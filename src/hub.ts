@@ -95,6 +95,38 @@ type Q = Pick<Transaction, 'query' | 'exec'>;
 
 const SCHEMA = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 
+/**
+ * Brings a database created by an earlier release up to schema.sql. Every
+ * statement is idempotent, so it runs on every open; on a fresh database it
+ * changes nothing.
+ */
+const MIGRATE = `
+  alter table query add column if not exists selector jsonb;
+  alter table query add column if not exists kind text not null default 'question';
+  alter table query add column if not exists from_version_id text references version(id);
+  alter table query add column if not exists from_element_id text;
+  alter table query add column if not exists answered_by text;
+  alter table query add column if not exists created_at timestamptz not null default now();
+  alter table query drop constraint if exists query_kind_check;
+  alter table query add constraint query_kind_check check (kind in ('question','note'));
+  alter table invalidation drop constraint if exists invalidation_reason_check;
+  alter table invalidation add constraint invalidation_reason_check check (reason in
+    ('changed','fuzzy_reanchor','orphaned','override_stale','override_orphaned',
+     'upstream_dirty','review_failed','role_boundary','query_answered'));
+`;
+
+/**
+ * Something an agent should look at: a layer's work queue (open questions,
+ * notes and marks it owns) or an actor's answers (replies to what they raised).
+ */
+export type HubEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
+
+export interface Query {
+  id: string; kind: 'question' | 'note'; address: string; question: string; state: string;
+  answer: string | null; answered_by: string | null; raised_by: string | null;
+  from: string | null; mark: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Hub
 // ---------------------------------------------------------------------------
@@ -102,15 +134,33 @@ const SCHEMA = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 export class Hub {
   private constructor(readonly db: PGlite, private reviewer: Reviewer) {}
 
+  private listeners = new Set<(e: HubEvent) => void>();
+
   /** In-memory by default; pass `dataDir` to persist across restarts. */
   static async open(opts: { reviewer?: Reviewer; dataDir?: string } = {}): Promise<Hub> {
     const db = opts.dataDir ? new PGlite(opts.dataDir) : new PGlite();
     const exists = await db.query<{ t: string | null }>(`select to_regclass('public.node')::text as t`);
-    if (!exists.rows[0].t) await db.exec(SCHEMA);
+    await db.exec(exists.rows[0].t ? MIGRATE : SCHEMA);
     return new Hub(db, opts.reviewer ?? structuralReviewer);
   }
 
   async close() { await this.db.close(); }
+
+  /** Be told when an inbox gains or loses work. Returns an unsubscribe function. */
+  onEvent(fn: (e: HubEvent) => void): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+
+  private emit(e: HubEvent) {
+    for (const fn of this.listeners) {
+      try { fn(e); } catch { /* a listener's failure never fails a write */ }
+    }
+  }
+
+  private async emitForVersion(versionId: string) {
+    this.emit({ inbox: 'layer', layer: (await this.version(versionId)).layer });
+  }
 
   // ---- write contexts ------------------------------------------------------
 
@@ -651,6 +701,13 @@ export class Hub {
         `update edge set target_version_id = $2, target_fingerprint = $3 where id = $1`, [e.id, latest.id, r.fingerprint]));
       await this.closeMark(m.id, `addressed by version ${v.seq} of ${v.node_id}`);
     }
+    const answered = await this.db.query<{ id: string }>(
+      `select i.id from invalidation i
+         join version me on me.id = $1
+         join delta d on d.version_id = me.id and d.element_id = i.element_id and d.kind = 'override'
+        where i.version_id = me.id and i.state = 'open' and i.reason = 'query_answered'
+          and i.created_at < me.created_at`, [v.id]);
+    for (const m of answered.rows) await this.closeMark(m.id, `addressed by version ${v.seq} of ${v.node_id}`);
   }
 
   /** Every non-clean override on a live version has exactly one open mark and query. */
@@ -744,30 +801,53 @@ export class Hub {
           [mark_id, `cause ${markId} cleared`]);
       }
     });
+    await this.emitForVersion((await this.markRow(markId)).version_id);
   }
 
   // ---- queries (the lightweight tier) ---------------------------------------
 
   /**
-   * Ask a question against an address. It lands on the layer that owns the
-   * answer: the version the address resolves to. Anyone may ask.
+   * Ask a question, or leave a note, against an address. It lands on the layer
+   * that owns the answer: the version the address resolves to. Anyone may ask.
+   *
+   * `from` names the asker's own element that waits on the answer (drafts
+   * allowed). When a question is answered, that element gets a
+   * `query_answered` mark, so the answer reaches the work that relied on it
+   * even if the spec text never changes. A note doesn't block anything, so a
+   * reply to it marks nothing.
    */
-  async raiseQuery(sessionId: string, address: Address | string, question: string): Promise<string> {
+  async raiseQuery(sessionId: string, address: Address | string, question: string,
+    opts: { kind?: 'question' | 'note'; from?: Address | string } = {}): Promise<string> {
     const s = await this.session(sessionId);
     const a = typeof address === 'string' ? parseAddress(address) : address;
     const r = await this.resolve(a);
     if (!r.versionId || r.status === 'orphan') throw new Error(`cannot ask about ${typeof address === 'string' ? address : JSON.stringify(address)}: it does not resolve`);
+    let from: { version: string; element: string | null } | undefined;
+    if (opts.from) {
+      const f = typeof opts.from === 'string' ? parseAddress(opts.from) : opts.from;
+      const fr = await this.resolve(f);
+      if (!fr.versionId || fr.status === 'orphan') throw new Error(`from ${formatAddress(f)} does not resolve`);
+      if ((await this.version(fr.versionId)).layer !== LAYER_OF_ROLE[s.active_role]) {
+        throw new RoleError(`from must be an element of your own layer (${LAYER_OF_ROLE[s.active_role]})`);
+      }
+      from = { version: fr.versionId, element: f.element ?? null };
+    }
     const id = ulid();
     await this.asSystem((tx) => tx.query(
-      `insert into query(id, version_id, element_id, question, raised_by) values ($1,$2,$3,$4,$5)`,
-      [id, r.versionId, a.element ?? null, question, s.actor_id]));
+      `insert into query(id, version_id, element_id, selector, kind, question, raised_by, from_version_id, from_element_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, r.versionId, a.element ?? null, a.selector ? JSON.stringify(a.selector) : null, opts.kind ?? 'question',
+        question, s.actor_id, from?.version ?? null, from?.element ?? null]));
+    await this.emitForVersion(r.versionId);
     return id;
   }
 
   /** Only the layer that owns the answer may answer. Override and edge questions resolve through their own verbs. */
   async answerQuery(sessionId: string, queryId: string, answer: string) {
-    const q = (await this.db.query<{ version_id: string; invalidation_id: string | null; state: string }>(
-      `select version_id, invalidation_id, state from query where id = $1`, [queryId])).rows[0];
+    const q = (await this.db.query<{
+      version_id: string; element_id: string | null; invalidation_id: string | null; state: string;
+      kind: 'question' | 'note'; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null;
+    }>(`select * from query where id = $1`, [queryId])).rows[0];
     if (!q) throw new Error(`no query ${queryId}`);
     if (q.state !== 'open') throw new GateError(`query ${queryId} is already answered`);
     const mark = q.invalidation_id ? await this.markRow(q.invalidation_id) : undefined;
@@ -776,9 +856,31 @@ export class Hub {
     }
     const v = await this.version(q.version_id);
     const s = await this.requireLayer(sessionId, v.layer);
-    await this.db.query(`update query set state = 'answered', answer = $2 where id = $1`, [queryId, answer]);
+    await this.db.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1`, [queryId, answer, s.actor_id]);
     // A boundary question is settled by the layer that owns the answer; its mark goes with it.
     if (mark && mark.state === 'open') await this.closeMark(mark.id, `answered by ${s.actor_id}: ${answer}`);
+    if (q.kind === 'question' && q.from_version_id) await this.markAsker(q, v, answer);
+    this.emit({ inbox: 'layer', layer: v.layer });
+    if (q.raised_by) this.emit({ inbox: 'actor', actor: q.raised_by });
+  }
+
+  /**
+   * The element that asked now has its answer: mark it on its node's live
+   * version (the draft it was asked from may have committed, or been
+   * superseded since). If the element is gone, the asker still sees the
+   * answer through list_queries mine=true.
+   */
+  private async markAsker(q: { element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
+    asked: VersionRow, answer: string) {
+    const fromNode = (await this.version(q.from_version_id!)).node_id;
+    const live = await this.latestCommitted(fromNode) ?? await this.version(q.from_version_id!);
+    if (q.from_element_id && !(await this.elements(live.id)).some((e) => e.element_id === q.from_element_id)) return;
+    const on = formatAddress({ node: asked.node_id, element: q.element_id ?? undefined });
+    await this.mark({
+      version_id: live.id, element_id: q.from_element_id, reason: 'query_answered',
+      triggered_by: (await this.latestCommitted(asked.node_id))?.id ?? asked.id,
+      note: `${on}: you asked "${q.question}"; answered: "${answer}"`,
+    });
   }
 
   // ---- inspection ----------------------------------------------------------
@@ -842,7 +944,8 @@ export class Hub {
       reason: r.reason,
       dirty: formatAddress({ node: r.node_id, version: r.seq, element: r.element_id ?? undefined }),
       layer: r.layer,
-      because: r.note ? `review gate: ${r.note}`
+      because: r.reason === 'query_answered' ? r.note ?? 'your question was answered'
+        : r.note ? `review gate: ${r.note}`
         : r.edge_id
         ? `${formatAddress({ node: r.trig_node, element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} changed in version ${r.trig_seq}`
         : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
@@ -851,14 +954,30 @@ export class Hub {
     }));
   }
 
-  async listQueries(filter: { layer?: Layer; state?: 'open' | 'answered'; raisedBy?: string } = {}) {
-    return (await this.db.query<{ id: string; address: string; question: string; state: string; answer: string | null; raised_by: string | null; mark: string | null }>(
-      `select q.id, 'kj:' || v.node_id || '@' || v.seq || coalesce('#' || q.element_id, '') as address,
-              q.question, q.state, q.answer, q.raised_by, q.invalidation_id as mark
+  async listQueries(filter: {
+    layer?: Layer; state?: 'open' | 'answered'; raisedBy?: string; node?: string; kind?: 'question' | 'note';
+  } = {}): Promise<Query[]> {
+    const rows = (await this.db.query<{
+      id: string; kind: 'question' | 'note'; node_id: string; seq: number; element_id: string | null;
+      selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
+      raised_by: string | null; mark: string | null; from_node: string | null; from_seq: number | null; from_element_id: string | null;
+    }>(
+      `select q.id, q.kind, v.node_id, v.seq, q.element_id, q.selector, q.question, q.state, q.answer, q.answered_by,
+              q.raised_by, q.invalidation_id as mark, fv.node_id as from_node, fv.seq as from_seq, q.from_element_id
          from query q join version v on v.id = q.version_id
+         left join version fv on fv.id = q.from_version_id
         where ($1::text is null or v.layer = $1) and ($2::text is null or q.state = $2)
-          and ($3::text is null or q.raised_by = $3)
-        order by q.id`, [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null])).rows;
+          and ($3::text is null or q.raised_by = $3) and ($4::text is null or v.node_id = $4)
+          and ($5::text is null or q.kind = $5)
+        order by q.id`,
+      [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null])).rows;
+    return rows.map((r) => ({
+      id: r.id, kind: r.kind,
+      address: formatAddress({ node: r.node_id, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }),
+      question: r.question, state: r.state, answer: r.answer, answered_by: r.answered_by, raised_by: r.raised_by,
+      from: r.from_node ? formatAddress({ node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }) : null,
+      mark: r.mark,
+    }));
   }
 
   async openMarks(): Promise<MarkRow[]> {
@@ -919,6 +1038,7 @@ export class Hub {
       `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note)
        values ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]));
+    await this.emitForVersion(m.version_id);
     return id;
   }
 
@@ -926,6 +1046,7 @@ export class Hub {
     await this.asSystem((tx) => tx.query(
       `insert into query(id, version_id, element_id, invalidation_id, question) values ($1,$2,$3,$4,$5)`,
       [ulid(), versionId, elementId, markId, question]));
+    await this.emitForVersion(versionId);
   }
 
   /**
@@ -992,6 +1113,7 @@ const NEXT_STEP: Record<string, string> = {
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',
   review_failed: 'Rebasing onto the new parent failed review. Draft a version that resolves the contradiction named in the query.',
   role_boundary: 'The review gate thinks this crosses the layer boundary. A question went to the layer that owns the answer; the mark clears when it is answered. Meanwhile, work continues at risk.',
+  query_answered: 'A question this element was waiting on has been answered. Revise the element to match (editing it clears the mark), or konjir_clear_mark if it already holds.',
 };
 
 /**

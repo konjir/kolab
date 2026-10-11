@@ -10,7 +10,7 @@ TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in
 
 ```
 npm install
-npm test                  # 43 scenario, regression, review and end-to-end tests
+npm test                  # 49 scenario, regression, review and end-to-end tests
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 ```
 
@@ -136,14 +136,27 @@ The semantic reviewer is tested against a scripted model and stubbed Bedrock cli
 | `list_nodes`, `read_node`, `resolve` | Read current state; `resolve` takes any address |
 | `lineage` | What a node depends on (upstream) or what depends on it (downstream) |
 | `list_stale` | Open marks on your layer: what is dirty, why, and the next step |
-| `list_queries` | Questions your layer owns; `mine=true` for answers to questions you raised |
+| `list_queries` | Questions and notes your layer owns; `mine=true` for the ones you raised, with answers |
 | `create_node`, `draft`, `submit_for_review` | Author. `draft` takes deltas or full elements, plus `links` |
 | `link` | Declare that one of your elements relies on an address |
 | `clear_mark`, `resolve_override` | Settle a mark |
-| `ask`, `answer_query` | The question tier. Questions route to the layer that owns the answer |
+| `ask`, `annotate`, `answer_query` | The question tier. Questions and notes route to the layer that owns the answer; see below |
 | `admin_add_actor`, `admin_open_session`, `admin_end_session` | Admin token only |
 
-In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it.
+In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it. `konjir watch` streams your inbox (see below).
+
+## Questions, notes and push
+
+An engineer writing a binding talks to the spec through two verbs:
+
+- **`ask`** is for a decision the engineer needs before they can proceed. Pass `from=<binding element>` to name the element that waits on it. When product answers, that element gets a `query_answered` mark carrying the question and the answer. Editing the element, or `clear_mark`, settles it. The answer reaches the binding even if the spec text never changes.
+- **`annotate`** leaves a note: an interpretation the engineer is going ahead with, an assumption, a risk, or something they couldn't check. It blocks nothing, but it waits in product's queue until product replies, so product can object. A reply to a note marks nothing.
+
+Both can target an element or a quoted span (`kj:orders#R13~q({"exact":"50 meters"})`). `read_node` shows them beside the element they're about, open and answered, including ones asked on earlier versions of the spec. Either layer can use them in either direction.
+
+**Push.** Each layer has an inbox resource, `konjir://inbox/functional` and `konjir://inbox/technical`, holding its open questions, notes and marks. Each actor has `konjir://answers/<actor>`, which holds what they raised, with replies. `whoami` lists the two for the session. The hub declares `resources.subscribe` and signals a resource whenever it changes, over MCP 2026-07-28 `subscriptions/listen`. A client that listens gets `notifications/resources/updated` and re-reads the resource. Only the URI is pushed, never the content, and reading `answers` is limited to its own actor.
+
+Claude Code doesn't yet turn these notifications into a turn for the model. Until it does, an agent waiting on answers can run `konjir watch --once` as a background command, which exits with the change as soon as the inbox has one. `konjir watch` without `--once` prints the inbox, then one JSON line per change, for a harness that tails output.
 
 ## How each decision is implemented
 
@@ -206,4 +219,4 @@ Their feedback drove these changes:
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.
-- **Server push isn't used.** Agents poll `list_stale` and `list_queries`. The live clarification loop over `subscriptions/listen` is a later step.
+- **Push is a signal, not a message.** The hub signals an inbox over `subscriptions/listen`, and the agent reads what changed. Under the 2025 protocol, which has no listen stream, agents still poll `list_stale` and `list_queries`. Claude Code needs `konjir watch --once` (see *Questions, notes and push*). A Claude Code channel would need a local stdio bridge, because channels don't work over HTTP.

@@ -101,7 +101,8 @@ create table invalidation (
   triggered_by       text not null references version(id),  -- the upstream commit
   reason             text not null check (reason in
                        ('changed','fuzzy_reanchor','orphaned','override_stale',
-                        'override_orphaned','upstream_dirty','review_failed','role_boundary')),
+                        'override_orphaned','upstream_dirty','review_failed','role_boundary',
+                        'query_answered')),
   state              text not null default 'open' check (state in ('open','cleared')),
   note               text,                                  -- e.g. the review gate's explanation
   cleared_by         text,
@@ -116,15 +117,23 @@ create table invalidation_cause (
   primary key (mark_id, cause_id)
 );
 
+-- Questions and notes. Both land on the layer that owns the address and wait
+-- for its reply; a question also blocks the element it was asked from.
 create table query (
   id          text primary key,
   version_id  text not null references version(id),   -- the layer that owns the answer
   element_id  text,
+  selector    jsonb,                                  -- a quoted span inside element_id
   invalidation_id text references invalidation(id),
+  kind        text not null default 'question' check (kind in ('question','note')),
   question    text not null,
   raised_by   text,
+  from_version_id text references version(id),        -- the asker's own element that waits on it
+  from_element_id text,
   state       text not null default 'open' check (state in ('open','answered')),
-  answer      text
+  answer      text,
+  answered_by text,
+  created_at  timestamptz not null default now()
 );
 
 -- Dispute machinery (not exercised by this prototype beyond the schema).

@@ -10,6 +10,7 @@
  *   konjir read <node> [version]
  *   konjir stale [all]
  *   konjir queries [all]
+ *   konjir watch [--once]                -> print your inbox now and each time the hub pushes a change
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -23,11 +24,30 @@ import { DEFAULT_REVIEW_MODEL, bedrockReviewer } from './review.js';
 import type { Reviewer } from './hub.js';
 
 export async function connect(url: string, token: string): Promise<Client> {
-  const client = new Client({ name: 'konjir-cli', version: '0.2.0' });
+  // 'auto' talks 2026-07-28 to a hub that offers it (needed for subscriptions/listen) and 2025 to an older one.
+  const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   }));
   return client;
+}
+
+/**
+ * Subscribe to this session's inboxes (its layer's queue and its own answers)
+ * over subscriptions/listen. `onUpdate` gets the URI and fresh contents each
+ * time the hub signals a change.
+ */
+export async function watch(client: Client, onUpdate: (uri: string, body: unknown) => void | Promise<void>) {
+  const me = await call(client, 'whoami') as { subscribe: string[] };
+  const read = async (uri: string) => {
+    const r = await client.readResource({ uri });
+    const c = r.contents[0];
+    return c && 'text' in c ? JSON.parse(c.text) : null;
+  };
+  client.setNotificationHandler('notifications/resources/updated', async (n) => {
+    await onUpdate(n.params.uri, await read(n.params.uri));
+  });
+  return { uris: me.subscribe, read, subscription: await client.listen({ resourceSubscriptions: me.subscribe }) };
 }
 
 /** Call a tool and return its structured result, or throw with the tool's error text. */
@@ -49,6 +69,8 @@ const USAGE = `konjir — the Konjir hub from a shell. Same verbs as the MCP ser
   konjir <verb> --json '{...}' the same, with all arguments as one JSON object
 
 Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir stale [all] · konjir queries [all]
+Push:      konjir watch prints your inbox, then a JSON line each time it changes (questions, notes,
+           answers, marks). konjir watch --once waits for the next change, prints it and exits.
 Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
 Server: konjir serve [--port 7420] [--data .konjir] [--admin-token T] [--review structural|bedrock] [--public-host hub.example.com]
@@ -129,6 +151,26 @@ async function main(argv: string[]) {
       throw new Error(`the hub at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`);
     }
     throw e;
+  }
+  if (cmd === 'watch') {
+    const once = rest.includes('--once');
+    let finished = false;
+    const done = new Promise<void>((resolve) => {
+      const finish = () => { finished = true; resolve(); };
+      void watch(client, (uri, body) => {
+        console.log(JSON.stringify({ updated: uri, ...(body as object) }));
+        if (once) finish();
+      }).then(async (w) => {
+        if (!once) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
+        void w.subscription.closed.then((how) => {
+          if (!finished && how === 'remote') console.error('the hub closed the subscription; run konjir watch again');
+          finish();
+        });
+      });
+    });
+    await done;
+    await client.close();
+    return;
   }
   try {
     let result: unknown;

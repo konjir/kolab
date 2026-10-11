@@ -32,7 +32,10 @@ test('two agents work through one hub: roles, gate, links, questions, cascade, s
   const pm = await agentFor(server.url, admin, 'pm-agent', 'product');
   const eng = await agentFor(server.url, admin, 'eng-agent', 'engineer');
 
-  assert.deepEqual(await call(eng.client, 'whoami'), { session: eng.token, actor: 'eng-agent', role: 'engineer', layer: 'technical' });
+  assert.deepEqual(await call(eng.client, 'whoami'), {
+    session: eng.token, actor: 'eng-agent', role: 'engineer', layer: 'technical',
+    subscribe: ['konjir://inbox/technical', 'konjir://answers/eng-agent'],
+  });
 
   // Product authors and commits the spec.
   await call(pm.client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });

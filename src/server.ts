@@ -9,10 +9,10 @@
  * translates.
  */
 import { createServer, type Server as HttpServer } from 'node:http';
-import { McpServer, createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
+import { McpServer, ResourceTemplate, createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import { hostHeaderValidation, localhostHostValidation, localhostOriginValidation, originValidation, toWebRequest } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
-import { GateError, Hub, RoleError, type Kind, type Reviewer } from './hub.js';
+import { GateError, Hub, RoleError, type HubEvent, type Kind, type Layer, type Query, type Reviewer } from './hub.js';
 import { parseAddress } from './address.js';
 
 const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;
@@ -21,13 +21,25 @@ export const INSTRUCTIONS = `Konjir holds the canonical specs, bindings and work
 Rules:
 1. Fetch fresh. Resolve addresses with konjir_resolve when you need them; never copy spec text into local files, readmes or comments.
 2. Address precisely. kj:<node>[@<version>][#<element>][~q({"exact":"…"})]. Link from the element you are writing to the element you rely on.
-3. Never change behavior from the technical layer. If the spec can't be met as written, konjir_ask the spec, don't patch around it.
+3. Never change behavior from the technical layer. If the spec can't be met as written, konjir_ask the spec, don't patch around it. Pass from=<your element> so the answer comes back to that element as a mark. To flag an interpretation or assumption that needs no answer, konjir_annotate the spec.
 4. Drafts are not truth until review commits them. Nothing may link to an uncommitted version.
-5. Before finishing work, run konjir_list_stale and handle every mark on your layer.`;
+5. Before finishing work, run konjir_list_stale and handle every mark on your layer.
+6. Your inbox is pushed. If your client supports subscriptions/listen, subscribe to the resources konjir_whoami lists and re-read one when it is updated. Otherwise, while you wait on answers, run \`konjir watch --once\` (the konjir CLI, with KONJIR_URL and KONJIR_TOKEN set) as a background command: it exits with the change as soon as your inbox has one.`;
 
 const MORE = 'Full operating instructions and precedent: the konjir_operating_instructions MCP prompt, or run `konjir instructions` in a shell.';
 
 type Ctx = { hub: Hub; session?: string; admin: boolean };
+
+/** Resources an agent subscribes to. The hub signals them; their contents are read, never pushed. */
+export const inboxUri = (layer: Layer) => `konjir://inbox/${layer}`;
+export const answersUri = (actor: string) => `konjir://answers/${encodeURIComponent(actor)}`;
+export const uriOf = (e: HubEvent) => e.inbox === 'layer' ? inboxUri(e.layer) : answersUri(e.actor);
+
+/** Questions and notes in the shape read_node shows them beside an element. */
+const thread = (q: Query) => ({
+  id: q.id, kind: q.kind, state: q.state, on: q.address, question: q.question, raised_by: q.raised_by, from: q.from,
+  ...(q.state === 'answered' ? { answer: q.answer, answered_by: q.answered_by } : {}),
+});
 
 function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }], structuredContent: data as Record<string, unknown> };
@@ -65,14 +77,20 @@ const deltaInput = z.object({
 
 export function buildServer(ctx: Ctx): McpServer {
   const { hub } = ctx;
-  const server = new McpServer({ name: 'konjir', version: '0.2.0' }, { instructions: `${INSTRUCTIONS}\n${MORE}` });
+  const server = new McpServer({ name: 'konjir', version: '0.6.0' }, {
+    instructions: `${INSTRUCTIONS}\n${MORE}`,
+    capabilities: { resources: { subscribe: true } },
+  });
 
   // ---- read ----------------------------------------------------------------
 
   server.registerTool('konjir_whoami', {
-    description: 'Show the actor, role and layer your session token carries.',
+    description: 'Show the actor, role and layer your session token carries, and the inbox resources to subscribe to for pushed updates.',
     annotations: { readOnlyHint: true },
-  }, agent(ctx, async (_: unknown, s) => hub.sessionInfo(s)));
+  }, agent(ctx, async (_: unknown, s) => {
+    const me = await hub.sessionInfo(s);
+    return { ...me, subscribe: [inboxUri(me.layer), answersUri(me.actor)] };
+  }));
 
   server.registerTool('konjir_list_nodes', {
     description: 'List specs, bindings, WBS, work packages and implementations, with their latest committed version number.',
@@ -91,7 +109,7 @@ export function buildServer(ctx: Ctx): McpServer {
   }));
 
   server.registerTool('konjir_read_node', {
-    description: 'Read every element of a node version, each with its address. Defaults to the latest committed version.',
+    description: 'Read every element of a node version, each with its address and the questions and notes raised on it (open and answered, from any version). Defaults to the latest committed version.',
     inputSchema: z.object({ node: z.string(), version: z.number().int().optional() }),
     annotations: { readOnlyHint: true },
   }, agent(ctx, async ({ node, version }: { node: string; version?: number }) => {
@@ -101,9 +119,18 @@ export function buildServer(ctx: Ctx): McpServer {
     if (!v) throw new Error(`${node} has no ${version === undefined ? 'committed version' : `version ${version}`}`);
     const row = await hub.version(v.id);
     const els = await hub.elements(v.id);
+    const threads = new Map<string | null, ReturnType<typeof thread>[]>();
+    for (const q of await hub.listQueries({ node })) {
+      const el = parseAddress(q.address).element ?? null;
+      (threads.get(el) ?? threads.set(el, []).get(el)!).push(thread(q));
+    }
     return {
       node, version: row.seq, state: row.state, versionId: row.id,
-      elements: els.map((e) => ({ address: `kj:${node}@${row.seq}#${e.element_id}`, id: e.element_id, parent: e.parent_element_id, text: e.text })),
+      ...(threads.get(null) ? { questions: threads.get(null) } : {}),
+      elements: els.map((e) => ({
+        address: `kj:${node}@${row.seq}#${e.element_id}`, id: e.element_id, parent: e.parent_element_id, text: e.text,
+        ...(threads.get(e.element_id) ? { questions: threads.get(e.element_id) } : {}),
+      })),
     };
   }));
 
@@ -130,17 +157,19 @@ export function buildServer(ctx: Ctx): McpServer {
   }));
 
   server.registerTool('konjir_list_queries', {
-    description: 'List questions. Default: open questions your layer owns the answer to. mine=true: questions you raised, with their answers (check this to learn when your questions are answered).',
+    description: 'List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers.',
     inputSchema: z.object({
-      mine: z.boolean().optional().describe('Questions you raised, open and answered'),
+      mine: z.boolean().optional().describe('Questions and notes you raised, open and answered'),
       all_layers: z.boolean().optional(),
       state: z.enum(['open', 'answered']).optional(),
+      kind: z.enum(['question', 'note']).optional(),
+      node: z.string().optional().describe('Only those raised on this node'),
     }),
     annotations: { readOnlyHint: true },
-  }, agent(ctx, async ({ mine, all_layers, state }: { mine?: boolean; all_layers?: boolean; state?: 'open' | 'answered' }, s) => {
+  }, agent(ctx, async ({ mine, all_layers, state, kind, node }: { mine?: boolean; all_layers?: boolean; state?: 'open' | 'answered'; kind?: 'question' | 'note'; node?: string }, s) => {
     const me = await hub.sessionInfo(s);
-    if (mine) return { queries: await hub.listQueries({ raisedBy: me.actor, state }) };
-    return { queries: await hub.listQueries({ layer: all_layers ? undefined : me.layer, state: state ?? 'open' }) };
+    if (mine) return { queries: await hub.listQueries({ raisedBy: me.actor, state, kind, node }) };
+    return { queries: await hub.listQueries({ layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node }) };
   }));
 
   // ---- write ---------------------------------------------------------------
@@ -224,15 +253,54 @@ export function buildServer(ctx: Ctx): McpServer {
     return { ok: r.verdict.ok, note: r.verdict.note ?? null };
   }));
 
+  const from = address.optional().describe('Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark.');
+
   server.registerTool('konjir_ask', {
-    description: 'Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices.',
-    inputSchema: z.object({ address, question: z.string() }),
-  }, agent(ctx, async ({ address: a, question }: { address: string; question: string }, s) => ({ query: await hub.raiseQuery(s, a, question) })));
+    description: 'Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer.',
+    inputSchema: z.object({ address, question: z.string(), from }),
+  }, agent(ctx, async (a: { address: string; question: string; from?: string }, s) =>
+    ({ query: await hub.raiseQuery(s, a.address, a.question, { from: a.from }) })));
+
+  server.registerTool('konjir_annotate', {
+    description: 'Leave a note on an address for the layer that owns it: an interpretation you are proceeding on, an assumption, a risk, or something you could not check. It blocks nothing. The owner sees it beside the element in konjir_read_node and in its konjir_list_queries, and can reply. If you need a decision before you can proceed, use konjir_ask instead.',
+    inputSchema: z.object({ address, note: z.string(), from: address.optional().describe('Your own element the note is about') }),
+  }, agent(ctx, async (a: { address: string; note: string; from?: string }, s) =>
+    ({ note: await hub.raiseQuery(s, a.address, a.note, { kind: 'note', from: a.from }) })));
 
   server.registerTool('konjir_answer_query', {
-    description: 'Answer an open question your layer owns.',
+    description: 'Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it.',
     inputSchema: z.object({ query: z.string(), answer: z.string() }),
   }, agent(ctx, async ({ query, answer }: { query: string; answer: string }, s) => { await hub.answerQuery(s, query, answer); return { answered: query }; }));
+
+  // ---- inboxes (subscribe for pushed updates) ---------------------------------
+
+  server.registerResource('konjir_inbox', new ResourceTemplate('konjir://inbox/{layer}', { list: undefined }), {
+    title: 'A layer\'s work queue',
+    description: 'Open questions and notes the layer owns, and open marks on its work. Subscribe to your own layer\'s inbox; it is updated whenever that queue changes.',
+    mimeType: 'application/json',
+  }, async (uri, vars) => {
+    const layer = String(vars.layer);
+    if (layer !== 'functional' && layer !== 'technical') throw new Error(`no inbox ${uri.href}`);
+    if (!ctx.session) throw new RoleError('reading an inbox needs an agent session token');
+    const body = {
+      layer,
+      queries: await hub.listQueries({ layer, state: 'open' }),
+      marks: await hub.describeMarks({ layer }),
+    };
+    return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
+  });
+
+  server.registerResource('konjir_answers', new ResourceTemplate('konjir://answers/{actor}', { list: undefined }), {
+    title: 'Answers to what you raised',
+    description: 'Your questions and notes with their replies. Updated whenever one of them is answered.',
+    mimeType: 'application/json',
+  }, async (uri, vars) => {
+    if (!ctx.session) throw new RoleError('reading answers needs an agent session token');
+    const me = await hub.sessionInfo(ctx.session);
+    if (decodeURIComponent(String(vars.actor)) !== me.actor) throw new RoleError('you can only read your own answers');
+    const body = { actor: me.actor, queries: await hub.listQueries({ raisedBy: me.actor }) };
+    return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
+  });
 
   // ---- served instructions ---------------------------------------------------
 
@@ -251,11 +319,12 @@ export function buildServer(ctx: Ctx): McpServer {
       '',
       'Writing specs (product): intent and behavior only, one testable requirement per element, readable stable IDs (e.g. R1, R2 or a feature prefix like PR1). Reuse an element\'s ID when you edit it; a new ID means a new requirement. To edit, draft with deltas (override/add/remove) rather than resending everything.',
       'Writing bindings and work (engineer): one element per implementation decision; link each element to exactly the requirement(s) it serves, with source_element set. Questions about intent go to the spec with konjir_ask; never encode a behavior change in a binding.',
+      'Questions and notes: ask on the narrowest address (an element, or a quoted span with ~q). Set from to your element that waits on the answer; when it is answered that element gets a query_answered mark, which editing the element or konjir_clear_mark settles. Use konjir_annotate for an interpretation or assumption you are proceeding on, so the owner can object; it blocks nothing. Both show beside the element in konjir_read_node.',
       'Edge kinds: dependency = this element relies on that one (the usual choice); derivation = this element was generated from that one (e.g. a WBS item from a binding element); equivalence = two representations that must stay in sync (spec and prototype). All three are re-checked the same way when the target changes.',
       'Links inside one spec are allowed: they say one requirement relies on another, and the hub re-checks them when the target requirement changes.',
       '',
       `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
-      `Answered questions (${answered.length}): ` + (answered.slice(-20).map((q) => `${q.address}: "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
+      `Answered questions and notes (${answered.length}): ` + (answered.slice(-20).map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
     ].join('\n');
     return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
   });
@@ -325,6 +394,8 @@ export async function startServer(opts: {
     session: authInfo?.scopes.includes('agent') ? authInfo.clientId : undefined,
     admin: authInfo?.scopes.includes('admin') ?? false,
   }));
+  // Push: every open subscriptions/listen stream that subscribed to an inbox hears when it changes.
+  const unsubscribe = hub.onEvent((e) => handler.notify.resourceUpdated(uriOf(e)));
 
   async function authenticate(header: string | undefined): Promise<AuthInfo | undefined> {
     const token = header?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -374,6 +445,7 @@ export async function startServer(opts: {
     url: opts.publicHost ? `https://${opts.publicHost}/mcp` : `http://${host}:${port}/mcp`,
     hub,
     async close() {
+      unsubscribe();
       await handler.close();
       http.closeAllConnections();
       await new Promise<void>((resolve) => http.close(() => resolve()));
