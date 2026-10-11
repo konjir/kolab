@@ -1,0 +1,160 @@
+#!/bin/bash
+# Konjir hub bootstrap (first boot). Installs Node and Caddy, mounts the data volume,
+# writes the services and the release installer. The release module installs the code.
+set -euxo pipefail
+exec > >(tee -a /var/log/konjir-bootstrap.log) 2>&1
+
+NODE_VERSION='${node_version}'
+CADDY_VERSION='${caddy_version}'
+DOMAIN='${domain}'
+BUCKET='${bucket}'
+REGION='${region}'
+TOKEN_PARAM='${token_param}'
+DATA_VOLUME_ID='${data_volume_id}'
+
+dnf install -y tar xz unzip
+
+# ---- Node.js (official build, checksum-verified)
+if ! /usr/local/bin/node --version 2>/dev/null | grep -q "v$NODE_VERSION"; then
+  cd /tmp
+  curl -fsSLO "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.xz"
+  curl -fsSLO "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt"
+  grep " node-v$NODE_VERSION-linux-arm64.tar.xz\$" SHASUMS256.txt | sha256sum -c -
+  rm -rf /usr/local/lib/nodejs && mkdir -p /usr/local/lib/nodejs
+  tar -xJf "node-v$NODE_VERSION-linux-arm64.tar.xz" -C /usr/local/lib/nodejs --strip-components=1
+  ln -sf /usr/local/lib/nodejs/bin/node /usr/local/bin/node
+  ln -sf /usr/local/lib/nodejs/bin/npm /usr/local/bin/npm
+  ln -sf /usr/local/lib/nodejs/bin/npx /usr/local/bin/npx
+fi
+
+# ---- Caddy (official release, checksum-verified)
+if ! /usr/local/bin/caddy version 2>/dev/null | grep -q "v$CADDY_VERSION"; then
+  cd /tmp
+  CADDY_TGZ="caddy_$${CADDY_VERSION}_linux_arm64.tar.gz"
+  curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/$CADDY_TGZ"
+  curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_$${CADDY_VERSION}_checksums.txt"
+  grep " $CADDY_TGZ\$" "caddy_$${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+  tar -xzf "$CADDY_TGZ" caddy
+  install -m 0755 caddy /usr/local/bin/caddy
+fi
+
+id konjir >/dev/null 2>&1 || useradd --system --home /var/lib/konjir --shell /sbin/nologin konjir
+id caddy  >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --shell /sbin/nologin caddy
+mkdir -p /var/lib/caddy /etc/caddy /opt/konjir/releases /etc/konjir
+chown caddy:caddy /var/lib/caddy
+
+# ---- Data volume: wait for the attachment, format it once, mount it by UUID
+DEV="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$(echo "$DATA_VOLUME_ID" | tr -d -)"
+for _ in $(seq 1 120); do [ -e "$DEV" ] && break; sleep 5; done
+[ -e "$DEV" ] || { echo "data volume $DATA_VOLUME_ID never attached"; exit 1; }
+blkid "$DEV" >/dev/null 2>&1 || mkfs.xfs "$DEV"
+UUID=$(blkid -s UUID -o value "$DEV")
+mkdir -p /var/lib/konjir
+grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /var/lib/konjir xfs defaults,nofail 0 2" >> /etc/fstab
+mountpoint -q /var/lib/konjir || mount /var/lib/konjir
+chown konjir:konjir /var/lib/konjir
+
+# ---- Caddy: TLS in front of the hub
+cat > /etc/caddy/Caddyfile <<CADDY
+{
+  ${caddy_email}
+}
+$DOMAIN {
+  encode gzip
+  reverse_proxy 127.0.0.1:7420
+}
+CADDY
+cat > /etc/systemd/system/caddy.service <<'UNIT'
+[Unit]
+Description=Caddy (TLS for the Konjir hub)
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+Environment=XDG_DATA_HOME=/var/lib/caddy XDG_CONFIG_HOME=/var/lib/caddy
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=on-failure
+LimitNOFILE=1048576
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# ---- The hub
+cat > /etc/konjir/env <<ENV
+KONJIR_PUBLIC_HOST=$DOMAIN
+KONJIR_REVIEW=${review_mode}
+KONJIR_REVIEW_MODEL=${review_model}
+AWS_REGION=$REGION
+KONJIR_TOKEN_PARAM=$TOKEN_PARAM
+ENV
+
+cat > /usr/local/bin/konjir-start <<'START'
+#!/bin/bash
+set -euo pipefail
+KONJIR_ADMIN_TOKEN=$(aws ssm get-parameter --region "$AWS_REGION" --name "$KONJIR_TOKEN_PARAM" \
+  --with-decryption --query Parameter.Value --output text)
+export KONJIR_ADMIN_TOKEN
+cd /opt/konjir/current
+exec node_modules/.bin/tsx src/cli.ts serve --port 7420 --data /var/lib/konjir/data --quiet
+START
+chmod 0755 /usr/local/bin/konjir-start
+
+cat > /etc/systemd/system/konjir.service <<'UNIT'
+[Unit]
+Description=Konjir hub
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/konjir
+ConditionPathExists=/opt/konjir/current/package.json
+[Service]
+User=konjir
+Group=konjir
+EnvironmentFile=/etc/konjir/env
+ExecStart=/usr/local/bin/konjir-start
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/konjir
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Release installer, run by the release module through SSM: pull, install, switch, restart.
+cat > /usr/local/bin/konjir-update <<UPDATE
+#!/bin/bash
+set -euo pipefail
+BUCKET='$BUCKET'
+REGION='$REGION'
+UPDATE
+cat >> /usr/local/bin/konjir-update <<'UPDATE'
+if ! aws s3api head-object --region "$REGION" --bucket "$BUCKET" --key releases/current.zip >/dev/null 2>&1; then
+  echo "no release uploaded yet"; exit 0
+fi
+REL=/opt/konjir/releases/$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$REL"
+aws s3 cp --region "$REGION" --only-show-errors "s3://$BUCKET/releases/current.zip" /tmp/konjir.zip
+unzip -q /tmp/konjir.zip -d "$REL"
+rm -f /tmp/konjir.zip
+cd "$REL"
+HOME=/tmp npm ci --no-audit --no-fund --loglevel=error
+chown -R root:root "$REL"
+ln -sfn "$REL" /opt/konjir/current.new && mv -Tf /opt/konjir/current.new /opt/konjir/current
+systemctl restart konjir
+for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:7420/healthz >/dev/null 2>&1 && break; sleep 2; done
+curl -fsS http://127.0.0.1:7420/healthz && echo " · release $(basename "$REL") is live"
+ls -1dt /opt/konjir/releases/* | tail -n +4 | xargs -r rm -rf   # keep the last 3
+UPDATE
+chmod 0755 /usr/local/bin/konjir-update
+
+systemctl daemon-reload
+systemctl enable --now caddy
+systemctl enable konjir
+# On a replacement instance, reinstall the current release straight away.
+/usr/local/bin/konjir-update
+touch /var/lib/konjir-bootstrap-done

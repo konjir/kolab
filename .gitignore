@@ -1,0 +1,7 @@
+node_modules/
+.konjir/
+*.tgz
+deploy/terraform/.terraform/
+deploy/terraform/.build/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*

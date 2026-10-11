@@ -1,0 +1,209 @@
+# konjir-core
+
+Prototype of Konjir's engine and its delivery rails:
+
+- **The hub:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
+- **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients.
+- **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of the hub, so there is one backend.
+
+TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in WASM), so there's no server to install.
+
+```
+npm install
+npm test                  # 43 scenario, regression, review and end-to-end tests
+npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
+```
+
+## Running it with agents
+
+```
+# 1. Start the hub. It persists to ./.konjir and prints an admin token.
+bin/konjir serve --port 7420
+
+# 2. Register agents and give each a session (one actor, one active role).
+export KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<admin token>
+bin/konjir admin_add_actor id=pm-agent
+bin/konjir admin_open_session actor=pm-agent role=product      # prints the agent's token
+bin/konjir admin_open_session actor=eng-agent role=engineer
+```
+
+Then point each harness at the hub with its own token. The token decides who the agent is and which layer it may write. Tool arguments never carry identity.
+
+- **Claude Code:** `claude mcp add --transport http konjir http://127.0.0.1:7420/mcp --header "Authorization: Bearer <token>"`
+- **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
+- **Anything with a shell** (Codex, opencode, a person): `export KONJIR_URL=… KONJIR_TOKEN=<token>`, then `bin/konjir instructions`.
+
+That one connection is the only static setup a harness needs. The rules come down the protocol, as server instructions and the `konjir_operating_instructions` prompt (`konjir instructions` in a shell). The served text includes answered questions and override precedent, so settled questions aren't re-asked.
+
+## Deploying to AWS for testing
+
+Everything is provisioned by Terraform, so `terraform destroy` removes all of it. The one exception is the bucket that holds Terraform's own state, which a script creates once.
+
+You need:
+
+- Terraform 1.15 or later
+- AWS CLI v2 with a profile named `icedlee337` for the account that owns the `konjir.com` hosted zone
+- `npm install` run once in this folder (the `konjir` CLI runs locally)
+
+```
+deploy/bootstrap-state.sh          # once: creates s3://konjir-terraform (versioned, encrypted, TLS-only)
+cd deploy/terraform
+terraform init
+terraform apply                    # ~5–10 min the first time; ends when the code is installed
+cd ../..
+deploy/konjir-ops.sh connect lee product     # prints Lee's token and the Claude Code command
+deploy/konjir-ops.sh connect eng-1 engineer
+```
+
+The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terraform/konjir/test/terraform.tfstate` in `us-east-1`, using the `icedlee337` profile. It locks with S3's native lock file, so no DynamoDB table is needed.
+
+| Module | What it creates |
+| --- | --- |
+| `network` | A VPC with one public subnet. Inbound is 443, plus 80 for certificate issuance; there is no SSH. |
+| `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days |
+| `secrets` | A generated admin token, stored as an SSM SecureString |
+| `iam` | The instance role: Session Manager access, read its releases and token, call Bedrock for the review gate |
+| `hub` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `hub.konjir.com` |
+| `release` | Zips this repo, uploads it, and installs it on the hub through Systems Manager. `terraform apply` is the deploy |
+
+The hub listens on localhost only, behind Caddy. Its database lives on the separate data volume, so replacing the instance is safe. A change to the boot script replaces it automatically. The rough cost is $15–20 a month at list price.
+
+Day to day:
+
+- **Ship code:** `terraform apply`. A code change alters the release hash, and Terraform reinstalls and waits for success.
+- **Turn on semantic review:** `terraform apply -var review_mode=bedrock`. Enable the model under *Model access* in the Bedrock console first.
+- **Inspect:** `deploy/konjir-ops.sh status`, `logs` or `bootstrap-log`. `shell` opens a session; it needs the Session Manager plugin.
+- **OS refresh:** `terraform apply -replace=module.hub.aws_instance.hub`. The AMI is pinned when the instance is created.
+- **Tear down:** `terraform destroy`. A final snapshot of the data volume is kept by default; use `-var final_snapshot_on_destroy=false` for a teardown that leaves nothing. Daily snapshots made before the teardown remain until you delete them. The state bucket stays until you remove it.
+
+The admin token is generated by Terraform, so it is also in the state file. That is why the state bucket is private, encrypted and TLS-only.
+
+**Testing only.** This is one instance with no failover. Tokens are bearer tokens with no expiry or single sign-on: hand them out privately, and revoke them with `admin_end_session`. Before real use, replace them with OAuth.
+
+## Who pays for which model calls
+
+Konjir splits model usage along one line: the server does a small, bounded check, and all the real work happens in collaborators' own harnesses.
+
+| Work | Runs where | Paid by |
+| --- | --- | --- |
+| Authoring specs, bindings, WBS; implementing; answering questions | Each collaborator's harness (Claude Code, Codex, opencode, …) | That collaborator's own subscription or API account |
+| The review gate's semantic check | The Konjir server | The operator's AWS account, via Amazon Bedrock |
+| Cascade, addressing, rebase, roles | The Konjir server | No model at all |
+
+The server is built so it can't drift across that line:
+
+- **It never asks for, stores, or relays a collaborator's model credentials.** A collaborator's token identifies them to Konjir and nothing else.
+- **It never borrows a client's model.** It doesn't use MCP sampling or any other way to make a collaborator's harness run inference on the server's behalf. When the server needs judgment beyond its gate, it raises a question to a person, who answers from their own harness, by their own choice.
+- **Each collaborator's model use stays inside their own harness and account.** Konjir doesn't pool, share or proxy anyone's access. Whether a given plan permits a given use (for example, connecting an MCP server, or how much automated work a subscription may drive) is set by that provider's terms. Each collaborator should confirm their own plan covers how they use it.
+
+### Turning on semantic review
+
+```
+export AWS_REGION=us-east-1            # plus AWS credentials: role, profile, or env vars
+export KONJIR_REVIEW=bedrock
+export KONJIR_REVIEW_MODEL=anthropic.claude-haiku-5-5   # the default
+bin/konjir serve
+```
+
+Any Bedrock model with tool use works. Claude IDs (`anthropic.*`) go through Bedrock's Messages API; everything else goes through the Converse API with the same prompt and tool. List prices per million tokens as of October 2026:
+
+| Model | `KONJIR_REVIEW_MODEL` | Input | Output |
+| --- | --- | --- | --- |
+| Claude Haiku 5.5 (default) | `anthropic.claude-haiku-5-5` | $0.10 | $0.50 |
+| Kimi K2.5 | `moonshotai.kimi-k2.5` (in-region only) | $0.60 | $3.00 |
+| Kimi K3 | `global.moonshotai.kimi-k3` | $3.00 | $15.00 |
+
+Haiku 5.5's price rises to $0.50 / $2.50 above 100k input tokens per request. Review prompts stay well under that, since the gate rejects anything over 120k characters. Prices change, so check the Bedrock pricing page for your region before switching.
+
+The account needs access to the model in Amazon Bedrock (check *Model access* in the console). Each review is one forced tool call, `report_review`, with `max_tokens` 1500. The input is the version's elements plus the text of the requirements they link to.
+
+- **Free checks run first.** Structural failures (empty, duplicated, malformed) are rejected without a model call.
+- **Repeats are cached.** A rebase that produces content the gate has already seen is a cache hit.
+- **Usage is logged.** The server logs tokens per review and running totals to stderr.
+- **What the reviewer reports:**
+  - *Contradiction:* rejects the version and names the elements involved.
+  - *Layer leak:* commits, then raises a `role_boundary` mark and a question to the layer that owns the answer. Implementation detail in a spec goes back to its author; a binding that changes behavior goes to the spec it links to. Answering the question clears the mark.
+  - *Model unavailable* (outage, throttling, missing credentials): the draft is left intact and the agent is told to resubmit. Nothing commits unreviewed.
+- **Spec text is treated as data.** It is escaped and fenced in the prompt, so it can't pose as instructions to the reviewer.
+
+The semantic reviewer is tested against a scripted model and stubbed Bedrock clients for both APIs. It has not yet run against live Bedrock. Run one review with your chosen model on a real account before relying on it; Kimi in particular has only been checked for the request shape, not for how well it follows the review instructions.
+
+## Verbs
+
+| Verb | Does |
+| --- | --- |
+| `whoami` | Your actor, role and layer |
+| `list_nodes`, `read_node`, `resolve` | Read current state; `resolve` takes any address |
+| `lineage` | What a node depends on (upstream) or what depends on it (downstream) |
+| `list_stale` | Open marks on your layer: what is dirty, why, and the next step |
+| `list_queries` | Questions your layer owns; `mine=true` for answers to questions you raised |
+| `create_node`, `draft`, `submit_for_review` | Author. `draft` takes deltas or full elements, plus `links` |
+| `link` | Declare that one of your elements relies on an address |
+| `clear_mark`, `resolve_override` | Settle a mark |
+| `ask`, `answer_query` | The question tier. Questions route to the layer that owns the answer |
+| `admin_add_actor`, `admin_open_session`, `admin_end_session` | Admin token only |
+
+In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it.
+
+## How each decision is implemented
+
+**1. Addressing.** An address is `kj:<node>[@<version>][#<element>][~q(<selector>)]`. Every edge stores the fingerprint of the content it addressed when it was created. On an upstream commit, the hub re-resolves each address against the new version:
+
+- **Same fingerprint:** the edge is re-pinned. This is a pointer bump, not a mark.
+- **Different content:** the dependent gets a `changed` mark.
+- **Near match on a span:** `fuzzy_reanchor` mark.
+- **Gone:** `orphaned` mark.
+
+An element address covers that element's subtree, so addressing a section means addressing its requirements too.
+
+**2. Overrides.** Every delta records its base: the parent version and fingerprint it was written against. When a parent commits, each live child is rebased:
+
+- Untouched elements are inherited.
+- An override whose parent text now matches the child's text is retired as converged.
+- A changed override goes `dirty` but keeps applying.
+- A deleted one goes `orphaned` but keeps applying.
+
+The rebased child must pass the review gate. Resolving a dirty override records precedent, and the same `(base, parent, child)` triple then resolves itself on the next rebase.
+
+**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). The hub rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer.
+
+## What the prototype found
+
+**Element addressing has to be on both ends of an edge.** The measurement, at N = 100 requirements with one edited:
+
+| Addressing | Dirty versions |
+| --- | --- |
+| Version scope everywhere | 202 of 202 (lockstep) |
+| Element *targets*, whole-version sources | 202 of 202 |
+| Element targets **and** element sources | **4**, at every N |
+| Same, but the WBS derives from the whole binding | 202 of 202 |
+
+Pointing at the changed requirement isn't enough. The edge must also say *which part of the dependent* relies on it, or the dirt spreads to the whole dependent version and everything downstream. One whole-version hop anywhere in a lineage collapses back to lockstep.
+
+**Concurrency needs an explicit rule.** A draft can be overtaken while it's open:
+
+- **Overtaken only by hub rebases:** the draft is folded into a fresh rebase, keeping its author and declared edges.
+- **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted.
+
+**Agents can use it unaided.** Two separate agents were given only a token and the `konjir` command, with no access to the source. The product agent wrote and committed a password-reset spec. The engineer agent bound it to a Node/Postgres/Redis stack and linked each of its 11 elements to the requirements it serves. It then found two real ambiguities (which sessions survive a reset, and whether earlier reset links die) and asked them instead of deciding. The product owner ruled, and the product agent answered and amended the spec. Exactly the three binding elements tied to the amended requirements went dirty. The engineer revised them and cleared all three marks.
+
+Their feedback drove these changes:
+
+- per-verb help
+- `key=value` on every verb
+- links declared inside a draft
+- partial edits by delta
+- `mine=true` on questions
+- a gate that says what it checked
+- plain errors when the hub is down or a token is refused
+- editing a marked element counts as addressing its mark
+
+## Deliberate simplifications
+
+- **Semantic review is opt-in** (`KONJIR_REVIEW=bedrock`). Without it the gate is structural only, and it says so on every commit.
+- **Session tokens are bearer tokens** with no expiry or OAuth. They're fine on one machine or a trusted network, but not on the open internet.
+- **One hub process** owns the embedded database. Moving to a real Postgres server is the path to more than one hub process.
+- **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
+- **Precedent applies on a child's next rebase**, not immediately to other open marks.
+- **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.
+- **Server push isn't used.** Agents poll `list_stale` and `list_queries`. The live clarification loop over `subscriptions/listen` is a later step.
