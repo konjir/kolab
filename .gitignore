@@ -1,7 +1,23 @@
 node_modules/
 .konjir/
 *.tgz
-deploy/terraform/.terraform/
+.env
+.env.*
+
+# Terraform: anything that can hold secret values, anywhere in the tree
+**/.terraform/
 deploy/terraform/.build/
-deploy/terraform/*.tfstate
-deploy/terraform/*.tfstate.*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+tfplan
+*.plan
+plan.out
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
