@@ -1,5 +1,5 @@
 {
-  "name": "konjir-core",
+  "name": "kolab",
   "version": "0.5.0",
   "description": "Konjir core prototype: addressing, invalidation cascade, override rebase, role enforcement",
   "scripts": {

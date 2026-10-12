@@ -1,4 +1,4 @@
-# Konjir hub: working rules
+# Kolab: working rules
 
 ## Source of truth
 
