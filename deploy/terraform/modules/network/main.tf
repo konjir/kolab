@@ -44,9 +44,9 @@ resource "aws_default_security_group" "this" {
 }
 
 resource "aws_security_group" "web" {
-  #checkov:skip=CKV2_AWS_5:Attached to the hub instance in the hub module
+  #checkov:skip=CKV2_AWS_5:Attached to the Kolab instance in the kolab module
   name        = "${var.name}-web"
-  description = "HTTPS for the hub and HTTP for certificate issuance only - no SSH"
+  description = "HTTPS for Kolab and HTTP for certificate issuance only - no SSH"
   vpc_id      = aws_vpc.this.id
   tags        = { Name = "${var.name}-web" }
 }

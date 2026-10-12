@@ -1,5 +1,5 @@
 #!/bin/bash
-# Konjir hub bootstrap (first boot). Installs Node and Caddy, mounts the data volume,
+# Kolab bootstrap (first boot). Installs Node and Caddy, mounts the data volume,
 # writes the services and the release installer. The release module installs the code.
 set -euxo pipefail
 exec > >(tee -a /var/log/konjir-bootstrap.log) 2>&1
@@ -54,7 +54,7 @@ grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /var/lib/konjir xfs defaults,nofa
 mountpoint -q /var/lib/konjir || mount /var/lib/konjir
 chown konjir:konjir /var/lib/konjir
 
-# ---- Caddy: TLS in front of the hub
+# ---- Caddy: TLS in front of Kolab
 cat > /etc/caddy/Caddyfile <<CADDY
 {
   ${caddy_email}
@@ -66,7 +66,7 @@ $DOMAIN {
 CADDY
 cat > /etc/systemd/system/caddy.service <<'UNIT'
 [Unit]
-Description=Caddy (TLS for the Konjir hub)
+Description=Caddy (TLS for Kolab)
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -82,7 +82,7 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 UNIT
 
-# ---- The hub
+# ---- Kolab
 cat > /etc/konjir/env <<ENV
 KONJIR_PUBLIC_HOST=$DOMAIN
 KONJIR_REVIEW=${review_mode}
@@ -104,7 +104,7 @@ chmod 0755 /usr/local/bin/konjir-start
 
 cat > /etc/systemd/system/konjir.service <<'UNIT'
 [Unit]
-Description=Konjir hub
+Description=Kolab
 After=network-online.target
 Wants=network-online.target
 RequiresMountsFor=/var/lib/konjir

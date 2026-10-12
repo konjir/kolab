@@ -5,7 +5,7 @@ variable "aws_profile" {
 }
 
 variable "region" {
-  description = "Region for the hub (and the Bedrock review model)."
+  description = "Region for Kolab (and the Bedrock review model)."
   type        = string
   default     = "us-east-1"
 }
@@ -23,9 +23,9 @@ variable "zone_name" {
 }
 
 variable "domain_name" {
-  description = "Public hostname for the hub. Must be inside zone_name."
+  description = "Public hostname for Kolab. Must be inside zone_name."
   type        = string
-  default     = "hub.konjir.com"
+  default     = "kolab.konjir.com"
 }
 
 variable "availability_zone" {
@@ -35,13 +35,13 @@ variable "availability_zone" {
 }
 
 variable "instance_type" {
-  description = "Graviton instance for the hub."
+  description = "Graviton instance for Kolab."
   type        = string
   default     = "t4g.small"
 }
 
 variable "data_volume_gib" {
-  description = "Size of the hub's data volume."
+  description = "Size of Kolab's data volume."
   type        = number
   default     = 20
 }

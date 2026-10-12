@@ -14,7 +14,7 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import {
   ReviewUnavailableError, structuralReviewer,
   type Finding, type ReviewContext, type ReviewVerdict, type Reviewer,
-} from './hub.js';
+} from './kolab.js';
 
 export const DEFAULT_REVIEW_MODEL = 'anthropic.claude-haiku-5-5';
 
@@ -82,7 +82,7 @@ export function buildReviewPrompt(ctx: ReviewContext): string {
 
 /**
  * Structural checks first (free); then the model, once per distinct content.
- * A contradiction rejects. Layer leaks pass through to the hub, which commits
+ * A contradiction rejects. Layer leaks pass through to Kolab, which commits
  * and turns each into a question. A model failure leaves the draft retryable.
  */
 export function modelReviewer(call: ModelCall, opts: {

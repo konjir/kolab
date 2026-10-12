@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Day-to-day operations on the Terraform-managed hub. Provisioning lives in deploy/terraform;
-# this only reads its outputs and talks to the running hub.
+# Day-to-day operations on the Terraform-managed Kolab server. Provisioning lives in deploy/terraform;
+# this only reads its outputs and talks to the running Kolab server.
 #
 #   deploy/konjir-ops.sh connect <actor> <product|engineer>   register a collaborator; print token + setup
 #   deploy/konjir-ops.sh status                                health, service state
-#   deploy/konjir-ops.sh logs                                  last 200 lines from the hub and Caddy
+#   deploy/konjir-ops.sh logs                                  last 200 lines from Kolab and Caddy
 #   deploy/konjir-ops.sh bootstrap-log                         the instance's first-boot install log
 #   deploy/konjir-ops.sh shell                                 interactive shell (Session Manager plugin)
 #   deploy/konjir-ops.sh admin-token                           print the admin token
@@ -24,8 +24,8 @@ admin_token() {
   aws ssm get-parameter --name "$(out admin_token_parameter)" --with-decryption --query Parameter.Value --output text
 }
 
-# Run a shell command on the hub through SSM Run Command and print its output.
-on_hub() {
+# Run a shell command on Kolab through SSM Run Command and print its output.
+on_kolab() {
   local instance cmd_id status
   instance="$(out instance_id)"
   cmd_id="$(aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript \
@@ -38,7 +38,7 @@ on_hub() {
   done
   aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$instance" \
     --query '[StandardOutputContent, StandardErrorContent]' --output text
-  [ "$status" = Success ] || die "command on the hub ended with status $status"
+  [ "$status" = Success ] || die "command on Kolab ended with status $status"
 }
 
 cmd_connect() {
@@ -68,9 +68,9 @@ case "${1:-}" in
   connect)       shift; cmd_connect "$@" ;;
   status)        url="$(out url)"; printf 'health (%s): ' "${url%/mcp}/healthz"
                  curl -fsS --max-time 5 "${url%/mcp}/healthz" || printf 'not answering'; echo
-                 on_hub "systemctl --no-pager --lines=0 status konjir caddy | grep -E '●|Active:'; ls -1dt /opt/konjir/releases/* | head -1" ;;
-  logs)          on_hub "journalctl -u konjir -u caddy -n 200 --no-pager" ;;
-  bootstrap-log) on_hub "tail -n 200 /var/log/konjir-bootstrap.log" ;;
+                 on_kolab "systemctl --no-pager --lines=0 status konjir caddy | grep -E '●|Active:'; ls -1dt /opt/konjir/releases/* | head -1" ;;
+  logs)          on_kolab "journalctl -u konjir -u caddy -n 200 --no-pager" ;;
+  bootstrap-log) on_kolab "tail -n 200 /var/log/konjir-bootstrap.log" ;;
   shell)         command -v session-manager-plugin >/dev/null || die "install the Session Manager plugin: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
                  aws ssm start-session --target "$(out instance_id)" ;;
   admin-token)   admin_token ;;

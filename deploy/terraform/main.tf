@@ -46,8 +46,8 @@ module "iam" {
   admin_token_param_arn = module.secrets.admin_token_param_arn
 }
 
-module "hub" {
-  source                 = "./modules/hub"
+module "kolab" {
+  source                 = "./modules/kolab"
   name                   = var.name
   instance_type          = var.instance_type
   subnet_id              = module.network.subnet_id
@@ -63,14 +63,20 @@ module "hub" {
   letsencrypt_email      = var.letsencrypt_email
 }
 
+# The server was named "hub" until 2026-10-11 (Decisions Log D11).
+moved {
+  from = module.hub
+  to   = module.kolab
+}
+
 module "release" {
   source          = "./modules/release"
   name            = var.name
   source_dir      = coalesce(var.app_source_dir, abspath("${path.root}/../.."))
   artifact_bucket = module.storage.artifact_bucket
-  instance_id     = module.hub.instance_id
+  instance_id     = module.kolab.instance_id
   domain_name     = var.domain_name
 
   # The instance must be attached to its data volume and reachable before a release installs.
-  depends_on = [module.hub]
+  depends_on = [module.kolab]
 }

@@ -4,7 +4,7 @@
 --      (node version | element | span selector) plus a fingerprint.
 --   2. Overrides: every delta records its base; three-way rule on rebase.
 --   3. Roles: one active role per session (dynamic separation of duty),
---      layer writes checked by the hub AND by row-level security.
+--      layer writes checked by Kolab AND by row-level security.
 
 create table actor (
   id   text primary key,
@@ -221,7 +221,7 @@ create policy agent_layer on edge for insert to kj_agent
 create policy agent_layer on query for insert to kj_agent
   with check (exists (select 1 from version v where v.id = version_id and v.layer = kj_session_layer()));
 
--- The hub's own system work (rebases, review transitions, cascade) is trusted.
+-- Kolab's own system work (rebases, review transitions, cascade) is trusted.
 create policy system_all on version for all to kj_system using (true) with check (true);
 create policy system_all on element for all to kj_system using (true) with check (true);
 create policy system_all on delta   for all to kj_system using (true) with check (true);

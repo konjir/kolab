@@ -1,12 +1,12 @@
-# kolab
+# Kolab
 
 > Konjir's requirements, design and decisions live in the Konjir artifacts on claude.ai, starting with the [Decisions Log](https://claude.ai/code/artifact/ef4df29b-5618-43d5-bc42-d36a24c3962c). [`CLAUDE.md`](CLAUDE.md) lists all of them and gives the rules. This README describes the code as it is today. Where it disagrees with the artifacts, the artifacts are the intent. For example, the Bedrock reviewer described below has been decided out (D4) but not yet removed.
 
 Prototype of Konjir's engine and its delivery rails:
 
-- **The hub:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
+- **Kolab:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
 - **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients.
-- **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of the hub, so there is one backend.
+- **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of Kolab, so there is one backend.
 
 TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in WASM), so there's no server to install.
 
@@ -19,7 +19,7 @@ npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 ## Running it with agents
 
 ```
-# 1. Start the hub. It persists to ./.konjir and prints an admin token.
+# 1. Start Kolab. It persists to ./.konjir and prints an admin token.
 bin/konjir serve --port 7420
 
 # 2. Register agents and give each a session (one actor, one active role).
@@ -29,7 +29,7 @@ bin/konjir admin_open_session actor=pm-agent role=product      # prints the agen
 bin/konjir admin_open_session actor=eng-agent role=engineer
 ```
 
-Then point each harness at the hub with its own token. The token decides who the agent is and which layer it may write. Tool arguments never carry identity.
+Then point each harness at Kolab with its own token. The token decides who the agent is and which layer it may write. Tool arguments never carry identity.
 
 - **Claude Code:** `claude mcp add --transport http konjir http://127.0.0.1:7420/mcp --header "Authorization: Bearer <token>"`
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
@@ -65,17 +65,17 @@ The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terrafo
 | `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days |
 | `secrets` | A generated admin token, stored as an SSM SecureString |
 | `iam` | The instance role: Session Manager access, read its releases and token, call Bedrock for the review gate |
-| `hub` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `hub.konjir.com` |
-| `release` | Zips this repo, uploads it, and installs it on the hub through Systems Manager. `terraform apply` is the deploy |
+| `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `kolab.konjir.com` |
+| `release` | Zips this repo, uploads it, and installs it on Kolab through Systems Manager. `terraform apply` is the deploy |
 
-The hub listens on localhost only, behind Caddy. Its database lives on the separate data volume, so replacing the instance is safe. A change to the boot script replaces it automatically. The rough cost is $15–20 a month at list price.
+Kolab listens on localhost only, behind Caddy. Its database lives on the separate data volume, so replacing the instance is safe. A change to the boot script replaces it automatically. The rough cost is $15–20 a month at list price.
 
 Day to day:
 
 - **Ship code:** `terraform apply`. A code change alters the release hash, and Terraform reinstalls and waits for success.
 - **Turn on semantic review:** `terraform apply -var review_mode=bedrock`. Enable the model under *Model access* in the Bedrock console first.
 - **Inspect:** `deploy/konjir-ops.sh status`, `logs` or `bootstrap-log`. `shell` opens a session; it needs the Session Manager plugin.
-- **OS refresh:** `terraform apply -replace=module.hub.aws_instance.hub`. The AMI is pinned when the instance is created.
+- **OS refresh:** `terraform apply -replace=module.kolab.aws_instance.kolab`. The AMI is pinned when the instance is created.
 - **Tear down:** `terraform destroy`. A final snapshot of the data volume is kept by default; use `-var final_snapshot_on_destroy=false` for a teardown that leaves nothing. Daily snapshots made before the teardown remain until you delete them. The state bucket stays until you remove it.
 
 The admin token is generated by Terraform, so it is also in the state file. That is why the state bucket is private, encrypted and TLS-only.
@@ -156,13 +156,13 @@ An engineer writing a binding talks to the spec through two verbs:
 
 Both can target an element or a quoted span (`kj:orders#R13~q({"exact":"50 meters"})`). `read_node` shows them beside the element they're about, open and answered, including ones asked on earlier versions of the spec. Either layer can use them in either direction.
 
-**Push.** Each layer has an inbox resource, `konjir://inbox/functional` and `konjir://inbox/technical`, holding its open questions, notes and marks. Each actor has `konjir://answers/<actor>`, which holds what they raised, with replies. `whoami` lists the two for the session. The hub declares `resources.subscribe` and signals a resource whenever it changes, over MCP 2026-07-28 `subscriptions/listen`. A client that listens gets `notifications/resources/updated` and re-reads the resource. Only the URI is pushed, never the content, and reading `answers` is limited to its own actor.
+**Push.** Each layer has an inbox resource, `konjir://inbox/functional` and `konjir://inbox/technical`, holding its open questions, notes and marks. Each actor has `konjir://answers/<actor>`, which holds what they raised, with replies. `whoami` lists the two for the session. Kolab declares `resources.subscribe` and signals a resource whenever it changes, over MCP 2026-07-28 `subscriptions/listen`. A client that listens gets `notifications/resources/updated` and re-reads the resource. Only the URI is pushed, never the content, and reading `answers` is limited to its own actor.
 
 Claude Code doesn't yet turn these notifications into a turn for the model. Until it does, an agent waiting on answers can run `konjir watch --once` as a background command, which exits with the change as soon as the inbox has one. `konjir watch` without `--once` prints the inbox, then one JSON line per change, for a harness that tails output.
 
 ## How each decision is implemented
 
-**1. Addressing.** An address is `kj:<node>[@<version>][#<element>][~q(<selector>)]`. Every edge stores the fingerprint of the content it addressed when it was created. On an upstream commit, the hub re-resolves each address against the new version:
+**1. Addressing.** An address is `kj:<node>[@<version>][#<element>][~q(<selector>)]`. Every edge stores the fingerprint of the content it addressed when it was created. On an upstream commit, Kolab re-resolves each address against the new version:
 
 - **Same fingerprint:** the edge is re-pinned. This is a pointer bump, not a mark.
 - **Different content:** the dependent gets a `changed` mark.
@@ -180,7 +180,7 @@ An element address covers that element's subtree, so addressing a section means 
 
 The rebased child must pass the review gate. Resolving a dirty override records precedent, and the same `(base, parent, child)` triple then resolves itself on the next rebase.
 
-**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). The hub rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer.
+**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer.
 
 ## What the prototype found
 
@@ -197,7 +197,7 @@ Pointing at the changed requirement isn't enough. The edge must also say *which 
 
 **Concurrency needs an explicit rule.** A draft can be overtaken while it's open:
 
-- **Overtaken only by hub rebases:** the draft is folded into a fresh rebase, keeping its author and declared edges.
+- **Overtaken only by Kolab's own rebases:** the draft is folded into a fresh rebase, keeping its author and declared edges.
 - **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted.
 
 **Agents can use it unaided.** Two separate agents were given only a token and the `konjir` command, with no access to the source. The product agent wrote and committed a password-reset spec. The engineer agent bound it to a Node/Postgres/Redis stack and linked each of its 11 elements to the requirements it serves. It then found two real ambiguities (which sessions survive a reset, and whether earlier reset links die) and asked them instead of deciding. The product owner ruled, and the product agent answered and amended the spec. Exactly the three binding elements tied to the amended requirements went dirty. The engineer revised them and cleared all three marks.
@@ -210,15 +210,15 @@ Their feedback drove these changes:
 - partial edits by delta
 - `mine=true` on questions
 - a gate that says what it checked
-- plain errors when the hub is down or a token is refused
+- plain errors when Kolab is down or a token is refused
 - editing a marked element counts as addressing its mark
 
 ## Deliberate simplifications
 
 - **Semantic review is opt-in** (`KONJIR_REVIEW=bedrock`). Without it the gate is structural only, and it says so on every commit.
 - **Session tokens are bearer tokens** with no expiry or OAuth. They're fine on one machine or a trusted network, but not on the open internet.
-- **One hub process** owns the embedded database. Moving to a real Postgres server is the path to more than one hub process.
+- **One Kolab process** owns the embedded database. Moving to a real Postgres server is the path to more than one Kolab process.
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.
-- **Push is a signal, not a message.** The hub signals an inbox over `subscriptions/listen`, and the agent reads what changed. Under the 2025 protocol, which has no listen stream, agents still poll `list_stale` and `list_queries`. Claude Code needs `konjir watch --once` (see *Questions, notes and push*). A Claude Code channel would need a local stdio bridge, because channels don't work over HTTP.
+- **Push is a signal, not a message.** Kolab signals an inbox over `subscriptions/listen`, and the agent reads what changed. Under the 2025 protocol, which has no listen stream, agents still poll `list_stale` and `list_queries`. Claude Code needs `konjir watch --once` (see *Questions, notes and push*). A Claude Code channel would need a local stdio bridge, because channels don't work over HTTP.

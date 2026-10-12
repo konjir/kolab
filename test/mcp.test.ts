@@ -1,4 +1,4 @@
-// End to end over real HTTP: two agents with different roles, one hub.
+// End to end over real HTTP: two agents with different roles, one Kolab server.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -27,7 +27,7 @@ async function agentFor(url: string, admin: Awaited<ReturnType<typeof connect>>,
   return { token, client };
 }
 
-test('two agents work through one hub: roles, gate, links, questions, cascade, served instructions', async () => {
+test('two agents work through one kolab: roles, gate, links, questions, cascade, served instructions', async () => {
   const { server, admin } = await boot();
   const pm = await agentFor(server.url, admin, 'pm-agent', 'product');
   const eng = await agentFor(server.url, admin, 'eng-agent', 'engineer');
@@ -115,7 +115,7 @@ test('tokens: no token, a wrong token, and a revoked token are all refused; agen
   await server.close();
 });
 
-test('the hub persists across restarts', async () => {
+test('Kolab persists across restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-'));
   try {
     let { server, admin } = await boot(dir);

@@ -6,21 +6,21 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Hub, RoleError, type HubEvent } from '../src/hub.js';
+import { Kolab, RoleError, type KolabEvent } from '../src/kolab.js';
 import { startServer } from '../src/server.js';
 import { call, connect, watch } from '../src/cli.js';
 import { els, marksOn, setup } from './helpers.js';
 
 async function specAndBinding() {
   const ctx = await setup();
-  const { hub, product, engineer } = ctx;
-  await hub.createNode(product, 'functional_spec', 'Orders', 'orders');
-  await hub.commit(product, 'orders', { elements: els({
+  const { kolab, product, engineer } = ctx;
+  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.commit(product, 'orders', { elements: els({
     R8: 'Office staff can cancel an order.',
     R13: 'Photos taken more than 50 meters from the property are flagged.',
   }) });
-  await hub.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
-  const draft = await hub.draft(engineer, 'orders-pg', { elements: els({
+  await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  const draft = await kolab.draft(engineer, 'orders-pg', { elements: els({
     b1: 'orders.status allows cancel from Open and Assigned (pending a spec question).',
     b2: 'Photo GPS distance check in the mobile app.',
   }) });
@@ -28,76 +28,76 @@ async function specAndBinding() {
 }
 
 test('a question asked from a binding element comes back to that element as a mark', async () => {
-  const { hub, product, engineer, draft } = await specAndBinding();
-  const events: HubEvent[] = [];
-  hub.onEvent((e) => events.push(e));
+  const { kolab, product, engineer, draft } = await specAndBinding();
+  const events: KolabEvent[] = [];
+  kolab.onEvent((e) => events.push(e));
 
   // Asked while the binding is still a draft, about a quoted span.
-  const q = await hub.raiseQuery(engineer, 'kj:orders#R8~q({"exact":"cancel an order"})',
+  const q = await kolab.raiseQuery(engineer, 'kj:orders#R8~q({"exact":"cancel an order"})',
     'From which statuses, and what happens to its invoices?', { from: 'kj:orders-pg@1#b1' });
   assert.deepEqual(events, [{ inbox: 'layer', layer: 'functional' }]);
-  assert.equal((await hub.review(draft)).ok, true);
+  assert.equal((await kolab.review(draft)).ok, true);
 
-  const [listed] = await hub.listQueries({ layer: 'functional', state: 'open' });
+  const [listed] = await kolab.listQueries({ layer: 'functional', state: 'open' });
   assert.deepEqual(
     [listed.id, listed.kind, listed.address, listed.from, listed.raised_by],
     [q, 'question', 'kj:orders@1#R8~q({"exact":"cancel an order"})', 'kj:orders-pg@1#b1', 'bob']);
 
   // Only the owning layer answers. The answer marks b1, not b2, and tells the asker.
-  await assert.rejects(hub.answerQuery(engineer, q, 'any time'), RoleError);
+  await assert.rejects(kolab.answerQuery(engineer, q, 'any time'), RoleError);
   events.length = 0;
-  await hub.answerQuery(product, q, 'Open or Assigned only; invoices are voided.');
-  const [mark] = await marksOn(hub, 'orders-pg');
+  await kolab.answerQuery(product, q, 'Open or Assigned only; invoices are voided.');
+  const [mark] = await marksOn(kolab, 'orders-pg');
   assert.deepEqual([mark.reason, mark.element_id], ['query_answered', 'b1']);
   assert.match(mark.note!, /you asked "From which statuses.*answered: "Open or Assigned only/);
   assert.deepEqual(
-    (await hub.describeMarks({ layer: 'technical' })).map((m) => [m.dirty, m.because.slice(0, 15)]),
+    (await kolab.describeMarks({ layer: 'technical' })).map((m) => [m.dirty, m.because.slice(0, 15)]),
     [['kj:orders-pg@1#b1', 'kj:orders#R8: y']]);
   assert.deepEqual(new Set(events.map((e) => JSON.stringify(e))), new Set([
     JSON.stringify({ inbox: 'layer', layer: 'technical' }),   // the new mark
     JSON.stringify({ inbox: 'layer', layer: 'functional' }),  // the queue shrank
     JSON.stringify({ inbox: 'actor', actor: 'bob' }),         // the asker's answers
   ]));
-  assert.deepEqual((await hub.listQueries({ raisedBy: 'bob' })).map((x) => [x.state, x.answered_by]), [['answered', 'alice']]);
+  assert.deepEqual((await kolab.listQueries({ raisedBy: 'bob' })).map((x) => [x.state, x.answered_by]), [['answered', 'alice']]);
 
   // Revising b1 addresses the mark; nothing else was touched.
-  await hub.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'orders.status allows cancel from Open and Assigned; cancelling voids both invoices.' }] });
-  assert.deepEqual(await marksOn(hub, 'orders-pg'), []);
+  await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'orders.status allows cancel from Open and Assigned; cancelling voids both invoices.' }] });
+  assert.deepEqual(await marksOn(kolab, 'orders-pg'), []);
 });
 
 test('a note asks nothing: it waits in the owner\'s queue, and a reply marks nothing', async () => {
-  const { hub, product, engineer, draft } = await specAndBinding();
-  await hub.review(draft);
-  const n = await hub.raiseQuery(engineer, 'kj:orders#R13', 'Read "flagged" as a warning on the photo that does not block submission.',
+  const { kolab, product, engineer, draft } = await specAndBinding();
+  await kolab.review(draft);
+  const n = await kolab.raiseQuery(engineer, 'kj:orders#R13', 'Read "flagged" as a warning on the photo that does not block submission.',
     { kind: 'note', from: 'kj:orders-pg#b2' });
-  assert.deepEqual((await hub.listQueries({ layer: 'functional', state: 'open' })).map((x) => [x.id, x.kind]), [[n, 'note']]);
-  await hub.answerQuery(product, n, 'Agreed.');
-  assert.deepEqual(await marksOn(hub, 'orders-pg'), []);
-  assert.equal((await hub.listQueries({ raisedBy: 'bob' }))[0].answer, 'Agreed.');
+  assert.deepEqual((await kolab.listQueries({ layer: 'functional', state: 'open' })).map((x) => [x.id, x.kind]), [[n, 'note']]);
+  await kolab.answerQuery(product, n, 'Agreed.');
+  assert.deepEqual(await marksOn(kolab, 'orders-pg'), []);
+  assert.equal((await kolab.listQueries({ raisedBy: 'bob' }))[0].answer, 'Agreed.');
 });
 
 test('from must name the asker\'s own layer, and must resolve', async () => {
-  const { hub, engineer } = await specAndBinding();
-  await assert.rejects(hub.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders#R13' }), /own layer/);
-  await assert.rejects(hub.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders-pg@1#nope' }), /does not resolve/);
+  const { kolab, engineer } = await specAndBinding();
+  await assert.rejects(kolab.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders#R13' }), /own layer/);
+  await assert.rejects(kolab.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders-pg@1#nope' }), /does not resolve/);
 });
 
 test('an answer to an element the binding has since removed still reaches the asker, without a mark', async () => {
-  const { hub, product, engineer, draft } = await specAndBinding();
-  await hub.review(draft);
-  const q = await hub.raiseQuery(engineer, 'kj:orders#R8', 'Who can cancel?', { from: 'kj:orders-pg#b1' });
-  await hub.commit(engineer, 'orders-pg', { deltas: [{ kind: 'remove', element: 'b1' }] });
-  await hub.answerQuery(product, q, 'Office staff.');
-  assert.deepEqual(await marksOn(hub, 'orders-pg'), []);
-  assert.equal((await hub.listQueries({ raisedBy: 'bob' }))[0].state, 'answered');
+  const { kolab, product, engineer, draft } = await specAndBinding();
+  await kolab.review(draft);
+  const q = await kolab.raiseQuery(engineer, 'kj:orders#R8', 'Who can cancel?', { from: 'kj:orders-pg#b1' });
+  await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'remove', element: 'b1' }] });
+  await kolab.answerQuery(product, q, 'Office staff.');
+  assert.deepEqual(await marksOn(kolab, 'orders-pg'), []);
+  assert.equal((await kolab.listQueries({ raisedBy: 'bob' }))[0].state, 'answered');
 });
 
 test('a database from the previous release is migrated on open', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-migrate-'));
   try {
-    let hub = await Hub.open({ dataDir: dir });
+    let kolab = await Kolab.open({ dataDir: dir });
     // Put the tables back the way 0.5 created them.
-    await hub.db.exec(`
+    await kolab.db.exec(`
       alter table query drop constraint query_kind_check;
       alter table query drop column selector, drop column kind, drop column from_version_id,
                         drop column from_element_id, drop column answered_by, drop column created_at;
@@ -105,22 +105,22 @@ test('a database from the previous release is migrated on open', async () => {
       alter table invalidation add constraint invalidation_reason_check check (reason in
         ('changed','fuzzy_reanchor','orphaned','override_stale','override_orphaned',
          'upstream_dirty','review_failed','role_boundary'));`);
-    await hub.addActor('alice'); await hub.addActor('bob');
-    const product = await hub.openSession('alice', 'product');
-    await hub.createNode(product, 'functional_spec', 'Orders', 'orders');
-    await hub.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
-    await hub.close();
+    await kolab.addActor('alice'); await kolab.addActor('bob');
+    const product = await kolab.openSession('alice', 'product');
+    await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
+    await kolab.close();
 
-    hub = await Hub.open({ dataDir: dir });
-    const engineer = await hub.openSession('bob', 'engineer');
-    await hub.createNode(engineer, 'technical_binding', 'B', 'b');
-    await hub.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
-    const q = await hub.raiseQuery(engineer, 'kj:orders#R1~q({"exact":"cancelled"})', 'By whom?', { from: 'kj:b#b1' });
-    await hub.answerQuery(product, q, 'Office staff.');
-    assert.deepEqual((await marksOn(hub, 'b')).map((m) => m.reason), ['query_answered']);
-    await hub.close();
+    kolab = await Kolab.open({ dataDir: dir });
+    const engineer = await kolab.openSession('bob', 'engineer');
+    await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
+    await kolab.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
+    const q = await kolab.raiseQuery(engineer, 'kj:orders#R1~q({"exact":"cancelled"})', 'By whom?', { from: 'kj:b#b1' });
+    await kolab.answerQuery(product, q, 'Office staff.');
+    assert.deepEqual((await marksOn(kolab, 'b')).map((m) => m.reason), ['query_answered']);
+    await kolab.close();
     // Opening again is a no-op.
-    await (await Hub.open({ dataDir: dir })).close();
+    await (await Kolab.open({ dataDir: dir })).close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

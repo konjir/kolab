@@ -1,4 +1,4 @@
-# The hub instance's role: Systems Manager access (no SSH), read its releases and admin token,
+# The Kolab instance's role: Systems Manager access (no SSH), read its releases and admin token,
 # and call Bedrock for the review gate. Nothing else.
 
 variable "name" { type = string }
@@ -18,17 +18,17 @@ data "aws_iam_policy_document" "assume" {
   }
 }
 
-resource "aws_iam_role" "hub" {
-  name_prefix        = "${var.name}-hub-"
+resource "aws_iam_role" "kolab" {
+  name_prefix        = "${var.name}-kolab-"
   assume_role_policy = data.aws_iam_policy_document.assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.hub.name
+  role       = aws_iam_role.kolab.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-data "aws_iam_policy_document" "hub" {
+data "aws_iam_policy_document" "kolab" {
   statement {
     sid       = "ReadReleases"
     actions   = ["s3:GetObject"]
@@ -72,16 +72,30 @@ data "aws_iam_policy_document" "hub" {
   }
 }
 
-resource "aws_iam_role_policy" "hub" {
-  name   = "konjir-hub"
-  role   = aws_iam_role.hub.id
-  policy = data.aws_iam_policy_document.hub.json
+resource "aws_iam_role_policy" "kolab" {
+  name   = "konjir-kolab"
+  role   = aws_iam_role.kolab.id
+  policy = data.aws_iam_policy_document.kolab.json
 }
 
-resource "aws_iam_instance_profile" "hub" {
-  name_prefix = "${var.name}-hub-"
-  role        = aws_iam_role.hub.name
+resource "aws_iam_instance_profile" "kolab" {
+  name_prefix = "${var.name}-kolab-"
+  role        = aws_iam_role.kolab.name
 }
 
-output "instance_profile_name" { value = aws_iam_instance_profile.hub.name }
-output "role_arn" { value = aws_iam_role.hub.arn }
+output "instance_profile_name" { value = aws_iam_instance_profile.kolab.name }
+output "role_arn" { value = aws_iam_role.kolab.arn }
+
+# Renamed from "hub" on 2026-10-11 (Decisions Log D11).
+moved {
+  from = aws_iam_role.hub
+  to   = aws_iam_role.kolab
+}
+moved {
+  from = aws_iam_role_policy.hub
+  to   = aws_iam_role_policy.kolab
+}
+moved {
+  from = aws_iam_instance_profile.hub
+  to   = aws_iam_instance_profile.kolab
+}

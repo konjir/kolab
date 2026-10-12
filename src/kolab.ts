@@ -119,7 +119,7 @@ const MIGRATE = `
  * Something an agent should look at: a layer's work queue (open questions,
  * notes and marks it owns) or an actor's answers (replies to what they raised).
  */
-export type HubEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
+export type KolabEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
 
 export interface Query {
   id: string; kind: 'question' | 'note'; address: string; question: string; state: string;
@@ -128,31 +128,31 @@ export interface Query {
 }
 
 // ---------------------------------------------------------------------------
-// Hub
+// Kolab
 // ---------------------------------------------------------------------------
 
-export class Hub {
+export class Kolab {
   private constructor(readonly db: PGlite, private reviewer: Reviewer) {}
 
-  private listeners = new Set<(e: HubEvent) => void>();
+  private listeners = new Set<(e: KolabEvent) => void>();
 
   /** In-memory by default; pass `dataDir` to persist across restarts. */
-  static async open(opts: { reviewer?: Reviewer; dataDir?: string } = {}): Promise<Hub> {
+  static async open(opts: { reviewer?: Reviewer; dataDir?: string } = {}): Promise<Kolab> {
     const db = opts.dataDir ? new PGlite(opts.dataDir) : new PGlite();
     const exists = await db.query<{ t: string | null }>(`select to_regclass('public.node')::text as t`);
     await db.exec(exists.rows[0].t ? MIGRATE : SCHEMA);
-    return new Hub(db, opts.reviewer ?? structuralReviewer);
+    return new Kolab(db, opts.reviewer ?? structuralReviewer);
   }
 
   async close() { await this.db.close(); }
 
   /** Be told when an inbox gains or loses work. Returns an unsubscribe function. */
-  onEvent(fn: (e: HubEvent) => void): () => void {
+  onEvent(fn: (e: KolabEvent) => void): () => void {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
   }
 
-  private emit(e: HubEvent) {
+  private emit(e: KolabEvent) {
     for (const fn of this.listeners) {
       try { fn(e); } catch { /* a listener's failure never fails a write */ }
     }
@@ -173,7 +173,7 @@ export class Hub {
     });
   }
 
-  /** The hub's own work: rebases, review transitions, the cascade. */
+  /** Kolab's own work: rebases, review transitions, the cascade. */
   private asSystem<T>(fn: (tx: Q) => Promise<T>): Promise<T> {
     return this.db.transaction(async (tx) => {
       await tx.exec('set local role kj_system');
@@ -254,7 +254,7 @@ export class Hub {
   }
 
   /**
-   * Draft a new version. Give either full `elements` (the hub diffs them into
+   * Draft a new version. Give either full `elements` (Kolab diffs them into
    * a delta against the parent) or explicit `deltas` (a variant's exceptions).
    * `parent` defaults to this node's latest committed version.
    */
@@ -318,7 +318,7 @@ export class Hub {
    *
    * Optimistic concurrency: if the node committed newer versions while this
    * draft was open, the draft is stale. When those newer versions are only the
-   * hub's own rebases, nothing human is lost: the draft is folded into a fresh
+   * kolab's own rebases, nothing human is lost: the draft is folded into a fresh
    * rebase onto the current parent. Otherwise it is rejected for redrafting.
    * The result names the version that actually committed.
    */
@@ -649,7 +649,7 @@ export class Hub {
     await this.asSystem(async (tx) => {
       await writeVersion(tx, {
         id, node_id: child.node_id, seq, parent_version_id: newParent.id, layer: child.layer,
-        actor_id: opts.author?.actor_id ?? 'hub', active_role: opts.author?.active_role ?? 'system',
+        actor_id: opts.author?.actor_id ?? 'kolab', active_role: opts.author?.active_role ?? 'system',
       }, els, kept);
       if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
     });
@@ -681,7 +681,7 @@ export class Hub {
    * An element left untouched keeps its mark, so a fix has to be deliberate.
    */
   private async clearAddressed(v: VersionRow) {
-    if (v.active_role === 'system') return; // the hub's own rebases address nothing
+    if (v.active_role === 'system') return; // Kolab's own rebases address nothing
     const marks = await this.db.query<MarkRow & { target_node: string }>(
       `select i.*, tv.node_id as target_node
          from invalidation i

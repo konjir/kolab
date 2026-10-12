@@ -1,4 +1,4 @@
-# Ships the Konjir code: zip the source tree, upload it, and run the installer on the hub
+# Ships the Konjir code: zip the source tree, upload it, and run the installer on Kolab
 # through Systems Manager. Any change to the code changes the zip's hash, which updates the
 # association and re-runs the install. `terraform apply` is the deploy.
 
@@ -52,9 +52,9 @@ resource "aws_ssm_association" "install" {
   depends_on = [aws_s3_object.release]
 }
 
-# After apply: is the hub answering over HTTPS? A warning, not a failure, because DNS and the
+# After apply: is Kolab answering over HTTPS? A warning, not a failure, because DNS and the
 # first certificate can take a few minutes after a fresh deploy.
-check "hub_is_live" {
+check "kolab_is_live" {
   data "http" "health" {
     url = "https://${var.domain_name}/healthz"
     retry {

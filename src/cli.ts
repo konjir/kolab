@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * konjir: the same verbs as the MCP server, for a shell or a harness without MCP.
- * It is an MCP client of the hub, so there is exactly one backend.
+ * It is an MCP client of Kolab, so there is exactly one backend.
  *
  *   konjir serve [--port 7420] [--data .konjir] [--admin-token T]
  *   konjir tools
@@ -10,7 +10,7 @@
  *   konjir read <node> [version]
  *   konjir stale [all]
  *   konjir queries [all]
- *   konjir watch [--once]                -> print your inbox now and each time the hub pushes a change
+ *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -21,10 +21,10 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { randomBytes } from 'node:crypto';
 import { startServer } from './server.js';
 import { DEFAULT_REVIEW_MODEL, bedrockReviewer } from './review.js';
-import type { Reviewer } from './hub.js';
+import type { Reviewer } from './kolab.js';
 
 export async function connect(url: string, token: string): Promise<Client> {
-  // 'auto' talks 2026-07-28 to a hub that offers it (needed for subscriptions/listen) and 2025 to an older one.
+  // 'auto' talks 2026-07-28 to a Kolab server that offers it (needed for subscriptions/listen) and 2025 to an older one.
   const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
@@ -35,7 +35,7 @@ export async function connect(url: string, token: string): Promise<Client> {
 /**
  * Subscribe to this session's inboxes (its layer's queue and its own answers)
  * over subscriptions/listen. `onUpdate` gets the URI and fresh contents each
- * time the hub signals a change.
+ * time Kolab signals a change.
  */
 export async function watch(client: Client, onUpdate: (uri: string, body: unknown) => void | Promise<void>) {
   const me = await call(client, 'whoami') as { subscribe: string[] };
@@ -59,7 +59,7 @@ export async function call(client: Client, verb: string, args: Record<string, un
   return r.structuredContent ?? text;
 }
 
-const USAGE = `konjir — the Konjir hub from a shell. Same verbs as the MCP server.
+const USAGE = `konjir — Kolab from a shell. Same verbs as the MCP server.
 
   konjir instructions          the operating rules and precedent (read this first)
   konjir tools                 every verb, one line each
@@ -73,7 +73,7 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks). konjir watch --once waits for the next change, prints it and exits.
 Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
-Server: konjir serve [--port 7420] [--data .konjir] [--admin-token T] [--review structural|bedrock] [--public-host hub.example.com]
+Server: konjir serve [--port 7420] [--data .konjir] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
         KONJIR_REVIEW=bedrock uses KONJIR_REVIEW_MODEL (default ${DEFAULT_REVIEW_MODEL}) with the
         server's own AWS credentials (AWS_REGION, AWS_PROFILE or the default AWS chain).`;
 
@@ -130,7 +130,7 @@ async function main(argv: string[]) {
     }
     const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
     const s = await startServer({ port, dataDir, adminToken, reviewer, publicHost });
-    console.log(`konjir hub listening on ${s.url}`);
+    console.log(`Kolab listening on ${s.url}`);
     console.log(`data: ${dataDir}`);
     if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);
     const stop = async () => { await s.close(); process.exit(0); };
@@ -145,10 +145,10 @@ async function main(argv: string[]) {
   } catch (e) {
     const msg = String((e as Error).message ?? e);
     if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(msg + String((e as { cause?: unknown }).cause ?? ''))) {
-      throw new Error(`cannot reach the Konjir hub at ${url}. Nothing is listening there: the hub isn't running, or KONJIR_URL is wrong. Start it with \`konjir serve\`, or ask whoever runs it. Your work is safe; the hub stores everything.`);
+      throw new Error(`cannot reach Kolab at ${url}. Nothing is listening there: Kolab isn't running, or KONJIR_URL is wrong. Start it with \`konjir serve\`, or ask whoever runs it. Your work is safe; Kolab stores everything.`);
     }
     if (/401|invalid Konjir token|Unauthorized/i.test(msg)) {
-      throw new Error(`the hub at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`);
+      throw new Error(`the Kolab server at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`);
     }
     throw e;
   }
@@ -163,7 +163,7 @@ async function main(argv: string[]) {
       }).then(async (w) => {
         if (!once) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
         void w.subscription.closed.then((how) => {
-          if (!finished && how === 'remote') console.error('the hub closed the subscription; run konjir watch again');
+          if (!finished && how === 'remote') console.error('Kolab closed the subscription; run konjir watch again');
           finish();
         });
       });

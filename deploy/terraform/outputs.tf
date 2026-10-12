@@ -4,11 +4,11 @@ output "url" {
 }
 
 output "instance_id" {
-  value = module.hub.instance_id
+  value = module.kolab.instance_id
 }
 
 output "public_ip" {
-  value = module.hub.public_ip
+  value = module.kolab.public_ip
 }
 
 output "artifact_bucket" {
@@ -25,6 +25,6 @@ output "admin_token_parameter" {
 }
 
 output "release" {
-  description = "Hash of the code currently shipped to the hub."
+  description = "Hash of the code currently shipped to Kolab."
   value       = module.release.release_md5
 }

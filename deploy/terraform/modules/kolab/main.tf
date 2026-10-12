@@ -1,9 +1,9 @@
-# The hub instance, its data volume attachment, a stable public address and its DNS name.
+# The Kolab instance, its data volume attachment, a stable public address and its DNS name.
 #
 # The instance holds no state of its own: the database is on the storage module's volume.
 # That makes replacement safe, so a change to the boot script replaces the instance.
 # The AMI is pinned at creation; refresh the OS with
-#   terraform apply -replace=module.hub.aws_instance.hub
+#   terraform apply -replace=module.kolab.aws_instance.kolab
 
 variable "name" { type = string }
 variable "instance_type" { type = string }
@@ -34,8 +34,8 @@ data "aws_ssm_parameter" "al2023_arm64" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
 }
 
-resource "aws_instance" "hub" {
-  #checkov:skip=CKV_AWS_126:Basic 5-minute monitoring is enough for a test hub
+resource "aws_instance" "kolab" {
+  #checkov:skip=CKV_AWS_126:Basic 5-minute monitoring is enough for a test server
   ami                         = data.aws_ssm_parameter.al2023_arm64.insecure_value
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
@@ -72,7 +72,7 @@ resource "aws_instance" "hub" {
     delete_on_termination = true
   }
 
-  tags = { Name = "${var.name}-hub" }
+  tags = { Name = "${var.name}-kolab" }
 
   lifecycle {
     ignore_changes = [ami]
@@ -82,27 +82,45 @@ resource "aws_instance" "hub" {
 resource "aws_volume_attachment" "data" {
   device_name                    = "/dev/sdf"
   volume_id                      = var.data_volume_id
-  instance_id                    = aws_instance.hub.id
+  instance_id                    = aws_instance.kolab.id
   stop_instance_before_detaching = true # clean unmount of the database volume on replacement
 }
 
-resource "aws_eip" "hub" {
+resource "aws_eip" "kolab" {
   domain = "vpc"
-  tags   = { Name = "${var.name}-hub" }
+  tags   = { Name = "${var.name}-kolab" }
 }
 
-resource "aws_eip_association" "hub" {
-  instance_id   = aws_instance.hub.id
-  allocation_id = aws_eip.hub.id
+resource "aws_eip_association" "kolab" {
+  instance_id   = aws_instance.kolab.id
+  allocation_id = aws_eip.kolab.id
 }
 
-resource "aws_route53_record" "hub" {
+resource "aws_route53_record" "kolab" {
   zone_id = var.zone_id
   name    = var.domain_name
   type    = "A"
   ttl     = 300
-  records = [aws_eip.hub.public_ip]
+  records = [aws_eip.kolab.public_ip]
 }
 
-output "instance_id" { value = aws_instance.hub.id }
-output "public_ip" { value = aws_eip.hub.public_ip }
+output "instance_id" { value = aws_instance.kolab.id }
+output "public_ip" { value = aws_eip.kolab.public_ip }
+
+# Renamed from "hub" on 2026-10-11 (Decisions Log D11). Keeps the Elastic IP and the rest in place.
+moved {
+  from = aws_instance.hub
+  to   = aws_instance.kolab
+}
+moved {
+  from = aws_eip.hub
+  to   = aws_eip.kolab
+}
+moved {
+  from = aws_eip_association.hub
+  to   = aws_eip_association.kolab
+}
+moved {
+  from = aws_route53_record.hub
+  to   = aws_route53_record.kolab
+}
