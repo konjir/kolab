@@ -1,5 +1,7 @@
 # konjir-core
 
+> Konjir's requirements, design and decisions live in the Konjir artifacts on claude.ai, starting with the [Decisions Log](https://claude.ai/code/artifact/ef4df29b-5618-43d5-bc42-d36a24c3962c). [`CLAUDE.md`](CLAUDE.md) lists all of them and gives the rules. This README describes the code as it is today. Where it disagrees with the artifacts, the artifacts are the intent. For example, the Bedrock reviewer described below has been decided out (D4) but not yet removed.
+
 Prototype of Konjir's engine and its delivery rails:
 
 - **The hub:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
