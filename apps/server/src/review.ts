@@ -14,7 +14,7 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import {
   ReviewUnavailableError, structuralReviewer,
   type Finding, type ReviewContext, type ReviewVerdict, type Reviewer,
-} from './kolab.js';
+} from '@konjir/engine';
 
 export const DEFAULT_REVIEW_MODEL = 'anthropic.claude-haiku-5-5';
 

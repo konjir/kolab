@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GateError, RoleError } from '../src/kolab.js';
-import { setup, els } from './helpers.js';
+import { GateError, RoleError } from '@konjir/engine';
+import { setup, els } from '@konjir/engine/testing';
 
 test('an engineer session cannot create or write the functional layer', async () => {
   const { kolab, product, engineer } = await setup();

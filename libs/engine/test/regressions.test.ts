@@ -1,8 +1,8 @@
 // Regressions for the six bugs found in the first adversarial review.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GateError } from '../src/kolab.js';
-import { setup, els, marksOn, textOf } from './helpers.js';
+import { GateError } from '@konjir/engine';
+import { setup, els, marksOn, textOf } from '@konjir/engine/testing';
 
 test('a pending draft does not hide its node from the cascade; the draft catches up on commit', async () => {
   const { kolab, product, engineer } = await setup();

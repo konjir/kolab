@@ -1,0 +1,24 @@
+{
+  "name": "konjir",
+  "version": "0.5.0",
+  "private": true,
+  "description": "konjir: the Kolab verbs from a shell, as an MCP client of Kolab",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@konjir/source": "./src/cli.ts",
+      "types": "./dist/cli.d.ts",
+      "default": "./src/cli.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.app.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@konjir/engine": "*",
+    "@konjir/server": "*"
+  }
+}

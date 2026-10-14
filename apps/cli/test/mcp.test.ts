@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startServer } from '../src/server.js';
+import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
 
 const ADMIN = 'test-admin-token';

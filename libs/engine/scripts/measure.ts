@@ -6,7 +6,7 @@
  * addressing modes, against the design notes' lockstep rule (every downstream
  * version re-mints).
  */
-import { Kolab } from '../src/kolab.js';
+import { Kolab } from '../src/index.js';
 
 type Mode = { name: string; targetElement: boolean; sourceElement: boolean; wbsWhole: boolean };
 

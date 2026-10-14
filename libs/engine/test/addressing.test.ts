@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatAddress, parseAddress, resolveSpan } from '../src/address.js';
-import { setup, els } from './helpers.js';
+import { formatAddress, parseAddress, resolveSpan } from '@konjir/address';
+import { setup, els } from '@konjir/engine/testing';
 
 test('address grammar round-trips at every granularity', () => {
   for (const s of [
