@@ -21,7 +21,11 @@
     "tsx": "^4.23.15"
   },
   "devDependencies": {
+    "@jest/globals": "^30.5.2",
+    "@swc/core": "^1.16.18",
+    "@swc/jest": "^0.2.39",
     "@types/node": "^26.6.5",
+    "jest": "^30.5.2",
     "nx": "23.3.0",
     "typescript": "^7.0.2"
   },

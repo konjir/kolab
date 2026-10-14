@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from '@jest/globals';
 import { setup, els, marksOn, textOf } from '@konjir/engine/testing';
 
 const PARENT_V1 = {
@@ -41,7 +40,7 @@ test('three-way rule: every row of the outcomes table', async () => {
     }),
   });
 
-  assert.deepEqual(await textOf(kolab, child), {
+  expect(await textOf(kolab, child)).toStrictEqual({
     E1: 'Background is navy.',                 // override retired; now inherited
     E2: 'Logo sits top-center.',               // inherited change arrived automatically
     E3: 'Session timeout is 30 minutes.',      // dirty, but the override still stands
@@ -51,13 +50,11 @@ test('three-way rule: every row of the outcomes table', async () => {
 
   const childV = (await kolab.latestCommitted(child))!;
   const marks = (await kolab.openMarks()).filter((m) => m.version_id === childV.id);
-  assert.deepEqual(marks.map((m) => [m.element_id, m.reason]).sort(),
-    [['E3', 'override_stale'], ['E4', 'override_orphaned']]);
+  expect(marks.map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['E3', 'override_stale'], ['E4', 'override_orphaned']]);
   const deltaKinds = (await kolab.db.query<{ element_id: string; state: string }>(
     `select element_id, state from delta where version_id = $1 order by element_id`, [childV.id])).rows;
-  assert.deepEqual(deltaKinds.map((d) => [d.element_id, d.state]),
-    [['E3', 'dirty'], ['E4', 'orphaned'], ['X1', 'clean']]);   // E1's override is gone
-  assert.equal((await kolab.openQueries()).filter((q) => q.version_id === childV.id).length, 2);
+  expect(deltaKinds.map((d) => [d.element_id, d.state])).toStrictEqual([['E3', 'dirty'], ['E4', 'orphaned'], ['X1', 'clean']]);   // E1's override is gone
+  expect((await kolab.openQueries()).filter((q) => q.version_id === childV.id).length).toBe(2);
   await kolab.close();
 });
 
@@ -72,13 +69,13 @@ test('resolving a stale override: amend, then reaffirm an orphan as a local addi
 
   // The other open override mark followed the child to its new version.
   const e4 = (await open()).find((m) => m.element_id === 'E4')!;
-  assert.equal(e4.version_id, (await kolab.latestCommitted(child))!.id);
+  expect(e4.version_id).toBe((await kolab.latestCommitted(child))!.id);
   await kolab.resolveOverride(product, e4.id, 'reaffirm');
 
-  assert.deepEqual(await open(), []);
+  expect(await open()).toStrictEqual([]);
   const t = await textOf(kolab, child);
-  assert.equal(t.E3, 'Session timeout is 10 minutes for admins, 30 for shoppers.');
-  assert.equal(t.E4, 'Show the promo banner on weekends.');
+  expect(t.E3).toBe('Session timeout is 10 minutes for admins, 30 for shoppers.');
+  expect(t.E4).toBe('Show the promo banner on weekends.');
   await kolab.close();
 });
 
@@ -96,9 +93,9 @@ test('precedent: the same (base, parent, child) triple resolves itself next time
   await kolab.commit(product, parent, {
     elements: els({ ...PARENT_V1, E3: 'Session timeout is 10 minutes.', E2: 'Logo sits top-center.' }),
   });
-  assert.equal((await textOf(kolab, sibling)).E3, 'Session timeout is 10 minutes.');
+  expect((await textOf(kolab, sibling)).E3).toBe('Session timeout is 10 minutes.');
   const globexV = (await kolab.latestCommitted(sibling))!.id;
-  assert.deepEqual((await kolab.openMarks()).filter((m) => m.version_id === globexV), []);
+  expect((await kolab.openMarks()).filter((m) => m.version_id === globexV)).toStrictEqual([]);
   await kolab.close();
 });
 
@@ -117,9 +114,9 @@ test('the review gate catches what the three-way rule cannot see', async () => {
   // the child's override. No shared element, so the three-way rule sees nothing.
   await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.', A2: 'Header is blue on mobile too.' }) });
 
-  assert.equal((await kolab.latestCommitted(child))!.id, c1, 'child stays on its old parent');
+  expect((await kolab.latestCommitted(child))!.id).toBe(c1); // child stays on its old parent
   const marks = await kolab.openMarks();
-  assert.deepEqual(marks.map((m) => [m.version_id, m.reason]), [[c1, 'review_failed']]);
-  assert.match((await kolab.openQueries())[0].question, /green vs blue/);
+  expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[c1, 'review_failed']]);
+  expect((await kolab.openQueries())[0].question).toMatch(/green vs blue/);
   await kolab.close();
 });

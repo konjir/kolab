@@ -1,7 +1,6 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from '@jest/globals';
 import { formatAddress, parseAddress, resolveSpan } from '@konjir/address';
-import { setup, els } from '@konjir/engine/testing';
+import { setup, els, thrown } from '@konjir/engine/testing';
 
 test('address grammar round-trips at every granularity', () => {
   for (const s of [
@@ -9,15 +8,15 @@ test('address grammar round-trips at every granularity', () => {
     'kj:spec-checkout@7',
     'kj:spec-checkout@7#R1',
     'kj:spec-checkout#R1~q({"exact":"30 seconds","prefix":"within "})',
-  ]) assert.equal(formatAddress(parseAddress(s)), s);
-  assert.throws(() => parseAddress('kj:spec~q({"exact":"x"})'), /needs an element/);
+  ]) expect(formatAddress(parseAddress(s))).toBe(s);
+  expect(thrown(() => parseAddress('kj:spec~q({"exact":"x"})'))).toMatch(/needs an element/);
 });
 
 test('span resolution: exact is clean even if moved, near is fuzzy, gone is orphan', () => {
   const sel = { exact: 'save a cart for later' };
-  assert.equal(resolveSpan('Users can save a cart for later and share it.', sel).status, 'exact');
-  assert.equal(resolveSpan('Users can save the cart for later.', sel).status, 'fuzzy');
-  assert.equal(resolveSpan('Users can export receipts.', sel).status, 'orphan');
+  expect(resolveSpan('Users can save a cart for later and share it.', sel).status).toBe('exact');
+  expect(resolveSpan('Users can save the cart for later.', sel).status).toBe('fuzzy');
+  expect(resolveSpan('Users can export receipts.', sel).status).toBe('orphan');
 });
 
 test('each edge goes dirty only when its own addressed scope changes', async () => {
@@ -60,7 +59,7 @@ test('each edge goes dirty only when its own addressed scope changes', async () 
     }, { R3: 'SEC', R4: 'SEC' }),
   });
   let marks = await kolab.openMarks();
-  assert.deepEqual(marks.map((m) => [m.element_id, m.reason]).sort(), [['b1', 'changed'], ['b3', 'changed']]);
+  expect(marks.map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['b1', 'changed'], ['b3', 'changed']]);
 
   // v3: reword the quoted span slightly; delete R5. R6 untouched throughout.
   await kolab.commit(product, spec, {
@@ -74,8 +73,7 @@ test('each edge goes dirty only when its own addressed scope changes', async () 
     }, { R3: 'SEC', R4: 'SEC' }),
   });
   marks = await kolab.openMarks();
-  assert.deepEqual(marks.map((m) => [m.element_id, m.reason]).sort(),
-    [['b1', 'changed'], ['b2', 'fuzzy_reanchor'], ['b3', 'changed'], ['b4', 'orphaned']]);
+  expect(marks.map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['b1', 'changed'], ['b2', 'fuzzy_reanchor'], ['b3', 'changed'], ['b4', 'orphaned']]);
   await kolab.close();
 });
 
@@ -86,8 +84,8 @@ test('resolve() follows the address scope and floats to the latest committed ver
   await kolab.commit(product, spec, { elements: els({ R1: 'Timeout is 10 seconds.' }) });
   const pinned = await kolab.resolve('kj:S@1#R1');
   const floating = await kolab.resolve('kj:S#R1');
-  assert.equal(pinned.status === 'ok' && pinned.content, 'Timeout is 30 seconds.');
-  assert.equal(floating.status === 'ok' && floating.content, 'Timeout is 10 seconds.');
-  assert.equal((await kolab.resolve('kj:S#R9')).status, 'orphan');
+  expect(pinned.status === 'ok' && pinned.content).toBe('Timeout is 30 seconds.');
+  expect(floating.status === 'ok' && floating.content).toBe('Timeout is 10 seconds.');
+  expect((await kolab.resolve('kj:S#R9')).status).toBe('orphan');
   await kolab.close();
 });

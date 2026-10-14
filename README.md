@@ -21,7 +21,7 @@ TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in
 
 ```
 npm install
-npm test                  # 49 scenario, regression, review and end-to-end tests, through Nx
+npm test                  # 49 scenario, regression, review and end-to-end tests, on Jest through Nx
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
