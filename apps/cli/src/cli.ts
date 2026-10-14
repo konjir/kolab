@@ -18,8 +18,11 @@
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { randomBytes } from 'node:crypto';
-import { DEFAULT_REVIEW_MODEL, bedrockReviewer, startServer } from '@konjir/server';
 import type { Reviewer } from '@konjir/types';
+
+// The server, with the Bedrock SDK and the database, is imported only by the
+// commands that need it, so the client verbs start without loading it.
+const server = () => import('@konjir/server');
 
 /** The tool name for a verb: `read_node` and `konjir_read_node` both mean konjir_read_node. */
 const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_${verb}`);
@@ -59,7 +62,7 @@ export async function call(client: Client, verb: string, args: Record<string, un
   return r.structuredContent ?? text;
 }
 
-const USAGE = `konjir — Kolab from a shell. Same verbs as the MCP server.
+const usage = (defaultReviewModel: string) => `konjir — Kolab from a shell. Same verbs as the MCP server.
 
   konjir instructions          the operating rules and precedent (read this first)
   konjir tools                 every verb, one line each
@@ -74,7 +77,7 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
 Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
 Server: konjir serve [--port 7420] [--data .konjir] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
-        KONJIR_REVIEW=bedrock uses KONJIR_REVIEW_MODEL (default ${DEFAULT_REVIEW_MODEL}) with the
+        KONJIR_REVIEW=bedrock uses KONJIR_REVIEW_MODEL (default ${defaultReviewModel}) with the
         server's own AWS credentials (AWS_REGION, AWS_PROFILE or the default AWS chain).`;
 
 function parseKv(argv: string[]): Record<string, unknown> {
@@ -103,10 +106,11 @@ export async function main(argv: string[]) {
   const [cmd, ...rest] = argv;
 
   if (!cmd || ((cmd === 'help' || cmd === '--help') && !rest[0])) {
-    console.log(USAGE); return;
+    console.log(usage((await server()).DEFAULT_REVIEW_MODEL)); return;
   }
 
   if (cmd === 'serve') {
+    const { DEFAULT_REVIEW_MODEL, bedrockReviewer, startServer } = await server();
     const port = Number(flag(rest, 'port') ?? 7420);
     const dataDir = flag(rest, 'data') ?? '.konjir';
     const adminToken = flag(rest, 'admin-token') ?? process.env.KONJIR_ADMIN_TOKEN ?? randomBytes(18).toString('base64url');
