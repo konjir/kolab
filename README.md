@@ -38,7 +38,7 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | `@konjir/db` | `libs/db` | The schema and its migration |
 | `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI and engine |
 
-Each package's `exports` resolve to its TypeScript source at run time (through `tsx`) and to its `dist/` declarations when another project builds against it. Production still runs the source through `tsx`, from `src/cli.ts`, a shim the test server's start command needs until W1.10 moves it to compiled output. Until then `tsx` is the root package's one runtime dependency; the instance installs with `npm ci --omit=dev`, so Nx and TypeScript stay off it.
+Each package's `exports` resolve to its TypeScript source at run time (through `tsx`) and to its `dist/` declarations when another project builds against it. Production still runs the source through `tsx` until W1.10 moves it to compiled output, so `tsx` is the root package's one runtime dependency. Each release carries its own `deploy/release/install.sh` (`npm ci --omit=dev`, so Nx and TypeScript stay off the instance) and `start.sh`; the instance's boot script only calls them, so changing either ships with a plain `terraform apply`.
 
 ## Running it with agents
 

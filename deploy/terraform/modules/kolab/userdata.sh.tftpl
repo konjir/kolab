@@ -1,6 +1,8 @@
 #!/bin/bash
 # Kolab bootstrap (first boot). Installs Node and Caddy, mounts the data volume,
 # writes the services and the release installer. The release module installs the code.
+# How a release installs and starts lives in the release itself (deploy/release), so this
+# script, and with it the instance, changes only when the machine does.
 set -euxo pipefail
 exec > >(tee -a /var/log/konjir-bootstrap.log) 2>&1
 
@@ -97,8 +99,7 @@ set -euo pipefail
 KONJIR_ADMIN_TOKEN=$(aws ssm get-parameter --region "$AWS_REGION" --name "$KONJIR_TOKEN_PARAM" \
   --with-decryption --query Parameter.Value --output text)
 export KONJIR_ADMIN_TOKEN
-cd /opt/konjir/current
-exec node_modules/.bin/tsx src/cli.ts serve --port 7420 --data /var/lib/konjir/data --quiet
+exec /bin/bash /opt/konjir/current/deploy/release/start.sh --port 7420 --data /var/lib/konjir/data
 START
 chmod 0755 /usr/local/bin/konjir-start
 
@@ -141,9 +142,12 @@ mkdir -p "$REL"
 aws s3 cp --region "$REGION" --only-show-errors "s3://$BUCKET/releases/current.zip" /tmp/konjir.zip
 unzip -q /tmp/konjir.zip -d "$REL"
 rm -f /tmp/konjir.zip
-cd "$REL"
-# --omit=dev: production needs tsx, not the build tools (Nx, TypeScript), or their install scripts.
-HOME=/tmp npm ci --omit=dev --no-audit --no-fund --loglevel=error
+if [ ! -f "$REL/deploy/release/install.sh" ]; then
+  # A release from before deploy/release, still in S3 while a replacement instance boots.
+  # The release module uploads the current one next and runs this again.
+  echo "release predates deploy/release; skipping it"; rm -rf "$REL"; exit 0
+fi
+/bin/bash "$REL/deploy/release/install.sh"
 chown -R root:root "$REL"
 ln -sfn "$REL" /opt/konjir/current.new && mv -Tf /opt/konjir/current.new /opt/konjir/current
 systemctl restart konjir
