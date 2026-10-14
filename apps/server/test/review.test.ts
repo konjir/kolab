@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Kolab, type Finding } from '../src/kolab.js';
+import { Kolab, type Finding } from '@konjir/engine';
 import { SYSTEM_PROMPT, bedrockReviewer, buildReviewPrompt, modelReviewer, type ModelCall } from '../src/review.js';
-import { els, marksOn } from './helpers.js';
+import { els, marksOn } from '@konjir/engine/testing';
 
 /** A scripted model: returns whatever findings the test queues for the next call. */
 function fakeModel() {

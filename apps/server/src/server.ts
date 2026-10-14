@@ -12,8 +12,8 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { McpServer, ResourceTemplate, createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import { hostHeaderValidation, localhostHostValidation, localhostOriginValidation, originValidation, toWebRequest } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
-import { GateError, Kolab, RoleError, type KolabEvent, type Kind, type Layer, type Query, type Reviewer } from './kolab.js';
-import { parseAddress } from './address.js';
+import { GateError, Kolab, RoleError, type KolabEvent, type Kind, type Layer, type Query, type Reviewer } from '@konjir/engine';
+import { parseAddress } from '@konjir/address';
 
 const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;
 

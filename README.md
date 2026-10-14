@@ -21,9 +21,24 @@ TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in
 
 ```
 npm install
-npm test                  # 49 scenario, regression, review and end-to-end tests
+npm test                  # 49 scenario, regression, review and end-to-end tests, through Nx
+npm run typecheck         # every project
+npm run build             # every project, to its dist/
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 ```
+
+The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.
+
+| Project | Folder | What it holds |
+| --- | --- | --- |
+| `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. |
+| `@konjir/server` | `apps/server` | The MCP server, and the Bedrock reviewer until W1.7 removes it |
+| `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
+| `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring |
+| `@konjir/db` | `libs/db` | The schema and its migration |
+| `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI and engine |
+
+Each package's `exports` resolve to its TypeScript source at run time (through `tsx`) and to its `dist/` declarations when another project builds against it. Production still runs the source through `tsx`, from `src/cli.ts`, a shim the test server's start command needs until W1.10 moves it to compiled output.
 
 ## Running it with agents
 

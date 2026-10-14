@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "customConditions": ["@konjir/source"] },
+  "include": ["src", "test"]
+}

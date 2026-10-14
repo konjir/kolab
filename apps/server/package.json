@@ -1,0 +1,28 @@
+{
+  "name": "@konjir/server",
+  "version": "0.5.0",
+  "private": true,
+  "description": "The Kolab MCP server",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@konjir/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.app.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.34.4",
+    "@aws-sdk/client-bedrock-runtime": "^3.1149.0",
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "zod": "^4.6.5",
+    "@konjir/address": "*",
+    "@konjir/engine": "*"
+  }
+}

@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Kolab, RoleError, type KolabEvent } from '../src/kolab.js';
-import { startServer } from '../src/server.js';
+import { Kolab, RoleError, type KolabEvent } from '@konjir/engine';
+import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { els, marksOn, setup } from './helpers.js';
+import { els, marksOn, setup } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();

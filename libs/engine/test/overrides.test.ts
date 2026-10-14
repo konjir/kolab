@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup, els, marksOn, textOf } from './helpers.js';
+import { setup, els, marksOn, textOf } from '@konjir/engine/testing';
 
 const PARENT_V1 = {
   E1: 'Background is white.',

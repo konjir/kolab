@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup, els } from './helpers.js';
+import { setup, els } from '@konjir/engine/testing';
 
 /**
  * spec S:  R1  R2

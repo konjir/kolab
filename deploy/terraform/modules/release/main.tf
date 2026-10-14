@@ -14,6 +14,9 @@ data "archive_file" "app" {
   output_path = "${path.root}/.build/konjir-release.zip"
   excludes = [
     "node_modules",
+    "**/node_modules",
+    ".nx",
+    "**/dist",
     ".konjir",
     ".git",
     "deploy/terraform/.terraform",
