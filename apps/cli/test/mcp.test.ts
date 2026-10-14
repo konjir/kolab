@@ -1,16 +1,16 @@
 // End to end over real HTTP: two agents with different roles, one Kolab server.
-import { after, test } from 'node:test';
-import assert from 'node:assert/strict';
+import { afterAll, expect, test } from '@jest/globals';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
+import { rejection } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
 
 const open: { close(): Promise<void> }[] = [];
-after(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
+afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
 async function boot(dataDir?: string) {
   const server = await startServer({ adminToken: ADMIN, dataDir });
@@ -32,7 +32,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   const pm = await agentFor(server.url, admin, 'pm-agent', 'product');
   const eng = await agentFor(server.url, admin, 'eng-agent', 'engineer');
 
-  assert.deepEqual(await call(eng.client, 'whoami'), {
+  expect(await call(eng.client, 'whoami')).toStrictEqual({
     session: eng.token, actor: 'eng-agent', role: 'engineer', layer: 'technical',
     subscribe: ['konjir://inbox/technical', 'konjir://answers/eng-agent'],
   });
@@ -44,15 +44,15 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
     { id: 'R2', text: 'Users can save a cart for later.' },
   ] });
   const committed = await call(pm.client, 'submit_for_review', { node: 'checkout', version: 1 }) as { ok: boolean; committed: string };
-  assert.deepEqual([committed.ok, committed.committed], [true, 'kj:checkout@1']);
+  expect([committed.ok, committed.committed]).toStrictEqual([true, 'kj:checkout@1']);
 
   // The engineer cannot touch the functional layer, and gets an actionable error.
-  await assert.rejects(call(eng.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'x' }] }), /RoleError.*konjir_ask/);
+  expect(await rejection(call(eng.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'x' }] }))).toMatch(/RoleError.*konjir_ask/);
 
   // The engineer binds, links element to element, and asks the spec a question.
   await call(eng.client, 'create_node', { kind: 'technical_binding', title: 'Checkout on Postgres', id: 'checkout-pg' });
   await call(eng.client, 'draft', { node: 'checkout-pg', elements: [{ id: 'b1', text: 'Order finalizer worker with a 25s budget.' }, { id: 'b2', text: 'saved_cart table.' }] });
-  await assert.rejects(call(eng.client, 'link', { kind: 'dependency', source: 'kj:checkout-pg@1', source_element: 'b1', target: 'kj:checkout-pg@1' }), /not committed|GateError/);
+  expect(await rejection(call(eng.client, 'link', { kind: 'dependency', source: 'kj:checkout-pg@1', source_element: 'b1', target: 'kj:checkout-pg@1' }))).toMatch(/not committed|GateError/);
   await call(eng.client, 'submit_for_review', { node: 'checkout-pg', version: 1 });
   await call(eng.client, 'link', { kind: 'dependency', source: 'kj:checkout-pg@1', source_element: 'b1', target: 'kj:checkout@1#R1' });
   await call(eng.client, 'link', { kind: 'dependency', source: 'kj:checkout-pg@1', source_element: 'b2', target: 'kj:checkout#R2~q({"exact":"save a cart"})' });
@@ -60,8 +60,8 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
 
   // The question lands on the product layer; the engineer can't answer it.
   const pmQueries = await call(pm.client, 'list_queries') as { queries: { id: string; address: string }[] };
-  assert.deepEqual(pmQueries.queries.map((q) => [q.id, q.address]), [[query, 'kj:checkout@1#R2']]);
-  await assert.rejects(call(eng.client, 'answer_query', { query, answer: 'never' }), /RoleError/);
+  expect(pmQueries.queries.map((q) => [q.id, q.address])).toStrictEqual([[query, 'kj:checkout@1#R2']]);
+  expect(await rejection(call(eng.client, 'answer_query', { query, answer: 'never' }))).toMatch(/RoleError/);
   await call(pm.client, 'answer_query', { query, answer: 'After 30 days.' });
 
   // Product tightens R1. Only b1 goes dirty; the span link on R2 doesn't.
@@ -71,28 +71,28 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   ] });
   await call(pm.client, 'submit_for_review', { node: 'checkout', version: 2 });
   const stale = await call(eng.client, 'list_stale') as { marks: { mark: string; dirty: string; reason: string; because: string; next: string }[] };
-  assert.equal(stale.marks.length, 1);
-  assert.equal(stale.marks[0].dirty, 'kj:checkout-pg@1#b1');
-  assert.equal(stale.marks[0].reason, 'changed');
-  assert.match(stale.marks[0].because, /kj:checkout#R1 changed in version 2/);
-  assert.match(stale.marks[0].next, /konjir_clear_mark/);
-  assert.deepEqual((await call(pm.client, 'list_stale') as { marks: unknown[] }).marks, [], 'product layer has nothing dirty');
+  expect(stale.marks.length).toBe(1);
+  expect(stale.marks[0].dirty).toBe('kj:checkout-pg@1#b1');
+  expect(stale.marks[0].reason).toBe('changed');
+  expect(stale.marks[0].because).toMatch(/kj:checkout#R1 changed in version 2/);
+  expect(stale.marks[0].next).toMatch(/konjir_clear_mark/);
+  expect((await call(pm.client, 'list_stale') as { marks: unknown[] }).marks).toStrictEqual([]); // product layer has nothing dirty
 
   // Lineage reads both ways.
   const down = await call(pm.client, 'lineage', { node: 'checkout', direction: 'downstream' }) as { edges: { source: string }[] };
-  assert.deepEqual(down.edges.map((e) => e.source).sort(), ['kj:checkout-pg@1#b1', 'kj:checkout-pg@1#b2']);
+  expect(down.edges.map((e) => e.source).sort()).toStrictEqual(['kj:checkout-pg@1#b1', 'kj:checkout-pg@1#b2']);
 
   // The engineer re-checks and clears; the edge re-pins to v2.
   await call(eng.client, 'clear_mark', { mark: stale.marks[0].mark });
-  assert.deepEqual((await call(eng.client, 'list_stale') as { marks: unknown[] }).marks, []);
+  expect((await call(eng.client, 'list_stale') as { marks: unknown[] }).marks).toStrictEqual([]);
   const up = await call(eng.client, 'lineage', { node: 'checkout-pg', direction: 'upstream' }) as { edges: { target: string }[] };
-  assert.ok(up.edges.some((e) => e.target === 'kj:checkout@2#R1'));
+  expect(up.edges.some((e) => e.target === 'kj:checkout@2#R1')).toBeTruthy();
 
   // Served instructions carry the rules and the settled question.
   const prompt = await pm.client.getPrompt({ name: 'konjir_operating_instructions' });
   const text = prompt.messages.map((m) => (m.content.type === 'text' ? m.content.text : '')).join('');
-  assert.match(text, /Fetch fresh/);
-  assert.match(text, /Do saved carts expire\?" -> "After 30 days\./);
+  expect(text).toMatch(/Fetch fresh/);
+  expect(text).toMatch(/Do saved carts expire\?" -> "After 30 days\./);
 
   for (const c of [pm.client, eng.client, admin]) await c.close();
   await server.close();
@@ -101,16 +101,16 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
 test('tokens: no token, a wrong token, and a revoked token are all refused; agents cannot use admin verbs', async () => {
   const { server, admin } = await boot();
   const res = await fetch(server.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  assert.equal(res.status, 401);
-  await assert.rejects(connect(server.url, 'kjs_not-a-session'));
+  expect(res.status).toBe(401);
+  await expect(connect(server.url, 'kjs_not-a-session')).rejects.toThrow();
 
   const pm = await agentFor(server.url, admin, 'pm', 'product');
   const tools = (await pm.client.listTools()).tools.map((t) => t.name);
-  assert.ok(!tools.some((t) => t.startsWith('konjir_admin')));
+  expect(!tools.some((t) => t.startsWith('konjir_admin'))).toBeTruthy();
   await pm.client.close();
 
   await call(admin, 'admin_end_session', { token: pm.token });
-  await assert.rejects(connect(server.url, pm.token));
+  await expect(connect(server.url, pm.token)).rejects.toThrow();
   await admin.close();
   await server.close();
 });
@@ -127,8 +127,7 @@ test('Kolab persists across restarts', async () => {
 
     ({ server, admin } = await boot(dir));
     const again = await connect(server.url, pm.token);
-    assert.deepEqual(await call(again, 'resolve', { address: 'kj:checkout#R1' }),
-      { address: 'kj:checkout#R1', status: 'ok', version: 1, content: 'Persist me.' });
+    expect(await call(again, 'resolve', { address: 'kj:checkout#R1' })).toStrictEqual({ address: 'kj:checkout#R1', status: 'ok', version: 1, content: 'Persist me.' });
     await again.close(); await admin.close(); await server.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

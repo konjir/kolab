@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from '@jest/globals';
 import { setup, els } from '@konjir/engine/testing';
 
 /**
@@ -50,12 +49,12 @@ test('one spec edit dirties exactly its own lineage, once per version, through a
 
   const marks = await kolab.openMarks();
   const direct = marks.filter((m) => m.reason === 'changed');
-  assert.deepEqual(direct.map((m) => [m.version_id, m.element_id]), [[b, 'b1']]);
+  expect(direct.map((m) => [m.version_id, m.element_id])).toStrictEqual([[b, 'b1']]);
 
   const dirtyVersions = new Set(marks.map((m) => m.version_id));
-  assert.deepEqual(dirtyVersions, new Set([b, w, pk[1], im[1]]));
-  assert.ok(!dirtyVersions.has(pk[2]) && !dirtyVersions.has(im[2]), 'the R2 lineage stays clean');
-  assert.equal(marks.filter((m) => m.version_id === im[1]).length, 1, 'diamond reaches I1 once');
+  expect(dirtyVersions).toStrictEqual(new Set([b, w, pk[1], im[1]]));
+  expect(!dirtyVersions.has(pk[2]) && !dirtyVersions.has(im[2])).toBeTruthy(); // the R2 lineage stays clean
+  expect(marks.filter((m) => m.version_id === im[1]).length).toBe(1); // diamond reaches I1 once
 });
 
 test('clearing the direct mark ("still holds") re-pins the edge and clears what it caused', async () => {
@@ -63,12 +62,12 @@ test('clearing the direct mark ("still holds") re-pins the edge and clears what 
   await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 10 seconds.', R2: 'Carts can be saved.' }) });
   const direct = (await kolab.openMarks()).find((m) => m.reason === 'changed')!;
   await kolab.clear(engineer, direct.id);
-  assert.deepEqual(await kolab.openMarks(), []);
+  expect(await kolab.openMarks()).toStrictEqual([]);
 
   // The edge now points at v2 with v2's fingerprint: the same edit doesn't re-fire.
   await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 10 seconds.', R2: 'Carts can be saved, and shared.' }) });
   const after = await kolab.openMarks();
-  assert.ok(after.every((m) => m.element_id !== 'b1'));
+  expect(after.every((m) => m.element_id !== 'b1')).toBeTruthy();
 });
 
 test('re-versioning a dirty dependent carries its marks forward instead of dropping them', async () => {
@@ -77,7 +76,7 @@ test('re-versioning a dirty dependent carries its marks forward instead of dropp
   // The engineer edits b2 (unrelated to the open mark) while b1's mark is open.
   const b2v = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker', b2: 'Cart table, partitioned' }) });
   const direct = (await kolab.openMarks()).filter((m) => m.reason === 'changed');
-  assert.deepEqual(direct.map((m) => [m.version_id, m.element_id]).sort(), [
+  expect(direct.map((m) => [m.version_id, m.element_id]).sort()).toStrictEqual([
     [b2v, 'b1'],   // b1's mark followed B to its new version
     [w, 'w2'],     // and the b2 edit itself correctly dirtied w2
   ].sort());
@@ -86,22 +85,22 @@ test('re-versioning a dirty dependent carries its marks forward instead of dropp
 test('a content-identical upstream commit is a pointer bump, not a mark', async () => {
   const { kolab, product, S } = await chain();
   await kolab.commit(product, S, { elements: els({ R1: 'Checkout   within 30 seconds.', R2: 'Carts can be saved.' }) });
-  assert.deepEqual(await kolab.openMarks(), [], 'whitespace-only change normalizes away');
+  expect(await kolab.openMarks()).toStrictEqual([]); // whitespace-only change normalizes away
 });
 
 test('editing a marked element in a later version addresses its mark; leaving it untouched does not', async () => {
   const { kolab, product, engineer, S, B } = await chain();
   await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 10 seconds.', R2: 'Carts can be saved, and shared.' }) });
-  assert.deepEqual((await kolab.openMarks()).filter((m) => m.reason === 'changed').map((m) => m.element_id).sort(), ['b1', 'b2']);
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'changed').map((m) => m.element_id).sort()).toStrictEqual(['b1', 'b2']);
 
   // Rewrite b1 in response; leave b2 alone.
   const b2v = await kolab.commit(engineer, B, { deltas: [{ kind: 'override', element: 'b1', text: 'Order worker, 8s budget' }] });
   const open = await kolab.openMarks();
   const onB = open.filter((m) => m.version_id === b2v);
-  assert.deepEqual(onB.map((m) => [m.element_id, m.reason]), [['b2', 'changed']], 'b1 addressed; b2 still open');
+  expect(onB.map((m) => [m.element_id, m.reason])).toStrictEqual([['b2', 'changed']]); // b1 addressed; b2 still open
   // The spec-triggered marks downstream of b1 cleared with it. What's open
   // downstream of b1 now is the consequence of b1's own new text.
   const downstreamOfB1 = open.filter((m) => m.element_id === 'w1' || (m.version_id !== b2v && m.element_id === null && m.reason === 'changed'));
-  assert.ok(downstreamOfB1.length > 0);
-  assert.ok(downstreamOfB1.every((m) => m.triggered_by === b2v), 'only the new binding text triggers them');
+  expect(downstreamOfB1.length > 0).toBeTruthy();
+  expect(downstreamOfB1.every((m) => m.triggered_by === b2v)).toBeTruthy(); // only the new binding text triggers them
 });

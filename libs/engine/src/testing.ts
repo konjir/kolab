@@ -1,8 +1,22 @@
 import type { Reviewer } from '@konjir/types';
 import { Kolab } from './kolab.js';
 
+const opened: Kolab[] = [];
+
+/** Opens a Kolab for a test. `closeOpened` closes every one, after each test file. */
+export async function openKolab(options?: Parameters<typeof Kolab.open>[0]) {
+  const kolab = await Kolab.open(options);
+  opened.push(kolab);
+  return kolab;
+}
+
+/** Closes the databases `openKolab` and `setup` opened; jest.setup.js runs it after each file. */
+export async function closeOpened() {
+  for (const kolab of opened.splice(0)) await kolab.close().catch(() => undefined);
+}
+
 export async function setup(reviewer?: Reviewer) {
-  const kolab = await Kolab.open({ reviewer });
+  const kolab = await openKolab({ reviewer });
   await kolab.addActor('alice');   // product owner
   await kolab.addActor('bob');     // engineer
   await kolab.addActor('carol');   // holds both roles, one at a time
@@ -11,7 +25,31 @@ export async function setup(reviewer?: Reviewer) {
   return { kolab, product, engineer };
 }
 
-export const els = (pairs: Record<string, string>, parents: Record<string, string> = {}) =>
+/**
+ * What a promise rejected with, as `String(error)`: the error's name and message, which is
+ * what a pattern matched against under node:assert. Jest's `toThrow(pattern)` sees only the
+ * message, and some patterns name the error class.
+ */
+export async function rejection(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (error) {
+    return String(error);
+  }
+  throw new Error('expected the promise to reject, but it resolved');
+}
+
+/** What a function threw, as `String(error)`; see `rejection`. */
+export function thrown(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (error) {
+    return String(error);
+  }
+  throw new Error('expected the function to throw, but it returned');
+}
+
+export const els =(pairs: Record<string, string>, parents: Record<string, string> = {}) =>
   Object.entries(pairs).map(([id, text]) => ({ id, text, parent: parents[id] }));
 
 /** Open marks on any version of one node. */

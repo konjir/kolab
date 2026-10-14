@@ -1,8 +1,7 @@
 // Questions and notes across the layer boundary: the engineer asks or
 // annotates the spec, the answer comes back to the element that waited on it,
 // and every inbox change is pushed to subscribed agents.
-import { after, test } from 'node:test';
-import assert from 'node:assert/strict';
+import { afterAll, expect, test } from '@jest/globals';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +9,7 @@ import { Kolab, RoleError } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { els, marksOn, setup } from '@konjir/engine/testing';
+import { els, marksOn, setup, rejection } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -36,34 +35,30 @@ test('a question asked from a binding element comes back to that element as a ma
   // Asked while the binding is still a draft, about a quoted span.
   const q = await kolab.raiseQuery(engineer, 'kj:orders#R8~q({"exact":"cancel an order"})',
     'From which statuses, and what happens to its invoices?', { from: 'kj:orders-pg@1#b1' });
-  assert.deepEqual(events, [{ inbox: 'layer', layer: 'functional' }]);
-  assert.equal((await kolab.review(draft)).ok, true);
+  expect(events).toStrictEqual([{ inbox: 'layer', layer: 'functional' }]);
+  expect((await kolab.review(draft)).ok).toBe(true);
 
   const [listed] = await kolab.listQueries({ layer: 'functional', state: 'open' });
-  assert.deepEqual(
-    [listed.id, listed.kind, listed.address, listed.from, listed.raised_by],
-    [q, 'question', 'kj:orders@1#R8~q({"exact":"cancel an order"})', 'kj:orders-pg@1#b1', 'bob']);
+  expect([listed.id, listed.kind, listed.address, listed.from, listed.raised_by]).toStrictEqual([q, 'question', 'kj:orders@1#R8~q({"exact":"cancel an order"})', 'kj:orders-pg@1#b1', 'bob']);
 
   // Only the owning layer answers. The answer marks b1, not b2, and tells the asker.
-  await assert.rejects(kolab.answerQuery(engineer, q, 'any time'), RoleError);
+  await expect(kolab.answerQuery(engineer, q, 'any time')).rejects.toBeInstanceOf(RoleError);
   events.length = 0;
   await kolab.answerQuery(product, q, 'Open or Assigned only; invoices are voided.');
   const [mark] = await marksOn(kolab, 'orders-pg');
-  assert.deepEqual([mark.reason, mark.element_id], ['query_answered', 'b1']);
-  assert.match(mark.note!, /you asked "From which statuses.*answered: "Open or Assigned only/);
-  assert.deepEqual(
-    (await kolab.describeMarks({ layer: 'technical' })).map((m) => [m.dirty, m.because.slice(0, 15)]),
-    [['kj:orders-pg@1#b1', 'kj:orders#R8: y']]);
-  assert.deepEqual(new Set(events.map((e) => JSON.stringify(e))), new Set([
+  expect([mark.reason, mark.element_id]).toStrictEqual(['query_answered', 'b1']);
+  expect(mark.note!).toMatch(/you asked "From which statuses.*answered: "Open or Assigned only/);
+  expect((await kolab.describeMarks({ layer: 'technical' })).map((m) => [m.dirty, m.because.slice(0, 15)])).toStrictEqual([['kj:orders-pg@1#b1', 'kj:orders#R8: y']]);
+  expect(new Set(events.map((e) => JSON.stringify(e)))).toStrictEqual(new Set([
     JSON.stringify({ inbox: 'layer', layer: 'technical' }),   // the new mark
     JSON.stringify({ inbox: 'layer', layer: 'functional' }),  // the queue shrank
     JSON.stringify({ inbox: 'actor', actor: 'bob' }),         // the asker's answers
   ]));
-  assert.deepEqual((await kolab.listQueries({ raisedBy: 'bob' })).map((x) => [x.state, x.answered_by]), [['answered', 'alice']]);
+  expect((await kolab.listQueries({ raisedBy: 'bob' })).map((x) => [x.state, x.answered_by])).toStrictEqual([['answered', 'alice']]);
 
   // Revising b1 addresses the mark; nothing else was touched.
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'orders.status allows cancel from Open and Assigned; cancelling voids both invoices.' }] });
-  assert.deepEqual(await marksOn(kolab, 'orders-pg'), []);
+  expect(await marksOn(kolab, 'orders-pg')).toStrictEqual([]);
 });
 
 test('a note asks nothing: it waits in the owner\'s queue, and a reply marks nothing', async () => {
@@ -71,16 +66,16 @@ test('a note asks nothing: it waits in the owner\'s queue, and a reply marks not
   await kolab.review(draft);
   const n = await kolab.raiseQuery(engineer, 'kj:orders#R13', 'Read "flagged" as a warning on the photo that does not block submission.',
     { kind: 'note', from: 'kj:orders-pg#b2' });
-  assert.deepEqual((await kolab.listQueries({ layer: 'functional', state: 'open' })).map((x) => [x.id, x.kind]), [[n, 'note']]);
+  expect((await kolab.listQueries({ layer: 'functional', state: 'open' })).map((x) => [x.id, x.kind])).toStrictEqual([[n, 'note']]);
   await kolab.answerQuery(product, n, 'Agreed.');
-  assert.deepEqual(await marksOn(kolab, 'orders-pg'), []);
-  assert.equal((await kolab.listQueries({ raisedBy: 'bob' }))[0].answer, 'Agreed.');
+  expect(await marksOn(kolab, 'orders-pg')).toStrictEqual([]);
+  expect((await kolab.listQueries({ raisedBy: 'bob' }))[0].answer).toBe('Agreed.');
 });
 
 test('from must name the asker\'s own layer, and must resolve', async () => {
   const { kolab, engineer } = await specAndBinding();
-  await assert.rejects(kolab.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders#R13' }), /own layer/);
-  await assert.rejects(kolab.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders-pg@1#nope' }), /does not resolve/);
+  expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders#R13' }))).toMatch(/own layer/);
+  expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R8', 'q', { from: 'kj:orders-pg@1#nope' }))).toMatch(/does not resolve/);
 });
 
 test('an answer to an element the binding has since removed still reaches the asker, without a mark', async () => {
@@ -89,8 +84,8 @@ test('an answer to an element the binding has since removed still reaches the as
   const q = await kolab.raiseQuery(engineer, 'kj:orders#R8', 'Who can cancel?', { from: 'kj:orders-pg#b1' });
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'remove', element: 'b1' }] });
   await kolab.answerQuery(product, q, 'Office staff.');
-  assert.deepEqual(await marksOn(kolab, 'orders-pg'), []);
-  assert.equal((await kolab.listQueries({ raisedBy: 'bob' }))[0].state, 'answered');
+  expect(await marksOn(kolab, 'orders-pg')).toStrictEqual([]);
+  expect((await kolab.listQueries({ raisedBy: 'bob' }))[0].state).toBe('answered');
 });
 
 test('a database from the previous release is migrated on open', async () => {
@@ -118,7 +113,7 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
     const q = await kolab.raiseQuery(engineer, 'kj:orders#R1~q({"exact":"cancelled"})', 'By whom?', { from: 'kj:b#b1' });
     await kolab.answerQuery(product, q, 'Office staff.');
-    assert.deepEqual((await marksOn(kolab, 'b')).map((m) => m.reason), ['query_answered']);
+    expect((await marksOn(kolab, 'b')).map((m) => m.reason)).toStrictEqual(['query_answered']);
     await kolab.close();
     // Opening again is a no-op.
     await (await Kolab.open({ dataDir: dir })).close();
@@ -130,7 +125,7 @@ test('a database from the previous release is migrated on open', async () => {
 // ---- over MCP --------------------------------------------------------------------
 
 const open: { close(): Promise<void> }[] = [];
-after(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
+afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
 test('over MCP: questions sit beside the spec element, and answers are pushed to the asker', async () => {
   const server = await startServer({ adminToken: 'admin' });
@@ -147,8 +142,7 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   const pm = await agent('pm', 'product');
   const eng = await agent('eng', 'engineer');
 
-  assert.deepEqual((await call(eng, 'whoami') as { subscribe: string[] }).subscribe,
-    ['konjir://inbox/technical', 'konjir://answers/eng']);
+  expect((await call(eng, 'whoami') as { subscribe: string[] }).subscribe).toStrictEqual(['konjir://inbox/technical', 'konjir://answers/eng']);
 
   // Each side watches its own inboxes.
   const pushed: { who: string; uri: string; body: { queries?: { kind: string; answer?: string | null }[]; marks?: unknown[] } }[] = [];
@@ -170,15 +164,15 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   const { query } = await call(eng, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?', from: 'kj:orders-pg@1#b1' }) as { query: string };
   await call(eng, 'annotate', { address: 'kj:orders#R8', note: 'Assuming office staff means the Office role.' });
   await arrived(2);
-  assert.ok(pushed.every((p) => p.who === 'pm' && p.uri === 'konjir://inbox/functional'));
-  assert.deepEqual(pushed.at(-1)!.body.queries!.map((q) => q.kind), ['question', 'note']);
+  expect(pushed.every((p) => p.who === 'pm' && p.uri === 'konjir://inbox/functional')).toBeTruthy();
+  expect(pushed.at(-1)!.body.queries!.map((q) => q.kind)).toStrictEqual(['question', 'note']);
 
   // The spec moves on to v2; the question still shows beside R8.
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order that is not yet completed.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 2 });
   const read = await call(pm, 'read_node', { node: 'orders' }) as { version: number; elements: { id: string; questions?: { id: string; on: string; kind: string; from: string | null }[] }[] };
-  assert.equal(read.version, 2);
-  assert.deepEqual(read.elements[0].questions!.map((q) => [q.id, q.kind, q.on, q.from]), [
+  expect(read.version).toBe(2);
+  expect(read.elements[0].questions!.map((q) => [q.id, q.kind, q.on, q.from])).toStrictEqual([
     [query, 'question', 'kj:orders@1#R8', 'kj:orders-pg@1#b1'],
     [read.elements[0].questions![1].id, 'note', 'kj:orders@1#R8', null],
   ]);
@@ -188,10 +182,10 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   await call(pm, 'answer_query', { query, answer: 'Any status before Completed.' });
   await arrived(3);
   const engHeard = new Set(pushed.filter((p) => p.who === 'eng').map((p) => p.uri));
-  assert.deepEqual(engHeard, new Set(['konjir://inbox/technical', 'konjir://answers/eng']));
+  expect(engHeard).toStrictEqual(new Set(['konjir://inbox/technical', 'konjir://answers/eng']));
   const answers = pushed.find((p) => p.uri === 'konjir://answers/eng')!.body.queries!;
-  assert.equal(answers.find((q) => q.kind === 'question')!.answer, 'Any status before Completed.');
+  expect(answers.find((q) => q.kind === 'question')!.answer).toBe('Any status before Completed.');
 
   // Nobody reads someone else's answers.
-  await assert.rejects(pm.readResource({ uri: 'konjir://answers/eng' }), /your own answers/);
+  expect(await rejection(pm.readResource({ uri: 'konjir://answers/eng' }))).toMatch(/your own answers/);
 });

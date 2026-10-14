@@ -1,8 +1,7 @@
 // Regressions for the six bugs found in the first adversarial review.
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from '@jest/globals';
 import { GateError } from '@konjir/engine';
-import { setup, els, marksOn, textOf } from '@konjir/engine/testing';
+import { setup, els, marksOn, textOf, rejection } from '@konjir/engine/testing';
 
 test('a pending draft does not hide its node from the cascade; the draft catches up on commit', async () => {
   const { kolab, product, engineer } = await setup();
@@ -14,10 +13,10 @@ test('a pending draft does not hide its node from the cascade; the draft catches
 
   const draft = await kolab.draft(engineer, B, { elements: els({ b1: 'Order worker v2' }) });
   await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 10 seconds.' }) });
-  assert.deepEqual((await marksOn(kolab, B)).map((m) => [m.version_id, m.reason]), [[b1, 'changed']]);
+  expect((await marksOn(kolab, B)).map((m) => [m.version_id, m.reason])).toStrictEqual([[b1, 'changed']]);
 
   await kolab.review(draft);
-  assert.deepEqual((await marksOn(kolab, B)).map((m) => [m.version_id, m.reason]), [[draft, 'changed']]);
+  expect((await marksOn(kolab, B)).map((m) => [m.version_id, m.reason])).toStrictEqual([[draft, 'changed']]);
   await kolab.close();
 });
 
@@ -32,7 +31,7 @@ test('a variant drafted while its parent moved on is rebased when the draft comm
   await kolab.commit(product, P, { elements: els({ E1: 'Logo top-center.', E2: 'White background.' }) });
   await kolab.review(draft);
 
-  assert.deepEqual(await textOf(kolab, C), { E1: 'Logo top-center.', E2: 'Navy background.', X: 'Chat on.' });
+  expect(await textOf(kolab, C)).toStrictEqual({ E1: 'Logo top-center.', E2: 'Navy background.', X: 'Chat on.' });
   await kolab.close();
 });
 
@@ -45,9 +44,9 @@ test('optimistic concurrency: a draft overtaken by a human commit is rejected, n
   const bobDraft = await kolab.draft(engineer, B, { elements: els({ b1: 'bob edit' }) });
   await kolab.commit(dave, B, { elements: els({ b1: 'dave edit' }) });
   const r = await kolab.review(bobDraft);
-  assert.equal(r.ok, false);
-  assert.match(r.note!, /stale draft/);
-  assert.equal((await textOf(kolab, B)).b1, 'dave edit');
+  expect(r.ok).toBe(false);
+  expect(r.note!).toMatch(/stale draft/);
+  expect((await textOf(kolab, B)).b1).toBe('dave edit');
   await kolab.close();
 });
 
@@ -63,11 +62,11 @@ test('a rejected override resolution keeps the mark and the query open', async (
 
   reject = true;
   const r = await kolab.resolveOverride(product, m.id, 'amend', 'Timeout 20.');
-  assert.equal(r.verdict.ok, false);
-  assert.deepEqual((await marksOn(kolab, C)).map((x) => x.id), [m.id]);
-  assert.equal((await kolab.openQueries()).length, 1);
+  expect(r.verdict.ok).toBe(false);
+  expect((await marksOn(kolab, C)).map((x) => x.id)).toStrictEqual([m.id]);
+  expect((await kolab.openQueries()).length).toBe(1);
   const precedents = await kolab.db.query(`select 1 from precedent`);
-  assert.equal(precedents.rows.length, 0, 'no precedent from a rejected resolution');
+  expect(precedents.rows.length).toBe(0); // no precedent from a rejected resolution
   await kolab.close();
 });
 
@@ -77,7 +76,7 @@ test('variants may not inherit from each other in a loop', async () => {
   const a1 = await kolab.commit(product, A, { elements: els({ E: 'x' }) });
   const B = await kolab.createNode(product, 'functional_spec', 'B', 'B');
   const b1 = await kolab.commit(product, B, { parent: a1, deltas: [{ kind: 'add', element: 'F', text: 'y' }] });
-  await assert.rejects(kolab.commit(product, A, { parent: b1, deltas: [{ kind: 'add', element: 'G', text: 'z' }] }), GateError);
+  await expect(kolab.commit(product, A, { parent: b1, deltas: [{ kind: 'add', element: 'G', text: 'z' }] })).rejects.toBeInstanceOf(GateError);
   await kolab.close();
 });
 
@@ -94,11 +93,11 @@ test('row-level security: agents cannot self-commit, mislabel a layer, or link f
   });
   const ins = `insert into version(id, node_id, seq, layer, state, actor_id, active_role) values ($1, $2, 99, $3, $4, 'x', 'x')`;
 
-  await assert.rejects(asAgent(product, ins, ['v1', 'T', 'functional', 'drafted']), /row-level security/, 'layer label vs node');
-  await assert.rejects(asAgent(product, ins, ['v2', 'S', 'functional', 'committed']), /row-level security/, 'self-commit');
-  await assert.rejects(asAgent(product,
+  expect(await rejection(asAgent(product, ins, ['v1', 'T', 'functional', 'drafted']))).toMatch(/row-level security/); // layer label vs node
+  expect(await rejection(asAgent(product, ins, ['v2', 'S', 'functional', 'committed']))).toMatch(/row-level security/); // self-commit
+  expect(await rejection(asAgent(product,
     `insert into edge(id, kind, source_version_id, target_version_id, target_fingerprint) values ('e', 'dependency', $1, $2, 'x')`,
-    [t1, s1]), /row-level security/, 'edge from another layer');
+    [t1, s1]))).toMatch(/row-level security/); // edge from another layer
   await kolab.close();
 });
 
@@ -116,13 +115,13 @@ test('a whole-version dependent gets one mark per commit, and clears only when e
   await kolab.link(engineer, { kind: 'dependency', source: x, target: b });
 
   await kolab.commit(product, S, { elements: els({ R1: 'a ONE', R2: 'b TWO' }) });
-  assert.equal((await marksOn(kolab, X)).length, 1);
+  expect((await marksOn(kolab, X)).length).toBe(1);
 
   const [d1, d2] = (await marksOn(kolab, B));
   await kolab.clear(engineer, d1.id);
-  assert.equal((await marksOn(kolab, X)).length, 1, 'still dirty: the other cause is open');
+  expect((await marksOn(kolab, X)).length).toBe(1); // still dirty: the other cause is open
   await kolab.clear(engineer, d2.id);
-  assert.equal((await marksOn(kolab, X)).length, 0);
+  expect((await marksOn(kolab, X)).length).toBe(0);
   await kolab.close();
 });
 
@@ -135,7 +134,7 @@ test('an equivalence pair does not flag the version that was just committed', as
   await kolab.link(product, { kind: 'equivalence', source: a1, sourceElement: 'E', target: b1, targetElement: 'F' });
   await kolab.link(product, { kind: 'equivalence', source: b1, sourceElement: 'F', target: a1, targetElement: 'E' });
   await kolab.commit(product, A, { elements: els({ E: 'x changed' }) });
-  assert.deepEqual((await kolab.openMarks()).map((m) => [m.version_id, m.element_id, m.reason]), [[b1, 'F', 'changed']]);
+  expect((await kolab.openMarks()).map((m) => [m.version_id, m.element_id, m.reason])).toStrictEqual([[b1, 'F', 'changed']]);
   await kolab.close();
 });
 
@@ -153,11 +152,11 @@ test('folding keeps the draft author, so a second stale draft is rejected instea
   const d2 = await kolab.draft(erin, C, { deltas: [{ kind: 'add', element: 'Z', text: 'z' }] });
   await kolab.commit(product, P, { elements: els({ E1: 'one, revised' }) });
 
-  assert.equal((await kolab.review(d1)).ok, true);
+  expect((await kolab.review(d1)).ok).toBe(true);
   const second = await kolab.review(d2);
-  assert.equal(second.ok, false);
-  assert.match(second.note!, /stale draft/);
-  assert.deepEqual(await textOf(kolab, C), { E1: 'one, revised', X: 'x', Y: 'y' });
+  expect(second.ok).toBe(false);
+  expect(second.note!).toMatch(/stale draft/);
+  expect(await textOf(kolab, C)).toStrictEqual({ E1: 'one, revised', X: 'x', Y: 'y' });
   await kolab.close();
 });
 
@@ -173,11 +172,10 @@ test('folding carries the dependencies the draft declared', async () => {
   await kolab.link(product, { kind: 'dependency', source: draft, sourceElement: 'K2', target: s1, targetElement: 'R1' });
   await kolab.commit(product, P, { elements: els({ E1: 'one, revised' }) });
   const folded = await kolab.review(draft);
-  assert.equal(folded.ok, true);
+  expect(folded.ok).toBe(true);
 
   await kolab.commit(product, S, { elements: els({ R1: 'r one, changed' }) });
-  assert.deepEqual((await marksOn(kolab, C)).map((m) => [m.version_id, m.element_id, m.reason]),
-    [[folded.version, 'K2', 'changed']]);
+  expect((await marksOn(kolab, C)).map((m) => [m.version_id, m.element_id, m.reason])).toStrictEqual([[folded.version, 'K2', 'changed']]);
   await kolab.close();
 });
 
@@ -190,13 +188,13 @@ test('a later successful rebase settles an earlier review_failed mark', async ()
   const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   await kolab.commit(product, P, { elements: els({ E1: 'two' }) });
-  assert.deepEqual((await marksOn(kolab, C)).map((m) => m.reason), ['review_failed']);
+  expect((await marksOn(kolab, C)).map((m) => m.reason)).toStrictEqual(['review_failed']);
 
   rejectSystem = false;
   await kolab.commit(product, P, { elements: els({ E1: 'three' }) });
-  assert.deepEqual(await marksOn(kolab, C), []);
-  assert.equal((await kolab.openQueries()).length, 0);
-  assert.equal((await textOf(kolab, C)).E1, 'three');
+  expect(await marksOn(kolab, C)).toStrictEqual([]);
+  expect((await kolab.openQueries()).length).toBe(0);
+  expect((await textOf(kolab, C)).E1).toBe('three');
   await kolab.close();
 });
 
@@ -209,7 +207,6 @@ test('propagation skips only the changed element, not the whole triggering node'
   await kolab.link(product, { kind: 'dependency', source: b1, sourceElement: 'F', target: a1, targetElement: 'E1' });
   await kolab.link(product, { kind: 'dependency', source: a1, sourceElement: 'E2', target: b1, targetElement: 'F' });
   const a2 = await kolab.commit(product, A, { elements: els({ E1: 'e one, changed', E2: 'e two' }) });
-  assert.deepEqual((await kolab.openMarks()).map((m) => [m.version_id, m.element_id, m.reason]).sort(),
-    [[a2, 'E2', 'upstream_dirty'], [b1, 'F', 'changed']].sort());
+  expect((await kolab.openMarks()).map((m) => [m.version_id, m.element_id, m.reason]).sort()).toStrictEqual([[a2, 'E2', 'upstream_dirty'], [b1, 'F', 'changed']].sort());
   await kolab.close();
 });
