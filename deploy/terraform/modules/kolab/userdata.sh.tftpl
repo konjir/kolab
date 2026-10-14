@@ -142,7 +142,8 @@ aws s3 cp --region "$REGION" --only-show-errors "s3://$BUCKET/releases/current.z
 unzip -q /tmp/konjir.zip -d "$REL"
 rm -f /tmp/konjir.zip
 cd "$REL"
-HOME=/tmp npm ci --no-audit --no-fund --loglevel=error
+# --omit=dev: production needs tsx, not the build tools (Nx, TypeScript), or their install scripts.
+HOME=/tmp npm ci --omit=dev --no-audit --no-fund --loglevel=error
 chown -R root:root "$REL"
 ln -sfn "$REL" /opt/konjir/current.new && mv -Tf /opt/konjir/current.new /opt/konjir/current
 systemctl restart konjir
