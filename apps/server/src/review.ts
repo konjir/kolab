@@ -11,10 +11,8 @@
 import { createHash } from 'node:crypto';
 import { AnthropicBedrockMantle } from '@anthropic-ai/bedrock-sdk';
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-import {
-  ReviewUnavailableError, structuralReviewer,
-  type Finding, type ReviewContext, type ReviewVerdict, type Reviewer,
-} from '@konjir/engine';
+import { ReviewUnavailableError, structuralReviewer } from '@konjir/engine';
+import type { Finding, ReviewContext, ReviewVerdict, Reviewer } from '@konjir/types';
 
 export const DEFAULT_REVIEW_MODEL = 'anthropic.claude-haiku-5-5';
 

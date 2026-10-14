@@ -7,19 +7,17 @@ import {
 import { MIGRATE, SCHEMA } from '@konjir/db';
 import {
   LAYER_OF_KIND, LAYER_OF_ROLE,
-  type DeltaInput, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type MarkRow, type OverrideResolution, type Query, type Resolution, type ReviewContext, type ReviewVerdict,
+  type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
+  type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type ReviewContext, type ReviewVerdict,
   type Reviewer, type Role, type VersionRow,
 } from '@konjir/types';
-
-export * from '@konjir/types';
 
 // ---------------------------------------------------------------------------
 // Row types used only inside the engine (shared types are in @konjir/types)
 // ---------------------------------------------------------------------------
 
 interface DeltaRow {
-  id: string; version_id: string; element_id: string; kind: 'add' | 'override' | 'remove';
+  id: string; version_id: string; element_id: string; kind: DeltaKind;
   text: string | null; parent_element_id: string | null; ord: number | null;
   base_version_id: string | null; base_fingerprint: string | null;
   state: 'clean' | 'dirty' | 'orphaned';
@@ -728,7 +726,7 @@ export class Kolab {
    * reply to it marks nothing.
    */
   async raiseQuery(sessionId: string, address: Address | string, question: string,
-    opts: { kind?: 'question' | 'note'; from?: Address | string } = {}): Promise<string> {
+    opts: { kind?: QueryKind; from?: Address | string } = {}): Promise<string> {
     const s = await this.session(sessionId);
     const a = typeof address === 'string' ? parseAddress(address) : address;
     const r = await this.resolve(a);
@@ -757,7 +755,7 @@ export class Kolab {
   async answerQuery(sessionId: string, queryId: string, answer: string) {
     const q = (await this.db.query<{
       version_id: string; element_id: string | null; invalidation_id: string | null; state: string;
-      kind: 'question' | 'note'; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null;
+      kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null;
     }>(`select * from query where id = $1`, [queryId])).rows[0];
     if (!q) throw new Error(`no query ${queryId}`);
     if (q.state !== 'open') throw new GateError(`query ${queryId} is already answered`);
@@ -866,10 +864,10 @@ export class Kolab {
   }
 
   async listQueries(filter: {
-    layer?: Layer; state?: 'open' | 'answered'; raisedBy?: string; node?: string; kind?: 'question' | 'note';
+    layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind;
   } = {}): Promise<Query[]> {
     const rows = (await this.db.query<{
-      id: string; kind: 'question' | 'note'; node_id: string; seq: number; element_id: string | null;
+      id: string; kind: QueryKind; node_id: string; seq: number; element_id: string | null;
       selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
       raised_by: string | null; mark: string | null; from_node: string | null; from_seq: number | null; from_element_id: string | null;
     }>(

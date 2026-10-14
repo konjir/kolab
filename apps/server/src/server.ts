@@ -12,10 +12,12 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { McpServer, ResourceTemplate, createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import { hostHeaderValidation, localhostHostValidation, localhostOriginValidation, originValidation, toWebRequest } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
-import { GateError, Kolab, RoleError, type KolabEvent, type Kind, type Layer, type Query, type Reviewer } from '@konjir/engine';
+import { GateError, Kolab, RoleError } from '@konjir/engine';
 import { parseAddress } from '@konjir/address';
-
-const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;
+import {
+  DELTA_KINDS, EDGE_KINDS, KINDS, LAYERS, OVERRIDE_RESOLUTIONS, QUERY_KINDS, QUERY_STATES, ROLES,
+  type EdgeKind, type Kind, type KolabEvent, type Layer, type OverrideResolution, type Query, type QueryKind, type QueryState, type Reviewer,
+} from '@konjir/types';
 
 export const INSTRUCTIONS = `Konjir holds the canonical specs, bindings and work for this project. Your session token fixes your actor and role (product writes the functional layer; engineer writes the technical layer).
 Rules:
@@ -69,7 +71,7 @@ const elementInput = z.object({
   parent: z.string().optional().describe('ID of the containing element (e.g. a section).'),
 });
 const deltaInput = z.object({
-  kind: z.enum(['add', 'override', 'remove']),
+  kind: z.enum(DELTA_KINDS),
   element: z.string(),
   text: z.string().optional(),
   parent: z.string().optional(),
@@ -161,12 +163,12 @@ export function buildServer(ctx: Ctx): McpServer {
     inputSchema: z.object({
       mine: z.boolean().optional().describe('Questions and notes you raised, open and answered'),
       all_layers: z.boolean().optional(),
-      state: z.enum(['open', 'answered']).optional(),
-      kind: z.enum(['question', 'note']).optional(),
+      state: z.enum(QUERY_STATES).optional(),
+      kind: z.enum(QUERY_KINDS).optional(),
       node: z.string().optional().describe('Only those raised on this node'),
     }),
     annotations: { readOnlyHint: true },
-  }, agent(ctx, async ({ mine, all_layers, state, kind, node }: { mine?: boolean; all_layers?: boolean; state?: 'open' | 'answered'; kind?: 'question' | 'note'; node?: string }, s) => {
+  }, agent(ctx, async ({ mine, all_layers, state, kind, node }: { mine?: boolean; all_layers?: boolean; state?: QueryState; kind?: QueryKind; node?: string }, s) => {
     const me = await kolab.sessionInfo(s);
     if (mine) return { queries: await kolab.listQueries({ raisedBy: me.actor, state, kind, node }) };
     return { queries: await kolab.listQueries({ layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node }) };
@@ -191,10 +193,10 @@ export function buildServer(ctx: Ctx): McpServer {
         source_element: z.string().optional().describe('Your element in this draft (same name as on konjir_link)'),
         element: z.string().optional().describe('Alias for source_element'),
         target: address.describe('What it relies on (committed)'),
-        kind: z.enum(['dependency', 'derivation', 'equivalence']).optional().describe('Defaults to dependency'),
+        kind: z.enum(EDGE_KINDS).optional().describe('Defaults to dependency'),
       })).optional().describe('Links to declare from this draft\'s elements, in the same call: [{"source_element":"b1","target":"kj:spec#R1"}]. Links on earlier versions carry forward automatically.'),
     }),
-  }, agent(ctx, async (a: { node: string; elements?: z.infer<typeof elementInput>[]; deltas?: z.infer<typeof deltaInput>[]; parent?: string; links?: { source_element?: string; element?: string; target: string; kind?: 'dependency' | 'derivation' | 'equivalence' }[] }, s) => {
+  }, agent(ctx, async (a: { node: string; elements?: z.infer<typeof elementInput>[]; deltas?: z.infer<typeof deltaInput>[]; parent?: string; links?: { source_element?: string; element?: string; target: string; kind?: EdgeKind }[] }, s) => {
     for (const l of a.links ?? []) {
       if (!l.source_element && !l.element) throw new Error(`each link needs source_element (the element in your draft); missing for target ${l.target}`);
     }
@@ -230,12 +232,12 @@ export function buildServer(ctx: Ctx): McpServer {
   server.registerTool('konjir_link', {
     description: 'Declare that one of your elements relies on an address, so you are told when it changes. Name your element either in source (kj:checkout-pg@2#b1) or in source_element; a link without a source element makes your whole version, and everything downstream of it, dirty on any change. kind: dependency (usual), derivation (generated from it), equivalence (must stay in sync). Linking two elements of the same spec is allowed.',
     inputSchema: z.object({
-      kind: z.enum(['dependency', 'derivation', 'equivalence']).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
+      kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
       source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
       source_element: z.string().optional().describe('Alternative to putting #element in source.'),
       target: address.describe('What it relies on; must be committed. e.g. kj:checkout@3#R1, or a span: kj:checkout#R1~q({"exact":"30 seconds"})'),
     }),
-  }, agent(ctx, async (a: { kind: 'dependency' | 'derivation' | 'equivalence'; source: string; source_element?: string; target: string }, s) => {
+  }, agent(ctx, async (a: { kind: EdgeKind; source: string; source_element?: string; target: string }, s) => {
     return { edge: await linkOne(kolab, s, a) };
   }));
 
@@ -246,8 +248,8 @@ export function buildServer(ctx: Ctx): McpServer {
 
   server.registerTool('konjir_resolve_override', {
     description: 'Resolve a stale or orphaned override in a variant spec: reaffirm (keep yours), adopt_parent (take the parent text), or amend (new text). Becomes precedent for the same situation elsewhere.',
-    inputSchema: z.object({ mark: z.string(), resolution: z.enum(['reaffirm', 'adopt_parent', 'amend']), text: z.string().optional() }),
-  }, agent(ctx, async ({ mark, resolution, text }: { mark: string; resolution: 'reaffirm' | 'adopt_parent' | 'amend'; text?: string }, s) => {
+    inputSchema: z.object({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() }),
+  }, agent(ctx, async ({ mark, resolution, text }: { mark: string; resolution: OverrideResolution; text?: string }, s) => {
     if (resolution === 'amend' && !text) throw new Error('amend needs text');
     const r = await kolab.resolveOverride(s, mark, resolution, text);
     return { ok: r.verdict.ok, note: r.verdict.note ?? null };
@@ -279,8 +281,8 @@ export function buildServer(ctx: Ctx): McpServer {
     description: 'Open questions and notes the layer owns, and open marks on its work. Subscribe to your own layer\'s inbox; it is updated whenever that queue changes.',
     mimeType: 'application/json',
   }, async (uri, vars) => {
-    const layer = String(vars.layer);
-    if (layer !== 'functional' && layer !== 'technical') throw new Error(`no inbox ${uri.href}`);
+    const layer = String(vars.layer) as Layer;
+    if (!LAYERS.includes(layer)) throw new Error(`no inbox ${uri.href}`);
     if (!ctx.session) throw new RoleError('reading an inbox needs an agent session token');
     const body = {
       layer,
@@ -339,7 +341,7 @@ export function buildServer(ctx: Ctx): McpServer {
 
     server.registerTool('konjir_admin_open_session', {
       description: 'Admin: open a session for an actor with one active role. Returns the bearer token the agent connects with.',
-      inputSchema: z.object({ actor: z.string(), role: z.enum(['product', 'engineer']) }),
+      inputSchema: z.object({ actor: z.string(), role: z.enum(ROLES) }),
     }, async ({ actor, role }) => { try { return ok({ token: await kolab.openSession(actor, role), actor, role }); } catch (e) { return fail(e); } });
 
     server.registerTool('konjir_admin_end_session', {
@@ -352,7 +354,7 @@ export function buildServer(ctx: Ctx): McpServer {
 }
 
 async function linkOne(kolab: Kolab, session: string,
-  a: { kind: 'dependency' | 'derivation' | 'equivalence'; source: string; source_element?: string; target: string }) {
+  a: { kind: EdgeKind; source: string; source_element?: string; target: string }) {
   const src = parseAddress(a.source);
   const tgt = parseAddress(a.target);
   if (src.element && a.source_element && src.element !== a.source_element) {
