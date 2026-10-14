@@ -2,17 +2,29 @@
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "namedInputs": {
     "default": ["{projectRoot}/**/*", "sharedGlobals"],
-    "production": ["default", "!{projectRoot}/test/**/*", "!{projectRoot}/scripts/**/*"],
-    "sharedGlobals": ["{workspaceRoot}/tsconfig.base.json"]
+    "production": ["default", "!{projectRoot}/test/**/*", "!{projectRoot}/scripts/**/*", "!{projectRoot}/jest.config.js"],
+    "sharedGlobals": [
+      "{workspaceRoot}/tsconfig.base.json",
+      "{workspaceRoot}/tsconfig.check.json",
+      "{workspaceRoot}/tsconfig.build.json"
+    ],
+    "jest": [
+      "{workspaceRoot}/jest.preset.js",
+      "{workspaceRoot}/jest.setup.js",
+      { "externalDependencies": ["jest", "@jest/globals", "@swc/jest", "@swc/core"] }
+    ]
   },
   "targetDefaults": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["production", "^production"],
+      "inputs": ["production", "^production", { "externalDependencies": ["typescript"] }],
       "outputs": ["{projectRoot}/dist"],
       "cache": true
     },
-    "typecheck": { "inputs": ["default", "^production"], "cache": true },
-    "test": { "inputs": ["default", "^production"], "cache": true }
+    "typecheck": {
+      "inputs": ["default", "^production", { "externalDependencies": ["typescript"] }],
+      "cache": true
+    },
+    "test": { "inputs": ["default", "^production", "jest"], "cache": true }
   }
 }
