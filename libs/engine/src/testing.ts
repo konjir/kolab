@@ -1,4 +1,5 @@
-import { Kolab, type Reviewer } from './kolab.js';
+import type { Reviewer } from '@konjir/types';
+import { Kolab } from './kolab.js';
 
 export async function setup(reviewer?: Reviewer) {
   const kolab = await Kolab.open({ reviewer });

@@ -99,10 +99,7 @@ create table invalidation (
   edge_id            text references edge(id),
   delta_id           text references delta(id),
   triggered_by       text not null references version(id),  -- the upstream commit
-  reason             text not null check (reason in
-                       ('changed','fuzzy_reanchor','orphaned','override_stale',
-                        'override_orphaned','upstream_dirty','review_failed','role_boundary',
-                        'query_answered')),
+  reason             text not null,                         -- checked by invalidation_reason_check, from @konjir/db
   state              text not null default 'open' check (state in ('open','cleared')),
   note               text,                                  -- e.g. the review gate's explanation
   cleared_by         text,
@@ -125,7 +122,7 @@ create table query (
   element_id  text,
   selector    jsonb,                                  -- a quoted span inside element_id
   invalidation_id text references invalidation(id),
-  kind        text not null default 'question' check (kind in ('question','note')),
+  kind        text not null default 'question',          -- checked by query_kind_check, from @konjir/db
   question    text not null,
   raised_by   text,
   from_version_id text references version(id),        -- the asker's own element that waits on it

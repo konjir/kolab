@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Kolab, type Finding } from '@konjir/engine';
+import { Kolab } from '@konjir/engine';
+import type { Finding } from '@konjir/types';
 import { SYSTEM_PROMPT, bedrockReviewer, buildReviewPrompt, modelReviewer, type ModelCall } from '../src/review.js';
 import { els, marksOn } from '@konjir/engine/testing';
 

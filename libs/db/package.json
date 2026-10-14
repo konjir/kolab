@@ -12,7 +12,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.lib.json && cp src/schema.sql dist/",
+    "build": "tsc -p tsconfig.build.json && cp src/schema.sql dist/",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@konjir/types": "*"
   }
 }

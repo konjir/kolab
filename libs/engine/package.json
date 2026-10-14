@@ -17,7 +17,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.lib.json",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
     "measure": "tsx scripts/measure.ts"

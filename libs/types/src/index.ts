@@ -2,10 +2,31 @@
  * Types and constants shared by Kolab's engine, server, CLI and web interface.
  */
 
-export type Role = 'product' | 'engineer';
-export type Layer = 'functional' | 'technical';
-export type Kind =
-  | 'functional_spec' | 'prototype' | 'technical_binding' | 'wbs' | 'work_package' | 'implementation';
+// Each value list is a constant, and its type derives from it, so the server's
+// input schemas and the database constraints use the same list.
+
+export const ROLES = ['product', 'engineer'] as const;
+export type Role = typeof ROLES[number];
+export const LAYERS = ['functional', 'technical'] as const;
+export type Layer = typeof LAYERS[number];
+export const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;
+export type Kind = typeof KINDS[number];
+export const DELTA_KINDS = ['add', 'override', 'remove'] as const;
+export type DeltaKind = typeof DELTA_KINDS[number];
+export const EDGE_KINDS = ['dependency', 'derivation', 'equivalence'] as const;
+export type EdgeKind = typeof EDGE_KINDS[number];
+export const QUERY_KINDS = ['question', 'note'] as const;
+export type QueryKind = typeof QUERY_KINDS[number];
+export const QUERY_STATES = ['open', 'answered'] as const;
+export type QueryState = typeof QUERY_STATES[number];
+export const OVERRIDE_RESOLUTIONS = ['reaffirm', 'adopt_parent', 'amend'] as const;
+export type OverrideResolution = typeof OVERRIDE_RESOLUTIONS[number];
+/** Why a mark (an invalidation) was raised. */
+export const MARK_REASONS = [
+  'changed', 'fuzzy_reanchor', 'orphaned', 'override_stale', 'override_orphaned',
+  'upstream_dirty', 'review_failed', 'role_boundary', 'query_answered',
+] as const;
+export type MarkReason = typeof MARK_REASONS[number];
 
 export const LAYER_OF_KIND: Record<Kind, Layer> = {
   functional_spec: 'functional',
@@ -18,7 +39,7 @@ export const LAYER_OF_KIND: Record<Kind, Layer> = {
 export const LAYER_OF_ROLE: Record<Role, Layer> = { product: 'functional', engineer: 'technical' };
 
 export interface ElementInput { id?: string; text: string; parent?: string }
-export interface DeltaInput { kind: 'add' | 'override' | 'remove'; element: string; text?: string; parent?: string }
+export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string }
 
 export interface ElementRow {
   element_id: string;
@@ -65,8 +86,6 @@ export type Resolution =
   | { status: 'fuzzy'; content: string; fingerprint: string }
   | { status: 'orphan' };
 
-export type OverrideResolution = 'reaffirm' | 'adopt_parent' | 'amend';
-
 /**
  * Something an agent should look at: a layer's work queue (open questions,
  * notes and marks it owns) or an actor's answers (replies to what they raised).
@@ -74,7 +93,7 @@ export type OverrideResolution = 'reaffirm' | 'adopt_parent' | 'amend';
 export type KolabEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
 
 export interface Query {
-  id: string; kind: 'question' | 'note'; address: string; question: string; state: string;
+  id: string; kind: QueryKind; address: string; question: string; state: string;
   answer: string | null; answered_by: string | null; raised_by: string | null;
   from: string | null; mark: string | null;
 }

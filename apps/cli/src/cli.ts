@@ -19,7 +19,10 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { randomBytes } from 'node:crypto';
 import { DEFAULT_REVIEW_MODEL, bedrockReviewer, startServer } from '@konjir/server';
-import type { Reviewer } from '@konjir/engine';
+import type { Reviewer } from '@konjir/types';
+
+/** The tool name for a verb: `read_node` and `konjir_read_node` both mean konjir_read_node. */
+const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_${verb}`);
 
 export async function connect(url: string, token: string): Promise<Client> {
   // 'auto' talks 2026-07-28 to a Kolab server that offers it (needed for subscriptions/listen) and 2025 to an older one.
@@ -50,8 +53,7 @@ export async function watch(client: Client, onUpdate: (uri: string, body: unknow
 
 /** Call a tool and return its structured result, or throw with the tool's error text. */
 export async function call(client: Client, verb: string, args: Record<string, unknown> = {}) {
-  const name = verb.startsWith('konjir_') ? verb : `konjir_${verb}`;
-  const r = await client.callTool({ name, arguments: args });
+  const r = await client.callTool({ name: toolName(verb), arguments: args });
   const text = (r.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('\n');
   if (r.isError) throw new Error(text);
   return r.structuredContent ?? text;
@@ -179,7 +181,7 @@ export async function main(argv: string[]) {
       case 'tools':
         result = (await client.listTools()).tools.map((t) => `${t.name.replace(/^konjir_/, '')}  — ${t.description}`).join('\n'); break;
       case 'help': {
-        const name = rest[0].startsWith('konjir_') ? rest[0] : `konjir_${rest[0]}`;
+        const name = toolName(rest[0]);
         const tool = (await client.listTools()).tools.find((t) => t.name === name);
         if (!tool) throw new Error(`no verb ${rest[0]}; run konjir tools`);
         const schema = tool.inputSchema as { properties?: Record<string, { type?: string; enum?: string[]; description?: string }>; required?: string[] };
