@@ -24,6 +24,11 @@ resource "random_password" "db" {
   special = false
 }
 
+# Each database's final snapshot gets a name of its own, so a second teardown doesn't collide with the first.
+resource "random_id" "final_snapshot" {
+  byte_length = 4
+}
+
 resource "aws_db_instance" "this" {
   #checkov:skip=CKV_AWS_157:One zone for a test environment; Multi-AZ is a production step (P10)
   #checkov:skip=CKV_AWS_118:Enhanced monitoring adds cost and no consumer reads it yet
@@ -31,6 +36,7 @@ resource "aws_db_instance" "this" {
   #checkov:skip=CKV_AWS_129:Log exports to CloudWatch are a production step (P11)
   #checkov:skip=CKV2_AWS_30:Query logging is a production step (P11)
   #checkov:skip=CKV_AWS_161:Kolab logs in with a password from SSM; IAM auth is a production step
+  #checkov:skip=CKV_AWS_293:Test environment; deletion protection is a production step
   identifier                 = "${var.name}-db"
   engine                     = "postgres"
   engine_version             = var.postgres_version
@@ -48,10 +54,11 @@ resource "aws_db_instance" "this" {
   backup_retention_period    = 7
   copy_tags_to_snapshot      = true
   auto_minor_version_upgrade = true
-  # A stack that keeps a final snapshot also refuses an accidental delete; a full teardown sets both off.
-  deletion_protection       = var.final_snapshot
+  # A test stack: terraform destroy may delete it, keeping a final snapshot unless final_snapshot is off.
+  # Destroy reads this from state, so turning the snapshot off takes an apply first (README).
+  deletion_protection       = false
   skip_final_snapshot       = !var.final_snapshot
-  final_snapshot_identifier = "${var.name}-db-final"
+  final_snapshot_identifier = "${var.name}-db-final-${random_id.final_snapshot.hex}"
   apply_immediately         = false
 }
 
