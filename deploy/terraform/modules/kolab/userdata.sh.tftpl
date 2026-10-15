@@ -12,6 +12,8 @@ DOMAIN='${domain}'
 BUCKET='${bucket}'
 REGION='${region}'
 TOKEN_PARAM='${token_param}'
+DATABASE_PARAM='${database_param}'
+DATABASE_CA='${database_ca}'
 DATA_VOLUME_ID='${data_volume_id}'
 
 dnf install -y tar xz unzip
@@ -85,12 +87,17 @@ WantedBy=multi-user.target
 UNIT
 
 # ---- Kolab
+# The certificate bundle Kolab verifies RDS's TLS certificate against.
+curl -fsSL -o "$DATABASE_CA" https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+chmod 0644 "$DATABASE_CA"
+
 cat > /etc/konjir/env <<ENV
 KONJIR_PUBLIC_HOST=$DOMAIN
 KONJIR_REVIEW=${review_mode}
 KONJIR_REVIEW_MODEL=${review_model}
 AWS_REGION=$REGION
 KONJIR_TOKEN_PARAM=$TOKEN_PARAM
+KONJIR_DATABASE_PARAM=$DATABASE_PARAM
 ENV
 
 cat > /usr/local/bin/konjir-start <<'START'
@@ -99,6 +106,9 @@ set -euo pipefail
 KONJIR_ADMIN_TOKEN=$(aws ssm get-parameter --region "$AWS_REGION" --name "$KONJIR_TOKEN_PARAM" \
   --with-decryption --query Parameter.Value --output text)
 export KONJIR_ADMIN_TOKEN
+KONJIR_DATABASE_URL=$(aws ssm get-parameter --region "$AWS_REGION" --name "$KONJIR_DATABASE_PARAM" \
+  --with-decryption --query Parameter.Value --output text)
+export KONJIR_DATABASE_URL
 exec /bin/bash /opt/konjir/current/deploy/release/start.sh --port 7420 --data /var/lib/konjir/data
 START
 chmod 0755 /usr/local/bin/konjir-start
