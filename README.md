@@ -86,14 +86,15 @@ The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terrafo
 
 | Module | What it creates |
 | --- | --- |
-| `network` | A VPC with one public subnet. Inbound is 443, plus 80 for certificate issuance; there is no SSH. |
+| `network` | A VPC with one public subnet, and two private subnets for the database. Inbound is 443, plus 80 for certificate issuance; there is no SSH. |
 | `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days |
+| `database` | Postgres 18 on RDS (`db.t4g.micro`, 20 GB, encrypted, 7 days of backups), reachable only from Kolab over verified TLS. Its URL is an SSM SecureString |
 | `secrets` | A generated admin token, stored as an SSM SecureString |
-| `iam` | The instance role: Session Manager access, read its releases and token, call Bedrock for the review gate |
+| `iam` | The instance role: Session Manager access, read its releases, token and database URL, call Bedrock for the review gate |
 | `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `kolab.konjir.com` |
 | `release` | Zips this repo, uploads it, and installs it on Kolab through Systems Manager. `terraform apply` is the deploy |
 
-Kolab listens on localhost only, behind Caddy. Its database lives on the separate data volume, so replacing the instance is safe. A change to the boot script replaces it automatically. The rough cost is $15–20 a month at list price.
+Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart from the instance, so replacing the instance is safe. A change to the boot script replaces it automatically. The data volume still holds the PGlite database Kolab used before RDS. The rough cost is $30–35 a month at list price.
 
 Day to day:
 

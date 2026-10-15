@@ -39,28 +39,42 @@ module "secrets" {
   name   = var.name
 }
 
+module "database" {
+  source            = "./modules/database"
+  name              = var.name
+  subnet_ids        = module.network.db_subnet_ids
+  security_group_id = module.network.db_security_group_id
+  postgres_version  = var.postgres_version
+  instance_class    = var.db_instance_class
+  allocated_gib     = var.db_allocated_gib
+  final_snapshot    = var.final_snapshot_on_destroy
+}
+
 module "iam" {
-  source               = "./modules/iam"
-  name                 = var.name
-  artifact_bucket_arn   = module.storage.artifact_bucket_arn
-  admin_token_param_arn = module.secrets.admin_token_param_arn
+  source                 = "./modules/iam"
+  name                   = var.name
+  artifact_bucket_arn    = module.storage.artifact_bucket_arn
+  admin_token_param_arn  = module.secrets.admin_token_param_arn
+  database_url_param_arn = module.database.database_url_param_arn
 }
 
 module "kolab" {
-  source                 = "./modules/kolab"
-  name                   = var.name
-  instance_type          = var.instance_type
-  subnet_id              = module.network.subnet_id
-  security_group_id      = module.network.security_group_id
-  instance_profile_name  = module.iam.instance_profile_name
-  data_volume_id         = module.storage.data_volume_id
-  artifact_bucket        = module.storage.artifact_bucket
-  admin_token_param_name = module.secrets.admin_token_param_name
-  domain_name            = var.domain_name
-  zone_id                = data.aws_route53_zone.this.zone_id
-  review_mode            = var.review_mode
-  review_model           = var.review_model
-  letsencrypt_email      = var.letsencrypt_email
+  source                  = "./modules/kolab"
+  name                    = var.name
+  instance_type           = var.instance_type
+  subnet_id               = module.network.subnet_id
+  security_group_id       = module.network.security_group_id
+  instance_profile_name   = module.iam.instance_profile_name
+  data_volume_id          = module.storage.data_volume_id
+  artifact_bucket         = module.storage.artifact_bucket
+  admin_token_param_name  = module.secrets.admin_token_param_name
+  database_url_param_name = module.database.database_url_param_name
+  database_ca_path        = module.database.ca_path
+  domain_name             = var.domain_name
+  zone_id                 = data.aws_route53_zone.this.zone_id
+  review_mode             = var.review_mode
+  review_model            = var.review_model
+  letsencrypt_email       = var.letsencrypt_email
 }
 
 # The server was named "hub" until 2026-10-11 (Decisions Log D11).

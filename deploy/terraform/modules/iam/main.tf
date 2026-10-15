@@ -1,9 +1,10 @@
-# The Kolab instance's role: Systems Manager access (no SSH), read its releases and admin token,
+# The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL,
 # and call Bedrock for the review gate. Nothing else.
 
 variable "name" { type = string }
 variable "artifact_bucket_arn" { type = string }
 variable "admin_token_param_arn" { type = string }
+variable "database_url_param_arn" { type = string }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -40,9 +41,9 @@ data "aws_iam_policy_document" "kolab" {
     resources = [var.artifact_bucket_arn]
   }
   statement {
-    sid       = "ReadAdminToken"
+    sid       = "ReadAdminTokenAndDatabaseUrl"
     actions   = ["ssm:GetParameter"]
-    resources = [var.admin_token_param_arn]
+    resources = [var.admin_token_param_arn, var.database_url_param_arn]
   }
   # Claude models on Bedrock (Messages API, served by bedrock-mantle).
   statement {

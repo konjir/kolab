@@ -19,6 +19,11 @@ output "data_volume_id" {
   value = module.storage.data_volume_id
 }
 
+output "database_endpoint" {
+  description = "Kolab's Postgres on RDS, reachable only from the Kolab instance."
+  value       = module.database.endpoint
+}
+
 output "admin_token_parameter" {
   description = "SSM SecureString holding the admin token. Read it with deploy/konjir-ops.sh admin-token."
   value       = module.secrets.admin_token_param_name

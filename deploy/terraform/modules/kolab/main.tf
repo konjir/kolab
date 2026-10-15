@@ -13,6 +13,8 @@ variable "instance_profile_name" { type = string }
 variable "data_volume_id" { type = string }
 variable "artifact_bucket" { type = string }
 variable "admin_token_param_name" { type = string }
+variable "database_url_param_name" { type = string }
+variable "database_ca_path" { type = string }
 variable "domain_name" { type = string }
 variable "zone_id" { type = string }
 variable "review_mode" { type = string }
@@ -51,6 +53,8 @@ resource "aws_instance" "kolab" {
     bucket         = var.artifact_bucket
     region         = data.aws_region.current.region
     token_param    = var.admin_token_param_name
+    database_param = var.database_url_param_name
+    database_ca    = var.database_ca_path
     data_volume_id = var.data_volume_id
     review_mode    = var.review_mode
     review_model   = var.review_model

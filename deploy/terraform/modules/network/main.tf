@@ -1,4 +1,5 @@
 # A small VPC with one public subnet. Only 443 (and 80 for certificate issuance) is open; no SSH.
+# Two private subnets, in two zones as RDS requires, hold the database; only Kolab reaches it.
 
 variable "name" { type = string }
 variable "az" { type = string }
@@ -78,6 +79,39 @@ resource "aws_vpc_security_group_egress_rule" "all" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# ---- Database: private subnets in two zones, reachable on 5432 from Kolab only.
+data "aws_availability_zones" "this" { state = "available" }
+
+locals {
+  db_azs = [var.az, [for z in data.aws_availability_zones.this.names : z if z != var.az][0]]
+}
+
+resource "aws_subnet" "db" {
+  count             = 2
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = "10.42.${11 + count.index}.0/24"
+  availability_zone = local.db_azs[count.index]
+  tags              = { Name = "${var.name}-db-${count.index}" }
+}
+
+resource "aws_security_group" "db" {
+  name        = "${var.name}-db"
+  description = "Postgres from Kolab only"
+  vpc_id      = aws_vpc.this.id
+  tags        = { Name = "${var.name}-db" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_kolab" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "Postgres from the Kolab instance"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.web.id
+}
+
 output "subnet_id" { value = aws_subnet.public.id }
+output "db_subnet_ids" { value = aws_subnet.db[*].id }
+output "db_security_group_id" { value = aws_security_group.db.id }
 output "security_group_id" { value = aws_security_group.web.id }
 output "vpc_id" { value = aws_vpc.this.id }

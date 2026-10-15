@@ -47,7 +47,7 @@ variable "data_volume_gib" {
 }
 
 variable "final_snapshot_on_destroy" {
-  description = "Snapshot the data volume when it is destroyed. Set false for a teardown that leaves nothing behind."
+  description = "Snapshot the data volume and the database when they are destroyed, and protect the database from deletion. Set false for a teardown that leaves nothing behind."
   type        = bool
   default     = true
 }
@@ -78,4 +78,22 @@ variable "app_source_dir" {
   description = "The Konjir source tree to ship. Defaults to this repository."
   type        = string
   default     = null
+}
+
+variable "postgres_version" {
+  description = "Postgres engine version on RDS. Minor versions upgrade automatically."
+  type        = string
+  default     = "18.6"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class for Kolab's database."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_gib" {
+  description = "Storage for Kolab's database."
+  type        = number
+  default     = 20
 }
