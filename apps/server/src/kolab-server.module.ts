@@ -34,8 +34,8 @@ export class KolabServerModule {
           // Agents don't see the admin verbs; the admin token sees everything.
           toolVisibility: 'authorized',
           exposeErrorMessages: false,
-          // DNS-rebinding guard. Locally, only loopback host names; behind the TLS proxy, its host name.
-          ...(publicHost ? { allowedHosts: [publicHost], allowedOrigins: [`https://${publicHost}`] } : {}),
+          // The DNS-rebinding guard is startServer's: onivoro's allowedHosts compares the whole Host
+          // header, port included, and its default trusts any request carrying a forwarding header.
         }),
       ],
       controllers: [HealthController],
