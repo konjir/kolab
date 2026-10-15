@@ -47,7 +47,7 @@ variable "data_volume_gib" {
 }
 
 variable "final_snapshot_on_destroy" {
-  description = "Snapshot the data volume and the database when they are destroyed, and protect the database from deletion. Set false for a teardown that leaves nothing behind."
+  description = "Snapshot the data volume and the database when they are destroyed. Set false for a teardown that leaves nothing behind."
   type        = bool
   default     = true
 }
@@ -81,9 +81,9 @@ variable "app_source_dir" {
 }
 
 variable "postgres_version" {
-  description = "Postgres engine version on RDS. Minor versions upgrade automatically."
+  description = "Postgres major version on RDS. RDS picks the minor version and upgrades it automatically; a pinned minor would make the next apply try to downgrade."
   type        = string
-  default     = "18.6"
+  default     = "18"
 }
 
 variable "db_instance_class" {
