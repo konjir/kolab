@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { MARK_REASONS, QUERY_KINDS } from '@konjir/types';
 
+export { openDb, type Db } from './connect.js';
+
 const list = (values: readonly string[]) => values.map((v) => `'${v}'`).join(',');
 
 /**

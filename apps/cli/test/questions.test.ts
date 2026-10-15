@@ -2,14 +2,11 @@
 // annotates the spec, the answer comes back to the element that waited on it,
 // and every inbox change is pushed to subscribed agents.
 import { afterAll, expect, test } from '@jest/globals';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { Kolab, RoleError } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { els, marksOn, setup, rejection } from '@konjir/engine/testing';
+import { els, marksOn, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -89,9 +86,9 @@ test('an answer to an element the binding has since removed still reaches the as
 });
 
 test('a database from the previous release is migrated on open', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'konjir-migrate-'));
-  try {
-    let kolab = await Kolab.open({ dataDir: dir });
+  const store = await persistentStore();
+  {
+    let kolab = await Kolab.open(store);
     // Put the tables back the way 0.5 created them.
     await kolab.db.exec(`
       alter table query drop constraint query_kind_check;
@@ -107,7 +104,7 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     await kolab.close();
 
-    kolab = await Kolab.open({ dataDir: dir });
+    kolab = await Kolab.open(store);
     const engineer = await kolab.openSession('bob', 'engineer');
     await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
     await kolab.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
@@ -116,9 +113,7 @@ test('a database from the previous release is migrated on open', async () => {
     expect((await marksOn(kolab, 'b')).map((m) => m.reason)).toStrictEqual(['query_answered']);
     await kolab.close();
     // Opening again is a no-op.
-    await (await Kolab.open({ dataDir: dir })).close();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await (await Kolab.open(store)).close();
   }
 });
 
@@ -128,7 +123,7 @@ const open: { close(): Promise<void> }[] = [];
 afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
 test('over MCP: questions sit beside the spec element, and answers are pushed to the asker', async () => {
-  const server = await startServer({ adminToken: 'admin' });
+  const server = await startServer({ adminToken: 'admin', ...(await testStore()) });
   open.push(server);
   const admin = await connect(server.url, 'admin');
   open.push(admin);

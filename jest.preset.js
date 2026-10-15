@@ -10,6 +10,8 @@ export default {
   testEnvironment: 'node',
   testMatch: ['<rootDir>/test/**/*.test.ts'],
   setupFilesAfterEnv: ['<rootDir>/../../jest.setup.js'],
+  globalSetup: '<rootDir>/../../jest.global-setup.js',
+  globalTeardown: '<rootDir>/../../jest.global-teardown.js',
   extensionsToTreatAsEsm: ['.ts'],
   transform: {
     '^.+\\.ts$': ['@swc/jest', {
@@ -23,6 +25,6 @@ export default {
     }],
   },
   moduleNameMapper: { '^(\\.{1,2}/.*)\\.js$': '$1' },
-  // Each test opens its own PGlite database, and the end-to-end tests start servers.
+  // Each test opens its own database, and the end-to-end tests start servers.
   testTimeout: 30_000,
 };

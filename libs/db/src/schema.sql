@@ -173,8 +173,15 @@ create table precedent (
 -- Agent writes run as kj_agent. The DB looks up the layer from the session
 -- row itself, so a service bug can't spoof the layer without a real session.
 -- ---------------------------------------------------------------------------
-create role kj_agent nologin;
-create role kj_system nologin;
+-- Roles belong to the whole cluster, so another database on it may have made them already,
+-- even at the same moment.
+do $$ begin create role kj_agent nologin;
+exception when duplicate_object or unique_violation then null; end $$;
+do $$ begin create role kj_system nologin;
+exception when duplicate_object or unique_violation then null; end $$;
+-- Kolab's own login switches into them with set local role. A superuser could anyway;
+-- on managed Postgres the login is not one.
+grant kj_agent, kj_system to current_user;
 
 create function kj_session_layer() returns text
 language sql stable security definer as $$

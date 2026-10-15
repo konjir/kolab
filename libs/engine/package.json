@@ -23,10 +23,10 @@
     "measure": "tsx scripts/measure.ts"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.8",
     "ulid": "^3.0.2",
     "@konjir/address": "*",
     "@konjir/db": "*",
-    "@konjir/types": "*"
+    "@konjir/types": "*",
+    "pg": "^8.23.1"
   }
 }

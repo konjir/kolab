@@ -13,10 +13,12 @@ export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void
 
 export async function startServer(opts: {
   port?: number; host?: string; dataDir?: string; adminToken: string; kolab?: Kolab; reviewer?: Reviewer;
+  /** Postgres to store in. Without it, PGlite in `dataDir`, or in memory. */
+  databaseUrl?: string;
   /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). Accepted alongside localhost. */
   publicHost?: string;
 }): Promise<KonjirServer> {
-  const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, reviewer: opts.reviewer });
+  const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, reviewer: opts.reviewer });
   const app = await NestFactory.create(
     KolabServerModule.register({ kolab, adminToken: opts.adminToken, publicHost: opts.publicHost }),
     { logger: ['error', 'warn'] },

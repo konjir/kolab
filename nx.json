@@ -1,8 +1,16 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "namedInputs": {
-    "default": ["{projectRoot}/**/*", "sharedGlobals"],
-    "production": ["default", "!{projectRoot}/test/**/*", "!{projectRoot}/scripts/**/*", "!{projectRoot}/jest.config.js"],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
+    "production": [
+      "default",
+      "!{projectRoot}/test/**/*",
+      "!{projectRoot}/scripts/**/*",
+      "!{projectRoot}/jest.config.js"
+    ],
     "sharedGlobals": [
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/tsconfig.check.json",
@@ -11,20 +19,62 @@
     "jest": [
       "{workspaceRoot}/jest.preset.js",
       "{workspaceRoot}/jest.setup.js",
-      { "externalDependencies": ["jest", "@jest/globals", "@swc/jest", "@swc/core"] }
+      "{workspaceRoot}/jest.global-setup.js",
+      "{workspaceRoot}/jest.global-teardown.js",
+      {
+        "env": "KONJIR_TEST_POSTGRES"
+      },
+      {
+        "env": "KONJIR_TEST_DATABASE_URL"
+      },
+      {
+        "externalDependencies": [
+          "jest",
+          "@jest/globals",
+          "@swc/jest",
+          "@swc/core"
+        ]
+      }
     ]
   },
   "targetDefaults": {
     "build": {
-      "dependsOn": ["^build"],
-      "inputs": ["production", "^production", { "externalDependencies": ["typescript"] }],
-      "outputs": ["{projectRoot}/dist"],
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "production",
+        "^production",
+        {
+          "externalDependencies": [
+            "typescript"
+          ]
+        }
+      ],
+      "outputs": [
+        "{projectRoot}/dist"
+      ],
       "cache": true
     },
     "typecheck": {
-      "inputs": ["default", "^production", { "externalDependencies": ["typescript"] }],
+      "inputs": [
+        "default",
+        "^production",
+        {
+          "externalDependencies": [
+            "typescript"
+          ]
+        }
+      ],
       "cache": true
     },
-    "test": { "inputs": ["default", "^production", "jest"], "cache": true }
+    "test": {
+      "inputs": [
+        "default",
+        "^production",
+        "jest"
+      ],
+      "cache": true
+    }
   }
 }

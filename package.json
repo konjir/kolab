@@ -15,7 +15,8 @@
     "build": "nx run-many -t build",
     "measure": "nx run @konjir/engine:measure --",
     "serve": "tsx apps/cli/src/main.ts serve",
-    "konjir": "tsx apps/cli/src/main.ts"
+    "konjir": "tsx apps/cli/src/main.ts",
+    "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test"
   },
   "dependencies": {
     "tsx": "^4.23.15"
@@ -24,7 +25,9 @@
     "@jest/globals": "^30.5.2",
     "@swc/core": "^1.16.18",
     "@swc/jest": "^0.2.39",
+    "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
     "jest": "^30.5.2",
     "nx": "23.3.0",
     "typescript": "^7.0.2"
