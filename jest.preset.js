@@ -13,7 +13,12 @@ export default {
   extensionsToTreatAsEsm: ['.ts'],
   transform: {
     '^.+\\.ts$': ['@swc/jest', {
-      jsc: { parser: { syntax: 'typescript' }, target: 'es2022' },
+      // Legacy decorators with metadata, as NestJS and tsc's experimentalDecorators expect.
+      jsc: {
+        parser: { syntax: 'typescript', decorators: true },
+        transform: { legacyDecorator: true, decoratorMetadata: true },
+        target: 'es2022',
+      },
       module: { type: 'es6' },
     }],
   },

@@ -14,7 +14,7 @@
 Prototype of Konjir's engine and its delivery rails:
 
 - **Kolab:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
-- **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients.
+- **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients. It's a NestJS app; each verb is an `@McpTool` method, and the inboxes and the operating-instructions prompt are `@McpResource` and `@McpPrompt` methods.
 - **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of Kolab, so there is one backend.
 
 TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in WASM), so there's no server to install.
@@ -32,7 +32,7 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | Project | Folder | What it holds |
 | --- | --- | --- |
 | `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. |
-| `@konjir/server` | `apps/server` | The MCP server, and the Bedrock reviewer until W1.7 removes it |
+| `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. Also the Bedrock reviewer, until W1.7 removes it. |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
 | `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring |
 | `@konjir/db` | `libs/db` | The schema and its migration |
