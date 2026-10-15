@@ -1,18 +1,64 @@
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import pg from 'pg';
 import type { Reviewer } from '@konjir/types';
 import { Kolab } from './kolab.js';
 
+/**
+ * Set by jest.global-setup.js when the suite runs on Postgres (KONJIR_TEST_POSTGRES=1), or
+ * by hand to point at a server you run. Each test then gets a database of its own on it.
+ */
+const POSTGRES = process.env.KONJIR_TEST_DATABASE_URL;
+
 const opened: Kolab[] = [];
+const databases: string[] = [];
+const dirs: string[] = [];
+
+export type Store = { dataDir?: string; databaseUrl?: string };
+
+/** An empty store that lasts until the test file ends: in memory on PGlite, a fresh database on Postgres. */
+export async function testStore(): Promise<Store> {
+  return POSTGRES ? { databaseUrl: await freshDatabase() } : {};
+}
+
+/** An empty store that survives closing and reopening Kolab: a fresh directory on PGlite. */
+export async function persistentStore(): Promise<Store> {
+  if (POSTGRES) return { databaseUrl: await freshDatabase() };
+  const dataDir = mkdtempSync(join(tmpdir(), 'konjir-'));
+  dirs.push(dataDir);
+  return { dataDir };
+}
+
+async function freshDatabase() {
+  const name = `kj_test_${randomBytes(6).toString('hex')}`;
+  await onServer(`create database ${name}`);
+  databases.push(name);
+  const url = new URL(POSTGRES!);
+  url.pathname = `/${name}`;
+  return url.toString();
+}
+
+async function onServer(sql: string) {
+  const client = new pg.Client({ connectionString: POSTGRES });
+  await client.connect();
+  try { await client.query(sql); } finally { await client.end(); }
+}
 
 /** Opens a Kolab for a test. `closeOpened` closes every one, after each test file. */
-export async function openKolab(options?: Parameters<typeof Kolab.open>[0]) {
-  const kolab = await Kolab.open(options);
+export async function openKolab(options: Parameters<typeof Kolab.open>[0] = {}) {
+  const store = options.dataDir || options.databaseUrl ? {} : await testStore();
+  const kolab = await Kolab.open({ ...options, ...store });
   opened.push(kolab);
   return kolab;
 }
 
-/** Closes the databases `openKolab` and `setup` opened; jest.setup.js runs it after each file. */
+/** Closes the databases the tests opened, and removes their stores; jest.setup.js runs it after each file. */
 export async function closeOpened() {
   for (const kolab of opened.splice(0)) await kolab.close().catch(() => undefined);
+  for (const name of databases.splice(0)) await onServer(`drop database if exists ${name} with (force)`);
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
 
 export async function setup(reviewer?: Reviewer) {

@@ -3,6 +3,7 @@
  * It is an MCP client of Kolab, so there is exactly one backend.
  *
  *   konjir serve [--port 7420] [--data .konjir] [--admin-token T]
+ *                [--database-url postgres://…]
  *   konjir tools
  *   konjir instructions
  *   konjir resolve <address>
@@ -76,7 +77,7 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks). konjir watch --once waits for the next change, prints it and exits.
 Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
-Server: konjir serve [--port 7420] [--data .konjir] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
+Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
         KONJIR_REVIEW=bedrock uses KONJIR_REVIEW_MODEL (default ${defaultReviewModel}) with the
         server's own AWS credentials (AWS_REGION, AWS_PROFILE or the default AWS chain).`;
 
@@ -133,9 +134,10 @@ export async function main(argv: string[]) {
       console.log('review: structural only (set KONJIR_REVIEW=bedrock for semantic review)');
     }
     const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
-    const s = await startServer({ port, dataDir, adminToken, reviewer, publicHost });
+    const databaseUrl = flag(rest, 'database-url') ?? process.env.KONJIR_DATABASE_URL;
+    const s = await startServer({ port, dataDir, databaseUrl, adminToken, reviewer, publicHost });
     console.log(`Kolab listening on ${s.url}`);
-    console.log(`data: ${dataDir}`);
+    console.log(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);
     const stop = async () => { await s.close(); process.exit(0); };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
@@ -211,4 +213,11 @@ export async function main(argv: string[]) {
   } finally {
     await client.close();
   }
+}
+
+/** A database URL fit to print: the password is left out. */
+function withoutPassword(url: string) {
+  const u = new URL(url);
+  if (u.password) u.password = '***';
+  return u.toString();
 }

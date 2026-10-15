@@ -1,10 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { PGlite, type Transaction } from '@electric-sql/pglite';
 import { ulid } from 'ulid';
 import {
   type Address, type QuoteSelector, fingerprint, formatAddress, normalize, parseAddress, resolveSpan,
 } from '@konjir/address';
-import { MIGRATE, SCHEMA } from '@konjir/db';
+import { MIGRATE, SCHEMA, openDb, type Db } from '@konjir/db';
 import {
   LAYER_OF_KIND, LAYER_OF_ROLE,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
@@ -34,20 +33,23 @@ export class ReviewUnavailableError extends Error { name = 'ReviewUnavailableErr
 export class RoleError extends Error { name = 'RoleError'; }
 export class GateError extends Error { name = 'GateError'; }
 
-type Q = Pick<Transaction, 'query' | 'exec'>;
+type Q = Pick<Db, 'query' | 'exec'>;
 
 // ---------------------------------------------------------------------------
 // Kolab
 // ---------------------------------------------------------------------------
 
 export class Kolab {
-  private constructor(readonly db: PGlite, private reviewer: Reviewer) {}
+  private constructor(readonly db: Db, private reviewer: Reviewer) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
 
-  /** In-memory by default; pass `dataDir` to persist across restarts. */
-  static async open(opts: { reviewer?: Reviewer; dataDir?: string } = {}): Promise<Kolab> {
-    const db = opts.dataDir ? new PGlite(opts.dataDir) : new PGlite();
+  /**
+   * Postgres at `databaseUrl`; otherwise PGlite, in memory by default or persisted to `dataDir`
+   * across restarts.
+   */
+  static async open(opts: { reviewer?: Reviewer; dataDir?: string; databaseUrl?: string } = {}): Promise<Kolab> {
+    const db = openDb(opts);
     const exists = await db.query<{ t: string | null }>(`select to_regclass('public.node')::text as t`);
     await db.exec(exists.rows[0].t ? MIGRATE : SCHEMA);
     return new Kolab(db, opts.reviewer ?? structuralReviewer);

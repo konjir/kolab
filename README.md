@@ -17,11 +17,12 @@ Prototype of Konjir's engine and its delivery rails:
 - **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients. It's a NestJS app; each verb is an `@McpTool` method, and the inboxes and the operating-instructions prompt are `@McpResource` and `@McpPrompt` methods.
 - **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of Kolab, so there is one backend.
 
-TypeScript on an embedded Postgres ([PGlite](https://pglite.dev), Postgres 18 in WASM), so there's no server to install.
+TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve` a `--database-url` (or `KONJIR_DATABASE_URL`) for a Postgres server. Without one, Kolab runs on embedded Postgres ([PGlite](https://pglite.dev), Postgres in WASM), so local development needs no server.
 
 ```
 npm install
 npm test                  # 49 scenario, regression, review and end-to-end tests, on Jest through Nx
+npm run test:postgres     # the same tests on Postgres 18 in a container (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
@@ -241,7 +242,7 @@ Their feedback drove these changes:
 
 - **Semantic review is opt-in** (`KONJIR_REVIEW=bedrock`). Without it the gate is structural only, and it says so on every commit.
 - **Session tokens are bearer tokens** with no expiry or OAuth. They're fine on one machine or a trusted network, but not on the open internet.
-- **One Kolab process** owns the embedded database. Moving to a real Postgres server is the path to more than one Kolab process.
+- **One Kolab process** serves each database. On Postgres, a second process would need push across processes (W2.2) before its agents heard each other's changes.
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.

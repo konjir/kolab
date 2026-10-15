@@ -1,19 +1,16 @@
 // End to end over real HTTP: two agents with different roles, one Kolab server.
 import { afterAll, expect, test } from '@jest/globals';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
-import { rejection } from '@konjir/engine/testing';
+import { persistentStore, rejection, testStore, type Store } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
 
 const open: { close(): Promise<void> }[] = [];
 afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
-async function boot(dataDir?: string) {
-  const server = await startServer({ adminToken: ADMIN, dataDir });
+async function boot(store?: Store) {
+  const server = await startServer({ adminToken: ADMIN, ...(store ?? await testStore()) });
   const admin = await connect(server.url, ADMIN);
   open.push(server, admin);
   return { server, admin };
@@ -116,20 +113,18 @@ test('tokens: no token, a wrong token, and a revoked token are all refused; agen
 });
 
 test('Kolab persists across restarts', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'konjir-'));
-  try {
-    let { server, admin } = await boot(dir);
+  const store = await persistentStore();
+  {
+    let { server, admin } = await boot(store);
     const pm = await agentFor(server.url, admin, 'pm', 'product');
     await call(pm.client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
     await call(pm.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Persist me.' }] });
     await call(pm.client, 'submit_for_review', { node: 'checkout', version: 1 });
     await pm.client.close(); await admin.close(); await server.close();
 
-    ({ server, admin } = await boot(dir));
+    ({ server, admin } = await boot(store));
     const again = await connect(server.url, pm.token);
     expect(await call(again, 'resolve', { address: 'kj:checkout#R1' })).toStrictEqual({ address: 'kj:checkout#R1', status: 'ok', version: 1, content: 'Persist me.' });
     await again.close(); await admin.close(); await server.close();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
 });
