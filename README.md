@@ -112,7 +112,7 @@ Konjir splits model usage along one line: the server does a small, bounded check
 
 | Work | Runs where | Paid by |
 | --- | --- | --- |
-| Authoring specs, bindings, WBS; implementing; answering questions | Each collaborator's harness (Claude Code, Codex, opencode, …) | That collaborator's own subscription or API account |
+| Authoring specs, bindings, plans; implementing; answering questions | Each collaborator's harness (Claude Code, Codex, opencode, …) | That collaborator's own subscription or API account |
 | The review gate's semantic check | The Konjir server | The operator's AWS account, via Amazon Bedrock |
 | Cascade, addressing, rebase, roles | The Konjir server | No model at all |
 
