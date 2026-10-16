@@ -6,11 +6,16 @@ name: CI
 # - "Test on Postgres": the Jest suite again, on Postgres 18 through Testcontainers, as a
 #   non-superuser like RDS's (jest.global-setup.js). The runner's Docker hosts the container.
 #
+# Both run as production does: on arm64 (the instance is a t4g, Graviton), with the Node version
+# production installs, read from node_version in deploy/terraform/modules/kolab/main.tf. The
+# runner image is pinned, so a new ubuntu-latest can't turn a pull request red.
+#
 # Nx prints each task's output (--output-style=static), so the log shows Jest's results.
 #
 # Each job runs only the projects the change affects (nx affected). On a pull request the base
 # is where the branch left main; on main it is the last commit whose CI run passed
-# (nrwl/nx-set-shas). This file is in nx.json's sharedGlobals, so changing it runs everything.
+# (nrwl/nx-set-shas). This file and the terraform file the Node version comes from are in nx.json's
+# sharedGlobals, so changing either runs everything.
 #
 # Hardening: a read-only token and no secrets, actions pinned to commit SHAs, and dependencies
 # installed without install scripts, as deploy/release/install.sh does. There is no Nx Cloud.
@@ -28,14 +33,13 @@ concurrency:
 permissions: {}
 
 env:
-  NODE_VERSION: 24.20.0 # as onivoro's CI; production runs Node 22
   NX_DAEMON: 'false'
   NX_NO_CLOUD: 'true'
 
 jobs:
   pglite:
     name: Test on PGlite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
       contents: read
@@ -47,9 +51,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
@@ -61,7 +75,7 @@ jobs:
 
   postgres:
     name: Test on Postgres
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
       contents: read
@@ -75,9 +89,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
@@ -88,8 +112,8 @@ jobs:
       - name: Test
         run: npx nx affected -t test --output-style=static
 
-      # Evidence in the log that Testcontainers pulled Postgres 18 into the runner's Docker.
-      # (The global teardown removes the containers themselves.)
-      - name: Show the Postgres image
+      # Evidence in the log that Testcontainers pulled Postgres 18 and Ryuk into the runner's
+      # Docker, for arm64. (The global teardown removes the containers themselves.)
+      - name: Show the images the tests ran on
         if: always()
-        run: docker image ls postgres
+        run: docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' $(docker image ls -q)

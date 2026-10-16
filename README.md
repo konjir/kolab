@@ -28,7 +28,7 @@ npm run build             # every project, to its dist/
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 ```
 
-CI (`.github/workflows/ci.yml`) runs both on every pull request into main, and on main after each merge, as two checks: *Test on PGlite* typechecks, builds and tests, and *Test on Postgres* runs the tests on Postgres 18 through Testcontainers. Each runs only the projects the change affects.
+CI (`.github/workflows/ci.yml`) runs the equivalents of `npm test` (with typecheck and build) and `npm run test:postgres` on every pull request into main and every push to main, as two checks, Test on PGlite and Test on Postgres. Each runs only the Nx projects affected since the base: main for a pull request, the last passing commit for main. Both run as production does: on arm64, with the Node version that `deploy/terraform/modules/kolab/main.tf` installs (`node_version`).
 
 The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.
 

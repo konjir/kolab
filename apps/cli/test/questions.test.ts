@@ -1,7 +1,7 @@
 // Questions and notes across the layer boundary: the engineer asks or
 // annotates the spec, the answer comes back to the element that waited on it,
 // and every inbox change is pushed to subscribed agents.
-import { afterAll, expect, test } from '@jest/globals';
+import { afterEach, expect, test } from '@jest/globals';
 import { Kolab, RoleError } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
@@ -144,7 +144,9 @@ test('a database from the previous release is migrated on open', async () => {
 // ---- over MCP --------------------------------------------------------------------
 
 const open: { close(): Promise<void> }[] = [];
-afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
+// After each test, not after all: jest.setup.js's afterAll drops the test databases, and it runs
+// before this file's own, so servers must close first or their idle connections are cut.
+afterEach(async () => { for (const o of open.splice(0).reverse()) await o.close().catch(() => undefined); });
 
 test('over MCP: questions sit beside the spec element, and answers are pushed to the asker', async () => {
   const server = await startServer({ adminToken: 'admin', ...(await testStore()) });
