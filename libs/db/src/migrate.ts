@@ -23,22 +23,46 @@ export const fileOf = (m: Pick<Migration, 'version' | 'name'>) => `${String(m.ve
 /** The sha256 of a migration's text, recorded when it's applied, so an edited file is caught. */
 export const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
+const PINS_FILE = 'checksums.json';
+
 /**
  * Reads the numbered migrations in `dir`, in version order. Any other `.sql` file there is an
  * error, not something to skip, so a misnamed migration can't silently never run.
+ *
+ * Every `.sql` file, `baseline.sql` included, must match its sha256 in `checksums.json`. The
+ * release zips the working tree, so this is what keeps a draft migration, or an edit to a
+ * shipped one, from reaching a database: an unpinned or changed file stops Kolab loading.
  */
 export function loadMigrations(dir: URL = DIR): Migration[] {
+  let pins: Record<string, string>;
+  try {
+    pins = JSON.parse(readFileSync(new URL(PINS_FILE, dir), 'utf8')) as Record<string, string>;
+  } catch (e) {
+    throw new Error(`migrations: can't read ${PINS_FILE}: ${(e as Error).message}`, { cause: e });
+  }
+  const files = readdirSync(dir).filter((f) => /\.sql$/i.test(f)).sort();
+  for (const file of Object.keys(pins)) {
+    if (!files.includes(file)) throw new Error(`migrations: ${PINS_FILE} pins ${file}, which is missing`);
+  }
+
   const migrations: Migration[] = [];
-  for (const file of readdirSync(dir).sort()) {
-    if (file === BASELINE_FILE || !/\.sql$/i.test(file)) continue;
+  for (const file of files) {
+    const sql = readFileSync(new URL(file, dir), 'utf8');
     const match = FILE.exec(file);
-    if (!match) throw new Error(`migrations: ${file} isn't named NNNN_lower_snake_case.sql`);
-    const m = { version: Number(match[1]), name: match[2], sql: readFileSync(new URL(file, dir), 'utf8') };
-    assertNoTransactionControl(file, m.sql);
-    migrations.push(m);
+    if (file !== BASELINE_FILE && !match) throw new Error(`migrations: ${file} isn't named NNNN_lower_snake_case.sql`);
+    if (!pins[file]) throw new Error(`migrations: ${file} isn't in ${PINS_FILE}; add its sha256 there to ship it`);
+    if (pins[file] !== checksum(sql)) {
+      throw new Error(`migrations: ${file} doesn't match its sha256 in ${PINS_FILE}; a shipped migration must never change, so make the change in a new one`);
+    }
+    assertNoTransactionControl(file, sql);
+    if (match) migrations.push({ version: Number(match[1]), name: match[2], sql });
   }
   migrations.sort((a, b) => a.version - b.version);
   migrations.forEach((m, i) => {
+    const prev = migrations[i - 1];
+    if (prev?.version === m.version) {
+      throw new Error(`migrations: ${fileOf(prev)} and ${fileOf(m)} share version ${m.version}; renumber the newer one`);
+    }
     if (m.version !== i + 1) throw new Error(`migrations: expected version ${i + 1}, found ${fileOf(m)}`);
   });
   return migrations;
@@ -99,16 +123,17 @@ const TRANSACTION_CONTROL = /^(begin|commit|rollback|end|abort|savepoint|release
 export function assertNoTransactionControl(file: string, sql: string) {
   const bad = statements(sql).find((s) => TRANSACTION_CONTROL.test(s));
   if (bad) {
-    throw new Error(`migrations: ${file} controls the transaction (${bad.split(/\s+/)[0]}); the runner wraps every file in one transaction`);
+    const word = bad.split(/\s+/)[0];
+    const hint = /^end$/i.test(word) ? `; if it ends a begin atomic function body, write the body dollar-quoted (as $$ … $$) instead` : '';
+    throw new Error(`migrations: ${file} controls the transaction (${word}); the runner wraps every file in one transaction${hint}`);
   }
 }
 
 /** Every migration, in version order. */
 export const MIGRATIONS: readonly Migration[] = loadMigrations();
 
-/** Brings a database made before migrations began to migration 0001; see the file. */
+/** Brings a database made before migrations began to migration 0001; see the file. loadMigrations checked its pin. */
 export const BASELINE: string = readFileSync(new URL(BASELINE_FILE, DIR), 'utf8');
-assertNoTransactionControl(BASELINE_FILE, BASELINE);
 
 /**
  * Advisory locks are scoped to one database, so this key serializes Kolab processes migrating
@@ -169,14 +194,14 @@ export async function migrate(
     const baselined = !recorded && !!node;
     if (baselined) {
       if (first?.version !== 1) throw new Error('migrations: a baseline needs migration 0001');
-      await tx.exec(baseline);
+      await run(tx, BASELINE_FILE, baseline);
       done.add(first.version);
     }
 
     const applied: Migration[] = [];
     for (const m of migrations) {
       if (done.has(m.version)) continue;
-      await tx.exec(m.sql);
+      await run(tx, fileOf(m), m.sql);
       applied.push(m);
     }
 
@@ -209,4 +234,13 @@ export async function migrate(
       end $$`);
     return { baselined, applied: applied.map((m) => m.version) };
   });
+}
+
+/** Runs one file, so that its failure names it. */
+async function run(tx: Db, file: string, sql: string) {
+  try {
+    await tx.exec(sql);
+  } catch (e) {
+    throw new Error(`migration ${file} failed: ${(e as Error).message}`, { cause: e });
+  }
 }
