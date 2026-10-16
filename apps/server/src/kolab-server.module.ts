@@ -1,4 +1,4 @@
-import { Module, type DynamicModule } from '@nestjs/common';
+import { Inject, Module, RequestMethod, type DynamicModule, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { McpHttpModule } from '@onivoro/server-mcp';
 import type { Kolab } from '@konjir/engine';
 import { AdminTools } from './admin-tools.js';
@@ -6,6 +6,7 @@ import { AgentTools } from './agent-tools.js';
 import { KonjirAuth } from './auth.js';
 import { HealthController } from './health.controller.js';
 import { Inboxes } from './inboxes.js';
+import { ListenStreams } from './listen-streams.js';
 import { OperatingInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
 import { KOLAB, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 
@@ -21,7 +22,14 @@ export interface KolabServerModuleOptions extends ServerOptions {
  * plus GET /healthz.
  */
 @Module({})
-export class KolabServerModule {
+export class KolabServerModule implements NestModule {
+  constructor(@Inject(ListenStreams) private readonly streams: ListenStreams) {}
+
+  /** Each listen stream an agent opens is tracked, so ending its session closes it (D41). */
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(this.streams.track.bind(this.streams)).forRoutes({ path: 'mcp', method: RequestMethod.POST });
+  }
+
   static register(options: KolabServerModuleOptions): DynamicModule {
     const { kolab, publicHost, ...serverOptions } = options;
     return {
@@ -49,6 +57,7 @@ export class KolabServerModule {
         AgentTools,
         AdminTools,
         Inboxes,
+        ListenStreams,
         OperatingInstructions,
       ],
     };

@@ -23,8 +23,7 @@ export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const expiresAt = Math.floor(Date.now() / 1000) + 300;
     if (token === this.options.adminToken) return { token, clientId: 'admin', scopes: ['admin'], expiresAt };
-    const s = await this.kolab.db.query(`select 1 from session where id = $1 and ended_at is null`, [token]);
-    if (!s.rows.length) throw new OAuthError(OAuthErrorCode.InvalidToken, 'missing or invalid Konjir token');
+    if (!(await this.kolab.sessionOpen(token))) throw new OAuthError(OAuthErrorCode.InvalidToken, 'missing or invalid Konjir token');
     return { token, clientId: token, scopes: ['agent'], expiresAt };
   }
 

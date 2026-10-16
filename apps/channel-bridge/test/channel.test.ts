@@ -168,7 +168,7 @@ test('an engineer\'s session hears answers to what it raised, and a refused toke
   await server.close();
 }, 60_000);
 
-test('ending the session while the bridge listens tells the session its token was refused', async () => {
+test('ending the session while the bridge listens closes its stream, and tells the session its token was refused', async () => {
   const server = await boot(await persistentStore());
   const pm = await session(server, 'pm', 'product');
   const eng = await session(server, 'eng', 'engineer');
@@ -181,11 +181,16 @@ test('ending the session while the bridge listens tells the session its token wa
   const admin = await kolabClient(server.url, ADMIN);
   await call(admin, 'admin_end_session', { token: pm.token });
 
-  // Kolab still signals the open stream, but the bridge's read of it is refused.
-  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
-  const told = await b.until('the refusal', () => b.messages.find((m) => m.meta.status === 'refused'));
+  // Kolab closes the open stream at once (D41), with nothing more signalled to it; the
+  // bridge's reconnect is refused.
+  const told = await b.until('the refusal', () => b.messages.find((m) => m.meta.status === 'refused'), 5000);
   expect(told.content).toMatch(/refused its session token/);
+  expect(b.stderr()).toMatch(/Kolab closed the subscription stream; reconnecting/);
+  expect(b.stderr()).not.toMatch(/could not read/);
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
+  await new Promise((r) => setTimeout(r, 500));
   expect(b.messages.filter((m) => m.meta.kind === 'inbox')).toStrictEqual([]);
+  expect(b.stderr()).not.toMatch(/could not read/);
   expect(JSON.stringify(b.messages) + b.stderr()).not.toContain(pm.token);
   await b.claude.close();
   await server.close();

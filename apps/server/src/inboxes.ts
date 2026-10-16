@@ -1,7 +1,7 @@
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { McpResource, McpToolRegistry, type McpHandlerContext } from '@onivoro/server-mcp';
 import { Kolab, RoleError } from '@konjir/engine';
-import { LAYERS, type Layer } from '@konjir/types';
+import { LAYERS, isInboxEvent, type Layer } from '@konjir/types';
 import { sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
 import { uriOf } from './uris.js';
@@ -16,9 +16,12 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     @Inject(McpToolRegistry) private readonly registry: McpToolRegistry,
   ) {}
 
-  /** Push: every open subscriptions/listen stream that subscribed to an inbox hears when it changes. */
+  /**
+   * Push: every open subscriptions/listen stream that subscribed to an inbox hears when it changes.
+   * ListenStreams holds back what a stream of an ended session would hear.
+   */
   onModuleInit() {
-    this.unsubscribe = this.kolab.onEvent((e) => this.registry.notifyResourceUpdated(uriOf(e)));
+    this.unsubscribe = this.kolab.onEvent((e) => { if (isInboxEvent(e)) this.registry.notifyResourceUpdated(uriOf(e)); });
   }
 
   onModuleDestroy() {

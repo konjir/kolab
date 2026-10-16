@@ -72,7 +72,7 @@ export class Kolab {
 
   async close() { await this.db.close(); }
 
-  /** Be told when an inbox gains or loses work. Returns an unsubscribe function. */
+  /** Be told when an inbox gains or loses work, or a session ends. Returns an unsubscribe function. */
   onEvent(fn: (e: KolabEvent) => void): () => void {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
@@ -185,8 +185,16 @@ export class Kolab {
     return id;
   }
 
+  /** End a session, revoking its token, and tell listeners so its open streams close (D41). */
   async endSession(id: string) {
-    await this.db.query(`update session set ended_at = now() where id = $1`, [id]);
+    const r = await this.db.query(`update session set ended_at = now() where id = $1 returning id`, [id]);
+    if (r.rows.length) this.emit({ session: 'ended', id });
+  }
+
+  /** Whether `id` is an open session: its token is still good. */
+  async sessionOpen(id: string): Promise<boolean> {
+    const r = await this.db.query(`select 1 from session where id = $1 and ended_at is null`, [id]);
+    return r.rows.length > 0;
   }
 
   private async session(id: string): Promise<{ actor_id: string; active_role: Role; kind: ActorKind; owner: string | null }> {

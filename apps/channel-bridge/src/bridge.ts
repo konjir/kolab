@@ -103,8 +103,9 @@ export class KolabBridge {
         const ended = new Promise<Ended>((resolve) => { end = resolve; });
         let endedBy: Ended | undefined;
         const stop = (why: Ended) => { endedBy ??= why; end(why); };
-        // A read Kolab refuses (the session was ended while the stream stayed open) ends
-        // this connection, so the loop reconnects and whoami reports the refusal.
+        // Kolab closes an ended session's streams (D41). A read it refuses all the same
+        // (a Kolab from before that) ends this connection, so the loop reconnects and
+        // the reconnect reports the refusal.
         const c = client;
         const enqueue = (uri: string, onBody?: (body: unknown) => void) => {
           this.queue = this.queue.then(() => this.update(c, uri, onBody)).catch((e) => {
