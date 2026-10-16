@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { FUZZY_THRESHOLD, MATCH_MAX_BITS, type QuoteSelector, resolveSpan, similarity } from '@konjir/address';
+import { FUZZY_THRESHOLD, MATCH_MAX_BITS, type QuoteSelector, resolveSpan, SHORT_QUOTE, similarity } from '@konjir/address';
 
 // ADR8: an exact match in a new position is clean ('exact'), a near match counts as a change
 // ('fuzzy'), and no match leaves an orphan. Offsets are into the whitespace-normalized text.
@@ -10,9 +10,9 @@ const at = (text: string, sel: QuoteSelector) => {
 };
 
 /** Deterministic filler prose that shares the quotes' vocabulary, so near misses are everywhere. */
-function filler(bytes: number): string {
+function filler(bytes: number, seed = 7): string {
   const words = 'order cart payment refund checkout user guest session price tax receipt invoice save later share'.split(' ');
-  let x = 7;
+  let x = seed;
   const next = () => (x = (x * 1103515245 + 12345) & 0x7fffffff);
   let out = '';
   while (out.length < bytes) {
@@ -138,6 +138,9 @@ describe('a long element does not slow matching sharply', () => {
     ['orphan', text, { exact: 'Admins may export every invoice' }, 'orphan'],
     ['fuzzy, long quote', inserted(LONG.replace('thirty', '30')), { exact: LONG }, 'fuzzy'],
     ['orphan, long quote', text, { exact: LONG }, 'orphan'],
+    // A 2 KB quote in the element's own vocabulary that is gone: its slices hit all over the element.
+    ['orphan, 2 KB quote', text, { exact: filler(2_000, 99) }, 'orphan'],
+    ['orphan, 2 KB quote with context', text, { exact: filler(2_000, 99), prefix: 'order cart payment', suffix: 'refund checkout' }, 'orphan'],
   ];
   test.each(cases)('100 KB element, %s', (_name, haystack, sel, status) => {
     const t0 = performance.now();
@@ -145,6 +148,108 @@ describe('a long element does not slow matching sharply', () => {
     const ms = performance.now() - t0;
     expect(r.status).toBe(status);
     expect(ms).toBeLessThan(BOUND_MS);
+  });
+});
+
+describe('a verbatim match must be whole words', () => {
+  test('a quote glued to a longer word is not exact: the changed word is a near match', () => {
+    expect(at('Retain logs for 300 days.', { exact: 'Retain logs for 30', suffix: 'days.' }))
+      .toMatchObject({ status: 'fuzzy', located: 'Retain logs for 300' });
+    expect(at('Users can save the carts for later.', { exact: 'save the cart', suffix: 'for later' }))
+      .toMatchObject({ status: 'fuzzy', located: 'save the carts' });
+  });
+
+  test('a quote found only inside a longer word is an orphan', () => {
+    expect(resolveSpan('We concatenate the files.', { exact: 'cat' }).status).toBe('orphan');
+  });
+
+  test('a whole-word occurrence wins over one inside a word', () => {
+    expect(at('Retain logs for 300 days. Retain logs for 30 days.', { exact: 'Retain logs for 30' }))
+      .toMatchObject({ status: 'exact', start: 26 });
+  });
+
+  test('punctuation is a boundary', () => {
+    expect(at('Note: (save a cart for later)!', { exact: 'save a cart for later' })).toMatchObject({ status: 'exact', start: 7 });
+  });
+
+  test('scripts written without spaces have a boundary between any two characters', () => {
+    expect(at('支付完成后三十秒内结账', { exact: '三十秒' })).toMatchObject({ status: 'exact', start: 5, end: 8 });
+    expect(at('ข้อมูลถูกบันทึกทันที', { exact: 'บันทึก' })).toMatchObject({ status: 'exact' });
+  });
+});
+
+describe('a fuzzy span is whole words', () => {
+  test('an edited last word is taken whole, not cut where the old word ended', () => {
+    expect(at('Users can save the cart for afterwards and share it.', { exact: 'Users can save the cart for later', suffix: 'and share' }))
+      .toMatchObject({ status: 'fuzzy', located: 'Users can save the cart for afterwards' });
+  });
+
+  test('replacing words at the end are kept, up to the end of the sentence', () => {
+    expect(at('The system must respond within 2 seconds. Logs are kept.', { exact: 'The system must respond within 200 ms.' }))
+      .toMatchObject({ status: 'fuzzy', located: 'The system must respond within 2 seconds.' });
+  });
+
+  test('an edited first word is taken whole', () => {
+    expect(at('Note that checkouts complete within 30 seconds of payment.', { exact: 'Checkout completes within 30 seconds of payment' }))
+      .toMatchObject({ status: 'fuzzy', located: 'checkouts complete within 30 seconds of payment' });
+  });
+});
+
+describe(`a quote shorter than ${SHORT_QUOTE} characters needs its context for a near match`, () => {
+  test('with its context gone, a one-letter-off word elsewhere is an orphan', () => {
+    expect(resolveSpan('Pay by card. Some fine text follows here.', { exact: 'cart', prefix: 'save the', suffix: 'for later' }).status)
+      .toBe('orphan');
+    expect(resolveSpan('We also must hurry.', { exact: 'just', prefix: 'it is', suffix: 'fine' }).status).toBe('orphan');
+  });
+
+  test('without any recorded context, it is exact or an orphan', () => {
+    expect(resolveSpan('Pay by card.', { exact: 'cart' }).status).toBe('orphan');
+    expect(resolveSpan('Pay by cart.', { exact: 'cart' }).status).toBe('exact');
+  });
+
+  test('with its context still there, an edit is a near match', () => {
+    expect(at('Users can save the card for later.', { exact: 'cart', prefix: 'save the', suffix: 'for later' }))
+      .toMatchObject({ status: 'fuzzy', located: 'card' });
+    // Two near matches: the one whose context agrees.
+    expect(at('Pay by card. Then save the card.', { exact: 'cart', prefix: 'Then save the' }))
+      .toMatchObject({ status: 'fuzzy', start: 27 });
+  });
+});
+
+describe('Unicode', () => {
+  const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+  test('a fuzzy span never splits an emoji or a combining sequence', () => {
+    const r = at('Intro 😂😂 the party 😁🎉 starts at nine tonight.', { exact: '😀 the party 😁🎉 starts at nine', prefix: 'Intro' });
+    expect(r).toMatchObject({ status: 'fuzzy', located: '😂 the party 😁🎉 starts at nine' });
+    const marks = at('Read: ñ̃ the café notes, then leave.', { exact: 'the cafe notes, then go', prefix: 'Read:' });
+    expect(marks.status).toBe('fuzzy');
+    expect(marks.status !== 'orphan' && marks.content).not.toMatch(/^\p{M}/u);
+  });
+
+  test('fuzzy content is always well-formed UTF-16', () => {
+    const pool = ['😂', '😁', '🎉', '👍🏽', 'a', 'b', ' ', '文', 'é', 'e\u0301', 'cart', 'save'];
+    let x = 3;
+    const pick = () => pool[(x = (x * 1103515245 + 12345) & 0x7fffffff) % pool.length];
+    for (let i = 0; i < 500; i++) {
+      const text = Array.from({ length: 24 }, pick).join('');
+      const exact = Array.from({ length: 10 }, pick).join('');
+      const r = resolveSpan(text, { exact, prefix: pick() + pick() });
+      if (r.status !== 'orphan') expect(r.content).not.toMatch(LONE);
+    }
+  });
+
+  test('a quote matches text that encodes the same characters differently (NFC against NFD)', () => {
+    const nfd = 'Order a cafe\u0301 au lait now.';
+    const r = at(nfd, { exact: 'caf\u00e9 au lait' });
+    expect(r).toMatchObject({ status: 'exact', content: 'caf\u00e9 au lait', start: 8, end: 21 });
+    expect(r.status !== 'orphan' && r.located).toBe('cafe\u0301 au lait');
+  });
+
+  test('fuzzy offsets and content are in the text as given, not its NFC form', () => {
+    const r = at('D\u00e9j\u00e0: cafe\u0301s au lait are served now.', { exact: 'caf\u00e9 au lait is served', prefix: 'D\u00e9j\u00e0:' });
+    expect(r).toMatchObject({ status: 'fuzzy', content: 'cafe\u0301s au lait are served' });
+    expect(r.status !== 'orphan' && r.located).toBe('cafe\u0301s au lait are served');
   });
 });
 
