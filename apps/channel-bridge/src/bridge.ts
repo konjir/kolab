@@ -2,10 +2,11 @@
  * The Kolab side of the bridge: an MCP client of Kolab that subscribes to the
  * session's inbox and answers over subscriptions/listen, reads each resource
  * Kolab signals, and hands a channel message for each change to `forward`.
- * It reconnects, with backoff, whenever Kolab goes away.
+ * It reconnects, with backoff, whenever Kolab goes away or stops answering.
  */
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { describeChange, type ChannelMessage } from './messages.js';
+import { Client, StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
+import { describeChange, describeStartup, type ChannelMessage } from './messages.js';
+import { VERSION } from './version.js';
 
 export interface BridgeOptions {
   url: string;
@@ -16,26 +17,41 @@ export interface BridgeOptions {
   log(line: string): void;
   /** Reconnect delays: doubles from `initialMs` up to `maxMs`. */
   backoff?: { initialMs: number; maxMs: number };
+  /** How often to check on Kolab while listening, and how long to wait for the reply. */
+  liveness?: { intervalMs: number; timeoutMs: number };
+  /** The fetch the Kolab transport uses (tests stand in a network here). */
+  fetch?: FetchLike;
 }
 
 export interface Whoami { actor: string; role: string; layer: string; subscribe: string[] }
 
-const VERSION = '0.1.0';
+/** Kolab answered, but the token can't drive a channel: it isn't an agent session token. */
+class NotAnAgentToken extends Error {}
+
+/** Why a connection ended, other than the subscription closing. */
+type Ended = 'refused' | 'unresponsive' | 'stopped';
 
 export class KolabBridge {
   private stopped = false;
   private wake!: () => void;
   /** Resolves once stop() is called. */
   private readonly stopping = new Promise<'stopped'>((resolve) => { this.wake = () => resolve('stopped'); });
+  /** The connection in use, so stop() can close it. */
+  private client?: Client;
+  /** Aborts every request to Kolab, connecting included, when stop() is called. */
+  private readonly abort = new AbortController();
   private running?: Promise<void>;
   /** The last contents seen of each resource, so a change is described against what came before. */
   private readonly seen = new Map<string, unknown>();
   /** Updates are handled one at a time, in arrival order. */
   private queue: Promise<void> = Promise.resolve();
-  private refusedToldClaude = false;
+  /** The startup summary goes out once, on the first connection that reads the inbox. */
+  private summarized = false;
+  /** The problem last reported, so a retry loop doesn't repeat itself. */
+  private lastProblem?: string;
   /** Who this session is, once Kolab has said. */
   me?: Whoami;
-  /** Resolves each time a subscription is open; for tests and logs. */
+  /** Called each time a subscription is open and caught up; for tests. */
   onListening?: (me: Whoami) => void;
 
   constructor(private readonly opts: BridgeOptions) {}
@@ -45,9 +61,12 @@ export class KolabBridge {
     return this;
   }
 
+  /** Stop listening. Requests in flight are ended, not waited out. */
   async stop() {
     this.stopped = true;
     this.wake();
+    this.abort.abort();
+    await this.client?.close().catch(() => undefined);
     await this.running;
   }
 
@@ -60,6 +79,14 @@ export class KolabBridge {
     this.opts.log(this.redact(line));
   }
 
+  /** Report a problem once: to the log, and to the session if `tell` is given. Repeats are dropped. */
+  private async problem(key: string, line: string, tell?: ChannelMessage) {
+    if (this.lastProblem === key) return;
+    this.lastProblem = key;
+    this.log(line);
+    if (tell) await this.opts.forward({ content: this.redact(tell.content), meta: tell.meta }).catch(() => undefined);
+  }
+
   private async run() {
     const { initialMs, maxMs } = this.opts.backoff ?? { initialMs: 1000, maxMs: 30_000 };
     let delay = initialMs;
@@ -67,55 +94,76 @@ export class KolabBridge {
     while (!this.stopped) {
       let client: Client | undefined;
       try {
-        client = await this.connect();
+        client = this.client = this.newClient();
+        await client.connect(this.transport());
         const me = await this.whoami(client);
         this.me = me;
-        this.refusedToldClaude = false;
-        // A read Kolab refuses (the session was ended while the stream stayed open) drops
+
+        let end!: (why: Ended) => void;
+        const ended = new Promise<Ended>((resolve) => { end = resolve; });
+        let endedBy: Ended | undefined;
+        const stop = (why: Ended) => { endedBy ??= why; end(why); };
+        // A read Kolab refuses (the session was ended while the stream stayed open) ends
         // this connection, so the loop reconnects and whoami reports the refusal.
-        let drop!: () => void;
-        const dropped = new Promise<'refused'>((resolve) => { drop = () => resolve('refused'); });
-        // On the first connection, the first read of each resource is a baseline, not news.
-        const first = !everConnected;
         const c = client;
-        const enqueue = (uri: string) => {
-          this.queue = this.queue.then(() => this.update(c, uri, first)).catch((e) => {
+        const enqueue = (uri: string, onBody?: (body: unknown) => void) => {
+          this.queue = this.queue.then(() => this.update(c, uri, onBody)).catch((e) => {
             this.log(`could not read ${uri}: ${messageOf(e)}`);
-            if (isRefusal(e)) drop();
+            if (isRefusal(e)) stop('refused');
           });
         };
         client.setNotificationHandler('notifications/resources/updated', (n) => enqueue(n.params.uri));
         // Listen first, then read: a change landing in between is then both signalled and read.
         const subscription = await client.listen({ resourceSubscriptions: me.subscribe });
-        // Read each resource now: a baseline on first connect, and on a reconnect,
+        // Read each resource: a baseline the first time it is read, and on a reconnect,
         // whatever changed while the bridge was away.
-        for (const uri of me.subscribe) enqueue(uri);
+        const firstReads: { uri: string; body: unknown }[] = [];
+        for (const uri of me.subscribe) enqueue(uri, (body) => firstReads.push({ uri, body }));
         await this.queue;
-        this.log(`${everConnected ? 'reconnected' : 'connected'} to Kolab at ${safeUrl(this.opts.url)} as ${me.actor} (${me.role}); watching ${me.subscribe.join(', ')}`);
-        everConnected = true;
-        delay = initialMs;
-        this.onListening?.(me);
-        const how = await Promise.race([subscription.closed, dropped, this.stopping]);
-        if (how === 'refused' || how === 'stopped') await subscription.close().catch(() => undefined);
-        if (how === 'stopped') break;
-        this.log(how === 'refused' ? 'Kolab refused a read with this token; reconnecting' : `Kolab ended the subscription (${how}); reconnecting`);
+
+        if (endedBy) {
+          await subscription.close().catch(() => undefined);
+          this.log('Kolab refused a read with this token; reconnecting');
+        } else {
+          this.lastProblem = undefined;
+          this.log(`${everConnected ? 'reconnected' : 'connected'} to Kolab at ${safeUrl(this.opts.url)} as ${me.actor} (${me.role}); watching ${me.subscribe.join(', ')}`);
+          everConnected = true;
+          delay = initialMs;
+          if (!this.summarized && firstReads.length) {
+            this.summarized = true;
+            const summary = describeStartup(firstReads);
+            if (summary) await this.opts.forward({ content: this.redact(summary.content), meta: summary.meta });
+          }
+          this.onListening?.(me);
+          const alive = this.watchLiveness(client, stop);
+          const how = await Promise.race([subscription.closed.then(() => 'closed' as const), ended, this.stopping]);
+          alive();
+          if (how !== 'closed') await subscription.close().catch(() => undefined);
+          if (how === 'stopped') break;
+          this.log(how === 'refused' ? 'Kolab refused a read with this token; reconnecting'
+            : how === 'unresponsive' ? 'Kolab stopped answering; reconnecting'
+            : 'Kolab closed the subscription stream; reconnecting');
+        }
       } catch (e) {
         if (this.stopped) break;
         const msg = messageOf(e);
-        if (isRefusal(e)) {
-          this.log(`Kolab at ${safeUrl(this.opts.url)} refused the token; retrying in ${Math.round(delay / 1000)}s`);
-          if (!this.refusedToldClaude) {
-            this.refusedToldClaude = true;
-            await this.opts.forward({
-              content: `The Konjir channel can't sign in to Kolab at ${safeUrl(this.opts.url)}: Kolab refused its session token (revoked or mistyped). Inbox changes won't arrive until KONJIR_TOKEN is fixed and Claude Code restarts. Tell the user.`,
-              meta: { kind: 'bridge', status: 'refused' },
-            }).catch(() => undefined);
-          }
+        if (e instanceof NotAnAgentToken) {
+          delay = maxMs;
+          await this.problem('not-agent', `KONJIR_TOKEN is not an agent session token: ${msg}. Retrying every ${Math.round(maxMs / 1000)}s`, {
+            content: `The Konjir channel's KONJIR_TOKEN is not an agent session token (it may be the admin token), so it has no inbox to listen to. Restart Claude Code with KONJIR_TOKEN set to this agent's session token from konjir admin_open_session. Tell the user.`,
+            meta: { kind: 'bridge', status: 'misconfigured' },
+          });
+        } else if (isRefusal(e)) {
+          await this.problem('refused', `Kolab at ${safeUrl(this.opts.url)} refused the token; retrying`, {
+            content: `The Konjir channel can't sign in to Kolab at ${safeUrl(this.opts.url)}: Kolab refused its session token (revoked or mistyped). Inbox changes won't arrive until KONJIR_TOKEN is fixed and Claude Code restarts. Tell the user.`,
+            meta: { kind: 'bridge', status: 'refused' },
+          });
         } else {
-          this.log(`cannot reach Kolab at ${safeUrl(this.opts.url)} (${msg}); retrying in ${Math.round(delay / 1000)}s`);
+          await this.problem(`unreachable:${msg}`, `cannot reach Kolab at ${safeUrl(this.opts.url)} (${msg}); retrying with backoff`);
         }
       } finally {
         await client?.close().catch(() => undefined);
+        if (this.client === client) this.client = undefined;
       }
       if (this.stopped) break;
       await this.sleep(delay);
@@ -123,33 +171,64 @@ export class KolabBridge {
     }
   }
 
-  private async connect() {
+  private newClient() {
     // 'auto' talks 2026-07-28 to Kolab, which subscriptions/listen needs.
-    const client = new Client({ name: 'konjir-channel-bridge', version: VERSION }, { versionNegotiation: { mode: 'auto' } });
-    await client.connect(new StreamableHTTPClientTransport(new URL(this.opts.url), {
+    return new Client({ name: 'konjir-channel-bridge', version: VERSION }, { versionNegotiation: { mode: 'auto' } });
+  }
+
+  private transport() {
+    return new StreamableHTTPClientTransport(new URL(this.opts.url), {
       requestInit: { headers: { Authorization: `Bearer ${this.opts.token}` } },
-    }));
-    return client;
+      fetch: (input, init) => (this.opts.fetch ?? fetch)(input, {
+        ...init,
+        signal: init?.signal ? AbortSignal.any([init.signal, this.abort.signal]) : this.abort.signal,
+      }),
+    });
+  }
+
+  /**
+   * Check on Kolab while listening, since a half-open connection looks just like a quiet
+   * inbox. 2026-07-28 has no ping, so the check is a konjir_whoami call with a timeout.
+   * A refusal ends the connection as refused; anything else, as unresponsive.
+   * Returns a function that stops the checks.
+   */
+  private watchLiveness(client: Client, ended: (why: Ended) => void) {
+    const { intervalMs, timeoutMs } = this.opts.liveness ?? { intervalMs: 30_000, timeoutMs: 10_000 };
+    let busy = false;
+    const timer = setInterval(() => {
+      if (busy) return;
+      busy = true;
+      client.callTool({ name: 'konjir_whoami', arguments: {} }, { timeout: timeoutMs }).then(
+        () => { busy = false; },
+        (e) => { busy = false; this.log(`liveness check failed: ${messageOf(e)}`); ended(isRefusal(e) ? 'refused' : 'unresponsive'); },
+      );
+    }, intervalMs);
+    timer.unref();
+    return () => clearInterval(timer);
   }
 
   private async whoami(client: Client): Promise<Whoami> {
     const r = await client.callTool({ name: 'konjir_whoami', arguments: {} });
-    if (r.isError) throw new Error((r.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('\n'));
+    const text = (r.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+    if (r.isError) throw new NotAnAgentToken(text.split('\n')[0].replace(/\. Your session role.*$/, ''));
     const me = r.structuredContent as Whoami | undefined;
-    if (!me?.subscribe?.length) throw new Error('konjir_whoami named no resources to subscribe to; is this an agent session token?');
+    if (!me?.subscribe?.length) throw new NotAnAgentToken('konjir_whoami named no resources to subscribe to');
     return me;
   }
 
-  /** Read `uri` and forward what changed since it was last seen. A baseline read forwards nothing. */
-  private async update(client: Client, uri: string, baseline = false) {
+  /**
+   * Read `uri` and forward what changed since it was last seen. The first read of a
+   * resource is a baseline: it forwards nothing, and goes to `onFirst`.
+   */
+  private async update(client: Client, uri: string, onFirst?: (body: unknown) => void) {
     const r = await client.readResource({ uri }, { cacheMode: 'bypass' });
     const c = r.contents[0];
     const body = c && 'text' in c ? JSON.parse(c.text) as unknown : null;
     const had = this.seen.has(uri);
     const before = this.seen.get(uri);
     this.seen.set(uri, body);
-    if (baseline && !had) return;
-    const message = describeChange(uri, had ? before : undefined, body);
+    if (!had) { onFirst?.(body); return; }
+    const message = describeChange(uri, before, body);
     if (message) await this.opts.forward({ content: this.redact(message.content), meta: message.meta });
   }
 

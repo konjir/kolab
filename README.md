@@ -91,22 +91,22 @@ That one connection is the only static setup a harness needs. The rules come dow
 
 Kolab signals inbox changes over `subscriptions/listen`, but Claude Code doesn't hand those notifications to the model. The Konjir channel does: `apps/channel-bridge` is a Claude Code plugin whose stdio server listens to Kolab with the session's token and forwards each change to its inbox (`konjir://inbox/{layer}`) or its answers (`konjir://answers/{actor}`) as a [channel](https://code.claude.com/docs/en/channels-reference) message. Each message says what changed and how to read it. It serves only the 2025-era protocol, because Claude Code doesn't register a channel server that negotiates 2026-07-28, and it reconnects when Kolab restarts.
 
-It runs in place from a Kolab checkout, so run `npm install` there first, and install it only from that checkout's local path. A marketplace added from GitHub copies the plugin into Claude Code's cache, away from the workspace's packages, and the bridge won't start. Channels are a research preview and this one isn't on Anthropic's allowlist, so it loads with the development flag, in an interactive session (`-p` ignores the flag). Start Claude Code with the same `KONJIR_URL` and `KONJIR_TOKEN` as the agent's Konjir MCP server:
+It runs in place from a Kolab checkout, so run `npm install` there first, and install it only from that checkout's local path. A marketplace added from GitHub copies the plugin into Claude Code's cache, away from the workspace's packages, and the bridge won't start. Channels are a research preview and this one isn't on Anthropic's allowlist, so it loads with the development flag, in an interactive session (`-p` ignores the flag). Start Claude Code with the agent's own session token, the one its Konjir MCP server uses. Never give it the admin token that step 2 exports: set both variables on the `claude` command itself, as below, or start from a fresh shell. If the bridge gets a token that isn't an agent session token, it tells the session so once, and waits.
 
 ```
-export KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<the agent's token>
-
 # For one session, straight from the checkout:
-claude --plugin-dir ~/github.com/konjir/kolab/apps/channel-bridge \
+KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<the agent's session token> \
+  claude --plugin-dir ~/github.com/konjir/kolab/apps/channel-bridge \
   --dangerously-load-development-channels plugin:konjir-channel@inline
 
 # Or install it from the checkout's marketplace (local path only), then start sessions with the plugin:
 claude plugin marketplace add ~/github.com/konjir/kolab
 claude plugin install konjir-channel@konjir
-claude --dangerously-load-development-channels plugin:konjir-channel@konjir
+KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<the agent's session token> \
+  claude --dangerously-load-development-channels plugin:konjir-channel@konjir
 ```
 
-Choose **I am using this for local development** at the warning. Events arrive as `← konjir: Your functional inbox changed: …`. The plugin loads in place from a marketplace added from a local path, so it keeps using this checkout's `node_modules`. On Team and Enterprise plans an admin must enable channels first.
+Choose **I am using this for local development** at the warning. Work already waiting arrives first, as one `← konjir: Your functional inbox already holds …` message. Each new question, note, mark or answer after that arrives as `← konjir: Your functional inbox changed: …`. Items leaving the inbox, such as the agent's own answers and clears, send nothing. The plugin loads in place from a marketplace added from a local path, so it keeps using this checkout's `node_modules`. On Team and Enterprise plans an admin must enable channels first.
 
 ## Deploying to AWS for testing
 
