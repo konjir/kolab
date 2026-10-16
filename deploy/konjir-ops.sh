@@ -68,7 +68,7 @@ case "${1:-}" in
   connect)       shift; cmd_connect "$@" ;;
   status)        url="$(out url)"; printf 'health (%s): ' "${url%/mcp}/healthz"
                  curl -fsS --max-time 5 "${url%/mcp}/healthz" || printf 'not answering'; echo
-                 on_kolab "systemctl --no-pager --lines=0 status konjir caddy | grep -E '●|Active:'; ls -1dt /opt/konjir/releases/* | head -1" ;;
+                 on_kolab "systemctl --no-pager --lines=0 status konjir caddy | grep -E '●|Active:'; echo \"live release: \$(readlink -f /opt/konjir/current)\"" ;;
   logs)          on_kolab "journalctl -u konjir -u caddy -n 200 --no-pager" ;;
   bootstrap-log) on_kolab "tail -n 200 /var/log/konjir-bootstrap.log" ;;
   shell)         command -v session-manager-plugin >/dev/null || die "install the Session Manager plugin: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
