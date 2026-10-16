@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 163 unit, scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 163 unit, scenario, regression, migration, agent, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -238,6 +238,8 @@ Both can target an element or a quoted span (`kj:orders#R13~q({"exact":"50 meter
 
 **Push.** Each layer has an inbox resource, `konjir://inbox/functional` and `konjir://inbox/technical`, holding its open questions, notes and marks. Each actor has `konjir://answers/<actor>`, which holds what they raised, with replies. `whoami` lists the two for the session. Kolab declares `resources.subscribe` and signals a resource whenever it changes, over MCP 2026-07-28 `subscriptions/listen`. A client that listens gets `notifications/resources/updated` and re-reads the resource. Only the URI is pushed, never the content, and reading `answers` is limited to its own actor. Ending a session closes its open listen streams at once, as the server closing the subscription, and nothing more is signalled to them. Each change is also checked against the session before it is signalled, so a session ended any other way closes its stream on the next change instead. Its token is then refused (401), so a client that reconnects with it learns it was revoked. Other sessions' streams, including those of the same person's other agents, are untouched.
 
+**Push across processes.** Several Kolab processes can serve one Postgres database, and an agent listening on any of them hears a change made through any other (API5). Each engine event is sent with Postgres `NOTIFY` inside the transaction that commits its change, so it is delivered only if the change commits, and never on a rollback. Each process `LISTEN`s on the `konjir_events` channel over one connection of its own, apart from its pool, through [`@onivoro/server-pg-notify`](https://www.npmjs.com/package/@onivoro/server-pg-notify)'s `NotificationListener`, which reconnects with backoff when the connection drops. A process tells its own listeners once the transaction commits, and skips its own notification when it hears it back, so nothing is signalled twice. The payload is the event (a layer, an actor), not the content; an event too long for `NOTIFY` is sent as a signal to re-read every inbox. A change committed while a process's listener is reconnecting doesn't reach that process's subscribers: the listener doesn't yet say when it is back, which @onivoro/server-pg-notify would need to add. On PGlite there is one process, and events go only to its own listeners.
+
 Claude Code doesn't yet turn these notifications into a turn for the model. Until it does, an agent waiting on answers can run `konjir watch --once` as a background command, which exits with the change as soon as the inbox has one. `konjir watch` without `--once` prints the inbox, then one JSON line per change, for a harness that tails output.
 
 ## How each decision is implemented
@@ -299,7 +301,7 @@ Their feedback drove these changes:
 
 - **Semantic review is opt-in** (`KONJIR_REVIEW=bedrock`). Without it the gate is structural only, and it says so on every commit.
 - **Session tokens are bearer tokens** with no expiry or OAuth. They're fine on one machine or a trusted network, but not on the open internet.
-- **One Kolab process** serves each database. On Postgres, a second process would need push across processes (W2.2) before its agents heard each other's changes.
+- **Push misses what changes while a listener is reconnecting.** Kolab can't yet tell when its LISTEN connection comes back, so it can't signal every subscriber to re-read then (see *Push across processes*).
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.

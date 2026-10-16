@@ -23,10 +23,11 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
   private scheduled = false;
 
   /**
-   * Push: every open subscriptions/listen stream that subscribed to an inbox hears when it changes.
-   * First, ListenStreams closes the streams of any session that has ended (D41).
+   * Push: every open subscriptions/listen stream that subscribed to an inbox hears when it
+   * changes, whichever Kolab process on the database made the change (API5). First,
+   * ListenStreams closes the streams of any session that has ended (D41).
    */
-  onModuleInit() {
+  async onModuleInit() {
     this.unsubscribe = this.kolab.onEvent((e) => {
       if (!isInboxEvent(e)) return;
       this.pending.add(uriOf(e));
@@ -34,6 +35,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       this.scheduled = true;
       setImmediate(() => void this.signal());
     });
+    await this.kolab.listen();
   }
 
   private async signal() {
