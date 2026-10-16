@@ -79,7 +79,9 @@ resource "aws_instance" "kolab" {
   tags = { Name = "${var.name}-kolab" }
 
   lifecycle {
-    ignore_changes = [ami]
+    # The AMI is pinned at creation (README: OS refresh). With the Elastic IP associated, AWS reports
+    # associate_public_ip_address as true; without this, every apply would replace the instance.
+    ignore_changes = [ami, associate_public_ip_address]
   }
 }
 
