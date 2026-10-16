@@ -8,7 +8,7 @@
     ".": {
       "@konjir/source": "./src/channel.ts",
       "types": "./dist/channel.d.ts",
-      "default": "./src/channel.ts"
+      "default": "./dist/channel.js"
     }
   },
   "scripts": {
