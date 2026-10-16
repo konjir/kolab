@@ -2,6 +2,7 @@ import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@ne
 import { McpResource, McpToolRegistry, type McpHandlerContext } from '@onivoro/server-mcp';
 import { Kolab, RoleError } from '@konjir/engine';
 import { LAYERS, isInboxEvent, type Layer } from '@konjir/types';
+import { ListenStreams } from './listen-streams.js';
 import { sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
 import { uriOf } from './uris.js';
@@ -14,14 +15,33 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
     @Inject(McpToolRegistry) private readonly registry: McpToolRegistry,
+    @Inject(ListenStreams) private readonly streams: ListenStreams,
   ) {}
+
+  /** Changes waiting to be signalled, gathered so one write's several changes cost one session check. */
+  private readonly pending = new Set<string>();
+  private scheduled = false;
 
   /**
    * Push: every open subscriptions/listen stream that subscribed to an inbox hears when it changes.
-   * ListenStreams holds back what a stream of an ended session would hear.
+   * First, ListenStreams closes the streams of any session that has ended (D41).
    */
   onModuleInit() {
-    this.unsubscribe = this.kolab.onEvent((e) => { if (isInboxEvent(e)) this.registry.notifyResourceUpdated(uriOf(e)); });
+    this.unsubscribe = this.kolab.onEvent((e) => {
+      if (!isInboxEvent(e)) return;
+      this.pending.add(uriOf(e));
+      if (this.scheduled) return;
+      this.scheduled = true;
+      setImmediate(() => void this.signal());
+    });
+  }
+
+  private async signal() {
+    this.scheduled = false;
+    const uris = [...this.pending];
+    this.pending.clear();
+    if (!(await this.streams.closeEnded())) return;
+    for (const uri of uris) this.registry.notifyResourceUpdated(uri);
   }
 
   onModuleDestroy() {

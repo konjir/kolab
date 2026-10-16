@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { ulid } from 'ulid';
 import {
   type Address, type QuoteSelector, fingerprint, formatAddress, MAX_QUOTE, normalize, parseAddress, resolveSpan,
@@ -43,6 +43,12 @@ const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 /** The author of Kolab's own work, in the role 'system'. Never an actor. */
 export const SYSTEM_ACTOR = 'kolab';
 export class GateError extends Error { name = 'GateError'; }
+
+/**
+ * How events and logs name a session: the sha256 of its id, base64url. The id is the bearer
+ * token, so it never leaves the process; events cross processes (W2.2) and can reach logs.
+ */
+export const sessionKey = (id: string) => createHash('sha256').update(id).digest('base64url');
 
 type Q = Pick<Db, 'query' | 'exec'>;
 
@@ -185,10 +191,20 @@ export class Kolab {
     return id;
   }
 
-  /** End a session, revoking its token, and tell listeners so its open streams close (D41). */
+  /**
+   * End a session, revoking its token, and tell listeners so its open streams close (D41).
+   * The event names the session by sessionKey, never by its token.
+   */
   async endSession(id: string) {
     const r = await this.db.query(`update session set ended_at = now() where id = $1 returning id`, [id]);
-    if (r.rows.length) this.emit({ session: 'ended', id });
+    if (r.rows.length) this.emit({ session: 'ended', id: sessionKey(id) });
+  }
+
+  /** Which of `ids` are open sessions, in one query. */
+  async openSessions(ids: string[]): Promise<Set<string>> {
+    if (!ids.length) return new Set();
+    const r = await this.db.query<{ id: string }>(`select id from session where id = any($1) and ended_at is null`, [ids]);
+    return new Set(r.rows.map((x) => x.id));
   }
 
   /** Whether `id` is an open session: its token is still good. */

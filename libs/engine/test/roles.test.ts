@@ -1,5 +1,6 @@
 import { expect, test } from '@jest/globals';
-import { ActorError, GateError, RoleError } from '@konjir/engine';
+import { createHash } from 'node:crypto';
+import { ActorError, GateError, RoleError, sessionKey } from '@konjir/engine';
 import { setup, els, rejection } from '@konjir/engine/testing';
 import { isInboxEvent, isSessionEnded, type KolabEvent } from '@konjir/types';
 
@@ -21,7 +22,7 @@ test('dynamic separation of duty: one active role per actor at a time', async ()
   await kolab.close();
 });
 
-test('ending a session revokes it and tells listeners, with the session id, so its streams close', async () => {
+test('ending a session revokes it and tells listeners, by the session\'s key, so its streams close', async () => {
   const { kolab, product, engineer } = await setup();
   const events: KolabEvent[] = [];
   kolab.onEvent((e) => events.push(e));
@@ -29,9 +30,14 @@ test('ending a session revokes it and tells listeners, with the session id, so i
   await kolab.endSession(product);
   expect(await kolab.sessionOpen(product)).toBe(false);
   expect(await kolab.sessionOpen(engineer)).toBe(true);
-  expect(events).toStrictEqual([{ session: 'ended', id: product }]);
+  // Named by its key, the sha256 of the id, never by the id, which is the bearer token.
+  const key = createHash('sha256').update(product).digest('base64url');
+  expect(sessionKey(product)).toBe(key);
+  expect(events).toStrictEqual([{ session: 'ended', id: key }]);
+  expect(JSON.stringify(events)).not.toContain(product);
   expect(JSON.parse(JSON.stringify(events[0]))).toStrictEqual(events[0]); // plain JSON, to carry between processes
-  expect(events.filter(isSessionEnded).map((e) => e.id)).toStrictEqual([product]);
+  expect(events.filter(isSessionEnded).map((e) => e.id)).toStrictEqual([key]);
+  expect(await kolab.openSessions([product, engineer, 'kjs_no-such-session'])).toStrictEqual(new Set([engineer]));
   expect(events.filter(isInboxEvent)).toStrictEqual([]);
   // No such session: nothing to tell.
   await kolab.endSession('kjs_no-such-session');

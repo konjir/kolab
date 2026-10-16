@@ -8,7 +8,7 @@ import { HealthController } from './health.controller.js';
 import { Inboxes } from './inboxes.js';
 import { ListenStreams } from './listen-streams.js';
 import { OperatingInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
-import { KOLAB, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
+import { KOLAB, MCP_ROUTE, SERVER_INFO, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 
 export interface KolabServerModuleOptions extends ServerOptions {
   kolab: Kolab;
@@ -27,7 +27,7 @@ export class KolabServerModule implements NestModule {
 
   /** Each listen stream an agent opens is tracked, so ending its session closes it (D41). */
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(this.streams.track.bind(this.streams)).forRoutes({ path: 'mcp', method: RequestMethod.POST });
+    consumer.apply(this.streams.track.bind(this.streams)).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
   }
 
   static register(options: KolabServerModuleOptions): DynamicModule {
@@ -36,7 +36,8 @@ export class KolabServerModule implements NestModule {
       module: KolabServerModule,
       imports: [
         McpHttpModule.registerAndServeHttp({
-          metadata: { name: 'konjir', version: '0.6.0', instructions: SERVER_INSTRUCTIONS },
+          metadata: { ...SERVER_INFO, instructions: SERVER_INSTRUCTIONS },
+          route: MCP_ROUTE,
           authStrategy: KonjirAuth,
           requireBearerAuth: true,
           // Agents don't see the admin verbs; the admin token sees everything.
