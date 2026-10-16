@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # 52 scenario, regression, review and end-to-end tests, on Jest through Nx
+npm test                  # 63 scenario, regression, migration, review and end-to-end tests, on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -36,10 +36,25 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. Also the Bedrock reviewer, until W1.7 removes it. |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
 | `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring |
-| `@konjir/db` | `libs/db` | The schema and its migration |
+| `@konjir/db` | `libs/db` | The schema, as versioned SQL migrations, and the connection |
 | `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI and engine |
 
 Each package's `exports` resolve to its TypeScript source at run time (through `tsx`) and to its `dist/` declarations when another project builds against it. Production still runs the source through `tsx` until W1.10 moves it to compiled output, so `tsx` is the root package's one runtime dependency. Each release carries its own `deploy/release/install.sh` (`npm ci --omit=dev`, so Nx and TypeScript stay off the instance) and `start.sh`; the instance's boot script only calls them, so changing either ships with a plain `terraform apply`.
+
+## Changing the schema
+
+The schema is the SQL files in `libs/db/src/migrations`, applied in order (DAT2). `0001_schema.sql` is the core schema; each later file changes it. When Kolab opens a database, it applies the files it hasn't recorded yet, in one transaction under an advisory lock, and records each one in the `kj_migration` table. A second Kolab process opening the same database waits for the first, then finds nothing left to do. A migration that fails rolls the whole open back. A database recorded at a migration this release doesn't have is refused.
+
+A database made before migrations began has Kolab's tables but no `kj_migration` table. Those are PGlite data directories from release 0.5 on, and the test server's first RDS database. Kolab runs `baseline.sql` on it once, which brings it to 0001 with idempotent statements, and records 0001 as baselined.
+
+To change the schema:
+
+1. Add `libs/db/src/migrations/NNNN_what_it_does.sql`, numbered one past the last file. Never edit a file that has shipped, and never edit `baseline.sql`.
+2. Write plain SQL that runs once. It doesn't need to be idempotent, but it does run in a transaction, so avoid statements that can't, such as `create index concurrently`. Statements that create roles must guard against another database on the same cluster creating them first, as `0001_schema.sql` does.
+3. **Value lists.** `MARK_REASONS` and `QUERY_KINDS` in `@konjir/types` are also written out in the database's `invalidation_reason_check` and `query_kind_check`. A change to either list needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
+4. Run `npm test` and `npm run test:postgres`.
+
+The files ship as they are: the release runs `libs/db/src`, and `npm run build` copies them to `libs/db/dist/migrations`, so they are found from either.
 
 ## Running it with agents
 

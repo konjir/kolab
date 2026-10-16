@@ -2,7 +2,7 @@
   "name": "@konjir/db",
   "version": "0.5.0",
   "private": true,
-  "description": "The Kolab database: its schema, its migration and the connection through Kysely",
+  "description": "The Kolab database: its versioned migrations and the connection through Kysely",
   "type": "module",
   "exports": {
     ".": {
@@ -12,12 +12,11 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/schema.sql dist/",
+    "build": "tsc -p tsconfig.build.json && rm -rf dist/migrations && cp -R src/migrations dist/migrations",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "@konjir/types": "*",
     "kysely": "^0.29.6",
     "pg": "^8.23.1"
   }
