@@ -1,0 +1,12 @@
+{
+  "name": "konjir-channel",
+  "displayName": "Konjir channel",
+  "version": "0.1.0",
+  "description": "Pushes your Kolab inbox into the session: questions and notes for your layer, marks on your work, and answers to what you raised.",
+  "author": { "name": "Konjir" },
+  "repository": "https://github.com/konjir/kolab",
+  "keywords": ["konjir", "kolab", "channel", "mcp"],
+  "channels": [
+    { "server": "konjir", "displayName": "Konjir inbox" }
+  ]
+}
