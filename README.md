@@ -28,6 +28,8 @@ npm run build             # every project, to its dist/
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 ```
 
+CI (`.github/workflows/ci.yml`) runs both on every pull request into main, and on main after each merge, as two checks: *Test on PGlite* typechecks, builds and tests, and *Test on Postgres* runs the tests on Postgres 18 through Testcontainers. Each runs only the projects the change affects.
+
 The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.
 
 | Project | Folder | What it holds |

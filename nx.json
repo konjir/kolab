@@ -14,7 +14,8 @@
     "sharedGlobals": [
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/tsconfig.check.json",
-      "{workspaceRoot}/tsconfig.build.json"
+      "{workspaceRoot}/tsconfig.build.json",
+      "{workspaceRoot}/.github/workflows/ci.yml"
     ],
     "jest": [
       "{workspaceRoot}/jest.preset.js",

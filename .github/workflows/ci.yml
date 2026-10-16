@@ -1,0 +1,87 @@
+name: CI
+
+# Checks every pull request into main, and main after each merge (W2.4, binding element TST3).
+# Two jobs, so a pull request shows two checks:
+# - "Test on PGlite": typecheck, build and the Jest suite, on embedded Postgres (PGlite)
+# - "Test on Postgres": the Jest suite again, on Postgres 18 through Testcontainers, as a
+#   non-superuser like RDS's (jest.global-setup.js). The runner's Docker hosts the container.
+#
+# Each job runs only the projects the change affects (nx affected). On a pull request the base
+# is where the branch left main; on main it is the last commit whose CI run passed
+# (nrwl/nx-set-shas). This file is in nx.json's sharedGlobals, so changing it runs everything.
+#
+# Hardening: a read-only token and no secrets, actions pinned to commit SHAs, and dependencies
+# installed without install scripts, as deploy/release/install.sh does. There is no Nx Cloud.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  NODE_VERSION: 24.20.0 # as onivoro's CI; production runs Node 22
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  pglite:
+    name: Test on PGlite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read # nx-set-shas looks up main's last passing run
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
+
+      - name: Typecheck, build and test
+        run: npx nx affected -t typecheck build test
+
+  postgres:
+    name: Test on Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read # nx-set-shas looks up main's last passing run
+    env:
+      KONJIR_TEST_POSTGRES: '1'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
+
+      # The cli's tests build first (a start test runs the compiled CLI); Nx runs that build.
+      - name: Test
+        run: npx nx affected -t test
