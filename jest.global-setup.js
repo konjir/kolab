@@ -8,8 +8,11 @@
  * the shape of the RDS master user that the test server runs as.
  */
 export default async function globalSetup() {
-  // Names this run's databases, so jest.global-teardown.js drops exactly them.
-  process.env.KONJIR_TEST_RUN ??= (await import('node:crypto')).randomBytes(4).toString('hex');
+  // Names this run's databases, so jest.global-teardown.js drops exactly them. Always fresh,
+  // never inherited: Nx runs the projects in parallel, and each must drop only its own. It
+  // starts with the time in seconds, base 36, so the teardown can sweep old runs' leftovers.
+  const { randomBytes } = await import('node:crypto');
+  process.env.KONJIR_TEST_RUN = Math.floor(Date.now() / 1000).toString(36).padStart(7, '0') + randomBytes(2).toString('hex');
   if (process.env.KONJIR_TEST_POSTGRES !== '1' || process.env.KONJIR_TEST_DATABASE_URL) return;
   const { PostgreSqlContainer } = await import('@testcontainers/postgresql');
   const { default: pg } = await import('pg');

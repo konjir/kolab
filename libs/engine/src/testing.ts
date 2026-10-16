@@ -11,11 +11,15 @@ import { Kolab } from './kolab.js';
  * by hand to point at a server you run. Each test then gets a database of its own on it.
  */
 const POSTGRES = process.env.KONJIR_TEST_DATABASE_URL;
-/** Set by jest.global-setup.js; jest.global-teardown.js drops this run's databases by it. */
-const RUN = process.env.KONJIR_TEST_RUN ?? 'adhoc';
+/**
+ * Set by jest.global-setup.js; jest.global-teardown.js drops this run's databases by it.
+ * Without it (a test run some other way), closeOpened drops each file's databases itself.
+ */
+const RUN = process.env.KONJIR_TEST_RUN;
 
 const opened: Kolab[] = [];
 const dirs: string[] = [];
+const adhoc: string[] = [];
 
 export type Store = { dataDir?: string; databaseUrl?: string };
 
@@ -33,8 +37,9 @@ export async function persistentStore(): Promise<Store> {
 }
 
 async function freshDatabase() {
-  const name = `kj_test_${RUN}_${randomBytes(6).toString('hex')}`;
+  const name = `kj_test_${RUN ?? 'adhoc'}_${randomBytes(6).toString('hex')}`;
   await onServer(`create database ${name}`);
+  if (!RUN) adhoc.push(name);
   const url = new URL(POSTGRES!);
   url.pathname = `/${name}`;
   return url.toString();
@@ -62,6 +67,7 @@ export async function openKolab(options: Parameters<typeof Kolab.open>[0] = {}) 
 export async function closeOpened() {
   for (const kolab of opened.splice(0)) await kolab.close().catch(() => undefined);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const name of adhoc.splice(0)) await onServer(`drop database if exists ${name} with (force)`);
 }
 
 export async function setup(reviewer?: Reviewer) {

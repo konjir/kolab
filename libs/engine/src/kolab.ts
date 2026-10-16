@@ -5,7 +5,7 @@ import {
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
-  LAYER_OF_KIND, LAYER_OF_ROLE,
+  LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE,
   type Actor, type ActorKind, type Author,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type ReviewContext, type ReviewVerdict,
@@ -67,6 +67,29 @@ export const EVENT_CHANNEL = 'konjir_events';
  */
 type Notice = { from: string; event: KolabEvent } | { from: string; resync: true };
 
+const isObject = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+
+const hasKeys = (x: Record<string, unknown>, ...keys: string[]) =>
+  Object.keys(x).length === keys.length && keys.every((k) => k in x);
+
+/**
+ * Whether `x` is exactly a KolabEvent Kolab could have sent: its fields and no others. Each
+ * new kind of event adds its check here.
+ */
+export function isKolabEvent(x: unknown): x is KolabEvent {
+  if (!isObject(x)) return false;
+  if (x.inbox === 'layer') return hasKeys(x, 'inbox', 'layer') && LAYERS.includes(x.layer as Layer);
+  if (x.inbox === 'actor') return hasKeys(x, 'inbox', 'actor') && typeof x.actor === 'string' && ACTOR_ID.test(x.actor);
+  // A session's sessionKey: a sha256, base64url, never the token itself.
+  if (x.session === 'ended') return hasKeys(x, 'session', 'id') && typeof x.id === 'string' && /^[A-Za-z0-9_-]{43}$/.test(x.id);
+  return false;
+}
+
+function isNotice(x: unknown): x is Notice {
+  if (!isObject(x) || typeof x.from !== 'string') return false;
+  return x.resync === true || isKolabEvent(x.event);
+}
+
 // ---------------------------------------------------------------------------
 // Kolab
 // ---------------------------------------------------------------------------
@@ -118,7 +141,7 @@ export class Kolab {
    * other processes, and it does nothing.
    */
   async listen(): Promise<void> {
-    this.listening ??= this.db.listen(EVENT_CHANNEL, (p) => this.heard(p as Notice));
+    this.listening ??= this.db.listen(EVENT_CHANNEL, (p) => this.heard(p), { applicationName: this.listenerName });
     try {
       await this.listening;
     } catch (e) {
@@ -127,10 +150,29 @@ export class Kolab {
     }
   }
 
-  private heard(n: Notice) {
-    if (n?.from === this.origin) return; // told our own listeners when it committed
+  /**
+   * Whether this Kolab hears other processes now: its LISTEN connection is up, as Postgres sees
+   * it. Undefined when there's no listener to ask: on PGlite, or before `listen` has succeeded.
+   */
+  async listenerConnected(): Promise<boolean | undefined> {
+    const l = await this.listening?.catch(() => undefined);
+    return l?.connected();
+  }
+
+  /** The listening connection's application_name, unique to this Kolab. */
+  private get listenerName() { return `kolab-listen-${this.origin}`; }
+
+  /**
+   * A notification from the channel. Anyone who can connect to the database can NOTIFY on it,
+   * so anything that isn't a Notice carrying a valid event is dropped, and logged without its
+   * payload, which may carry a session's id.
+   */
+  private heard(p: unknown) {
+    const n = isNotice(p) ? p : undefined;
+    if (!n) return void console.error(`kolab: dropped a notification on ${EVENT_CHANNEL} that isn't a Kolab event`);
+    if (n.from === this.origin) return; // told our own listeners when it committed
     if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${e}`));
-    else if (n?.event) this.dispatch(n.event);
+    else this.dispatch(n.event);
   }
 
   /**
@@ -156,14 +198,18 @@ export class Kolab {
    * this process's listeners hear it once the transaction has committed. Never on a rollback.
    */
   private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>): Promise<T> {
-    const events = new Map<string, KolabEvent>();
-    const result = await this.db.transaction((tx) => fn(tx, async (event) => {
-      const key = JSON.stringify(event);
-      if (events.has(key)) return; // Postgres folds a repeated notification in one transaction too
-      events.set(key, event);
-      const notice: Notice = { from: this.origin, event };
-      await tx.notify(EVENT_CHANNEL, JSON.stringify(notice), () => JSON.stringify({ from: this.origin, resync: true } satisfies Notice));
-    }));
+    let events = new Map<string, KolabEvent>();
+    const result = await this.db.transaction((tx) => {
+      // Each attempt starts empty, so a transaction ever run again would notify again.
+      const sent = events = new Map<string, KolabEvent>();
+      return fn(tx, async (event) => {
+        const key = JSON.stringify(event);
+        if (sent.has(key)) return; // Postgres folds a repeated notification in one transaction too
+        sent.set(key, event);
+        const notice: Notice = { from: this.origin, event };
+        await tx.notify(EVENT_CHANNEL, JSON.stringify(notice), () => JSON.stringify({ from: this.origin, resync: true } satisfies Notice));
+      });
+    });
     for (const e of events.values()) this.dispatch(e);
     return result;
   }
@@ -788,8 +834,7 @@ export class Kolab {
     const failed = await this.db.query<{ id: string }>(
       `select id from invalidation where version_id = $1 and reason = 'review_failed' and state = 'open'`, [verdict.version]);
     for (const { id: mid } of failed.rows) {
-      await this.closeMark(mid, `rebase ${verdict.version} passed review`);
-      await this.db.query(`update query set state = 'answered', answer = 'resolved by a later rebase' where invalidation_id = $1`, [mid]);
+      await this.closeMark(mid, `rebase ${verdict.version} passed review`, 'resolved by a later rebase');
     }
     return verdict;
   }
@@ -884,8 +929,7 @@ export class Kolab {
         [ulid(), d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!),
           resolution, amendedText ?? null, s.actor_id]));
     }
-    await this.closeMark(markId, s.actor_id);
-    await this.db.query(`update query set state = 'answered', answer = $2 where invalidation_id = $1`, [markId, resolution]);
+    await this.closeMark(markId, s.actor_id, resolution);
     return { version: id, verdict };
   }
 
@@ -909,20 +953,29 @@ export class Kolab {
     await this.closeMark(markId, s.actor_id);
   }
 
-  private async closeMark(markId: string, by: string) {
+  /**
+   * Clears a mark, and the marks it alone caused, and with `answer` answers the mark's
+   * question, all in one transaction that signals every layer whose inbox lost work.
+   */
+  private async closeMark(markId: string, by: string, answer?: string) {
     await this.asSystem(async (tx, signal) => {
       const closed = await tx.query<{ version_id: string }>(
         `update invalidation set state = 'cleared', cleared_by = $2 where id = $1 returning version_id`, [markId, by]);
       if (!closed.rows[0]) throw new Error(`no mark ${markId}`);
       await this.signalLayerOf(tx, signal, closed.rows[0].version_id);
+      if (answer !== undefined) {
+        await tx.query(`update query set state = 'answered', answer = $2 where invalidation_id = $1`, [markId, answer]);
+      }
       const caused = await tx.query<{ mark_id: string }>(
         `delete from invalidation_cause where cause_id = $1 returning mark_id`, [markId]);
       for (const { mark_id } of caused.rows) {
-        await tx.query(
+        const cascaded = await tx.query<{ version_id: string }>(
           `update invalidation set state = 'cleared', cleared_by = $2
             where id = $1 and state = 'open'
-              and not exists (select 1 from invalidation_cause c where c.mark_id = $1)`,
+              and not exists (select 1 from invalidation_cause c where c.mark_id = $1)
+           returning version_id`,
           [mark_id, `cause ${markId} cleared`]);
+        for (const r of cascaded.rows) await this.signalLayerOf(tx, signal, r.version_id);
       }
     });
   }

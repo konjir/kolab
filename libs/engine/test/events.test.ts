@@ -4,11 +4,12 @@
 // stand in for two processes here: each has its own pool and its own listener connection.
 // apps/cli/test/processes.test.ts runs two real server processes.
 import { describe, expect, test } from '@jest/globals';
+import { createServer, type Socket } from 'node:net';
 import pg from 'pg';
-import type { Db } from '@konjir/db';
-import { EVENT_CHANNEL, type Kolab } from '@konjir/engine';
+import { openDb, type Db } from '@konjir/db';
+import { EVENT_CHANNEL, isKolabEvent, sessionKey, type Kolab } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
-import { els, openKolab, rejection, testStore } from '@konjir/engine/testing';
+import { els, marksOn, openKolab, rejection, setup, testStore } from '@konjir/engine/testing';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
 
@@ -34,6 +35,7 @@ const settle = () => new Promise((r) => setTimeout(r, 300));
 test('a rolled-back change signals no one; a committed one signals this Kolab once, after it commits', async () => {
   const kolab = await openKolab();
   await kolab.listen();
+  expect(await kolab.listenerConnected()).toBe(onPostgres ? true : undefined);
   const events = heard(kolab);
 
   const failed = internals(kolab).inTransaction(async (tx, signal) => {
@@ -53,6 +55,60 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   expect(events).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);
   await settle();                                     // and its own NOTIFY, when heard, adds nothing
   expect(events).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);
+});
+
+test('clearing a mark signals every layer whose inbox it empties, the cascade\'s included', async () => {
+  const { kolab, product, engineer } = await setup();
+  const spec = await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  const s1 = await kolab.commit(product, spec, { elements: els({ R1: 'Orders can be cancelled.' }) });
+  const binding = await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  const b1 = await kolab.commit(engineer, binding, { elements: els({ b1: 'A cancel endpoint.' }) });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
+  // A functional prototype relies on the binding, so a mark on the binding cascades to it.
+  const proto = await kolab.createNode(product, 'prototype', 'Cancel screen', 'cancel-ui');
+  const p1 = await kolab.commit(product, proto, { elements: els({ F: 'A cancel button.' }) });
+  await kolab.link(product, { kind: 'dependency', source: p1, sourceElement: 'F', target: b1, targetElement: 'b1' });
+  await kolab.commit(product, spec, { elements: els({ R1: 'Orders can be cancelled until shipped.' }) });
+  const [changed] = await marksOn(kolab, binding);
+  expect((await marksOn(kolab, proto)).map((m) => m.reason)).toStrictEqual(['upstream_dirty']);
+
+  const events = heard(kolab);
+  await kolab.clear(engineer, changed.id);
+  expect(await marksOn(kolab, proto)).toStrictEqual([]);
+  expect(events).toStrictEqual([{ inbox: 'layer', layer: 'technical' }, { inbox: 'layer', layer: 'functional' }]);
+});
+
+test('a listener that can\'t LISTEN at boot rejects, and leaves nothing behind still reconnecting', async () => {
+  // A "server" that hangs up on every connection, counting the attempts.
+  let attempts = 0;
+  const sockets = new Set<Socket>();
+  const server = createServer((sock) => { attempts++; sockets.add(sock); sock.destroy(); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  const db = openDb({ databaseUrl: `postgres://kolab:x@127.0.0.1:${port}/kolab` });
+  const original = console.error;
+  try {
+    expect(await rejection(db.listen(EVENT_CHANNEL, () => undefined, { applicationName: 'kolab-listen-test' }))).toMatch(/Error/);
+    const after = attempts;
+    await new Promise((r) => setTimeout(r, 2500));   // past pg-listen's 500 ms retry and the listener's 1 s re-init
+    expect(attempts).toBe(after);
+  } finally {
+    console.error = original;
+    await db.close();
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
+  expect([
+    { inbox: 'layer', layer: 'functional' }, { inbox: 'actor', actor: 'alice-pm' },
+    { session: 'ended', id: sessionKey('kjs_anything') },
+  ].every(isKolabEvent)).toBe(true);
+  expect([
+    undefined, null, 'null', 3, [], {}, { inbox: 'layer', layer: '<script>' }, { inbox: 'actor', actor: 7 },
+    { inbox: 'actor', actor: '../x' }, { inbox: 'mailbox' }, { inbox: 'actor', actor: 'x', extra: 1 },
+    { session: 'ended', id: 'kjs_a-raw-token' }, { session: 'open', id: sessionKey('kjs_x') },
+  ].some(isKolabEvent)).toBe(false);
 });
 
 // PGlite is one process, with no one else to tell: Kolab.listen does nothing there.
@@ -112,15 +168,51 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
     ]);
   });
 
+  test('a bad notification on the channel is dropped, and the Kolab goes on hearing real events', async () => {
+    const { a, b, url, onA } = await twoKolabs();
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (m: unknown) => { errors.push(String(m)); };
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try {
+      await admin.query(`notify ${EVENT_CHANNEL}`);                                  // no payload
+      for (const bad of ['null', '"str"', '7', '[]', '{}', '{"from":"x"}',
+        '{"from":"x","event":{"inbox":"layer","layer":"<script>"}}', '{"from":"x","event":{"inbox":"actor","actor":"x","session":"kjs_secret"}, "resync": false}']) {
+        await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, bad]);
+      }
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"x","event":{"inbox":"actor","actor":"zed"}}']);
+      await until(() => onA.length > 0);
+      expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);   // only the valid one
+      expect(errors.filter((e) => e.includes('dropped a notification'))).toHaveLength(2 * 9);   // a and b each drop all nine
+      expect(errors.some((e) => e.includes('<script>') || e.includes('str'))).toBe(false);   // no payloads in the log
+
+      // Unparseable JSON makes pg-listen report a connection error and reconnect (see the PR's
+      // onivoro proposal); the process survives and hears the next real event.
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{bad']);
+      onA.length = 0;
+      await until(async () => {
+        await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', actor: 'after-bad' }));
+        return onA.length > 0;
+      }, 20_000);
+      expect(onA.every((e) => (e as { actor: string }).actor === 'after-bad')).toBe(true);
+      expect(await a.listenerConnected()).toBe(true);
+    } finally {
+      console.error = original;
+      await admin.end();
+    }
+  }, 40_000);
+
   test('a listener whose connection drops reconnects, and hears changes made after it', async () => {
-    const { b, url, onA } = await twoKolabs();
+    const { a, b, url, onA } = await twoKolabs();
+    expect(await a.listenerConnected()).toBe(true);
     await b.addActor('alice');
     const admin = new pg.Client({ connectionString: url });
     await admin.connect();
     try {
       const listeners = async () => (await admin.query<{ pid: number }>(
-        `select pid from pg_stat_activity where datname = current_database() and application_name = $1 order by pid`,
-        [`kolab-listen-${EVENT_CHANNEL}`])).rows.map((r) => r.pid);
+        `select pid from pg_stat_activity where datname = current_database() and application_name like 'kolab-listen-%' order by pid`,
+      )).rows.map((r) => r.pid);
       const before = await listeners();
       expect(before).toHaveLength(2);   // one per Kolab, apart from their pools
 
@@ -148,6 +240,7 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
       }
       await until(() => onA.length >= 3);
       expect(onA.map((e) => (e as { actor: string }).actor)).toStrictEqual([1, 2, 3].map((i) => `after-${from}-${i}`));
+      expect(await a.listenerConnected()).toBe(true);
     } finally {
       await admin.end();
     }
