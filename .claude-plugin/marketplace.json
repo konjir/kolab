@@ -1,0 +1,12 @@
+{
+  "name": "konjir",
+  "owner": { "name": "Konjir" },
+  "description": "Konjir's Claude Code plugins, from this checkout",
+  "plugins": [
+    {
+      "name": "konjir-channel",
+      "source": "./apps/channel-bridge",
+      "description": "Pushes your Kolab inbox into the session as channel messages"
+    }
+  ]
+}
