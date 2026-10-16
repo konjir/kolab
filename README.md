@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # 63 scenario, regression, migration, review and end-to-end tests, on Jest through Nx
+npm test                  # 69 scenario, regression, migration, review and end-to-end tests, on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -43,16 +43,23 @@ Each package's `exports` resolve to its TypeScript source at run time (through `
 
 ## Changing the schema
 
-The schema is the SQL files in `libs/db/src/migrations`, applied in order (DAT2). `0001_schema.sql` is the core schema; each later file changes it. When Kolab opens a database, it applies the files it hasn't recorded yet, in one transaction under an advisory lock, and records each one in the `kj_migration` table. A second Kolab process opening the same database waits for the first, then finds nothing left to do. A migration that fails rolls the whole open back. A database recorded at a migration this release doesn't have is refused.
+The schema is the SQL files in `libs/db/src/migrations`, applied in order (DAT2). `0001_schema.sql` is the core schema; each later file changes it. When Kolab opens a database, it applies the files it hasn't recorded yet, in one transaction under an advisory lock. It records each one in the `kj_migration` table, with the sha256 of the file's text. A second Kolab process opening the same database waits for the first, then finds nothing left to do. A migration that fails rolls the whole open back. Kolab refuses to open a database in two cases:
 
-A database made before migrations began has Kolab's tables but no `kj_migration` table. Those are PGlite data directories from release 0.5 on, and the test server's first RDS database. Kolab runs `baseline.sql` on it once, which brings it to 0001 with idempotent statements, and records 0001 as baselined.
+- it's recorded at a migration this release doesn't have
+- a recorded file's text has changed since it was applied
+
+The error names the file.
+
+A database made before migrations began has Kolab's tables but no `kj_migration` table. Those are PGlite data directories from release 0.5 on, and the test server's first RDS database. Kolab runs `baseline.sql` on it once, which brings it to 0001 with idempotent statements. It then records 0001 as baselined, with 0001's checksum.
 
 To change the schema:
 
-1. Add `libs/db/src/migrations/NNNN_what_it_does.sql`, numbered one past the last file. Never edit a file that has shipped, and never edit `baseline.sql`.
-2. Write plain SQL that runs once. It doesn't need to be idempotent, but it does run in a transaction, so avoid statements that can't, such as `create index concurrently`. Statements that create roles must guard against another database on the same cluster creating them first, as `0001_schema.sql` does.
-3. **Value lists.** `MARK_REASONS` and `QUERY_KINDS` in `@konjir/types` are also written out in the database's `invalidation_reason_check` and `query_kind_check`. A change to either list needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
-4. Run `npm test` and `npm run test:postgres`.
+1. Add `libs/db/src/migrations/NNNN_what_it_does.sql`, numbered one past the last file. The name must be four digits, an underscore, then lowercase letters, digits and underscores. Any other `.sql` file in the folder stops Kolab loading, so a misnamed migration can't be skipped.
+2. Never edit a file that has shipped, not even a comment, and never edit `baseline.sql`. An edited file would never reach databases that already ran it, so Kolab refuses them instead.
+3. Write plain SQL that runs once. It doesn't need to be idempotent. Every file runs inside the runner's one transaction, so a file may not contain `begin`, `commit`, `rollback`, `end`, `abort`, `start transaction`, `savepoint`, `release` or `prepare transaction`. Kolab rejects such a file when it loads; the same words inside a `do` block or function body are fine. Avoid statements that can't run in a transaction, such as `create index concurrently`. Statements that create roles must guard against another database on the same cluster creating them first, as `0001_schema.sql` does.
+4. **A new table** gets no rights by itself. The engine writes as `kj_agent` or `kj_system` through `set local role`, so grant each what it needs explicitly. If the table holds kolab data, enable row-level security and add policies like those in 0001. Grants on all tables are fine: Kolab revokes everything on `kj_migration` from `kj_agent`, `kj_system` and `public` after every migration.
+5. **Value lists.** `MARK_REASONS` and `QUERY_KINDS` in `@konjir/types` are also written out in the database's `invalidation_reason_check` and `query_kind_check`. A change to either list needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
+6. Run `npm test` and `npm run test:postgres`.
 
 The files ship as they are: the release runs `libs/db/src`, and `npm run build` copies them to `libs/db/dist/migrations`, so they are found from either.
 

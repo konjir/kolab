@@ -1,13 +1,25 @@
 // Versioned migrations (DAT2): a fresh database and one made before migrations began both reach
 // the current schema through the files, each migration runs once and in order, and Kolab
 // processes opening one database together don't trip over each other.
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expect, test } from '@jest/globals';
-import { BASELINE, MIGRATIONS, migrate, openDb, type Db, type Migration } from '@konjir/db';
+import {
+  BASELINE, MIGRATIONS, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
+} from '@konjir/db';
 import { Kolab } from '@konjir/engine';
 import { els, persistentStore, rejection, testStore, type Store } from '@konjir/engine/testing';
 import { MARK_REASONS, QUERY_KINDS } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
+
+/**
+ * The SCHEMA string of main before migrations, frozen: what the test server's RDS database and
+ * the PGlite data directories of 0.5 and later were made from.
+ */
+const BEFORE_MIGRATIONS = readFileSync(new URL('./fixtures/schema-before-migrations.sql', import.meta.url), 'utf8');
 
 /** A raw database on a fresh store, closed when `fn` ends. */
 async function withDb<T>(fn: (db: Db, store: Store) => Promise<T>, store?: Store): Promise<T> {
@@ -44,8 +56,8 @@ async function schemaOf(db: Db): Promise<string[]> {
 }
 
 async function recorded(db: Db) {
-  return (await db.query<{ version: number; name: string; baselined: boolean }>(
-    `select version, name, baselined from kj_migration order by version`)).rows;
+  return (await db.query<{ version: number; name: string; checksum: string; baselined: boolean }>(
+    `select version, name, checksum, baselined from kj_migration order by version`)).rows;
 }
 
 /** The schema a fresh database reaches through the files, to compare the other paths with. */
@@ -62,7 +74,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   const store = await persistentStore();
   await withDb(async (db) => {
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions });
-    expect(await recorded(db)).toStrictEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name, baselined: false })));
+    expect(await recorded(db)).toStrictEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name, checksum: checksum(m.sql), baselined: false })));
     // Nothing reaches the record but Kolab's own login.
     expect((await schemaOf(db)).filter((l) => l.startsWith('grant') && l.includes(' kj_migration '))).toStrictEqual([]);
   }, store);
@@ -92,12 +104,12 @@ test("the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS
 test("a database made by today's SCHEMA, with no migration record, is baselined and reaches the current schema", async () => {
   const current = await currentSchema();
   await withDb(async (db) => {
-    // What the test server's RDS database is: the schema of 0001, applied before migrations were recorded.
-    await db.exec(MIGRATIONS[0].sql);
+    // What the test server's RDS database is: main's SCHEMA, with no migration record.
+    await db.exec(BEFORE_MIGRATIONS);
     await db.query(`insert into actor(id, name) values ('alice', 'Alice')`);
 
     expect(await migrate(db)).toStrictEqual({ baselined: true, applied: versions.slice(1) });
-    expect((await recorded(db))[0]).toStrictEqual({ version: 1, name: 'schema', baselined: true });
+    expect((await recorded(db))[0]).toStrictEqual({ version: 1, name: 'schema', checksum: checksum(MIGRATIONS[0].sql), baselined: true });
     expect(await schemaOf(db)).toStrictEqual(current);
     expect((await db.query(`select id from actor`)).rows).toStrictEqual([{ id: 'alice' }]);
     // And again: nothing left to do.
@@ -108,7 +120,7 @@ test("a database made by today's SCHEMA, with no migration record, is baselined 
 test('a database from release 0.5, before the query columns, is baselined and reaches the current schema', async () => {
   const current = await currentSchema();
   await withDb(async (db) => {
-    await db.exec(MIGRATIONS[0].sql);
+    await db.exec(BEFORE_MIGRATIONS);
     await db.exec(`
       alter table query drop constraint query_kind_check;
       alter table query drop column selector, drop column kind, drop column from_version_id,
@@ -160,7 +172,7 @@ test('a fresh database whose first migration fails gets no record at all', async
 test('Kolab refuses a database that a newer release has migrated', async () => {
   await withDb(async (db) => {
     await migrate(db, { migrations: [m1, m2] });
-    expect(await rejection(migrate(db, { migrations: [m1] }))).toMatch(/has migration 2, which this release of Kolab doesn't know/);
+    expect(await rejection(migrate(db, { migrations: [m1] }))).toMatch(/has migration 0002_m2\.sql, which this release of Kolab doesn't know/);
   });
 });
 
@@ -190,4 +202,90 @@ test('Kolab processes opening one database at once migrate it once', async () =>
       expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions);
     }, store);
   }
+});
+
+// ---- review findings: misnamed files, edited files, grants, transaction control -------
+
+function migrationsDir(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), 'konjir-migrations-'));
+  for (const [name, sql] of Object.entries(files)) writeFileSync(join(dir, name), sql);
+  return { url: pathToFileURL(`${dir}/`), done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test('a misnamed .sql file in the migrations directory is an error, not skipped', () => {
+  for (const bad of ['0002_add-query-kind-index.sql', '0002_AddIndex.sql', '0002_add_index.SQL', '2_add_index.sql']) {
+    const dir = migrationsDir({ '0001_first.sql': 'create table t (n int)', 'baseline.sql': 'select 1', [bad]: 'select 1', 'notes.txt': 'not sql' });
+    try {
+      expect(() => loadMigrations(dir.url)).toThrow(`${bad} isn't named NNNN_lower_snake_case.sql`);
+    } finally { dir.done(); }
+  }
+  const good = migrationsDir({ '0001_first.sql': 'select 1', '0002_second_one.sql': 'select 2', 'baseline.sql': 'select 0', 'notes.txt': '' });
+  try {
+    expect(loadMigrations(good.url).map((m) => `${m.version} ${m.name}`)).toStrictEqual(['1 first', '2 second_one']);
+  } finally { good.done(); }
+});
+
+test('Kolab refuses a database whose applied migration has since been edited, naming the file', async () => {
+  await withDb(async (db) => {
+    await migrate(db, { migrations: [m1, m2] });
+    const edited = m(1, `create table t (n int not null, email text)`);
+    expect(await rejection(migrate(db, { migrations: [edited, m2] })))
+      .toMatch(/migration 0001_m1\.sql has changed since it was applied to this database/);
+  });
+});
+
+test('editing the shipped 0001 is caught on a baselined database too', async () => {
+  await withDb(async (db) => {
+    await db.exec(BEFORE_MIGRATIONS);
+    await migrate(db);
+    const edited = { ...MIGRATIONS[0], sql: `${MIGRATIONS[0].sql}\nalter table actor add column email text;` };
+    expect(await rejection(migrate(db, { migrations: [edited, ...MIGRATIONS.slice(1)] }))).toMatch(/0001_schema\.sql has changed/);
+  });
+});
+
+test('a later migration granting on all tables leaves kj_migration alike on fresh and upgraded databases', async () => {
+  const grantAll = m(versions.length + 1, `grant select on all tables in schema public to kj_agent, kj_system`);
+  const later = [...MIGRATIONS, grantAll];
+  const acl = async (db: Db) => (await db.query<{ acl: string | null }>(
+    `select relacl::text as acl from pg_class where oid = 'kj_migration'::regclass`)).rows[0].acl ?? '';
+  const fresh = await withDb(async (db) => { await migrate(db, { migrations: later }); return { acl: await acl(db), schema: await schemaOf(db) }; });
+  const upgraded = await withDb(async (db) => {
+    await migrate(db);
+    expect((await migrate(db, { migrations: later })).applied).toStrictEqual([grantAll.version]);
+    return { acl: await acl(db), schema: await schemaOf(db) };
+  });
+  expect(upgraded).toStrictEqual(fresh);
+  expect(fresh.acl).not.toMatch(/kj_agent|kj_system|[{,]=/);
+});
+
+test('a migration that controls the transaction is refused before anything runs', async () => {
+  for (const sql of [
+    'create table t (n int); commit; create table u (n int)',
+    'BEGIN; create table t (n int)',
+    'create table t (n int);\n  rollback',
+    'savepoint s; create table t (n int)',
+    'release s',
+    'end',
+    'start transaction',
+  ]) {
+    await withDb(async (db) => {
+      expect(await rejection(migrate(db, { migrations: [m(1, sql)] }))).toMatch(/0001_m1\.sql controls the transaction/);
+      expect((await db.query<{ t: string | null }>(`select to_regclass('public.t')::text as t`)).rows[0].t).toBeNull();
+    });
+  }
+  const dir = migrationsDir({ '0001_first.sql': 'create table t (n int);\ncommit;' });
+  try { expect(() => loadMigrations(dir.url)).toThrow('0001_first.sql controls the transaction'); } finally { dir.done(); }
+});
+
+test('begin, end and commit inside comments, strings and dollar-quoted bodies are not transaction control', () => {
+  expect(statements(`
+    -- commit; begin;
+    /* rollback; */
+    do $$ begin create role r; exception when others then null; end $$;
+    create function f() returns text language sql as $body$ select 'commit;' $body$;
+    insert into t values ('it''s; commit'), ("end;");
+  `).map((s) => s.split(/\s+/)[0])).toStrictEqual(['do', 'create', 'insert']);
+  // The shipped files pass, which loading them at import already proved.
+  expect(MIGRATIONS.length).toBeGreaterThan(0);
+  expect(BASELINE.length).toBeGreaterThan(0);
 });
