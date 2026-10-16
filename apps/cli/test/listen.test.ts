@@ -44,6 +44,35 @@ async function until(what: string, check: () => boolean, ms = 5000) {
   }
 }
 
+/** A listen stream opened by hand, with whatever Authorization header the test gives. */
+async function rawListen(url: string, authorization: string) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      authorization, 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2026-07-28', 'mcp-method': 'subscriptions/listen',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 'raw:1', method: 'subscriptions/listen',
+      params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'raw', version: '0' }, 'io.modelcontextprotocol/clientCapabilities': {} }, notifications: { resourceSubscriptions: [INBOX] } },
+    }),
+  });
+  const frames: string[] = [];
+  let ended = false;
+  const done = (async () => {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let i;
+      while ((i = buffer.indexOf('\n\n')) >= 0) { frames.push(buffer.slice(0, i)); buffer = buffer.slice(i + 2); }
+    }
+    ended = true;
+  })().catch(() => { ended = true; });
+  const data = () => frames.filter((f) => !f.startsWith(':')).map((f) => JSON.parse(f.replace(/^event: message\ndata: /, '')) as { method?: string; id?: string; result?: unknown });
+  return { status: res.status, data, ended: () => ended, done };
+}
+
 /** How a subscription closed, or 'open' if it is still open after `ms`. */
 const settled = (closed: Promise<unknown>, ms: number) =>
   Promise.race([closed, new Promise((r) => setTimeout(() => r('open'), ms).unref())]);
@@ -131,6 +160,75 @@ test('ending a session that is not listening, or one already ended, closes nothi
   const eng2 = await agent(server, admin, 'eng-2', 'engineer');
   await call(eng2.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   await until('the listener to hear the question', () => pm.updates.length === 1);
+  await sub.close();
+  await server.close();
+});
+
+test('a stream is tracked under the token auth verified, however the header is written', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const eng = await agent(server, admin, 'eng', 'engineer');
+  await spec(pm.client);
+
+  // Kolab's auth takes the second word of the header and ignores the rest.
+  const odd = await rawListen(server.url, `Bearer ${pm.token} trailing`);
+  expect(odd.status).toBe(200);
+  await until('the acknowledgement', () => odd.data().some((m) => m.method === 'notifications/subscriptions/acknowledged'));
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
+  await until('the first update', () => odd.data().some((m) => m.method === 'notifications/resources/updated'));
+
+  await call(admin, 'admin_end_session', { token: pm.token });
+  await until('the stream to close', () => odd.ended(), 2000);
+  const messages = odd.data();
+  expect(messages.map((m) => m.method ?? `result ${m.id}`)).toStrictEqual([
+    'notifications/subscriptions/acknowledged', 'notifications/resources/updated', 'result raw:1',
+  ]);
+  expect(messages[2].result).toMatchObject({ resultType: 'complete', _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'konjir' } } });
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'And refunds?' });
+  await new Promise((r) => setTimeout(r, 200));
+  expect(odd.data().length).toBe(3);
+  await server.close();
+});
+
+test('each change checks every listening session in one query, however many streams there are', async () => {
+  const { server, admin } = await boot();
+  const eng = await agent(server, admin, 'eng', 'engineer');
+  const listeners: Awaited<ReturnType<typeof agent>>[] = [];
+  for (let i = 0; i < 4; i++) listeners.push(await agent(server, admin, `pm-${i}`, 'product', 'lee'));
+  await spec(listeners[0].client);
+  for (const l of listeners) for (let j = 0; j < 3; j++) await l.client.listen({ resourceSubscriptions: [INBOX] });
+
+  const kolab = server.kolab;
+  const counts = { openSessions: 0, sessionOpen: 0 };
+  const openSessions = kolab.openSessions.bind(kolab);
+  const sessionOpen = kolab.sessionOpen.bind(kolab);
+  kolab.openSessions = (ids) => { counts.openSessions++; return openSessions(ids); };
+  kolab.sessionOpen = (id) => { counts.sessionOpen++; return sessionOpen(id); };
+
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
+  await until('all 12 streams to hear it', () => listeners.every((l) => l.updates.length === 3));
+  expect(counts.openSessions).toBe(1);
+  expect(counts.sessionOpen).toBe(1); // the asker's own auth check, nothing per stream
+  await server.close();
+});
+
+test('a failed session check holds back that one change, and closes no stream', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const eng = await agent(server, admin, 'eng', 'engineer');
+  await spec(pm.client);
+  const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });
+
+  const kolab = server.kolab;
+  const openSessions = kolab.openSessions.bind(kolab);
+  kolab.openSessions = async () => { kolab.openSessions = openSessions; throw new Error('connection terminated unexpectedly'); };
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
+  await new Promise((r) => setTimeout(r, 200));
+  expect(pm.updates).toStrictEqual([]);
+  expect(await settled(sub.closed, 100)).toBe('open');
+
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'And refunds?' });
+  await until('the next change', () => pm.updates.length === 1);
   await sub.close();
   await server.close();
 });
