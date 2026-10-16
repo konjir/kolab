@@ -30,7 +30,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   const eng = await agentFor(server.url, admin, 'eng-agent', 'engineer');
 
   expect(await call(eng.client, 'whoami')).toStrictEqual({
-    session: eng.token, actor: 'eng-agent', role: 'engineer', layer: 'technical',
+    session: eng.token, actor: 'eng-agent', kind: 'person', owner: null, role: 'engineer', layer: 'technical',
     subscribe: ['konjir://inbox/technical', 'konjir://answers/eng-agent'],
   });
 

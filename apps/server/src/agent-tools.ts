@@ -72,7 +72,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_whoami',
-    description: 'Show the actor, role and layer your session token carries, and the inbox resources to subscribe to for pushed updates.',
+    description: 'Show the actor, role and layer your session token carries (an agent also names the person who owns it), and the inbox resources to subscribe to for pushed updates.',
     annotations: { readOnlyHint: true },
   })
   whoami(_: unknown, context?: McpToolContext) {
@@ -108,7 +108,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: 'Read every element of a node version, each with its address and the questions and notes raised on it (open and answered, from any version). Defaults to the latest committed version.',
+    description: 'Read every element of a node version, with who wrote it, each with its address and the questions and notes raised on it (open and answered, from any version). Defaults to the latest committed version.',
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
@@ -127,7 +127,7 @@ export class AgentTools {
         (threads.get(el) ?? threads.set(el, []).get(el)!).push(thread(q));
       }
       return {
-        node, version: row.seq, state: row.state, versionId: row.id,
+        node, version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
         ...(threads.get(null) ? { questions: threads.get(null) } : {}),
         elements: els.map((e) => ({
           address: `kj:${node}@${row.seq}#${e.element_id}`, id: e.element_id, parent: e.parent_element_id, text: e.text,

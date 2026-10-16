@@ -2,7 +2,9 @@
 # Day-to-day operations on the Terraform-managed Kolab server. Provisioning lives in deploy/terraform;
 # this only reads its outputs and talks to the running Kolab server.
 #
-#   deploy/konjir-ops.sh connect <actor> <product|engineer>   register a collaborator; print token + setup
+#   deploy/konjir-ops.sh connect <actor> <product|engineer> [owner]
+#                                                              register a person, or with owner an agent that
+#                                                              person owns; open a session; print token + setup
 #   deploy/konjir-ops.sh status                                health, service state
 #   deploy/konjir-ops.sh logs                                  last 200 lines from Kolab and Caddy
 #   deploy/konjir-ops.sh bootstrap-log                         the instance's first-boot install log
@@ -42,17 +44,20 @@ on_kolab() {
 }
 
 cmd_connect() {
-  local actor="${1:-}" role="${2:-}" url admin token
-  [ -n "$actor" ] && [[ "$role" =~ ^(product|engineer)$ ]] || die "usage: konjir-ops.sh connect <actor> <product|engineer>"
+  local actor="${1:-}" role="${2:-}" owner="${3:-}" url admin token added
+  [ -n "$actor" ] && [[ "$role" =~ ^(product|engineer)$ ]] || die "usage: konjir-ops.sh connect <actor> <product|engineer> [owner]"
   [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first (the konjir CLI runs locally)"
   url="$(out url)"
   admin="$(admin_token)"
-  KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_add_actor "id=$actor" >/dev/null 2>&1 || true
+  # An actor registered already is reused as it is; any other refusal (an owner who isn't a person) stops here.
+  if ! added="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_add_actor "id=$actor" ${owner:+"owner=$owner"} 2>&1)"; then
+    [[ "$added" == *duplicate\ key* ]] || die "$added"
+  fi
   token="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_open_session "actor=$actor" "role=$role" \
     | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
   cat <<EOF
 
-$actor ($role) can connect with this token. Send it privately; it works like a password.
+$actor ($role${owner:+, an agent of $owner}) can connect with this token. Send it privately; it works like a password.
 
   Token:        $token
 
