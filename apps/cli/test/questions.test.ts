@@ -89,8 +89,9 @@ test('a database from the previous release is migrated on open', async () => {
   const store = await persistentStore();
   {
     let kolab = await Kolab.open(store);
-    // Put the tables back the way 0.5 created them.
+    // Put the tables back the way 0.5 created them, before migrations were recorded.
     await kolab.db.exec(`
+      drop table kj_migration;
       alter table query drop constraint query_kind_check;
       alter table query drop column selector, drop column kind, drop column from_version_id,
                         drop column from_element_id, drop column answered_by, drop column created_at;
