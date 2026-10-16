@@ -99,7 +99,19 @@ export type Resolution =
  * Something an agent should look at: a layer's work queue (open questions,
  * notes and marks it owns) or an actor's answers (replies to what they raised).
  */
-export type KolabEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
+export type InboxEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
+
+/**
+ * A session ended, so its token is revoked: every listen stream it holds closes (D41).
+ * `id` is the session id, which is also its (now revoked) bearer token.
+ */
+export type SessionEndedEvent = { session: 'ended'; id: string };
+
+/** What Kolab tells its listeners. Plain JSON, so it can be carried between processes as it is. */
+export type KolabEvent = InboxEvent | SessionEndedEvent;
+
+export const isInboxEvent = (e: KolabEvent): e is InboxEvent => 'inbox' in e;
+export const isSessionEnded = (e: KolabEvent): e is SessionEndedEvent => 'session' in e && e.session === 'ended';
 
 export interface Query {
   id: string; kind: QueryKind; address: string; question: string; state: string;

@@ -1,6 +1,7 @@
 import { expect, test } from '@jest/globals';
 import { ActorError, GateError, RoleError } from '@konjir/engine';
 import { setup, els, rejection } from '@konjir/engine/testing';
+import { isInboxEvent, isSessionEnded, type KolabEvent } from '@konjir/types';
 
 test('an engineer session cannot create or write the functional layer', async () => {
   const { kolab, product, engineer } = await setup();
@@ -17,6 +18,24 @@ test('dynamic separation of duty: one active role per actor at a time', async ()
   await kolab.endSession(asProduct);
   const asEngineer = await kolab.openSession('carol', 'engineer');
   expect(asEngineer).toBeTruthy();
+  await kolab.close();
+});
+
+test('ending a session revokes it and tells listeners, with the session id, so its streams close', async () => {
+  const { kolab, product, engineer } = await setup();
+  const events: KolabEvent[] = [];
+  kolab.onEvent((e) => events.push(e));
+  expect(await kolab.sessionOpen(product)).toBe(true);
+  await kolab.endSession(product);
+  expect(await kolab.sessionOpen(product)).toBe(false);
+  expect(await kolab.sessionOpen(engineer)).toBe(true);
+  expect(events).toStrictEqual([{ session: 'ended', id: product }]);
+  expect(JSON.parse(JSON.stringify(events[0]))).toStrictEqual(events[0]); // plain JSON, to carry between processes
+  expect(events.filter(isSessionEnded).map((e) => e.id)).toStrictEqual([product]);
+  expect(events.filter(isInboxEvent)).toStrictEqual([]);
+  // No such session: nothing to tell.
+  await kolab.endSession('kjs_no-such-session');
+  expect(events.length).toBe(1);
   await kolab.close();
 });
 
