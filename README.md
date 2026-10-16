@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 147 unit, scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 148 unit, scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -244,7 +244,7 @@ Claude Code doesn't yet turn these notifications into a turn for the model. Unti
 
 - **Same fingerprint:** the edge is re-pinned. This is a pointer bump, not a mark.
 - **Different content:** the dependent gets a `changed` mark.
-- **Near match on a span:** `fuzzy_reanchor` mark.
+- **A span that changed:** a `fuzzy_reanchor` mark. That is a near match (edited wording), or the exact words without the prefix or suffix they were quoted with, such as a copy in another statement (D42). The exact words with that context still around them, anywhere in the element, re-pin cleanly.
 - **Gone:** `orphaned` mark.
 
 An element address covers that element's subtree, so addressing a section means addressing its requirements too.

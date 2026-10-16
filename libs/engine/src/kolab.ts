@@ -450,7 +450,7 @@ export class Kolab {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
     const r = await this.resolveIn(e.target, e.targetElement ?? null, e.selector ?? null);
-    if (r.status !== 'ok') throw new Error(`target does not resolve exactly (${r.status})`);
+    if (r.status !== 'ok') throw new Error(await this.linkRefusal(tgt, e.targetElement ?? null, e.selector ?? null, r.status));
     // One edge per (source scope, target scope): duplicates would multiply marks.
     const dup = await this.db.query<{ id: string }>(
       `select id from edge where kind = $1 and source_version_id = $2
@@ -467,6 +467,30 @@ export class Kolab {
       [id, e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
         e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]));
     return id;
+  }
+
+  /**
+   * Why a link target doesn't resolve exactly, and how to fix it. A quoted span must stand as
+   * written with its prefix or suffix still around it (D42), so a selector that is fuzzy is a bad
+   * selector: the refusal quotes the current words with their current context to link to instead.
+   */
+  private async linkRefusal(tgt: VersionRow, elementId: string | null, selector: QuoteSelector | null,
+    status: 'fuzzy' | 'orphan'): Promise<string> {
+    const at = (sel?: QuoteSelector) => formatAddress({ node: tgt.node_id, version: tgt.seq, element: elementId ?? undefined, selector: sel });
+    const subtree = elementId ? subtreeText(await this.elements(tgt.id), elementId) : undefined;
+    if (subtree === undefined) {
+      return `target does not resolve exactly (orphan): ${at()} has no element ${elementId}. Read the target with konjir_read_node and link to an element it has.`;
+    }
+    const span = selector ? resolveSpan(subtree, selector) : undefined;
+    if (span?.status === 'fuzzy') {
+      const text = normalize(subtree);
+      const suggestion = { exact: span.content, ...spanContext(text, span.start, span.end) };
+      return `target does not resolve exactly (fuzzy): ${JSON.stringify(normalize(selector!.exact))} does not stand as quoted `
+        + `with its prefix or suffix in ${at()}; the nearest match reads ${JSON.stringify(span.content)}. `
+        + `Quote the current words with their current context, e.g. ${at(suggestion)}`;
+    }
+    return `target does not resolve exactly (${status}): the quoted words are not in ${at()}. `
+      + `Read the element with konjir_read_node and quote words it has now, with the words just before and after them as prefix and suffix.`;
   }
 
   // ---- the cascade ---------------------------------------------------------
@@ -1095,7 +1119,7 @@ export const structuralReviewer: Reviewer = ({ elements }) => {
 
 const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it.',
-  fuzzy_reanchor: 'The quoted words changed slightly. Re-read the target and either clear the mark or re-link to the new wording.',
+  fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target and either clear the mark or re-link, quoting the current words with their current context.',
   orphaned: 'The target no longer exists. Re-link to its replacement, or remove the dependency in a new draft.',
   upstream_dirty: 'Something this depends on is dirty. Wait for that mark to clear, or check it yourself and clear the upstream mark.',
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
@@ -1169,6 +1193,18 @@ function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'versio
 }
 
 /** An element plus its descendants, in order. The scope an element address covers. */
+/** Up to CONTEXT_CHARS of whole words either side of [start, end), for a quote selector. */
+function spanContext(text: string, start: number, end: number): { prefix?: string; suffix?: string } {
+  const CONTEXT_CHARS = 32;
+  let prefix = text.slice(Math.max(0, start - CONTEXT_CHARS), start);
+  if (start > CONTEXT_CHARS) prefix = prefix.replace(/^\S*\s?/, '');
+  let suffix = text.slice(end, end + CONTEXT_CHARS);
+  if (end + CONTEXT_CHARS < text.length) suffix = suffix.replace(/\s?\S*$/, '');
+  prefix = prefix.trim();
+  suffix = suffix.trim();
+  return { ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) };
+}
+
 function subtreeText(els: ElementRow[], rootId: string): string | undefined {
   if (!els.some((e) => e.element_id === rootId)) return undefined;
   const kids = new Map<string, ElementRow[]>();
