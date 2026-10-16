@@ -65,15 +65,23 @@ export function fingerprint(text: string): string {
 // ---------------------------------------------------------------------------
 // Span resolution (DAT6, ADR8). Re-anchoring is never silent:
 //   exact  - the quoted words appear verbatim, as whole words, wherever they
-//            now sit: clean
-//   fuzzy  - a near match (similarity >= FUZZY_THRESHOLD): counts as a change
+//            now sit, and their recorded prefix or suffix still agrees (D42):
+//            clean
+//   fuzzy  - a verbatim copy whose context doesn't agree, or a near match
+//            (similarity >= FUZZY_THRESHOLD): counts as a change
 //   orphan - nothing close enough
 //
 // Matching follows Hypothesis's text-quote anchoring on diff-match-patch:
 //   1. Every verbatim occurrence of the quote that starts and ends on a word
 //      boundary is a candidate; the recorded prefix and suffix pick between
-//      them. Any such occurrence is exact. One glued to a longer word
-//      ("30" in "300") is not: it falls through to near matching.
+//      them. It is exact where that context agrees (more than half of the
+//      words of the prefix or of the suffix still adjoin it; see
+//      contextAgrees), or where no context was recorded. One glued to a longer word ("30" in
+//      "300") is no candidate: it falls through to near matching.
+//   1a. A verbatim occurrence whose context doesn't agree is a change. The
+//      near match right where the context points, if the context agrees
+//      there, wins over it: that is the quoted statement, edited. Otherwise
+//      the verbatim copy is the fuzzy match, with similarity 1.
 //   2. Otherwise the prefix (or failing that, the suffix) is located with
 //      match_main to give an expected position, and the quote is matched
 //      near it with match_main (bitap), in slices of at most MATCH_MAX_BITS
@@ -90,10 +98,9 @@ export function fingerprint(text: string): string {
 //      element without the context, so a misleading prefix can't orphan a
 //      quote that is present.
 //   5. A quote shorter than SHORT_QUOTE characters is only a near match where
-//      its recorded context still agrees: CONTEXT_AGREES characters of it, or
-//      all of a shorter one. Otherwise one edit would re-anchor it to any
-//      similar word ("cart" to "card"). With no context recorded, a short
-//      quote is exact or an orphan.
+//      its recorded context still agrees, by the same rule. Otherwise one
+//      edit would re-anchor it to any similar word ("cart" to "card"). With
+//      no context recorded, a short quote is exact or an orphan.
 //
 // Text, quote and context are compared in Unicode NFC, so a quote and an
 // element that encode the same characters differently still match. The
@@ -146,8 +153,6 @@ const TERMINATOR = /^[.!?;。！？]$/u;
 /** The shortest equality at either end of the quote's diff that anchors that end. */
 const MIN_ANCHOR = 3;
 
-/** How many characters of context count as agreement, at most. */
-const CONTEXT_AGREES = 4;
 
 export function resolveSpan(haystack: string, sel: QuoteSelector): SpanResolution {
   const original = normalize(haystack);
@@ -159,22 +164,41 @@ export function resolveSpan(haystack: string, sel: QuoteSelector): SpanResolutio
   const prefix = normalize(sel.prefix ?? '').normalize('NFC');
   const suffix = normalize(sel.suffix ?? '').normalize('NFC');
 
+  const hasContext = !!(prefix || suffix);
+  const agrees = (at: number, to: number) => contextAgrees(text, at, to, prefix, suffix);
+  const fuzzy = (at: number, to: number, sim: number): SpanResolution => {
+    const start = folded.toOriginal(at);
+    const end = folded.toOriginal(to);
+    return { status: 'fuzzy', content: original.slice(start, end), similarity: sim, start, end };
+  };
+
+  // D42: a verbatim occurrence is exact only where its recorded prefix or suffix still agrees.
+  // With no context recorded there is nothing to disagree with, so any verbatim occurrence is.
   const verbatim = bestVerbatim(text, exact, prefix, suffix);
-  if (verbatim >= 0) {
+  if (verbatim >= 0 && (!hasContext || agrees(verbatim, verbatim + exact.length))) {
     return { status: 'exact', content: quote, start: folded.toOriginal(verbatim), end: folded.toOriginal(verbatim + exact.length) };
   }
 
+  // The context points somewhere: first, the near match right where it points, if the context
+  // agrees there. That is the quoted statement, edited, and it beats a copy elsewhere.
   const hint = contextHint(text, exact, prefix, suffix);
-  let found = hint === undefined ? undefined : nearMatch(text, exact, hint, true);
+  if (hint !== undefined) {
+    const anchored = nearMatch(text, exact, hint, 'anchored');
+    if (anchored && anchored.similarity >= FUZZY_THRESHOLD && agrees(anchored.start, anchored.end)) {
+      return fuzzy(anchored.start, anchored.end, anchored.similarity);
+    }
+  }
+  // A verbatim copy whose context doesn't agree: a change (D42), pinned to that copy.
+  if (verbatim >= 0) return fuzzy(verbatim, verbatim + exact.length, 1);
+
+  let found = hint === undefined ? undefined : nearMatch(text, exact, hint, 'local');
   if (!found || found.similarity < FUZZY_THRESHOLD) {
-    const loose = nearMatch(text, exact, Math.floor(text.length / 2), false);
+    const loose = nearMatch(text, exact, Math.floor(text.length / 2), 'whole');
     if (loose && (!found || loose.similarity > found.similarity)) found = loose;
   }
   if (!found || found.similarity < FUZZY_THRESHOLD) return { status: 'orphan' };
-  if ([...exact].length < SHORT_QUOTE && !contextAgrees(text, found.start, found.end, prefix, suffix)) return { status: 'orphan' };
-  const start = folded.toOriginal(found.start);
-  const end = folded.toOriginal(found.end);
-  return { status: 'fuzzy', content: original.slice(start, end), similarity: found.similarity, start, end };
+  if ([...exact].length < SHORT_QUOTE && !agrees(found.start, found.end)) return { status: 'orphan' };
+  return fuzzy(found.start, found.end, found.similarity);
 }
 
 /** 1 - (edit distance / longer length), with the distance from diff-match-patch's diff. */
@@ -264,7 +288,9 @@ function bestVerbatim(text: string, exact: string, prefix: string, suffix: strin
   let bestScore = -1;
   for (let at = text.indexOf(exact); at >= 0; at = text.indexOf(exact, at + 1)) {
     if (!boundary(text, at) || !boundary(text, at + exact.length)) continue;
-    const score = contextScore(text, at, at + exact.length, prefix, suffix);
+    // An occurrence whose context agrees outranks any that doesn't, however many characters match.
+    const score = contextScore(text, at, at + exact.length, prefix, suffix)
+      + (contextAgrees(text, at, at + exact.length, prefix, suffix) ? text.length + prefix.length + suffix.length : 0);
     if (score > bestScore) { best = at; bestScore = score; }
     if (!prefix && !suffix) break;
   }
@@ -274,7 +300,7 @@ function bestVerbatim(text: string, exact: string, prefix: string, suffix: strin
 function contextAround(text: string, start: number, end: number, prefix: string, suffix: string) {
   const ahead = text.slice(Math.max(0, start - prefix.length - 1), start).trimEnd();
   const behind = text.slice(end, end + suffix.length + 1).trimStart();
-  return { prefix: prefix ? diffCommonSuffix(ahead, prefix) : 0, suffix: suffix ? diffCommonPrefix(behind, suffix) : 0 };
+  return { ahead, behind, prefix: prefix ? diffCommonSuffix(ahead, prefix) : 0, suffix: suffix ? diffCommonPrefix(behind, suffix) : 0 };
 }
 
 /** How many characters of the recorded prefix and suffix still surround [start, end). */
@@ -283,16 +309,54 @@ function contextScore(text: string, start: number, end: number, prefix: string, 
   return c.prefix + c.suffix;
 }
 
-/** True when some of the recorded context, CONTEXT_AGREES characters or all of it, still adjoins the span. */
+/**
+ * True when the recorded prefix or suffix still agrees around the span: more than half of its
+ * words adjoin it, compared without case. Words, not characters, so that a shared "said" or
+ * "the" next to some other statement doesn't pass for its context. A word cut off where the
+ * prefix was recorded counts, if the text still has that much of it. In a script written
+ * without spaces, more than half of its characters must adjoin.
+ */
 function contextAgrees(text: string, start: number, end: number, prefix: string, suffix: string): boolean {
   const c = contextAround(text, start, end, prefix, suffix);
-  return (!!prefix && c.prefix >= Math.min(CONTEXT_AGREES, prefix.length))
-    || (!!suffix && c.suffix >= Math.min(CONTEXT_AGREES, suffix.length));
+  const p = lower(prefix);
+  const q = lower(suffix);
+  const ahead = lower(c.ahead);
+  const behind = lower(c.behind);
+  return (!!p && sideAgrees(reverse(p), reverse(ahead), diffCommonSuffix(ahead, p)))
+    || (!!q && sideAgrees(q, behind, diffCommonPrefix(behind, q)));
+}
+
+/** Lower case, where that keeps the length (so offsets still line up). */
+function lower(s: string): string {
+  const l = s.toLowerCase();
+  return l.length === s.length ? l : s;
+}
+
+/** In UTF-16 code units, like the offsets it is compared at. */
+function reverse(s: string): string {
+  return s.split('').reverse().join('');
+}
+
+/**
+ * Whether the first `matched` characters of recorded (read away from the span) agree as words.
+ * For a prefix, both strings are reversed, so they too are read away from the span.
+ */
+function sideAgrees(recorded: string, seen: string, matched: number): boolean {
+  if (!matched) return false;
+  if (!recorded.includes(' ') && [...recorded].some((ch) => SPACELESS.test(ch))) return matched * 2 > recorded.length;
+  const words = recorded.split(' ').filter(Boolean);
+  if (matched >= recorded.length) return true;
+  const part = recorded.slice(0, matched);
+  let whole = part.split(' ').filter(Boolean).length;
+  // The last word read is whole only if both the recorded context and the text end it there.
+  const last = part[part.length - 1];
+  if (last !== ' ' && (WORDY.test(recorded[matched] ?? '') || WORDY.test(seen[matched] ?? '')) && WORDY.test(last)) whole--;
+  return whole * 2 > words.length;
 }
 
 /** Where the quote should start, judged from its recorded context; undefined if neither is found. */
 function contextHint(text: string, exact: string, prefix: string, suffix: string): number | undefined {
-  const opts = options(text);
+  const opts = options(text, exact, 'whole');
   if (prefix) {
     const tail = prefix.slice(-MATCH_MAX_BITS);
     const at = matchMain(text, tail, Math.floor(text.length / 2), opts);
@@ -308,15 +372,22 @@ function contextHint(text: string, exact: string, prefix: string, suffix: string
 
 // ---- Near matches -----------------------------------------------------------
 
+type Reach = 'anchored' | 'local' | 'whole';
+
 /**
- * Hypothesis's setting: a match the whole text away costs 0.5, so the
- * expected position steers ties without excluding distant matches. Near a
- * position the context gave, the search stays local (about a quote's length
- * either side, and at least 500 characters); the retry without context
- * covers the rest of the element.
+ * How far from loc a match may be:
+ *   whole    - Hypothesis's setting: a match the whole text away costs 0.5, so
+ *              loc steers ties without excluding distant matches
+ *   local    - about a quote's length either side of where the context points,
+ *              and at least 500 characters
+ *   anchored - right where the context points: a match a quote's length away
+ *              costs a full 1.0, so a closer, more edited match wins over a
+ *              verbatim one elsewhere
  */
-function options(text: string, near?: string): DiffMatchPathOptions {
-  const matchDistance = near === undefined ? Math.max(1000, text.length * 2) : 1000 + 2 * near.length;
+function options(text: string, exact: string, reach: Reach): DiffMatchPathOptions {
+  const matchDistance = reach === 'whole' ? Math.max(1000, text.length * 2)
+    : reach === 'local' ? 1000 + 2 * exact.length
+      : Math.max(MATCH_MAX_BITS, exact.length);
   return { matchThreshold: MATCH_THRESHOLD, matchDistance, matchMaxBits: MATCH_MAX_BITS };
 }
 
@@ -332,9 +403,9 @@ function slices(exact: string): { offset: number; text: string }[] {
 }
 
 /** The best near match of the quote around loc, with its similarity; undefined if there is none worth verifying. */
-function nearMatch(text: string, exact: string, loc: number, hinted: boolean):
+function nearMatch(text: string, exact: string, loc: number, reach: Reach):
   { similarity: number; start: number; end: number } | undefined {
-  const opts = options(text, hinted ? exact : undefined);
+  const opts = options(text, exact, reach);
   // Each hit says where the quote would start.
   const starts: number[] = [];
   let expected = loc;
