@@ -32,8 +32,16 @@ interface EdgeRow {
 export class ReviewUnavailableError extends Error { name = 'ReviewUnavailableError'; }
 
 export class RoleError extends Error { name = 'RoleError'; }
-/** An actor that doesn't exist, or an agent whose owner isn't a person. */
+/**
+ * About actors and their sessions: an actor that doesn't exist or already does, an invalid id,
+ * an agent whose owner isn't a person, or an actor whose session is already open.
+ */
 export class ActorError extends Error { name = 'ActorError'; }
+
+/** An actor id: letters, digits, '.', '_', '-' and '@', starting with a letter or digit (actor_id_check). */
+const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
+/** The author of Kolab's own work, in the role 'system'. Never an actor. */
+export const SYSTEM_ACTOR = 'kolab';
 export class GateError extends Error { name = 'GateError'; }
 
 type Q = Pick<Db, 'query' | 'exec'>;
@@ -107,13 +115,22 @@ export class Kolab {
    */
   async addActor(id: string, opts: { name?: string; owner?: string } = {}) {
     const { name = id, owner } = opts;
+    if (!ACTOR_ID.test(id)) throw new ActorError(`"${id}" isn't a valid actor id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
+    if (id === SYSTEM_ACTOR) throw new ActorError(`"${SYSTEM_ACTOR}" is reserved for Kolab's own work`);
+    if (await this.findActor(id)) throw new ActorError(`actor ${id} already exists`);
     if (owner !== undefined) {
       const o = await this.findActor(owner);
       if (!o) throw new ActorError(`no actor ${owner} to own ${id}`);
       if (o.kind !== 'person') throw new ActorError(`${owner} is an agent; an agent's owner must be a person`);
     }
-    await this.db.query(`insert into actor(id, name, kind, owner_id) values ($1, $2, $3, $4)`,
-      [id, name, owner === undefined ? 'person' : 'agent', owner ?? null]);
+    try {
+      await this.db.query(`insert into actor(id, name, kind, owner_id) values ($1, $2, $3, $4)`,
+        [id, name, owner === undefined ? 'person' : 'agent', owner ?? null]);
+    } catch (e) {
+      // Another admin call added it between the check and the insert.
+      if (String(e).includes('actor_pkey')) throw new ActorError(`actor ${id} already exists`);
+      throw e;
+    }
   }
 
   private async findActor(id: string): Promise<Actor | undefined> {
@@ -141,8 +158,10 @@ export class Kolab {
    */
   async author(versionId: string): Promise<Author> {
     const v = await this.version(versionId);
+    if (v.active_role === 'system') return { actor: v.actor_id, kind: 'system', owner: null, role: v.active_role };
     const a = await this.findActor(v.actor_id);
-    return { actor: v.actor_id, kind: a?.kind ?? 'system', owner: a?.owner ?? null, role: v.active_role };
+    if (!a) throw new ActorError(`version ${versionId} names actor ${v.actor_id}, who doesn't exist`);
+    return { actor: v.actor_id, kind: a.kind, owner: a.owner, role: v.active_role };
   }
 
   /**
@@ -159,7 +178,7 @@ export class Kolab {
       await this.db.query(`insert into session(id, actor_id, active_role) values ($1, $2, $3)`, [id, actorId, role]);
     } catch (e) {
       if (String(e).includes('one_open_session_per_actor')) {
-        throw new RoleError(`${actorId} already has an open session; end it before activating another role`);
+        throw new ActorError(`${actorId} already has an open session; end it before opening another`);
       }
       throw e;
     }
@@ -616,7 +635,7 @@ export class Kolab {
     await this.asSystem(async (tx) => {
       await writeVersion(tx, {
         id, node_id: child.node_id, seq, parent_version_id: newParent.id, layer: child.layer,
-        actor_id: opts.author?.actor_id ?? 'kolab', active_role: opts.author?.active_role ?? 'system',
+        actor_id: opts.author?.actor_id ?? SYSTEM_ACTOR, active_role: opts.author?.active_role ?? 'system',
       }, els, kept);
       if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
     });

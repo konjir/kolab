@@ -142,7 +142,7 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
     // What the test server's RDS database is before this release: 0001, with people, a session and a version.
     expect(await migrate(db, { migrations: MIGRATIONS.slice(0, 1) })).toStrictEqual({ baselined: false, applied: [1] });
     await db.exec(`
-      insert into actor(id, name) values ('lee', 'Lee'), ('eng-1', 'eng-1');
+      insert into actor(id, name) values ('lee', 'Lee'), ('eng-1', 'eng-1'), ('Pat Smith', 'Pat');   -- an id 0002 wouldn't accept now
       insert into session(id, actor_id, active_role) values ('kjs_old', 'lee', 'product');
       insert into node(id, kind, layer, title) values ('orders', 'functional_spec', 'functional', 'Orders');
       insert into version(id, node_id, seq, layer, state, actor_id, active_role)
@@ -150,7 +150,8 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
       insert into element(version_id, element_id, ord, text, fingerprint) values ('v1', 'R1', 0, 'Orders can be cancelled.', 'x');`);
 
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(1) });
-    expect((await db.query(`select id, kind, owner_id, owner_kind from actor order by id`)).rows).toStrictEqual([
+    expect((await db.query(`select id, kind, owner_id, owner_kind from actor order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'Pat Smith', kind: 'person', owner_id: null, owner_kind: null },
       { id: 'eng-1', kind: 'person', owner_id: null, owner_kind: null },
       { id: 'lee', kind: 'person', owner_id: null, owner_kind: null },
     ]);

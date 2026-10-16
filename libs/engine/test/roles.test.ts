@@ -1,5 +1,5 @@
 import { expect, test } from '@jest/globals';
-import { GateError, RoleError } from '@konjir/engine';
+import { ActorError, GateError, RoleError } from '@konjir/engine';
 import { setup, els, rejection } from '@konjir/engine/testing';
 
 test('an engineer session cannot create or write the functional layer', async () => {
@@ -13,7 +13,7 @@ test('an engineer session cannot create or write the functional layer', async ()
 test('dynamic separation of duty: one active role per actor at a time', async () => {
   const { kolab } = await setup();
   const asProduct = await kolab.openSession('carol', 'product');
-  await expect(kolab.openSession('carol', 'engineer')).rejects.toBeInstanceOf(RoleError);
+  await expect(kolab.openSession('carol', 'engineer')).rejects.toBeInstanceOf(ActorError);
   await kolab.endSession(asProduct);
   const asEngineer = await kolab.openSession('carol', 'engineer');
   expect(asEngineer).toBeTruthy();
@@ -23,13 +23,17 @@ test('dynamic separation of duty: one active role per actor at a time', async ()
 test('row-level security backstops Kolab: a direct write in the wrong layer is refused', async () => {
   const { kolab, product, engineer } = await setup();
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout');
-  const attempt = (session: string) => kolab.db.transaction(async (tx) => {
-    await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [session]);
-    await tx.query(
-      `insert into version(id, node_id, seq, layer, state, actor_id, active_role)
-       values ($1, $2, 1, 'functional', 'drafted', 'x', 'x')`, [`v-${session}`, spec]);
-  });
+  // Each writes as its own actor and role, which row-level security also checks (0002).
+  const attempt = async (session: string) => {
+    const me = await kolab.sessionInfo(session);
+    return kolab.db.transaction(async (tx) => {
+      await tx.exec('set local role kj_agent');
+      await tx.query(`select set_config('kj.session', $1, true)`, [session]);
+      await tx.query(
+        `insert into version(id, node_id, seq, layer, state, actor_id, active_role)
+         values ($1, $2, 1, 'functional', 'drafted', $3, $4)`, [`v-${session}`, spec, me.actor, me.role]);
+    });
+  };
   expect(await rejection(attempt(engineer))).toMatch(/row-level security/);
   await attempt(product);
   await kolab.close();

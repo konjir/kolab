@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 98 scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 102 scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -84,7 +84,7 @@ bin/konjir admin_list_actors owner=lee                         # a person's agen
 
 Then point each harness at Kolab with its own token. The token decides who the agent is and which layer it may write. Tool arguments never carry identity.
 
-An actor is a person, or an agent owned by a person. Each agent is an actor of its own: it holds its own session, so one person's agents can each hold one at the same time, and it is the author of what it writes. `whoami` names the agent and its `owner`, and `read_node` gives each version's `author`, with the agent, its owner and its role. An agent's owner must be a person; agents owned by an organization, and the grants an agent may not exceed, come with accounts and grants (W1.3). Until then any actor may activate either role.
+An actor is a person, or an agent owned by a person. Each agent is an actor of its own: it holds its own session, so one person's agents can each hold one at the same time, and it is the author of what it writes. `whoami` names the agent and its `owner`, and `read_node` gives each version's `author`, with the agent, its owner and its role. An actor's kind and owner never change once it's added, so past authorship stays as it was written. An id is letters, digits, `.`, `_`, `-` and `@`, and `kolab` is reserved for Kolab's own work. An agent's owner must be a person; agents owned by an organization, and the grants an agent may not exceed, come with accounts and grants (W1.3). Until then any actor may activate either role.
 
 - **Claude Code:** `claude mcp add --transport http konjir http://127.0.0.1:7420/mcp --header "Authorization: Bearer <token>"`
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
@@ -258,7 +258,7 @@ An element address covers that element's subtree, so addressing a section means 
 
 The rebased child must pass the review gate. Resolving a dirty override records precedent, and the same `(base, parent, child)` triple then resolves itself on the next rebase.
 
-**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Each agent is an actor of its own, so the rule holds per agent, and one person's agents can each hold a session at once. Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer.
+**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Each agent is an actor of its own, so the rule holds per agent, and one person's agents can each hold a session at once. Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer. They write only as their session's own actor and role: a version, element, delta or question can't be authored as anyone else, an agent's owner included.
 
 ## What the prototype found
 

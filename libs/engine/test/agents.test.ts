@@ -61,7 +61,7 @@ test("Kolab's own rebases are authored by the system, not by a person or an agen
 test('one open session per agent: an agent with a session must end it before opening another', async () => {
   const kolab = await aliceAndHerAgents();
   const first = await kolab.openSession('alice-pm', 'product');
-  expect(await rejection(kolab.openSession('alice-pm', 'engineer'))).toMatch(/RoleError: alice-pm already has an open session/);
+  expect(await rejection(kolab.openSession('alice-pm', 'engineer'))).toMatch(/ActorError: alice-pm already has an open session; end it before opening another/);
   await kolab.openSession('alice-pm-2', 'engineer');   // her other agent is unaffected
   await kolab.endSession(first);
   expect(await kolab.sessionInfo(await kolab.openSession('alice-pm', 'engineer'))).toMatchObject({ actor: 'alice-pm', role: 'engineer' });
@@ -80,7 +80,7 @@ test("an agent's owner must be a person who exists", async () => {
   expect(await kolab.actor('alice')).toStrictEqual({ id: 'alice', name: 'Alice', kind: 'person', owner: null });
 });
 
-test('the database refuses an agent with no owner, a person with one, an agent owned by an agent, and an owner turned agent', async () => {
+test('the database refuses an agent with no owner, a person with one, an agent owned by an agent, and a bad id', async () => {
   const kolab = await aliceAndHerAgents();
   const insert = (id: string, kind: string, owner: string | null) =>
     kolab.db.query(`insert into actor(id, name, kind, owner_id) values ($1, $1, $2, $3)`, [id, kind, owner]);
@@ -89,7 +89,79 @@ test('the database refuses an agent with no owner, a person with one, an agent o
   expect(await rejection(insert('sub-agent', 'agent', 'alice-pm'))).toMatch(/actor_owner_is_person/);
   expect(await rejection(insert('stray', 'agent', 'nobody'))).toMatch(/actor_owner_is_person/);
   expect(await rejection(insert('robot', 'robot', null))).toMatch(/actor_kind_check/);
-  // Alice owns agents, so she can't become an agent herself.
+  expect(await rejection(insert('kolab', 'person', null))).toMatch(/actor_id_check/);
+  expect(await rejection(insert('', 'person', null))).toMatch(/actor_id_check/);
+  expect(await rejection(insert('a b', 'person', null))).toMatch(/actor_id_check/);
+});
+
+test("an actor's kind and owner never change, so past authorship can't be rewritten", async () => {
+  const kolab = await aliceAndHerAgents();
   await kolab.addActor('bob');
-  expect(await rejection(kolab.db.query(`update actor set kind = 'agent', owner_id = 'bob' where id = 'alice'`))).toMatch(/actor_owner_is_person/);
+  await kolab.addActor('carol');
+  const update = (sql: string) => kolab.db.query(`update actor set ${sql}`);
+  expect(await rejection(update(`owner_id = 'bob' where id = 'alice-pm'`))).toMatch(/actor alice-pm: kind and owner never change/);
+  expect(await rejection(update(`kind = 'person', owner_id = null where id = 'alice-pm'`))).toMatch(/kind and owner never change/);
+  expect(await rejection(update(`kind = 'agent', owner_id = 'bob' where id = 'carol'`))).toMatch(/kind and owner never change/);
+  expect(await rejection(update(`kind = 'agent', owner_id = 'bob' where id = 'alice'`))).toMatch(/kind and owner never change/);
+  await update(`name = 'Alice Liddell' where id = 'alice'`);   // a name may change
+  expect(await kolab.actor('alice-pm')).toMatchObject({ kind: 'agent', owner: 'alice' });
+});
+
+test('an actor id must be valid, new and not the reserved kolab', async () => {
+  const kolab = await aliceAndHerAgents();
+  expect(await rejection(kolab.addActor('alice'))).toMatch(/ActorError: actor alice already exists/);
+  expect(await rejection(kolab.addActor('alice-pm', { owner: 'alice' }))).toMatch(/ActorError: actor alice-pm already exists/);
+  expect(await rejection(kolab.addActor('kolab'))).toMatch(/ActorError: "kolab" is reserved/);
+  expect(await rejection(kolab.addActor(''))).toMatch(/ActorError: "" isn't a valid actor id/);
+  expect(await rejection(kolab.addActor('two words'))).toMatch(/ActorError: "two words" isn't a valid actor id/);
+  await kolab.addActor('lee@konjir.com');
+});
+
+test("row-level security: an agent's session writes only as its own actor and role, never as its owner", async () => {
+  const kolab = await aliceAndHerAgents();
+  const pm = await kolab.openSession('alice-pm', 'product');
+  await kolab.openSession('alice-pm-2', 'product');
+  const spec = await kolab.createNode(pm, 'functional_spec', 'Checkout', 'checkout');
+  const v1 = await kolab.commit(pm, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
+  const asAgent = (sql: string, params: unknown[]) => kolab.db.transaction(async (tx) => {
+    await tx.exec('set local role kj_agent');
+    await tx.query(`select set_config('kj.session', $1, true)`, [pm]);
+    await tx.query(sql, params);
+  });
+  const draftBy = (id: string, actor: string, role: string) => asAgent(
+    `insert into version(id, node_id, seq, layer, state, actor_id, active_role)
+     values ($1, $2, 90, 'functional', 'drafted', $3, $4)`, [id, spec, actor, role]);
+
+  for (const [actor, role] of [['alice', 'product'], ['alice-pm-2', 'product'], ['kolab', 'system'], ['alice-pm', 'engineer']]) {
+    expect(await rejection(draftBy(`v-${actor}-${role}`, actor, role))).toMatch(/row-level security/);
+  }
+  await draftBy('v-own', 'alice-pm', 'product');   // as itself, in its own role
+
+  // Elements and deltas go only into the session's own drafts.
+  await kolab.db.query(`insert into version(id, node_id, seq, layer, state, actor_id, active_role)
+                        values ('v-other', $1, 91, 'functional', 'drafted', 'alice-pm-2', 'product')`, [spec]);
+  const element = (version: string) => asAgent(
+    `insert into element(version_id, element_id, ord, text, fingerprint) values ($1, 'R9', 0, 'x', 'x')`, [version]);
+  expect(await rejection(element('v-other'))).toMatch(/row-level security/);
+  await element('v-own');
+  const delta = (id: string, version: string) => asAgent(
+    `insert into delta(id, version_id, element_id, kind, text) values ($1, $2, 'R9', 'add', 'x')`, [id, version]);
+  expect(await rejection(delta('d-other', 'v-other'))).toMatch(/row-level security/);
+  await delta('d-own', 'v-own');
+
+  // A question is raised by the session's own actor, and unanswered.
+  const query = (id: string, raisedBy: string, answeredBy: string | null = null) => asAgent(
+    `insert into query(id, version_id, question, raised_by, answered_by) values ($1, $2, 'Why?', $3, $4)`, [id, v1, raisedBy, answeredBy]);
+  expect(await rejection(query('q-owner', 'alice'))).toMatch(/row-level security/);
+  expect(await rejection(query('q-answered', 'alice-pm', 'alice'))).toMatch(/row-level security/);
+  await query('q-own', 'alice-pm');
+});
+
+test("author() takes the system from the version's role, and refuses a version whose actor is gone", async () => {
+  const kolab = await aliceAndHerAgents();
+  const pm = await kolab.openSession('alice-pm', 'product');
+  const spec = await kolab.createNode(pm, 'functional_spec', 'Checkout', 'checkout');
+  await kolab.db.query(`insert into version(id, node_id, seq, layer, state, actor_id, active_role)
+                        values ('v-ghost', $1, 1, 'functional', 'committed', 'ghost', 'product')`, [spec]);
+  expect(await rejection(kolab.author('v-ghost'))).toMatch(/ActorError: version v-ghost names actor ghost, who doesn't exist/);
 });
