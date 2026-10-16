@@ -10,7 +10,7 @@ import {
   BASELINE, MIGRATIONS, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
 import { Kolab } from '@konjir/engine';
-import { els, persistentStore, rejection, testStore, type Store } from '@konjir/engine/testing';
+import { els, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
 import { MARK_REASONS, QUERY_KINDS } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
@@ -156,7 +156,7 @@ test('migrations are applied in version order, and each only once', async () => 
 test('a migration that fails leaves the database as it was', async () => {
   await withDb(async (db) => {
     await migrate(db, { migrations: [m1] });
-    expect(await rejection(migrate(db, { migrations: [m1, m2, m(3, `insert into nowhere values (1)`)] }))).toMatch(/nowhere/);
+    expect(await rejection(migrate(db, { migrations: [m1, m2, m(3, `insert into nowhere values (1)`)] }))).toMatch(/^Error: migration 0003_m3\.sql failed: .*nowhere/);
     expect((await db.query(`select n from t`)).rows).toStrictEqual([]);
     expect((await recorded(db)).map((r) => r.version)).toStrictEqual([1]);
   });
@@ -206,10 +206,21 @@ test('Kolab processes opening one database at once migrate it once', async () =>
 
 // ---- review findings: misnamed files, edited files, grants, transaction control -------
 
-function migrationsDir(files: Record<string, string>) {
+/**
+ * A migrations folder of the test's own. Every .sql file is pinned in checksums.json, as the
+ * loader requires, unless `pins` says otherwise.
+ */
+function migrationsDir(files: Record<string, string>, pins?: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-migrations-'));
   for (const [name, sql] of Object.entries(files)) writeFileSync(join(dir, name), sql);
+  const pinned = pins ?? Object.fromEntries(Object.entries(files).filter(([f]) => /\.sql$/i.test(f)).map(([f, sql]) => [f, checksum(sql)]));
+  writeFileSync(join(dir, 'checksums.json'), JSON.stringify(pinned));
   return { url: pathToFileURL(`${dir}/`), done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function loadFrom(files: Record<string, string>, pins?: Record<string, string>) {
+  const dir = migrationsDir(files, pins);
+  try { return loadMigrations(dir.url); } finally { dir.done(); }
 }
 
 test('a misnamed .sql file in the migrations directory is an error, not skipped', () => {
@@ -317,4 +328,68 @@ test("a $ inside an identifier doesn't start a dollar quote that hides transacti
 
 test('nested block comments are skipped whole', () => {
   expect(statements('/* outer /* inner */ still a comment; commit; */ select 1').map((s) => s.split(/\s+/)[0])).toStrictEqual(['select']);
+});
+
+test('Kolab loads only files pinned in checksums.json, and only as pinned', () => {
+  const files = { '0001_first.sql': 'select 1', '0002_add_x.sql': 'select 2', 'baseline.sql': 'select 0' };
+  const pins = Object.fromEntries(Object.entries(files).map(([f, sql]) => [f, checksum(sql)]));
+  expect(loadFrom(files, pins).map((m) => m.version)).toStrictEqual([1, 2]);
+
+  // A draft left in the working tree, which the release would zip.
+  const { '0002_add_x.sql': _draft, ...shipped } = pins;
+  expect(thrown(() => loadFrom(files, shipped))).toMatch(/0002_add_x\.sql isn't in checksums\.json; add its sha256 there to ship it/);
+  // A shipped file edited, even by a comment, and an edited baseline.
+  expect(thrown(() => loadFrom({ ...files, '0001_first.sql': 'select 1 -- tidied' }, pins))).toMatch(/0001_first\.sql doesn't match its sha256 in checksums\.json/);
+  expect(thrown(() => loadFrom({ ...files, 'baseline.sql': 'select 00' }, pins))).toMatch(/baseline\.sql doesn't match its sha256/);
+  // A shipped file deleted, and no pins at all.
+  const { '0002_add_x.sql': _gone, ...fewer } = files;
+  expect(thrown(() => loadFrom(fewer, pins))).toMatch(/checksums\.json pins 0002_add_x\.sql, which is missing/);
+  const bare = mkdtempSync(join(tmpdir(), 'konjir-migrations-'));
+  try { expect(thrown(() => loadMigrations(pathToFileURL(`${bare}/`)))).toMatch(/can't read checksums\.json/); } finally { rmSync(bare, { recursive: true }); }
+});
+
+test('two migrations with the same number are named, not reported as a gap', () => {
+  expect(thrown(() => loadFrom({ '0001_a.sql': 'select 1', '0002_b.sql': 'select 2', '0002_c.sql': 'select 3' })))
+    .toMatch(/0002_b\.sql and 0002_c\.sql share version 2; renumber the newer one/);
+});
+
+test('a failing baseline names baseline.sql, and keeps the cause', async () => {
+  await withDb(async (db) => {
+    await db.exec(BEFORE_MIGRATIONS);
+    let error: Error | undefined;
+    try { await migrate(db, { baseline: 'alter table nowhere add column x int' }); } catch (e) { error = e as Error; }
+    expect(String(error)).toMatch(/^Error: migration baseline\.sql failed: .*nowhere/);
+    expect(String(error!.cause)).toMatch(/nowhere/);
+    expect((await db.query<{ t: string | null }>(`select to_regclass('public.kj_migration')::text as t`)).rows[0].t).toBeNull();
+  });
+});
+
+test('a begin atomic function body is refused, with the dollar-quoted way to write it', async () => {
+  const atomic = 'create function f() returns int language sql begin atomic select 1; end;';
+  await withDb(async (db) => {
+    expect(await rejection(migrate(db, { migrations: [m(1, atomic)] })))
+      .toMatch(/0001_m1\.sql controls the transaction \(end\).*write the body dollar-quoted/);
+    const quoted = 'create function f() returns int language sql as $$ select 1 $$;';
+    expect((await migrate(db, { migrations: [m(1, quoted)] })).applied).toStrictEqual([1]);
+  });
+});
+
+test('databases on one cluster each migrate, with the kj_ roles another one made', async () => {
+  // On Postgres the roles are the cluster's: the first database made them, and the second finds them.
+  const [a, b] = [await persistentStore(), await persistentStore()];
+  await withDb(async (db) => { await migrate(db); }, a);
+  await withDb(async (db) => {
+    expect((await migrate(db)).applied).toStrictEqual(versions);
+    // Kolab's login can still switch into both.
+    await db.transaction(async (tx) => { await tx.exec('set local role kj_agent'); await tx.exec('set local role kj_system'); });
+  }, b);
+});
+
+test('on Postgres, the suite runs as a login that is not a superuser, as on RDS', async () => {
+  await withDb(async (db, store) => {
+    if (!store.databaseUrl) return;
+    const r = await db.query<{ rolsuper: boolean; rolcreaterole: boolean; rolcreatedb: boolean }>(
+      `select rolsuper, rolcreaterole, rolcreatedb from pg_roles where rolname = current_user`);
+    expect(r.rows[0]).toStrictEqual({ rolsuper: false, rolcreaterole: true, rolcreatedb: true });
+  });
 });
