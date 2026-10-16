@@ -14,6 +14,7 @@
     "typecheck": "nx run-many -t typecheck",
     "build": "nx run-many -t build",
     "measure": "nx run @konjir/engine:measure --",
+    "rebase-storm": "nx run @konjir/engine:rebase-storm --",
     "serve": "bin/konjir serve",
     "konjir": "bin/konjir",
     "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test"
