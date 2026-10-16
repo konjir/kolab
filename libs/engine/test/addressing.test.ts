@@ -111,6 +111,30 @@ test('D42: a verbatim copy whose context no longer agrees is marked; a moved quo
   await kolab.close();
 });
 
+test('a link whose quoted context does not match is refused, with a selector that would', async () => {
+  const { kolab, product, engineer } = await setup();
+  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
+  const s1 = await kolab.commit(product, spec, {
+    elements: els({ R1: 'Alpha said save the cart now. Beta said save a cart later.' }),
+  });
+  const binding = await kolab.createNode(engineer, 'technical_binding', 'Checkout on Postgres', 'B');
+  const b = await kolab.commit(engineer, binding, { elements: els({ b1: 'Beta' }) });
+  const link = (selector: { exact: string; prefix?: string; suffix?: string }) =>
+    kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: 'b1', target: s1, targetElement: 'R1', selector });
+
+  const message = await link({ exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' }).then(() => '', (e: Error) => e.message);
+  expect(message).toMatch(/does not resolve exactly \(fuzzy\)/);
+  expect(message).toContain('"save a cart"');
+  const suggested = /(kj:\S+~q\(.*\))$/.exec(message)![1];
+  const { selector } = parseAddress(suggested);
+  expect(selector).toStrictEqual({ exact: 'save a cart', prefix: 'save the cart now. Beta said', suffix: 'later.' });
+  await expect(link(selector!)).resolves.toEqual(expect.any(String));
+
+  const gone = await link({ exact: 'export receipts' }).then(() => '', (e: Error) => e.message);
+  expect(gone).toMatch(/does not resolve exactly \(orphan\).*konjir_read_node/);
+  await kolab.close();
+});
+
 test('resolve() follows the address scope and floats to the latest committed version', async () => {
   const { kolab, product } = await setup();
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');

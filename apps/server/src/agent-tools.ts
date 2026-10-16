@@ -55,7 +55,7 @@ const link = z.object({
   kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
   source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
   source_element: z.string().optional().describe('Alternative to putting #element in source.'),
-  target: address.describe('What it relies on; must be committed. e.g. kj:checkout@3#R1, or a span: kj:checkout#R1~q({"exact":"30 seconds"})'),
+  target: address.describe('What it relies on; must be committed and resolve exactly. e.g. kj:checkout@3#R1, or a span: kj:checkout#R1~q({"exact":"30 seconds","prefix":"within","suffix":"of payment"}). A span\'s prefix or suffix must still surround its words in the target.'),
 });
 const clearMark = z.object({ mark: z.string() });
 const resolveOverride = z.object({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });
@@ -94,7 +94,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_resolve',
-    description: 'Resolve an address to its current content. Use this instead of caching spec text. Status is ok, fuzzy (wording drifted) or orphan (gone).',
+    description: 'Resolve an address to its current content. Use this instead of caching spec text. Status is ok, fuzzy or orphan. For a quoted span: ok means the exact words, with the prefix or suffix you quoted still around them (or no prefix or suffix was quoted). fuzzy means the span changed: either its wording was edited, or the exact words now appear only without their quoted context, such as a copy in another statement. Both kinds of fuzzy mark whatever links to the span (fuzzy_reanchor). orphan means it is gone.',
     schema: resolve,
     annotations: { readOnlyHint: true },
   })

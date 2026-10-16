@@ -6,7 +6,7 @@ import { KOLAB } from './tokens.js';
 export const INSTRUCTIONS = `Konjir holds the canonical specs, bindings and work for this project. Your session token fixes your actor and role (product writes the functional layer; engineer writes the technical layer).
 Rules:
 1. Fetch fresh. Resolve addresses with konjir_resolve when you need them; never copy spec text into local files, readmes or comments.
-2. Address precisely. kj:<node>[@<version>][#<element>][~q({"exact":"…"})]. Link from the element you are writing to the element you rely on.
+2. Address precisely. kj:<node>[@<version>][#<element>][~q({"exact":"…","prefix":"…","suffix":"…"})]. Link from the element you are writing to the element you rely on. A quoted span stays exact only while its words stand with the prefix or suffix you quoted; edited words, or the same words elsewhere without that context, are marked fuzzy_reanchor.
 3. Never change behavior from the technical layer. If the spec can't be met as written, konjir_ask the spec, don't patch around it. Pass from=<your element> so the answer comes back to that element as a mark. To flag an interpretation or assumption that needs no answer, konjir_annotate the spec.
 4. Drafts are not truth until review commits them. Nothing may link to an uncommitted version.
 5. Before finishing work, run konjir_list_stale and handle every mark on your layer.
