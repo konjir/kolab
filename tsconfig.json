@@ -1,5 +1,5 @@
 {
-  // tsx uses this file: bin/konjir and deploy/release/start.sh point TSX_TSCONFIG_PATH at it.
+  // tsx uses this file: bin/konjir points TSX_TSCONFIG_PATH at it. Production runs tsc's output.
   // It brings in experimentalDecorators from the base, which NestJS needs. tsx applies it only
   // to files it includes, so it keeps the default (everything). Projects type-check with
   // their own tsconfig.json.

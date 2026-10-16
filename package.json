@@ -14,12 +14,9 @@
     "typecheck": "nx run-many -t typecheck",
     "build": "nx run-many -t build",
     "measure": "nx run @konjir/engine:measure --",
-    "serve": "tsx apps/cli/src/main.ts serve",
-    "konjir": "tsx apps/cli/src/main.ts",
+    "serve": "bin/konjir serve",
+    "konjir": "bin/konjir",
     "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test"
-  },
-  "dependencies": {
-    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@jest/globals": "^30.5.2",
@@ -30,6 +27,7 @@
     "@types/pg": "^8.23.1",
     "jest": "^30.5.2",
     "nx": "23.3.0",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "bin": {

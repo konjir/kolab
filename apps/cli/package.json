@@ -8,7 +8,7 @@
     ".": {
       "@konjir/source": "./src/cli.ts",
       "types": "./dist/cli.d.ts",
-      "default": "./src/cli.ts"
+      "default": "./dist/cli.js"
     }
   },
   "scripts": {
@@ -23,5 +23,14 @@
   },
   "devDependencies": {
     "@konjir/engine": "*"
+  },
+  "nx": {
+    "targets": {
+      "test": {
+        "dependsOn": [
+          "build"
+        ]
+      }
+    }
   }
 }

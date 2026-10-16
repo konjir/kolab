@@ -1,3 +1,5 @@
 #!/usr/bin/env sh
+# The development entry: tsx runs the TypeScript source, which the packages export under the
+# @konjir/source condition. Production runs the compiled dist/ instead (deploy/release/start.sh).
 DIR="$(cd -P "$(dirname "$0")/.." && pwd -P)"  # physical: tsx matches its tsconfig by real path
-TSX_TSCONFIG_PATH="$DIR/tsconfig.json" exec "$DIR/node_modules/.bin/tsx" "$DIR/apps/cli/src/main.ts" "$@"
+TSX_TSCONFIG_PATH="$DIR/tsconfig.json" exec "$DIR/node_modules/.bin/tsx" --conditions=@konjir/source "$DIR/apps/cli/src/main.ts" "$@"

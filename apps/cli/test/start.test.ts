@@ -1,10 +1,10 @@
-// The release's start script, run the way the instance runs it: through a symlink
-// (/opt/konjir/current -> /opt/konjir/releases/<ts>). tsx applies its tsconfig only to files
-// under the tsconfig's directory by real path, so a start script that used the symlinked path
-// compiled the server without the decorators NestJS needs, and Kolab restarted in a loop.
+// The release's start script, run the way the instance runs it: plain node on the compiled
+// dist/ (RUN2), reached through a symlink (/opt/konjir/current -> /opt/konjir/releases/<ts>).
+// Nx builds every project before this test (the test target depends on build), as the
+// release's install.sh does before the instance starts it.
 import { afterAll, expect, test } from '@jest/globals';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -17,11 +17,13 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('deploy/release/start.sh serves /healthz when the release is reached through a symlink', async () => {
+test('deploy/release/start.sh serves /healthz with node on the compiled output, through a symlink', async () => {
+  expect(existsSync(join(root, 'apps/cli/dist/main.js'))).toBe(true); // run it through Nx, which builds first
   symlinkSync(root, join(dir, 'current'));
   const port = 20000 + Math.floor(Math.random() * 20000);
   child = spawn('bash', [join(dir, 'current/deploy/release/start.sh'), '--port', String(port), '--data', join(dir, 'data')], {
-    env: { ...process.env, KONJIR_ADMIN_TOKEN: 'start-test', KONJIR_DATABASE_URL: '' },
+    // No type stripping: if any package still resolved to its .ts source, node would fail to load it.
+    env: { ...process.env, NODE_OPTIONS: '--no-experimental-strip-types', KONJIR_ADMIN_TOKEN: 'start-test', KONJIR_DATABASE_URL: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -35,4 +37,8 @@ test('deploy/release/start.sh serves /healthz when the release is reached throug
 
   const res = await fetch(`http://127.0.0.1:${port}/healthz`);
   expect(await res.text()).toBe('ok');
+
+  // start.sh execs node, so the child is the server itself: node on dist, with no tsx.
+  const command = execFileSync('ps', ['-o', 'args=', '-p', String(child.pid)], { encoding: 'utf8' }).trim();
+  expect(command).toBe(`node apps/cli/dist/main.js serve --port ${port} --data ${join(dir, 'data')} --quiet`);
 }, 60_000);

@@ -4,5 +4,12 @@
 # so changing how Kolab installs is a plain terraform apply, not a new instance.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-# --omit=dev: production needs tsx, not the build tools (Nx, TypeScript), or their install scripts.
-HOME=/tmp npm ci --omit=dev --no-audit --no-fund --loglevel=error
+export HOME=/tmp NX_DAEMON=false NX_NO_CLOUD=true NX_TUI=false
+# 1. Build: every project's Nx build target compiles it with tsc into its dist/. The build
+#    needs the dev dependencies (Nx, TypeScript); none of them needs its install script.
+npm ci --ignore-scripts --no-audit --no-fund --loglevel=error
+npx nx run-many -t build --skip-nx-cache --output-style=static
+rm -rf .nx
+# 2. Run: reinstall only the production dependencies, so the release holds no build tools.
+#    npm ci replaces node_modules and leaves each project's dist/ in place.
+npm ci --omit=dev --no-audit --no-fund --loglevel=error

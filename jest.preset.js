@@ -8,6 +8,9 @@
  */
 export default {
   testEnvironment: 'node',
+  // Tests run the TypeScript source: packages export it under the @konjir/source condition,
+  // and their default export is the compiled dist/ that production runs.
+  testEnvironmentOptions: { customExportConditions: ['@konjir/source', 'node', 'node-addons'] },
   testMatch: ['<rootDir>/test/**/*.test.ts'],
   setupFilesAfterEnv: ['<rootDir>/../../jest.setup.js'],
   globalSetup: '<rootDir>/../../jest.global-setup.js',
