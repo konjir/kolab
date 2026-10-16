@@ -39,7 +39,9 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | `@konjir/db` | `libs/db` | The schema, as versioned SQL migrations, and the connection |
 | `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI and engine |
 
-Each package's `exports` resolve to its TypeScript source at run time (through `tsx`) and to its `dist/` declarations when another project builds against it. Production still runs the source through `tsx` until W1.10 moves it to compiled output, so `tsx` is the root package's one runtime dependency. Each release carries its own `deploy/release/install.sh` (`npm ci --omit=dev`, so Nx and TypeScript stay off the instance) and `start.sh`; the instance's boot script only calls them, so changing either ships with a plain `terraform apply`.
+Each package's `exports` give two entry points. The `@konjir/source` condition points at its TypeScript source, which development uses: `bin/konjir` runs it through `tsx`, Jest resolves it, and type-checking follows it. The default points at the compiled `dist/`, which production runs on plain `node`, and which other projects build against through its declarations. `tsx` is a development dependency only.
+
+Each release carries its own `deploy/release/install.sh` and `start.sh`; the instance's boot script only calls them, so changing either ships with a plain `terraform apply`. The release ships source, not `dist/`. `install.sh` builds it on the instance: a full `npm ci --ignore-scripts`, then every project's Nx `build` target (tsc), then `npm ci --omit=dev`, so the release keeps its `dist/` but no build tools. `start.sh` runs `node apps/cli/dist/main.js serve`.
 
 ## Changing the schema
 

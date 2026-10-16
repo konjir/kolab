@@ -3,9 +3,7 @@
 # /etc/konjir/env and the admin token in the environment, and passes --port and --data.
 # It ships with the code, so changing how Kolab starts is a plain terraform apply.
 set -euo pipefail
-# The physical path: the release is reached through the /opt/konjir/current symlink, and tsx
-# applies the tsconfig only to files under its directory, which it compares by real path.
+# The physical path: the release is reached through the /opt/konjir/current symlink.
 cd -P "$(dirname "$0")/../.."
-# tsx compiles the source until W1.10; this tsconfig turns on the decorators NestJS needs.
-export TSX_TSCONFIG_PATH="$PWD/tsconfig.json"
-exec node_modules/.bin/tsx apps/cli/src/main.ts serve "$@" --quiet
+# Plain node on the output install.sh compiled: each package's default export is its dist/.
+exec node apps/cli/dist/main.js serve "$@" --quiet

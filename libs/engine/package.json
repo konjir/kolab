@@ -8,19 +8,19 @@
     ".": {
       "@konjir/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
-      "default": "./src/index.ts"
+      "default": "./dist/index.js"
     },
     "./testing": {
       "@konjir/source": "./src/testing.ts",
       "types": "./dist/testing.d.ts",
-      "default": "./src/testing.ts"
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest",
-    "measure": "tsx scripts/measure.ts"
+    "measure": "tsx --conditions=@konjir/source scripts/measure.ts"
   },
   "dependencies": {
     "ulid": "^3.0.2",
