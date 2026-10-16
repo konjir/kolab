@@ -171,7 +171,7 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
   } finally { await kolab.close(); }
 });
 
-test('a database at 0002 reaches 0003: each version is given the base the old check implied, so an open draft is judged as before', async () => {
+test('a database at 0002 reaches 0003: settled versions get the base the old check implied, and open drafts none, so they are redrafted', async () => {
   const store = await persistentStore();
   await withDb(async (db) => {
     expect(await migrate(db, { migrations: MIGRATIONS.slice(0, 2) })).toStrictEqual({ baselined: false, applied: [1, 2] });
@@ -194,18 +194,21 @@ test('a database at 0002 reaches 0003: each version is given the base the old ch
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(2) });
     expect((await db.query(`select id, base_version_id from version order by seq`)).rows).toStrictEqual([
       { id: 'v1', base_version_id: null },
-      { id: 'd2', base_version_id: 'v1' },
+      { id: 'd2', base_version_id: null },   // open drafts: their true base is unknowable
       { id: 'v3', base_version_id: 'v1' },
       { id: 'r4', base_version_id: 'v3' },
-      { id: 'd5', base_version_id: 'v3' },
+      { id: 'd5', base_version_id: null },
     ]);
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
   const kolab = await Kolab.open(store);
   try {
-    expect(await kolab.review('d2')).toMatchObject({ ok: false, stale: true });   // Pat's v3 overtook it
-    expect(await kolab.review('d5')).toMatchObject({ ok: true, version: 'd5' });
+    // Each open draft is rejected as stale, to be redrafted, rather than risk committing over an
+    // edit it never saw: d5 may have been drafted before v3 committed.
+    expect(await kolab.review('d2')).toMatchObject({ ok: false, stale: true });
+    expect(await kolab.review('d5')).toMatchObject({ ok: false, stale: true });
+    expect((await kolab.latestCommitted('orders'))!.id).toBe('v3');
   } finally { await kolab.close(); }
 });
 

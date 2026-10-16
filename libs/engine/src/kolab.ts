@@ -43,6 +43,14 @@ const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 /** The author of Kolab's own work, in the role 'system'. Never an actor. */
 export const SYSTEM_ACTOR = 'kolab';
 export class GateError extends Error { name = 'GateError'; }
+/** Thrown by review when the reviewer itself fails with anything but ReviewUnavailableError. The draft stays drafted. */
+export class ReviewerError extends Error { name = 'ReviewerError'; }
+/**
+ * A version committed, but the cascade it runs (marks, rebases of its variants, its own
+ * catch-up) stopped part way, on an error this names. The commit stands; whatever the cascade
+ * hadn't reached yet is reached by the node's next commit, or its parent's.
+ */
+export class CascadeError extends Error { name = 'CascadeError'; }
 
 /**
  * How events and logs name a session: the sha256 of its id, base64url. The id is the bearer
@@ -479,7 +487,7 @@ export class Kolab {
       if (e instanceof ReviewUnavailableError) {
         return { ok: false, note: `Review could not run: ${e.message}. The draft is unchanged; resubmit it later.`, version: versionId, retryable: true };
       }
-      throw e;
+      throw new ReviewerError(`the reviewer failed on ${versionId}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
     if (!verdict.ok) {
       await this.reject(versionId, verdict.note ?? null);
@@ -488,8 +496,13 @@ export class Kolab {
     // The node may have moved on while the reviewer ran, which with a semantic gate takes seconds.
     const late = await this.commitStep(v, verdict.note ?? null);
     if (late) return this.settleOvertaken(v, late);
-    await this.onCommit(versionId);
-    await this.raiseLayerLeaks(v, verdict.findings ?? []);
+    try {
+      await this.onCommit(versionId);
+      await this.raiseLayerLeaks(v, verdict.findings ?? []);
+    } catch (e) {
+      if (e instanceof CascadeError) throw e;   // a variant's cascade, further down, names itself
+      throw new CascadeError(`${v.node_id}@${v.seq} committed, but its cascade did not finish: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+    }
     return { ...verdict, version: versionId };
   }
 
@@ -498,7 +511,7 @@ export class Kolab {
    * commits only if the node's live version is still its base. Otherwise it commits nothing and
    * returns the versions that overtook it.
    */
-  private commitStep(v: VersionRow, note: string | null): Promise<{ active_role: string }[] | undefined> {
+  private commitStep(v: VersionRow, note: string | null): Promise<Overtaker[] | undefined> {
     return this.asSystem(async (tx) => {
       const newer = await overtakenBy(tx, v);
       if (newer) return newer;
@@ -510,15 +523,16 @@ export class Kolab {
   }
 
   /**
-   * A version the node's newer commits overtook. When only Kolab's own rebases overtook a draft,
-   * nothing human is lost: the draft is folded into a fresh rebase onto the current parent, built
-   * on the current live version. When anyone else's commit did, it is rejected for redrafting.
-   * A rebase of Kolab's own that was overtaken is dropped: whatever overtook it committed after
-   * its parent did, so that version's own catch-up (onCommit step 5) rebases it.
+   * A version that `newer`, the node's commits since its base, overtook. When only Kolab's own
+   * rebases overtook a draft, nothing human is lost: the draft is folded into a fresh rebase onto
+   * the current parent. The fold is built on the newest of `newer`, the versions judged here, so
+   * if anything else commits meanwhile, the fold is overtaken in turn and judged again. When
+   * anyone else's commit overtook the draft, it is rejected for redrafting. A rebase of Kolab's
+   * own that was overtaken is dropped; its caller (rebase) catches up whatever overtook it.
    */
-  private async settleOvertaken(v: VersionRow, newer: { active_role: string }[]): Promise<GateResult> {
+  private async settleOvertaken(v: VersionRow, newer: Overtaker[]): Promise<GateResult> {
     if (v.active_role === 'system') {
-      const note = `superseded: ${v.node_id} committed a newer version while this rebase waited, and that version catches up itself`;
+      const note = `superseded: ${v.node_id} committed a newer version while this rebase waited`;
       await this.reject(v.id, note);
       return { ok: false, note, version: v.id, stale: true };
     }
@@ -530,11 +544,11 @@ export class Kolab {
       return { ok: false, note, version: v.id, stale: true };
     }
     const latestParent = (await this.latestCommitted(parent.node_id))!;
-    const live = (await this.latestCommitted(v.node_id))!;
     // Folding keeps the draft's authorship (so a later stale draft still sees a
     // human commit and is rejected) and the dependencies the draft declared.
-    const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: live.id });
-    await this.reject(v.id, `folded into ${folded.version}`);
+    const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id });
+    await this.reject(v.id, folded.ok ? `folded into ${folded.version}`
+      : `overtaken by Kolab's rebases; folding it into ${folded.version} failed: ${folded.note ?? ''}`);
     return folded;
   }
 
@@ -740,21 +754,26 @@ export class Kolab {
         where p.node_id = $1 and c.node_id <> $1 and p.id <> $2 and c.state = 'committed'
           and ${LIVE('c')}`,
       [v.node_id, v.id]);
-    for (const c of children.rows) {
-      // A child committed again since the list was taken; that commit's step 5 rebases it.
-      if ((await this.latestCommitted(c.node_id))?.id !== c.id) continue;
-      await this.rebaseOrMark(c, v);
-    }
+    //    Each rebases the variant's live version as it is now, never the one listed, which
+    //    someone may have committed past since.
+    for (const c of children.rows) await this.catchUp(c.node_id);
 
     // 5. Catch-up for this version itself: drafted against a parent that has since moved on.
-    if (v.parent_version_id) {
-      const p = await this.version(v.parent_version_id);
-      if (p.node_id !== v.node_id) {
-        const latestParent = (await this.latestCommitted(p.node_id))!;
-        const live = (await this.latestCommitted(v.node_id))!;
-        if (latestParent.id !== p.id && live.id === v.id) await this.rebaseOrMark(v, latestParent);
-      }
-    }
+    await this.catchUp(v.node_id);
+  }
+
+  /**
+   * If a variant's live version sits on an older version of its parent node, rebase it onto the
+   * parent's latest. Every path that leaves a variant behind ends here: the parent's storm, the
+   * variant's own commit, and a rebase dropped because something overtook it.
+   */
+  private async catchUp(nodeId: string) {
+    const live = await this.latestCommitted(nodeId);
+    if (!live?.parent_version_id) return;
+    const p = await this.version(live.parent_version_id);
+    if (p.node_id === nodeId) return;
+    const latestParent = (await this.latestCommitted(p.node_id))!;
+    if (latestParent.id !== p.id) await this.rebaseOrMark(live, latestParent);
   }
 
   /** Re-resolve an edge against a newer target version: re-pin if unchanged, else mark. */
@@ -816,29 +835,47 @@ export class Kolab {
   // ---- overrides: the three-way rule ---------------------------------------
 
   /**
-   * A rebase that throws marks the variant it was for, and the cascade carries on, so one
-   * variant's failure never leaves the ones after it on the old parent (W1.17). A later
-   * successful rebase settles the mark, as it does a failed review's.
+   * A rebase that fails for a reason of the variant's own (its review rejected or couldn't run,
+   * the reviewer failed, a gate refused it) marks the variant, and the cascade carries on, so one
+   * variant's failure never leaves the ones after it behind (W1.17). Anything else, such as a
+   * lost connection or a failure in the cascade of a rebase that did commit, propagates: the
+   * parent's caller gets a CascadeError rather than a success with variants silently left behind.
    */
   private async rebaseOrMark(child: VersionRow, newParent: VersionRow) {
     try {
       await this.rebase(child, newParent);
     } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      try {
-        const live = (await this.latestCommitted(child.node_id))?.id ?? child.id;
-        const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent.id, reason: 'review_failed' });
-        await this.ask(live, null, markId, `Rebasing onto the new parent failed: ${why}. Commit a new version to rebase it, or wait for the parent's next commit.`);
-      } catch (m) {
-        console.error(`kolab: rebasing ${child.node_id} onto ${newParent.id} failed (${why}), and so did marking it: ${m}`);
-      }
+      if (!(e instanceof GateError || e instanceof ReviewerError)) throw e;
+      await this.rebaseFailed(child.node_id, newParent.id, `Rebasing onto the new parent failed: ${e.message}. Commit a new version to rebase it, or wait for the parent's next commit.`);
     }
   }
 
   /**
+   * Marks a variant whose rebase failed, on its live version, with a question. A variant holds
+   * at most one open review_failed mark: a later failure re-points that mark at the newer parent
+   * and rewords its question instead of adding another. A rebase that passes settles it.
+   */
+  private async rebaseFailed(nodeId: string, newParent: string, question: string) {
+    const live = (await this.latestCommitted(nodeId))!.id;
+    const open = (await this.db.query<{ id: string }>(
+      `select id from invalidation where version_id = $1 and reason = 'review_failed' and state = 'open' order by id limit 1`, [live])).rows[0];
+    if (!open) {
+      const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent, reason: 'review_failed' });
+      await this.ask(live, null, markId, question);
+      return;
+    }
+    await this.asSystem(async (tx, signal) => {
+      await tx.query(`update invalidation set triggered_by = $2 where id = $1`, [open.id, newParent]);
+      await tx.query(`update query set question = $2 where invalidation_id = $1 and state = 'open'`, [open.id, question]);
+      await this.signalLayerOf(tx, signal, live);
+    });
+  }
+
+  /**
    * `child` rebased onto `newParent`, through the review gate. The new version is built on
-   * `base`, by default `child` itself: if the node has moved on past it by commit time, a
-   * rebase of Kolab's own is dropped (settleOvertaken).
+   * `base`, by default `child` itself. If the node has moved on past it by commit time, a rebase
+   * of Kolab's own is dropped, and the variant's live version is caught up here instead, so
+   * nothing depends on the overtaking version's own cascade getting that far.
    */
   private async rebase(child: VersionRow, newParent: VersionRow,
     opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string } = {}): Promise<GateResult> {
@@ -894,14 +931,23 @@ export class Kolab {
     }, child.node_id);
 
     // The rebased child goes through the review gate like any other version.
-    const verdict = await this.review(id);
-    // Overtaken, it failed nothing: the version that overtook it carries on.
-    if (verdict.stale) return verdict;
+    let verdict: GateResult;
+    try {
+      verdict = await this.review(id);
+    } catch (e) {
+      // The reviewer fell over: the rebase never committed, and nothing will resubmit it.
+      if (e instanceof ReviewerError) await this.reject(id, e.message);
+      throw e;
+    }
+    if (verdict.stale) {
+      // Overtaken, it failed nothing. Whatever overtook it may still be behind the parent.
+      await this.catchUp(child.node_id);
+      return verdict;
+    }
     if (!verdict.ok) {
       // The node stays on whatever it last committed; the mark goes there.
-      const live = (await this.latestCommitted(child.node_id))?.id ?? child.id;
-      const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent.id, reason: 'review_failed' });
-      await this.ask(live, null, markId, `Rebasing onto the new parent failed review: ${verdict.note ?? ''}`);
+      if (verdict.retryable) await this.reject(verdict.version, verdict.note ?? null);
+      await this.rebaseFailed(child.node_id, newParent.id, `Rebasing onto the new parent failed review: ${verdict.note ?? ''}`);
       return verdict;
     }
     // A successful rebase settles any earlier failed one (its mark moved here on supersede).
@@ -1528,16 +1574,20 @@ async function nextSeq(tx: Q, nodeId: string): Promise<number> {
   return r.rows[0].n;
 }
 
+/** A version committed since another's base: it overtook that one. */
+type Overtaker = { id: string; active_role: string };
+
 /**
- * The node's versions committed since `v`'s base, by role, or undefined if its base is still the
+ * The node's versions committed since `v`'s base, oldest first, or undefined if its base is still the
  * live version. Committed versions only ever commit on the live version, so their seqs rise in
  * commit order, and anything committed above the base's seq came after it.
  */
-async function overtakenBy(q: Q, v: VersionRow): Promise<{ active_role: string }[] | undefined> {
-  const r = await q.query<{ active_role: string }>(
-    `select active_role from version
+async function overtakenBy(q: Q, v: VersionRow): Promise<Overtaker[] | undefined> {
+  const r = await q.query<Overtaker>(
+    `select id, active_role from version
       where node_id = $1 and state = 'committed' and id <> $3
-        and seq > coalesce((select seq from version where id = $2), 0)`, [v.node_id, v.base_version_id, v.id]);
+        and seq > coalesce((select seq from version where id = $2), 0)
+      order by seq`, [v.node_id, v.base_version_id, v.id]);
   return r.rows.length ? r.rows : undefined;
 }
 

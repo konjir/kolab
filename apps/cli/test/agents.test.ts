@@ -54,3 +54,30 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   // Identity rides the token: an agent can't reach the admin verbs to add agents of its own.
   expect((await one.client.listTools()).tools.some((t) => t.name.startsWith('konjir_admin'))).toBe(false);
 });
+
+test('over MCP, an agent whose draft another agent overtook is told it is stale, not that its content was wrong', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  open.push(server, admin);
+  const session = async (actor: string) => {
+    await call(admin, 'admin_add_actor', { id: actor });
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
+    const client = await connect(server.url, token);
+    open.push(client);
+    return client;
+  };
+  const one = await session('ann');
+  const two = await session('ben');
+  await call(one, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(one, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }] });
+  await call(one, 'submit_for_review', { node: 'checkout', version: 1 });
+  await call(one, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 20 seconds.' }] });
+  await call(two, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 10 seconds.' }] });
+  expect(await call(two, 'submit_for_review', { node: 'checkout', version: 3 })).toMatchObject({ ok: true, stale: false });
+
+  expect(await call(one, 'submit_for_review', { node: 'checkout', version: 2 })).toMatchObject({
+    ok: false, stale: true, committed: null,
+    review: 'stale draft: the node committed a newer version; redraft against it',
+    next: expect.stringMatching(/^Stale: someone else committed to checkout after you drafted/),
+  });
+});

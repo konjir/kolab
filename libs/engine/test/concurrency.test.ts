@@ -60,26 +60,29 @@ const noteOf = async (kolab: Kolab, id: string) =>
 
 // ---- two commits to one node --------------------------------------------------
 
-test('two concurrent commits to one node: one commits, the other is rejected as stale with a GateError', async () => {
+test('two commits to one node built on the same version: the second is rejected as stale with a GateError', async () => {
   const { kolab, product } = await setup();
   await kolab.addActor('dave');
   const dave = await kolab.openSession('dave', 'product');
   const { ids } = await family(kolab, product, 1);
-  const rs = await Promise.allSettled([
-    kolab.commit(product, 'V0', add('A', 'Alice adds A.')),
-    kolab.commit(dave, 'V0', add('B', 'Dave adds B.')),
+  // Both drafted on V0@1, at once: each takes a number of its own.
+  const [alice, mine] = await Promise.all([
+    kolab.draft(product, 'V0', add('A', 'Alice adds A.')),
+    kolab.draft(dave, 'V0', add('B', 'Dave adds B.')),
+  ]);
+  expect((await history(kolab, 'V0')).map((v) => [v.seq, v.state, v.base])).toStrictEqual([
+    [1, 'committed', null], [2, 'drafted', 1], [3, 'drafted', 1],
   ]);
 
-  const won = rs.findIndex((r) => r.status === 'fulfilled');
-  const lost = rs.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-  expect(rs.filter((r) => r.status === 'fulfilled').length).toBe(1);
-  expect(lost!.reason).toBeInstanceOf(GateError);
-  expect(String(lost!.reason)).toMatch(/stale draft/);
-  expect(Object.keys(await textOf(kolab, 'V0'))).toContain(won === 0 ? 'A' : 'B');
-  // Both drafts took a number of their own, and only the winner committed.
-  expect((await history(kolab, 'V0')).map((v) => [v.seq, v.state, v.base])).toStrictEqual([
-    [1, 'committed', null], [2, won === 0 ? 'committed' : 'rejected', 1], [3, won === 1 ? 'committed' : 'rejected', 1],
-  ]);
+  expect((await kolab.review(mine)).ok).toBe(true);
+  const r = await kolab.review(alice);
+  expect([r.ok, r.stale, r.note]).toStrictEqual([false, true, 'stale draft: the node committed a newer version; redraft against it']);
+  expect(await textOf(kolab, 'V0')).toMatchObject({ B: 'Dave adds B.' });
+  expect(Object.keys(await textOf(kolab, 'V0'))).not.toContain('A');
+  // Through commit, the loser gets Kolab's GateError, never a database error.
+  const again = await kolab.draft(product, 'V0', add('A', 'Alice adds A.'));
+  await kolab.commit(dave, 'V0', add('C', 'Dave adds C.'));
+  expect(await rejection(kolab.review(again).then((x) => { if (!x.ok) throw new GateError(`review rejected: ${x.note}`); }))).toMatch(/^GateError: review rejected: stale draft/);
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
 
@@ -158,6 +161,42 @@ test('a draft overtaken only by Kolab\'s own rebases before review still folds a
     E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'V0 says E2 its own way.', H: 'Human edit to V0.',
   });
   expect(await kolab.author(r.version)).toMatchObject({ actor: 'alice', role: 'product' });
+});
+
+test('a human commit between judging a draft overtaken by rebases and folding it makes the fold stale, not lost', async () => {
+  const { kolab, product } = await setup();
+  await kolab.addActor('dave');
+  const dave = await kolab.openSession('dave', 'product');
+  const { next } = await family(kolab, product, 1);
+  const draft = await kolab.draft(product, 'V0', add('A', 'Alice adds A.'));
+  await kolab.commit(product, 'P', { elements: next });   // V0@3, Kolab's rebase, overtakes the draft
+
+  // Dave commits the moment the fold starts work: at its first read of the variant's parent.
+  const proto = Object.getPrototypeOf(kolab.db);
+  const query = proto.query;
+  let armed = true;
+  proto.query = async function (sql: string, params?: unknown[]) {
+    if (armed && sql.includes("state = 'committed' order by seq desc limit 1") && params?.[0] === 'P') {
+      armed = false;
+      await kolab.commit(dave, 'V0', add('B', 'Dave adds B.'));
+    }
+    return query.call(this, sql, params);
+  };
+  let r;
+  try { r = await kolab.review(draft); } finally { proto.query = query; }
+
+  expect(armed).toBe(false);
+  expect([r.ok, r.stale]).toStrictEqual([false, true]);
+  expect(await textOf(kolab, 'V0')).toMatchObject({ E0: 'Parent element 0, rev 2.', B: 'Dave adds B.' });
+  expect(Object.keys(await textOf(kolab, 'V0'))).not.toContain('A');
+  expect(await noteOf(kolab, draft)).toMatch(/^overtaken by Kolab's rebases; folding it into \S+ failed: stale draft/);
+  expect((await history(kolab, 'V0')).map((v) => [v.seq, v.active_role, v.state, v.base])).toStrictEqual([
+    [1, 'product', 'committed', null],
+    [2, 'product', 'rejected', 1],    // Alice's draft
+    [3, 'system', 'committed', 1],    // the storm's rebase
+    [4, 'product', 'committed', 3],   // Dave's commit, in the window
+    [5, 'product', 'rejected', 3],    // the fold, built on the rebase it judged, so Dave's commit overtook it
+  ]);
 });
 
 // ---- a human commit during a rebase storm ------------------------------------------
@@ -239,7 +278,90 @@ test('a rebase that throws marks its variant, and the storm carries on to the re
   const marks = (await marksOn(kolab, 'V1')).filter((m) => m.reason !== 'override_stale');
   expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[(await kolab.latestCommitted('V1'))!.id, 'review_failed']]);
   const [q] = (await kolab.openQueries()).filter((x) => x.question.startsWith('Rebasing'));
-  expect(q.question).toMatch(/^Rebasing onto the new parent failed: the reviewer fell over\./);
+  expect(q.question).toMatch(/^Rebasing onto the new parent failed: the reviewer failed on \S+: the reviewer fell over\./);
+  // The rebase the reviewer fell over on is rejected, not left drafted for anyone to resubmit.
+  expect((await history(kolab, 'V1')).map((v) => v.state)).toStrictEqual(['committed', 'rejected']);
+});
+
+/** Makes the first db.query matching `when` throw a connection error, until `restore` is called. */
+function failOnce(kolab: Kolab, when: (sql: string, params?: unknown[]) => boolean) {
+  const proto = Object.getPrototypeOf(kolab.db);
+  const query = proto.query;
+  let armed = true;
+  proto.query = async function (sql: string, params?: unknown[]) {
+    if (armed && when(sql, params)) {
+      armed = false;
+      throw new Error('Connection terminated unexpectedly');
+    }
+    return query.call(this, sql, params);
+  };
+  return { fired: () => !armed, restore: () => { proto.query = query; } };
+}
+
+/** supersedePrevious's first read, in the cascade of a version of `node` that has just committed. */
+const supersedeRead = (node: string) => (sql: string, params?: unknown[]) =>
+  sql.includes("seq < $2 and state = 'committed' order by seq desc limit 1") && params?.[0] === node;
+
+test('a failure in a committed rebase\'s own cascade fails the parent\'s commit with a CascadeError, and marks nothing', async () => {
+  const { kolab, product } = await setup();
+  const { ids, next } = await family(kolab, product, 2);
+  const fail = failOnce(kolab, supersedeRead('V0'));
+  let error: string;
+  try { error = await rejection(kolab.commit(product, 'P', { elements: next })); } finally { fail.restore(); }
+
+  expect(fail.fired()).toBe(true);
+  expect(error).toMatch(/^CascadeError: V0@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
+  expect(await stranded(kolab, ['V0'])).toStrictEqual([]);   // V0's rebase stands
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'review_failed')).toStrictEqual([]);
+  // The storm stopped loudly. Whatever it hadn't reached catches up on the parent's next commit.
+  await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
+  expect(await stranded(kolab, ids)).toStrictEqual([]);
+});
+
+test('a lost connection during a variant\'s rebase fails the parent\'s commit, rather than returning ok over variants left behind', async () => {
+  const { kolab, product } = await setup();
+  const { ids, next } = await family(kolab, product, 3);
+  const fail = failOnce(kolab, (sql, params) => sql.includes('coalesce(max(seq)') && params?.[0] === 'V1');
+  let error: string;
+  try { error = await rejection(kolab.commit(product, 'P', { elements: next })); } finally { fail.restore(); }
+
+  expect(error).toMatch(/^CascadeError: P@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
+  expect(await stranded(kolab, ids)).toContain('V1');
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'review_failed')).toStrictEqual([]);
+  await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
+  expect(await stranded(kolab, ids)).toStrictEqual([]);
+});
+
+test('a storm\'s rebase dropped as overtaken catches up the version that overtook it, even if that version\'s own cascade never got there', async () => {
+  const { kolab, product, setHook } = await hooked();
+  const { ids, next } = await family(kolab, product, 2);
+  let human: string | undefined;
+  setHook(async ({ version }) => {
+    if (human !== undefined || version.active_role !== 'system' || version.node_id !== 'V1') return;
+    // A human commits to V1 while the storm's rebase of it is in review, and that commit's
+    // cascade dies before its own catch-up (step 5).
+    const fail = failOnce(kolab, supersedeRead('V1'));
+    try { human = await rejection(kolab.commit(product, 'V1', add('H', 'Human edit to V1.'))); } finally { fail.restore(); }
+  });
+  await kolab.commit(product, 'P', { elements: next });
+  setHook(undefined);
+
+  expect(human).toMatch(/^CascadeError: V1@\d+ committed, but its cascade did not finish/);
+  expect(await stranded(kolab, ids)).toStrictEqual([]);
+  expect(await textOf(kolab, 'V1')).toMatchObject({ E0: 'Parent element 0, rev 2.', H: 'Human edit to V1.' });
+  expect((await kolab.openMarks()).filter((m) => m.reason !== 'override_stale')).toStrictEqual([]);
+});
+
+test('a variant whose rebases keep failing holds one review_failed mark and one question, re-pointed at the newest parent', async () => {
+  const { kolab, product } = await hooked(async (ctx) =>
+    (ctx.version.active_role === 'system' && ctx.version.node_id === 'V0' ? { ok: false, note: 'contradicts itself' } : structuralReviewer(ctx)));
+  const { next } = await family(kolab, product, 1);
+  await kolab.commit(product, 'P', { elements: next });
+  const p3 = await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
+
+  const marks = (await marksOn(kolab, 'V0')).filter((m) => m.reason === 'review_failed');
+  expect(marks.map((m) => m.triggered_by)).toStrictEqual([p3]);
+  expect((await kolab.openQueries()).filter((q) => q.question.startsWith('Rebasing')).length).toBe(1);
 });
 
 // ---- the base is recorded, and enforced for agents ------------------------------------
