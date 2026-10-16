@@ -8,6 +8,8 @@
  * the shape of the RDS master user that the test server runs as.
  */
 export default async function globalSetup() {
+  // Names this run's databases, so jest.global-teardown.js drops exactly them.
+  process.env.KONJIR_TEST_RUN ??= (await import('node:crypto')).randomBytes(4).toString('hex');
   if (process.env.KONJIR_TEST_POSTGRES !== '1' || process.env.KONJIR_TEST_DATABASE_URL) return;
   const { PostgreSqlContainer } = await import('@testcontainers/postgresql');
   const { default: pg } = await import('pg');
