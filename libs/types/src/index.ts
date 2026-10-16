@@ -7,6 +7,15 @@
 
 export const ROLES = ['product', 'engineer'] as const;
 export type Role = typeof ROLES[number];
+/** A person, or an agent owned by a person (D30). Agents owned by an organization come with W1.3. */
+export const ACTOR_KINDS = ['person', 'agent'] as const;
+export type ActorKind = typeof ACTOR_KINDS[number];
+export interface Actor { id: string; name: string; kind: ActorKind; owner: string | null }
+/**
+ * Who wrote a version: the actor, the person who owns it when it's an agent, and the role it
+ * was acting in. Kolab's own rebases are written by the actor `kolab`, of kind `system`.
+ */
+export interface Author { actor: string; kind: ActorKind | 'system'; owner: string | null; role: string }
 export const LAYERS = ['functional', 'technical'] as const;
 export type Layer = typeof LAYERS[number];
 export const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;

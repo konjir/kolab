@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { Kolab } from '@konjir/engine';
 import { els, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
-import { MARK_REASONS, QUERY_KINDS } from '@konjir/types';
+import { ACTOR_KINDS, MARK_REASONS, QUERY_KINDS } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
 
@@ -88,7 +88,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS and ACTOR_KINDS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -98,6 +98,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS
     };
     expect(await check('invalidation_reason_check')).toStrictEqual([...MARK_REASONS].sort());
     expect(await check('query_kind_check')).toStrictEqual([...QUERY_KINDS].sort());
+    expect(await check('actor_kind_check')).toStrictEqual([...ACTOR_KINDS].sort());
   });
 });
 
@@ -133,6 +134,40 @@ test('a database from release 0.5, before the query columns, is baselined and re
     expect((await migrate(db)).baselined).toBe(true);
     expect(await schemaOf(db)).toStrictEqual(current);
   });
+});
+
+test('a database at 0001 reaches 0002: its actors become persons, their sessions and authorship hold, and they can own agents', async () => {
+  const store = await persistentStore();
+  await withDb(async (db) => {
+    // What the test server's RDS database is before this release: 0001, with people, a session and a version.
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, 1) })).toStrictEqual({ baselined: false, applied: [1] });
+    await db.exec(`
+      insert into actor(id, name) values ('lee', 'Lee'), ('eng-1', 'eng-1');
+      insert into session(id, actor_id, active_role) values ('kjs_old', 'lee', 'product');
+      insert into node(id, kind, layer, title) values ('orders', 'functional_spec', 'functional', 'Orders');
+      insert into version(id, node_id, seq, layer, state, actor_id, active_role)
+        values ('v1', 'orders', 1, 'functional', 'committed', 'lee', 'product');
+      insert into element(version_id, element_id, ord, text, fingerprint) values ('v1', 'R1', 0, 'Orders can be cancelled.', 'x');`);
+
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(1) });
+    expect((await db.query(`select id, kind, owner_id, owner_kind from actor order by id`)).rows).toStrictEqual([
+      { id: 'eng-1', kind: 'person', owner_id: null, owner_kind: null },
+      { id: 'lee', kind: 'person', owner_id: null, owner_kind: null },
+    ]);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    expect(await kolab.sessionInfo('kjs_old')).toStrictEqual({
+      session: 'kjs_old', actor: 'lee', kind: 'person', owner: null, role: 'product', layer: 'functional',
+    });
+    expect(await kolab.author('v1')).toStrictEqual({ actor: 'lee', kind: 'person', owner: null, role: 'product' });
+    await kolab.addActor('lee-pm', { owner: 'lee' });
+    const token = await kolab.openSession('lee-pm', 'product');   // beside Lee's own open session
+    const v2 = await kolab.commit(token, 'orders', { elements: els({ R1: 'Orders can be cancelled within an hour.' }) });
+    expect(await kolab.author(v2)).toStrictEqual({ actor: 'lee-pm', kind: 'agent', owner: 'lee', role: 'product' });
+  } finally { await kolab.close(); }
 });
 
 // ---- the runner, with migrations of the test's own ---------------------------------

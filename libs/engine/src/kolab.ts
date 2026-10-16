@@ -6,6 +6,7 @@ import {
 import { migrate, openDb, type Db } from '@konjir/db';
 import {
   LAYER_OF_KIND, LAYER_OF_ROLE,
+  type Actor, type ActorKind, type Author,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type ReviewContext, type ReviewVerdict,
   type Reviewer, type Role, type VersionRow,
@@ -31,6 +32,8 @@ interface EdgeRow {
 export class ReviewUnavailableError extends Error { name = 'ReviewUnavailableError'; }
 
 export class RoleError extends Error { name = 'RoleError'; }
+/** An actor that doesn't exist, or an agent whose owner isn't a person. */
+export class ActorError extends Error { name = 'ActorError'; }
 export class GateError extends Error { name = 'GateError'; }
 
 type Q = Pick<Db, 'query' | 'exec'>;
@@ -98,12 +101,59 @@ export class Kolab {
 
   // ---- actors and sessions (dynamic separation of duty) --------------------
 
-  async addActor(id: string, name = id) {
-    await this.db.query(`insert into actor(id, name) values ($1, $2)`, [id, name]);
+  /**
+   * Registers a person, or with `owner` an agent owned by that person (D30). An agent is an
+   * actor of its own: it holds its own sessions and authors its own versions.
+   */
+  async addActor(id: string, opts: { name?: string; owner?: string } = {}) {
+    const { name = id, owner } = opts;
+    if (owner !== undefined) {
+      const o = await this.findActor(owner);
+      if (!o) throw new ActorError(`no actor ${owner} to own ${id}`);
+      if (o.kind !== 'person') throw new ActorError(`${owner} is an agent; an agent's owner must be a person`);
+    }
+    await this.db.query(`insert into actor(id, name, kind, owner_id) values ($1, $2, $3, $4)`,
+      [id, name, owner === undefined ? 'person' : 'agent', owner ?? null]);
   }
 
-  /** The session id doubles as the agent's bearer token, so it is random, not a sortable ULID. */
+  private async findActor(id: string): Promise<Actor | undefined> {
+    return (await this.db.query<Actor>(
+      `select id, name, kind, owner_id as owner from actor where id = $1`, [id])).rows[0];
+  }
+
+  /** An actor, with the person who owns it when it's an agent. */
+  async actor(id: string): Promise<Actor> {
+    const a = await this.findActor(id);
+    if (!a) throw new ActorError(`no actor ${id}`);
+    return a;
+  }
+
+  /** Every actor, or with `owner` that person's agents. */
+  async listActors(opts: { owner?: string } = {}): Promise<Actor[]> {
+    return (await this.db.query<Actor>(
+      `select id, name, kind, owner_id as owner from actor
+        where $1::text is null or owner_id = $1 order by id`, [opts.owner ?? null])).rows;
+  }
+
+  /**
+   * Who wrote a version: its actor, that actor's owner, and the role it acted in (ROL4).
+   * Two agents of one person are different authors with the same owner (D25, D33).
+   */
+  async author(versionId: string): Promise<Author> {
+    const v = await this.version(versionId);
+    const a = await this.findActor(v.actor_id);
+    return { actor: v.actor_id, kind: a?.kind ?? 'system', owner: a?.owner ?? null, role: v.active_role };
+  }
+
+  /**
+   * The session id doubles as the agent's bearer token, so it is random, not a sortable ULID.
+   * Each actor holds at most one open session (ENF4), so a person's agents each hold their own.
+   *
+   * An agent may never have more access than its owner grants it (D30). Until grants exist
+   * (W1.3), any actor may activate either role, so there is nothing of the owner's to exceed.
+   */
   async openSession(actorId: string, role: Role): Promise<string> {
+    if (!(await this.findActor(actorId))) throw new ActorError(`no actor ${actorId}; add it first`);
     const id = `kjs_${randomBytes(24).toString('base64url')}`;
     try {
       await this.db.query(`insert into session(id, actor_id, active_role) values ($1, $2, $3)`, [id, actorId, role]);
@@ -120,9 +170,11 @@ export class Kolab {
     await this.db.query(`update session set ended_at = now() where id = $1`, [id]);
   }
 
-  private async session(id: string): Promise<{ actor_id: string; active_role: Role }> {
-    const r = await this.db.query<{ actor_id: string; active_role: Role }>(
-      `select actor_id, active_role from session where id = $1 and ended_at is null`, [id]);
+  private async session(id: string): Promise<{ actor_id: string; active_role: Role; kind: ActorKind; owner: string | null }> {
+    const r = await this.db.query<{ actor_id: string; active_role: Role; kind: ActorKind; owner: string | null }>(
+      `select s.actor_id, s.active_role, a.kind, a.owner_id as owner
+         from session s join actor a on a.id = s.actor_id
+        where s.id = $1 and s.ended_at is null`, [id]);
     if (!r.rows[0]) throw new RoleError(`no open session ${id}`);
     return r.rows[0];
   }
@@ -802,7 +854,10 @@ export class Kolab {
 
   async sessionInfo(sessionId: string) {
     const s = await this.session(sessionId);
-    return { session: sessionId, actor: s.actor_id, role: s.active_role, layer: LAYER_OF_ROLE[s.active_role] };
+    return {
+      session: sessionId, actor: s.actor_id, kind: s.kind, owner: s.owner,
+      role: s.active_role, layer: LAYER_OF_ROLE[s.active_role],
+    };
   }
 
   async listNodes(kind?: Kind) {
