@@ -26,6 +26,7 @@ npm run test:postgres     # the same tests on Postgres 18 in a container, as a n
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
 npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
+npm run rebase-storm      # one parent commit rebasing many variants (W2.7); results in libs/engine/scripts/REBASE-STORMS.md
 ```
 
 The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.

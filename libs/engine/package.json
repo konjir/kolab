@@ -20,7 +20,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest",
-    "measure": "tsx --conditions=@konjir/source scripts/measure.ts"
+    "measure": "tsx --conditions=@konjir/source scripts/measure.ts",
+    "rebase-storm": "tsx --conditions=@konjir/source scripts/rebase-storm.ts"
   },
   "dependencies": {
     "ulid": "^3.0.2",
