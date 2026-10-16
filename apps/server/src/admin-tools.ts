@@ -6,7 +6,12 @@ import { ROLES } from '@konjir/types';
 import { fail, ok } from './results.js';
 import { KOLAB } from './tokens.js';
 
-const addActor = z.object({ id: z.string(), name: z.string().optional() });
+const addActor = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  owner: z.string().optional().describe('For an agent: the person who owns it. Omit to register a person.'),
+});
+const listActors = z.object({ owner: z.string().optional().describe("Only this person's agents") });
 const openSession = z.object({ actor: z.string(), role: z.enum(ROLES) });
 const endSession = z.object({ token: z.string() });
 
@@ -15,10 +20,23 @@ const endSession = z.object({ token: z.string() });
 export class AdminTools {
   constructor(@Inject(KOLAB) private readonly kolab: Kolab) {}
 
-  @McpTool({ name: 'konjir_admin_add_actor', description: 'Admin: register an actor (a person or an agent identity).', schema: addActor })
+  @McpTool({
+    name: 'konjir_admin_add_actor',
+    description: 'Admin: register a person, or with owner=<person> an agent that person owns. Each agent is an actor of its own, with its own sessions and authorship.',
+    schema: addActor,
+  })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async addActor({ id, name }: z.infer<typeof addActor>) {
-    try { await this.kolab.addActor(id, name ?? id); return ok({ actor: id }); } catch (e) { return fail(e); }
+  async addActor({ id, name, owner }: z.infer<typeof addActor>) {
+    try {
+      await this.kolab.addActor(id, { name, owner });
+      return ok({ actor: id, kind: owner === undefined ? 'person' : 'agent', owner: owner ?? null });
+    } catch (e) { return fail(e); }
+  }
+
+  @McpTool({ name: 'konjir_admin_list_actors', description: "Admin: list actors, each with its kind and owner; owner=<person> lists that person's agents.", schema: listActors })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async listActors({ owner }: z.infer<typeof listActors>) {
+    try { return ok({ actors: await this.kolab.listActors({ owner }) }); } catch (e) { return fail(e); }
   }
 
   @McpTool({

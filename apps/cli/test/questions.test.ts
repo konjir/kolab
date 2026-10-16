@@ -89,9 +89,17 @@ test('a database from the previous release is migrated on open', async () => {
   const store = await persistentStore();
   {
     let kolab = await Kolab.open(store);
-    // Put the tables back the way 0.5 created them, before migrations were recorded.
+    await kolab.addActor('alice'); await kolab.addActor('bob');
+    const product = await kolab.openSession('alice', 'product');
+    await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
+    // Put the tables back the way 0.5 created them, before migrations were recorded and before
+    // agents (0002). The people and the spec stay.
     await kolab.db.exec(`
       drop table kj_migration;
+      drop index actor_owner;
+      alter table actor drop constraint actor_owner_is_person, drop column owner_kind,
+                        drop constraint actor_id_kind_key, drop column owner_id, drop column kind;
       alter table query drop constraint query_kind_check;
       alter table query drop column selector, drop column kind, drop column from_version_id,
                         drop column from_element_id, drop column answered_by, drop column created_at;
@@ -99,10 +107,6 @@ test('a database from the previous release is migrated on open', async () => {
       alter table invalidation add constraint invalidation_reason_check check (reason in
         ('changed','fuzzy_reanchor','orphaned','override_stale','override_orphaned',
          'upstream_dirty','review_failed','role_boundary'));`);
-    await kolab.addActor('alice'); await kolab.addActor('bob');
-    const product = await kolab.openSession('alice', 'product');
-    await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
-    await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     await kolab.close();
 
     kolab = await Kolab.open(store);

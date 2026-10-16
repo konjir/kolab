@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 91 scenario, regression, migration, channel, review and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 98 scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -61,7 +61,7 @@ To change the schema:
 2. Never edit a file that has shipped, not even a comment, and never edit `baseline.sql`. An edited file would never reach databases that already ran it, so Kolab refuses them instead. `libs/db/src/migrations/checksums.json` pins the sha256 of every `.sql` file in the folder. Kolab refuses to load if any file differs from its pin, has no pin, or is pinned but missing. The release zips the working tree, untracked files included, so this check is what keeps a draft migration from shipping. Add the new file's checksum there (`shasum -a 256 <file>`) when it's ready to ship, and never change an existing one.
 3. Write plain SQL that runs once. It doesn't need to be idempotent. Every file runs inside the runner's one transaction, so a file may not contain `begin`, `commit`, `rollback`, `end`, `abort`, `start transaction`, `savepoint`, `release` or `prepare transaction`. Kolab rejects such a file when it loads. The same words are fine inside comments, string literals (including `E'…'` strings), quoted identifiers, and dollar-quoted bodies: `do $$ … $$` blocks and `as $$ … $$` functions. Write a function's body dollar-quoted, not as a SQL-standard `begin atomic … end` body, whose `end` the check can't tell apart. Avoid statements that can't run in a transaction, such as `create index concurrently`. Statements that create roles must guard against another database on the same cluster creating them first, as `0001_schema.sql` does.
 4. **A new table** gets no rights by itself. The engine writes as `kj_agent` or `kj_system` through `set local role`, so grant each what it needs explicitly. If the table holds kolab data, enable row-level security and add policies like those in 0001. Grants on all tables are fine: Kolab revokes everything on `kj_migration` from `kj_agent`, `kj_system` and `public` after every migration.
-5. **Value lists.** `MARK_REASONS` and `QUERY_KINDS` in `@konjir/types` are also written out in the database's `invalidation_reason_check` and `query_kind_check`. A change to either list needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' MARK_REASONS and QUERY_KINDS" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
+5. **Value lists.** `MARK_REASONS`, `QUERY_KINDS` and `ACTOR_KINDS` in `@konjir/types` are also written out in the database's `invalidation_reason_check`, `query_kind_check` and `actor_kind_check`. A change to any of them needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS and ACTOR_KINDS" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
 6. Run `npm test` and `npm run test:postgres`.
 
 The files ship as they are: the release runs `libs/db/src`, and `npm run build` copies them to `libs/db/dist/migrations`, so they are found from either.
@@ -72,14 +72,19 @@ The files ship as they are: the release runs `libs/db/src`, and `npm run build` 
 # 1. Start Kolab. It persists to ./.konjir and prints an admin token.
 bin/konjir serve --port 7420
 
-# 2. Register agents and give each a session (one actor, one active role).
+# 2. Register a person and the agents they own, and give each agent a session (one actor, one active role).
 export KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<admin token>
-bin/konjir admin_add_actor id=pm-agent
-bin/konjir admin_open_session actor=pm-agent role=product      # prints the agent's token
-bin/konjir admin_open_session actor=eng-agent role=engineer
+bin/konjir admin_add_actor id=lee
+bin/konjir admin_add_actor id=lee-pm owner=lee
+bin/konjir admin_add_actor id=lee-eng owner=lee
+bin/konjir admin_open_session actor=lee-pm role=product        # prints the agent's token
+bin/konjir admin_open_session actor=lee-eng role=engineer
+bin/konjir admin_list_actors owner=lee                         # a person's agents
 ```
 
 Then point each harness at Kolab with its own token. The token decides who the agent is and which layer it may write. Tool arguments never carry identity.
+
+An actor is a person, or an agent owned by a person. Each agent is an actor of its own: it holds its own session, so one person's agents can each hold one at the same time, and it is the author of what it writes. `whoami` names the agent and its `owner`, and `read_node` gives each version's `author`, with the agent, its owner and its role. An agent's owner must be a person; agents owned by an organization, and the grants an agent may not exceed, come with accounts and grants (W1.3). Until then any actor may activate either role.
 
 - **Claude Code:** `claude mcp add --transport http konjir http://127.0.0.1:7420/mcp --header "Authorization: Bearer <token>"`
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
@@ -126,6 +131,7 @@ terraform apply                    # ~5–10 min the first time; ends when the c
 cd ../..
 deploy/konjir-ops.sh connect lee product     # prints Lee's token and the Claude Code command
 deploy/konjir-ops.sh connect eng-1 engineer
+deploy/konjir-ops.sh connect lee-pm product lee   # an agent of Lee's, with its own token
 ```
 
 The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terraform/konjir/test/terraform.tfstate` in `us-east-1`, using the `icedlee337` profile. It locks with S3's native lock file, so no DynamoDB table is needed.
@@ -206,8 +212,8 @@ The semantic reviewer is tested against a scripted model and stubbed Bedrock cli
 
 | Verb | Does |
 | --- | --- |
-| `whoami` | Your actor, role and layer |
-| `list_nodes`, `read_node`, `resolve` | Read current state; `resolve` takes any address |
+| `whoami` | Your actor, its kind (`person` or `agent`), the person who owns it, your role and layer |
+| `list_nodes`, `read_node`, `resolve` | Read current state; `resolve` takes any address. `read_node` says who wrote the version |
 | `lineage` | What a node depends on (upstream) or what depends on it (downstream) |
 | `list_stale` | Open marks on your layer: what is dirty, why, and the next step |
 | `list_queries` | Questions and notes your layer owns; `mine=true` for the ones you raised, with answers |
@@ -215,7 +221,7 @@ The semantic reviewer is tested against a scripted model and stubbed Bedrock cli
 | `link` | Declare that one of your elements relies on an address |
 | `clear_mark`, `resolve_override` | Settle a mark |
 | `ask`, `annotate`, `answer_query` | The question tier. Questions and notes route to the layer that owns the answer; see below |
-| `admin_add_actor`, `admin_open_session`, `admin_end_session` | Admin token only |
+| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session` | Admin token only. `admin_add_actor owner=<person>` adds an agent of that person |
 
 In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it. `konjir watch` streams your inbox (see below).
 
@@ -252,7 +258,7 @@ An element address covers that element's subtree, so addressing a section means 
 
 The rebased child must pass the review gate. Resolving a dirty override records precedent, and the same `(base, parent, child)` triple then resolves itself on the next rebase.
 
-**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer.
+**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Each agent is an actor of its own, so the rule holds per agent, and one person's agents can each hold a session at once. Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer.
 
 ## What the prototype found
 
