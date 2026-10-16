@@ -12,10 +12,18 @@ const root = resolve(import.meta.dirname, '../../..');
 const dir = mkdtempSync(join(tmpdir(), 'konjir-start-'));
 let child: ChildProcess | undefined;
 
-afterAll(() => {
-  child?.kill('SIGTERM');
+// start.sh execs node, so the child is the server, which keeps writing its PGlite data
+// directory while it shuts down. Wait for it to exit before removing that directory.
+afterAll(async () => {
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise<void>((done) => child!.once('exit', () => done()));
+    child.kill('SIGTERM');
+    const timer = setTimeout(() => child!.kill('SIGKILL'), 10_000);
+    await exited;
+    clearTimeout(timer);
+  }
   rmSync(dir, { recursive: true, force: true });
-});
+}, 20_000);
 
 test('deploy/release/start.sh serves /healthz with node on the compiled output, through a symlink', async () => {
   expect(existsSync(join(root, 'apps/cli/dist/main.js'))).toBe(true); // run it through Nx, which builds first
