@@ -2,6 +2,8 @@
 
 What one parent commit costs when many variants inherit from it, measured on 16 October 2026 with [`rebase-storm.ts`](rebase-storm.ts). This file records the numbers and a recommendation. The limit, if any, is Lee's ruling. The engine wasn't changed.
 
+**Since this report:** W1.17 made each node's commit step serial, as recommended below, and closed bugs 1 and 2. `--races` now prints `SAFE` for all four races on both backends, and `libs/engine/test/concurrency.test.ts` runs them as tests. Race 2a now starts the human's commit at the storm's version-number read without awaiting it there, since that read now holds the variant's lock. The measurements below were taken before W1.17.
+
 ## What was measured
 
 A parent spec `P` has E elements. W variant trees hang under it, each D levels deep with B children per variant per level, so there are V = W × (1 + B + … + B^(D−1)) variants. Each variant overrides 20% of the elements (F = 0.2), a different window each. `P` then commits a version that changes its first K elements, and the script times that one `commit` call. That call returns only when every variant has been rebased (OVR3), each rebase passing the structural gate (OVR10, VER12) and the three-way rule (CAS5).
@@ -120,7 +122,7 @@ The CAS8 Today column can move from "not measured yet" to measured, with no limi
 ```
 npm run rebase-storm                            # the grid on PGlite, 3 runs per shape: about 22 minutes
 npm run rebase-storm -- --postgres              # the grid on Postgres 18 in a container: about 26 minutes, needs Docker
-npm run rebase-storm -- --races [--postgres]    # deterministic reproductions of the races, in seconds
+npm run rebase-storm -- --races [--postgres]    # deterministic reproductions of the races, in seconds; all SAFE since W1.17
 npm run rebase-storm -- --probe [--postgres]    # other writers during a storm
 npm run rebase-storm -- --E 100 --W 50 --D 3 --B 1 --K 10 --F 0.2   # one shape
 npm run rebase-storm -- --repeat 1 --budget 30000   # one run per shape; stop a series once a storm takes over 30 s

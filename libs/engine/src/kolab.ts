@@ -196,10 +196,17 @@ export class Kolab {
    * One transaction, with a `signal` for the events its change causes (API5). Each is notified
    * inside the transaction, so Postgres delivers it to other processes only if it commits, and
    * this process's listeners hear it once the transaction has committed. Never on a rollback.
+   *
+   * With `lock`, the transaction first locks that node's row, so it is the only one writing the
+   * node's versions until it ends (W1.17). It locks as Kolab's own login, before any `set local
+   * role`, since kj_agent may not lock rows. Each transaction locks at most one node, so two can
+   * never wait on each other. On PGlite, one connection, a transaction has the database to itself
+   * anyway, and everything inside it must go through `tx`.
    */
-  private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>): Promise<T> {
+  private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
     let events = new Map<string, KolabEvent>();
-    const result = await this.db.transaction((tx) => {
+    const result = await this.db.transaction(async (tx) => {
+      if (lock) await tx.query(`select 1 from node where id = $1 for no key update`, [lock]);
       // Each attempt starts empty, so a transaction ever run again would notify again.
       const sent = events = new Map<string, KolabEvent>();
       return fn(tx, async (event) => {
@@ -221,21 +228,21 @@ export class Kolab {
     await signal({ inbox: 'layer', layer: r.rows[0].layer });
   }
 
-  /** Agent writes run as kj_agent; row-level security re-checks the layer. */
-  private asAgent<T>(sessionId: string, fn: (tx: Q, signal: Signal) => Promise<T>): Promise<T> {
+  /** Agent writes run as kj_agent; row-level security re-checks the layer. `lock` as for inTransaction. */
+  private asAgent<T>(sessionId: string, fn: (tx: Q, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
     return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_agent');
       await tx.query(`select set_config('kj.session', $1, true)`, [sessionId]);
       return fn(tx, signal);
-    });
+    }, lock);
   }
 
-  /** Kolab's own work: rebases, review transitions, the cascade. */
-  private asSystem<T>(fn: (tx: Q, signal: Signal) => Promise<T>): Promise<T> {
+  /** Kolab's own work: rebases, review transitions, the cascade. `lock` as for inTransaction. */
+  private asSystem<T>(fn: (tx: Q, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
     return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_system');
       return fn(tx, signal);
-    });
+    }, lock);
   }
 
   // ---- actors and sessions (dynamic separation of duty) --------------------
@@ -442,43 +449,29 @@ export class Kolab {
 
     const els = materialize(parentEls, deltaRows);
     const id = ulid();
-    const seq = await this.nextSeq(nodeId);
-    await this.asAgent(sessionId, (tx) => writeVersion(tx, {
-      id, node_id: nodeId, seq, parent_version_id: parentId, layer: node.layer,
-      actor_id: s.actor_id, active_role: s.active_role,
-    }, els, deltaRows));
+    // Built on the live version read above: if the node moves on before this commits, review sees it.
+    await this.asAgent(sessionId, async (tx) => writeVersion(tx, {
+      id, node_id: nodeId, seq: await nextSeq(tx, nodeId), parent_version_id: parentId, base_version_id: latest?.id ?? null,
+      layer: node.layer, actor_id: s.actor_id, active_role: s.active_role,
+    }, els, deltaRows), nodeId);
     return id;
   }
 
   /**
    * The review gate: drafted -> committed | rejected. Commit runs the cascade.
    *
-   * Optimistic concurrency: if the node committed newer versions while this
-   * draft was open, the draft is stale. When those newer versions are only the
-   * kolab's own rebases, nothing human is lost: the draft is folded into a fresh
-   * rebase onto the current parent. Otherwise it is rejected for redrafting.
+   * Optimistic concurrency (CAS7): a draft commits only while its node's live
+   * version is still its base, the version it was built on. Otherwise it was
+   * overtaken; see settleOvertaken. The check runs before the reviewer, to spare
+   * it a stale draft, and again in the commit step, under the node's lock, so
+   * nothing can commit between the check and the commit (W1.17).
    * The result names the version that actually committed.
    */
   async review(versionId: string): Promise<GateResult> {
     const v = await this.version(versionId);
     if (v.state !== 'drafted') throw new GateError(`${versionId} is ${v.state}, not drafted`);
-    const newer = await this.db.query<{ active_role: string }>(
-      `select active_role from version where node_id = $1 and seq > $2 and state = 'committed'`, [v.node_id, v.seq]);
-    if (newer.rows.length) {
-      const human = newer.rows.some((r) => r.active_role !== 'system');
-      const parent = v.parent_version_id ? await this.version(v.parent_version_id) : undefined;
-      if (human || !parent || parent.node_id === v.node_id) {
-        const note = 'stale draft: the node committed a newer version; redraft against it';
-        await this.setState(versionId, 'rejected', note);
-        return { ok: false, note, version: versionId };
-      }
-      const latestParent = (await this.latestCommitted(parent.node_id))!;
-      // Folding keeps the draft's authorship (so a later stale draft still sees a
-      // human commit and is rejected) and the dependencies the draft declared.
-      const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id });
-      await this.setState(versionId, 'rejected', `folded into ${folded.version}`);
-      return folded;
-    }
+    const newer = await overtakenBy(this.db, v);
+    if (newer) return this.settleOvertaken(v, newer);
     let verdict: ReviewVerdict;
     try {
       verdict = await this.reviewer(await this.reviewContext(v));
@@ -488,12 +481,61 @@ export class Kolab {
       }
       throw e;
     }
-    await this.setState(versionId, verdict.ok ? 'committed' : 'rejected', verdict.note ?? null);
-    if (verdict.ok) {
-      await this.onCommit(versionId);
-      await this.raiseLayerLeaks(v, verdict.findings ?? []);
+    if (!verdict.ok) {
+      await this.reject(versionId, verdict.note ?? null);
+      return { ...verdict, version: versionId };
     }
+    // The node may have moved on while the reviewer ran, which with a semantic gate takes seconds.
+    const late = await this.commitStep(v, verdict.note ?? null);
+    if (late) return this.settleOvertaken(v, late);
+    await this.onCommit(versionId);
+    await this.raiseLayerLeaks(v, verdict.findings ?? []);
     return { ...verdict, version: versionId };
+  }
+
+  /**
+   * The commit step, serialized per node (W1.17). Under a lock on the node's row, the version
+   * commits only if the node's live version is still its base. Otherwise it commits nothing and
+   * returns the versions that overtook it.
+   */
+  private commitStep(v: VersionRow, note: string | null): Promise<{ active_role: string }[] | undefined> {
+    return this.asSystem(async (tx) => {
+      const newer = await overtakenBy(tx, v);
+      if (newer) return newer;
+      const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = 'drafted' returning id`,
+        [v.id, note]);
+      if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
+      return undefined;
+    }, v.node_id);
+  }
+
+  /**
+   * A version the node's newer commits overtook. When only Kolab's own rebases overtook a draft,
+   * nothing human is lost: the draft is folded into a fresh rebase onto the current parent, built
+   * on the current live version. When anyone else's commit did, it is rejected for redrafting.
+   * A rebase of Kolab's own that was overtaken is dropped: whatever overtook it committed after
+   * its parent did, so that version's own catch-up (onCommit step 5) rebases it.
+   */
+  private async settleOvertaken(v: VersionRow, newer: { active_role: string }[]): Promise<GateResult> {
+    if (v.active_role === 'system') {
+      const note = `superseded: ${v.node_id} committed a newer version while this rebase waited, and that version catches up itself`;
+      await this.reject(v.id, note);
+      return { ok: false, note, version: v.id, stale: true };
+    }
+    const human = newer.some((r) => r.active_role !== 'system');
+    const parent = v.parent_version_id ? await this.version(v.parent_version_id) : undefined;
+    if (human || !parent || parent.node_id === v.node_id) {
+      const note = 'stale draft: the node committed a newer version; redraft against it';
+      await this.reject(v.id, note);
+      return { ok: false, note, version: v.id, stale: true };
+    }
+    const latestParent = (await this.latestCommitted(parent.node_id))!;
+    const live = (await this.latestCommitted(v.node_id))!;
+    // Folding keeps the draft's authorship (so a later stale draft still sees a
+    // human commit and is rejected) and the dependencies the draft declared.
+    const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: live.id });
+    await this.reject(v.id, `folded into ${folded.version}`);
+    return folded;
   }
 
   private async reviewContext(v: VersionRow): Promise<ReviewContext> {
@@ -539,9 +581,10 @@ export class Kolab {
     }
   }
 
-  private async setState(versionId: string, state: 'committed' | 'rejected', note: string | null) {
-    await this.asSystem((tx) => tx.query(`update version set state = $2, review_note = $3 where id = $1`,
-      [versionId, state, note]));
+  /** Rejects a draft. Only commitStep commits one; a version another review already settled stays as it is. */
+  private async reject(versionId: string, note: string | null) {
+    await this.asSystem((tx) => tx.query(`update version set state = 'rejected', review_note = $2 where id = $1 and state = 'drafted'`,
+      [versionId, note]));
   }
 
   /** draft + review, for callers that don't need the two steps apart. Returns the committed version. */
@@ -697,7 +740,11 @@ export class Kolab {
         where p.node_id = $1 and c.node_id <> $1 and p.id <> $2 and c.state = 'committed'
           and ${LIVE('c')}`,
       [v.node_id, v.id]);
-    for (const c of children.rows) await this.rebase(c, v);
+    for (const c of children.rows) {
+      // A child committed again since the list was taken; that commit's step 5 rebases it.
+      if ((await this.latestCommitted(c.node_id))?.id !== c.id) continue;
+      await this.rebaseOrMark(c, v);
+    }
 
     // 5. Catch-up for this version itself: drafted against a parent that has since moved on.
     if (v.parent_version_id) {
@@ -705,7 +752,7 @@ export class Kolab {
       if (p.node_id !== v.node_id) {
         const latestParent = (await this.latestCommitted(p.node_id))!;
         const live = (await this.latestCommitted(v.node_id))!;
-        if (latestParent.id !== p.id && live.id === v.id) await this.rebase(v, latestParent);
+        if (latestParent.id !== p.id && live.id === v.id) await this.rebaseOrMark(v, latestParent);
       }
     }
   }
@@ -768,8 +815,33 @@ export class Kolab {
 
   // ---- overrides: the three-way rule ---------------------------------------
 
+  /**
+   * A rebase that throws marks the variant it was for, and the cascade carries on, so one
+   * variant's failure never leaves the ones after it on the old parent (W1.17). A later
+   * successful rebase settles the mark, as it does a failed review's.
+   */
+  private async rebaseOrMark(child: VersionRow, newParent: VersionRow) {
+    try {
+      await this.rebase(child, newParent);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      try {
+        const live = (await this.latestCommitted(child.node_id))?.id ?? child.id;
+        const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent.id, reason: 'review_failed' });
+        await this.ask(live, null, markId, `Rebasing onto the new parent failed: ${why}. Commit a new version to rebase it, or wait for the parent's next commit.`);
+      } catch (m) {
+        console.error(`kolab: rebasing ${child.node_id} onto ${newParent.id} failed (${why}), and so did marking it: ${m}`);
+      }
+    }
+  }
+
+  /**
+   * `child` rebased onto `newParent`, through the review gate. The new version is built on
+   * `base`, by default `child` itself: if the node has moved on past it by commit time, a
+   * rebase of Kolab's own is dropped (settleOvertaken).
+   */
   private async rebase(child: VersionRow, newParent: VersionRow,
-    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string } = {}): Promise<GateResult> {
+    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string } = {}): Promise<GateResult> {
     const parentEls = await this.elements(newParent.id);
     const byId = new Map(parentEls.map((e) => [e.element_id, e]));
     const oldEls = new Map((await this.elements(child.id)).map((e) => [e.element_id, e]));
@@ -811,18 +883,20 @@ export class Kolab {
     }
 
     const id = ulid();
-    const seq = await this.nextSeq(child.node_id);
     const els = materialize(parentEls, kept);
     await this.asSystem(async (tx) => {
       await writeVersion(tx, {
-        id, node_id: child.node_id, seq, parent_version_id: newParent.id, layer: child.layer,
+        id, node_id: child.node_id, seq: await nextSeq(tx, child.node_id), parent_version_id: newParent.id,
+        base_version_id: opts.base ?? child.id, layer: child.layer,
         actor_id: opts.author?.actor_id ?? SYSTEM_ACTOR, active_role: opts.author?.active_role ?? 'system',
       }, els, kept);
       if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
-    });
+    }, child.node_id);
 
     // The rebased child goes through the review gate like any other version.
     const verdict = await this.review(id);
+    // Overtaken, it failed nothing: the version that overtook it carries on.
+    if (verdict.stale) return verdict;
     if (!verdict.ok) {
       // The node stays on whatever it last committed; the mark goes there.
       const live = (await this.latestCommitted(child.node_id))?.id ?? child.id;
@@ -912,11 +986,10 @@ export class Kolab {
     });
 
     const id = ulid();
-    const seq = await this.nextSeq(v.node_id);
-    await this.asAgent(sessionId, (tx) => writeVersion(tx, {
-      id, node_id: v.node_id, seq, parent_version_id: v.parent_version_id,
-      layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
-    }, materialize(parentEls, next), next));
+    await this.asAgent(sessionId, async (tx) => writeVersion(tx, {
+      id, node_id: v.node_id, seq: await nextSeq(tx, v.node_id), parent_version_id: v.parent_version_id,
+      base_version_id: v.id, layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
+    }, materialize(parentEls, next), next), v.node_id);
 
     // The resolution is itself a new version: it must clear the gate before
     // the mark closes, the query is answered, or precedent is set.
@@ -1202,11 +1275,6 @@ export class Kolab {
     }
   }
 
-  private async nextSeq(nodeId: string): Promise<number> {
-    const r = await this.db.query<{ n: number }>(`select coalesce(max(seq), 0) + 1 as n from version where node_id = $1`, [nodeId]);
-    return r.rows[0].n;
-  }
-
   private async markRow(id: string): Promise<MarkRow> {
     const r = await this.db.query<MarkRow>(`select * from invalidation where id = $1`, [id]);
     if (!r.rows[0]) throw new Error(`no mark ${id}`);
@@ -1451,12 +1519,34 @@ async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<stri
   }
 }
 
+/**
+ * The node's next version number. Call it only in a transaction that holds the node's lock
+ * (inTransaction's `lock`), which keeps two writers from taking the same number.
+ */
+async function nextSeq(tx: Q, nodeId: string): Promise<number> {
+  const r = await tx.query<{ n: number }>(`select coalesce(max(seq), 0) + 1 as n from version where node_id = $1`, [nodeId]);
+  return r.rows[0].n;
+}
+
+/**
+ * The node's versions committed since `v`'s base, by role, or undefined if its base is still the
+ * live version. Committed versions only ever commit on the live version, so their seqs rise in
+ * commit order, and anything committed above the base's seq came after it.
+ */
+async function overtakenBy(q: Q, v: VersionRow): Promise<{ active_role: string }[] | undefined> {
+  const r = await q.query<{ active_role: string }>(
+    `select active_role from version
+      where node_id = $1 and state = 'committed' and id <> $3
+        and seq > coalesce((select seq from version where id = $2), 0)`, [v.node_id, v.base_version_id, v.id]);
+  return r.rows.length ? r.rows : undefined;
+}
+
 async function writeVersion(tx: Q, v: Omit<VersionRow, 'state'>, els: ElementRow[],
   deltas: Omit<DeltaRow, 'id' | 'version_id'>[]) {
   await tx.query(
-    `insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role)
-     values ($1,$2,$3,$4,$5,'drafted',$6,$7)`,
-    [v.id, v.node_id, v.seq, v.parent_version_id, v.layer, v.actor_id, v.active_role]);
+    `insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role)
+     values ($1,$2,$3,$4,$5,$6,'drafted',$7,$8)`,
+    [v.id, v.node_id, v.seq, v.parent_version_id, v.base_version_id, v.layer, v.actor_id, v.active_role]);
   for (const e of els) {
     await tx.query(
       `insert into element(version_id, element_id, parent_element_id, ord, text, fingerprint)

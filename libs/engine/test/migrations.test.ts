@@ -171,6 +171,44 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
   } finally { await kolab.close(); }
 });
 
+test('a database at 0002 reaches 0003: each version is given the base the old check implied, so an open draft is judged as before', async () => {
+  const store = await persistentStore();
+  await withDb(async (db) => {
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, 2) })).toStrictEqual({ baselined: false, applied: [1, 2] });
+    // Lee's draft d2 was opened on v1; Pat committed v3 since. A rejected r4 and an open draft d5 sit above it.
+    await db.exec(`
+      insert into actor(id, name) values ('lee', 'Lee'), ('pat', 'Pat');
+      insert into session(id, actor_id, active_role) values ('kjs_lee', 'lee', 'product');
+      insert into node(id, kind, layer, title) values ('orders', 'functional_spec', 'functional', 'Orders');
+      insert into version(id, node_id, seq, layer, state, actor_id, active_role) values
+        ('v1', 'orders', 1, 'functional', 'committed', 'lee', 'product'),
+        ('d2', 'orders', 2, 'functional', 'drafted', 'lee', 'product'),
+        ('v3', 'orders', 3, 'functional', 'committed', 'pat', 'product'),
+        ('r4', 'orders', 4, 'functional', 'rejected', 'pat', 'product'),
+        ('d5', 'orders', 5, 'functional', 'drafted', 'lee', 'product');
+      insert into element(version_id, element_id, ord, text, fingerprint) values
+        ('v1', 'R1', 0, 'Orders can be cancelled.', 'x'), ('d2', 'R1', 0, 'Orders can be cancelled by Lee.', 'x'),
+        ('v3', 'R1', 0, 'Orders can be cancelled by Pat.', 'x'), ('r4', 'R1', 0, 'No.', 'x'),
+        ('d5', 'R1', 0, 'Orders can be cancelled within an hour.', 'x');`);
+
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(2) });
+    expect((await db.query(`select id, base_version_id from version order by seq`)).rows).toStrictEqual([
+      { id: 'v1', base_version_id: null },
+      { id: 'd2', base_version_id: 'v1' },
+      { id: 'v3', base_version_id: 'v1' },
+      { id: 'r4', base_version_id: 'v3' },
+      { id: 'd5', base_version_id: 'v3' },
+    ]);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    expect(await kolab.review('d2')).toMatchObject({ ok: false, stale: true });   // Pat's v3 overtook it
+    expect(await kolab.review('d5')).toMatchObject({ ok: true, version: 'd5' });
+  } finally { await kolab.close(); }
+});
+
 // ---- the runner, with migrations of the test's own ---------------------------------
 
 const m = (version: number, sql: string): Migration => ({ version, name: `m${version}`, sql });

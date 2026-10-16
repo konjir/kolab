@@ -59,6 +59,8 @@ export interface ElementRow {
 }
 export interface VersionRow {
   id: string; node_id: string; seq: number; parent_version_id: string | null;
+  /** The node's live version when this one was drafted: what it was built on. Null for a node's first. */
+  base_version_id: string | null;
   layer: Layer; state: 'drafted' | 'committed' | 'rejected'; actor_id: string; active_role: string;
 }
 
@@ -80,7 +82,12 @@ export interface Finding {
   explanation: string;
 }
 export type ReviewVerdict = { ok: boolean; note?: string; findings?: Finding[] };
-export type GateResult = ReviewVerdict & { version: string; retryable?: boolean };
+/**
+ * `stale` is set when the version was overtaken before it could commit: the node's live version
+ * was no longer its base. A draft is then rejected, to be redrafted; a rebase of Kolab's own is
+ * superseded by the version that overtook it.
+ */
+export type GateResult = ReviewVerdict & { version: string; retryable?: boolean; stale?: boolean };
 export interface ReviewContext {
   version: VersionRow;
   elements: ElementRow[];
