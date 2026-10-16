@@ -116,4 +116,4 @@ jobs:
       # Docker, for arm64. (The global teardown removes the containers themselves.)
       - name: Show the images the tests ran on
         if: always()
-        run: docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' $(docker image ls -q)
+        run: docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' $(docker image ls -q --filter reference='postgres:*' --filter reference='testcontainers/*')
