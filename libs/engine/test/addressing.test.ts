@@ -127,8 +127,16 @@ test('a link whose quoted context does not match is refused, with a selector tha
   expect(message).toContain('"save a cart"');
   const suggested = /(kj:\S+~q\(.*\))$/.exec(message)![1];
   const { selector } = parseAddress(suggested);
-  expect(selector).toStrictEqual({ exact: 'save a cart', prefix: 'save the cart now. Beta said', suffix: 'later.' });
+  expect(selector).toStrictEqual({ exact: 'save a cart', prefix: 'cart now. Beta said', suffix: 'later.' });
   await expect(link(selector!)).resolves.toEqual(expect.any(String));
+
+  // One word of context is too little to tell (D42): refused, with several words to quote instead.
+  const weak = await link({ exact: 'save a cart', prefix: 'said' }).then(() => '', (e: Error) => e.message);
+  expect(weak).toMatch(/does not resolve exactly \(fuzzy\).*too little to tell/);
+  await expect(link(parseAddress(/(kj:\S+~q\(.*\))$/.exec(weak)![1]).selector!)).resolves.toEqual(expect.any(String));
+
+  const long = await link({ exact: 'save a cart '.repeat(100) }).then(() => '', (e: Error) => e.message);
+  expect(long).toMatch(/the quote is 1199 characters; quote at most 1000/);
 
   const gone = await link({ exact: 'export receipts' }).then(() => '', (e: Error) => e.message);
   expect(gone).toMatch(/does not resolve exactly \(orphan\).*konjir_read_node/);

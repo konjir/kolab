@@ -89,14 +89,15 @@ export function fingerprint(text: string): string {
 //   3. The slices' hits that agree on where the quote starts bound a region;
 //      a diff of the quote against that region fixes the span's ends. An
 //      edit at either end of the quote takes in as much of the replacing
-//      text as it replaced, without crossing a sentence's end. The ends are then widened to whole words and
-//      whole characters (never half a surrogate pair or a bare combining mark).
+//      text as it replaced, without crossing a sentence's end. The ends are
+//      then widened to whole words and whole characters (never half a
+//      surrogate pair or a bare combining mark).
 //   4. The span is verified against the whole quote by edit distance. A span
 //      whose length alone rules it out is never diffed, and no diff runs past
-//      DIFF_TIMEOUT. A context-guided search looks only near where the
-//      context points; if it fails, the search is retried over the whole
-//      element without the context, so a misleading prefix can't orphan a
-//      quote that is present.
+//      DIFF_TIMEOUT. Where the context points, the near match there wins if
+//      the context agrees around it (1a). Otherwise a search near where the
+//      context points is tried, then one over the whole element without the
+//      context, so a misleading prefix can't orphan a quote that is present.
 //   5. A quote shorter than SHORT_QUOTE characters is only a near match where
 //      its recorded context still agrees, by the same rule. Otherwise one
 //      edit would re-anchor it to any similar word ("cart" to "card"). With
@@ -120,6 +121,13 @@ export type SpanResolution =
 /** The least similarity (1 - edit distance / longer length) a near match needs. */
 export const FUZZY_THRESHOLD = 0.75;
 
+/**
+ * The longest quote link() accepts, in characters after whitespace normalization. ADR5 keeps
+ * quotes to the exact words with a short prefix and suffix; a requirement longer than this is
+ * addressed as an element. It also keeps every diff well inside DIFF_TIMEOUT.
+ */
+export const MAX_QUOTE = 1000;
+
 /** bitap's pattern limit: diff-match-patch's default word size. */
 export const MATCH_MAX_BITS = 32;
 
@@ -142,7 +150,10 @@ const MATCH_THRESHOLD = 0.5;
 /**
  * Seconds any one diff may take. Past it, diff-match-patch returns a coarser
  * diff, which can only overstate the edit distance: a match may come out an
- * orphan, never the reverse. Normal spans finish far inside it.
+ * orphan, never the reverse. Quotes within MAX_QUOTE finish far inside it.
+ * Longer quotes exist only on edges stored before link() capped them; for a
+ * long, lightly edited one the diff can reach the timeout, so whether it comes
+ * out fuzzy or an orphan can vary with the machine's load.
  */
 const DIFF_TIMEOUT = 0.25;
 
@@ -164,7 +175,8 @@ export function resolveSpan(haystack: string, sel: QuoteSelector): SpanResolutio
   const prefix = normalize(sel.prefix ?? '').normalize('NFC');
   const suffix = normalize(sel.suffix ?? '').normalize('NFC');
 
-  const hasContext = !!(prefix || suffix);
+  // A context of punctuation alone says nothing, so it counts as none.
+  const hasContext = meaningful(prefix) || meaningful(suffix);
   const agrees = (at: number, to: number) => contextAgrees(text, at, to, prefix, suffix);
   const fuzzy = (at: number, to: number, sim: number): SpanResolution => {
     const start = folded.toOriginal(at);
@@ -191,13 +203,14 @@ export function resolveSpan(haystack: string, sel: QuoteSelector): SpanResolutio
   // A verbatim copy whose context doesn't agree: a change (D42), pinned to that copy.
   if (verbatim >= 0) return fuzzy(verbatim, verbatim + exact.length, 1);
 
+  // Then a near match close to where the context points, and failing that, the best anywhere.
   let found = hint === undefined ? undefined : nearMatch(text, exact, hint, 'local');
   if (!found || found.similarity < FUZZY_THRESHOLD) {
     const loose = nearMatch(text, exact, Math.floor(text.length / 2), 'whole');
     if (loose && (!found || loose.similarity > found.similarity)) found = loose;
   }
   if (!found || found.similarity < FUZZY_THRESHOLD) return { status: 'orphan' };
-  if ([...exact].length < SHORT_QUOTE && !agrees(found.start, found.end)) return { status: 'orphan' };
+  if ([...exact].length < SHORT_QUOTE && !(hasContext && agrees(found.start, found.end))) return { status: 'orphan' };
   return fuzzy(found.start, found.end, found.similarity);
 }
 
@@ -286,21 +299,45 @@ function boundary(text: string, at: number): boolean {
 function bestVerbatim(text: string, exact: string, prefix: string, suffix: string): number {
   let best = -1;
   let bestScore = -1;
+  const context = meaningful(prefix) || meaningful(suffix);
   for (let at = text.indexOf(exact); at >= 0; at = text.indexOf(exact, at + 1)) {
-    if (!boundary(text, at) || !boundary(text, at + exact.length)) continue;
+    const to = at + exact.length;
+    if (!(boundary(text, at) || continuesPrefix(text, at, prefix))) continue;
+    if (!(boundary(text, to) || continuesSuffix(text, to, suffix))) continue;
     // An occurrence whose context agrees outranks any that doesn't, however many characters match.
-    const score = contextScore(text, at, at + exact.length, prefix, suffix)
-      + (contextAgrees(text, at, at + exact.length, prefix, suffix) ? text.length + prefix.length + suffix.length : 0);
+    const score = contextScore(text, at, to, prefix, suffix)
+      + (context && contextAgrees(text, at, to, prefix, suffix) ? text.length + prefix.length + suffix.length : 0);
     if (score > bestScore) { best = at; bestScore = score; }
-    if (!prefix && !suffix) break;
+    if (!context) break;
   }
   return best;
 }
 
+/**
+ * Quotes recorded before whole words were required may start or end mid-word ("bar baz" with
+ * prefix "foo", in "foobar baz"). Such an end is accepted where the recorded context itself
+ * continues the word there, so unchanged text still resolves as written. link() no longer
+ * records them: a new selector of this kind is fuzzy, and is refused.
+ */
+function continuesPrefix(text: string, at: number, prefix: string): boolean {
+  const run = /[\p{L}\p{N}\p{M}]+$/u.exec(prefix)?.[0];
+  return !!run && !splitsCharacter(text, at) && text.slice(at - run.length, at) === run;
+}
+function continuesSuffix(text: string, to: number, suffix: string): boolean {
+  const run = /^[\p{L}\p{N}\p{M}]+/u.exec(suffix)?.[0];
+  return !!run && !splitsCharacter(text, to) && text.slice(to, to + run.length) === run;
+}
+
 function contextAround(text: string, start: number, end: number, prefix: string, suffix: string) {
-  const ahead = text.slice(Math.max(0, start - prefix.length - 1), start).trimEnd();
+  const from = start - prefix.length - 1;
+  const ahead = text.slice(Math.max(0, from), start).trimEnd();
   const behind = text.slice(end, end + suffix.length + 1).trimStart();
-  return { ahead, behind, prefix: prefix ? diffCommonSuffix(ahead, prefix) : 0, suffix: suffix ? diffCommonPrefix(behind, suffix) : 0 };
+  return {
+    ahead, behind,
+    // Whether ahead and behind run to the element's start and end: then there is no more context to have.
+    aheadIsAll: from <= 0, behindIsAll: end + suffix.length + 1 >= text.length,
+    prefix: prefix ? diffCommonSuffix(ahead, prefix) : 0, suffix: suffix ? diffCommonPrefix(behind, suffix) : 0,
+  };
 }
 
 /** How many characters of the recorded prefix and suffix still surround [start, end). */
@@ -309,12 +346,30 @@ function contextScore(text: string, start: number, end: number, prefix: string, 
   return c.prefix + c.suffix;
 }
 
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+/** Whether a recorded prefix or suffix says anything: punctuation alone ("(", "1.") does not. */
+function meaningful(context: string): boolean {
+  return LETTER_OR_DIGIT.test(context);
+}
+
+/** A side of agreeing context this strong decides on its own; a weaker one needs the other side to agree too. */
+const STRONG_WORDS = 2;
+const STRONG_CHARS = 8;
+
 /**
- * True when the recorded prefix or suffix still agrees around the span: more than half of its
- * words adjoin it, compared without case. Words, not characters, so that a shared "said" or
- * "the" next to some other statement doesn't pass for its context. A word cut off where the
- * prefix was recorded counts, if the text still has that much of it. In a script written
- * without spaces, more than half of its characters must adjoin.
+ * Whether the recorded context agrees around the span (D42). Each side, prefix and suffix, is
+ * read away from the span and compared without case:
+ *   - it agrees when more than half of its words, counting only words with a letter or digit,
+ *     still adjoin the span; in a script written without spaces, more than half of its letters
+ *   - it agrees strongly when, besides, at least STRONG_WORDS such words agree, or STRONG_CHARS
+ *     letters and digits, or 2 letters without spaces, or all of it does and it runs to the
+ *     element's edge, where there is no more context to have
+ * The context agrees when either side agrees strongly, or both agree. So one shared word
+ * ("within", "the", "的") or a lone ")" never re-anchors a quote to another statement. A word cut
+ * off where the context was recorded counts if the text still has that much of it.
+ * Callers check meaningful() first: with no letters or digits in either side, there is nothing
+ * to agree or disagree with.
  */
 function contextAgrees(text: string, start: number, end: number, prefix: string, suffix: string): boolean {
   const c = contextAround(text, start, end, prefix, suffix);
@@ -322,8 +377,9 @@ function contextAgrees(text: string, start: number, end: number, prefix: string,
   const q = lower(suffix);
   const ahead = lower(c.ahead);
   const behind = lower(c.behind);
-  return (!!p && sideAgrees(reverse(p), reverse(ahead), diffCommonSuffix(ahead, p)))
-    || (!!q && sideAgrees(q, behind, diffCommonPrefix(behind, q)));
+  const before = meaningful(p) ? side(reverse(p), reverse(ahead), diffCommonSuffix(ahead, p), c.aheadIsAll) : 'silent';
+  const after = meaningful(q) ? side(q, behind, diffCommonPrefix(behind, q), c.behindIsAll) : 'silent';
+  return before === 'strong' || after === 'strong' || (before === 'weak' && after === 'weak');
 }
 
 /** Lower case, where that keeps the length (so offsets still line up). */
@@ -338,20 +394,30 @@ function reverse(s: string): string {
 }
 
 /**
- * Whether the first `matched` characters of recorded (read away from the span) agree as words.
- * For a prefix, both strings are reversed, so they too are read away from the span.
+ * How the first `matched` characters of recorded (read away from the span) agree. For a prefix,
+ * both strings are reversed, so they too are read away from the span. isAll: seen runs to the
+ * element's edge.
  */
-function sideAgrees(recorded: string, seen: string, matched: number): boolean {
-  if (!matched) return false;
-  if (!recorded.includes(' ') && [...recorded].some((ch) => SPACELESS.test(ch))) return matched * 2 > recorded.length;
-  const words = recorded.split(' ').filter(Boolean);
-  if (matched >= recorded.length) return true;
+function side(recorded: string, seen: string, matched: number, isAll: boolean): 'strong' | 'weak' | 'disagrees' {
+  if (!matched) return 'disagrees';
+  const whole = matched >= recorded.length;
+  const atEdge = whole && isAll && seen.length === matched;
+  const letters = (s: string) => [...s].filter((ch) => LETTER_OR_DIGIT.test(ch)).length;
+  if (!recorded.includes(' ') && [...recorded].some((ch) => SPACELESS.test(ch))) {
+    const agreed = letters(recorded.slice(0, matched));
+    if (agreed * 2 <= letters(recorded)) return 'disagrees';
+    return agreed >= 2 || atEdge ? 'strong' : 'weak';
+  }
+  const words = recorded.split(' ').filter((w) => LETTER_OR_DIGIT.test(w));
   const part = recorded.slice(0, matched);
-  let whole = part.split(' ').filter(Boolean).length;
+  const agreeing = part.split(' ').filter((w) => LETTER_OR_DIGIT.test(w));
   // The last word read is whole only if both the recorded context and the text end it there.
   const last = part[part.length - 1];
-  if (last !== ' ' && (WORDY.test(recorded[matched] ?? '') || WORDY.test(seen[matched] ?? '')) && WORDY.test(last)) whole--;
-  return whole * 2 > words.length;
+  if (!whole && last !== ' ' && WORDY.test(last) && (WORDY.test(recorded[matched] ?? '') || WORDY.test(seen[matched] ?? ''))) {
+    agreeing.pop();
+  }
+  if (agreeing.length * 2 <= words.length) return 'disagrees';
+  return agreeing.length >= STRONG_WORDS || letters(agreeing.join('')) >= STRONG_CHARS || atEdge ? 'strong' : 'weak';
 }
 
 /** Where the quote should start, judged from its recorded context; undefined if neither is found. */

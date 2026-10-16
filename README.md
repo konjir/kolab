@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 148 unit, scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 156 unit, scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -248,6 +248,8 @@ Claude Code doesn't yet turn these notifications into a turn for the model. Unti
 - **Gone:** `orphaned` mark.
 
 An element address covers that element's subtree, so addressing a section means addressing its requirements too.
+
+A span's context is its prefix and suffix. It agrees when more than half of the words on one side still sit next to the quote, and either at least two of them do, or both sides agree. One word or punctuation alone is too little. `link` accepts only a target that resolves exactly, and quotes of at most 1,000 characters. When it refuses one, it suggests the current words with several words of context either side.
 
 **2. Overrides.** Every delta records its base: the parent version and fingerprint it was written against. When a parent commits, each live child is rebased:
 
