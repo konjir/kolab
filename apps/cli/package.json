@@ -29,6 +29,13 @@
       "test": {
         "dependsOn": [
           "build"
+        ],
+        "inputs": [
+          "default",
+          "^production",
+          "jest",
+          "{workspaceRoot}/deploy/release/start.sh",
+          "{workspaceRoot}/deploy/release/install.sh"
         ]
       }
     }

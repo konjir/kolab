@@ -15,7 +15,8 @@
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/tsconfig.check.json",
       "{workspaceRoot}/tsconfig.build.json",
-      "{workspaceRoot}/.github/workflows/ci.yml"
+      "{workspaceRoot}/.github/workflows/ci.yml",
+      "{workspaceRoot}/deploy/terraform/modules/kolab/main.tf"
     ],
     "jest": [
       "{workspaceRoot}/jest.preset.js",

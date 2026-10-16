@@ -422,10 +422,13 @@ test('databases on one cluster each migrate, with the kj_ roles another one made
 });
 
 test('on Postgres, the suite runs as a login that is not a superuser, as on RDS', async () => {
-  await withDb(async (db, store) => {
-    if (!store.databaseUrl) return;
+  // Check the store before opening it: a database closed before its first query leaves its
+  // PGlite starting up after the file ends.
+  const store = await testStore();
+  if (!store.databaseUrl) return;
+  await withDb(async (db) => {
     const r = await db.query<{ rolsuper: boolean; rolcreaterole: boolean; rolcreatedb: boolean }>(
       `select rolsuper, rolcreaterole, rolcreatedb from pg_roles where rolname = current_user`);
     expect(r.rows[0]).toStrictEqual({ rolsuper: false, rolcreaterole: true, rolcreatedb: true });
-  });
+  }, store);
 });
