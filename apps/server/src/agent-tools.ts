@@ -55,7 +55,7 @@ const link = z.object({
   kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
   source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
   source_element: z.string().optional().describe('Alternative to putting #element in source.'),
-  target: address.describe('What it relies on; must be committed and resolve exactly. e.g. kj:checkout@3#R1, or a span: kj:checkout#R1~q({"exact":"30 seconds","prefix":"within","suffix":"of payment"}). A span\'s prefix or suffix must still surround its words in the target.'),
+  target: address.describe('What it relies on; must be committed and resolve exactly. e.g. kj:checkout@3#R1, or a span: kj:checkout#R1~q({"exact":"30 seconds","prefix":"Checkout completes within","suffix":"of payment confirming"}). For a span, quote only the few words you rely on (at most 1,000 characters), and give several whole words either side as prefix and suffix, not one word: they must still surround the quote in the target.'),
 });
 const clearMark = z.object({ mark: z.string() });
 const resolveOverride = z.object({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });

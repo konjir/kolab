@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { ulid } from 'ulid';
 import {
-  type Address, type QuoteSelector, fingerprint, formatAddress, normalize, parseAddress, resolveSpan,
+  type Address, type QuoteSelector, fingerprint, formatAddress, MAX_QUOTE, normalize, parseAddress, resolveSpan,
 } from '@konjir/address';
 import { migrate, openDb, type Db } from '@konjir/db';
 import {
@@ -449,6 +449,11 @@ export class Kolab {
     if (tgt.state !== 'committed') {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
+    if (e.selector && normalize(e.selector.exact).length > MAX_QUOTE) {
+      throw new Error(`the quote is ${normalize(e.selector.exact).length} characters; quote at most ${MAX_QUOTE}: `
+        + `the few words you rely on, with several words either side as prefix and suffix. `
+        + `To rely on a whole requirement, link to its element instead, without a selector.`);
+    }
     const r = await this.resolveIn(e.target, e.targetElement ?? null, e.selector ?? null);
     if (r.status !== 'ok') throw new Error(await this.linkRefusal(tgt, e.targetElement ?? null, e.selector ?? null, r.status));
     // One edge per (source scope, target scope): duplicates would multiply marks.
@@ -487,7 +492,8 @@ export class Kolab {
       const suggestion = { exact: span.content, ...spanContext(text, span.start, span.end) };
       return `target does not resolve exactly (fuzzy): ${JSON.stringify(normalize(selector!.exact))} does not stand as quoted `
         + `with its prefix or suffix in ${at()}; the nearest match reads ${JSON.stringify(span.content)}. `
-        + `Quote the current words with their current context, e.g. ${at(suggestion)}`;
+        + `A prefix or suffix of one word or of punctuation is too little to tell. `
+        + `Quote the current words with several words of their current context either side, e.g. ${at(suggestion)}`;
     }
     return `target does not resolve exactly (${status}): the quoted words are not in ${at()}. `
       + `Read the element with konjir_read_node and quote words it has now, with the words just before and after them as prefix and suffix.`;
@@ -1192,19 +1198,39 @@ function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'versio
   return [...map.values()].filter((e) => !removed.has(e.element_id)).sort((a, b) => a.ord - b.ord);
 }
 
-/** An element plus its descendants, in order. The scope an element address covers. */
-/** Up to CONTEXT_CHARS of whole words either side of [start, end), for a quote selector. */
+/**
+ * The context a quote selector should record: whole words either side of [start, end), at least
+ * three with a letter or digit and 16 characters (D42 needs two to agree), or all there is up to
+ * the element's edge. A run of a script written without spaces gives its 32 nearest characters.
+ */
 function spanContext(text: string, start: number, end: number): { prefix?: string; suffix?: string } {
-  const CONTEXT_CHARS = 32;
-  let prefix = text.slice(Math.max(0, start - CONTEXT_CHARS), start);
-  if (start > CONTEXT_CHARS) prefix = prefix.replace(/^\S*\s?/, '');
-  let suffix = text.slice(end, end + CONTEXT_CHARS);
-  if (end + CONTEXT_CHARS < text.length) suffix = suffix.replace(/\s?\S*$/, '');
-  prefix = prefix.trim();
-  suffix = suffix.trim();
+  const take = (words: string[]): string[] => {
+    const out: string[] = [];
+    let meaningful = 0;
+    for (const w of words) {
+      if (meaningful >= 3 && out.join(' ').length >= 16) break;
+      const cps = [...w];
+      if (cps.length > 32 && /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u.test(w)) {
+        out.push(cps.slice(0, 32).join(''));
+        break;
+      }
+      out.push(w);
+      if (/[\p{L}\p{N}]/u.test(w)) meaningful++;
+    }
+    return out;
+  };
+  const before = text.slice(0, start).trimEnd();
+  const after = text.slice(end).trimStart();
+  // The prefix is read away from the quote: its words last to first, each spelled backwards.
+  const backwards = (w: string) => [...w].reverse().join('');
+  const prefixWords = take(before ? before.split(' ').reverse().map(backwards) : []).map(backwards).reverse();
+  const suffixWords = take(after ? after.split(' ') : []);
+  const prefix = prefixWords.join(' ');
+  const suffix = suffixWords.join(' ');
   return { ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) };
 }
 
+/** An element plus its descendants, in order. The scope an element address covers. */
 function subtreeText(els: ElementRow[], rootId: string): string | undefined {
   if (!els.some((e) => e.element_id === rootId)) return undefined;
   const kids = new Map<string, ElementRow[]>();

@@ -86,8 +86,8 @@ describe('repeated phrases: the context decides', () => {
   });
 
   test('the suffix picks the occurrence it still follows', () => {
-    const t = 'Save a cart for later today. Then save a cart for later again.';
-    expect(at(t, { exact: 'a cart for later', suffix: ' again' })).toMatchObject({ status: 'exact', start: 39 });
+    const t = 'Save a cart for later today. Then save a cart for later again tomorrow.';
+    expect(at(t, { exact: 'a cart for later', suffix: ' again tomorrow' })).toMatchObject({ status: 'exact', start: 39 });
   });
 
   test('among near matches, the prefix picks too', () => {
@@ -139,13 +139,16 @@ describe('a long element does not slow matching sharply', () => {
     ['fuzzy, long quote', inserted(LONG.replace('thirty', '30')), { exact: LONG }, 'fuzzy'],
     ['orphan, long quote', text, { exact: LONG }, 'orphan'],
     // A 2 KB quote in the element's own vocabulary that is gone: its slices hit all over the element.
+    // link() now refuses quotes over MAX_QUOTE, but edges stored before that can still hold one.
     ['orphan, 2 KB quote', text, { exact: filler(2_000, 99) }, 'orphan'],
     ['orphan, 2 KB quote with context', text, { exact: filler(2_000, 99), prefix: 'order cart payment', suffix: 'refund checkout' }, 'orphan'],
   ];
   test.each(cases)('100 KB element, %s', (_name, haystack, sel, status) => {
-    const t0 = performance.now();
+    // CPU time, not wall time, so other suites running in parallel don't make this flaky.
+    const t0 = process.cpuUsage();
     const r = resolveSpan(haystack, sel);
-    const ms = performance.now() - t0;
+    const used = process.cpuUsage(t0);
+    const ms = (used.user + used.system) / 1000;
     expect(r.status).toBe(status);
     expect(ms).toBeLessThan(BOUND_MS);
   });
@@ -186,6 +189,43 @@ describe('D42: the context decides whether a verbatim match is exact', () => {
     expect(at(text, { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' })).toMatchObject({ status: 'exact', start: 36 });
   });
 
+  describe('one word or punctuation is too little context to decide', () => {
+    test('a one-word prefix: a copy in another statement is a change', () => {
+      const text = 'Checkout completes within 60 seconds of payment. Refunds are issued within 30 seconds.';
+      expect(at(text, { exact: '30 seconds', prefix: 'within', suffix: 'of payment' }))
+        .toMatchObject({ status: 'fuzzy', located: '60 seconds' });
+    });
+
+    test('punctuation alone agrees with nothing: a copy elsewhere is a change', () => {
+      expect(at('Retain logs (90 days). Delete accounts (30 days).', { exact: '30 days', prefix: 'logs (', suffix: ')' }))
+        .toMatchObject({ status: 'fuzzy', similarity: 1, start: 40 });
+      expect(resolveSpan('1. Pay now. 2. Users can save the cart.', { exact: 'Users can save the cart', prefix: '1.' }).status)
+        .toBe('fuzzy');
+    });
+
+    test('one shared character or one shared word is a change', () => {
+      expect(resolveSpan('这是我的购物车。那是你的购物车。', { exact: '购物车', prefix: '的', suffix: '吗' }).status).toBe('fuzzy');
+      expect(resolveSpan('Admins can delete the cart. Users keep the order.', { exact: 'cart', prefix: 'the', suffix: 'for later' }).status)
+        .toBe('fuzzy');
+    });
+
+    test('two weak sides that both agree decide together', () => {
+      expect(at('Checkout completes within 30 seconds of payment.', { exact: '30 seconds', prefix: 'within', suffix: 'of' }))
+        .toMatchObject({ status: 'exact' });
+    });
+
+    test('a long single word, or all the context there is up to the element edge, is enough', () => {
+      expect(at('Elsewhere: refunds. Reconciliation 30 days.', { exact: '30 days', prefix: 'Reconciliation' }))
+        .toMatchObject({ status: 'exact' });
+      expect(at('Retain 30 days.', { exact: '30 days', prefix: 'Retain', suffix: '.' })).toMatchObject({ status: 'exact' });
+      expect(at('这是我的购物车。', { exact: '购物车', prefix: '是我的' })).toMatchObject({ status: 'exact' });
+    });
+
+    test('a context of punctuation alone counts as none: a verbatim match is exact', () => {
+      expect(at('Save the cart.', { exact: 'Save the cart', suffix: '.' })).toMatchObject({ status: 'exact' });
+    });
+  });
+
   test('without any recorded context, a verbatim match is exact wherever it is', () => {
     expect(at('Alpha said save the cart now. Beta said save a cart later.', { exact: 'save the cart' }))
       .toMatchObject({ status: 'exact', start: 11 });
@@ -216,6 +256,19 @@ describe('a verbatim match must be whole words', () => {
   test('scripts written without spaces have a boundary between any two characters', () => {
     expect(at('支付完成后三十秒内结账', { exact: '三十秒' })).toMatchObject({ status: 'exact', start: 5, end: 8 });
     expect(at('ข้อมูลถูกบันทึกทันที', { exact: 'บันทึก' })).toMatchObject({ status: 'exact' });
+  });
+});
+
+describe('quotes recorded mid-word, before whole words were required', () => {
+  test('unchanged text still resolves as written, where the recorded context continues the word', () => {
+    expect(at('foobar baz', { exact: 'bar baz', prefix: 'foo' })).toMatchObject({ status: 'exact', start: 3 });
+    expect(at('Pay within thirty seconds.', { exact: 'Pay within thir', suffix: 'ty seconds.' })).toMatchObject({ status: 'exact' });
+    expect(at('Many unhappy users left.', { exact: 'happy users', prefix: 'Many un', suffix: 'left.' })).toMatchObject({ status: 'exact', start: 7 });
+  });
+
+  test('a recorded context that does not continue the word is no licence', () => {
+    expect(resolveSpan('Retain logs for 300 days.', { exact: 'Retain logs for 30', suffix: '0 years' }).status).not.toBe('exact');
+    expect(resolveSpan('Many unhappy users left.', { exact: 'happy users', prefix: 'Many' }).status).not.toBe('exact');
   });
 });
 
