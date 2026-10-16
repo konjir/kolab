@@ -1,5 +1,6 @@
 // Two Kolab server processes on one Postgres database (API5, W2.2; D9): an agent listening on
-// one hears a change made through the other. Process A runs in this test; process B is
+// one hears a change made through the other, and a session ended through one closes its
+// streams on the other (D41). Process A runs in this test; process B is
 // `konjir serve` from the compiled dist/, in a child process, as the instance runs it.
 import { afterAll, expect, test } from '@jest/globals';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -42,6 +43,9 @@ async function serveInChild(databaseUrl: string, adminToken: string): Promise<st
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 500));
+/** How a subscription closed, or 'open' if it is still open after `ms`. */
+const settled = (closed: Promise<unknown>, ms: number) =>
+  Promise.race([closed, new Promise((r) => setTimeout(() => r('open'), ms).unref())]);
 async function until(cond: () => boolean, ms = 10_000) {
   const end = Date.now() + ms;
   while (!cond()) {
@@ -74,8 +78,10 @@ async function until(cond: () => boolean, ms = 10_000) {
 
   // Both agents listen on A.
   const pushed: { who: string; uri: string; body: { queries?: { question: string; answer?: string | null }[] } }[] = [];
+  const subscriptions: Record<string, Awaited<ReturnType<typeof watch>>['subscription']> = {};
   for (const [who, c] of [['pm', pmOnA], ['eng', engOnA]] as const) {
     const w = await watch(c, (uri, body) => { pushed.push({ who, uri, body: body as never }); });
+    subscriptions[who] = w.subscription;
     open.push(w.subscription);
   }
 
@@ -107,4 +113,12 @@ async function until(cond: () => boolean, ms = 10_000) {
   await until(() => pushed.length >= 1);
   await settle();
   expect(pushed.map((p) => [p.who, p.uri])).toStrictEqual([['pm', 'konjir://inbox/functional']]);
+
+  // Ending the engineer's session through B closes its stream on A at once, with no further
+  // change to trigger A's own check: the session-ended event crossed processes. Product's stays open.
+  const t0 = Date.now();
+  await call(adminB, 'admin_end_session', { token: engToken });
+  expect(await settled(subscriptions.eng.closed, 2000)).toBe('graceful');
+  expect(Date.now() - t0).toBeLessThan(2000);
+  expect(await settled(subscriptions.pm.closed, 100)).toBe('open');
 }, 60_000);

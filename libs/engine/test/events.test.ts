@@ -154,6 +154,16 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
     expect([onA, onB]).toStrictEqual([[], []]);
   });
 
+  test('a session ended through one Kolab reaches the other by its sessionKey, never its token', async () => {
+    const { b, onA } = await twoKolabs();
+    await b.addActor('alice');
+    const token = await b.openSession('alice', 'product');
+    await b.endSession(token);
+    await until(() => onA.length > 0);
+    expect(onA).toStrictEqual([{ session: 'ended', id: sessionKey(token) }]);
+    expect(JSON.stringify(onA)).not.toContain(token);
+  });
+
   test('an event too long for NOTIFY reaches the other Kolab as a signal to re-read every inbox', async () => {
     const { a, b, onA, onB } = await twoKolabs();
     await a.addActor('alice'); await a.addActor('bob');
