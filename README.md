@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 102 scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 123 unit, scenario, regression, migration, agent, channel, review and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -36,7 +36,7 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | `@konjir/channel-bridge` | `apps/channel-bridge` | The Konjir channel: a Claude Code plugin whose stdio server forwards Kolab inbox changes into the session |
 | `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. Also the Bedrock reviewer, until W1.7 removes it. |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
-| `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring |
+| `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring, on [diff-match-patch](https://github.com/antfu/diff-match-patch-es) |
 | `@konjir/db` | `libs/db` | The schema, as versioned SQL migrations, and the connection |
 | `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI and engine |
 
