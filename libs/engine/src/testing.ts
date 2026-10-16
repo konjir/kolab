@@ -11,9 +11,10 @@ import { Kolab } from './kolab.js';
  * by hand to point at a server you run. Each test then gets a database of its own on it.
  */
 const POSTGRES = process.env.KONJIR_TEST_DATABASE_URL;
+/** Set by jest.global-setup.js; jest.global-teardown.js drops this run's databases by it. */
+const RUN = process.env.KONJIR_TEST_RUN ?? 'adhoc';
 
 const opened: Kolab[] = [];
-const databases: string[] = [];
 const dirs: string[] = [];
 
 export type Store = { dataDir?: string; databaseUrl?: string };
@@ -32,9 +33,8 @@ export async function persistentStore(): Promise<Store> {
 }
 
 async function freshDatabase() {
-  const name = `kj_test_${randomBytes(6).toString('hex')}`;
+  const name = `kj_test_${RUN}_${randomBytes(6).toString('hex')}`;
   await onServer(`create database ${name}`);
-  databases.push(name);
   const url = new URL(POSTGRES!);
   url.pathname = `/${name}`;
   return url.toString();
@@ -54,10 +54,13 @@ export async function openKolab(options: Parameters<typeof Kolab.open>[0] = {}) 
   return kolab;
 }
 
-/** Closes the databases the tests opened, and removes their stores; jest.setup.js runs it after each file. */
+/**
+ * Closes the Kolabs the tests opened, and removes their data directories; jest.setup.js runs it
+ * after each file. Postgres databases stay until jest.global-teardown.js drops them, after every
+ * file has closed the servers it started on them.
+ */
 export async function closeOpened() {
   for (const kolab of opened.splice(0)) await kolab.close().catch(() => undefined);
-  for (const name of databases.splice(0)) await onServer(`drop database if exists ${name} with (force)`);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
 
