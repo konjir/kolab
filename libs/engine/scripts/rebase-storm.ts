@@ -15,13 +15,19 @@
  *   npm run rebase-storm                          # the grid, on PGlite
  *   npm run rebase-storm -- --postgres            # the grid, on Postgres 18 in a container (needs Docker)
  *   npm run rebase-storm -- --probe [--postgres]  # other writers during a storm
+ *   npm run rebase-storm -- --races [--postgres]  # deterministic reproductions of the commit races (W1.17)
  *   npm run rebase-storm -- --E 100 --W 50 --D 3 --B 1 --K 10 --F 0.2   # one shape
  *
- * --budget <ms> (default 60000) stops scaling a series once a storm takes longer than that.
+ * Each shape runs --repeat <n> times (default 3, each on a fresh database) and reports the
+ * median storm, after one throwaway warm-up storm per backend. --budget <ms> (default 60000)
+ * stops scaling a series once a storm's median takes longer than that. The npm script runs
+ * with --expose-gc, so the memory baseline is taken after a collection; without it, the
+ * growth figures are upper bounds.
  */
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { Kolab } from '../src/index.js';
+import type { Reviewer } from '@konjir/types';
+import { Kolab, structuralReviewer } from '../src/index.js';
 
 type Shape = { E: number; W: number; D: number; B: number; K: number; F: number };
 type Backend = { name: string; url?: () => Promise<string>; stop?: () => Promise<void> };
@@ -30,6 +36,7 @@ const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
 const opt = (name: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? Number(args[i + 1]) : undefined; };
 const BUDGET = opt('budget') ?? 60_000;
+const REPEAT = opt('repeat') ?? 3;
 
 // ---------------------------------------------------------------------------
 // Instrumentation: count every statement and time every transaction, wherever it runs.
@@ -112,6 +119,7 @@ async function storm(backend: Backend, s: Shape) {
     const { product, P, next, depth } = await family(kolab, s);
     const setupMs = performance.now() - setup0;
     const before = await counts(kolab);
+    const earlier = new Set((await kolab.db.query<{ id: string }>(`select id from version`)).rows.map((r) => r.id));
 
     global.gc?.();
     resetStats();
@@ -121,8 +129,10 @@ async function storm(backend: Backend, s: Shape) {
     const ms = performance.now() - t0;
     stats.on = false;
 
-    const rebased = (await kolab.db.query<{ node_id: string; state: string }>(
-      `select node_id, state from version where active_role = 'system' and node_id <> 'P'`)).rows;
+    // Only the versions this storm made: Kolab's own, on the variants, absent before the commit.
+    const rebased = (await kolab.db.query<{ id: string; node_id: string; state: string }>(
+      `select id, node_id, state from version where active_role = 'system' and node_id <> 'P'`)).rows
+      .filter((r) => !earlier.has(r.id));
     const perDepth = Array<number>(s.D).fill(0);
     for (const r of rebased) perDepth[depth.get(r.node_id)! - 1]++;
     const after = await counts(kolab);
@@ -142,6 +152,7 @@ async function storm(backend: Backend, s: Shape) {
       statements: stats.statements,
       stmtPerRebase: rebased.length ? Math.round(stats.statements / rebased.length) : 0,
       transactions: stats.transactions,
+      txPerRebase: rebased.length ? +(stats.transactions / rebased.length).toFixed(1) : 0,
       txMaxMs: +stats.txMaxMs.toFixed(1),
       txShare: +(stats.txMs / ms).toFixed(2),
       marks,
@@ -153,6 +164,19 @@ async function storm(backend: Backend, s: Shape) {
   } finally {
     await kolab.close();
   }
+}
+
+/** The shape REPEAT times, each on a fresh database: the run with the median time, plus every run's time. */
+async function medianStorm(backend: Backend, s: Shape) {
+  const runs = [];
+  for (let i = 0; i < REPEAT; i++) runs.push(await storm(backend, s));
+  const sorted = [...runs].sort((a, b) => a.ms - b.ms);
+  return { ...sorted[Math.floor((sorted.length - 1) / 2)], runs: runs.map((r) => r.ms).join('/') };
+}
+
+/** One throwaway storm, so the first measured one doesn't pay for a cold container, pool or JIT. */
+async function warmUp(backend: Backend) {
+  await storm(backend, { E: 20, W: 50, D: 1, B: 1, K: 10, F: 0.2 });
 }
 
 async function counts(kolab: Kolab) {
@@ -169,8 +193,9 @@ async function counts(kolab: Kolab) {
 /**
  * While P's commit rebases every variant, two other writers run in a loop:
  * - an unrelated writer commits new versions of a node outside the family;
- * - a variant writer commits human edits to the variants, starting from the last to be
- *   rebased and working back, so that most edits land on variants still waiting for theirs.
+ * - a variant writer commits human edits to the variants, in reverse creation order. The
+ *   cascade's child query has no order, so this only makes it likely, not certain, that the
+ *   edits land on variants still waiting for their rebase; `--races` is the deterministic version.
  * Their latencies are compared with the same writes on an idle Kolab, and every failure is kept.
  */
 async function probe(backend: Backend, s: Shape) {
@@ -258,6 +283,208 @@ async function reviewFailed(kolab: Kolab) {
 }
 
 // ---------------------------------------------------------------------------
+// The commit races, reproduced deterministically (--races)
+// ---------------------------------------------------------------------------
+//
+// Each race injects one concurrent write at an exact point, through a reviewer hook or a
+// wrapper on db.query, into a small family: P with three elements, and variants that each
+// override E2. Each prints what happened and a verdict against what W1.17 (one serialized
+// commit step per node) should guarantee: no committed edit is lost, and no caller gets a raw
+// database error. W1.17 can take them as its starting tests. Reproductions after the PR #16 review.
+
+type Hook = (ctx: Parameters<Reviewer>[0]) => Promise<void>;
+
+async function raceKolab(backend: Backend) {
+  let hook: Hook | undefined;
+  const reviewer: Reviewer = async (ctx) => { await hook?.(ctx); return structuralReviewer(ctx); };
+  const kolab = await Kolab.open({ reviewer, ...(backend.url ? { databaseUrl: await backend.url() } : {}) });
+  return { kolab, setHook: (h: Hook | undefined) => { hook = h; } };
+}
+
+/** P@1 and `roots` variants V0, V1, …, each with `children` variants under it (V0.0, …). */
+async function raceFamily(kolab: Kolab, roots: number, children = 0) {
+  await kolab.addActor('alice');
+  const s = await kolab.openSession('alice', 'product');
+  await kolab.createNode(s, 'functional_spec', 'P', 'P');
+  const p1 = await kolab.commit(s, 'P', { elements: [0, 1, 2].map((i) => ({ id: `E${i}`, text: `Parent element ${i}, rev 1.` })) });
+  const ids: string[] = [];
+  const add = async (id: string, parent: string) => {
+    ids.push(id);
+    await kolab.createNode(s, 'functional_spec', id, id);
+    return kolab.commit(s, id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says E2 its own way.` }] });
+  };
+  for (let r = 0; r < roots; r++) {
+    const v = await add(`V${r}`, p1);
+    for (let c = 0; c < children; c++) await add(`V${r}.${c}`, v);
+  }
+  const next = [0, 1, 2].map((i) => ({ id: `E${i}`, text: i === 0 ? 'Parent element 0, rev 2.' : `Parent element ${i}, rev 1.` }));
+  return { s, ids, next };
+}
+
+async function raceHistory(kolab: Kolab, node: string) {
+  const rows = (await kolab.db.query<{ id: string; seq: number; active_role: string; state: string; parent_version_id: string }>(
+    `select id, seq, active_role, state, parent_version_id from version where node_id = $1 order by seq`, [node])).rows;
+  const out = [];
+  for (const v of rows) {
+    const p = await kolab.version(v.parent_version_id);
+    const els = (await kolab.elements(v.id)).map((e) => e.element_id).join(',');
+    out.push(`  ${node} seq ${v.seq} ${v.active_role.padEnd(7)} ${v.state.padEnd(9)} on ${p.node_id}@${p.seq} [${els}]`);
+  }
+  return out.join('\n');
+}
+
+const liveHas = async (kolab: Kolab, node: string, element: string) =>
+  (await kolab.elements((await kolab.latestCommitted(node))!.id)).some((e) => e.element_id === element);
+
+/** Marks other than the expected override_stale ones: a lost edit should at least raise one. */
+const otherMarks = async (kolab: Kolab) => JSON.stringify(Object.fromEntries((await kolab.db.query<{ reason: string; n: number }>(
+  `select reason, count(*)::int as n from invalidation where reason <> 'override_stale' group by reason`)).rows.map((r) => [r.reason, r.n])));
+
+/** Variants whose live version doesn't sit on their parent node's live version. */
+async function stranded(kolab: Kolab, ids: string[]) {
+  const out = [];
+  for (const id of ids) {
+    const v = (await kolab.latestCommitted(id))!;
+    const parentNode = (await kolab.version(v.parent_version_id!)).node_id;
+    if ((await kolab.latestCommitted(parentNode))!.id !== v.parent_version_id) out.push(id);
+  }
+  return out;
+}
+
+const verdict = (ok: boolean, what: string) => console.log(`  ${ok ? 'SAFE' : 'RACE'}: ${what}`);
+
+/**
+ * 1a. The stale child list. While the storm reviews its first root's rebase, a human commits
+ * `add H` to the other root. The storm then rebases the version it listed before the edit.
+ */
+async function race1a(backend: Backend) {
+  const { kolab, setHook } = await raceKolab(backend);
+  try {
+    const { s, next } = await raceFamily(kolab, 2, 1);
+    let edited: string | undefined;
+    setHook(async (ctx) => {
+      if (edited || ctx.version.active_role !== 'system' || !/^V\d$/.test(ctx.version.node_id)) return;
+      edited = ctx.version.node_id === 'V0' ? 'V1' : 'V0';
+      await kolab.commit(s, edited, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${edited}.` }] });
+    });
+    let error: unknown;
+    await kolab.commit(s, 'P', { elements: next }).catch((e) => { error = e; });
+    setHook(undefined);
+    console.log(`\n1a. Stale child list: a human commits to ${edited} while the storm rebases the other root`);
+    console.log(`  parent commit: ${error ? String(error) : 'ok'}`);
+    console.log(await raceHistory(kolab, edited!));
+    const own = await liveHas(kolab, edited!, 'H'), child = await liveHas(kolab, `${edited}.0`, 'H');
+    console.log(`  other marks: ${await otherMarks(kolab)}`);
+    verdict(own, `${edited}'s live version ${own ? 'keeps' : 'has lost'} the human edit H`);
+    verdict(child, `its child ${edited}.0 ${child ? 'inherits' : 'has lost'} H`);
+  } finally { await kolab.close(); }
+}
+
+/**
+ * 1b. Review's check-then-act. A human draft of V0 is in review (the reviewer is slow, as an
+ * LLM gate is) when P commits and the storm rebases V0. The staleness check ran before.
+ */
+async function race1b(backend: Backend) {
+  const { kolab, setHook } = await raceKolab(backend);
+  try {
+    const { s, ids, next } = await raceFamily(kolab, 1);
+    const draft = await kolab.draft(s, 'V0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.' }] });
+    let fired = false;
+    setHook(async (ctx) => {
+      if (fired || ctx.version.id !== draft) return;
+      fired = true;
+      await kolab.commit(s, 'P', { elements: next });
+    });
+    const r = await kolab.review(draft);
+    setHook(undefined);
+    console.log('\n1b. Review check-then-act: P commits while a human draft of V0 is in review');
+    console.log(`  human review: ok=${r.ok}${r.version === draft ? ', committed the draft' : `, folded into ${r.version}`}`);
+    console.log(await raceHistory(kolab, 'V0'));
+    const kept = await liveHas(kolab, 'V0', 'H');
+    console.log(`  other marks: ${await otherMarks(kolab)}; stranded: ${JSON.stringify(await stranded(kolab, ids))}`);
+    verdict(kept || !r.ok, kept ? 'V0 keeps H' : r.ok ? 'the review said ok, but V0\'s live version has lost H' : 'the draft was refused');
+  } finally { await kolab.close(); }
+}
+
+/**
+ * 2a. The seq collision, rebase loses. A human commits to a variant between the storm's
+ * nextSeq read for it and its insert.
+ */
+async function race2a(backend: Backend) {
+  const { kolab } = await raceKolab(backend);
+  const proto = Object.getPrototypeOf(kolab.db);
+  const query = proto.query;
+  try {
+    const { s, ids, next } = await raceFamily(kolab, 4);
+    let armed = true, edited: string | undefined;
+    proto.query = async function (sql: string, params?: unknown[]) {
+      const res = await query.call(this, sql, params);
+      const node = params?.[0];
+      if (armed && sql.includes('coalesce(max(seq)') && typeof node === 'string' && node.startsWith('V')) {
+        armed = false; edited = node;
+        await kolab.commit(s, node, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${node}.` }] });
+      }
+      return res;
+    };
+    let error: unknown;
+    await kolab.commit(s, 'P', { elements: next }).catch((e) => { error = e; });
+    proto.query = query;
+    const left = await stranded(kolab, ids);
+    console.log(`\n2a. Seq collision, the rebase loses: a human commits to ${edited} between the storm's nextSeq and its insert`);
+    console.log(`  parent commit: ${error ? String(error).slice(0, 140) : 'ok'}; P live at seq ${(await kolab.latestCommitted('P'))!.seq}`);
+    console.log(await raceHistory(kolab, edited!));
+    console.log(`  other marks: ${await otherMarks(kolab)}`);
+    verdict(!error, error ? 'the parent committed, but its caller got a raw database error' : 'the parent commit returned');
+    verdict(!left.length, left.length ? `${left.join(', ')} left on the old parent, with no mark` : 'every variant is on the new parent');
+    if (left.length) {
+      // A stranded variant catches up on its own next commit (cascade step 5), or on P's next commit.
+      const last = left.at(-1)!;
+      await kolab.commit(s, last, { deltas: [{ kind: 'add', element: 'Z', text: `Later edit to ${last}.` }] });
+      console.log(`  after a later commit to ${last}, it is ${(await stranded(kolab, [last])).length ? 'still stranded' : 'on the new parent'}`);
+    }
+  } finally { proto.query = query; await kolab.close(); }
+}
+
+/** 2b. Two concurrent human commits to one node, `n` times; tallies what the live version kept. */
+async function race2b(backend: Backend, n = 10) {
+  const tally: Record<string, number> = {};
+  for (let i = 0; i < n; i++) {
+    const { kolab } = await raceKolab(backend);
+    try {
+      const { s } = await raceFamily(kolab, 1);
+      await kolab.addActor('bob');
+      const s2 = await kolab.openSession('bob', 'product');
+      const rs = await Promise.allSettled([
+        kolab.commit(s, 'V0', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] }),
+        kolab.commit(s2, 'V0', { deltas: [{ kind: 'add', element: 'B', text: 'Bob adds B.' }] }),
+      ]);
+      const ok = rs.filter((r) => r.status === 'fulfilled').length;
+      const kept = [] as string[];
+      for (const e of ['A', 'B']) if (await liveHas(kolab, 'V0', e)) kept.push(e);
+      const failure = rs.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+      const key = `${ok} of 2 commits ok, live has ${kept.join('+') || 'neither'}`
+        + (failure ? `; the other got ${String(failure.reason).slice(0, 80)}` : '');
+      tally[key] = (tally[key] ?? 0) + 1;
+    } finally { await kolab.close(); }
+  }
+  console.log(`\n2b. Two concurrent human commits to V0, ${n} runs:`);
+  for (const [k, c] of Object.entries(tally)) {
+    console.log(`  ${c}× ${k}`);
+  }
+  const lost = Object.entries(tally).filter(([k]) => k.startsWith('2 of 2') && !k.includes('A+B')).reduce((a, [, c]) => a + c, 0);
+  const raw = Object.entries(tally).filter(([k]) => k.includes('the other got')).reduce((a, [, c]) => a + c, 0);
+  verdict(!lost, `${lost} of ${n} runs reported both commits ok and lost one edit`);
+  verdict(!raw, `${raw} of ${n} runs gave one caller a raw database error`);
+}
+
+async function races(backend: Backend) {
+  await race1a(backend);
+  await race1b(backend);
+  await race2a(backend);
+  await race2b(backend);
+}
+
+// ---------------------------------------------------------------------------
 // Backends
 // ---------------------------------------------------------------------------
 
@@ -309,6 +536,10 @@ async function main() {
   const backend = flag('postgres') ? await postgres() : pglite;
   try {
     console.log(`backend: ${backend.name}; node ${process.version}`);
+    if (flag('races')) {
+      await races(backend);
+      return;
+    }
     if (flag('probe')) {
       for (const s of [
         { E: 20, W: 50, D: 3, B: 1, K: 10, F: 0.2 },
@@ -318,13 +549,15 @@ async function main() {
     }
     if (opt('W') !== undefined) {
       const s = { E: opt('E') ?? 20, W: opt('W')!, D: opt('D') ?? 1, B: opt('B') ?? 1, K: opt('K') ?? 1, F: opt('F') ?? 0.2 };
-      print([await storm(backend, s)]);
+      await warmUp(backend);
+      print([await medianStorm(backend, s)]);
       return;
     }
+    await warmUp(backend);
     const all: Record<string, unknown>[] = [];
     for (const series of grid()) {
       for (const s of series) {
-        const r = await storm(backend, s);
+        const r = await medianStorm(backend, s);
         all.push(r);
         console.log(JSON.stringify(r));
         if (r.ms > BUDGET) { console.log(`  storm took ${r.ms} ms, over the ${BUDGET} ms budget: the rest of this series is skipped`); break; }
