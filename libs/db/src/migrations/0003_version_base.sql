@@ -6,8 +6,13 @@
 -- while its base is still the node's live version, checked under a lock on the node's row, so
 -- two commits to one node can't both build on the same version and one silently lose the other.
 --
--- Every version that exists already gets the base the old check implied: the node's latest
--- committed version below its own seq. A draft open when this runs is judged as it was before.
+-- Committed and rejected versions get the base the old check implied: the node's latest
+-- committed version below their own seq. That is a record only; nothing judges them again.
+-- A draft still open when this runs keeps a null base. Its true base is unknowable: a version
+-- below it may have committed after it was drafted, and nothing records when. With a null base,
+-- review treats every committed version of the node as newer, so the draft commits only on a
+-- node with none, and otherwise is rejected as stale, to be redrafted. Nothing it
+-- would overwrite is lost.
 -- The table grants that 0001 gives kj_agent (insert) and kj_system (insert, update) on version
 -- cover the new column.
 
@@ -16,7 +21,8 @@ alter table version add column base_version_id text references version(id);
 update version v set base_version_id = (
   select b.id from version b
    where b.node_id = v.node_id and b.seq < v.seq and b.state = 'committed'
-   order by b.seq desc limit 1);
+   order by b.seq desc limit 1)
+ where v.state <> 'drafted';
 
 -- An agent's draft may only be built on a committed version of its own node.
 drop policy agent_layer on version;

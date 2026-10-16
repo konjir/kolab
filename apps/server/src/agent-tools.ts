@@ -227,10 +227,11 @@ export class AgentTools {
       const r = await kolab.review(id);
       const v = await kolab.version(r.version);
       return {
-        ok: r.ok, review: r.note ?? null, committed: r.ok ? `kj:${node}@${v.seq}` : null,
+        ok: r.ok, review: r.note ?? null, committed: r.ok ? `kj:${node}@${v.seq}` : null, stale: r.stale ?? false,
         stale_after_commit: r.ok ? await kolab.describeMarks({ node }) : [],
         next: r.ok ? 'Committed. Others can now link to it; check konjir_list_stale.'
           : r.retryable ? `Not reviewed yet; the draft is intact. Resubmit with konjir_submit_for_review node=${node} version=${version} shortly.`
+          : r.stale ? `Stale: someone else committed to ${node} after you drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
           : 'Rejected. Fix what the review names and draft again.',
       };
     });

@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 184 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 190 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -283,10 +283,11 @@ Pointing at the changed requirement isn't enough. The edge must also say *which 
 **Concurrency needs an explicit rule.** Each version records its base: the node's live version when it was drafted, which it was built on. It commits only while that is still the node's live version. Each node's commit step checks this and sets the version committed in one transaction that holds a lock on the node's row, and every write of a new version takes its number under the same lock. So two commits to one node can't both build on one version, and version numbers never collide. A draft can be overtaken while it's open, or while the reviewer runs:
 
 - **Overtaken only by Kolab's own rebases:** the draft is folded into a fresh rebase, keeping its author and declared edges.
-- **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted. `commit` and `konjir_submit_for_review` say so; the caller never gets a raw database error.
-- **A rebase of Kolab's own that was overtaken** is dropped. Whatever overtook it committed after the parent did, and its own commit rebases it onto that parent.
+- **Overtaken only by Kolab's own rebases:** the fold is built on the newest of the versions just judged, so a commit that lands while it is being made overtakes the fold in turn.
+- **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted. `commit` throws a `GateError`, and `konjir_submit_for_review` returns `stale: true` and says to re-read and redraft. The caller never gets a raw database error for losing a race.
+- **A rebase of Kolab's own that was overtaken** is dropped, and the variant's live version is caught up onto the parent's latest version on the spot.
 
-A parent's commit rebases each variant it listed only if the variant hasn't moved on since. A rebase that fails marks its variant `review_failed`, with a question, and the parent's commit carries on to the rest, so no variant is left on the old parent without a mark. `libs/engine/test/concurrency.test.ts` drives each race that `npm run rebase-storm -- --races` reproduces, on PGlite and Postgres.
+A parent's commit rebases each variant's live version as it is when its turn comes, never the version it listed. A rebase that fails for the variant's own reasons (its review rejects it or can't run, or the reviewer throws) marks the variant `review_failed`, with a question, and the parent's commit carries on to the rest. A variant holds at most one such mark; a later failure re-points it at the newer parent, and a rebase that passes settles it. Any other failure, such as a lost connection, or a failure in the cascade of a version that did commit, stops the cascade: the caller gets a `CascadeError` saying which version committed and what didn't finish, never a success over variants left behind. What it hadn't reached catches up on the parent's or the variant's next commit. A draft left open across the upgrade to migration 0003 has no recorded base, so it is rejected as stale on review if its node has any committed version, and must be redrafted. `libs/engine/test/concurrency.test.ts` drives each race that `npm run rebase-storm -- --races` reproduces, on PGlite and Postgres.
 
 **Agents can use it unaided.** Two separate agents were given only a token and the `konjir` command, with no access to the source. The product agent wrote and committed a password-reset spec. The engineer agent bound it to a Node/Postgres/Redis stack and linked each of its 11 elements to the requirements it serves. It then found two real ambiguities (which sessions survive a reset, and whether earlier reset links die) and asked them instead of deciding. The product owner ruled, and the product agent answered and amended the spec. Exactly the three binding elements tied to the amended requirements went dirty. The engineer revised them and cleared all three marks.
 
@@ -308,5 +309,6 @@ Their feedback drove these changes:
 - **Push misses what changes while a listener is reconnecting.** Kolab can't yet tell when its LISTEN connection comes back, so it can't signal every subscriber to re-read then (see *Push across processes*).
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
+- **The cascade isn't durable.** A commit's cascade runs after it commits, in the calling process. If that process stops part way, or the cascade stops on a `CascadeError`, variants it hadn't reached stay on the old parent, with no mark, until the parent or the variant commits again.
 - **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.
 - **Push is a signal, not a message.** Kolab signals an inbox over `subscriptions/listen`, and the agent reads what changed. Under the 2025 protocol, which has no listen stream, agents still poll `list_stale` and `list_queries`. Claude Code needs `konjir watch --once` (see *Questions, notes and push*). A Claude Code channel would need a local stdio bridge, because channels don't work over HTTP.
