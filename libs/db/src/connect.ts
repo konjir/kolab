@@ -26,14 +26,25 @@ export interface Db {
   /**
    * Hear `channel` on one connection of its own, apart from the pool, through
    * @onivoro/server-pg-notify's `NotificationListener`, which re-establishes it when it's lost.
-   * `fn` gets each payload, parsed as JSON. Resolves once the LISTEN is in place. On PGlite it
-   * resolves to undefined: nothing else can write to its database.
+   * `fn` gets each payload, parsed as JSON; it should check what it gets, since anyone who can
+   * connect to the database can NOTIFY. Whatever `fn` throws is logged, without the payload,
+   * and goes no further. The connection is named `application_name` (at most 63 bytes), so
+   * `connected` can find it. Resolves once the LISTEN is in place, and rejects, leaving nothing
+   * behind, if it can't be. On PGlite it resolves to undefined: nothing else can write to its
+   * database.
    */
-  listen(channel: string, fn: (payload: unknown) => void): Promise<Listening | undefined>;
+  listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string }): Promise<Listening | undefined>;
   close(): Promise<void>;
 }
 
-export interface Listening { close(): Promise<void> }
+export interface Listening {
+  /**
+   * Whether the listening connection is up now, as Postgres sees it: a backend with its
+   * application_name exists. While it's down, notifications are missed.
+   */
+  connected(): Promise<boolean>;
+  close(): Promise<void>;
+}
 
 /** Postgres when `databaseUrl` is given; otherwise PGlite, persisted to `dataDir` or in memory. */
 export function openDb(opts: { databaseUrl?: string; dataDir?: string } = {}): Db {
@@ -82,14 +93,30 @@ class KyselyDb implements Db {
     await this.query(q.text, q.values);
   }
 
-  async listen(channel: string, fn: (payload: unknown) => void): Promise<Listening | undefined> {
+  async listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string }): Promise<Listening | undefined> {
     if (!this.databaseUrl) return undefined;
     const { NotificationListener } = await loadPgNotify();
     const listener = new (class extends NotificationListener<unknown> {
-      onNotification(payload: unknown) { fn(payload); }
-    })(channel, { connectionString: this.databaseUrl, application_name: `kolab-listen-${channel}` });
-    await listener.onModuleInit();
-    return { close: () => listener.onModuleDestroy() };
+      onNotification(payload: unknown) {
+        // pg-listen calls this from pg's socket handler, where a throw would end the process.
+        try { fn(payload); } catch (e) {
+          console.error(`postgres: a notification on ${channel} failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+        }
+      }
+    })(channel, { connectionString: this.databaseUrl, application_name: opts.applicationName });
+    try {
+      await listener.onModuleInit();
+    } catch (e) {
+      // Its connection's handlers are already attached, and would keep reconnecting it.
+      await listener.onModuleDestroy().catch(() => undefined);
+      throw e;
+    }
+    return {
+      connected: async () => (await this.query(
+        `select 1 from pg_stat_activity where datname = current_database() and application_name = $1`,
+        [opts.applicationName])).rows.length > 0,
+      close: () => listener.onModuleDestroy(),
+    };
   }
 
   close() { return this.k.destroy(); }
