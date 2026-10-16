@@ -3,7 +3,7 @@ import { ulid } from 'ulid';
 import {
   type Address, type QuoteSelector, fingerprint, formatAddress, MAX_QUOTE, normalize, parseAddress, resolveSpan,
 } from '@konjir/address';
-import { migrate, openDb, type Db } from '@konjir/db';
+import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
   LAYER_OF_KIND, LAYER_OF_ROLE,
   type Actor, type ActorKind, type Author,
@@ -52,6 +52,21 @@ export const sessionKey = (id: string) => createHash('sha256').update(id).digest
 
 type Q = Pick<Db, 'query' | 'exec'>;
 
+/** Tells every listener in every process about `e`, once the transaction it's called in commits. */
+type Signal = (e: KolabEvent) => Promise<void>;
+
+/**
+ * The Postgres channel that carries engine events between Kolab processes (API5). NOTIFY is
+ * per database, so only the processes serving one kolab hear each other.
+ */
+export const EVENT_CHANNEL = 'konjir_events';
+
+/**
+ * What goes over EVENT_CHANNEL: the event, and the Kolab that sent it, which has already told
+ * its own listeners. `resync` stands in for an event too long for NOTIFY: re-read everything.
+ */
+type Notice = { from: string; event: KolabEvent } | { from: string; resync: true };
+
 // ---------------------------------------------------------------------------
 // Kolab
 // ---------------------------------------------------------------------------
@@ -60,6 +75,9 @@ export class Kolab {
   private constructor(readonly db: Db, private reviewer: Reviewer) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
+  /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
+  private readonly origin = randomBytes(9).toString('base64url');
+  private listening?: Promise<Listening | undefined>;
 
   /**
    * Postgres at `databaseUrl`; otherwise PGlite, in memory by default or persisted to `dataDir`
@@ -76,40 +94,101 @@ export class Kolab {
     return new Kolab(db, opts.reviewer ?? structuralReviewer);
   }
 
-  async close() { await this.db.close(); }
+  async close() {
+    const listening = this.listening;
+    this.listening = undefined;
+    await (await listening?.catch(() => undefined))?.close();
+    await this.db.close();
+  }
 
-  /** Be told when an inbox gains or loses work, or a session ends. Returns an unsubscribe function. */
+  /**
+   * Be told when an inbox gains or loses work, or a session ends, here or, once `listen` has
+   * been called, in any other Kolab process on the same Postgres database. Every engine event
+   * arrives, whatever its kind, and only once its change has committed. Returns an unsubscribe
+   * function.
+   */
   onEvent(fn: (e: KolabEvent) => void): () => void {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
   }
 
-  private emit(e: KolabEvent) {
+  /**
+   * Hear the events of other Kolab processes on this database (API5), over Postgres
+   * LISTEN/NOTIFY on one connection of this process's own. Idempotent. On PGlite there are no
+   * other processes, and it does nothing.
+   */
+  async listen(): Promise<void> {
+    this.listening ??= this.db.listen(EVENT_CHANNEL, (p) => this.heard(p as Notice));
+    try {
+      await this.listening;
+    } catch (e) {
+      this.listening = undefined;
+      throw e;
+    }
+  }
+
+  private heard(n: Notice) {
+    if (n?.from === this.origin) return; // told our own listeners when it committed
+    if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${e}`));
+    else if (n?.event) this.dispatch(n.event);
+  }
+
+  /**
+   * Signals every inbox and every actor's answers, for a change too big to name. Each listener
+   * re-reads what it holds; an inbox that didn't change reads the same.
+   */
+  private async resync() {
+    for (const layer of ['functional', 'technical'] as const) this.dispatch({ inbox: 'layer', layer });
+    for (const a of await this.listActors()) this.dispatch({ inbox: 'actor', actor: a.id });
+  }
+
+  private dispatch(e: KolabEvent) {
     for (const fn of this.listeners) {
       try { fn(e); } catch { /* a listener's failure never fails a write */ }
     }
   }
 
-  private async emitForVersion(versionId: string) {
-    this.emit({ inbox: 'layer', layer: (await this.version(versionId)).layer });
-  }
-
   // ---- write contexts ------------------------------------------------------
 
+  /**
+   * One transaction, with a `signal` for the events its change causes (API5). Each is notified
+   * inside the transaction, so Postgres delivers it to other processes only if it commits, and
+   * this process's listeners hear it once the transaction has committed. Never on a rollback.
+   */
+  private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>): Promise<T> {
+    const events = new Map<string, KolabEvent>();
+    const result = await this.db.transaction((tx) => fn(tx, async (event) => {
+      const key = JSON.stringify(event);
+      if (events.has(key)) return; // Postgres folds a repeated notification in one transaction too
+      events.set(key, event);
+      const notice: Notice = { from: this.origin, event };
+      await tx.notify(EVENT_CHANNEL, JSON.stringify(notice), () => JSON.stringify({ from: this.origin, resync: true } satisfies Notice));
+    }));
+    for (const e of events.values()) this.dispatch(e);
+    return result;
+  }
+
+  /** Signals the inbox of a version's layer. */
+  private async signalLayerOf(tx: Q, signal: Signal, versionId: string) {
+    const r = await tx.query<{ layer: Layer }>(`select layer from version where id = $1`, [versionId]);
+    if (!r.rows[0]) throw new Error(`no version ${versionId}`);
+    await signal({ inbox: 'layer', layer: r.rows[0].layer });
+  }
+
   /** Agent writes run as kj_agent; row-level security re-checks the layer. */
-  private asAgent<T>(sessionId: string, fn: (tx: Q) => Promise<T>): Promise<T> {
-    return this.db.transaction(async (tx) => {
+  private asAgent<T>(sessionId: string, fn: (tx: Q, signal: Signal) => Promise<T>): Promise<T> {
+    return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_agent');
       await tx.query(`select set_config('kj.session', $1, true)`, [sessionId]);
-      return fn(tx);
+      return fn(tx, signal);
     });
   }
 
   /** Kolab's own work: rebases, review transitions, the cascade. */
-  private asSystem<T>(fn: (tx: Q) => Promise<T>): Promise<T> {
-    return this.db.transaction(async (tx) => {
+  private asSystem<T>(fn: (tx: Q, signal: Signal) => Promise<T>): Promise<T> {
+    return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_system');
-      return fn(tx);
+      return fn(tx, signal);
     });
   }
 
@@ -196,8 +275,10 @@ export class Kolab {
    * The event names the session by sessionKey, never by its token.
    */
   async endSession(id: string) {
-    const r = await this.db.query(`update session set ended_at = now() where id = $1 returning id`, [id]);
-    if (r.rows.length) this.emit({ session: 'ended', id: sessionKey(id) });
+    await this.inTransaction(async (tx, signal) => {
+      const r = await tx.query(`update session set ended_at = now() where id = $1 returning id`, [id]);
+      if (r.rows.length) await signal({ session: 'ended', id: sessionKey(id) });
+    });
   }
 
   /** Which of `ids` are open sessions, in one query. */
@@ -829,8 +910,11 @@ export class Kolab {
   }
 
   private async closeMark(markId: string, by: string) {
-    await this.asSystem(async (tx) => {
-      await tx.query(`update invalidation set state = 'cleared', cleared_by = $2 where id = $1`, [markId, by]);
+    await this.asSystem(async (tx, signal) => {
+      const closed = await tx.query<{ version_id: string }>(
+        `update invalidation set state = 'cleared', cleared_by = $2 where id = $1 returning version_id`, [markId, by]);
+      if (!closed.rows[0]) throw new Error(`no mark ${markId}`);
+      await this.signalLayerOf(tx, signal, closed.rows[0].version_id);
       const caused = await tx.query<{ mark_id: string }>(
         `delete from invalidation_cause where cause_id = $1 returning mark_id`, [markId]);
       for (const { mark_id } of caused.rows) {
@@ -841,7 +925,6 @@ export class Kolab {
           [mark_id, `cause ${markId} cleared`]);
       }
     });
-    await this.emitForVersion((await this.markRow(markId)).version_id);
   }
 
   // ---- queries (the lightweight tier) ---------------------------------------
@@ -873,12 +956,14 @@ export class Kolab {
       from = { version: fr.versionId, element: f.element ?? null };
     }
     const id = ulid();
-    await this.asSystem((tx) => tx.query(
-      `insert into query(id, version_id, element_id, selector, kind, question, raised_by, from_version_id, from_element_id)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [id, r.versionId, a.element ?? null, a.selector ? JSON.stringify(a.selector) : null, opts.kind ?? 'question',
-        question, s.actor_id, from?.version ?? null, from?.element ?? null]));
-    await this.emitForVersion(r.versionId);
+    await this.asSystem(async (tx, signal) => {
+      await tx.query(
+        `insert into query(id, version_id, element_id, selector, kind, question, raised_by, from_version_id, from_element_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, r.versionId, a.element ?? null, a.selector ? JSON.stringify(a.selector) : null, opts.kind ?? 'question',
+          question, s.actor_id, from?.version ?? null, from?.element ?? null]);
+      await this.signalLayerOf(tx, signal, r.versionId!);
+    });
     return id;
   }
 
@@ -896,12 +981,15 @@ export class Kolab {
     }
     const v = await this.version(q.version_id);
     const s = await this.requireLayer(sessionId, v.layer);
-    await this.db.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1`, [queryId, answer, s.actor_id]);
+    // The owner's queue shrinks and the asker's answers grow, in the transaction that answers.
+    await this.inTransaction(async (tx, signal) => {
+      await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1`, [queryId, answer, s.actor_id]);
+      await signal({ inbox: 'layer', layer: v.layer });
+      if (q.raised_by) await signal({ inbox: 'actor', actor: q.raised_by });
+    });
     // A boundary question is settled by the layer that owns the answer; its mark goes with it.
     if (mark && mark.state === 'open') await this.closeMark(mark.id, `answered by ${s.actor_id}: ${answer}`);
     if (q.kind === 'question' && q.from_version_id) await this.markAsker(q, v, answer);
-    this.emit({ inbox: 'layer', layer: v.layer });
-    if (q.raised_by) this.emit({ inbox: 'actor', actor: q.raised_by });
   }
 
   /**
@@ -1077,19 +1165,23 @@ export class Kolab {
     edge_id?: string; delta_id?: string; note?: string;
   }): Promise<string> {
     const id = ulid();
-    await this.asSystem((tx) => tx.query(
-      `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]));
-    await this.emitForVersion(m.version_id);
+    await this.asSystem(async (tx, signal) => {
+      await tx.query(
+        `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]);
+      await this.signalLayerOf(tx, signal, m.version_id);
+    });
     return id;
   }
 
   private async ask(versionId: string, elementId: string | null, markId: string, question: string) {
-    await this.asSystem((tx) => tx.query(
-      `insert into query(id, version_id, element_id, invalidation_id, question) values ($1,$2,$3,$4,$5)`,
-      [ulid(), versionId, elementId, markId, question]));
-    await this.emitForVersion(versionId);
+    await this.asSystem(async (tx, signal) => {
+      await tx.query(
+        `insert into query(id, version_id, element_id, invalidation_id, question) values ($1,$2,$3,$4,$5)`,
+        [ulid(), versionId, elementId, markId, question]);
+      await this.signalLayerOf(tx, signal, versionId);
+    });
   }
 
   /**

@@ -15,16 +15,38 @@ export interface Db {
   /** Runs one or more statements that take no parameters. */
   exec(text: string): Promise<void>;
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
+  /**
+   * NOTIFY `channel` with `payload`, through @onivoro/server-pg-notify's `buildNotifyQuery`.
+   * Call it on a transaction's Db: Postgres delivers the notification when that transaction
+   * commits, and never if it rolls back. A payload too long for NOTIFY (8000 bytes) is sent as
+   * `oversized(payload)` instead. On PGlite, which is one process with no one else to tell, it
+   * does nothing.
+   */
+  notify(channel: string, payload: string, oversized: (payload: string) => string): Promise<void>;
+  /**
+   * Hear `channel` on one connection of its own, apart from the pool, through
+   * @onivoro/server-pg-notify's `NotificationListener`, which re-establishes it when it's lost.
+   * `fn` gets each payload, parsed as JSON. Resolves once the LISTEN is in place. On PGlite it
+   * resolves to undefined: nothing else can write to its database.
+   */
+  listen(channel: string, fn: (payload: unknown) => void): Promise<Listening | undefined>;
   close(): Promise<void>;
 }
+
+export interface Listening { close(): Promise<void> }
 
 /** Postgres when `databaseUrl` is given; otherwise PGlite, persisted to `dataDir` or in memory. */
 export function openDb(opts: { databaseUrl?: string; dataDir?: string } = {}): Db {
   const dialect = opts.databaseUrl
     ? new PostgresDialect({ pool: pool(opts.databaseUrl) })
     : new PGliteDialect(opts.dataDir ? new PGlite(opts.dataDir) : new PGlite());
-  return new KyselyDb(new Kysely<unknown>({ dialect }));
+  return new KyselyDb(new Kysely<unknown>({ dialect }), opts.databaseUrl);
 }
+
+// Loaded on first use, on Postgres only: its listener brings in NestJS's logger and pg-listen,
+// which PGlite and the CLI's client verbs never need.
+let pgNotify: Promise<typeof import('@onivoro/server-pg-notify')> | undefined;
+const loadPgNotify = () => (pgNotify ??= import('@onivoro/server-pg-notify'));
 
 function pool(connectionString: string) {
   const p = new pg.Pool({ connectionString });
@@ -35,7 +57,8 @@ function pool(connectionString: string) {
 }
 
 class KyselyDb implements Db {
-  constructor(private readonly k: Kysely<unknown>) {}
+  /** `databaseUrl` is Postgres's; without it, this is PGlite. */
+  constructor(private readonly k: Kysely<unknown>, private readonly databaseUrl?: string) {}
 
   async query<R>(text: string, params: unknown[] = []) {
     const r = await this.k.executeQuery<R>(CompiledQuery.raw(text, params));
@@ -48,7 +71,25 @@ class KyselyDb implements Db {
   }
 
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
-    return this.k.transaction().execute((trx) => fn(new KyselyDb(trx)));
+    return this.k.transaction().execute((trx) => fn(new KyselyDb(trx, this.databaseUrl)));
+  }
+
+  async notify(channel: string, payload: string, oversized: (payload: string) => string) {
+    if (!this.databaseUrl) return;
+    const { buildNotifyQuery } = await loadPgNotify();
+    const q = buildNotifyQuery(channel, payload, { onOversized: oversized });
+    if (!q) throw new Error(`a notification on ${channel} is too long for NOTIFY, even as ${oversized(payload)}`);
+    await this.query(q.text, q.values);
+  }
+
+  async listen(channel: string, fn: (payload: unknown) => void): Promise<Listening | undefined> {
+    if (!this.databaseUrl) return undefined;
+    const { NotificationListener } = await loadPgNotify();
+    const listener = new (class extends NotificationListener<unknown> {
+      onNotification(payload: unknown) { fn(payload); }
+    })(channel, { connectionString: this.databaseUrl, application_name: `kolab-listen-${channel}` });
+    await listener.onModuleInit();
+    return { close: () => listener.onModuleDestroy() };
   }
 
   close() { return this.k.destroy(); }
