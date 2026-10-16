@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import type { Db } from './connect.js';
 
@@ -14,29 +15,80 @@ export interface Migration {
  */
 const DIR = new URL('./migrations/', import.meta.url);
 const FILE = /^(\d{4})_([a-z0-9_]+)\.sql$/;
+const BASELINE_FILE = 'baseline.sql';
 
-/** Reads the numbered migrations in `dir`, in version order. */
+/** A migration's file name, as errors and the README spell it. */
+export const fileOf = (m: Pick<Migration, 'version' | 'name'>) => `${String(m.version).padStart(4, '0')}_${m.name}.sql`;
+
+/** The sha256 of a migration's text, recorded when it's applied, so an edited file is caught. */
+export const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
+
+/**
+ * Reads the numbered migrations in `dir`, in version order. Any other `.sql` file there is an
+ * error, not something to skip, so a misnamed migration can't silently never run.
+ */
 export function loadMigrations(dir: URL = DIR): Migration[] {
-  const migrations = readdirSync(dir)
-    .map((file) => FILE.exec(file))
-    .filter((m): m is RegExpExecArray => m !== null)
-    .map(([file, version, name]) => ({
-      version: Number(version),
-      name,
-      sql: readFileSync(new URL(file, dir), 'utf8'),
-    }))
-    .sort((a, b) => a.version - b.version);
+  const migrations: Migration[] = [];
+  for (const file of readdirSync(dir).sort()) {
+    if (file === BASELINE_FILE || !/\.sql$/i.test(file)) continue;
+    const match = FILE.exec(file);
+    if (!match) throw new Error(`migrations: ${file} isn't named NNNN_lower_snake_case.sql`);
+    const m = { version: Number(match[1]), name: match[2], sql: readFileSync(new URL(file, dir), 'utf8') };
+    assertNoTransactionControl(file, m.sql);
+    migrations.push(m);
+  }
+  migrations.sort((a, b) => a.version - b.version);
   migrations.forEach((m, i) => {
-    if (m.version !== i + 1) throw new Error(`migrations: expected version ${i + 1}, found ${m.version}_${m.name}`);
+    if (m.version !== i + 1) throw new Error(`migrations: expected version ${i + 1}, found ${fileOf(m)}`);
   });
   return migrations;
+}
+
+/**
+ * The SQL's top-level statements, with comments, string literals, quoted identifiers and
+ * dollar-quoted bodies (a `do` block's or a function's) blanked out.
+ */
+export function statements(sql: string): string[] {
+  let out = '';
+  let i = 0;
+  const skipTo = (end: string, from: number) => { const j = sql.indexOf(end, from); return j < 0 ? sql.length : j + end.length; };
+  while (i < sql.length) {
+    const c = sql[i];
+    const dollar = c === '$' ? /^\$([A-Za-z_][A-Za-z_0-9]*)?\$/.exec(sql.slice(i)) : null;
+    if (c === '-' && sql[i + 1] === '-') { i = skipTo('\n', i); out += ' '; }
+    else if (c === '/' && sql[i + 1] === '*') { i = skipTo('*/', i + 2); out += ' '; }
+    else if (c === "'" || c === '"') {
+      // A doubled quote is an escaped one, so it just continues the literal.
+      let j = i + 1;
+      while (j < sql.length && !(sql[j] === c && sql[j + 1] !== c)) j += sql[j] === c ? 2 : 1;
+      i = j + 1;
+      out += `${c}${c}`;
+    }
+    else if (dollar) { i = skipTo(dollar[0], i + dollar[0].length); out += ' $$ '; }
+    else { out += c; i++; }
+  }
+  return out.split(';').map((s) => s.trim()).filter(Boolean);
+}
+
+const TRANSACTION_CONTROL = /^(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b/i;
+
+/**
+ * Every migration runs inside the runner's one transaction. A `commit` or `begin` in a file
+ * would end it early, releasing the advisory lock and recording a half-applied database.
+ */
+export function assertNoTransactionControl(file: string, sql: string) {
+  const bad = statements(sql).find((s) => TRANSACTION_CONTROL.test(s));
+  if (bad) {
+    throw new Error(`migrations: ${file} controls the transaction (${bad.split(/\s+/)[0]}); the runner wraps every file in one transaction`);
+  }
 }
 
 /** Every migration, in version order. */
 export const MIGRATIONS: readonly Migration[] = loadMigrations();
 
 /** Brings a database made before migrations began to migration 0001; see the file. */
-export const BASELINE: string = readFileSync(new URL('baseline.sql', DIR), 'utf8');
+export const BASELINE: string = readFileSync(new URL(BASELINE_FILE, DIR), 'utf8');
+assertNoTransactionControl(BASELINE_FILE, BASELINE);
 
 /**
  * Advisory locks are scoped to one database, so this key serializes Kolab processes migrating
@@ -59,14 +111,17 @@ export interface MigrateResult {
  * - **No `kj_migration` table and no `node` table:** a fresh database. Every migration runs.
  * - **`node` but no `kj_migration`:** a database made before migrations began. The baseline
  *   brings it to 0001, which is recorded as baselined, and the later migrations run.
- * - **A recorded version this release doesn't have:** a newer release migrated it, and this
- *   one refuses to run on it.
+ * - **A recorded migration whose file has changed since, or that this release doesn't have:**
+ *   Kolab refuses to open the database.
  */
 export async function migrate(
   db: Db,
   { migrations: given = MIGRATIONS, baseline = BASELINE }: { migrations?: readonly Migration[]; baseline?: string } = {},
 ): Promise<MigrateResult> {
   const migrations = [...given].sort((a, b) => a.version - b.version);
+  for (const m of migrations) assertNoTransactionControl(fileOf(m), m.sql);
+  assertNoTransactionControl(BASELINE_FILE, baseline);
+
   return db.transaction(async (tx) => {
     await tx.query(`select pg_advisory_xact_lock($1)`, [LOCK]);
     const tables = await tx.query<{ migrations: string | null; node: string | null }>(
@@ -75,11 +130,18 @@ export async function migrate(
 
     const done = new Set<number>();
     if (recorded) {
-      for (const r of (await tx.query<{ version: number }>(`select version from kj_migration`)).rows) done.add(r.version);
-      const known = new Set(migrations.map((m) => m.version));
-      const unknown = [...done].filter((v) => !known.has(v)).sort((a, b) => a - b);
-      if (unknown.length) {
-        throw new Error(`the database has migration ${unknown.join(', ')}, which this release of Kolab doesn't know; run a newer release`);
+      const rows = (await tx.query<{ version: number; name: string; checksum: string }>(
+        `select version, name, checksum from kj_migration order by version`)).rows;
+      for (const r of rows) {
+        const m = migrations.find((x) => x.version === r.version);
+        if (!m) {
+          throw new Error(`the database has migration ${fileOf(r)}, which this release of Kolab doesn't know; run a newer release`);
+        }
+        if (checksum(m.sql) !== r.checksum) {
+          throw new Error(`migration ${fileOf(m)} has changed since it was applied to this database; ` +
+            'restore the file as it shipped, and make the change in a new migration');
+        }
+        done.add(r.version);
       }
     }
 
@@ -91,27 +153,40 @@ export async function migrate(
       done.add(first.version);
     }
 
-    const applied: number[] = [];
+    const applied: Migration[] = [];
     for (const m of migrations) {
       if (done.has(m.version)) continue;
       await tx.exec(m.sql);
-      applied.push(m.version);
+      applied.push(m);
     }
 
-    // Made after the migrations, so 0001's grants on every table never reach it: the record is Kolab's alone.
     if (!recorded) {
       await tx.exec(`
         create table kj_migration (
           version    int primary key,
           name       text not null,
+          checksum   text not null,          -- sha256 of the file as applied
           baselined  boolean not null default false,
           applied_at timestamptz not null default now()
         )`);
     }
-    if (baselined) await tx.query(`insert into kj_migration(version, name, baselined) values ($1, $2, true)`, [first.version, first.name]);
-    for (const v of applied) {
-      await tx.query(`insert into kj_migration(version, name) values ($1, $2)`, [v, migrations.find((m) => m.version === v)!.name]);
-    }
-    return { baselined, applied };
+    const record = (m: Migration, isBaseline: boolean) => tx.query(
+      `insert into kj_migration(version, name, checksum, baselined) values ($1, $2, $3, $4)`,
+      [m.version, m.name, checksum(m.sql), isBaseline]);
+    if (baselined) await record(first, true);
+    for (const m of applied) await record(m, false);
+
+    // A migration that grants on all tables would reach the record on a database that already had
+    // it, but not on a fresh one. The record is Kolab's login's alone, on every database.
+    await tx.exec(`
+      revoke all on kj_migration from public;
+      do $$ declare r text; begin
+        foreach r in array array['kj_agent', 'kj_system'] loop
+          if exists (select 1 from pg_roles where rolname = r) then
+            execute format('revoke all on kj_migration from %I', r);
+          end if;
+        end loop;
+      end $$`);
+    return { baselined, applied: applied.map((m) => m.version) };
   });
 }
