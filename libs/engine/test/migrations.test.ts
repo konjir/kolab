@@ -1,7 +1,7 @@
 // Versioned migrations (DAT2): a fresh database and one made before migrations began both reach
 // the current schema through the files, each migration runs once and in order, and Kolab
 // processes opening one database together don't trip over each other.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -288,4 +288,33 @@ test('begin, end and commit inside comments, strings and dollar-quoted bodies ar
   // The shipped files pass, which loading them at import already proved.
   expect(MIGRATIONS.length).toBeGreaterThan(0);
   expect(BASELINE.length).toBeGreaterThan(0);
+});
+
+test('every shipped migration file matches its pinned checksum, and every file is pinned', () => {
+  // Databases already record these files' checksums. Changing a pin means every one of them
+  // stops opening, so a new migration adds a pin and never changes one (README.md, "Changing the schema").
+  const dir = new URL('../../db/src/migrations/', import.meta.url);
+  const pinned = JSON.parse(readFileSync(new URL('checksums.json', dir), 'utf8')) as Record<string, string>;
+  const files = readdirSync(dir).filter((f) => /\.sql$/i.test(f)).sort();
+  expect(Object.keys(pinned).sort()).toStrictEqual(files);
+  for (const file of files) {
+    expect(`${file} ${checksum(readFileSync(new URL(file, dir), 'utf8'))}`).toBe(`${file} ${pinned[file]}`);
+  }
+  expect(pinned['0001_schema.sql']).toBe('a2cc436568d0741b06261fe0f79e2b389f5a490668cebd731c66105bcf664947');
+});
+
+test("an escape string's backslashed quote doesn't hide transaction control", () => {
+  expect(statements(String.raw`select E'\''; commit; select 'x';`).map((s) => s.split(/\s+/)[0])).toStrictEqual(['select', 'commit', 'select']);
+  expect(statements(String.raw`select e'a\\'; commit`).map((s) => s.split(/\s+/)[0])).toStrictEqual(['select', 'commit']);
+  // An identifier ending in e, followed by a plain string, is not an escape string.
+  expect(statements(String.raw`select name'\'; commit; select '\'`).map((s) => s.split(/\s+/)[0])).toStrictEqual(['select', 'commit', 'select']);
+});
+
+test("a $ inside an identifier doesn't start a dollar quote that hides transaction control", () => {
+  expect(statements('select 1 as q$t$; commit; select 1 as r$t$;').map((s) => s.split(/\s+/)[0])).toStrictEqual(['select', 'commit', 'select']);
+  expect(statements('select $t$ a; commit $t$; commit').map((s) => s.split(/\s+/)[0])).toStrictEqual(['select', 'commit']);
+});
+
+test('nested block comments are skipped whole', () => {
+  expect(statements('/* outer /* inner */ still a comment; commit; */ select 1').map((s) => s.split(/\s+/)[0])).toStrictEqual(['select']);
 });

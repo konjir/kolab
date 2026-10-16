@@ -52,17 +52,37 @@ export function statements(sql: string): string[] {
   let out = '';
   let i = 0;
   const skipTo = (end: string, from: number) => { const j = sql.indexOf(end, from); return j < 0 ? sql.length : j + end.length; };
+  // A letter, digit, _ or $ just before means we're inside an identifier, as in q$t$ or name'x'.
+  const inWord = (at: number) => at > 0 && /[A-Za-z0-9_$]/.test(sql[at - 1]);
   while (i < sql.length) {
     const c = sql[i];
-    const dollar = c === '$' ? /^\$([A-Za-z_][A-Za-z_0-9]*)?\$/.exec(sql.slice(i)) : null;
+    const dollar = c === '$' && !inWord(i) ? /^\$([A-Za-z_][A-Za-z_0-9]*)?\$/.exec(sql.slice(i)) : null;
+    const escape = (c === 'E' || c === 'e') && sql[i + 1] === "'" && !inWord(i);
     if (c === '-' && sql[i + 1] === '-') { i = skipTo('\n', i); out += ' '; }
-    else if (c === '/' && sql[i + 1] === '*') { i = skipTo('*/', i + 2); out += ' '; }
-    else if (c === "'" || c === '"') {
-      // A doubled quote is an escaped one, so it just continues the literal.
-      let j = i + 1;
-      while (j < sql.length && !(sql[j] === c && sql[j + 1] !== c)) j += sql[j] === c ? 2 : 1;
+    else if (c === '/' && sql[i + 1] === '*') {
+      // Block comments nest in Postgres.
+      let depth = 1;
+      i += 2;
+      while (i < sql.length && depth > 0) {
+        if (sql.startsWith('/*', i)) { depth++; i += 2; }
+        else if (sql.startsWith('*/', i)) { depth--; i += 2; }
+        else i++;
+      }
+      out += ' ';
+    }
+    else if (c === "'" || c === '"' || escape) {
+      // A doubled quote is an escaped one, so it just continues the literal. In an E'…' string a
+      // backslash also escapes the next character.
+      const q = escape ? "'" : c;
+      let j = i + (escape ? 2 : 1);
+      while (j < sql.length) {
+        if (escape && sql[j] === '\\') j += 2;
+        else if (sql[j] === q && sql[j + 1] === q) j += 2;
+        else if (sql[j] === q) break;
+        else j++;
+      }
       i = j + 1;
-      out += `${c}${c}`;
+      out += `${q}${q}`;
     }
     else if (dollar) { i = skipTo(dollar[0], i + dollar[0].length); out += ' $$ '; }
     else { out += c; i++; }
