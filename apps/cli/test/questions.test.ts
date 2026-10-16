@@ -97,6 +97,25 @@ test('a database from the previous release is migrated on open', async () => {
     // agents (0002). The people and the spec stay.
     await kolab.db.exec(`
       drop table kj_migration;
+      drop policy agent_layer on version;
+      create policy agent_layer on version for insert to kj_agent
+        with check (state = 'drafted' and layer = kj_session_layer()
+                    and layer = (select n.layer from node n where n.id = node_id));
+      drop policy agent_layer on element;
+      create policy agent_layer on element for insert to kj_agent
+        with check (exists (select 1 from version v where v.id = version_id
+                             and v.state = 'drafted' and v.layer = kj_session_layer()));
+      drop policy agent_layer on delta;
+      create policy agent_layer on delta for insert to kj_agent
+        with check (exists (select 1 from version v where v.id = version_id
+                             and v.state = 'drafted' and v.layer = kj_session_layer()));
+      drop policy agent_layer on query;
+      create policy agent_layer on query for insert to kj_agent
+        with check (exists (select 1 from version v where v.id = version_id and v.layer = kj_session_layer()));
+      drop function kj_session_actor(), kj_session_role();
+      drop trigger actor_frozen on actor;
+      drop function kj_actor_frozen();
+      alter table actor drop constraint actor_id_check;
       drop index actor_owner;
       alter table actor drop constraint actor_owner_is_person, drop column owner_kind,
                         drop constraint actor_id_kind_key, drop column owner_id, drop column kind;
