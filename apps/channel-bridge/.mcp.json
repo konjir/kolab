@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "konjir": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/start.sh",
+      "env": {
+        "KONJIR_URL": "${KONJIR_URL:-http://127.0.0.1:7420/mcp}",
+        "KONJIR_TOKEN": "${KONJIR_TOKEN:-}"
+      }
+    }
+  }
+}
