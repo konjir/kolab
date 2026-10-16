@@ -103,7 +103,15 @@ class KyselyDb implements Db {
           console.error(`postgres: a notification on ${channel} failed: ${e instanceof Error ? e.message : 'unknown error'}`);
         }
       }
-    })(channel, { connectionString: this.databaseUrl, application_name: opts.applicationName });
+    })(channel, {
+      connectionString: this.databaseUrl,
+      application_name: opts.applicationName,
+      // pg-listen's own reconnect loop can't be stopped once it starts, so a listener closed
+      // mid-reconnect would go on connecting. With one attempt it makes none and reports the
+      // loss at once, and NotificationListener, which stops when closed, owns every retry:
+      // after 1 s, 2 s, 4 s and so on, up to 30 s, without limit.
+      ...({ retryLimit: 1 } as object),
+    });
     try {
       await listener.onModuleInit();
     } catch (e) {
