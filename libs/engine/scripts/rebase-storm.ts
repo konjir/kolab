@@ -27,7 +27,7 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import type { Reviewer } from '@konjir/types';
-import { Kolab, structuralReviewer } from '../src/index.js';
+import { GateError, Kolab, structuralReviewer } from '../src/index.js';
 
 type Shape = { E: number; W: number; D: number; B: number; K: number; F: number };
 type Backend = { name: string; url?: () => Promise<string>; stop?: () => Promise<void> };
@@ -289,8 +289,9 @@ async function reviewFailed(kolab: Kolab) {
 // Each race injects one concurrent write at an exact point, through a reviewer hook or a
 // wrapper on db.query, into a small family: P with three elements, and variants that each
 // override E2. Each prints what happened and a verdict against what W1.17 (one serialized
-// commit step per node) should guarantee: no committed edit is lost, and no caller gets a raw
-// database error. W1.17 can take them as its starting tests. Reproductions after the PR #16 review.
+// commit step per node) guarantees: no committed edit is lost, and no caller gets a raw
+// database error. Reproductions after the PR #16 review; libs/engine/test/concurrency.test.ts
+// runs the same races as tests, on PGlite and Postgres.
 
 type Hook = (ctx: Parameters<Reviewer>[0]) => Promise<void>;
 
@@ -408,7 +409,9 @@ async function race1b(backend: Backend) {
 
 /**
  * 2a. The seq collision, rebase loses. A human commits to a variant between the storm's
- * nextSeq read for it and its insert.
+ * nextSeq read for it and its insert. The commit starts there but isn't awaited there: since
+ * W1.17 that read runs in the transaction that holds the variant's lock, so the human's commit
+ * waits for it to end, as a concurrent caller's would.
  */
 async function race2a(backend: Backend) {
   const { kolab } = await raceKolab(backend);
@@ -416,25 +419,31 @@ async function race2a(backend: Backend) {
   const query = proto.query;
   try {
     const { s, ids, next } = await raceFamily(kolab, 4);
-    let armed = true, edited: string | undefined;
+    let armed = true, edited: string | undefined, human: Promise<unknown> | undefined;
     proto.query = async function (sql: string, params?: unknown[]) {
       const res = await query.call(this, sql, params);
       const node = params?.[0];
       if (armed && sql.includes('coalesce(max(seq)') && typeof node === 'string' && node.startsWith('V')) {
         armed = false; edited = node;
-        await kolab.commit(s, node, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${node}.` }] });
+        human = kolab.commit(s, node, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${node}.` }] })
+          .then(() => 'ok', (e) => String(e));
       }
       return res;
     };
     let error: unknown;
     await kolab.commit(s, 'P', { elements: next }).catch((e) => { error = e; });
+    const humanResult = await human;
     proto.query = query;
     const left = await stranded(kolab, ids);
     console.log(`\n2a. Seq collision, the rebase loses: a human commits to ${edited} between the storm's nextSeq and its insert`);
     console.log(`  parent commit: ${error ? String(error).slice(0, 140) : 'ok'}; P live at seq ${(await kolab.latestCommitted('P'))!.seq}`);
+    console.log(`  human commit: ${String(humanResult).slice(0, 140)}`);
     console.log(await raceHistory(kolab, edited!));
     console.log(`  other marks: ${await otherMarks(kolab)}`);
     verdict(!error, error ? 'the parent committed, but its caller got a raw database error' : 'the parent commit returned');
+    const kept = await liveHas(kolab, edited!, 'H');
+    verdict(humanResult === 'ok' && kept, humanResult !== 'ok' ? `the human commit failed: ${String(humanResult).slice(0, 80)}`
+      : `${edited}'s live version ${kept ? 'keeps' : 'has lost'} the human edit H`);
     verdict(!left.length, left.length ? `${left.join(', ')} left on the old parent, with no mark` : 'every variant is on the new parent');
     if (left.length) {
       // A stranded variant catches up on its own next commit (cascade step 5), or on P's next commit.
@@ -462,8 +471,9 @@ async function race2b(backend: Backend, n = 10) {
       const kept = [] as string[];
       for (const e of ['A', 'B']) if (await liveHas(kolab, 'V0', e)) kept.push(e);
       const failure = rs.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+      // Kolab's own error for an overtaken draft is a GateError naming it stale; anything else is raw.
       const key = `${ok} of 2 commits ok, live has ${kept.join('+') || 'neither'}`
-        + (failure ? `; the other got ${String(failure.reason).slice(0, 80)}` : '');
+        + (failure ? `; the other got ${failure.reason instanceof GateError ? '' : 'raw '}${String(failure.reason).slice(0, 80)}` : '');
       tally[key] = (tally[key] ?? 0) + 1;
     } finally { await kolab.close(); }
   }
@@ -472,7 +482,7 @@ async function race2b(backend: Backend, n = 10) {
     console.log(`  ${c}× ${k}`);
   }
   const lost = Object.entries(tally).filter(([k]) => k.startsWith('2 of 2') && !k.includes('A+B')).reduce((a, [, c]) => a + c, 0);
-  const raw = Object.entries(tally).filter(([k]) => k.includes('the other got')).reduce((a, [, c]) => a + c, 0);
+  const raw = Object.entries(tally).filter(([k]) => k.includes('the other got raw')).reduce((a, [, c]) => a + c, 0);
   verdict(!lost, `${lost} of ${n} runs reported both commits ok and lost one edit`);
   verdict(!raw, `${raw} of ${n} runs gave one caller a raw database error`);
 }

@@ -93,14 +93,15 @@ test('a database from the previous release is migrated on open', async () => {
     const product = await kolab.openSession('alice', 'product');
     await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
-    // Put the tables back the way 0.5 created them, before migrations were recorded and before
-    // agents (0002). The people and the spec stay.
+    // Put the tables back the way 0.5 created them, before migrations were recorded, before
+    // agents (0002) and before version bases (0003). The people and the spec stay.
     await kolab.db.exec(`
       drop table kj_migration;
       drop policy agent_layer on version;
       create policy agent_layer on version for insert to kj_agent
         with check (state = 'drafted' and layer = kj_session_layer()
                     and layer = (select n.layer from node n where n.id = node_id));
+      alter table version drop column base_version_id;
       drop policy agent_layer on element;
       create policy agent_layer on element for insert to kj_agent
         with check (exists (select 1 from version v where v.id = version_id

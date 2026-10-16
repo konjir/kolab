@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 173 unit, scenario, regression, migration, agent, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 184 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -280,10 +280,13 @@ The rebased child must pass the review gate. Resolving a dirty override records 
 
 Pointing at the changed requirement isn't enough. The edge must also say *which part of the dependent* relies on it, or the dirt spreads to the whole dependent version and everything downstream. One whole-version hop anywhere in a lineage collapses back to lockstep.
 
-**Concurrency needs an explicit rule.** A draft can be overtaken while it's open:
+**Concurrency needs an explicit rule.** Each version records its base: the node's live version when it was drafted, which it was built on. It commits only while that is still the node's live version. Each node's commit step checks this and sets the version committed in one transaction that holds a lock on the node's row, and every write of a new version takes its number under the same lock. So two commits to one node can't both build on one version, and version numbers never collide. A draft can be overtaken while it's open, or while the reviewer runs:
 
 - **Overtaken only by Kolab's own rebases:** the draft is folded into a fresh rebase, keeping its author and declared edges.
-- **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted.
+- **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted. `commit` and `konjir_submit_for_review` say so; the caller never gets a raw database error.
+- **A rebase of Kolab's own that was overtaken** is dropped. Whatever overtook it committed after the parent did, and its own commit rebases it onto that parent.
+
+A parent's commit rebases each variant it listed only if the variant hasn't moved on since. A rebase that fails marks its variant `review_failed`, with a question, and the parent's commit carries on to the rest, so no variant is left on the old parent without a mark. `libs/engine/test/concurrency.test.ts` drives each race that `npm run rebase-storm -- --races` reproduces, on PGlite and Postgres.
 
 **Agents can use it unaided.** Two separate agents were given only a token and the `konjir` command, with no access to the source. The product agent wrote and committed a password-reset spec. The engineer agent bound it to a Node/Postgres/Redis stack and linked each of its 11 elements to the requirements it serves. It then found two real ambiguities (which sessions survive a reset, and whether earlier reset links die) and asked them instead of deciding. The product owner ruled, and the product agent answered and amended the spec. Exactly the three binding elements tied to the amended requirements went dirty. The engineer revised them and cleared all three marks.
 
