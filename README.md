@@ -33,6 +33,7 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | Project | Folder | What it holds |
 | --- | --- | --- |
 | `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. |
+| `@konjir/channel-bridge` | `apps/channel-bridge` | The Konjir channel: a Claude Code plugin whose stdio server forwards Kolab inbox changes into the session |
 | `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. Also the Bedrock reviewer, until W1.7 removes it. |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
 | `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring |
@@ -84,7 +85,28 @@ Then point each harness at Kolab with its own token. The token decides who the a
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
 - **Anything with a shell** (Codex, opencode, a person): `export KONJIR_URL=… KONJIR_TOKEN=<token>`, then `bin/konjir instructions`.
 
-That one connection is the only static setup a harness needs. The rules come down the protocol, as server instructions and the `konjir_operating_instructions` prompt (`konjir instructions` in a shell). The served text includes answered questions and override precedent, so settled questions aren't re-asked.
+That one connection is the only static setup a harness needs.
+
+### Pushing the inbox into a Claude Code session
+
+Kolab signals inbox changes over `subscriptions/listen`, but Claude Code doesn't hand those notifications to the model. The Konjir channel does: `apps/channel-bridge` is a Claude Code plugin whose stdio server listens to Kolab with the session's token and forwards each change to its inbox (`konjir://inbox/{layer}`) or its answers (`konjir://answers/{actor}`) as a [channel](https://code.claude.com/docs/en/channels-reference) message. Each message says what changed and how to read it. It serves only the 2025-era protocol, because Claude Code doesn't register a channel server that negotiates 2026-07-28, and it reconnects when Kolab restarts.
+
+It runs from this checkout, so run `npm install` here first. Channels are a research preview and this one isn't on Anthropic's allowlist, so it loads with the development flag, in an interactive session (`-p` ignores the flag). Start Claude Code with the same `KONJIR_URL` and `KONJIR_TOKEN` as the agent's Konjir MCP server:
+
+```
+export KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<the agent's token>
+
+# For one session, straight from the checkout:
+claude --plugin-dir ~/github.com/konjir/kolab/apps/channel-bridge \
+  --dangerously-load-development-channels plugin:konjir-channel@inline
+
+# Or install it from this repository's marketplace, then start sessions with the plugin:
+claude plugin marketplace add ~/github.com/konjir/kolab
+claude plugin install konjir-channel@konjir
+claude --dangerously-load-development-channels plugin:konjir-channel@konjir
+```
+
+Choose **I am using this for local development** at the warning. Events arrive as `← konjir: Your functional inbox changed: …`. The plugin loads in place from a marketplace added from a local path, so it keeps using this checkout's `node_modules`. On Team and Enterprise plans an admin must enable channels first. The rules come down the protocol, as server instructions and the `konjir_operating_instructions` prompt (`konjir instructions` in a shell). The served text includes answered questions and override precedent, so settled questions aren't re-asked.
 
 ## Deploying to AWS for testing
 
