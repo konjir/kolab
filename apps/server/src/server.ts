@@ -1,6 +1,5 @@
-import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
+import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { hostHeaderValidation, localhostHostValidation, localhostOriginValidation, originValidation } from '@modelcontextprotocol/node';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
 import type { Reviewer } from '@konjir/types';
@@ -24,15 +23,6 @@ export async function startServer(opts: {
     { logger: ['error', 'warn'] },
   );
   const host = opts.host ?? '127.0.0.1';
-  // DNS-rebinding guard: only our own hostnames, and no browser origin but our own.
-  if (host === '127.0.0.1' || host === 'localhost' || opts.publicHost) {
-    const allowed = ['localhost', '127.0.0.1', '[::1]', ...(opts.publicHost ? [opts.publicHost] : [])];
-    const validateHost = opts.publicHost ? hostHeaderValidation(allowed) : localhostHostValidation();
-    const validateOrigin = opts.publicHost ? originValidation(allowed) : localhostOriginValidation();
-    app.use('/mcp', (req: IncomingMessage, res: ServerResponse, next: () => void) => {
-      if (validateHost(req, res) && validateOrigin(req, res)) next();
-    });
-  }
   await app.listen(opts.port ?? 0, host);
   const http = app.getHttpServer() as HttpServer;
   const { port } = http.address() as AddressInfo;
