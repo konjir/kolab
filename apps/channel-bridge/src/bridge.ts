@@ -71,29 +71,38 @@ export class KolabBridge {
         const me = await this.whoami(client);
         this.me = me;
         this.refusedToldClaude = false;
-        client.setNotificationHandler('notifications/resources/updated', (n) => {
-          const c = client!;
-          this.queue = this.queue.then(() => this.update(c, n.params.uri)).catch((e) => this.log(`could not read ${n.params.uri}: ${messageOf(e)}`));
-        });
+        // A read Kolab refuses (the session was ended while the stream stayed open) drops
+        // this connection, so the loop reconnects and whoami reports the refusal.
+        let drop!: () => void;
+        const dropped = new Promise<'refused'>((resolve) => { drop = () => resolve('refused'); });
+        // On the first connection, the first read of each resource is a baseline, not news.
+        const first = !everConnected;
+        const c = client;
+        const enqueue = (uri: string) => {
+          this.queue = this.queue.then(() => this.update(c, uri, first)).catch((e) => {
+            this.log(`could not read ${uri}: ${messageOf(e)}`);
+            if (isRefusal(e)) drop();
+          });
+        };
+        client.setNotificationHandler('notifications/resources/updated', (n) => enqueue(n.params.uri));
+        // Listen first, then read: a change landing in between is then both signalled and read.
+        const subscription = await client.listen({ resourceSubscriptions: me.subscribe });
         // Read each resource now: a baseline on first connect, and on a reconnect,
         // whatever changed while the bridge was away.
-        for (const uri of me.subscribe) {
-          const c = client;
-          this.queue = this.queue.then(() => this.update(c, uri, !everConnected)).catch((e) => this.log(`could not read ${uri}: ${messageOf(e)}`));
-        }
+        for (const uri of me.subscribe) enqueue(uri);
         await this.queue;
-        const subscription = await client.listen({ resourceSubscriptions: me.subscribe });
         this.log(`${everConnected ? 'reconnected' : 'connected'} to Kolab at ${safeUrl(this.opts.url)} as ${me.actor} (${me.role}); watching ${me.subscribe.join(', ')}`);
         everConnected = true;
         delay = initialMs;
         this.onListening?.(me);
-        const how = await Promise.race([subscription.closed, this.stopping]);
-        if (how === 'stopped') { await subscription.close().catch(() => undefined); break; }
-        this.log(`Kolab ended the subscription (${how}); reconnecting`);
+        const how = await Promise.race([subscription.closed, dropped, this.stopping]);
+        if (how === 'refused' || how === 'stopped') await subscription.close().catch(() => undefined);
+        if (how === 'stopped') break;
+        this.log(how === 'refused' ? 'Kolab refused a read with this token; reconnecting' : `Kolab ended the subscription (${how}); reconnecting`);
       } catch (e) {
         if (this.stopped) break;
         const msg = messageOf(e);
-        if (/\b401\b|invalid Konjir token|Unauthorized/i.test(msg)) {
+        if (isRefusal(e)) {
           this.log(`Kolab at ${safeUrl(this.opts.url)} refused the token; retrying in ${Math.round(delay / 1000)}s`);
           if (!this.refusedToldClaude) {
             this.refusedToldClaude = true;
@@ -147,6 +156,11 @@ export class KolabBridge {
   private sleep(ms: number) {
     return Promise.race([new Promise<void>((r) => setTimeout(r, ms).unref()), this.stopping.then(() => undefined)]);
   }
+}
+
+/** Kolab refused the token: a 401 on connect, or invalid_token on a read. */
+function isRefusal(e: unknown) {
+  return /\b401\b|invalid_token|invalid Konjir token|Unauthorized/i.test(messageOf(e));
 }
 
 function messageOf(e: unknown) {

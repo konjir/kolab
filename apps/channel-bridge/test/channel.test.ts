@@ -163,3 +163,26 @@ test('an engineer\'s session hears answers to what it raised, and a refused toke
   await refused.claude.close(); await b.claude.close();
   await server.close();
 }, 60_000);
+
+test('ending the session while the bridge listens tells the session its token was refused', async () => {
+  const server = await boot(await persistentStore());
+  const pm = await session(server, 'pm', 'product');
+  const eng = await session(server, 'eng', 'engineer');
+  await call(pm.client, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pm.client, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
+  await call(pm.client, 'submit_for_review', { node: 'orders', version: 1 });
+
+  const b = await bridge(server.url, pm.token);
+  await b.listening(1);
+  const admin = await kolabClient(server.url, ADMIN);
+  await call(admin, 'admin_end_session', { token: pm.token });
+
+  // Kolab still signals the open stream, but the bridge's read of it is refused.
+  await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
+  const told = await b.until('the refusal', () => b.messages.find((m) => m.meta.status === 'refused'));
+  expect(told.content).toMatch(/refused its session token/);
+  expect(b.messages.filter((m) => m.meta.kind === 'inbox')).toStrictEqual([]);
+  expect(JSON.stringify(b.messages) + b.stderr()).not.toContain(pm.token);
+  await b.claude.close();
+  await server.close();
+}, 60_000);
