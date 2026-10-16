@@ -77,6 +77,40 @@ test('each edge goes dirty only when its own addressed scope changes', async () 
   await kolab.close();
 });
 
+test('D42: a verbatim copy whose context no longer agrees is marked; a moved quote with its context is not', async () => {
+  const { kolab, product, engineer } = await setup();
+  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
+  const s1 = await kolab.commit(product, spec, {
+    elements: els({
+      R1: 'Alpha said save the cart now. Beta said save the cart later.',
+      R2: 'Refunds go to the original card within 5 days.',
+      R3: 'Beta said save the cart later.',
+    }),
+  });
+  const binding = await kolab.createNode(engineer, 'technical_binding', 'Checkout on Postgres', 'B');
+  const b = await kolab.commit(engineer, binding, { elements: els({ b1: 'Beta', b2: 'Any', b3: 'Refunds', b4: 'Moved' }) });
+  const link = (src: string, tgt: string, selector: { exact: string; prefix?: string; suffix?: string }) =>
+    kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: src, target: s1, targetElement: tgt, selector });
+  await link('b1', 'R1', { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' });
+  await link('b2', 'R1', { exact: 'save the cart' });
+  await link('b3', 'R2', { exact: 'the original card', prefix: 'Refunds go to', suffix: 'within 5 days' });
+  await link('b4', 'R3', { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' });
+
+  await kolab.commit(product, spec, {
+    elements: els({
+      // Beta's words were edited; Alpha's verbatim copy is no longer the quoted statement.
+      R1: 'Alpha said save the cart now. Beta said save a cart later.',
+      // Moved, with its context: clean.
+      R2: 'For card payments, refunds go to the original card within 5 days of the request.',
+      // Only a verbatim copy is left, in another statement: a change.
+      R3: 'Alpha said save the cart now.',
+    }),
+  });
+  const marks = await kolab.openMarks();
+  expect(marks.map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['b1', 'fuzzy_reanchor'], ['b4', 'fuzzy_reanchor']]);
+  await kolab.close();
+});
+
 test('resolve() follows the address scope and floats to the latest committed version', async () => {
   const { kolab, product } = await setup();
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');

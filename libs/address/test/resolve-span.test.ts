@@ -28,11 +28,11 @@ const LONG = 'Checkout completes within thirty seconds of the payment provider c
   + 'and the receipt is emailed to the address on the order at once.';
 
 describe('moved exact quotes are clean', () => {
-  test('a quote that moved within its element is exact, at its new offset', () => {
+  test('a quote that moved within its element, with its context, is exact at its new offset', () => {
     const sel = { exact: 'save a cart for later', prefix: 'Users can ', suffix: ' and share it' };
-    const r = at('Guests may browse. Signed-in users can now save a cart for later, too.', sel);
+    const r = at('Guests may browse. Signed-in users can save a cart for later, too.', sel);
     expect(r).toMatchObject({ status: 'exact', content: 'save a cart for later', located: 'save a cart for later' });
-    expect(r.status === 'exact' && r.start).toBe(43);
+    expect(r.status === 'exact' && r.start).toBe(39);
   });
 
   test('whitespace differences are not edits', () => {
@@ -148,6 +148,47 @@ describe('a long element does not slow matching sharply', () => {
     const ms = performance.now() - t0;
     expect(r.status).toBe(status);
     expect(ms).toBeLessThan(BOUND_MS);
+  });
+});
+
+describe('D42: the context decides whether a verbatim match is exact', () => {
+  test('an edited original plus a verbatim copy elsewhere: the edited original, as a change', () => {
+    const text = 'Alpha said save the cart now. Beta said save a cart later.';
+    expect(at(text, { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' }))
+      .toMatchObject({ status: 'fuzzy', located: 'save a cart', start: 40 });
+  });
+
+  test('a verbatim copy whose context does not agree, with nothing near where it pointed, is a change at the copy', () => {
+    const text = 'Alpha said save the cart now. Beta left.';
+    expect(at(text, { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' }))
+      .toMatchObject({ status: 'fuzzy', similarity: 1, located: 'save the cart', start: 11 });
+    // Context recorded, none of it left anywhere: still a change, never clean.
+    expect(resolveSpan('Users may save the cart.', { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' }).status)
+      .toBe('fuzzy');
+  });
+
+  test('an edited original plus a near copy elsewhere: the one the context points at', () => {
+    // Alpha's "save the carts" is closer to the quote; Beta's "save a cart" is where the context points.
+    const text = 'Alpha said save the carts now. Beta said save a cart later.';
+    expect(at(text, { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' }))
+      .toMatchObject({ status: 'fuzzy', located: 'save a cart', start: 41 });
+  });
+
+  test('a moved quote with either side of its context still there is exact', () => {
+    const sel = { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' };
+    expect(at('Intro first. Then Beta said save the cart much later.', sel)).toMatchObject({ status: 'exact', start: 28 });
+    expect(at('Intro first. Then Gamma: save the cart later.', sel)).toMatchObject({ status: 'exact', start: 25 });
+  });
+
+  test('a verbatim copy whose context agrees beats one with more matching characters that does not', () => {
+    // The first copy keeps " said" and "lat" (one word of two, and part of one); the second, all of the prefix.
+    const text = 'X said save the cart lat. Beta said save the cart now.';
+    expect(at(text, { exact: 'save the cart', prefix: 'Beta said', suffix: 'later.' })).toMatchObject({ status: 'exact', start: 36 });
+  });
+
+  test('without any recorded context, a verbatim match is exact wherever it is', () => {
+    expect(at('Alpha said save the cart now. Beta said save a cart later.', { exact: 'save the cart' }))
+      .toMatchObject({ status: 'exact', start: 11 });
   });
 });
 
