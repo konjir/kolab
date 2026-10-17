@@ -130,6 +130,11 @@ jobs:
     defaults:
       run:
         working-directory: deploy/terraform
+    env:
+      # init installs the providers from this cache when it has them, so a registry outage
+      # doesn't turn a required check red. Unpacked, they're about 800 MB, aws nearly all of it
+      # (measured with du). init still checks each cached provider against the lock file's checksums.
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -142,14 +147,24 @@ jobs:
           terraform_version: 1.16.5
           terraform_wrapper: false
 
+      - name: Make the provider cache directory
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ github.workspace }}/.terraform-plugin-cache
+          key: terraform-providers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deploy/terraform/.terraform.lock.hcl') }}
+
       - name: terraform fmt -check
         run: terraform fmt -check -recursive -diff
 
       # No AWS credentials, and none needed: -backend=false skips the S3 state, init only downloads
       # the providers .terraform.lock.hcl pins (and fails if the lock file would change), and
       # validate checks the configuration without configuring a provider or reading a data source.
-      # The lock file carries each provider's checksums for linux_arm64 as well as darwin_arm64
-      # (terraform providers lock -platform=...), or validate here rejects the providers.
+      # The lock file carries each provider's checksums for three platforms: linux_arm64 (this
+      # runner), linux_amd64 and darwin_arm64 (Lee's machine). Without this runner's, validate
+      # rejects every provider. After changing a provider, regenerate it in deploy/terraform with
+      #   terraform providers lock -platform=linux_arm64 -platform=linux_amd64 -platform=darwin_arm64
       - name: terraform init
         run: terraform init -backend=false -input=false -lockfile=readonly
 

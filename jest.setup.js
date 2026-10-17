@@ -5,4 +5,7 @@
 import { afterAll } from '@jest/globals';
 import { closeOpened } from '@konjir/engine/testing';
 
-afterAll(closeOpened);
+// Longer than a test's 30 s: one file's teardown can stop a child server (up to 10 s before
+// SIGKILL), close servers that wait on their streams, close Kolabs and drop databases. A hook that
+// timed out would leave the rest running after the file's environment was gone.
+afterAll(closeOpened, 60_000);

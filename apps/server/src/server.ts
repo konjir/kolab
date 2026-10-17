@@ -30,12 +30,16 @@ export async function startServer(opts: {
   return {
     url: opts.publicHost ? `https://${opts.publicHost}/mcp` : `http://${host}:${port}/mcp`,
     kolab,
-    // Closing again, or while it's closing, waits for the same close.
+    // Closing again, or while it's closing, waits for the same close; after a failed close, it tries again.
     close: () => (closing ??= (async () => {
-      // Listen streams stay open until the client goes; end them so close doesn't wait on them.
-      http.closeAllConnections();
-      await app.close();
-      if (!opts.kolab) await kolab.close();
-    })()),
+      try {
+        // Listen streams stay open until the client goes; end them so close doesn't wait on them.
+        http.closeAllConnections();
+        await app.close();
+      } finally {
+        // Its own Kolab, which no one else will close, even if the app's close failed.
+        if (!opts.kolab) await kolab.close();
+      }
+    })().catch((e) => { closing = undefined; throw e; })),
   };
 }

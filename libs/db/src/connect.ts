@@ -133,14 +133,20 @@ class KyselyDb implements Db {
 
   private closing?: Promise<void>;
 
+  /** Closing again, or while it's closing, waits for the same close; after a failed close, it tries again. */
   close() {
-    return (this.closing ??= (async () => {
+    return (this.closing ??= this.shutdown().catch((e) => { this.closing = undefined; throw e; }));
+  }
+
+  private async shutdown() {
+    try {
       await this.k.destroy();
+    } finally {
       // Kysely destroys only a driver it has initialized, on the first query. A PGlite starts up
       // as soon as it's made, so one closed before any query would otherwise go on starting up,
-      // and stay open, after its Db was closed.
+      // and stay open, after its Db was closed. It's closed here too if destroy failed.
       if (this.pglite && !this.pglite.closed) await this.pglite.close();
-    })());
+    }
   }
 }
 
