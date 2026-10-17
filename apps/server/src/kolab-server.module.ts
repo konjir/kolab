@@ -1,7 +1,7 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import { McpHttpModule } from '@onivoro/server-mcp';
 import type { Kolab } from '@konjir/engine';
-import { AdminTools } from './admin-tools.js';
+import { AdminTools, TenancyTools } from './admin-tools.js';
 import { AgentTools } from './agent-tools.js';
 import { KonjirAuth } from './auth.js';
 import { HealthController } from './health.controller.js';
@@ -51,6 +51,7 @@ export class KolabServerModule {
         KonjirAuth,
         AgentTools,
         AdminTools,
+        TenancyTools,
         Inboxes,
         ListenStreams,
         OperatingInstructions,

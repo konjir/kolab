@@ -1,7 +1,7 @@
 import { expect, test } from '@jest/globals';
 import type { Finding } from '@konjir/types';
 import { SYSTEM_PROMPT, bedrockReviewer, buildReviewPrompt, modelReviewer, type ModelCall } from '../src/review.js';
-import { els, marksOn, openKolab, rejection } from '@konjir/engine/testing';
+import { els, marksOn, openKolab, people, rejection } from '@konjir/engine/testing';
 
 /** A scripted model: returns whatever findings the test queues for the next call. */
 function fakeModel() {
@@ -17,7 +17,7 @@ function fakeModel() {
 
 async function kolabWith(call: ModelCall) {
   const kolab = await openKolab({ reviewer: modelReviewer(call) });
-  await kolab.addActor('alice'); await kolab.addActor('bob');
+  await people(kolab, 'alice'); await people(kolab, 'bob');
   return { kolab, product: await kolab.openSession('alice', 'product'), engineer: await kolab.openSession('bob', 'engineer') };
 }
 
@@ -92,7 +92,7 @@ test('cost controls: structural failures and repeated content never reach the mo
   const usage: boolean[] = [];
   const reviewer = modelReviewer(m.call, { onUsage: (u) => usage.push(u.cached) });
   const kolab = await openKolab({ reviewer });
-  await kolab.addActor('alice');
+  await people(kolab, 'alice');
   const product = await kolab.openSession('alice', 'product');
   const P = await kolab.createNode(product, 'functional_spec', 'Parent', 'P');
 
@@ -137,7 +137,7 @@ test('the Bedrock reviewer sends a forced report_review call to the configured m
   const usage: number[] = [];
   const reviewer = bedrockReviewer({ client, onUsage: (u) => usage.push(u.inputTokens) });
   const kolab = await openKolab({ reviewer });
-  await kolab.addActor('alice');
+  await people(kolab, 'alice');
   const product = await kolab.openSession('alice', 'product');
   const spec = await kolab.createNode(product, 'functional_spec', 'Reset', 'S');
   await kolab.commit(product, spec, { elements: els({ R1: 'Keep reset tokens in Postgres.' }) });
@@ -177,7 +177,7 @@ test('a Kimi model routes through the Converse API with a forced report_review t
   const usage: number[] = [];
   const reviewer = bedrockReviewer({ model: 'moonshotai.kimi-k2.5', converseClient, onUsage: (u) => usage.push(u.inputTokens) });
   const kolab = await openKolab({ reviewer });
-  await kolab.addActor('alice');
+  await people(kolab, 'alice');
   const product = await kolab.openSession('alice', 'product');
   const spec = await kolab.createNode(product, 'functional_spec', 'Reset', 'S');
   const r = await kolab.review(await kolab.draft(product, spec, { elements: els({ R1: 'Users can reset a password.' }) }));

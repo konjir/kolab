@@ -3,8 +3,8 @@
 # this only reads its outputs and talks to the running Kolab server.
 #
 #   deploy/konjir-ops.sh connect <actor> <product|engineer> [owner]
-#                                                              register a person, or with owner an agent that
-#                                                              person owns; open a session; print token + setup
+#                                                              register a person, or with owner an agent of that account,
+#                                                              granted Write in kolab $KONJIR_KOLAB (default kolab); open a session
 #   deploy/konjir-ops.sh status                                health, service state
 #   deploy/konjir-ops.sh logs                                  last 200 lines from Kolab and Caddy
 #   deploy/konjir-ops.sh bootstrap-log                         the instance's first-boot install log
@@ -44,24 +44,29 @@ on_kolab() {
 }
 
 cmd_connect() {
-  local actor="${1:-}" role="${2:-}" owner="${3:-}" url admin token added existing
+  local actor="${1:-}" role="${2:-}" owner="${3:-}" kolab="${KONJIR_KOLAB:-kolab}" url admin token added granted existing
   [ -n "$actor" ] && [[ "$role" =~ ^(product|engineer)$ ]] || die "usage: konjir-ops.sh connect <actor> <product|engineer> [owner]"
   [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first (the konjir CLI runs locally)"
   url="$(out url)"
   admin="$(admin_token)"
   # An actor registered already is reused only if it is what was asked for: a person, or an agent of
-  # that same owner. Any other refusal (an invalid id, an owner who isn't a person) stops here.
-  if ! added="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_add_actor "id=$actor" ${owner:+"owner=$owner"} 2>&1)"; then
+  # that same owner, with the access it already has. Any other refusal (an invalid id, an owner
+  # that isn't an account) stops here. A new actor gets Write on both layers of the kolab; an
+  # agent's grant is refused if its owner holds less there.
+  if added="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_add_actor "id=$actor" ${owner:+"owner=$owner"} 2>&1)"; then
+    granted="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_grant "kolab=$kolab" "to=$actor" level=write 2>&1)" \
+      || die "$actor was added, but not granted access to kolab $kolab: $granted"
+  else
     [[ "$added" == *"actor $actor already exists"* ]] || die "$added"
     existing="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_list_actors \
       | python3 -c 'import json,sys;a=[x for x in json.load(sys.stdin)["actors"] if x["id"]==sys.argv[1]][0];print(a["owner"] or "")' "$actor")"
     [ "$existing" = "$owner" ] || die "$actor already exists as $([ -n "$existing" ] && echo "an agent of $existing" || echo "a person"), not as $([ -n "$owner" ] && echo "an agent of $owner" || echo "a person")"
   fi
-  token="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_open_session "actor=$actor" "role=$role" \
+  token="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_open_session "actor=$actor" "role=$role" "kolab=$kolab" \
     | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
   cat <<EOF
 
-$actor ($role${owner:+, an agent of $owner}) can connect with this token. Send it privately; it works like a password.
+$actor ($role in kolab $kolab${owner:+, an agent of $owner}) can connect with this token. Send it privately; it works like a password.
 
   Token:        $token
 
