@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then NNN unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 238 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -118,6 +118,7 @@ The database also keeps tenants apart for every role, not only `kj_agent`:
 - **No row references another kolab's row.** Each reference is a foreign key on the pair of the referenced id and the row's own kolab: a version's node, parent and base, an element's or delta's version, a delta's base, an edge's source and target, a mark's version, trigger, edge and delta, a mark cause's two marks, a question's version, asker's version and mark, a case file's version, and a position's or ruling's case file or version.
 - **A row's kolab never changes** once written (`kolab_fixed`), and those keys stop a row being re-parented into another kolab.
 - **`kj_agent` reads no sessions**, whose ids are bearer tokens, **and no actors**. Only Kolab can run `kj_access` (and `kj_system`, which re-checks an author as a draft commits).
+- **No shadowing.** Every security definer function searches `pg_catalog, public, pg_temp`, with temporary tables last. Only the database's owner may create temporary tables (0006 revokes `TEMPORARY` from `public`), so `kj_agent` can't plant a table that a helper would read in place of `session`.
 - **Precedent is per kolab**, keyed by the kolab and the fingerprint triple, and a rebase matches only its own kolab's.
 - **The served instructions** (`konjir_operating_instructions`) carry only the session's kolab's precedent and answered questions; the admin token gets the rules alone.
 
@@ -136,7 +137,7 @@ Row-level security's session helpers sit in subqueries, so Postgres evaluates th
 | `admin_revoke kolab=<name> to=<grantee>` | Removes a grant. Says how many sessions it ended |
 | `admin_access actor=<actor> kolab=<name>` | An actor's level and writable layers there, as Kolab computes them |
 
-Migration 0006 keeps what the database holds. If it has any actor or node, its data becomes the kolab `kolab`, owned by the organization `konjir`; each person becomes a user and a member of `konjir`, and each person and agent gets Write on both layers of `kolab`, which is what any actor could do before. Open sessions work in `kolab`. A fresh database gets none of this. An existing actor named `konjir` stops the migration, since the organization needs that id: rename the actor first.
+Migration 0006 keeps what the database holds. If it has any actor or node, its data becomes the kolab `kolab`, owned by the organization `konjir`; each person becomes a user and a member of `konjir`, and each person and agent gets Write on both layers of `kolab`, which is what any actor could do before. Open sessions work in `kolab`. A fresh database gets none of this. An existing actor named `konjir`, person or agent, stops the migration, since the organization needs that id: rename the actor first.
 
 **Take a database snapshot before deploying 0006.** Once it is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot.
 
