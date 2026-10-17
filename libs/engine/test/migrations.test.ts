@@ -292,7 +292,7 @@ test('a database at 0003 reaches 0004: marks from failed rebases become rebase_f
   } finally { await kolab.close(); }
 });
 
-test('a database at 0004 reaches 0005: a ruling can be stored with no case file, and has a verdict exactly when it has one', async () => {
+test('a database at 0004 reaches 0005: a ruling can be stored with no case file, naming what it rules on, and positions carry their own verdicts', async () => {
   const store = await persistentStore();
   const at = MIGRATIONS.findIndex((x) => x.name === 'optional_case_file');
   expect(at).toBe(4);
@@ -304,27 +304,45 @@ test('a database at 0004 reaches 0005: a ruling can be stored with no case file,
       insert into version(id, node_id, seq, layer, state, actor_id, active_role) values
         ('v1', 'orders', 1, 'functional', 'committed', 'lee', 'product');
       insert into case_file(id, version_id, element_id, state) values ('c1', 'v1', 'R1', 'ruled');
+      insert into position(id, case_file_id, actor_id, claim, evidence) values
+        ('p1', 'c1', 'lee-pm', 'R1 stands.', '[]'), ('p2', 'c1', 'lee-eng', 'R1 cannot be met.', '[]');
       insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r1', 'c1', 'lee', 'sustained', 'The spec stands.');`);
     // Before: a ruling needs a case file.
     expect(await rejection(db.query(`insert into ruling(id, actor_id, verdict, text) values ('r0', 'lee', 'sustained', 'No case.')`)))
       .toMatch(/case_file_id/);
 
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
-    // A ruling given directly (CASE3, D16): its author and text, no case file and no verdict.
-    await db.exec(`insert into ruling(id, actor_id, text) values ('d16', 'lee', 'A ruling can stand without a case file.')`);
-    expect((await db.query(`select id, case_file_id, actor_id, verdict, text from ruling order by id collate "C"`)).rows).toStrictEqual([
-      { id: 'd16', case_file_id: null, actor_id: 'lee', verdict: null, text: 'A ruling can stand without a case file.' },
-      { id: 'r1', case_file_id: 'c1', actor_id: 'lee', verdict: 'sustained', text: 'The spec stands.' },
+    // A ruling given directly (CASE3, D16): its author, what it rules on, its body and what it
+    // replaces. No case file, and no sustained/overruled outcome.
+    await db.exec(`
+      insert into ruling(id, actor_id, version_id, element_id, text, replaces) values
+        ('d16', 'lee', 'v1', 'R1', 'A ruling can stand without a case file.', 'A ruling only resolves a case file.');
+      insert into ruling(id, actor_id, version_id, text) values ('d17', 'lee', 'v1', 'Prior Art stays outside the model.');`);
+    expect((await db.query(`select id, case_file_id, version_id, element_id, actor_id, verdict, text, replaces from ruling order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'd16', case_file_id: null, version_id: 'v1', element_id: 'R1', actor_id: 'lee', verdict: null,
+        text: 'A ruling can stand without a case file.', replaces: 'A ruling only resolves a case file.' },
+      { id: 'd17', case_file_id: null, version_id: 'v1', element_id: null, actor_id: 'lee', verdict: null,
+        text: 'Prior Art stays outside the model.', replaces: null },
+      { id: 'r1', case_file_id: 'c1', version_id: null, element_id: null, actor_id: 'lee', verdict: 'sustained', text: 'The spec stands.', replaces: null },
     ]);
-    // A verdict is said of a case file's position (CASE2): one without the other is refused.
-    expect(await rejection(db.query(`insert into ruling(id, actor_id, verdict, text) values ('r2', 'lee', 'overruled', 'No case.')`)))
-      .toMatch(/ruling_verdict_with_case_file/);
-    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, text) values ('r3', 'c1', 'lee', 'No verdict.')`)))
-      .toMatch(/ruling_verdict_with_case_file/);
-    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r4', 'c1', 'lee', 'maybe', 'Neither.')`)))
+    // Each position of a case file gets its own outcome (CASE2).
+    await db.exec(`update position set verdict = case id when 'p1' then 'sustained' else 'overruled' end`);
+    expect((await db.query(`select id, verdict from position order by id`)).rows)
+      .toStrictEqual([{ id: 'p1', verdict: 'sustained' }, { id: 'p2', verdict: 'overruled' }]);
+    expect(await rejection(db.query(`update position set verdict = 'maybe' where id = 'p1'`))).toMatch(/position_verdict_check/);
+
+    // A ruling rules on a case file or on a version, never neither or both, and an element only
+    // within a version.
+    expect(await rejection(db.query(`insert into ruling(id, actor_id, text) values ('r2', 'lee', 'On nothing.')`)))
+      .toMatch(/ruling_subject_check/);
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, version_id, actor_id, text) values ('r3', 'c1', 'v1', 'lee', 'Both.')`)))
+      .toMatch(/ruling_subject_check/);
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, element_id, actor_id, text) values ('r4', 'c1', 'R1', 'lee', 'Stray element.')`)))
+      .toMatch(/ruling_subject_check/);
+    expect(await rejection(db.query(`insert into ruling(id, version_id, actor_id, text) values ('r5', 'nope', 'lee', 'No such version.')`)))
+      .toMatch(/ruling_version_id_fkey/);
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r6', 'c1', 'lee', 'maybe', 'Neither.')`)))
       .toMatch(/ruling_verdict_check/);
-    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r5', 'nope', 'lee', 'sustained', 'No such case.')`)))
-      .toMatch(/ruling_case_file_id_fkey/);
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 });
