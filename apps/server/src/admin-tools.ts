@@ -3,7 +3,7 @@ import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { GateError, Kolab } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
-import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, ROLES, VISIBILITIES } from '@konjir/types';
+import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES } from '@konjir/types';
 import { fail, ok } from './results.js';
 import { KOLAB } from './tokens.js';
 
@@ -48,6 +48,10 @@ const applyRuling = z.object({
   deltas: z.array(z.object({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional() })).optional(),
   parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
 });
+const outbox = z.object({
+  state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
+  retry: z.string().optional().describe('The id of a dead job, or one waiting out its backoff, to run again now'),
+});
 
 /** Verbs for the admin token only: the scope guard refuses them to agent sessions. */
 @Injectable()
@@ -90,6 +94,19 @@ export class AdminTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async endSession({ token }: z.infer<typeof endSession>) {
     try { await this.kolab.endSession(token); return ok({ ended: token }); } catch (e) { return fail(e); }
+  }
+
+  @McpTool({
+    name: 'konjir_admin_outbox',
+    description: 'Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again.',
+    schema: outbox,
+  })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async outbox({ state, retry }: z.infer<typeof outbox>) {
+    try {
+      if (retry !== undefined && !(await this.kolab.retryOutboxJob(retry))) throw new GateError(`no job ${retry} to retry: it is done, or a live process is running it`);
+      return ok({ ...(retry !== undefined ? { retried: retry } : {}), jobs: await this.kolab.outboxJobs({ state }) });
+    } catch (e) { return fail(e); }
   }
 
   @McpTool({

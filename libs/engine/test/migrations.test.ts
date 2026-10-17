@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
 import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
-import { ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, QUERY_KINDS, REVIEW_REQUEST_STATES, VERSION_STATES, VISIBILITIES } from '@konjir/types';
+import { ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, QUERY_KINDS, REVIEW_REQUEST_STATES, VERSION_STATES, VISIBILITIES } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
 
@@ -88,7 +88,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES and OUTBOX_KINDS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS and OUTBOX_STATES", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -107,6 +107,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, A
     expect(await check('version_state_check')).toStrictEqual([...VERSION_STATES].sort());
     expect(await check('review_request_state_check')).toStrictEqual([...REVIEW_REQUEST_STATES].sort());
     expect(await check('outbox_kind_check')).toStrictEqual([...OUTBOX_KINDS].sort());
+    expect(await check('outbox_state_check')).toStrictEqual([...OUTBOX_STATES].sort());
   });
 });
 
