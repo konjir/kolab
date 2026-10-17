@@ -26,14 +26,16 @@ export async function startServer(opts: {
   await app.listen(opts.port ?? 0, host);
   const http = app.getHttpServer() as HttpServer;
   const { port } = http.address() as AddressInfo;
+  let closing: Promise<void> | undefined;
   return {
     url: opts.publicHost ? `https://${opts.publicHost}/mcp` : `http://${host}:${port}/mcp`,
     kolab,
-    async close() {
+    // Closing again, or while it's closing, waits for the same close.
+    close: () => (closing ??= (async () => {
       // Listen streams stay open until the client goes; end them so close doesn't wait on them.
       http.closeAllConnections();
       await app.close();
       if (!opts.kolab) await kolab.close();
-    },
+    })()),
   };
 }

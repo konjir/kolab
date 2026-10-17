@@ -17,6 +17,7 @@ const POSTGRES = process.env.KONJIR_TEST_DATABASE_URL;
  */
 const RUN = process.env.KONJIR_TEST_RUN;
 
+const closers: (() => Promise<unknown>)[] = [];
 const opened: Kolab[] = [];
 const dirs: string[] = [];
 const adhoc: string[] = [];
@@ -60,14 +61,35 @@ export async function openKolab(options: Parameters<typeof Kolab.open>[0] = {}) 
 }
 
 /**
- * Closes the Kolabs the tests opened, and removes their data directories; jest.setup.js runs it
- * after each file. Postgres databases stay until jest.global-teardown.js drops them, after every
- * file has closed the servers it started on them.
+ * Closes `things` when the test file ends, before the Kolabs and databases: servers, clients,
+ * child processes, anything that holds a Kolab or a connection to a database. Everything
+ * registered closes in the reverse of the order it was registered, so a client registered after
+ * its server closes first. A test may close something itself as well; its `close` must then
+ * do nothing the second time.
+ */
+export function closeAtEnd(...things: { close(): Promise<unknown> }[]) {
+  for (const it of things) closers.push(() => it.close());
+}
+
+/**
+ * Tears down what a test file opened, in order: what it registered with `closeAtEnd` (its servers
+ * and clients), then the Kolabs `openKolab` opened, then their databases (PGlite data directories,
+ * and Postgres databases made without a run name). jest.setup.js runs it after each file, as the
+ * file's only teardown, so no server is left holding a Kolab or a connection to a database that
+ * is going away. Each step runs even if an earlier one fails, and then the failures are thrown,
+ * so a teardown error fails the file instead of hiding.
+ *
+ * The run's Postgres databases stay until jest.global-teardown.js drops them.
  */
 export async function closeOpened() {
-  for (const kolab of opened.splice(0)) await kolab.close().catch(() => undefined);
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  for (const name of adhoc.splice(0)) await onServer(`drop database if exists ${name} with (force)`);
+  const errors: unknown[] = [];
+  const attempt = async (fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { errors.push(e); } };
+  for (const close of closers.splice(0).reverse()) await attempt(close);
+  for (const kolab of opened.splice(0)) await attempt(() => kolab.close());
+  for (const dir of dirs.splice(0)) await attempt(async () => rmSync(dir, { recursive: true, force: true }));
+  for (const name of adhoc.splice(0)) await attempt(() => onServer(`drop database if exists ${name} with (force)`));
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, `${errors.length} teardown steps failed`);
 }
 
 export async function setup(reviewer?: Reviewer) {

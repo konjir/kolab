@@ -1,16 +1,14 @@
 // The bridge's Kolab side in-process, for what a child process can't show: a Kolab that
 // stops answering, and how fast stop() returns.
-import { afterAll, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { createServer, type Socket } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
-import { testStore } from '@konjir/engine/testing';
+import { closeAtEnd, testStore } from '@konjir/engine/testing';
 import { KolabBridge } from '../src/bridge.js';
 import type { ChannelMessage } from '../src/messages.js';
 
 const ADMIN = 'bridge-test-admin';
-const open: { close(): Promise<void> }[] = [];
-afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
 async function until(what: string, check: () => boolean, ms = 15_000) {
   const end = Date.now() + ms;
@@ -31,7 +29,7 @@ async function agentToken(url: string) {
 
 test('a Kolab that stops answering is reconnected to', async () => {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
-  open.push(server);
+  closeAtEnd(server);
   const token = await agentToken(server.url);
   // Liveness checks hang while `deaf` is set, as they would on a half-open connection.
   let deaf = false;
@@ -52,7 +50,7 @@ test('a Kolab that stops answering is reconnected to', async () => {
     liveness: { intervalMs: 100, timeoutMs: 200 },
   });
   bridge.onListening = () => { listens++; };
-  open.push({ close: () => bridge.stop() });
+  closeAtEnd({ close: () => bridge.stop() });
   bridge.start();
   await until('the first listen', () => listens === 1);
   await new Promise((r) => setTimeout(r, 400)); // checks answered: still on the first connection

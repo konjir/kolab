@@ -1,19 +1,16 @@
 // Agents as actors of their own, over real HTTP (W1.14; D30, ENF4, ENF5, ROL4): an admin adds two
 // agents for one person, each holds its own session at the same time, and each version names its agent.
-import { afterAll, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
-import { rejection, testStore } from '@konjir/engine/testing';
+import { closeAtEnd, rejection, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
-
-const open: { close(): Promise<void> }[] = [];
-afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
 test("two agents of one person hold sessions at once over MCP, and whoami and read_node name the agent and its owner", async () => {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
   const admin = await connect(server.url, ADMIN);
-  open.push(server, admin);
+  closeAtEnd(server, admin);
 
   expect(await call(admin, 'admin_add_actor', { id: 'alice', name: 'Alice' })).toStrictEqual({ actor: 'alice', kind: 'person', owner: null });
   expect(await call(admin, 'admin_add_actor', { id: 'alice-pm', owner: 'alice' })).toStrictEqual({ actor: 'alice-pm', kind: 'agent', owner: 'alice' });
@@ -27,7 +24,7 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   const session = async (actor: string) => {
     const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
     const client = await connect(server.url, token);
-    open.push(client);
+    closeAtEnd(client);
     return { token, client };
   };
   const one = await session('alice-pm');
@@ -58,12 +55,12 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
 test('over MCP, an agent whose draft another agent overtook is told it is stale, not that its content was wrong', async () => {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
   const admin = await connect(server.url, ADMIN);
-  open.push(server, admin);
+  closeAtEnd(server, admin);
   const session = async (actor: string) => {
     await call(admin, 'admin_add_actor', { id: actor });
     const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
     const client = await connect(server.url, token);
-    open.push(client);
+    closeAtEnd(client);
     return client;
   };
   const one = await session('ann');

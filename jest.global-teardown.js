@@ -2,10 +2,10 @@
  * Drops the databases this run's tests made (@konjir/engine/testing), then stops the Postgres
  * container jest.global-setup.js started, if it started one.
  *
- * They're dropped here, once every test file has closed its servers, rather than after each
- * file: a file's own afterAll runs after jest.setup.js's, so a server it still holds would
- * have its database dropped from under it, and its LISTEN connection would try to reconnect
- * after the file's environment was gone.
+ * They're dropped here, once every test file has finished, rather than after each file: each
+ * file's servers and Kolabs close first (closeOpened, from jest.setup.js), but anything a file
+ * still held in a hook of its own would have its database dropped from under it, and its LISTEN
+ * connection would try to reconnect after the file's environment was gone.
  *
  * On a server that outlives runs, it also sweeps databases left by runs that started more than
  * a day ago and never got here (killed, crashed, or --watch).

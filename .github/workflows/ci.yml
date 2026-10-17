@@ -1,19 +1,22 @@
 name: CI
 
-# Checks every pull request into main, and main after each merge (W2.4, binding element TST3).
-# Two jobs, so a pull request shows two checks:
+# Checks every pull request into main, and main after each merge (W2.4, W2.9, binding element TST3).
+# Three jobs, so a pull request shows three checks, all of which main requires (D45):
 # - "Test on PGlite": typecheck, build and the Jest suite, on embedded Postgres (PGlite)
 # - "Test on Postgres": the Jest suite again, on Postgres 18 through Testcontainers, as a
 #   non-superuser like RDS's (jest.global-setup.js). The runner's Docker hosts the container.
+# - "Check Terraform": terraform fmt -check and terraform validate on deploy/terraform. It runs on
+#   every change, not only ones under deploy/, so it can be required: a required check that a path
+#   filter skips never reports, and the pull request waits for it forever.
 #
-# Both run as production does: on arm64 (the instance is a t4g, Graviton), with the Node version
-# production installs, read from node_version in deploy/terraform/modules/kolab/main.tf. The
-# runner image is pinned, so a new ubuntu-latest can't turn a pull request red.
+# The two test jobs run as production does: on arm64 (the instance is a t4g, Graviton), with the
+# Node version production installs, read from node_version in deploy/terraform/modules/kolab/main.tf.
+# The runner image is pinned, so a new ubuntu-latest can't turn a pull request red.
 #
 # Nx prints each task's output (--output-style=static), so the log shows Jest's results.
 #
-# Each job runs only the projects the change affects (nx affected). On a pull request the base
-# is where the branch left main; on main it is the last commit whose CI run passed
+# Each test job runs only the projects the change affects (nx affected). On a pull request the
+# base is where the branch left main; on main it is the last commit whose CI run passed
 # (nrwl/nx-set-shas). This file and the terraform file the Node version comes from are in nx.json's
 # sharedGlobals, so changing either runs everything.
 #
@@ -117,3 +120,36 @@ jobs:
       - name: Show the images the tests ran on
         if: always()
         run: docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' $(docker image ls -q --filter reference='postgres:*' --filter reference='testcontainers/*')
+
+  terraform:
+    name: Check Terraform
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: deploy/terraform
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The version Lee deploys with (README.md); versions.tf requires 1.15 or later.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+      # No AWS credentials, and none needed: -backend=false skips the S3 state, init only downloads
+      # the providers .terraform.lock.hcl pins (and fails if the lock file would change), and
+      # validate checks the configuration without configuring a provider or reading a data source.
+      - name: terraform init
+        run: terraform init -backend=false -input=false -lockfile=readonly
+
+      - name: terraform validate
+        run: terraform validate

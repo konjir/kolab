@@ -48,10 +48,11 @@ export interface Listening {
 
 /** Postgres when `databaseUrl` is given; otherwise PGlite, persisted to `dataDir` or in memory. */
 export function openDb(opts: { databaseUrl?: string; dataDir?: string } = {}): Db {
-  const dialect = opts.databaseUrl
-    ? new PostgresDialect({ pool: pool(opts.databaseUrl) })
-    : new PGliteDialect(opts.dataDir ? new PGlite(opts.dataDir) : new PGlite());
-  return new KyselyDb(new Kysely<unknown>({ dialect }), opts.databaseUrl);
+  if (opts.databaseUrl) {
+    return new KyselyDb(new Kysely<unknown>({ dialect: new PostgresDialect({ pool: pool(opts.databaseUrl) }) }), opts.databaseUrl);
+  }
+  const pglite = opts.dataDir ? new PGlite(opts.dataDir) : new PGlite();
+  return new KyselyDb(new Kysely<unknown>({ dialect: new PGliteDialect(pglite) }), undefined, pglite);
 }
 
 // Loaded on first use, on Postgres only: its listener brings in NestJS's logger and pg-listen,
@@ -68,8 +69,11 @@ function pool(connectionString: string) {
 }
 
 class KyselyDb implements Db {
-  /** `databaseUrl` is Postgres's; without it, this is PGlite. */
-  constructor(private readonly k: Kysely<unknown>, private readonly databaseUrl?: string) {}
+  /**
+   * `databaseUrl` is Postgres's; without it, this is PGlite. `pglite` is given only to the Db
+   * that owns it, not to its transactions, so only that one closes it.
+   */
+  constructor(private readonly k: Kysely<unknown>, private readonly databaseUrl?: string, private readonly pglite?: PGlite) {}
 
   async query<R>(text: string, params: unknown[] = []) {
     const r = await this.k.executeQuery<R>(CompiledQuery.raw(text, params));
@@ -127,7 +131,17 @@ class KyselyDb implements Db {
     };
   }
 
-  close() { return this.k.destroy(); }
+  private closing?: Promise<void>;
+
+  close() {
+    return (this.closing ??= (async () => {
+      await this.k.destroy();
+      // Kysely destroys only a driver it has initialized, on the first query. A PGlite starts up
+      // as soon as it's made, so one closed before any query would otherwise go on starting up,
+      // and stay open, after its Db was closed.
+      if (this.pglite && !this.pglite.closed) await this.pglite.close();
+    })());
+  }
 }
 
 // ---------------------------------------------------------------------------

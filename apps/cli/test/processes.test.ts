@@ -2,20 +2,20 @@
 // one hears a change made through the other, and a session ended through one closes its
 // streams on the other (D41). Process A runs in this test; process B is
 // `konjir serve` from the compiled dist/, in a child process, as the instance runs it.
-import { afterAll, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { startServer } from '@konjir/server';
-import { testStore } from '@konjir/engine/testing';
+import { closeAtEnd, testStore } from '@konjir/engine/testing';
 import { call, connect, watch } from '../src/cli.js';
 
 const root = resolve(import.meta.dirname, '../../..');
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
 
-const open: { close(): Promise<void> }[] = [];
 let child: ChildProcess | undefined;
-afterAll(async () => {
-  for (const o of open.reverse()) await o.close().catch(() => undefined);
+
+/** Stops the child server, and resolves once it has exited. */
+async function stopChild() {
   if (child && child.exitCode === null && child.signalCode === null) {
     const exited = new Promise<void>((done) => child!.once('exit', () => done()));
     child.kill('SIGTERM');
@@ -23,11 +23,12 @@ afterAll(async () => {
     await exited;
     clearTimeout(timer);
   }
-}, 20_000);
+}
 
 /** Starts `konjir serve` on the database in a child process, and resolves with its MCP URL. */
 async function serveInChild(databaseUrl: string, adminToken: string): Promise<string> {
   const port = 20000 + Math.floor(Math.random() * 20000);
+  closeAtEnd({ close: stopChild });
   child = spawn('node', [join(root, 'apps/cli/dist/main.js'), 'serve', '--port', String(port), '--database-url', databaseUrl, '--quiet'], {
     env: { ...process.env, NODE_OPTIONS: '--no-experimental-strip-types', KONJIR_ADMIN_TOKEN: adminToken },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -58,19 +59,19 @@ async function until(cond: () => boolean, ms = 10_000) {
 (onPostgres ? test : test.skip)('an agent listening on one server process hears a change made through another, once', async () => {
   const { databaseUrl } = await testStore();
   const a = await startServer({ adminToken: 'admin', databaseUrl });
-  open.push(a);
+  closeAtEnd(a);
   const bUrl = await serveInChild(databaseUrl!, 'admin');
 
   // Sessions live in the database, so a token opened on B works on A.
   const adminB = await connect(bUrl, 'admin');
-  open.push(adminB);
+  closeAtEnd(adminB);
   const session = async (actor: string, role: 'product' | 'engineer') => {
     await call(adminB, 'admin_add_actor', { id: actor });
     return (await call(adminB, 'admin_open_session', { actor, role }) as { token: string }).token;
   };
   const pmToken = await session('pm', 'product');
   const engToken = await session('eng', 'engineer');
-  const client = async (url: string, token: string) => { const c = await connect(url, token); open.push(c); return c; };
+  const client = async (url: string, token: string) => { const c = await connect(url, token); closeAtEnd(c); return c; };
   const pmOnA = await client(a.url, pmToken);
   const engOnA = await client(a.url, engToken);
   const pmOnB = await client(bUrl, pmToken);
@@ -82,7 +83,7 @@ async function until(cond: () => boolean, ms = 10_000) {
   for (const [who, c] of [['pm', pmOnA], ['eng', engOnA]] as const) {
     const w = await watch(c, (uri, body) => { pushed.push({ who, uri, body: body as never }); });
     subscriptions[who] = w.subscription;
-    open.push(w.subscription);
+    closeAtEnd(w.subscription);
   }
 
   await call(pmOnB, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
