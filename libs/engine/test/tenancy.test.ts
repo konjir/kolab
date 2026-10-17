@@ -266,3 +266,137 @@ test('openSession needs the kolab named when an actor reaches several', async ()
   expect(TenancyError.name).toBe('TenancyError');
   expect(AccessError.name).toBe('AccessError');
 });
+
+// ---- review findings (PR #27) ------------------------------------------------------------
+
+test('precedent is per kolab: two kolabs with the same fingerprints never share a ruling on an override', async () => {
+  const kolab = await openKolab();
+  for (const [person, k] of [['ann', 'one'], ['ben', 'two']]) {
+    await kolab.addActor(person);
+    await kolab.createKolab(k, { owner: person });
+  }
+  // The same template in each kolab, with the same variant and override.
+  const setUp = async (person: string, prefix: string) => {
+    const s = await kolab.openSession(person, 'product');
+    await kolab.createNode(s, 'functional_spec', 'Base', `${prefix}-base`);
+    const base = await kolab.commit(s, `${prefix}-base`, { elements: els({ R1: 'Prices show in dollars.' }) });
+    await kolab.createNode(s, 'functional_spec', 'Variant', `${prefix}-eu`);
+    await kolab.commit(s, `${prefix}-eu`, { parent: base, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
+    await kolab.commit(s, `${prefix}-base`, { elements: els({ R1: 'Prices show in dollars, with tax.' }) });
+    return s;
+  };
+  const ann = await setUp('ann', 'one');
+  const [mark] = (await kolab.openMarks()).filter((m) => m.reason === 'override_stale');
+  await kolab.resolveOverride(ann, mark.id, 'amend', "Ann's private wording.");
+  const ben = await setUp('ben', 'two');
+
+  // Ben's variant is marked for him to decide, not settled with Ann's text.
+  const bens = (await kolab.describeMarks({ kolab: 'two' })).filter((m) => m.reason === 'override_stale');
+  expect(bens).toHaveLength(1);
+  expect(Object.values(Object.fromEntries((await kolab.elements((await kolab.latestCommitted('two-eu'))!.id)).map((e) => [e.element_id, e.text]))))
+    .toStrictEqual(['Prices show in euros.']);
+  // And he can record his own precedent for the same triple.
+  await kolab.resolveOverride(ben, bens[0].mark, 'reaffirm');
+  expect((await kolab.db.query(`select kolab_id, resolution from precedent order by kolab_id`)).rows)
+    .toStrictEqual([{ kolab_id: 'one', resolution: 'amend' }, { kolab_id: 'two', resolution: 'reaffirm' }]);
+});
+
+test("no row references another kolab's row, and no row's kolab changes, whoever writes it", async () => {
+  const { kolab, alice, bob } = await twoAccounts();
+  const ordersV = (await kolab.latestCommitted('orders-spec'))!.id;
+  const billingV = (await kolab.latestCommitted('billing-spec'))!.id;
+  // As kj_agent in bob's session: an edge from his kolab into alice's.
+  expect(await rejection(asAgent(kolab, bob,
+    `insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_fingerprint)
+     values ('x1', 'dependency', $1, 'B1', $2, 'f')`, [billingV, ordersV]))).toMatch(/edge_target_kolab_fkey|row-level security/);
+  // As Kolab's own login, with no row-level security at all.
+  const refused = [
+    [`insert into edge(id, kind, source_version_id, target_version_id, target_fingerprint) values ('x2', 'dependency', $1, $2, 'f')`, /edge_target_kolab_fkey/],
+    [`insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role) values ('x3', 'billing-spec', 9, $2, 'functional', 'drafted', 'bob', 'product') returning $1::text`, /version_parent_kolab_fkey/],
+    [`insert into query(id, version_id, question, from_version_id) values ('x4', $1, 'q', $2)`, /query_from_version_kolab_fkey/],
+    [`insert into invalidation(id, version_id, triggered_by, reason) values ('x5', $1, $2, 'changed')`, /invalidation_triggered_kolab_fkey/],
+    [`update element set kolab_id = 'billing' where version_id = $2 and $1::text is not null`, /a row's kolab never changes/],
+    [`update node set kolab_id = 'billing' where id = 'orders-spec' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
+    [`update element set version_id = $1 where version_id = $2`, /element_version_kolab_fkey/],
+    [`update session set kolab_id = 'billing' where id = '${alice}' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
+  ] as const;
+  for (const [sql, pattern] of refused) expect(await rejection(kolab.db.query(sql, [billingV, ordersV]))).toMatch(pattern);
+});
+
+test("kj_agent reads no sessions or actors, and can't ask who holds what elsewhere", async () => {
+  const { kolab, bob } = await twoAccounts();
+  expect(await rejection(asAgent(kolab, bob, `select id from session`))).toMatch(/permission denied/);
+  expect(await rejection(asAgent(kolab, bob, `select id from actor`))).toMatch(/permission denied/);
+  expect(await rejection(asAgent(kolab, bob, `select * from kj_access('alice', 'orders')`))).toMatch(/permission denied/);
+  expect(await rejection(asAgent(kolab, bob, `select * from kj_person_access('alice', 'orders')`))).toMatch(/permission denied/);
+  // Its own session's helpers still work: it drafts in its own kolab as before.
+  await kolab.commit(bob, 'billing-spec', { elements: els({ B1: 'Invoices are weekly.' }) });
+});
+
+test("submitting a draft needs Write on its layer, and a draft whose author lost Write doesn't commit", async () => {
+  const { kolab, alice } = await twoAccounts();
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'read');
+  const carol = await kolab.openSession('carol', 'product');
+  const draft = await kolab.draft(alice, 'orders-spec', { elements: els({ R1: 'Orders can be cancelled by staff.' }) });
+  expect(await rejection(kolab.submit(carol, draft))).toMatch(/AccessError: carol may not write the functional layer of kolab orders: it holds Read/);
+  expect((await kolab.version(draft)).state).toBe('drafted');
+
+  // Dan drafts, then loses Write; whoever submits his draft, it is rejected, not committed.
+  await kolab.addActor('dan');
+  await kolab.grant('orders', 'dan', 'write');
+  const dan = await kolab.openSession('dan', 'product');
+  await kolab.endSession(alice);
+  const alice2 = await kolab.openSession('alice', 'product');
+  const dans = await kolab.draft(dan, 'orders-spec', { elements: els({ R1: 'Orders can be cancelled by anyone.' }) });
+  await kolab.grant('orders', 'dan', 'read');
+  await kolab.version(draft);
+  expect(await kolab.submit(alice2, dans)).toMatchObject({ ok: false, note: expect.stringMatching(/its author dan no longer holds Write on the functional layer of kolab orders/) });
+  expect((await kolab.version(dans)).state).toBe('rejected');
+});
+
+test("a node name taken anywhere is refused the same way, saying nothing of whose it is", async () => {
+  const { kolab, alice, bob } = await twoAccounts();
+  const theirs = await rejection(kolab.createNode(bob, 'functional_spec', 'X', 'orders-spec'));
+  const mine = await rejection(kolab.createNode(alice, 'functional_spec', 'X', 'orders-spec'));
+  expect(theirs).toBe('GateError: the node name orders-spec is taken; choose another');
+  expect(mine).toBe(theirs);
+});
+
+test('a public kolab is no default: openSession picks only from kolabs an actor owns, belongs to or is granted', async () => {
+  const { kolab, alice } = await twoAccounts();
+  await kolab.addActor('pat');
+  await kolab.createKolab('site', { owner: 'pat', visibility: 'public' });
+  expect(await kolab.access('alice', 'site')).toStrictEqual({ level: 'read', layers: [] });
+  expect(await kolab.reachable('alice')).toStrictEqual(['orders']);
+  await kolab.endSession(alice);
+  expect((await kolab.sessionInfo(await kolab.openSession('alice', 'product'))).kolab).toBe('orders');
+  expect(await kolab.reachable('bob')).toStrictEqual(['billing']);
+});
+
+test('a session found with no access when used is ended, and its listeners told', async () => {
+  const { kolab, bob } = await twoAccounts();
+  const events: KolabEvent[] = [];
+  kolab.onEvent((e) => events.push(e));
+  // Access taken away without Kolab's verbs, so nothing has swept the session yet.
+  await kolab.db.query(`update kolab set owner_id = 'alice' where id = 'billing'`);
+  expect(await kolab.sessionOpen(bob)).toBe(true);
+  expect(await rejection(kolab.sessionInfo(bob))).toMatch(/AccessError: bob can no longer reach kolab billing; its session has ended/);
+  expect(await kolab.sessionOpen(bob)).toBe(false);
+  expect(events).toStrictEqual([{ session: 'ended', id: sessionKey(bob) }]);
+});
+
+test("a team's grant counts only on its own organization's kolabs, even after the kolab changes hands", async () => {
+  const kolab = await openKolab();
+  await kolab.addOrganization('acme');
+  await kolab.addActor('tom');
+  await kolab.addMember('acme', 'tom');
+  await kolab.addTeam('acme', 'eng');
+  await kolab.addTeamMember('acme/eng', 'tom');
+  await kolab.createKolab('api', { owner: 'acme' });
+  await kolab.grant('api', 'acme/eng', 'write');
+  expect((await kolab.access('tom', 'api')).level).toBe('write');
+  await kolab.addActor('pat');
+  await kolab.db.query(`update kolab set owner_id = 'pat' where id = 'api'`);
+  expect((await kolab.access('tom', 'api')).level).toBeNull();
+});

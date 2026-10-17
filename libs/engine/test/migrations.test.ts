@@ -318,7 +318,9 @@ test('a database at 0004 reaches 0005: a ruling can be stored with no case file,
     expect(await rejection(db.query(`insert into ruling(id, actor_id, verdict, text) values ('r0', 'lee', 'sustained', 'No case.')`)))
       .toMatch(/case_file_id/);
 
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
+    // Checked at 0005 itself, so each assertion below hits the constraint it names; 0006's kolab
+    // keys would otherwise refuse some of these rows first.
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [versions[at]] });
     // A ruling given directly (CASE3, D16): its author, what it rules on, its body and what it
     // replaces. No case file, and no sustained/overruled outcome.
     await db.exec(`
@@ -340,17 +342,17 @@ test('a database at 0004 reaches 0005: a ruling can be stored with no case file,
 
     // A ruling rules on a case file or on a version, never neither or both, and an element only
     // within a version.
-    // (From 0006 a ruling on nothing has no kolab either, which the database refuses first.)
     expect(await rejection(db.query(`insert into ruling(id, actor_id, text) values ('r2', 'lee', 'On nothing.')`)))
-      .toMatch(/ruling_subject_check|null value in column "kolab_id" of relation "ruling"/);
+      .toMatch(/ruling_subject_check/);
     expect(await rejection(db.query(`insert into ruling(id, case_file_id, version_id, actor_id, text) values ('r3', 'c1', 'v1', 'lee', 'Both.')`)))
       .toMatch(/ruling_subject_check/);
     expect(await rejection(db.query(`insert into ruling(id, case_file_id, element_id, actor_id, text) values ('r4', 'c1', 'R1', 'lee', 'Stray element.')`)))
       .toMatch(/ruling_subject_check/);
     expect(await rejection(db.query(`insert into ruling(id, version_id, actor_id, text) values ('r5', 'nope', 'lee', 'No such version.')`)))
-      .toMatch(/ruling_version_id_fkey|null value in column "kolab_id" of relation "ruling"/);   // 0006: no version, no kolab
+      .toMatch(/ruling_version_id_fkey/);
     expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r6', 'c1', 'lee', 'maybe', 'Neither.')`)))
       .toMatch(/ruling_verdict_check/);
+    expect((await migrate(db)).applied).toStrictEqual(versions.slice(at + 1));
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 });
@@ -380,7 +382,12 @@ test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the
       insert into query(id, version_id, element_id, question, raised_by) values ('q1', 's1', 'TEN1', 'One per region?', 'lee-pm');
       insert into precedent(id, base_fingerprint, parent_fingerprint, child_fingerprint, resolution, ruled_by)
         values ('p1', 'a', 'b', 'c', 'reaffirm', 'lee');
-      insert into ruling(id, actor_id, version_id, text) values ('d12', 'lee', 's1', 'Konjir is one hosted service.');`);
+      insert into ruling(id, actor_id, version_id, text) values ('d12', 'lee', 's1', 'Konjir is one hosted service.');
+      insert into invalidation(id, version_id, triggered_by, reason) values ('m2', 'b1', 's1', 'upstream_dirty');
+      insert into invalidation_cause(mark_id, cause_id) values ('m2', 'm1');
+      insert into case_file(id, version_id, element_id) values ('c1', 's1', 'TEN1');
+      insert into position(id, case_file_id, actor_id, claim, evidence) values ('p1', 'c1', 'lee', 'One service.', '[]');
+      insert into ruling(id, case_file_id, actor_id, text) values ('r1', 'c1', 'lee', 'It stands.');`);
 
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
     expect((await db.query(`select id, owner_id, title, visibility from kolab`)).rows).toStrictEqual([{ id: 'kolab', owner_id: 'konjir', title: 'Kolab', visibility: 'private' }]);
@@ -397,7 +404,7 @@ test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the
       { who: 'pat', level: 'write', functional: true, technical: true },
     ]);
     // Every row is keyed by it.
-    for (const t of ['session', 'node', 'version', 'element', 'delta', 'edge', 'invalidation', 'query', 'precedent', 'ruling']) {
+    for (const t of ['session', 'node', 'version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'precedent', 'ruling']) {
       expect(`${t}: ${JSON.stringify((await db.query(`select distinct kolab_id from ${t}`)).rows)}`).toBe(`${t}: [{"kolab_id":"kolab"}]`);
     }
   }, store);
@@ -423,6 +430,16 @@ test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the
     expect(await kolab.revoke('kolab', 'lee')).toStrictEqual({ ended: 2 });
     expect(ended.sort()).toStrictEqual([sessionKey('kjs_lee'), sessionKey('kjs_pm')].sort());
   } finally { await kolab.close(); }
+});
+
+test("0006 refuses a database where an actor named konjir would take the organization's id", async () => {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'accounts_kolabs');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`insert into actor(id, name) values ('konjir', 'Konjir the person')`);
+    expect(await rejection(migrate(db))).toMatch(/0006_accounts_kolabs\.sql failed: .*an actor named konjir exists/);
+    expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
+  });
 });
 
 // ---- the runner, with migrations of the test's own ---------------------------------

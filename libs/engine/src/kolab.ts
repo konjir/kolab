@@ -61,6 +61,12 @@ const KOLAB_NAME = /^[a-z0-9][a-z0-9-]*$/;
 /** A team's name within its organization (team_name_check). */
 const TEAM_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * The advisory lock that orders changes of access against sessions opening, so a session can't
+ * open on access that a concurrent change is taking away without that change ending it.
+ */
+const ACCESS_LOCK = 0x4b4a0006;
+
 /** An actor id: letters, digits, '.', '_', '-' and '@', starting with a letter or digit (actor_id_check). */
 const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 /** The author of Kolab's own work, in the role 'system'. Never an actor. */
@@ -461,6 +467,7 @@ export class Kolab {
     const id = `kjs_${randomBytes(24).toString('base64url')}`;
     try {
       await this.db.transaction(async (tx) => {
+        await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
         await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [id, actorId, role, kolab]);
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
@@ -510,8 +517,12 @@ export class Kolab {
     if (!r.rows[0]) throw new RoleError(`no open session ${id}`);
     const s = { ...r.rows[0], access: await accessIn(this.db, r.rows[0].actor_id, r.rows[0].kolab) };
     // Access is computed on each use, so a session narrows the moment its access (or, for an
-    // agent, its owner's) does. One that can no longer reach its kolab at all is ended.
-    if (!s.access.level) throw new AccessError(`${s.actor_id} can no longer reach kolab ${s.kolab}`);
+    // agent, its owner's) does. One that can no longer reach its kolab at all is ended here, if
+    // no change of access ended it already, and its streams are told (D41).
+    if (!s.access.level) {
+      await this.endUnreachable();
+      throw new AccessError(`${s.actor_id} can no longer reach kolab ${s.kolab}; its session has ended`);
+    }
     return s;
   }
 
@@ -721,10 +732,24 @@ export class Kolab {
     return accessIn(this.db, actorId, kolab);
   }
 
-  /** The kolabs an actor can reach. */
+  /**
+   * The kolabs an actor holds access to through ownership, membership or a grant: not those it
+   * could only read because they are public or internal. Only these are candidates, so it costs
+   * one kj_access per kolab the actor is tied to, not per kolab in Konjir.
+   */
   async reachable(actorId: string): Promise<string[]> {
     return (await this.db.query<{ id: string }>(
-      `select k.id from kolab k where (select a.rank from kj_access($1, k.id) a) >= 1 order by k.id`, [actorId])).rows.map((r) => r.id);
+      `with recursive teams(id) as (
+         select team_id from team_member where user_id = $1
+         union
+         select t.parent_id from team t join teams on t.id = teams.id where t.parent_id is not null
+       ), candidates(id) as (
+         select k.id from kolab k where k.owner_id = $1
+         union select k.id from kolab k join org_member m on m.org_id = k.owner_id and m.user_id = $1
+                where m.role = 'owner' or k.base_permission is not null
+         union select g.kolab_id from kolab_grant g where g.user_id = $1 or g.agent_id = $1 or g.team_id in (select id from teams)
+       )
+       select c.id from candidates c where (select a.rank from kj_access($1, c.id) a) >= 1 order by c.id`, [actorId])).rows.map((r) => r.id);
   }
 
   /**
@@ -735,13 +760,17 @@ export class Kolab {
    */
   private async changeAccess(fn: (tx: Q) => Promise<unknown>): Promise<{ ended: number }> {
     return this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
       await fn(tx);
-      const r = await tx.query<{ id: string }>(
-        `update session s set ended_at = now()
-          where s.ended_at is null and (select a.rank from kj_access(s.actor_id, s.kolab_id) a) = 0
-         returning s.id`);
-      for (const { id } of r.rows) await signal({ session: 'ended', id: sessionKey(id) });
-      return { ended: r.rows.length };
+      return { ended: await endUnreachableIn(tx, signal) };
+    });
+  }
+
+  /** Ends every open session that can no longer reach its kolab, and tells listeners (D41). */
+  private async endUnreachable(): Promise<number> {
+    return this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      return endUnreachableIn(tx, signal);
     });
   }
 
@@ -750,8 +779,16 @@ export class Kolab {
   /** Creates a node in the session's kolab. */
   async createNode(sessionId: string, kind: Kind, title: string, id: string = ulid()): Promise<string> {
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
-    await this.db.query(`insert into node(id, kind, layer, title, kolab_id) values ($1, $2, $3, $4, $5)`,
-      [id, kind, LAYER_OF_KIND[kind], title, s.kolab]);
+    try {
+      await this.db.query(`insert into node(id, kind, layer, title, kolab_id) values ($1, $2, $3, $4, $5)`,
+        [id, kind, LAYER_OF_KIND[kind], title, s.kolab]);
+    } catch (e) {
+      // Node names are still unique across all of Konjir until addresses carry their kolab
+      // (W1.4). The refusal is the same whichever kolab holds the name, so it says nothing of
+      // another kolab's nodes.
+      if (String(e).includes('node_pkey')) throw new GateError(`the node name ${id} is taken; choose another`);
+      throw e;
+    }
     return id;
   }
 
@@ -843,6 +880,16 @@ export class Kolab {
   }
 
   /**
+   * Submits a draft for review on behalf of a session, which must be able to write the draft's
+   * layer in its own kolab: Read is not enough to decide when someone's draft becomes truth.
+   */
+  async submit(sessionId: string, versionId: string): Promise<GateResult> {
+    const v = await this.version(versionId);
+    await this.requireLayer(sessionId, v.layer, v.kolab_id);
+    return this.review(versionId);
+  }
+
+  /**
    * The review gate: drafted -> committed | rejected. Commit runs the cascade.
    *
    * Optimistic concurrency (CAS7): a draft commits only while its node's live
@@ -872,6 +919,7 @@ export class Kolab {
     }
     // The node may have moved on while the reviewer ran, which with a semantic gate takes seconds.
     const late = await this.commitStep(v, verdict.note ?? null);
+    if (typeof late === 'string') return { ok: false, note: late, version: versionId };
     if (late) return this.settleOvertaken(v, late);
     try {
       await this.onCommit(versionId);
@@ -888,10 +936,21 @@ export class Kolab {
    * commits only if the node's live version is still its base. Otherwise it commits nothing and
    * returns the versions that overtook it.
    */
-  private commitStep(v: VersionRow, note: string | null): Promise<Overtaker[] | undefined> {
+  private commitStep(v: VersionRow, note: string | null): Promise<Overtaker[] | string | undefined> {
     return this.asSystem(async (tx, signal) => {
       const newer = await overtakenBy(tx, v);
       if (newer) return newer;
+      // A draft commits only while its author may still write its layer there (D30): one whose
+      // author lost Write since drafting is rejected, whoever submits it. Kolab's own rebases
+      // carry no author to check.
+      if (v.active_role !== 'system') {
+        const author = await accessIn(tx, v.actor_id, v.kolab_id!);
+        if (!author.layers.includes(v.layer)) {
+          const refused = `rejected: its author ${v.actor_id} no longer holds Write on the ${v.layer} layer of kolab ${v.kolab_id} (${describeAccess(author)})`;
+          await tx.query(`update version set state = 'rejected', review_note = $2 where id = $1 and state = 'drafted'`, [v.id, refused]);
+          return refused;
+        }
+      }
       const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = 'drafted' returning id`,
         [v.id, note]);
       if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
@@ -1317,8 +1376,8 @@ export class Kolab {
       const childFp = d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!);
       const p = await this.db.query<{ resolution: OverrideResolution; amended_text: string | null }>(
         `select resolution, amended_text from precedent
-          where base_fingerprint = $1 and parent_fingerprint = $2 and child_fingerprint = $3`,
-        [d.base_fingerprint, pe.fingerprint, childFp]);
+          where base_fingerprint = $1 and parent_fingerprint = $2 and child_fingerprint = $3 and kolab_id = $4`,
+        [d.base_fingerprint, pe.fingerprint, childFp, child.kolab_id]);
       const prec = p.rows[0];
       if (prec?.resolution === 'adopt_parent') continue;
       if (prec) {
@@ -1514,15 +1573,16 @@ export class Kolab {
 
   /**
    * A resolution's ruling, inside the transaction that commits it (`rulings`): the precedent for
-   * its triple, unless one already stands (the first ruling stands), and its mark closed, with
+   * its triple in its kolab, unless one already stands there (the first ruling stands), and its mark closed, with
    * its question answered by the ruling and the actor who made it.
    */
   private async recordRuling(tx: Q, signal: Signal, r: Ruling) {
     if (r.triple) {
       await tx.query(
-        `insert into precedent(id, base_fingerprint, parent_fingerprint, child_fingerprint, resolution, amended_text, ruled_by)
-         values ($1,$2,$3,$4,$5,$6,$7) on conflict do nothing`,
-        [ulid(), ...r.triple, r.resolution, r.amendedText, r.actor]);
+        // In the kolab of the mark it settles: precedent is per kolab (TEN13).
+        `insert into precedent(id, base_fingerprint, parent_fingerprint, child_fingerprint, resolution, amended_text, ruled_by, kolab_id)
+         values ($1,$2,$3,$4,$5,$6,$7, (select i.kolab_id from invalidation i where i.id = $8)) on conflict do nothing`,
+        [ulid(), ...r.triple, r.resolution, r.amendedText, r.actor, r.markId]);
     }
     await this.closeMarkIn(tx, signal, r.markId, r.actor, { answer: r.resolution, by: r.actor });
   }
@@ -2050,6 +2110,16 @@ async function nextSeq(tx: Q, nodeId: string): Promise<number> {
 /** An open session: its actor, role and kolab, and the actor's access there now. */
 interface Session {
   actor_id: string; active_role: Role; kolab: string; kind: ActorKind; owner: string | null; access: Access;
+}
+
+/** Ends, in `tx`, every open session that can no longer reach its kolab. Returns how many. */
+async function endUnreachableIn(tx: Q, signal: Signal): Promise<number> {
+  const r = await tx.query<{ id: string }>(
+    `update session s set ended_at = now()
+      where s.ended_at is null and (select a.rank from kj_access(s.actor_id, s.kolab_id) a) = 0
+     returning s.id`);
+  for (const { id } of r.rows) await signal({ session: 'ended', id: sessionKey(id) });
+  return r.rows.length;
 }
 
 /** An actor's access to a kolab, from kj_access: the database is the one place it is computed. */

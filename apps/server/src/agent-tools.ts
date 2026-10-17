@@ -227,7 +227,7 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       const kolab = this.kolab;
       const id = await versionIdOf(kolab, s, `kj:${node}@${version}`, true);
-      const r = await kolab.review(id);
+      const r = await kolab.submit(s, id);
       const v = await kolab.version(r.version);
       return {
         ok: r.ok, review: r.note ?? null, committed: r.ok ? `kj:${node}@${v.seq}` : null, stale: r.stale ?? false,
