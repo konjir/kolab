@@ -440,6 +440,12 @@ test("0006 refuses a database where an actor named konjir would take the organiz
     expect(await rejection(migrate(db))).toMatch(/0006_accounts_kolabs\.sql failed: .*an actor named konjir exists/);
     expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
   });
+  // An agent named konjir is refused too.
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`insert into actor(id, name) values ('lee', 'Lee'); insert into actor(id, name, kind, owner_id) values ('konjir', 'konjir', 'agent', 'lee')`);
+    expect(await rejection(migrate(db))).toMatch(/an actor named konjir exists/);
+  });
 });
 
 // ---- the runner, with migrations of the test's own ---------------------------------
