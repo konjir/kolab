@@ -1,8 +1,7 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { McpHttpService, type McpListenStream } from '@onivoro/server-mcp';
-import { Kolab, sessionKey } from '@konjir/engine';
+import { Kolab, maskTokens, sessionKey } from '@konjir/engine';
 import { isSessionEnded } from '@konjir/types';
-import { redact } from './auth.js';
 import { KOLAB } from './tokens.js';
 
 /** An agent's stream, with the token KonjirAuth verified for it. The admin token's streams are never closed here. */
@@ -61,7 +60,7 @@ export class ListenStreams implements OnModuleInit, OnModuleDestroy {
     try {
       open = await this.kolab.openSessions([...checked]);
     } catch (e) {
-      this.logger.warn(`could not check ${checked.size} listening session(s) before signalling a change, so it wasn't signalled: ${redact(e)}`);
+      this.logger.warn(`could not check ${checked.size} listening session(s) before signalling a change, so it wasn't signalled: ${maskTokens(e)}`);
       return false;
     }
     // Only the sessions checked: a stream opened meanwhile has passed the gate on its own.

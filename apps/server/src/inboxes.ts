@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { McpResource, McpToolRegistry, type McpHandlerContext } from '@onivoro/server-mcp';
-import { Kolab, RoleError } from '@konjir/engine';
+import { Kolab, RoleError, type ListenerState } from '@konjir/engine';
 import { LAYERS, isInboxEvent, type Layer } from '@konjir/types';
 import { ListenStreams } from './listen-streams.js';
 import { sessionOf } from './results.js';
@@ -10,11 +10,8 @@ import { uriOf } from './uris.js';
 /** Each layer's inbox and each actor's answers, and the push that signals them. */
 @Injectable()
 export class Inboxes implements OnModuleInit, OnModuleDestroy {
-  /** How often the listener's connection is checked, in ms. */
-  static healthInterval = 30_000;
   private unsubscribe?: () => void;
-  private health?: ReturnType<typeof setInterval>;
-  private heard = true;
+  private unwatch?: () => void;
   private readonly logger = new Logger('Push');
 
   constructor(
@@ -40,25 +37,21 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       this.scheduled = true;
       setImmediate(() => void this.signal());
     });
+    // After boot, a lost listener degrades push, not the server: say so as it happens.
+    this.unwatch = this.kolab.onListenerState((s) => this.report(s));
     // A server that can't hear other processes at boot doesn't start.
     await this.kolab.listen();
-    // After boot, a lost listener degrades push, not the server: say so, at error level, until it's back.
-    if ((await this.kolab.listenerConnected()) === undefined) return; // PGlite: no other processes
-    this.health = setInterval(() => void this.checkListener(), Inboxes.healthInterval);
-    this.health.unref();
   }
 
   /**
-   * Logs when this process stops hearing other processes' changes, and when it hears them
-   * again. The listener re-establishes the connection itself, and the Kolab resyncs then
-   * (Kolab.listen), so this only reports it.
+   * Logs when this process stops hearing other processes' changes, and when it hears them again.
+   * The listener re-establishes the connection itself and the Kolab resyncs (Kolab.listen); this
+   * reports what actually happened, however short the outage.
    */
-  async checkListener() {
-    const now = (await this.kolab.listenerConnected().catch(() => false)) !== false;
-    if (now === this.heard) return;
-    this.heard = now;
-    if (now) this.logger.warn('push across processes restored: the LISTEN connection is back, and every inbox was signalled again for what changed meanwhile');
-    else this.logger.error('push across processes is down: the LISTEN connection is lost, so this process\'s subscribers miss changes made through other processes until it reconnects');
+  report(s: ListenerState) {
+    if (s.state === 'lost') this.logger.error('push across processes is down: the LISTEN connection is lost, so this process\'s subscribers miss changes made through other processes until it reconnects');
+    else if (s.state === 'resync_failed') this.logger.error(`push across processes: the LISTEN connection is back, but signalling what changed meanwhile failed (${s.error}); retrying in ${Math.round(s.retryInMs / 1000)} s`);
+    else this.logger.warn('push across processes restored: the LISTEN connection is back, and every inbox was signalled again for what changed meanwhile');
   }
 
   private async signal() {
@@ -70,7 +63,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy() {
-    if (this.health) clearInterval(this.health);
+    this.unwatch?.();
     this.unsubscribe?.();
   }
 
