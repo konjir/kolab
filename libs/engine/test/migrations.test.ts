@@ -453,6 +453,58 @@ test("0006 refuses a database where an actor named konjir would take the organiz
   });
 });
 
+test('0008 refuses a database with a node name no address can name, naming it', async () => {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'node_names');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`
+      insert into account(id, kind, name) values ('konjir', 'organization', 'Konjir');
+      insert into kolab(id, owner_id, title) values ('kolab', 'konjir', 'Kolab');
+      insert into node(id, kind, layer, title, kolab_id) values
+        ('shop/x', 'functional_spec', 'functional', 'X', 'kolab'), ('fine', 'functional_spec', 'functional', 'Fine', 'kolab');`);
+    expect(await rejection(migrate(db))).toMatch(/0008_node_names\.sql failed: .*these nodes have names no address can name.*: shop\/x \(kolab kolab\); rename them first/);
+    expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
+  });
+});
+
+test('a database at 0007 reaches 0008: each node keeps its id, which becomes its name in its kolab, and another kolab may use the name', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'node_names');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // The test server after 0006: Konjir's own kolab, with the spec, its binding and its plan.
+    await db.exec(`
+      insert into account(id, kind, name) values ('konjir', 'organization', 'Konjir'), ('lee', 'user', 'Lee');
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into kolab(id, owner_id, title) values ('kolab', 'konjir', 'Kolab');
+      insert into node(id, kind, layer, title, kolab_id) values
+        ('kolab', 'functional_spec', 'functional', 'Kolab', 'kolab'),
+        ('kolab-binding', 'technical_binding', 'technical', 'Binding', 'kolab'),
+        ('kolab-plan', 'wbs', 'technical', 'Plan', 'kolab');
+      insert into version(id, node_id, seq, layer, state, actor_id, active_role) values
+        ('s1', 'kolab', 1, 'functional', 'committed', 'lee', 'product');
+      insert into element(version_id, element_id, ord, text, fingerprint) values ('s1', 'TEN1', 0, 'Konjir is one hosted service.', 'x');`);
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
+    expect((await db.query(`select id, name, kolab_id from node order by id`)).rows).toStrictEqual([
+      { id: 'kolab', name: 'kolab', kolab_id: 'kolab' },
+      { id: 'kolab-binding', name: 'kolab-binding', kolab_id: 'kolab' },
+      { id: 'kolab-plan', name: 'kolab-plan', kolab_id: 'kolab' },
+    ]);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    // kj:kolab/kolab, the spec's own address (D15), resolves from anywhere.
+    expect(await kolab.resolve('kj:kolab/kolab@1#TEN1', { system: 'shop' })).toMatchObject({ status: 'ok', content: 'Konjir is one hosted service.' });
+    // Another kolab's binding may be called kolab-binding too.
+    await kolab.createKolab('shop', { owner: 'lee' });
+    const s = await kolab.openSession('lee', 'engineer', { kolab: 'shop' });
+    expect(await kolab.createNode(s, 'technical_binding', 'Binding', 'kolab-binding')).toMatch(/^~[0-9A-Z]{26}$/);
+    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.name)).toStrictEqual(['kolab', 'kolab-binding', 'kolab-plan']);
+  } finally { await kolab.close(); }
+});
+
 // ---- the runner, with migrations of the test's own ---------------------------------
 
 const m = (version: number, sql: string): Migration => ({ version, name: `m${version}`, sql });

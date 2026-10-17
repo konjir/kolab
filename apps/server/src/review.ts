@@ -62,7 +62,7 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 export function buildReviewPrompt(ctx: ReviewContext): string {
   const lines = [
-    `Node: ${esc(ctx.node.id)} (${ctx.node.kind}, ${ctx.node.layer} layer), "${esc(ctx.node.title)}", version ${ctx.version.seq}.`,
+    `Node: ${esc(ctx.node.name)} (${ctx.node.kind}, ${ctx.node.layer} layer), "${esc(ctx.node.title)}", version ${ctx.version.seq}.`,
     '',
     'Elements of this version:',
     ...ctx.elements.map((e) =>

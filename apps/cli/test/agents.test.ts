@@ -238,3 +238,49 @@ test('over MCP, only the admin token applies a ruling, which commits without rev
   expect(await call(other, 'list_reviews', {})).toMatchObject({ for_you: [] });
   expect(await call(pm, 'read_node', { node: 'kolab' })).toMatchObject({ version: 1, state: 'committed', author: { actor: 'mirror-product', role: 'product' } });
 });
+
+test('over MCP, two kolabs each have a node called checkout: the short form is your own, the full form resolves wherever you can read (W1.4, DAT11)', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  for (const [actor, kolab] of [['alice', 'orders'], ['bob', 'billing']]) {
+    await call(admin, 'admin_add_actor', { id: actor });
+    await call(admin, 'admin_add_kolab', { name: kolab, owner: actor });
+  }
+  const session = async (actor: string) => {
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  const alice = await session('alice');
+  const bob = await session('bob');
+  for (const [client, text] of [[alice, 'Orders ship within a day.'], [bob, 'Invoices are sent monthly.']] as const) {
+    expect(await call(client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' })).toStrictEqual({ node: 'checkout' });
+    await call(client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text }] });
+    expect(await call(client, 'submit_for_review', { node: 'checkout', version: 1 })).toMatchObject({ ok: true, committed: 'kj:checkout@1' });
+  }
+  expect((await call(bob, 'list_nodes') as { id: string }[]).map((n) => n.id)).toStrictEqual(['checkout']);
+  expect(await call(bob, 'resolve', { address: 'kj:checkout#R1' })).toMatchObject({ status: 'ok', content: 'Invoices are sent monthly.' });
+  expect(await call(alice, 'resolve', { address: 'kj:checkout#R1' })).toMatchObject({ status: 'ok', content: 'Orders ship within a day.' });
+  // Its own kolab's full form works for writing too.
+  await call(bob, 'draft', { node: 'billing/checkout', elements: [{ id: 'R1', text: 'Invoices are sent weekly.' }] });
+  expect(await call(bob, 'submit_for_review', { node: 'kj:billing/checkout', version: 2 })).toMatchObject({ ok: true, committed: 'kj:checkout@2' });
+
+  // Without Read on billing, alice is told there is no such node, as for one that isn't there.
+  expect(await rejection(call(alice, 'resolve', { address: 'kj:billing/checkout#R1' }))).toMatch(/no node checkout in kolab billing/);
+  expect(await rejection(call(alice, 'read_node', { node: 'billing/checkout' }))).toMatch(/no node checkout in kolab billing/);
+  await call(admin, 'admin_grant', { kolab: 'billing', to: 'alice', level: 'read' });
+  expect(await call(alice, 'resolve', { address: 'kj:billing/checkout@1#R1' })).toMatchObject({ status: 'ok', version: 1, content: 'Invoices are sent monthly.' });
+  expect(await call(alice, 'read_node', { node: 'billing/checkout' })).toMatchObject({
+    node: 'billing/checkout', version: 2, elements: [{ address: 'kj:billing/checkout@2#R1', id: 'R1', text: 'Invoices are sent weekly.' }],
+  });
+  expect(await call(alice, 'read_node', { node: 'checkout' })).toMatchObject({ node: 'checkout', elements: [{ address: 'kj:checkout@1#R1' }] });
+
+  // Reading is all: a link, a variant or a question across kolabs waits on the binding (LNK8).
+  await call(alice, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Orders ship within a day.' }, { id: 'R2', text: 'Invoices follow billing.' }] });
+  expect(await rejection(call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:billing/checkout#R1' })))
+    .toMatch(/billing\/checkout is in kolab billing, and this session works in kolab orders: linking across kolabs isn't supported yet/);
+  expect(await rejection(call(alice, 'ask', { address: 'kj:billing/checkout#R1', question: 'Why weekly?' }))).toMatch(/asking across kolabs isn't supported yet/);
+  expect(await rejection(call(alice, 'draft', { node: 'billing/checkout', elements: [{ id: 'R1', text: 'x' }] }))).toMatch(/drafting across kolabs isn't supported yet/);
+});

@@ -96,11 +96,16 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
-    // without case files (0005), before accounts and kolabs (0006) and before the review flow
-    // (0007), newest first. The people and the spec stay.
+    // without case files (0005), before accounts and kolabs (0006), before the review flow (0007)
+    // and before node names per kolab (0008), newest first. The people and the spec stay.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      ${['node', 'version', 'element', 'query'].map((t) => `drop policy kolab_read on ${t}; create policy kolab_read on ${t} for select to kj_agent using (kolab_id = (select kj_session_kolab()));`).join('\n')}
+      drop function kj_session_readable_kolabs();
+      drop trigger node_name_fixed on node;
+      drop function kj_node_name_fixed();
+      alter table node drop column name cascade;
       drop table review_request;
       drop function kj_review_request_kolab();
       alter table version drop column resolves, drop column findings, drop column folded_from;
@@ -178,6 +183,8 @@ test('a database from the previous release is migrated on open', async () => {
     // 0006 gave both of them Write on both layers of the kolab `kolab`; with alice back to the
     // functional one, bob is alone on his and commits without review (W1.6).
     await kolab.grant('kolab', 'alice', 'write', { layers: ['functional'] });
+    // 0008: the existing node keeps its id, now also its name in the kolab 0006 put it in.
+    expect(await kolab.node('orders')).toMatchObject({ id: 'orders', name: 'orders', kolab_id: 'kolab' });
     const engineer = await kolab.openSession('bob', 'engineer');
     await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
     await kolab.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
