@@ -234,7 +234,7 @@ test('over MCP, only the admin token applies a ruling, which commits without rev
   expect(await rejection(call(pm, 'admin_apply_ruling', ruling))).toMatch(/admin|scope|not found|forbidden|unknown/i);
   expect(await rejection(call(other, 'admin_apply_ruling', ruling))).toMatch(/admin|scope|not found|forbidden|unknown/i);
 
-  expect(await call(admin, 'admin_apply_ruling', ruling)).toMatchObject({ ok: true, ruling: 'D46', committed: 'kj:kolab@1', state: 'committed', review: expect.stringMatching(/^Applied as ruling D46 through the admin token/) });
+  expect(await call(admin, 'admin_apply_ruling', ruling)).toMatchObject({ ok: true, ruling: 'D46', committed: 'kj:test/kolab@1', state: 'committed', review: expect.stringMatching(/^Applied as ruling D46 through the admin token/) });
   expect(await call(other, 'list_reviews', {})).toMatchObject({ for_you: [] });
   expect(await call(pm, 'read_node', { node: 'kolab' })).toMatchObject({ version: 1, state: 'committed', author: { actor: 'mirror-product', role: 'product' } });
 });
