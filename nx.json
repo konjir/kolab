@@ -89,20 +89,18 @@
     "version": {
       "currentVersionResolver": "git-tag",
       "fallbackCurrentVersionResolver": "disk",
-      "conventionalCommits": false
+      "conventionalCommits": false,
+      "versionActions": "apps/cli/scripts/version-actions.cjs",
+      "git": {
+        "commit": false,
+        "tag": false,
+        "stageChanges": false
+      },
+      "adjustSemverBumpsForZeroMajorVersion": false
     },
     "changelog": {
       "workspaceChangelog": false,
       "projectChangelogs": false
-    },
-    "git": {
-      "commit": false,
-      "tag": false
-    }
-  },
-  "pluginsConfig": {
-    "@nx/js": {
-      "analyzeSourceFiles": false
     }
   }
 }

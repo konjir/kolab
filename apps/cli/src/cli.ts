@@ -25,9 +25,13 @@ import type { Reviewer } from '@konjir/types';
 // commands that need it, so the client verbs start without loading it. The published
 // konjir (the npm package and the single-file binaries) is the client alone: it leaves
 // @konjir/server out, so serve is only for a Kolab checkout.
+// Only @konjir/server itself being absent means that; any other failure to load it (a stale
+// dist/, a missing dependency of the server's, a syntax error) is rethrown as it is.
+class ClientOnly extends Error {}
 const server = () => import('@konjir/server').catch((e: unknown) => {
-  if (/@konjir\/server/.test(String((e as Error)?.message ?? e))) {
-    throw new Error('this konjir is the client only, so it has no serve. Run `bin/konjir serve` from a Kolab checkout (github.com/konjir/kolab), or point KONJIR_URL at a running Kolab.');
+  const err = e as { code?: unknown; message?: unknown };
+  if (err?.code === 'ERR_MODULE_NOT_FOUND' && /^Cannot find (package|module) '@konjir\/server'/.test(String(err.message))) {
+    throw new ClientOnly('this konjir is the client only, so it has no serve. Run `bin/konjir serve` from a Kolab checkout (github.com/konjir/kolab), or point KONJIR_URL at a running Kolab.');
   }
   throw e;
 });
@@ -134,7 +138,8 @@ export async function main(argv: string[]) {
 
   if (!cmd || ((cmd === 'help' || cmd === '--help') && !rest[0])) {
     // Without the server (the published client), help leaves out serve.
-    console.log(usage(await server().then((s) => s.DEFAULT_REVIEW_MODEL, () => undefined))); return;
+    const model = await server().then((s) => s.DEFAULT_REVIEW_MODEL, (e: unknown) => { if (e instanceof ClientOnly) return undefined; throw e; });
+    console.log(usage(model)); return;
   }
 
   if (cmd === 'serve') {
