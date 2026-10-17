@@ -17,14 +17,9 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "@nestjs/common": "^11.2.7",
-    "@onivoro/server-pg-notify": "^25.3.2",
+    "@onivoro/server-pg-notify": "^25.4.0",
     "kysely": "^0.29.6",
     "pg": "^8.23.1",
-    "pg-listen": "^1.7.0"
-  },
-  "peerDependencies": {
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "pg-listen": "~1.7.0"
   }
 }
