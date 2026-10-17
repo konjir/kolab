@@ -3,6 +3,13 @@
   "version": "0.5.0",
   "private": true,
   "description": "konjir: the Kolab verbs from a shell, as an MCP client of Kolab",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -14,7 +21,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
+    "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest",
+    "bundle": "node scripts/package.mjs npm",
+    "compile": "node scripts/package.mjs binaries"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
@@ -37,6 +46,48 @@
           "{workspaceRoot}/deploy/release/start.sh",
           "{workspaceRoot}/deploy/release/install.sh"
         ]
+      },
+      "bundle": {
+        "inputs": [
+          "production",
+          "{projectRoot}/scripts/package.mjs",
+          "{projectRoot}/.bun-version",
+          {
+            "externalDependencies": [
+              "@modelcontextprotocol/client"
+            ]
+          },
+          "{projectRoot}/README.npm.md"
+        ],
+        "outputs": [
+          "{projectRoot}/dist-npm"
+        ],
+        "cache": true
+      },
+      "compile": {
+        "inputs": [
+          "production",
+          "{projectRoot}/scripts/package.mjs",
+          "{projectRoot}/.bun-version",
+          {
+            "externalDependencies": [
+              "@modelcontextprotocol/client"
+            ]
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/dist-bin"
+        ],
+        "cache": false
+      },
+      "nx-release-publish": {
+        "executor": "@nx/js:release-publish",
+        "dependsOn": [
+          "bundle"
+        ],
+        "options": {
+          "packageRoot": "{projectRoot}/dist-npm"
+        }
       }
     }
   }

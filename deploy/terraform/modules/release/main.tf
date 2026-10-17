@@ -17,6 +17,8 @@ data "archive_file" "app" {
     "**/node_modules",
     ".nx",
     "**/dist",
+    "**/dist-npm", # the published CLI's builds (apps/cli/scripts/package.mjs); Kolab doesn't run them
+    "**/dist-bin",
     ".konjir",
     ".git",
     "deploy/terraform/.terraform",

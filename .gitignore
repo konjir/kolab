@@ -25,3 +25,6 @@ override.tf.json
 # Nx
 .nx/
 dist/
+# The published CLI: its npm package and its binaries (apps/cli/scripts/package.mjs)
+dist-npm/
+dist-bin/
