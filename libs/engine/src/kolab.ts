@@ -7,6 +7,7 @@ import {
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
   ACCESS_LEVELS, FINDING_KINDS, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
+  type OutboxKind,
   type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
@@ -89,8 +90,9 @@ const ROLE_OF_LAYER = Object.fromEntries(ROLES.map((r) => [LAYER_OF_ROLE[r], r])
 export class ChecksError extends Error { name = 'ChecksError'; }
 /**
  * A version committed, but the cascade it runs (marks, rebases of its variants, its own
- * catch-up) stopped part way, on an error this names. The commit stands; whatever the cascade
- * hadn't reached yet is reached by the node's next commit, or its parent's.
+ * catch-up) stopped part way, on an error this names. The commit stands, and so does the
+ * cascade's after_commit job in the outbox (W1.8): the worker runs it again after a backoff, and
+ * the node's next commit runs it first. Its parent's next commit catches it up too.
  */
 export class CascadeError extends Error { name = 'CascadeError'; }
 
@@ -114,8 +116,9 @@ export const EVENT_CHANNEL = 'konjir_events';
 /**
  * What goes over EVENT_CHANNEL: the event, and the Kolab that sent it, which has already told
  * its own listeners. `resync` stands in for an event too long for NOTIFY: re-read everything.
+ * `work` says a job in the outbox is free for any process's worker to take (REV3, W1.8).
  */
-type Notice = { from: string; event: KolabEvent } | { from: string; resync: true };
+type Notice = { from: string; event: KolabEvent } | { from: string; resync: true } | { from: string; work: true };
 
 /**
  * What a Kolab's listener goes through after `listen` (API5): its connection is lost; it is back
@@ -155,15 +158,31 @@ export function isKolabEvent(x: unknown): x is KolabEvent {
 
 function isNotice(x: unknown): x is Notice {
   if (!isObject(x) || typeof x.from !== 'string') return false;
-  return x.resync === true || isKolabEvent(x.event);
+  if (x.resync === true) return hasKeys(x, 'from', 'resync');
+  if (x.work === true) return hasKeys(x, 'from', 'work');
+  return hasKeys(x, 'from', 'event') && isKolabEvent(x.event);
 }
 
 // ---------------------------------------------------------------------------
 // Kolab
 // ---------------------------------------------------------------------------
 
+/** A job in the outbox (REV3, W1.8): work a committed change still owes, until it is done. */
+interface OutboxJob {
+  id: string; kind: OutboxKind; version_id: string; payload: { approvedBy?: string } | null; attempts: number;
+}
+
+/** How long a process's claim on an outbox job lasts unless renewed, by default. */
+const OUTBOX_LEASE_MS = 30_000;
+/** How often an idle worker looks for due jobs, by default, besides when it is told of one. */
+const OUTBOX_POLL_MS = 5_000;
+/** The longest a failed job waits before it is tried again. */
+const OUTBOX_MAX_BACKOFF_S = 300;
+
 export class Kolab {
-  private constructor(readonly db: Db, private submissionChecks: Checks, private checks: Checks) {}
+  private constructor(readonly db: Db, private submissionChecks: Checks, private checks: Checks,
+    /** Whether other processes may share the database: Postgres. PGlite is one process's. */
+    private readonly shared: boolean, private readonly leaseMs: number) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
   /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
@@ -184,19 +203,34 @@ export class Kolab {
    * one, and `checks` for everything else (Kolab's own rebases, folds, plans and rulings, VER12),
    * to inject a write at an exact point.
    */
-  static async open(opts: { submissionChecks?: Checks; checks?: Checks; dataDir?: string; databaseUrl?: string } = {}): Promise<Kolab> {
+  static async open(opts: {
+    submissionChecks?: Checks; checks?: Checks; dataDir?: string; databaseUrl?: string;
+    /** How long this process's claim on an outbox job lasts unless renewed (30 s by default). */
+    outboxLeaseMs?: number;
+  } = {}): Promise<Kolab> {
     const db = openDb(opts);
     try {
       await migrate(db);
+      // PGlite is one process's database: any claim on a job is a stopped process's, so it is freed now.
+      if (!opts.databaseUrl) await db.query(`update outbox set claimed_by = null, claimed_until = null where claimed_by is not null`);
     } catch (e) {
       await db.close().catch(() => undefined);
       throw e;
     }
-    return new Kolab(db, opts.submissionChecks ?? structuralChecks, opts.checks ?? structuralChecks);
+    return new Kolab(db, opts.submissionChecks ?? structuralChecks, opts.checks ?? structuralChecks, !!opts.databaseUrl, opts.outboxLeaseMs ?? OUTBOX_LEASE_MS);
   }
 
+  /**
+   * Stops this Kolab's worker, frees the outbox jobs it holds for other processes, telling their
+   * workers, and closes the database. Work it was running stops part way, and is run again in
+   * full by whichever process takes its job: every job's work is idempotent.
+   */
   async close() {
+    if (!this.closed && this.shared) await this.freeClaims().catch(() => undefined);
     this.closed = true;
+    clearTimeout(this.worker?.timer);
+    for (const timer of this.heartbeats) clearInterval(timer);
+    this.heartbeats.clear();
     const listening = this.listening;
     this.listening = undefined;
     await (await listening?.catch(() => undefined))?.close();
@@ -303,6 +337,7 @@ export class Kolab {
     const n = isNotice(p) ? p : undefined;
     if (!n) return this.dropped('isn\'t a Kolab event');
     if (n.from === this.origin) return; // told our own listeners when it committed
+    if ('work' in n) return this.wake();
     if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${maskTokens(e)}`));
     else this.dispatch(n.event);
   }
@@ -385,6 +420,178 @@ export class Kolab {
       await tx.exec('set local role kj_system');
       return fn(tx, signal);
     }, lock);
+  }
+
+  // ---- the outbox: durable waits (REV3, W1.8) --------------------------------
+
+  /**
+   * Writes a job into the outbox, in `tx`, the transaction whose change owes the work: the job
+   * exists if and only if that change commits. This process claims it as it writes it, since it
+   * runs the work at once (runClaimed); if it stops first, the claim lapses and any process's
+   * worker takes the job. A second job of the same kind for the same version adds nothing.
+   */
+  private async enqueue(tx: Q, kind: OutboxKind, versionId: string, payload?: OutboxJob['payload']) {
+    await tx.query(
+      `insert into outbox(id, kind, version_id, payload, attempts, claimed_by, claimed_until)
+       values ($1, $2, $3, $4, 1, $5, now() + $6::int * interval '1 millisecond')
+       on conflict (kind, version_id) do nothing`,
+      [ulid(), kind, versionId, payload && Object.keys(payload).length ? JSON.stringify(payload) : null, this.origin, this.leaseMs]);
+  }
+
+  /**
+   * Runs the work a job this process wrote owes, now, in the caller's call: the commit's caller
+   * still sees its cascade finish or fail. The job is deleted once the work is done. If the work
+   * fails, the job is freed to be tried again later, by this process's worker or another's, and
+   * the failure is thrown on.
+   */
+  private async runClaimed<T>(kind: OutboxKind, versionId: string, work: () => Promise<T>): Promise<T> {
+    const stop = this.heartbeat(kind, versionId);
+    try {
+      const result = await work();
+      await this.db.query(`delete from outbox where kind = $1 and version_id = $2`, [kind, versionId]);
+      return result;
+    } catch (e) {
+      await this.free(kind, versionId, e).catch(() => undefined);
+      throw e;
+    } finally {
+      stop();
+    }
+  }
+
+  /**
+   * Renews this process's claim on a job while it runs it, so that only a stopped process's claim
+   * lapses. On PGlite there is no other process to take it.
+   */
+  private heartbeat(kind: OutboxKind, versionId: string): () => void {
+    if (!this.shared) return () => undefined;
+    const timer = setInterval(() => {
+      void this.db.query(
+        `update outbox set claimed_until = now() + $4::int * interval '1 millisecond' where kind = $1 and version_id = $2 and claimed_by = $3`,
+        [kind, versionId, this.origin, this.leaseMs]).catch(() => undefined);
+    }, Math.max(10, Math.floor(this.leaseMs / 3)));
+    timer.unref();
+    this.heartbeats.add(timer);
+    return () => { clearInterval(timer); this.heartbeats.delete(timer); };
+  }
+
+  /** The claims this process is renewing, which stop when it closes. */
+  private heartbeats = new Set<ReturnType<typeof setInterval>>();
+
+  /**
+   * Frees a job whose work failed, to be tried again after a backoff that doubles with each
+   * attempt, from 1 s up to 5 minutes, and tells every process's worker, in the same transaction.
+   */
+  private async free(kind: OutboxKind, versionId: string, error: unknown) {
+    await this.inTransaction(async (tx) => {
+      await tx.query(
+        `update outbox set claimed_by = null, claimed_until = null, last_error = $3,
+                run_after = now() + least(power(2, greatest(attempts - 1, 0)), $4) * interval '1 second'
+          where kind = $1 and version_id = $2`,
+        [kind, versionId, maskTokens(error).slice(0, 2000), OUTBOX_MAX_BACKOFF_S]);
+      await this.notifyWork(tx);
+    });
+  }
+
+  /** Frees every job this process holds, telling other processes' workers (on close). */
+  private async freeClaims() {
+    await this.inTransaction(async (tx) => {
+      const r = await tx.query(`update outbox set claimed_by = null, claimed_until = null where claimed_by = $1 returning id`, [this.origin]);
+      if (r.rows.length) await this.notifyWork(tx);
+    });
+  }
+
+  /** Tells every process's worker, once `tx` commits, that a job is free to take (API5). */
+  private async notifyWork(tx: Db) {
+    const work: Notice = { from: this.origin, work: true };
+    await tx.notify(EVENT_CHANNEL, JSON.stringify(work), () => JSON.stringify(work));
+  }
+
+  private worker?: { pollMs: number; timer?: ReturnType<typeof setTimeout>; running?: Promise<void>; again: boolean };
+
+  /**
+   * Starts this Kolab's outbox worker (REV3, W1.8): it runs every job that is due at once, as a
+   * server boots, then whenever another process says a job is free (over EVENT_CHANNEL, once
+   * `listen` has been called), when a failed job's backoff or a stopped process's claim runs out,
+   * and at least every `pollMs`. Jobs are taken one at a time, oldest first, each by one process
+   * (`for update skip locked`). Idempotent; closing the Kolab stops it.
+   */
+  startWorker(opts: { pollMs?: number } = {}) {
+    if (this.worker || this.closed) return;
+    this.worker = { pollMs: opts.pollMs ?? OUTBOX_POLL_MS, again: false };
+    this.wake();
+  }
+
+  /** Has the worker, if started, look for due jobs now, or once more after the pass it is in. */
+  private wake() {
+    const w = this.worker;
+    if (!w || this.closed) return;
+    if (w.running) { w.again = true; return; }
+    clearTimeout(w.timer);
+    w.running = (async () => {
+      do {
+        w.again = false;
+        try {
+          await this.drainOutbox();
+        } catch (e) {
+          if (!this.closed) console.error(`kolab: the outbox worker could not read the outbox: ${maskTokens(e)}`);
+        }
+      } while (w.again && !this.closed);
+    })().finally(() => { w.running = undefined; void this.scheduleWorker(); });
+  }
+
+  /** Sets the worker's next pass: when the next job falls due or its claim lapses, or after pollMs. */
+  private async scheduleWorker() {
+    const w = this.worker;
+    if (!w || this.closed) return;
+    let ms = w.pollMs;
+    try {
+      const r = await this.db.query<{ ms: number | string | null }>(
+        `select extract(epoch from min(greatest(run_after, coalesce(claimed_until, run_after))) - now()) * 1000 as ms from outbox`);
+      const next = r.rows[0]?.ms;
+      if (next !== null && next !== undefined) ms = Math.min(ms, Math.max(20, Math.ceil(Number(next)) + 5));
+    } catch { /* the next pass reads it again */ }
+    if (this.closed || w.running) return;
+    clearTimeout(w.timer);
+    w.timer = setTimeout(() => this.wake(), ms);
+    w.timer.unref();
+  }
+
+  /**
+   * Runs every outbox job that is due and that no live process holds, oldest first, until none is
+   * left: a job written by a process that stopped before finishing it, or one whose work failed
+   * and has waited out its backoff. Returns how many finished. The worker calls it; a test can too.
+   */
+  async drainOutbox(): Promise<number> {
+    let done = 0;
+    while (!this.closed) {
+      const job = (await this.db.query<OutboxJob>(
+        `update outbox o set claimed_by = $1, claimed_until = now() + $2::int * interval '1 millisecond', attempts = o.attempts + 1
+          where o.id = (select j.id from outbox j
+                         where j.run_after <= now() and (j.claimed_until is null or j.claimed_until < now())
+                         order by j.id limit 1 for update skip locked)
+         returning o.id, o.kind, o.version_id, o.payload, o.attempts`, [this.origin, this.leaseMs])).rows[0];
+      if (!job) break;
+      if (await this.runJob(job)) done++;
+    }
+    return done;
+  }
+
+  /** Runs a job this process has just claimed. Returns whether it finished; a failure frees it to retry. */
+  private async runJob(job: OutboxJob): Promise<boolean> {
+    try {
+      await this.runClaimed(job.kind, job.version_id, () => this.perform(job));
+      return true;
+    } catch (e) {
+      if (!this.closed) console.error(`kolab: outbox job ${job.kind} for version ${job.version_id} failed (attempt ${job.attempts}); it will be tried again: ${maskTokens(e)}`);
+      return false;
+    }
+  }
+
+  /** The work a job owes, from its row alone. Each is idempotent: run again, it does nothing twice. */
+  private async perform(job: OutboxJob): Promise<unknown> {
+    if (job.kind === 'after_commit') return this.cascade(await this.version(job.version_id));
+    if (job.kind === 'settle_approval') return this.settleApproval(job.version_id, job.payload?.approvedBy ?? 'a reviewer');
+    throw new Error(`no work for an outbox job of kind ${String(job.kind)}`);
   }
 
   // ---- actors and sessions (dynamic separation of duty) --------------------
@@ -1134,7 +1341,7 @@ export class Kolab {
     const late = await this.commitStep(v, note, approvedBy ? { record: (tx, signal, overtaken) => this.foldRecord(tx, signal, v, overtaken) } : {});
     if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
     if (late && late !== 'waiting') return this.settleOvertaken(v, late, approvedBy, ruling);
-    await this.afterCommit(v, []);
+    await this.runClaimed('after_commit', v.id, () => this.cascade(v));
     return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}) };
   }
 
@@ -1165,7 +1372,7 @@ export class Kolab {
     const late = await this.commitStep(v, note, { from: 'in_review' });
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
     if (late && late !== 'waiting') return this.settleOvertaken(v, late);
-    await this.afterCommit(v, []);
+    await this.runClaimed('after_commit', v.id, () => this.cascade(v));
     return { ok: true, note, version: v.id, unreviewed: true };
   }
 
@@ -1294,6 +1501,7 @@ export class Kolab {
     const note = `Approved by ${s.actor_id}${said}`;
     const late = await this.commitStep(v, note, {
       from: 'in_review',
+      approvedBy: s.actor_id,
       record: async (tx, signal) => {
         await record(tx, 'approved');
         const approvals = await tx.query<{ n: number }>(
@@ -1305,9 +1513,29 @@ export class Kolab {
     });
     if (late === 'waiting') return { ok: false, note: `${note} More approvals are needed.`, version: v.id, in_review: true };
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
-    if (late) return this.settleOvertaken(v, late, s.actor_id);
-    await this.afterCommit(v, findings);
+    // Overtaken while it waited: the approval stands, and its settle_approval job folds or rejects it.
+    if (late) return this.runClaimed('settle_approval', v.id, () => this.settleApproval(v.id, s.actor_id));
+    await this.runClaimed('after_commit', v.id, () => this.cascade(v));
     return { ok: true, note, version: v.id, findings };
+  }
+
+  /**
+   * The work an approval owes when its version was overtaken while it waited in review: the
+   * settle_approval job, written with the approval (W1.8). Unless the version has been settled
+   * since, it is folded onto Kolab's rebase, or rejected as stale if anyone else committed
+   * (settleOvertaken). A fold that a stopped process wrote and never committed is rejected first,
+   * so the version is folded once.
+   */
+  private async settleApproval(versionId: string, approvedBy: string): Promise<GateResult> {
+    const v = await this.version(versionId);
+    if (v.state !== 'in_review') return { ok: v.state === 'committed', note: (await this.reviewNote(v.id)) ?? undefined, version: v.id };
+    const newer = await overtakenBy(this.db, v);
+    const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
+    if (!newer) throw new Error(`${here} is in review, approved, and no longer overtaken; nothing to settle`);
+    await this.asSystem((tx) => tx.query(
+      `update version set state = 'rejected', review_note = $2 where folded_from = $1 and state = 'drafted'`,
+      [v.folded_from ?? v.id, `not committed: Kolab stopped while folding ${here}, and folded it again`]));
+    return this.settleOvertaken(v, newer, approvedBy);
   }
 
   /**
@@ -1334,8 +1562,30 @@ export class Kolab {
   }
 
   /**
+   * A committed version's after_commit job (W1.8): first the cascades its node still owes for
+   * versions that committed before it, which a stopped process left behind (each superseded the
+   * one before, so they run in order), then its own (afterCommit). A job another live process
+   * holds is left to it, and one that fails is freed to retry; neither stops this cascade.
+   */
+  private async cascade(v: VersionRow) {
+    for (;;) {
+      const earlier = (await this.db.query<OutboxJob>(
+        `update outbox o set claimed_by = $1, claimed_until = now() + $2::int * interval '1 millisecond', attempts = o.attempts + 1
+          where o.id = (select j.id from outbox j join version jv on jv.id = j.version_id
+                         where j.kind = 'after_commit' and jv.node_id = $3 and jv.seq < $4
+                           and (j.claimed_until is null or j.claimed_until < now())
+                         order by jv.seq limit 1 for update of j skip locked)
+         returning o.id, o.kind, o.version_id, o.payload, o.attempts`, [this.origin, this.leaseMs, v.node_id, v.seq])).rows[0];
+      if (!earlier) break;
+      if (!(await this.runJob(earlier))) break;   // freed to retry; this version's cascade goes on
+    }
+    await this.afterCommit(v, []);
+  }
+
+  /**
    * The cascade a commit runs, and what the version's review found: layer leaks become marks and
    * questions. (A resolution of an override it carries recorded its ruling in the commit step.)
+   * Idempotent, so that a job run again after a stop part way does each thing once.
    */
   private async afterCommit(v: VersionRow, findings: Finding[]) {
     try {
@@ -1381,15 +1631,24 @@ export class Kolab {
    * that commits it, which stands even if the version was overtaken (`overtaken` says whether
    * it was); it returns whether the version now has the approvals it needs, and if not, nothing
    * commits and this returns 'waiting'.
+   *
+   * What the change still owes is written to the outbox in the same transaction (W1.8), for the
+   * caller to run at once with runClaimed, and for any process to run if this one stops first: a
+   * version that commits owes its cascade and its reviewers' layer leaks (after_commit); an approval of a version that was overtaken (`approvedBy`) owes its fold or its
+   * rejection as stale (settle_approval).
    */
   private commitStep(v: VersionRow, note: string | null, opts: {
     from?: 'drafted' | 'in_review'; record?: (tx: Q, signal: Signal, overtaken: boolean) => Promise<boolean>;
+    approvedBy?: string;
   } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | undefined> {
     const from = opts.from ?? 'drafted';
     return this.asSystem(async (tx, signal) => {
       const newer = await overtakenBy(tx, v);
       if (opts.record && !(await opts.record(tx, signal, !!newer))) return 'waiting' as const;
-      if (newer) return newer;
+      if (newer) {
+        if (opts.approvedBy) await this.enqueue(tx, 'settle_approval', v.id, { approvedBy: opts.approvedBy });
+        return newer;
+      }
       const refused = await this.authorRefusal(tx, signal, v);
       if (refused) return { refused };
       const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = $3 returning id`,
@@ -1399,6 +1658,7 @@ export class Kolab {
       // An override resolution records its ruling as it commits, before its cascade (W2.5, OVR9).
       const ruling = (await tx.query<{ resolves: Ruling | null }>(`select resolves from version where id = $1`, [v.id])).rows[0]?.resolves;
       if (ruling) await this.recordRuling(tx, signal, ruling);
+      await this.enqueue(tx, 'after_commit', v.id);
       return undefined;
     }, v.node_id);
   }
@@ -1461,10 +1721,15 @@ export class Kolab {
     const node = await this.node(v.node_id);
     for (const f of findings.filter((x) => x.kind === 'layer_leak')) {
       const element = f.elements[0] ?? null;
-      const markId = await this.mark({ version_id: v.id, element_id: element, triggered_by: v.id, reason: 'role_boundary', note: f.explanation });
+      // Raised once: a cascade run again after a stop (W1.8) finds it, wherever the mark has moved since.
+      const raised = await this.db.query(
+        `select 1 from invalidation where triggered_by = $1 and reason = 'role_boundary' and element_id is not distinct from $2 and note = $3`,
+        [v.id, element, f.explanation]);
+      if (raised.rows.length) continue;
+      const mark: MarkInput = { version_id: v.id, element_id: element, triggered_by: v.id, reason: 'role_boundary', note: f.explanation };
       const here = formatAddress({ node: node.name, version: v.seq, element: element ?? undefined });
       if (node.layer === 'functional') {
-        await this.ask(v.id, element, markId,
+        await this.markAndAsk(mark,
           `The review gate thinks ${here} specifies implementation, not behavior: ${f.explanation} Rewrite it as behavior, or answer to keep it as is.`);
         continue;
       }
@@ -1474,8 +1739,9 @@ export class Kolab {
           where e.source_version_id = $1 and e.source_element_id is not distinct from $2 and t.layer = 'functional'
           order by e.id limit 1`, [v.id, element])).rows[0];
       const spec = link ? formatAddress({ kolab: link.tkolab, node: link.tnode, version: link.tseq, element: link.target_element_id ?? undefined }, { from: node.kolab_id }) : 'the spec';
-      await this.ask(link?.target_version_id ?? v.id, link?.target_element_id ?? element, markId,
-        `The review gate thinks binding ${here} changes behavior beyond ${spec}: ${f.explanation} If this behavior is intended, amend the spec and answer; if not, answer "no" and the binding must change.`);
+      await this.markAndAsk(mark,
+        `The review gate thinks binding ${here} changes behavior beyond ${spec}: ${f.explanation} If this behavior is intended, amend the spec and answer; if not, answer "no" and the binding must change.`,
+        { version_id: link?.target_version_id ?? v.id, element_id: link?.target_element_id ?? element });
     }
   }
 
@@ -1627,7 +1893,6 @@ export class Kolab {
     await this.supersedePrevious(v);
     await this.markStaleOverrides(v);
     await this.clearAddressed(v);
-    const direct: string[] = [];
 
     // 1. Direct: every live edge pinned to an older version of this node.
     const inbound = await this.db.query<EdgeRow>(
@@ -1638,10 +1903,7 @@ export class Kolab {
           and ${LIVE('s')}
           and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`,
       [v.node_id, v.id]);
-    for (const e of inbound.rows) {
-      const markId = await this.checkEdge(e, v.id);
-      if (markId) direct.push(markId);
-    }
+    for (const e of inbound.rows) await this.checkEdge(e, v.id);
 
     // 2. Catch-up: if this version was drafted while its upstream moved on, its
     //    outbound edges may be pinned to targets that are no longer current.
@@ -1654,12 +1916,10 @@ export class Kolab {
       [v.id]);
     for (const e of outbound.rows) {
       if (e.latest === e.target_version_id) continue;
-      const markId = await this.checkEdge(e, e.latest);
-      if (markId) direct.push(markId);
+      await this.checkEdge(e, e.latest);
     }
 
-    // 3. Transitive marks, one walk per direct mark, deduplicated across walks.
-    for (const markId of direct) await this.propagate(markId);
+    // 3. Transitive marks: each direct mark's walk ran in the transaction that raised it.
 
     // 4. Children (variants) of an older version of this node rebase onto it.
     const children = await this.db.query<VersionRow>(
@@ -1705,18 +1965,25 @@ export class Kolab {
     }
   }
 
-  /** Re-resolve an edge against a newer target version: re-pin if unchanged, else mark. */
-  private async checkEdge(e: EdgeRow, against: string): Promise<string | null> {
+  /**
+   * Re-resolve an edge against a newer target version: re-pin if unchanged, else mark. A mark and
+   * its transitive marks (propagateIn) are raised in one transaction, so a cascade run again after
+   * a stop finds the edge marked and its walk done, or neither (W1.8).
+   */
+  private async checkEdge(e: EdgeRow, against: string): Promise<void> {
     const r = await this.resolveIn(against, e.target_element_id, e.target_selector);
     if (r.status === 'ok' && r.fingerprint === e.target_fingerprint) {
       // Content-identical: a cheap pointer bump, not a regeneration.
       await this.asSystem((tx) => tx.query(`update edge set target_version_id = $2 where id = $1`, [e.id, against]));
-      return null;
+      return;
     }
     const reason = r.status === 'orphan' ? 'orphaned' : r.status === 'fuzzy' ? 'fuzzy_reanchor' : 'changed';
-    return this.mark({
-      version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id,
-      triggered_by: against, reason,
+    await this.asSystem(async (tx, signal) => {
+      const m = {
+        version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: against, reason,
+      };
+      const id = await this.markIn(tx, signal, m);
+      await this.propagateIn(tx, signal, { id, ...m });
     });
   }
 
@@ -1734,13 +2001,12 @@ export class Kolab {
    * the edge's address resolves to it again, so its dependent gets an upstream_dirty mark too.
    * (Edge lookups by target version have no index of their own yet; see W2.5's follow-up.)
    */
-  private async propagate(markId: string) {
-    const m = await this.markRow(markId);
-    const changed = m.edge_id
-      ? (await this.db.query<{ target_element_id: string | null }>(
-          `select target_element_id from edge where id = $1`, [m.edge_id])).rows[0]?.target_element_id ?? null
-      : null;
-    const r = await this.db.query<{ version_id: string; element_id: string | null }>(
+  private async propagateIn(tx: Q, signal: Signal,
+    m: { id: string; version_id: string; element_id: string | null; edge_id: string; triggered_by: string }) {
+    const markId = m.id;
+    const changed = (await tx.query<{ target_element_id: string | null }>(
+      `select target_element_id from edge where id = $1`, [m.edge_id])).rows[0]?.target_element_id ?? null;
+    const r = await tx.query<{ version_id: string; element_id: string | null }>(
       `with recursive walk(version_id, element_id) as (
          select $1::text, $2::text
          union
@@ -1758,14 +2024,13 @@ export class Kolab {
         where not (version_id = $1 and element_id is not distinct from $2)`,
       [m.version_id, m.element_id, m.triggered_by, changed]);
     for (const row of r.rows) {
-      const existing = await this.db.query<{ id: string }>(
+      const existing = await tx.query<{ id: string }>(
         `select id from invalidation where version_id = $1 and element_id is not distinct from $2
             and triggered_by = $3 and reason = 'upstream_dirty' and state = 'open'`,
         [row.version_id, row.element_id, m.triggered_by]);
       const target = existing.rows[0]?.id
-        ?? await this.mark({ ...row, triggered_by: m.triggered_by, reason: 'upstream_dirty' });
-      await this.asSystem((tx) => tx.query(
-        `insert into invalidation_cause(mark_id, cause_id) values ($1, $2) on conflict do nothing`, [target, markId]));
+        ?? await this.markIn(tx, signal, { ...row, triggered_by: m.triggered_by, reason: 'upstream_dirty' });
+      await tx.query(`insert into invalidation_cause(mark_id, cause_id) values ($1, $2) on conflict do nothing`, [target, markId]);
     }
   }
 
@@ -1804,8 +2069,7 @@ export class Kolab {
         where v.node_id = $1 and i.reason = 'rebase_failed' and i.state = 'open'
         order by t.seq desc, i.created_at desc, i.id desc limit 1`, [nodeId])).rows[0];
     if (!open) {
-      const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent, reason: 'rebase_failed' });
-      await this.ask(live, null, markId, question);
+      await this.markAndAsk({ version_id: live, element_id: null, triggered_by: newParent, reason: 'rebase_failed' }, question);
       return;
     }
     await this.asSystem(async (tx, signal) => {
@@ -1980,10 +2244,9 @@ export class Kolab {
         }
         continue;
       }
-      const markId = await this.mark({
+      await this.markAndAsk({
         version_id: v.id, element_id: d.element_id, delta_id: d.id, triggered_by: v.parent_version_id!, reason,
-      });
-      await this.ask(v.id, d.element_id, markId, question);
+      }, question);
     }
   }
 
@@ -2007,15 +2270,20 @@ export class Kolab {
     });
 
     const id = ulid();
-    await this.asAgent(sessionId, async (tx) => writeVersion(tx, {
-      id, node_id: v.node_id, seq: await nextSeq(tx, v.node_id), parent_version_id: v.parent_version_id,
-      base_version_id: v.id, layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
-    }, materialize(parentEls, next), next), v.node_id);
     const ruling: Ruling = {
       markId, actor: s.actor_id, resolution, amendedText: amendedText ?? null,
       triple: pe ? [d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!)] : undefined,
     };
-    await this.asSystem((tx) => tx.query(`update version set resolves = $2 where id = $1`, [id, JSON.stringify(ruling)]));
+    // The version and the ruling waiting on it are written together (W1.8): the agent writes the
+    // version, then Kolab, as kj_system, the ruling, which no agent may write.
+    await this.asAgent(sessionId, async (tx) => {
+      await writeVersion(tx, {
+        id, node_id: v.node_id, seq: await nextSeq(tx, v.node_id), parent_version_id: v.parent_version_id,
+        base_version_id: v.id, layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
+      }, materialize(parentEls, next), next);
+      await tx.exec('set local role none; set local role kj_system');
+      await tx.query(`update version set resolves = $2 where id = $1`, [id, JSON.stringify(ruling)]);
+    }, v.node_id);
 
     // The resolution is itself a new version: it must clear the gate, and its review if it has
     // reviewers, before the mark closes, the query is answered, or precedent is set. The ruling waits
@@ -2149,32 +2417,41 @@ export class Kolab {
     }
     const v = await this.version(q.version_id);
     const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
-    // The owner's queue shrinks and the asker's answers grow, in the transaction that answers.
-    await this.inTransaction(async (tx, signal) => {
-      await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1`, [queryId, answer, s.actor_id]);
+    // Everything an answer causes happens in the transaction that answers, so nothing of it waits
+    // in memory (W1.8): the owner's queue shrinks, the asker's answers grow, a boundary question's
+    // mark is settled with it, and the element that asked is marked.
+    await this.asSystem(async (tx, signal) => {
+      const r = await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1 and state = 'open' returning id`,
+        [queryId, answer, s.actor_id]);
+      if (!r.rows.length) throw new GateError(`query ${queryId} is already answered`);
       await signal({ inbox: 'layer', layer: v.layer });
       if (q.raised_by) await signal({ inbox: 'actor', actor: q.raised_by });
+      // A boundary question is settled by the layer that owns the answer; its mark goes with it.
+      const open = mark && (await tx.query(`select 1 from invalidation where id = $1 and state = 'open'`, [mark.id])).rows.length;
+      if (open) await this.closeMarkIn(tx, signal, mark.id, `answered by ${s.actor_id}: ${answer}`);
+      if (q.kind === 'question' && q.from_version_id) await this.markAsker(tx, signal, q, v, answer);
     });
-    // A boundary question is settled by the layer that owns the answer; its mark goes with it.
-    if (mark && mark.state === 'open') await this.closeMark(mark.id, `answered by ${s.actor_id}: ${answer}`);
-    if (q.kind === 'question' && q.from_version_id) await this.markAsker(q, v, answer);
   }
 
   /**
    * The element that asked now has its answer: mark it on its node's live
    * version (the draft it was asked from may have committed, or been
    * superseded since). If the element is gone, the asker still sees the
-   * answer through list_queries mine=true.
+   * answer through list_queries mine=true. In the answer's transaction.
    */
-  private async markAsker(q: { element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
+  private async markAsker(tx: Q, signal: Signal,
+    q: { element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
     asked: VersionRow, answer: string) {
-    const fromNode = (await this.version(q.from_version_id!)).node_id;
-    const live = await this.latestCommitted(fromNode) ?? await this.version(q.from_version_id!);
-    if (q.from_element_id && !(await this.elements(live.id)).some((e) => e.element_id === q.from_element_id)) return;
-    const on = formatAddress({ node: await this.nameOf(asked.node_id), element: q.element_id ?? undefined });
-    await this.mark({
-      version_id: live.id, element_id: q.from_element_id, reason: 'query_answered',
-      triggered_by: (await this.latestCommitted(asked.node_id))?.id ?? asked.id,
+    const latest = async (node: string) => (await tx.query<{ id: string }>(
+      `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [node])).rows[0]?.id;
+    const fromNode = (await tx.query<{ node_id: string }>(`select node_id from version where id = $1`, [q.from_version_id])).rows[0].node_id;
+    const live = await latest(fromNode) ?? q.from_version_id!;
+    if (q.from_element_id && !(await tx.query(`select 1 from element where version_id = $1 and element_id = $2`, [live, q.from_element_id])).rows.length) return;
+    const askedName = (await tx.query<{ name: string }>(`select name from node where id = $1`, [asked.node_id])).rows[0].name;
+    const on = formatAddress({ node: askedName, element: q.element_id ?? undefined });
+    await this.markIn(tx, signal, {
+      version_id: live, element_id: q.from_element_id, reason: 'query_answered',
+      triggered_by: await latest(asked.node_id) ?? asked.id,
       note: `${on}: you asked "${q.question}"; answered: "${answer}"`,
     });
   }
@@ -2399,27 +2676,30 @@ export class Kolab {
     return r.rows[0];
   }
 
-  private async mark(m: {
-    version_id: string; element_id: string | null; triggered_by: string; reason: string;
-    edge_id?: string; delta_id?: string; note?: string;
-  }): Promise<string> {
+  /** Raises a mark, in `tx`, and signals its layer. */
+  private async markIn(tx: Q, signal: Signal, m: MarkInput): Promise<string> {
     const id = ulid();
-    await this.asSystem(async (tx, signal) => {
-      await tx.query(
-        `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note)
-         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]);
-      await this.signalLayerOf(tx, signal, m.version_id);
-    });
+    await tx.query(
+      `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]);
+    await this.signalLayerOf(tx, signal, m.version_id);
     return id;
   }
 
-  private async ask(versionId: string, elementId: string | null, markId: string, question: string) {
-    await this.asSystem(async (tx, signal) => {
+  /**
+   * Raises a mark and the question it asks, in one transaction, so a cascade run again after a
+   * stop never finds the mark without its question (W1.8). The question goes to `ask`'s version
+   * and element: by default the mark's own.
+   */
+  private async markAndAsk(m: MarkInput, question: string, ask: { version_id: string; element_id: string | null } = m): Promise<string> {
+    return this.asSystem(async (tx, signal) => {
+      const markId = await this.markIn(tx, signal, m);
       await tx.query(
         `insert into query(id, version_id, element_id, invalidation_id, question) values ($1,$2,$3,$4,$5)`,
-        [ulid(), versionId, elementId, markId, question]);
-      await this.signalLayerOf(tx, signal, versionId);
+        [ulid(), ask.version_id, ask.element_id, markId, question]);
+      await this.signalLayerOf(tx, signal, ask.version_id);
+      return markId;
     });
   }
 
@@ -2675,6 +2955,12 @@ export interface NodeRow { id: string; name: string; kind: Kind; layer: Layer; t
  * anything a session asked for.
  */
 export type Where = { session: string } | { system: string };
+
+/** A mark to raise. */
+interface MarkInput {
+  version_id: string; element_id: string | null; triggered_by: string; reason: string;
+  edge_id?: string; delta_id?: string; note?: string;
+}
 
 /** An open session: its actor, role and kolab, and the actor's access there now. */
 interface Session {
