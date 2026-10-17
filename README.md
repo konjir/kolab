@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 192 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 194 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
