@@ -14,6 +14,33 @@ const RUN_NAME = /^kj_test_([0-9a-z]{7})[0-9a-f]{4}_[0-9a-f]{12}$/;
 const DAY = 24 * 60 * 60;
 
 export default async function globalTeardown() {
+  try {
+    await dropDatabases();
+  } finally {
+    // Stopped even if a drop failed, so a failed teardown never leaves the container running.
+    await globalThis.__konjirPostgres?.stop();
+  }
+}
+
+/**
+ * Drops one database, forcing its connections closed. Now and then the force is refused with
+ * "permission denied to terminate process": a backend the non-superuser test login may not
+ * terminate is on the database for a moment, most likely an autovacuum worker on one that a test
+ * churned through. It passes, so the drop is retried for up to five seconds before it gives up.
+ */
+async function drop(client, name) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await client.query(`drop database if exists "${name}" with (force)`);
+      return;
+    } catch (e) {
+      if (attempt >= 10 || !/permission denied to terminate process/.test(String(e))) throw e;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+}
+
+async function dropDatabases() {
   const url = process.env.KONJIR_TEST_DATABASE_URL;
   const run = process.env.KONJIR_TEST_RUN;
   if (url && run) {
@@ -29,11 +56,10 @@ export default async function globalTeardown() {
         return !!m && now - parseInt(m[1], 36) > DAY;
       };
       for (const { datname } of rows) {
-        if (ours(datname) || stale(datname)) await client.query(`drop database if exists "${datname}" with (force)`);
+        if (ours(datname) || stale(datname)) await drop(client, datname);
       }
     } finally {
       await client.end();
     }
   }
-  await globalThis.__konjirPostgres?.stop();
 }
