@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 211 unit, scenario, property, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 215 unit, scenario, property, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -337,12 +337,39 @@ Pointing at the changed requirement isn't enough. The edge must also say *which 
 
 A parent's commit rebases each variant's live version as it is when its turn comes, never the version it listed. A rebase that fails for the variant's own reasons (its review rejects it or can't run, or the reviewer throws) marks the variant `rebase_failed`, with a question, and the parent's commit carries on to the rest (D44), so an inbox tells a failed rebase from a rejected review. A variant holds at most one such mark: a later failure re-points it at the newer parent. The mark and its question settle once the variant's live version sits on the parent's latest version, whether through a rebase that passes or the variant's own commit with `parent` set to that version. Migration 0004 renames every `review_failed` mark of earlier releases to `rebase_failed`, since all of them came from failed rebases. On each variant it keeps open only the mark naming the newest parent, which is also the mark the engine re-points, and moves it to the live version. It settles the mark if the variant already sits on its parent's latest version, and asks the question where none was written. Any other failure, such as a lost connection, or a failure in the cascade of a version that did commit, stops the cascade: the caller gets a `CascadeError` saying which version committed and what didn't finish, never a success over variants left behind. What it hadn't reached catches up on the parent's or the variant's next commit. A draft left open across the upgrade to migration 0003 has no recorded base, so it is rejected as stale on review if its node has any committed version, and must be redrafted. `libs/engine/test/concurrency.test.ts` drives each race that `npm run rebase-storm -- --races` reproduces, on PGlite and Postgres.
 
-**Property tests check the cascade and rebases (W2.5).** `libs/engine/test/properties.test.ts` uses [fast-check](https://fast-check.dev) to generate a spec family (a parent with a nested element, a variant, a variant of that variant, a binding linked into all three, and a WBS linked into the binding) and a sequence of edits: parent commits that change, delete and restore elements, variant overrides, edits of marked binding and WBS elements, clears and override resolutions. After each step it compares Kolab with a reference model (`libs/engine/test/cascade-model.ts`): every element's text; every override's state, clean, retired, dirty or orphaned; exactly which marks are open, each on its node's live version, the same mark carried forward rather than raised again; one open question per dirty or orphaned override and no other; and every link either pinned to its target's live version with a matching fingerprint, or carrying an open mark. The seed is fixed, so CI runs the same 40 sequences every time, on PGlite and on Postgres, in under a minute on each (about 50 and 25 seconds on CI's runners). `KONJIR_PROPERTY_SEED` and `KONJIR_PROPERTY_RUNS` change the seed and the number of runs, to replay a failure or search harder. They found four bugs, now fixed, with a regression each in `libs/engine/test/property-regressions.test.ts`:
+**Property tests check the cascade and rebases (W2.5).** `libs/engine/test/properties.test.ts` uses [fast-check](https://fast-check.dev) to generate a spec family and a sequence of edits to it. The family has:
 
-- A mark didn't spread through a link that carried a mark of its own, since that link stays pinned to an older version. Clearing the link's mark then left its element clean while what it relied on was dirty. The walk now follows live links into any version of the node it reaches.
-- A dirty or orphaned override that came out clean on its own (its parent went back to the text it was written against, converged on it, or the variant overrode it again) cleared its mark but left the mark's question open, where nothing could answer it. The question now closes with the mark.
-- An override that went from orphaned to dirty, or back, kept the mark and question it was first raised with. Both are now reworded.
-- A resolution's precedent was recorded after its own cascade, so a variant of the resolved variant, rebased by that cascade with the same (base, parent, child) triple, was asked again. The precedent is now recorded before the review, and withdrawn if the resolution doesn't commit.
+- a parent with a nested element
+- a variant of it, and a variant of that variant, which itself depends on the binding
+- a binding linked into all three, including a cycle with the nested variant
+- a WBS linked into the binding, and a work package linked into the WBS
+
+The edits are parent commits that change, delete and restore elements, variant overrides, edits of marked elements, clears and override resolutions. The review gate rejects some of them.
+
+After each step the test compares Kolab with a reference model (`libs/engine/test/cascade-model.ts`), written from the spec rather than the engine. It checks:
+
+- every element's text
+- every override's state: clean, retired, dirty or orphaned
+- exactly which marks are open, each on its node's live version, and that a mark carried forward keeps its id rather than being raised again
+- one open question per dirty or orphaned override and no other, and a resolved question answered with the ruling by whoever made it
+- every link: either pinned to its target's live version with a matching fingerprint, or carrying an open mark
+
+The seed is fixed, so CI runs the same sequences every time: 25 on PGlite and 60 on Postgres, which runs them about twice as fast. Three environment variables change that: `KONJIR_PROPERTY_SEED` changes the seed and `KONJIR_PROPERTY_RUNS` the number of runs, to replay a failure or search harder; `KONJIR_PROPERTY_SHRINK=0` stops at the first failure instead of shrinking it.
+
+The model makes three readings of the spec on purpose:
+
+- **A link that already carries an open mark isn't re-checked by later commits.** CAS1's "each live link" is read as each link not already marked. Its owner settles the mark (LNK6), even if the target goes back to the pinned text, or is deleted after it changed.
+- **A link whose target is gone can't re-pin.** Revising its element doesn't settle the mark (CAS4 says "clears that mark and re-pins its link"), and clearing it is refused: the owner re-links instead.
+- **When two rulings share a (base, parent, child) triple, the first stands.**
+
+The tests found six bugs, now fixed, each with a regression in `libs/engine/test/property-regressions.test.ts`:
+
+- **A mark didn't spread through a link that carried a mark of its own.** Such a link stays pinned to an older version. Clearing the link's mark then left its element clean while what it relied on was dirty. The walk now follows live links into any version of the node it reaches. (A follow-up, once the migrations in flight have landed, adds an index on `edge(target_version_id)` for it.)
+- **A self-settled override left its question open.** When a dirty or orphaned override came out clean on its own (its parent went back to the text it was written against, converged on it, or the variant overrode it again), its mark cleared but its question stayed open, where nothing could answer it. Kolab now answers it as `kolab`.
+- **An override moving between orphaned and dirty kept its first wording.** It kept the mark and question it was first raised with. Both are now reworded.
+- **A resolution's precedent was recorded after its own cascade.** So a variant of the resolved variant, rebased by that cascade with the same (base, parent, child) triple, was asked again. The ruling is now recorded in the transaction that commits the resolution, before its cascade: the precedent, and the mark closed with its question answered by the ruling and its author. Nothing is visible while the resolution is in review, and of two resolutions of one mark only the one that commits records anything.
+- **A variant's commit settled marks on overrides it only carried forward.** It counted every element with a delta as revised. Only elements whose text or place in the tree changed from the node's previous version count now.
+- **Revising an element didn't settle its upstream_dirty marks**, though LNK6 and CAS4 say revising a marked element settles its mark. It now does, as a clear would.
 
 **Agents can use it unaided.** Two separate agents were given only a token and the `konjir` command, with no access to the source. The product agent wrote and committed a password-reset spec. The engineer agent bound it to a Node/Postgres/Redis stack and linked each of its 11 elements to the requirements it serves. It then found two real ambiguities (which sessions survive a reset, and whether earlier reset links die) and asked them instead of deciding. The product owner ruled, and the product agent answered and amended the spec. Exactly the three binding elements tied to the amended requirements went dirty. The engineer revised them and cleared all three marks.
 
