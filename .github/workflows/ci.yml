@@ -148,6 +148,8 @@ jobs:
       # No AWS credentials, and none needed: -backend=false skips the S3 state, init only downloads
       # the providers .terraform.lock.hcl pins (and fails if the lock file would change), and
       # validate checks the configuration without configuring a provider or reading a data source.
+      # The lock file carries each provider's checksums for linux_arm64 as well as darwin_arm64
+      # (terraform providers lock -platform=...), or validate here rejects the providers.
       - name: terraform init
         run: terraform init -backend=false -input=false -lockfile=readonly
 
