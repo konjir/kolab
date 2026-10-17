@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 215 unit, scenario, property, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 218 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -67,8 +67,8 @@ To change the schema:
 1. Add `libs/db/src/migrations/NNNN_what_it_does.sql`, numbered one past the last file. The name must be four digits, an underscore, then lowercase letters, digits and underscores. Any other `.sql` file in the folder stops Kolab loading, so a misnamed migration can't be skipped.
 2. Never edit a file that has shipped, not even a comment, and never edit `baseline.sql`. An edited file would never reach databases that already ran it, so Kolab refuses them instead. `libs/db/src/migrations/checksums.json` pins the sha256 of every `.sql` file in the folder. Kolab refuses to load if any file differs from its pin, has no pin, or is pinned but missing. The release zips the working tree, untracked files included, so this check is what keeps a draft migration from shipping. Add the new file's checksum there (`shasum -a 256 <file>`) when it's ready to ship, and never change an existing one.
 3. Write plain SQL that runs once. It doesn't need to be idempotent. Every file runs inside the runner's one transaction, so a file may not contain `begin`, `commit`, `rollback`, `end`, `abort`, `start transaction`, `savepoint`, `release` or `prepare transaction`. Kolab rejects such a file when it loads. The same words are fine inside comments, string literals (including `E'…'` strings), quoted identifiers, and dollar-quoted bodies: `do $$ … $$` blocks and `as $$ … $$` functions. Write a function's body dollar-quoted, not as a SQL-standard `begin atomic … end` body, whose `end` the check can't tell apart. Avoid statements that can't run in a transaction, such as `create index concurrently`. Statements that create roles must guard against another database on the same cluster creating them first, as `0001_schema.sql` does.
-4. **A new table** gets no rights by itself. The engine writes as `kj_agent` or `kj_system` through `set local role`, so grant each what it needs explicitly. If the table holds kolab data, enable row-level security and add policies like those in 0001. Grants on all tables are fine: Kolab revokes everything on `kj_migration` from `kj_agent`, `kj_system` and `public` after every migration.
-5. **Value lists.** `MARK_REASONS`, `QUERY_KINDS` and `ACTOR_KINDS` in `@konjir/types` are also written out in the database's `invalidation_reason_check`, `query_kind_check` and `actor_kind_check`. A change to any of them needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS and ACTOR_KINDS" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
+4. **A new table** gets no rights by itself. The engine writes as `kj_agent` or `kj_system` through `set local role`, so grant each what it needs explicitly. If the table holds kolab data, give it a `kolab_id` that references `kolab`, not null, set from its parent by the `kolab_of_parent` trigger (`kj_kolab_of_parent`, from 0006) or by Kolab, and enable row-level security with policies like 0006's: `kolab_read` for `kj_agent` (`kolab_id = kj_session_kolab()`), `system_all` for `kj_system`, and for anything an agent inserts, an `agent_layer` policy plus a restrictive `kolab_write`. Grants on all tables are fine: Kolab revokes everything on `kj_migration` from `kj_agent`, `kj_system` and `public` after every migration.
+5. **Value lists.** `MARK_REASONS`, `QUERY_KINDS`, `ACTOR_KINDS`, `ACCOUNT_KINDS`, `ORG_ROLES`, `ACCESS_LEVELS` and `VISIBILITIES` in `@konjir/types` are also written out in the database's `invalidation_reason_check`, `query_kind_check`, `actor_kind_check`, `account_kind_check`, `org_member_role_check`, `kolab_grant_level_check` and `kolab_base_permission_check` (both `ACCESS_LEVELS`), and `kolab_visibility_check`. A change to any of them needs a migration that drops the check and adds it again with the whole new list. The test "the database's value lists are @konjir/types' …" fails until there is one. Before removing a value, the migration must deal with the rows that use it.
 6. Run `npm test` and `npm run test:postgres`.
 
 The files ship as they are: the release runs `libs/db/src`, and `npm run build` copies them to `libs/db/dist/migrations`, so they are found from either.
@@ -79,19 +79,53 @@ The files ship as they are: the release runs `libs/db/src`, and `npm run build` 
 # 1. Start Kolab. It persists to ./.konjir and prints an admin token.
 bin/konjir serve --port 7420
 
-# 2. Register a person and the agents they own, and give each agent a session (one actor, one active role).
+# 2. Register a person, a kolab they own, and the agents they own, each granted access to it.
 export KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<admin token>
 bin/konjir admin_add_actor id=lee
+bin/konjir admin_add_kolab name=checkout owner=lee              # Lee owns it: Admin
 bin/konjir admin_add_actor id=lee-pm owner=lee
 bin/konjir admin_add_actor id=lee-eng owner=lee
-bin/konjir admin_open_session actor=lee-pm role=product        # prints the agent's token
-bin/konjir admin_open_session actor=lee-eng role=engineer
-bin/konjir admin_list_actors owner=lee                         # a person's agents
+bin/konjir admin_grant kolab=checkout to=lee-pm level=write layers='["functional"]'
+bin/konjir admin_grant kolab=checkout to=lee-eng level=write layers='["technical"]'
+
+# 3. Give each agent a session in the kolab (one actor, one kolab, one active role).
+bin/konjir admin_open_session actor=lee-pm role=product kolab=checkout   # prints the agent's token
+bin/konjir admin_open_session actor=lee-eng role=engineer                # kolab defaults to the one it can reach
+bin/konjir admin_list_actors owner=lee                                   # an account's agents
 ```
 
-Then point each harness at Kolab with its own token. The token decides who the agent is and which layer it may write. Tool arguments never carry identity.
+Then point each harness at Kolab with its own token. The token decides who the agent is, which kolab it works in and which layer it may write. Tool arguments never carry identity.
 
-An actor is a person, or an agent owned by a person. Each agent is an actor of its own: it holds its own session, so one person's agents can each hold one at the same time, and it is the author of what it writes. `whoami` names the agent and its `owner`, and `read_node` gives each version's `author`, with the agent, its owner and its role. An actor's kind and owner never change once it's added, so past authorship stays as it was written. An id is letters, digits, `.`, `_`, `-` and `@`, and `kolab` is reserved for Kolab's own work. An agent's owner must be a person; agents owned by an organization, and the grants an agent may not exceed, come with accounts and grants (W1.3). Until then any actor may activate either role.
+An actor is a person, or an agent owned by an account: a person or an organization. Each agent is an actor of its own: it holds its own session, so one person's agents can each hold one at the same time, and it is the author of what it writes. `whoami` names the agent and its `owner`, its kolab and its access there, and `read_node` gives each version's `author`, with the agent, its owner and its role. An actor's kind and owner never change once it's added, so past authorship stays as it was written. An id is letters, digits, `.`, `_`, `-` and `@`, and `kolab` is reserved for Kolab's own work.
+
+### Accounts, kolabs and access
+
+Kolab follows GitHub's model (D3). An **account** is a user or an organization, in one namespace: each person is a user, by the same id. An organization has **members**, some of them **owners**, and **teams**, which can nest and hold no konstructs. A **kolab** belongs to one account. Its name is unique across the whole database (`kolab.id`, its primary key, lowercase letters, digits and `-`), so a name another account has taken is refused (D7, D12). It is `private` by default, or `public` (anyone may read it) or `internal` (the owning organization's members may), and an organization's kolab may have a **base permission** that every member holds.
+
+Access to a kolab is one of five levels, `read`, `triage`, `write`, `maintain` and `admin`. A `write` grant names the layers it covers, `functional`, `technical` or both; `maintain` and `admin` cover both, and `read` and `triage` write neither. A person's access is the most that any of these gives them: owning the kolab or being an owner of the organization that owns it (Admin), the base permission, a grant to them (a member or an outside collaborator), or a grant to a team they are in or to a parent of one. Teams are granted access only to their own organization's kolabs. A session may write its role's layer only while its access covers that layer; with less, it can still read and ask.
+
+**An agent never holds more access than its owner (TEN11, D30).** Its access is its own grant on the kolab, cut down to what its owner holds there: the lower level, and only the layers both may write. An organization holds all of its own kolabs and nothing in anyone else's, so its agents work only in its kolabs. Kolab enforces this three ways:
+
+- `admin_grant` refuses an agent a grant its owner lacks: a higher level, or a layer its owner can't write.
+- A session's access is computed when it opens and on every use, from the grants as they stand. So an agent's session opens with no more than its owner holds, and it narrows the moment its owner's access does. An agent whose owner holds nothing in the kolab can't open a session there at all.
+- Every change to grants, memberships or teams ends, in the same transaction, each open session that can no longer reach its kolab, and tells its listen streams so they close (D41). A narrowed session stays open.
+
+Every row of Konjir data carries its kolab: nodes, sessions, versions, elements, deltas, edges, marks and their causes, questions, case files, positions, rulings and precedent. A child row takes its parent's kolab when it is inserted, whatever its writer gave. A session works in one kolab, and everything an agent names (a node, an address, a mark, a question, a link's target, a variant's parent) must be in it: anything in another kolab is refused as if it didn't exist. Row-level security repeats this in the database. As `kj_agent`, a session reads only the rows of its own kolab, and only while its actor can still reach it (`kj_session_kolab()`), and writes its layer only while its access covers it (`kj_session_layer()`). How access is computed lives in one place, the database's `kj_access(actor, kolab)`, which the engine calls too.
+
+| Verb | Does |
+| --- | --- |
+| `admin_add_organization id=<org>` | An organization account |
+| `admin_add_member org=<org> user=<person> [role=owner]` | Adds a person to an organization, or changes their role |
+| `admin_add_team org=<org> name=<team> [parent=<team>]` | A team, `<org>/<team>`, nested under a parent if given |
+| `admin_add_team_member team=<org>/<team> user=<person>` | Adds a member of the organization to the team |
+| `admin_remove_member org=<org> user=<person>`, `admin_remove_team_member team=<org>/<team> user=<person>` | Removes a membership (leaving an organization leaves its teams too). Says how many sessions it ended |
+| `admin_add_kolab name=<name> owner=<account> [visibility=…] [base=<level>]` | A kolab. Refused if the name is taken |
+| `admin_list_kolabs [owner=<account>]` | Kolabs, with their owner, visibility and base permission |
+| `admin_grant kolab=<name> to=<person, agent or org/team> level=<level> [layers=[…]]` | Replaces the grantee's grant. Says how many sessions it ended |
+| `admin_revoke kolab=<name> to=<grantee>` | Removes a grant. Says how many sessions it ended |
+| `admin_access actor=<actor> kolab=<name>` | An actor's level and writable layers there, as Kolab computes them |
+
+Migration 0006 keeps what the database holds. If it has any actor or node, its data becomes the kolab `kolab`, owned by the organization `konjir`; each person becomes a user and a member of `konjir`, and each person and agent gets Write on both layers of `kolab`, which is what any actor could do before. Open sessions work in `kolab`. A fresh database gets none of this.
 
 - **Claude Code:** `claude mcp add --transport http konjir http://127.0.0.1:7420/mcp --header "Authorization: Bearer <token>"`
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
@@ -159,6 +193,8 @@ deploy/konjir-ops.sh connect lee product     # prints Lee's token and the Claude
 deploy/konjir-ops.sh connect eng-1 engineer
 deploy/konjir-ops.sh connect lee-pm product lee   # an agent of Lee's, with its own token
 ```
+
+`connect` works in the kolab `kolab` unless `KONJIR_KOLAB` names another. An actor it adds is granted Write on both layers there; one that exists keeps the access it has. An agent's grant is refused if its owner holds less.
 
 The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terraform/konjir/test/terraform.tfstate` in `us-east-1`, using the `icedlee337` profile. It locks with S3's native lock file, so no DynamoDB table is needed.
 
@@ -263,8 +299,8 @@ The semantic reviewer is tested against a scripted model and stubbed Bedrock cli
 
 | Verb | Does |
 | --- | --- |
-| `whoami` | Your actor, its kind (`person` or `agent`), the person who owns it, your role and layer |
-| `list_nodes`, `read_node`, `resolve` | Read current state; `resolve` takes any address. `read_node` says who wrote the version |
+| `whoami` | Your actor, its kind (`person` or `agent`), the account that owns it, your role and layer, your kolab and your access there |
+| `list_nodes`, `read_node`, `resolve` | Read current state in your kolab; `resolve` takes any address. `read_node` says who wrote the version |
 | `lineage` | What a node depends on (upstream) or what depends on it (downstream) |
 | `list_stale` | Open marks on your layer: what is dirty, why, and the next step |
 | `list_queries` | Questions and notes your layer owns; `mine=true` for the ones you raised, with answers |
@@ -272,7 +308,8 @@ The semantic reviewer is tested against a scripted model and stubbed Bedrock cli
 | `link` | Declare that one of your elements relies on an address |
 | `clear_mark`, `resolve_override` | Settle a mark |
 | `ask`, `annotate`, `answer_query` | The question tier. Questions and notes route to the layer that owns the answer; see below |
-| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session` | Admin token only. `admin_add_actor owner=<person>` adds an agent of that person |
+| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session` | Admin token only. `admin_add_actor owner=<account>` adds an agent of that person or organization; `admin_open_session kolab=<name>` opens the session in that kolab |
+| `admin_add_organization`, `admin_add_member`, `admin_remove_member`, `admin_add_team`, `admin_add_team_member`, `admin_remove_team_member`, `admin_add_kolab`, `admin_list_kolabs`, `admin_grant`, `admin_revoke`, `admin_access` | Admin token only: accounts, kolabs, teams and grants (see *Accounts, kolabs and access*) |
 
 In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it. `konjir watch` streams your inbox (see below).
 
@@ -313,7 +350,7 @@ A span's context is its prefix and suffix. It agrees when more than half of the 
 
 The rebased child must pass the review gate. Resolving a dirty override records precedent, and the same `(base, parent, child)` triple then resolves itself on the next rebase.
 
-**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Each agent is an actor of its own, so the rule holds per agent, and one person's agents can each hold a session at once. Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer. They write only as their session's own actor and role: a version, element, delta or question can't be authored as anyone else, an agent's owner included.
+**3. Roles.** A session activates exactly one role, and an actor has at most one open session (NIST dynamic separation of duty). Each agent is an actor of its own, so the rule holds per agent, and one person's agents can each hold a session at once. Kolab rejects writes outside the session's layer. Row-level security repeats the check in the database: agents may only *draft* (never commit), only in their session's layer, and only on a node of that layer, and they may only declare edges from their own layer. They write only as their session's own actor and role: a version, element, delta or question can't be authored as anyone else, an agent's owner included. And they read and write only in their session's kolab, and write only the layers their access covers (see *Accounts, kolabs and access*).
 
 ## What the prototype found
 
@@ -391,5 +428,6 @@ Their feedback drove these changes:
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **The cascade isn't durable.** A commit's cascade runs after it commits, in the calling process. If that process stops part way, or the cascade stops on a `CascadeError`, variants it hadn't reached stay on the old parent, with no mark, until the parent or the variant commits again.
-- **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case. A ruling's case file is optional (migration 0005, DAT9). A ruling given directly, as the Decisions Log's are (D16), names the version it rules on, and optionally an element in it, instead of a case file; it has exactly one of the two. Its body is `text`, which is what the Decisions Log calls an entry's verdict, and `replaces` says in words what it overrules. The `verdict` column is the sustained or overruled outcome on a case file. CASE2 gives that outcome to each position, so `position.verdict` holds it; `ruling.verdict` is optional, null on a direct ruling, and kept only for the rulings already stored. Rulings don't record their date yet (CASE4). They have no kolab of their own yet: W1.3 must add `ruling.kolab_id` directly, because a direct ruling has no case file to derive it from.
+- **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case. A ruling's case file is optional (migration 0005, DAT9). A ruling given directly, as the Decisions Log's are (D16), names the version it rules on, and optionally an element in it, instead of a case file; it has exactly one of the two. Its body is `text`, which is what the Decisions Log calls an entry's verdict, and `replaces` says in words what it overrules. The `verdict` column is the sustained or overruled outcome on a case file. CASE2 gives that outcome to each position, so `position.verdict` holds it; `ruling.verdict` is optional, null on a direct ruling, and kept only for the rulings already stored. Rulings don't record their date yet (CASE4). A ruling's kolab is its case file's or, given directly, its version's (0006).
+- **Tenancy is partial (W1.3).** Addresses have no kolab segment yet (W1.4), so node names are still unique across the whole database rather than within a kolab, a session can't link to or fork from another kolab, and an `access_lost` mark doesn't exist. The served instructions, `konjir_operating_instructions`, still include answered questions and precedent from every kolab, and precedent is matched across kolabs (W1.5). Push signals name a layer or an actor, not a kolab, so a change in one kolab signals every subscriber to that layer's inbox, each of whom re-reads only its own kolab's. Node and mark ids are global, so creating a node whose name another kolab uses is refused. A session works in exactly one kolab, and an actor still holds at most one open session, so an agent works in one kolab at a time; its token is its session, scoped to that kolab and its role, and its level comes from its grant. Kolabs can't yet be transferred (TEN5), visibility and base permission are set only when a kolab is made, and accounts, teams and kolabs can't be removed or renamed. Only the admin token manages tenancy: a kolab's own Admins can't yet grant access through Kolab.
 - **Push is a signal, not a message.** Kolab signals an inbox over `subscriptions/listen`, and the agent reads what changed. Under the 2025 protocol, which has no listen stream, agents still poll `list_stale` and `list_queries`. Claude Code needs `konjir watch --once` (see *Questions, notes and push*). A Claude Code channel would need a local stdio bridge, because channels don't work over HTTP.
