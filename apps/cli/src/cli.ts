@@ -127,6 +127,23 @@ function flag(argv: string[], name: string): string | undefined {
   return v;
 }
 
+/**
+ * The review settings W1.7 retired (REV5). Kolab has no model reviewer, so a setting that asks for
+ * one is refused, rather than leave the operator believing a gate runs that doesn't. The test
+ * server's boot script still writes KONJIR_REVIEW=structural with KONJIR_REVIEW_MODEL beside it,
+ * which asks for nothing and passes silently; a model named on its own is ignored, and said so.
+ */
+export function retiredReviewSettings(env: Record<string, string | undefined>, reviewFlag?: string): { refuse?: string; warn?: string } {
+  const mode = reviewFlag ?? env.KONJIR_REVIEW;
+  if (mode !== undefined && mode !== 'structural') {
+    return { refuse: `review mode "${mode}" (${reviewFlag !== undefined ? '--review' : 'KONJIR_REVIEW'}) is no longer supported (W1.7): Kolab has no model reviewer. Its checks are structural, and agents review through konjir_review. Unset it, or set it to structural.` };
+  }
+  if (env.KONJIR_REVIEW_MODEL !== undefined && mode === undefined) {
+    return { warn: `ignoring KONJIR_REVIEW_MODEL=${env.KONJIR_REVIEW_MODEL}: Kolab has no model reviewer any more (W1.7), so it calls no model. Unset it.` };
+  }
+  return {};
+}
+
 export async function main(argv: string[]) {
   const url = flag(argv, 'url') ?? process.env.KONJIR_URL ?? 'http://127.0.0.1:7420/mcp';
   const token = flag(argv, 'token') ?? process.env.KONJIR_TOKEN;
@@ -148,12 +165,9 @@ export async function main(argv: string[]) {
     const dataDir = flag(rest, 'data') ?? '.konjir';
     const adminToken = flag(rest, 'admin-token') ?? process.env.KONJIR_ADMIN_TOKEN ?? randomBytes(18).toString('base64url');
     // Kolab makes no model calls (REV5): its checks are structural, and reviewing agents review.
-    // The test server's boot script still sets KONJIR_REVIEW=structural, which changes nothing. A
-    // setting that asks for a model reviewer is ignored too, but said so, rather than silently.
-    const retired = flag(rest, 'review') ?? process.env.KONJIR_REVIEW;
-    if (retired !== undefined && retired !== 'structural') {
-      console.error(`warning: ignoring review mode "${retired}" (KONJIR_REVIEW or --review): Kolab has no model reviewer any more (W1.7). Its checks are structural, and agents review through konjir_review.`);
-    }
+    const retired = retiredReviewSettings(process.env, flag(rest, 'review'));
+    if (retired.refuse) throw new Error(retired.refuse);
+    if (retired.warn) console.error(`warning: ${retired.warn}`);
     console.log('review: Kolab\'s structural checks, then reviewing agents (konjir_review); Kolab makes no model calls');
     const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
     const databaseUrl = flag(rest, 'database-url') ?? process.env.KONJIR_DATABASE_URL;
