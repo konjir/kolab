@@ -17,7 +17,7 @@ async function agentFor(url: string, admin: Awaited<ReturnType<typeof connect>>,
   await call(admin, 'admin_add_actor', { id: actor }).catch(() => undefined);
   await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
-  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });   // alone on its layer: no review (W1.6)
   const { token } = (await call(admin, 'admin_open_session', { actor, role })) as { token: string };
   const client = await connect(url, token);
   closeAtEnd(client);
@@ -31,7 +31,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
 
   expect(await call(eng.client, 'whoami')).toStrictEqual({
     session: eng.token, actor: 'eng-agent', kind: 'person', owner: null, role: 'engineer', layer: 'technical',
-    kolab: 'test', access: { level: 'write', layers: ['functional', 'technical'] },
+    kolab: 'test', access: { level: 'write', layers: ['technical'] },
     subscribe: ['konjir://inbox/technical', 'konjir://answers/eng-agent'],
   });
 

@@ -99,7 +99,8 @@ const usage = (defaultReviewModel: string | undefined) => `konjir — Kolab from
 
 Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir stale [all] · konjir queries [all]
 Push:      konjir watch prints your inbox, then a JSON line each time it changes (questions, notes,
-           answers, marks). konjir watch --once waits for the next change, prints it and exits.
+           answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
+           prints it and exits.
 Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
 Version:   konjir --version

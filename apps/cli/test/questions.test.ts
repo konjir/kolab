@@ -89,17 +89,23 @@ test('a database from the previous release is migrated on open', async () => {
   const store = await persistentStore();
   {
     let kolab = await Kolab.open(store);
-    await people(kolab, ['alice', 'bob']);
+    await people(kolab, 'alice', { layers: ['functional'] });
+    await people(kolab, 'bob', { layers: ['technical'] });
     const product = await kolab.openSession('alice', 'product');
     await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
-    // without case files (0005) and before accounts and kolabs (0006), newest first. The people
-    // and the spec stay.
+    // without case files (0005), before accounts and kolabs (0006) and before the review flow
+    // (0007), newest first. The people and the spec stay.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop table review_request;
+      drop function kj_review_request_kolab();
+      alter table version drop column resolves, drop column findings, drop column folded_from;
+      alter table version drop constraint version_state_check;
+      alter table version add constraint version_state_check check (state in ('drafted','committed','rejected'));
       ${['node', ...keyed].map((t) => `drop policy kolab_read on ${t};`).join('\n')}
       ${['version', 'element', 'delta', 'edge', 'query'].map((t) => `drop policy kolab_write on ${t}; create policy read_all on ${t} for select using (true);`).join('\n')}
       ${newlyRls.map((t) => `drop policy system_all on ${t}; alter table ${t} disable row level security;`).join('\n')}
@@ -169,6 +175,9 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.close();
 
     kolab = await Kolab.open(store);
+    // 0006 gave both of them Write on both layers of the kolab `kolab`; with alice back to the
+    // functional one, bob is alone on his and commits without review (W1.6).
+    await kolab.grant('kolab', 'alice', 'write', { layers: ['functional'] });
     const engineer = await kolab.openSession('bob', 'engineer');
     await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
     await kolab.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
@@ -192,7 +201,7 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
     await call(admin, 'admin_add_actor', { id: actor });
     await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
-  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });   // alone on its layer: no review (W1.6)
     const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
     const c = await connect(server.url, token);
     closeAtEnd(c);

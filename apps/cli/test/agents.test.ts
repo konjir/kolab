@@ -2,6 +2,7 @@
 // agents for one person, each holds its own session at the same time, and each version names its
 // agent. And accounts, kolabs and grants over the admin verbs (W1.3; TEN4, TEN11, TEN12).
 import { expect, test } from '@jest/globals';
+import type { Client } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
 import { closeAtEnd, rejection, testStore } from '@konjir/engine/testing';
@@ -76,14 +77,16 @@ test('over MCP, an agent whose draft another agent overtook is told it is stale,
   await call(one, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
   await call(one, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }] });
   await call(one, 'submit_for_review', { node: 'checkout', version: 1 });
+  await call(two, 'review', { node: 'checkout', version: 1, verdict: 'approve' });
   await call(one, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 20 seconds.' }] });
   await call(two, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 10 seconds.' }] });
-  expect(await call(two, 'submit_for_review', { node: 'checkout', version: 3 })).toMatchObject({ ok: true, stale: false });
+  expect(await call(two, 'submit_for_review', { node: 'checkout', version: 3 })).toMatchObject({ ok: false, in_review: 'kj:checkout@3', reviewers: ['ann'] });
+  expect(await call(one, 'review', { node: 'checkout', version: 3, verdict: 'approve' })).toMatchObject({ ok: true, committed: 'kj:checkout@3', stale: false });
 
   expect(await call(one, 'submit_for_review', { node: 'checkout', version: 2 })).toMatchObject({
     ok: false, stale: true, committed: null,
     review: 'stale draft: the node committed a newer version; redraft against it',
-    next: expect.stringMatching(/^Stale: someone else committed to checkout after you drafted/),
+    next: expect.stringMatching(/^Stale: someone else committed to checkout after this was drafted/),
   });
 });
 
@@ -152,4 +155,86 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
     .toMatch(/AccessError: ann-pm may not write the functional layer of kolab orders: it holds Read/);
   expect(await call(admin, 'admin_revoke', { kolab: 'orders', to: 'ann-pm' })).toStrictEqual({ kolab: 'orders', revoked: 'ann-pm', ended_sessions: 1 });
   expect(await rejection(call(pm.c, 'whoami'))).toMatch(/token/i);
+});
+
+test('over MCP, a review request waits in the reviewer\'s inbox, konjir_review settles it, and the author\'s answers show the verdict', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
+  await call(admin, 'admin_add_actor', { id: 'lee' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: 'lee', level: 'write', layers: ['functional'] });
+  const session = async (actor: string) => {
+    await call(admin, 'admin_add_actor', { id: actor, owner: 'lee' });
+    await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: ['functional'] });
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  // Two agents of one person: Claude Code writes, Codex reviews (D25). Lee, with Write on the
+  // layer too, is a reviewer as well, though she has no session.
+  const claude = await session('lee-claude');
+  const codex = await session('lee-codex');
+  const read = async (client: Client, uri: string) => {
+    const [content] = (await client.readResource({ uri })).contents;
+    return JSON.parse('text' in content ? content.text : '');
+  };
+  await call(claude, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(claude, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds and emails a receipt.' }] });
+  expect(await call(claude, 'submit_for_review', { node: 'checkout', version: 1 })).toMatchObject({
+    ok: false, committed: null, in_review: 'kj:checkout@1', reviewers: ['lee', 'lee-codex'], next: expect.stringMatching(/^In review: lee, lee-codex each have a review request/),
+  });
+
+  const inbox = await read(codex, 'konjir://inbox/functional');
+  expect(inbox.reviews).toMatchObject([{ subject: 'kj:checkout@1', subject_kind: 'version', author: 'lee-claude', reviewer: 'lee-codex' }]);
+  expect((await read(claude, 'konjir://inbox/functional')).reviews).toStrictEqual([]);
+  expect(await call(codex, 'list_reviews', {})).toMatchObject({ for_you: [{ subject: 'kj:checkout@1' }], yours: [] });
+  expect(await rejection(call(claude, 'review', { node: 'checkout', version: 1, verdict: 'approve' }))).toMatch(/lee-claude wrote checkout@1/);
+  expect(await rejection(call(codex, 'review', { node: 'checkout', version: 1, verdict: 'request_changes' }))).toMatch(/request_changes needs a note/);
+
+  expect(await call(codex, 'review', {
+    node: 'checkout', version: 1, verdict: 'request_changes', note: 'R1 is compound: split it.',
+  })).toMatchObject({ verdict: 'request_changes', state: 'drafted' });
+  const answers = await read(claude, 'konjir://answers/lee-claude');
+  expect(answers.submissions).toMatchObject([{ subject: 'kj:checkout@1', state: 'drafted', verdicts: [{ reviewer: 'lee', state: 'withdrawn' }, { reviewer: 'lee-codex', state: 'changes_requested', note: 'R1 is compound: split it.' }] }]);
+
+  await call(claude, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }, { id: 'R2', text: 'Checkout emails a receipt.' }] });
+  await call(claude, 'abandon', { node: 'checkout', version: 1 });
+  await call(claude, 'submit_for_review', { node: 'checkout', version: 2 });
+  expect(await call(codex, 'review', { node: 'checkout', version: 2, verdict: 'approve', note: 'Each element is one testable intent.' })).toMatchObject({
+    verdict: 'approve', ok: true, committed: 'kj:checkout@2', unreviewed: false,
+  });
+  expect((await read(codex, 'konjir://inbox/functional')).reviews).toStrictEqual([]);
+  expect((await read(claude, 'konjir://answers/lee-claude')).submissions.map((s: { subject: string; state: string }) => [s.subject, s.state]))
+    .toStrictEqual([['kj:checkout@2', 'committed'], ['kj:checkout@1', 'rejected']]);
+});
+
+test('over MCP, only the admin token applies a ruling, which commits without review (D47); an agent session can\'t reach it', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
+  const session = async (actor: string) => {
+    await call(admin, 'admin_add_actor', { id: actor });
+    await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: ['functional'] });
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  const pm = await session('mirror-product');
+  const other = await session('pm-2');   // a reviewer: without D47, the version would wait for it
+  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Kolab', id: 'kolab' });
+  const ruling = { ruling: 'D46', actor: 'mirror-product', node: 'kolab', elements: [{ id: 'R1', text: 'Kolab adopts onivoro hooks.' }] };
+
+  expect((await pm.listTools()).tools.some((t) => t.name === 'konjir_admin_apply_ruling')).toBe(false);
+  expect(await rejection(call(pm, 'admin_apply_ruling', ruling))).toMatch(/admin|scope|not found|forbidden|unknown/i);
+  expect(await rejection(call(other, 'admin_apply_ruling', ruling))).toMatch(/admin|scope|not found|forbidden|unknown/i);
+
+  expect(await call(admin, 'admin_apply_ruling', ruling)).toMatchObject({ ok: true, ruling: 'D46', committed: 'kj:kolab@1', state: 'committed', review: expect.stringMatching(/^Applied as ruling D46 through the admin token/) });
+  expect(await call(other, 'list_reviews', {})).toMatchObject({ for_you: [] });
+  expect(await call(pm, 'read_node', { node: 'kolab' })).toMatchObject({ version: 1, state: 'committed', author: { actor: 'mirror-product', role: 'product' } });
 });

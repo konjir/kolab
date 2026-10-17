@@ -3,7 +3,7 @@ import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { GateError, Kolab } from '@konjir/engine';
 import { parseAddress } from '@konjir/address';
-import { DELTA_KINDS, EDGE_KINDS, KINDS, OVERRIDE_RESOLUTIONS, QUERY_KINDS, QUERY_STATES, type EdgeKind } from '@konjir/types';
+import { DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, QUERY_KINDS, QUERY_STATES, REVIEW_VERDICTS, type EdgeKind, type GateResult } from '@konjir/types';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
 import { answersUri, inboxUri } from './uris.js';
@@ -51,6 +51,19 @@ const draft = z.object({
   })).optional().describe('Links to declare from this draft\'s elements, in the same call: [{"source_element":"b1","target":"kj:spec#R1"}]. Links on earlier versions carry forward automatically.'),
 });
 const submit = z.object({ node: z.string(), version: z.number().int() });
+const review = z.object({
+  node: z.string(),
+  version: z.number().int(),
+  verdict: z.enum(REVIEW_VERDICTS).describe('approve commits the version (one approval is enough); request_changes returns it to its author as a draft'),
+  note: z.string().optional().describe('What you checked, or what must change. Required with request_changes.'),
+  findings: z.array(z.object({
+    kind: z.enum(FINDING_KINDS).describe('contradiction: two elements that cannot both hold, or an element that makes what it links to impossible (blocks the commit). layer_leak: implementation in a functional spec, or a binding that changes behavior (commits, and raises a question to the layer that owns the answer).'),
+    elements: z.array(z.string()).min(1).describe('The element IDs involved, from this version'),
+    explanation: z.string().describe('One or two sentences the author can act on'),
+  })).optional(),
+});
+const abandon = z.object({ node: z.string(), version: z.number().int() });
+const listReviews = z.object({});
 const link = z.object({
   kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
   source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
@@ -220,24 +233,75 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_submit_for_review',
-    description: 'Run the review gate on a draft. On pass it commits and the cascade runs; the result names the version that committed (a stale draft may be folded into a rebase).',
+    description: 'Submit a draft. Kolab runs its structural checks; if they fail, the draft stays drafted, with the reason. If they pass, the version goes into review, with a review request in the inbox of each other actor who holds Write on its layer, and commits once one approves (konjir_review). If no one else holds Write on the layer, the checks alone commit it, and it is recorded as unreviewed; a plan or work-package version always commits on the checks alone. The result names the version that committed or waits (a stale draft may be folded into a rebase). Resubmit a draft that came back with changes requested the same way; resubmitting a version still in review asks whoever can review it now, and commits it unreviewed if no one can.',
     schema: submit,
   })
   submitForReview({ node, version }: z.infer<typeof submit>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const kolab = this.kolab;
       const id = await versionIdOf(kolab, s, `kj:${node}@${version}`, true);
-      const r = await kolab.submit(s, id);
-      const v = await kolab.version(r.version);
-      return {
-        ok: r.ok, review: r.note ?? null, committed: r.ok ? `kj:${node}@${v.seq}` : null, stale: r.stale ?? false,
-        stale_after_commit: r.ok ? await kolab.describeMarks({ node, kolab: await kolab.sessionKolab(s) }) : [],
-        next: r.ok ? 'Committed. Others can now link to it; check konjir_list_stale.'
-          : r.retryable ? `Not reviewed yet; the draft is intact. Resubmit with konjir_submit_for_review node=${node} version=${version} shortly.`
-          : r.stale ? `Stale: someone else committed to ${node} after you drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
-          : 'Rejected. Fix what the review names and draft again.',
-      };
+      return this.outcome(s, node, await kolab.submit(s, id), version);
     });
+  }
+
+  @McpTool({
+    name: 'konjir_review',
+    description: 'Record your verdict on a version in review that you did not write, on your own layer: approve, or request_changes with a note and findings. Review requests for you are in your inbox (konjir_list_reviews). Read the version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or one that makes what it links to impossible) only with request_changes. A layer_leak (implementation in a spec, or a binding that changes behavior) can come with approve: the version commits and a question goes to the layer that owns the answer. Send compound requirements back to be split.',
+    schema: review,
+  })
+  review(a: z.infer<typeof review>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      if (a.verdict === 'request_changes' && !a.note?.trim()) throw new Error('say what must change: request_changes needs a note');
+      const id = await versionIdOf(this.kolab, s, `kj:${a.node}@${a.version}`, true);
+      const r = await this.kolab.recordReview(s, id, { verdict: a.verdict, note: a.note, findings: a.findings });
+      if (a.verdict === 'request_changes') {
+        return { verdict: a.verdict, state: 'drafted', review: r.note ?? null, next: 'Returned to its author as a draft; nothing more to do.' };
+      }
+      return { verdict: a.verdict, ...(await this.outcome(s, a.node, r)) };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_abandon',
+    description: 'Abandon a draft or a version in review that you wrote: it is rejected, and its review requests are withdrawn. Refused, saying why, if the version was already committed or rejected.',
+    schema: abandon,
+  })
+  abandon({ node, version }: z.infer<typeof abandon>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const state = await this.kolab.abandon(s, await versionIdOf(this.kolab, s, `kj:${node}@${version}`, true));
+      return { abandoned: `kj:${node}@${version}`, state };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_list_reviews',
+    description: 'Review requests waiting for you, each with its subject and how to review it; and your own submissions, with the verdicts they got.',
+    schema: listReviews,
+    annotations: { readOnlyHint: true },
+  })
+  listReviews(_: z.infer<typeof listReviews>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const me = await this.kolab.sessionInfo(s);
+      const kolab = await this.kolab.sessionKolab(s);
+      return { for_you: await this.kolab.reviewRequests({ reviewer: me.actor, kolab }), yours: await this.kolab.submissions(me.actor, { kolab }) };
+    });
+  }
+
+  /** What a submission or an approval came to, and what to do next. */
+  private async outcome(session: string, node: string, r: GateResult, submitted?: number) {
+    const kolab = this.kolab;
+    const v = await kolab.version(r.version);
+    const at = `kj:${node}@${v.seq}`;
+    return {
+      ok: r.ok, review: r.note ?? null, committed: r.ok ? at : null, stale: r.stale ?? false,
+      in_review: r.in_review ? at : null, ...(r.reviewers ? { reviewers: r.reviewers } : {}), unreviewed: r.unreviewed ?? false,
+      stale_after_commit: r.ok ? await kolab.describeMarks({ node, kolab: await kolab.sessionKolab(session) }) : [],
+      next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}. Others can now link to it; check konjir_list_stale.`
+        : r.in_review ? `In review: ${r.reviewers?.length ? `${r.reviewers.join(', ')} each have a review request in their inbox, and ` : ''}one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
+        : r.retryable ? `Not reviewed yet; the draft is intact. Resubmit with konjir_submit_for_review node=${node} version=${submitted ?? v.seq} shortly.`
+        : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
+        : `Not committed: the checks found what the review names. The draft stays yours, drafted: draft a new version that fixes it (and konjir_abandon node=${node} version=${submitted ?? v.seq}), or resubmit it if the finding was wrong.`,
+    };
   }
 
   @McpTool({
@@ -267,7 +331,10 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       if (resolution === 'amend' && !text) throw new Error('amend needs text');
       const r = await this.kolab.resolveOverride(s, mark, resolution, text);
-      return { ok: r.verdict.ok, note: r.verdict.note ?? null };
+      return {
+        ok: r.verdict.ok, note: r.verdict.note ?? null, in_review: r.verdict.in_review ?? false,
+        ...(r.verdict.in_review ? { next: 'The resolution waits in review; the mark settles, and precedent is set, when it commits.' } : {}),
+      };
     });
   }
 

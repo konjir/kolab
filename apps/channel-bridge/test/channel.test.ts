@@ -34,7 +34,7 @@ async function session(server: KonjirServer, actor: string, role: 'product' | 'e
   await call(admin, 'admin_add_actor', { id: actor }).catch(() => undefined);
   await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
-  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });   // alone on its layer: no review (W1.6)
   const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
   await admin.close();
   return { token, client: await kolabClient(server.url, token) };

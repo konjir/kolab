@@ -16,12 +16,19 @@ async function boot() {
   await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_grant', { kolab: 'test', to: 'lee', level: 'write' });
+  // Lee holds Write on the functional layer, so she is a reviewer of every spec here (W1.6).
+  const { token } = await call(admin, 'admin_open_session', { actor: 'lee', role: 'product' }) as { token: string };
+  lee = await connect(server.url, token);
+  closeAtEnd(lee);
   return { server, admin };
 }
 
+/** Lee's product session, which approves the specs the tests write. */
+let lee: Client | undefined;
+
 async function agent(server: KonjirServer, admin: Client, id: string, role: 'product' | 'engineer', owner?: string) {
   await call(admin, 'admin_add_actor', { id, ...(owner && { owner }) });
-  await call(admin, 'admin_grant', { kolab: 'test', to: id, level: 'write' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: id, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });
   const { token } = await call(admin, 'admin_open_session', { actor: id, role }) as { token: string };
   const client = await connect(server.url, token);
   closeAtEnd(client);
@@ -30,11 +37,16 @@ async function agent(server: KonjirServer, admin: Client, id: string, role: 'pro
   return { token, client, updates };
 }
 
-/** A spec the engineer can ask about, so each question changes the functional inbox. */
-async function spec(pm: Client) {
+/**
+ * A spec the engineer can ask about, so each question changes the functional inbox. It waits in
+ * review, and `reviewer`, or Lee, approves it (W1.6).
+ */
+async function spec(pm: Client, reviewer?: Client) {
   await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
+  const r = await call(reviewer ?? lee!, 'review', { node: 'orders', version: 1, verdict: 'approve' }) as { ok: boolean };
+  if (!r.ok) throw new Error('the spec did not commit');
 }
 
 async function until(what: string, check: () => boolean, ms = 5000) {
@@ -83,7 +95,7 @@ test('ending a session closes its listen streams promptly; other sessions, of th
   const ended = await agent(server, admin, 'lee-pm', 'product', 'lee');
   const sibling = await agent(server, admin, 'lee-pm-2', 'product', 'lee');
   const eng = await agent(server, admin, 'eng', 'engineer');
-  await spec(ended.client);
+  await spec(ended.client, sibling.client);
 
   // The session to be ended listens twice; its sibling, an agent of the same person, once.
   const first = await ended.client.listen({ resourceSubscriptions: [INBOX] });
@@ -141,7 +153,7 @@ test('a listen stream opened with a session that has ended is refused in-band, a
   const { server, admin } = await boot();
   const pm = await agent(server, admin, 'pm', 'product');
   const pm2 = await agent(server, admin, 'pm-2', 'product');
-  await spec(pm.client);
+  await spec(pm.client, pm2.client);
 
   endAfterAuth(server);
   const res = await fetch(server.url, {
@@ -207,7 +219,7 @@ test('a session ended without an event hears nothing more: the next update close
   const pm = await agent(server, admin, 'pm', 'product');
   const other = await agent(server, admin, 'pm-2', 'product', 'lee');
   const eng = await agent(server, admin, 'eng', 'engineer');
-  await spec(pm.client);
+  await spec(pm.client, other.client);
   const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });
   const kept = await other.client.listen({ resourceSubscriptions: [INBOX] });
 
@@ -273,7 +285,7 @@ test('each change checks every listening session in one query, however many stre
   const eng = await agent(server, admin, 'eng', 'engineer');
   const listeners: Awaited<ReturnType<typeof agent>>[] = [];
   for (let i = 0; i < 4; i++) listeners.push(await agent(server, admin, `pm-${i}`, 'product', 'lee'));
-  await spec(listeners[0].client);
+  await spec(listeners[0].client, listeners[1].client);
   for (const l of listeners) for (let j = 0; j < 3; j++) await l.client.listen({ resourceSubscriptions: [INBOX] });
 
   const kolab = server.kolab;

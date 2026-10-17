@@ -39,6 +39,8 @@ export const LAYERS = ['functional', 'technical'] as const;
 export type Layer = typeof LAYERS[number];
 export const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;
 export type Kind = typeof KINDS[number];
+/** A binding's plan and its work packages: a version of one commits after structural checks, without review (VER3, PLN2, D26). */
+export const PLAN_KINDS: readonly Kind[] = ['wbs', 'work_package'];
 export const DELTA_KINDS = ['add', 'override', 'remove'] as const;
 export type DeltaKind = typeof DELTA_KINDS[number];
 export const EDGE_KINDS = ['dependency', 'derivation', 'equivalence'] as const;
@@ -47,6 +49,26 @@ export const QUERY_KINDS = ['question', 'note'] as const;
 export type QueryKind = typeof QUERY_KINDS[number];
 export const QUERY_STATES = ['open', 'answered'] as const;
 export type QueryState = typeof QUERY_STATES[number];
+/**
+ * A version moves from drafted, to in review, to committed (VER2). A request for changes, or a
+ * failed check at submission, returns it to drafted. It is rejected only when its author abandons
+ * it (D33), when someone else's commit overtakes it (stale, CAS7, D38), or when Kolab folds it into
+ * a fresh rebase. Kolab's own rebases are rejected when they fail their checks.
+ */
+export const VERSION_STATES = ['drafted', 'in_review', 'committed', 'rejected'] as const;
+export type VersionState = typeof VERSION_STATES[number];
+/** What a reviewer records with konjir_review (REV2). */
+export const REVIEW_VERDICTS = ['approve', 'request_changes'] as const;
+export type ReviewVerdictKind = typeof REVIEW_VERDICTS[number];
+/**
+ * A review request, one per reviewer of a version in review: open in the reviewer's inbox until
+ * they approve or request changes, or it is withdrawn because the version left review otherwise.
+ */
+export const REVIEW_REQUEST_STATES = ['open', 'approved', 'changes_requested', 'withdrawn'] as const;
+export type ReviewRequestState = typeof REVIEW_REQUEST_STATES[number];
+/** The two kinds of finding a reviewer reports (VER8). */
+export const FINDING_KINDS = ['contradiction', 'layer_leak'] as const;
+export type FindingKind = typeof FINDING_KINDS[number];
 export const OVERRIDE_RESOLUTIONS = ['reaffirm', 'adopt_parent', 'amend'] as const;
 export type OverrideResolution = typeof OVERRIDE_RESOLUTIONS[number];
 /** Why a mark (an invalidation) was raised. */
@@ -80,9 +102,11 @@ export interface VersionRow {
   id: string; node_id: string; seq: number; parent_version_id: string | null;
   /** The node's live version when this one was drafted: what it was built on. Null for a node's first. */
   base_version_id: string | null;
-  layer: Layer; state: 'drafted' | 'committed' | 'rejected'; actor_id: string; active_role: string;
+  layer: Layer; state: VersionState; actor_id: string; active_role: string;
   /** The kolab the version's node is in. */
   kolab_id?: string;
+  /** For a fold: the person's version Kolab rebased it from (CAS7). */
+  folded_from?: string | null;
 }
 
 export interface MarkRow {
@@ -98,7 +122,7 @@ export interface MarkRow {
  * layer that owns the answer.
  */
 export interface Finding {
-  kind: 'contradiction' | 'layer_leak';
+  kind: FindingKind;
   elements: string[];
   explanation: string;
 }
@@ -107,8 +131,29 @@ export type ReviewVerdict = { ok: boolean; note?: string; findings?: Finding[] }
  * `stale` is set when the version was overtaken before it could commit: the node's live version
  * was no longer its base. A draft is then rejected, to be redrafted; a rebase of Kolab's own is
  * superseded by the version that overtook it.
+ *
+ * `in_review` is set when the version passed Kolab's checks and now waits in review: `reviewers`
+ * each have a review request for it, and one approval commits it (D19, D25). `unreviewed` is set
+ * when it committed on structural checks alone, because no one else holds Write on its layer.
  */
-export type GateResult = ReviewVerdict & { version: string; retryable?: boolean; stale?: boolean };
+export type GateResult = ReviewVerdict & {
+  version: string; retryable?: boolean; stale?: boolean;
+  in_review?: boolean; reviewers?: string[]; unreviewed?: boolean;
+};
+
+/** A review request as a reviewer's inbox shows it. Its subject is a version; work packages come later (VER17). */
+export interface ReviewRequestView {
+  request: string; subject: string; subject_kind: 'version'; author: string; reviewer: string;
+  requested_at: string; next: string;
+}
+/** A version an author submitted, with the review it has had, as the author's answers show it. */
+export interface SubmissionView {
+  subject: string; state: VersionState; note: string | null;
+  /** For a version Kolab folded into a fresh rebase: the fold that carries its edit. */
+  folded_into?: string;
+  verdicts: { reviewer: string; state: ReviewRequestState; note: string | null; findings: Finding[] }[];
+  next: string;
+}
 export interface ReviewContext {
   version: VersionRow;
   elements: ElementRow[];

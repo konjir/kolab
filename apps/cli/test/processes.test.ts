@@ -69,7 +69,7 @@ async function until(cond: () => boolean, ms = 10_000) {
     await call(adminB, 'admin_add_actor', { id: actor });
     await call(adminB, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
   await call(adminB, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
-  await call(adminB, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
+  await call(adminB, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });   // alone on its layer: no review (W1.6)
     return (await call(adminB, 'admin_open_session', { actor, role }) as { token: string }).token;
   };
   const pmToken = await session('pm', 'product');
@@ -135,7 +135,8 @@ async function until(cond: () => boolean, ms = 10_000) {
   const a = await startServer({ adminToken: 'admin', databaseUrl });
   closeAtEnd(a);
   const b = await openKolab({ databaseUrl });
-  await people(b, ['pm', 'eng']);
+  await people(b, 'pm', { layers: ['functional'] });
+  await people(b, 'eng', { layers: ['technical'] });
   const pmToken = await b.openSession('pm', 'product');
   const engToken = await b.openSession('eng', 'engineer');
   await b.createNode(pmToken, 'functional_spec', 'Orders', 'orders');

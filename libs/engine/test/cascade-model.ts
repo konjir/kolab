@@ -311,7 +311,9 @@ export class Model {
 
   /** The engineer commits B, W or X with `el` rewritten. Text that fingerprints the same is no edit: Kolab keeps the old text. */
   edit(key: 'B' | 'W' | 'X', el: string, text: string): boolean {
-    if (vetoed(text)) return false;
+    // The plan (W, a wbs) and its work package (X) commit after structural checks only, so the
+    // reviewer's veto reaches only the binding (VER3, PLN2, W1.6).
+    if (vetoed(text) && key === 'B') return false;
     const before = this.mat(key);
     if (fp(this.plain[key].get(el)!) !== fp(text)) this.plain[key].set(el, text);
     this.revised(key, before);

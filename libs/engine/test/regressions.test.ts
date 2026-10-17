@@ -1,7 +1,7 @@
 // Regressions for the six bugs found in the first adversarial review.
 import { expect, test } from '@jest/globals';
 import { GateError } from '@konjir/engine';
-import { setup, els, marksOn, people, textOf, rejection } from '@konjir/engine/testing';
+import { approved, commitReviewed, els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
 
 test('a pending draft does not hide its node from the cascade; the draft catches up on commit', async () => {
   const { kolab, product, engineer } = await setup();
@@ -40,9 +40,9 @@ test('optimistic concurrency: a draft overtaken by a human commit is rejected, n
   await people(kolab, 'dave');
   const dave = await kolab.openSession('dave', 'engineer');
   const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
-  await kolab.commit(engineer, B, { elements: els({ b1: 'v1' }) });
+  await commitReviewed(kolab, engineer, dave, B, { elements: els({ b1: 'v1' }) });
   const bobDraft = await kolab.draft(engineer, B, { elements: els({ b1: 'bob edit' }) });
-  await kolab.commit(dave, B, { elements: els({ b1: 'dave edit' }) });
+  await commitReviewed(kolab, dave, engineer, B, { elements: els({ b1: 'dave edit' }) });
   const r = await kolab.review(bobDraft);
   expect(r.ok).toBe(false);
   expect(r.note!).toMatch(/stale draft/);
@@ -145,14 +145,15 @@ test('folding keeps the draft author, so a second stale draft is rejected instea
   await people(kolab, 'erin');
   const erin = await kolab.openSession('erin', 'product');
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
-  const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
+  const p1 = await commitReviewed(kolab, product, erin, P, { elements: els({ E1: 'one' }) });
   const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
-  await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
+  await commitReviewed(kolab, product, erin, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   const d1 = await kolab.draft(product, C, { deltas: [{ kind: 'add', element: 'Y', text: 'y' }] });
   const d2 = await kolab.draft(erin, C, { deltas: [{ kind: 'add', element: 'Z', text: 'z' }] });
-  await kolab.commit(product, P, { elements: els({ E1: 'one, revised' }) });
+  await commitReviewed(kolab, product, erin, P, { elements: els({ E1: 'one, revised' }) });
 
-  expect((await kolab.review(d1)).ok).toBe(true);
+  // d1 is folded onto Kolab's rebase, and the fold, not yet reviewed, goes into review.
+  expect((await approved(kolab, erin, await kolab.review(d1))).ok).toBe(true);
   const second = await kolab.review(d2);
   expect(second.ok).toBe(false);
   expect(second.note!).toMatch(/stale draft/);
@@ -180,21 +181,19 @@ test('folding carries the dependencies the draft declared', async () => {
 });
 
 test('a later successful rebase settles an earlier rebase_failed mark', async () => {
-  let rejectSystem = true;
-  const { kolab, product } = await setup(({ version }) =>
-    rejectSystem && version.active_role === 'system' ? { ok: false, note: 'no' } : { ok: true });
+  const { kolab, product } = await setup();
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
   const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
-  await kolab.commit(product, P, { elements: els({ E1: 'two' }) });
+  // The parent now says what the variant adds, word for word: the rebase fails the structural checks.
+  await kolab.commit(product, P, { elements: els({ E1: 'x' }) });
   expect((await marksOn(kolab, C)).map((m) => m.reason)).toStrictEqual(['rebase_failed']);
   // The inbox tells a failed rebase from a rejected review (D44).
   const [described] = await kolab.describeMarks({ node: C });
   expect(described).toMatchObject({ reason: 'rebase_failed', because: `parent ${P} version 2` });
   expect(described.next).toMatch(/^Rebasing onto the new parent failed/);
 
-  rejectSystem = false;
   await kolab.commit(product, P, { elements: els({ E1: 'three' }) });
   expect(await marksOn(kolab, C)).toStrictEqual([]);
   expect((await kolab.openQueries()).length).toBe(0);
@@ -203,18 +202,16 @@ test('a later successful rebase settles an earlier rebase_failed mark', async ()
 });
 
 test("a variant's own commit onto the parent's latest version settles its rebase_failed mark and question", async () => {
-  let rejectSystem = true;
-  const { kolab, product } = await setup(({ version }) =>
-    rejectSystem && version.active_role === 'system' ? { ok: false, note: 'no' } : { ok: true });
+  const { kolab, product } = await setup();
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
   const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
-  const p2 = await kolab.commit(product, P, { elements: els({ E1: 'two' }) });
+  const p2 = await kolab.commit(product, P, { elements: els({ E1: 'x' }) });   // the rebase repeats X word for word
   expect((await marksOn(kolab, C)).map((m) => m.reason)).toStrictEqual(['rebase_failed']);
   expect((await kolab.openQueries()).length).toBe(1);
 
-  // No rebase runs: the commit is already on p2. Kolab's own rebases are still rejected.
+  // No rebase runs: the commit is already on p2.
   const c = await kolab.commit(product, C, { parent: p2, deltas: [{ kind: 'add', element: 'X', text: 'x fixed' }] });
   expect((await kolab.latestCommitted(C))!).toMatchObject({ id: c, parent_version_id: p2 });
   expect(await marksOn(kolab, C)).toStrictEqual([]);

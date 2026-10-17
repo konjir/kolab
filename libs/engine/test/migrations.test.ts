@@ -10,8 +10,8 @@ import {
   BASELINE, MIGRATIONS, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
-import { els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
-import { ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, MARK_REASONS, ORG_ROLES, QUERY_KINDS, VISIBILITIES } from '@konjir/types';
+import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
+import { ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, MARK_REASONS, ORG_ROLES, QUERY_KINDS, REVIEW_REQUEST_STATES, VERSION_STATES, VISIBILITIES } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
 
@@ -88,7 +88,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS and VISIBILITIES", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES and REVIEW_REQUEST_STATES", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -104,6 +104,8 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, A
     expect(await check('kolab_grant_level_check')).toStrictEqual([...ACCESS_LEVELS].sort());
     expect(await check('kolab_base_permission_check')).toStrictEqual([...ACCESS_LEVELS].sort());
     expect(await check('kolab_visibility_check')).toStrictEqual([...VISIBILITIES].sort());
+    expect(await check('version_state_check')).toStrictEqual([...VERSION_STATES].sort());
+    expect(await check('review_request_state_check')).toStrictEqual([...REVIEW_REQUEST_STATES].sort());
   });
 });
 
@@ -173,7 +175,8 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
     await kolab.addActor('lee-pm', { owner: 'lee' });
     await kolab.grant('kolab', 'lee-pm', 'write');
     const token = await kolab.openSession('lee-pm', 'product');   // beside Lee's own open session
-    const v2 = await kolab.commit(token, 'orders', { elements: els({ R1: 'Orders can be cancelled within an hour.' }) });
+    // Lee's own session, from before 0002, makes him a reviewer of his agent's versions (D33).
+    const v2 = await commitReviewed(kolab, token, 'kjs_old', 'orders', { elements: els({ R1: 'Orders can be cancelled within an hour.' }) });
     expect(await kolab.author(v2)).toStrictEqual({ actor: 'lee-pm', kind: 'agent', owner: 'lee', role: 'product' });
   } finally { await kolab.close(); }
 });
@@ -414,7 +417,9 @@ test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the
   try {
     // Open sessions keep working, in kolab, with the access everyone had before.
     expect(await kolab.sessionInfo('kjs_pm')).toMatchObject({ actor: 'lee-pm', owner: 'lee', kolab: 'kolab', access: { level: 'write', layers: ['functional', 'technical'] } });
-    const v2 = await kolab.commit('kjs_pm', 'kolab', { elements: els({ TEN1: 'Konjir is one hosted service that every account shares.' }) });
+    // Everyone holds Write on both layers, so pat, say, reviews lee-pm's version (W1.6).
+    const pat = await kolab.openSession('pat', 'product');
+    const v2 = await commitReviewed(kolab, 'kjs_pm', pat, 'kolab', { elements: els({ TEN1: 'Konjir is one hosted service that every account shares.' }) });
     expect(await kolab.author(v2)).toStrictEqual({ actor: 'lee-pm', kind: 'agent', owner: 'lee', role: 'product' });
     expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.id)).toStrictEqual(['kolab', 'kolab-binding']);
     // An agent of the organization now, which a person's agent couldn't be before.

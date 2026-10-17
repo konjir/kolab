@@ -4,15 +4,19 @@
 // Postgres. `npm run rebase-storm -- --races` prints the same races as RACE or SAFE.
 import { expect, test } from '@jest/globals';
 import { GateError, Kolab, structuralReviewer } from '@konjir/engine';
-import { els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
+import { approved, commitReviewed, els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { ReviewContext, Reviewer } from '@konjir/types';
 
 type Hook = (ctx: ReviewContext) => Promise<void>;
 
-/** A Kolab whose reviewer runs `hook` first, set and cleared by the test. */
-async function hooked(reviewer: Reviewer = structuralReviewer) {
+/**
+ * A Kolab whose gates run `hook` first, set and cleared by the test: the reviewer of people's
+ * versions, and the structural checks of Kolab's own rebases (W1.6, VER12).
+ */
+async function hooked(opts: { reviewer?: Reviewer; checks?: Reviewer } = {}) {
   let hook: Hook | undefined;
-  const ctx = await setup(async (c) => { await hook?.(c); return reviewer(c); });
+  const { reviewer = structuralReviewer, checks = structuralReviewer } = opts;
+  const ctx = await setup(async (c) => { await hook?.(c); return reviewer(c); }, async (c) => { await hook?.(c); return checks(c); });
   return { ...ctx, setHook: (h: Hook | undefined) => { hook = h; } };
 }
 
@@ -62,9 +66,9 @@ const noteOf = async (kolab: Kolab, id: string) =>
 
 test('two commits to one node built on the same version: the second is rejected as stale with a GateError', async () => {
   const { kolab, product } = await setup();
-  await people(kolab, 'dave');
-  const dave = await kolab.openSession('dave', 'product');
   const { ids } = await family(kolab, product, 1);
+  await people(kolab, 'dave', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product');   // from here on, each reviews the other's versions
   // Both drafted on V0@1, at once: each takes a number of its own.
   const [alice, mine] = await Promise.all([
     kolab.draft(product, 'V0', add('A', 'Alice adds A.')),
@@ -74,29 +78,29 @@ test('two commits to one node built on the same version: the second is rejected 
     [1, 'committed', null], [2, 'drafted', 1], [3, 'drafted', 1],
   ]);
 
-  expect((await kolab.review(mine)).ok).toBe(true);
+  expect((await approved(kolab, product, await kolab.review(mine))).ok).toBe(true);
   const r = await kolab.review(alice);
   expect([r.ok, r.stale, r.note]).toStrictEqual([false, true, 'stale draft: the node committed a newer version; redraft against it']);
   expect(await textOf(kolab, 'V0')).toMatchObject({ B: 'Dave adds B.' });
   expect(Object.keys(await textOf(kolab, 'V0'))).not.toContain('A');
   // Through commit, the loser gets Kolab's GateError, never a database error.
   const again = await kolab.draft(product, 'V0', add('A', 'Alice adds A.'));
-  await kolab.commit(dave, 'V0', add('C', 'Dave adds C.'));
+  await commitReviewed(kolab, dave, product, 'V0', add('C', 'Dave adds C.'));
   expect(await rejection(kolab.review(again).then((x) => { if (!x.ok) throw new GateError(`review rejected: ${x.note}`); }))).toMatch(/^GateError: review rejected: stale draft/);
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
 
 test('a commit to a node while another draft of it is in review rejects that draft, even after the reviewer passed it', async () => {
   const { kolab, product, setHook } = await hooked();
-  await people(kolab, 'dave');
-  const dave = await kolab.openSession('dave', 'product');
   const B = await kolab.createNode(product, 'functional_spec', 'B', 'B');
   await kolab.commit(product, B, { elements: els({ b1: 'v1' }) });
+  await people(kolab, 'dave', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product');
   const draft = await kolab.draft(product, B, { elements: els({ b1: 'alice edit' }) });
   setHook(async ({ version }) => {
     if (version.id !== draft) return;
     setHook(undefined);
-    await kolab.commit(dave, B, { elements: els({ b1: 'dave edit' }) });
+    await commitReviewed(kolab, dave, product, B, { elements: els({ b1: 'dave edit' }) });
   });
 
   const r = await kolab.review(draft);
@@ -165,11 +169,11 @@ test('a draft overtaken only by Kolab\'s own rebases before review still folds a
 
 test('a human commit between judging a draft overtaken by rebases and folding it makes the fold stale, not lost', async () => {
   const { kolab, product } = await setup();
-  await people(kolab, 'dave');
-  const dave = await kolab.openSession('dave', 'product');
   const { next } = await family(kolab, product, 1);
+  await people(kolab, 'dave', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product');
   const draft = await kolab.draft(product, 'V0', add('A', 'Alice adds A.'));
-  await kolab.commit(product, 'P', { elements: next });   // V0@3, Kolab's rebase, overtakes the draft
+  await commitReviewed(kolab, product, dave, 'P', { elements: next });   // V0@3, Kolab's rebase, overtakes the draft
 
   // Dave commits the moment the fold starts work: at its first read of the variant's parent.
   const proto = Object.getPrototypeOf(kolab.db);
@@ -178,7 +182,7 @@ test('a human commit between judging a draft overtaken by rebases and folding it
   proto.query = async function (sql: string, params?: unknown[]) {
     if (armed && sql.includes("state = 'committed' order by seq desc limit 1") && params?.[0] === 'P') {
       armed = false;
-      await kolab.commit(dave, 'V0', add('B', 'Dave adds B.'));
+      await commitReviewed(kolab, dave, product, 'V0', add('B', 'Dave adds B.'));
     }
     return query.call(this, sql, params);
   };
@@ -267,10 +271,10 @@ test('a human commit between the storm\'s version number and its insert waits it
 });
 
 test('a rebase that throws marks its variant, and the storm carries on to the rest', async () => {
-  const { kolab, product } = await hooked(async (ctx) => {
-    if (ctx.version.active_role === 'system' && ctx.version.node_id === 'V1') throw new Error('the reviewer fell over');
+  const { kolab, product } = await hooked({ checks: async (ctx) => {
+    if (ctx.version.node_id === 'V1') throw new Error('the reviewer fell over');
     return structuralReviewer(ctx);
-  });
+  } });
   const { ids, next } = await family(kolab, product, 3);
   await kolab.commit(product, 'P', { elements: next });
 
@@ -353,8 +357,8 @@ test('a storm\'s rebase dropped as overtaken catches up the version that overtoo
 });
 
 test('a variant whose rebases keep failing holds one rebase_failed mark and one question, re-pointed at the newest parent', async () => {
-  const { kolab, product } = await hooked(async (ctx) =>
-    (ctx.version.active_role === 'system' && ctx.version.node_id === 'V0' ? { ok: false, note: 'contradicts itself' } : structuralReviewer(ctx)));
+  const { kolab, product } = await hooked({ checks: async (ctx) =>
+    (ctx.version.node_id === 'V0' ? { ok: false, note: 'contradicts itself' } : structuralReviewer(ctx)) });
   const { next } = await family(kolab, product, 1);
   await kolab.commit(product, 'P', { elements: next });
   const p3 = await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
@@ -381,3 +385,82 @@ test('an agent may only build a draft on a committed version of its own node', a
   });
   expect(await rejection(insert(a1))).toMatch(/row-level security/);
 });
+
+// ---- the review flow (W1.6, PR #26 review) -------------------------------------------
+
+/** Alice's spec S@1, and Dave and Erin, each a reviewer of the other product owners' versions. */
+async function reviewers() {
+  const ctx = await hooked();
+  const { kolab, product } = ctx;
+  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  await kolab.commit(product, S, { elements: els({ s1: 'v1' }) });
+  await people(kolab, ['dave', 'erin'], { layers: ['functional'] });
+  return { ...ctx, S, dave: await kolab.openSession('dave', 'product'), erin: await kolab.openSession('erin', 'product') };
+}
+
+test('an approval and the author abandoning the version race: exactly one wins, and the version ends as the winner left it', async () => {
+  for (let i = 0; i < 5; i++) {
+    const { kolab, product, dave, S } = await reviewers();
+    const v = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
+    await kolab.review(v);
+    const [approve, abandon] = await Promise.allSettled([kolab.recordReview(dave, v, { verdict: 'approve' }), kolab.abandon(product, v)]);
+    const state = (await kolab.version(v)).state;
+    if (approve.status === 'fulfilled') {
+      expect([approve.value.ok, state, abandon.status]).toStrictEqual([true, 'committed', 'rejected']);
+      expect(String((abandon as PromiseRejectedResult).reason)).toMatch(/GateError: S@2 is committed; only a draft or a version in review can be abandoned/);
+    } else {
+      expect([abandon.status, state]).toStrictEqual(['fulfilled', 'rejected']);
+      expect(String(approve.reason)).toMatch(/GateError: S@2 was rejected \(abandoned by alice\)/);
+    }
+    expect(await kolab.reviewRequests()).toStrictEqual([]);
+  }
+}, 120_000);
+
+test('an author who abandons an approved version while Kolab folds it keeps the edit out: the fold never commits', async () => {
+  const { kolab, product, setHook } = await hooked();
+  const { next } = await family(kolab, product, 1);
+  await people(kolab, 'dave', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product');
+  const draft = await kolab.draft(product, 'V0', add('H', 'Human edit to V0.'));
+  await kolab.review(draft);
+  await commitReviewed(kolab, product, dave, 'P', { elements: next });   // Kolab's rebase of V0 overtakes the draft in review
+  setHook(async ({ version }) => {
+    // The fold of the approved draft is being checked: its author abandons the draft now.
+    if (version.node_id !== 'V0' || version.active_role === 'system' || version.id === draft) return;
+    setHook(undefined);
+    await kolab.abandon(product, draft);
+  });
+  const r = await kolab.recordReview(dave, draft, { verdict: 'approve' });
+  expect(r.ok).toBe(false);
+  expect(r.note).toMatch(/was abandoned by alice while Kolab folded it/);
+  expect(Object.keys(await textOf(kolab, 'V0'))).not.toContain('H');
+  expect(await noteOf(kolab, draft)).toBe('abandoned by alice');
+  expect((await history(kolab, 'V0')).map((v) => [v.seq, v.active_role, v.state])).toStrictEqual([
+    [1, 'product', 'committed'], [2, 'product', 'rejected'], [3, 'system', 'committed'], [4, 'product', 'rejected'],
+  ]);
+});
+
+test('two reviewers approving at once commit the version once; the second is told it already committed', async () => {
+  const { kolab, product, dave, erin, S } = await reviewers();
+  const v = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
+  await kolab.review(v);
+  const rs = await Promise.allSettled([kolab.recordReview(dave, v, { verdict: 'approve' }), kolab.recordReview(erin, v, { verdict: 'approve' })]);
+  expect(rs.filter((r) => r.status === 'fulfilled').map((r) => r.value.ok)).toStrictEqual([true]);
+  expect(String((rs.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason)).toMatch(/GateError: S@2 is committed already/);
+  expect((await history(kolab, 'S')).map((x) => [x.seq, x.state])).toStrictEqual([[1, 'committed'], [2, 'committed']]);
+});
+
+test('an approval racing another commit to the node: one commits, the other is rejected as stale, and nothing merges', async () => {
+  for (let i = 0; i < 5; i++) {
+    const { kolab, product, dave, S } = await reviewers();
+    const mine = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
+    const theirs = await kolab.draft(dave, S, { elements: els({ s1: 'dave edit' }) });
+    await kolab.review(mine); await kolab.review(theirs);
+    const rs = await Promise.allSettled([kolab.recordReview(dave, mine, { verdict: 'approve' }), kolab.recordReview(product, theirs, { verdict: 'approve' })]);
+    const states = [(await kolab.version(mine)).state, (await kolab.version(theirs)).state].sort();
+    expect(states).toStrictEqual(['committed', 'rejected']);
+    expect(rs.filter((r) => r.status === 'fulfilled' && r.value.ok).length).toBe(1);
+    expect(['alice edit', 'dave edit']).toContain((await textOf(kolab, S)).s1);
+    expect(await kolab.reviewRequests()).toStrictEqual([]);
+  }
+}, 120_000);
