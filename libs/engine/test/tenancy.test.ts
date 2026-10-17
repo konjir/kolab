@@ -432,3 +432,27 @@ test("every security definer function searches pg_temp last", async () => {
   expect(r.rows.length).toBeGreaterThanOrEqual(8);
   for (const f of r.rows) expect(`${f.name}: ${f.config?.join(';')}`).toBe(`${f.name}: search_path=pg_catalog, public, pg_temp`);
 });
+
+test('review requests stay in their kolab: another kolab\'s agents read none, a request takes its version\'s kolab and keeps it, and no one reviews across kolabs', async () => {
+  const { kolab, alice, bob } = await twoAccounts();
+  await kolab.addActor('dan');
+  await kolab.grant('orders', 'dan', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'dan', 'write', { layers: ['functional'] });   // Write in both kolabs
+  await kolab.addActor('eve');
+  await kolab.grant('billing', 'eve', 'write', { layers: ['functional'] });   // Write in billing only
+  const draft = await kolab.draft(alice, 'orders-spec', { elements: els({ R1: 'Orders can be cancelled by staff.' }) });
+  // Only orders' writers review it: dan, not eve, whose Write is in billing.
+  expect(await kolab.review(draft)).toMatchObject({ in_review: true, reviewers: ['dan'] });
+  expect((await kolab.db.query(`select kolab_id from review_request`)).rows).toStrictEqual([{ kolab_id: 'orders' }]);
+  expect(await asAgent(kolab, alice, `select reviewer_id from review_request`)).toStrictEqual([{ reviewer_id: 'dan' }]);
+  expect(await asAgent(kolab, bob, `select reviewer_id from review_request`)).toStrictEqual([]);
+  // The kolab is the version's, whatever a writer gives, and never changes.
+  await kolab.db.query(`insert into review_request(id, kolab_id, version_id, reviewer_id) values ('rr-x', 'billing', $1, 'eve')`, [draft]);
+  expect((await kolab.db.query(`select kolab_id from review_request where id = 'rr-x'`)).rows).toStrictEqual([{ kolab_id: 'orders' }]);
+  expect(await rejection(kolab.db.query(`update review_request set kolab_id = 'billing' where id = 'rr-x'`))).toMatch(/a row's kolab never changes once written/);
+  await kolab.db.query(`delete from review_request where id = 'rr-x'`);
+  // A session in another kolab can't give a verdict on it.
+  const eve = await kolab.openSession('eve', 'product');
+  expect(await rejection(kolab.recordReview(eve, draft, { verdict: 'approve' }))).toMatch(/AccessError: that is not in kolab billing, the kolab this session works in/);
+  expect((await kolab.version(draft)).state).toBe('in_review');
+});

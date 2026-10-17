@@ -852,6 +852,11 @@ export class Kolab {
     if (!/^D\d+$/.test(ruling.id)) throw new GateError(`a ruling is named by its Decisions Log ID, such as D47, not "${ruling.id}"`);
     const node = await this.node(nodeId);
     await this.actor(ruling.actor);
+    // The actor it is written as must be able to write that layer there: refused before anything is written.
+    const access = await accessIn(this.db, ruling.actor, node.kolab_id);
+    if (!access.layers.includes(node.layer)) {
+      throw new AccessError(`${ruling.actor} may not write the ${node.layer} layer of kolab ${node.kolab_id}: it holds ${describeAccess(access)}; apply the ruling as an actor that does`);
+    }
     const author = { actor_id: ruling.actor, active_role: ROLE_OF_LAYER[node.layer], kolab: node.kolab_id };
     const id = await this.writeDraft(nodeId, node.layer, author, input, (fn) => this.asSystem(fn, nodeId));
     return this.judge(id, undefined, ruling.id);
@@ -955,7 +960,7 @@ export class Kolab {
     if (v.state === 'in_review' && !approvedBy) return this.resubmit(v);
     if (v.state !== 'drafted') throw new GateError(`${here} is ${v.state}, not drafted`);
     const newer = await overtakenBy(this.db, v);
-    if (newer) return this.settleOvertaken(v, newer, approvedBy);
+    if (newer) return this.settleOvertaken(v, newer, approvedBy, ruling);
     const human = v.active_role !== 'system';
     const plan = PLAN_KINDS.includes((await this.node(v.node_id)).kind);
     // Kolab's own rebases, folds of approved versions and plan versions get structural checks only
@@ -973,7 +978,8 @@ export class Kolab {
     if (!verdict.ok) {
       // A person's version goes back to its author, still drafted, with the reason (VER2, D33);
       // Kolab's own rebases, and folds, have no author to return to and are rejected.
-      if (!human || v.folded_from) await this.reject(versionId, verdict.note ?? null);
+      // A ruling applied through the admin token has no author to return to either (D47).
+      if (!human || v.folded_from || ruling) await this.reject(versionId, verdict.note ?? null);
       else await this.asSystem((tx) => tx.query(`update version set review_note = $2 where id = $1 and state = 'drafted'`, [versionId, verdict.note ?? null]));
       return { ...verdict, version: versionId };
     }
@@ -1001,7 +1007,7 @@ export class Kolab {
     // The node may have moved on while the reviewer ran, which with a semantic gate takes seconds.
     const late = await this.commitStep(v, note, approvedBy ? { record: (tx, signal, overtaken) => this.foldRecord(tx, signal, v, overtaken) } : {});
     if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
-    if (late && late !== 'waiting') return this.settleOvertaken(v, late, approvedBy);
+    if (late && late !== 'waiting') return this.settleOvertaken(v, late, approvedBy, ruling);
     await this.afterCommit(v, verdict.findings ?? []);
     return { ...verdict, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}) };
   }
@@ -1287,7 +1293,7 @@ export class Kolab {
    * then commits on structural checks, since the edit it carries was reviewed; a fold of a version
    * not yet reviewed goes into review itself.
    */
-  private async settleOvertaken(v: VersionRow, newer: Overtaker[], approvedBy?: string): Promise<GateResult> {
+  private async settleOvertaken(v: VersionRow, newer: Overtaker[], approvedBy?: string, ruling?: string): Promise<GateResult> {
     if (v.active_role === 'system') {
       const note = `superseded: ${v.node_id} committed a newer version while this rebase waited`;
       await this.reject(v.id, note);
@@ -1305,7 +1311,8 @@ export class Kolab {
     // human commit and is rejected) and the dependencies the draft declared.
     let folded: GateResult;
     try {
-      folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id, approvedBy });
+      // A ruling's fold is still the ruling: it commits after structural checks only (D47).
+      folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id, approvedBy, ruling });
     } catch (e) {
       // The author abandoned the approved version while it was being folded: drop the fold.
       if (!(e instanceof OriginalSettled)) throw e;
@@ -1713,7 +1720,7 @@ export class Kolab {
    * nothing depends on the overtaking version's own cascade getting that far.
    */
   private async rebase(child: VersionRow, newParent: VersionRow,
-    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string; approvedBy?: string } = {}): Promise<GateResult> {
+    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string; approvedBy?: string; ruling?: string } = {}): Promise<GateResult> {
     const parentEls = await this.elements(newParent.id);
     const byId = new Map(parentEls.map((e) => [e.element_id, e]));
     const oldEls = new Map((await this.elements(child.id)).map((e) => [e.element_id, e]));
@@ -1775,7 +1782,7 @@ export class Kolab {
     // person's edit: approved already, it does the same; otherwise it goes into review.
     let verdict: GateResult;
     try {
-      verdict = await this.judge(id, opts.approvedBy);
+      verdict = await this.judge(id, opts.approvedBy, opts.ruling);
     } catch (e) {
       // The reviewer fell over: the rebase never committed, and nothing will resubmit it.
       if (e instanceof ReviewerError) await this.reject(id, e.message);
