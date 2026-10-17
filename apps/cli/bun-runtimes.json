@@ -1,0 +1,10 @@
+{
+  "version": "1.3.8",
+  "sha256": {
+    "bun-darwin-aarch64.zip": "672a0a9a7b744d085a1d2219ca907e3e26f5579fca9e783a9510a4f98a36212f",
+    "bun-darwin-x64-baseline.zip": "9812e5f6c7f818ef9c491e05a77481ab2e7a4a1580b378526e1611c102fe7ca3",
+    "bun-linux-aarch64.zip": "4e9deb6814a7ec7f68725ddd97d0d7b4065bcda9a850f69d497567e995a7fa33",
+    "bun-linux-x64-baseline.zip": "bbe4632ac03d7495177d542ecefa8f21f9849273106525f6bb13172ec8e4ab2c",
+    "bun-windows-x64-baseline.zip": "74f4dad7b4873ee70f63add9918400334e31acab9ba3fce9ef9906d96646e231"
+  }
+}

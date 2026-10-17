@@ -51,7 +51,7 @@
         "inputs": [
           "production",
           "{projectRoot}/scripts/package.mjs",
-          "{projectRoot}/.bun-version",
+          "{projectRoot}/bun-runtimes.json",
           {
             "externalDependencies": [
               "@modelcontextprotocol/client"
@@ -68,7 +68,7 @@
         "inputs": [
           "production",
           "{projectRoot}/scripts/package.mjs",
-          "{projectRoot}/.bun-version",
+          "{projectRoot}/bun-runtimes.json",
           {
             "externalDependencies": [
               "@modelcontextprotocol/client"
@@ -79,15 +79,6 @@
           "{projectRoot}/dist-bin"
         ],
         "cache": false
-      },
-      "nx-release-publish": {
-        "executor": "@nx/js:release-publish",
-        "dependsOn": [
-          "bundle"
-        ],
-        "options": {
-          "packageRoot": "{projectRoot}/dist-npm"
-        }
       }
     }
   }

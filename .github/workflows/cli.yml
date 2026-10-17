@@ -18,8 +18,17 @@ name: CLI
 on:
   pull_request:
     branches: [main]
+    paths: &paths
+      - apps/cli/**
+      - libs/types/**
+      - package.json
+      - package-lock.json
+      - nx.json
+      - bin/konjir
+      - .github/workflows/cli.yml
   push:
     branches: [main]
+    paths: *paths
 
 concurrency:
   group: cli-${{ github.ref }}
@@ -59,14 +68,20 @@ jobs:
           node-version: ${{ steps.node.outputs.version }}
           cache: npm
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: apps/cli/.bun-version
-
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
+      # The Bun apps/cli/bun-runtimes.json pins, checked against its sha256.
+      - name: Install Bun
+        run: dirname "$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")" >> "$GITHUB_PATH"
+
+      # A pull request builds the binary this runner can run; main builds all five.
       - name: Bundle for npm and compile the binaries
-        run: npx nx run-many -t bundle compile -p konjir --output-style=static
+        env:
+          TARGETS: ${{ github.event_name == 'pull_request' && 'linux-arm64' || '' }}
+        run: |
+          npx nx run konjir:bundle --output-style=static
+          # shellcheck disable=SC2086 # TARGETS is empty (all) or one word
+          node apps/cli/scripts/package.mjs binaries $TARGETS
 
       - name: Pack the npm package
         run: |
@@ -85,16 +100,13 @@ jobs:
         run: |
           bin/konjir serve --port 7420 --data "$RUNNER_TEMP/kolab" --quiet > "$RUNNER_TEMP/kolab.log" 2>&1 &
           for _ in $(seq 60); do curl -sf http://127.0.0.1:7420/healthz >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:7420/healthz >/dev/null || { echo "::error::Kolab didn't answer /healthz within 60 s"; cat "$RUNNER_TEMP/kolab.log"; exit 1; }
           apps/cli/scripts/smoke.sh smoke-binary apps/cli/dist-bin/konjir-linux-arm64
           # Outside the workspace, so nothing resolves from its node_modules.
           smoke="$PWD/apps/cli/scripts/smoke.sh"
           tarball=$(ls "$RUNNER_TEMP"/pack/konjir-*.tgz)
           mkdir -p "$RUNNER_TEMP/npx" && cd "$RUNNER_TEMP/npx"
           "$smoke" smoke-npx npm exec --yes --package="$tarball" -- konjir
-
-      - name: Show Kolab's log
-        if: failure()
-        run: cat "$RUNNER_TEMP/kolab.log" || true
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
