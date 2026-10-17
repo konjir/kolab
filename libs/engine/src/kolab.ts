@@ -5,8 +5,8 @@ import {
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
-  LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE,
-  type Actor, type ActorKind, type Author,
+  ACCESS_LEVELS, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, VISIBILITIES,
+  type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type ReviewContext, type ReviewVerdict,
   type Reviewer, type Role, type VersionRow,
@@ -47,6 +47,19 @@ export class RoleError extends Error { name = 'RoleError'; }
  * an agent whose owner isn't a person, or an actor whose session is already open.
  */
 export class ActorError extends Error { name = 'ActorError'; }
+
+/**
+ * Access refused: a session whose actor can't do this in its kolab, an agent granted more than
+ * its owner holds, or something named in another kolab than the session's.
+ */
+export class AccessError extends Error { name = 'AccessError'; }
+/** About accounts, kolabs, teams and grants: one that doesn't exist or already does, or an invalid name. */
+export class TenancyError extends Error { name = 'TenancyError'; }
+
+/** A kolab's short name: lowercase letters, digits and '-', starting with a letter or digit (kolab_name_check). */
+const KOLAB_NAME = /^[a-z0-9][a-z0-9-]*$/;
+/** A team's name within its organization (team_name_check). */
+const TEAM_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
 /** An actor id: letters, digits, '.', '_', '-' and '@', starting with a letter or digit (actor_id_check). */
 const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
@@ -363,25 +376,30 @@ export class Kolab {
   // ---- actors and sessions (dynamic separation of duty) --------------------
 
   /**
-   * Registers a person, or with `owner` an agent owned by that person (D30). An agent is an
-   * actor of its own: it holds its own sessions and authors its own versions.
+   * Registers a person, who is also a user account by the same id, or with `owner` an agent
+   * owned by that account: a user or an organization (D30). An agent is an actor of its own: it
+   * holds its own sessions and authors its own versions.
    */
   async addActor(id: string, opts: { name?: string; owner?: string } = {}) {
     const { name = id, owner } = opts;
     if (!ACTOR_ID.test(id)) throw new ActorError(`"${id}" isn't a valid actor id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
     if (id === SYSTEM_ACTOR) throw new ActorError(`"${SYSTEM_ACTOR}" is reserved for Kolab's own work`);
     if (await this.findActor(id)) throw new ActorError(`actor ${id} already exists`);
-    if (owner !== undefined) {
-      const o = await this.findActor(owner);
-      if (!o) throw new ActorError(`no actor ${owner} to own ${id}`);
-      if (o.kind !== 'person') throw new ActorError(`${owner} is an agent; an agent's owner must be a person`);
+    if (owner !== undefined && !(await this.findAccount(owner))) {
+      if ((await this.findActor(owner))?.kind === 'agent') throw new ActorError(`${owner} is an agent; an agent's owner must be a person or an organization`);
+      throw new ActorError(`no account ${owner} to own ${id}`);
     }
+    if (owner === undefined && await this.findAccount(id)) throw new ActorError(`account ${id} already exists`);
     try {
-      await this.db.query(`insert into actor(id, name, kind, owner_id) values ($1, $2, $3, $4)`,
-        [id, name, owner === undefined ? 'person' : 'agent', owner ?? null]);
+      await this.db.transaction(async (tx) => {
+        if (owner === undefined) await tx.query(`insert into account(id, kind, name) values ($1, 'user', $2)`, [id, name]);
+        await tx.query(`insert into actor(id, name, kind, owner_id) values ($1, $2, $3, $4)`,
+          [id, name, owner === undefined ? 'person' : 'agent', owner ?? null]);
+      });
     } catch (e) {
       // Another admin call added it between the check and the insert.
       if (String(e).includes('actor_pkey')) throw new ActorError(`actor ${id} already exists`);
+      if (String(e).includes('account_pkey')) throw new ActorError(`account ${id} already exists`);
       throw e;
     }
   }
@@ -391,14 +409,14 @@ export class Kolab {
       `select id, name, kind, owner_id as owner from actor where id = $1`, [id])).rows[0];
   }
 
-  /** An actor, with the person who owns it when it's an agent. */
+  /** An actor, with the account that owns it when it's an agent. */
   async actor(id: string): Promise<Actor> {
     const a = await this.findActor(id);
     if (!a) throw new ActorError(`no actor ${id}`);
     return a;
   }
 
-  /** Every actor, or with `owner` that person's agents. */
+  /** Every actor, or with `owner` that account's agents. */
   async listActors(opts: { owner?: string } = {}): Promise<Actor[]> {
     return (await this.db.query<Actor>(
       `select id, name, kind, owner_id as owner from actor
@@ -418,17 +436,39 @@ export class Kolab {
   }
 
   /**
-   * The session id doubles as the agent's bearer token, so it is random, not a sortable ULID.
-   * Each actor holds at most one open session (ENF4), so a person's agents each hold their own.
+   * Opens a session for an actor in one kolab, with one active role. The session id doubles as
+   * the agent's bearer token, so it is random, not a sortable ULID. Each actor holds at most one
+   * open session (ENF4), so a person's agents each hold their own.
    *
-   * An agent may never have more access than its owner grants it (D30). Until grants exist
-   * (W1.3), any actor may activate either role, so there is nothing of the owner's to exceed.
+   * The actor must be able to reach the kolab. Without `kolab`, it is the one kolab the actor
+   * can reach. An agent's access is checked against its owner's as the session opens, and on
+   * every write after: it is its own grant, never more than its owner's (D30).
    */
-  async openSession(actorId: string, role: Role): Promise<string> {
-    if (!(await this.findActor(actorId))) throw new ActorError(`no actor ${actorId}; add it first`);
+  async openSession(actorId: string, role: Role, opts: { kolab?: string } = {}): Promise<string> {
+    const actor = await this.findActor(actorId);
+    if (!actor) throw new ActorError(`no actor ${actorId}; add it first`);
+    let kolab = opts.kolab;
+    if (kolab === undefined) {
+      const reach = await this.reachable(actorId);
+      if (reach.length !== 1) {
+        throw new AccessError(reach.length
+          ? `${actorId} can reach the kolabs ${reach.join(', ')}; name the one to open the session in`
+          : `${actorId} has no access to any kolab; grant it access to one first`);
+      }
+      kolab = reach[0];
+    }
+    await this.requireKolab(kolab);
     const id = `kjs_${randomBytes(24).toString('base64url')}`;
     try {
-      await this.db.query(`insert into session(id, actor_id, active_role) values ($1, $2, $3)`, [id, actorId, role]);
+      await this.db.transaction(async (tx) => {
+        await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [id, actorId, role, kolab]);
+        // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
+        const access = await accessIn(tx, actorId, kolab);
+        if (!access.level) {
+          throw new AccessError(`${actorId} has no access to kolab ${kolab}`
+            + (actor.kind === 'agent' ? `: an agent's access is its own grant there, never more than its owner ${actor.owner}'s` : ''));
+        }
+      });
     } catch (e) {
       if (String(e).includes('one_open_session_per_actor')) {
         throw new ActorError(`${actorId} already has an open session; end it before opening another`);
@@ -462,29 +502,256 @@ export class Kolab {
     return r.rows.length > 0;
   }
 
-  private async session(id: string): Promise<{ actor_id: string; active_role: Role; kind: ActorKind; owner: string | null }> {
-    const r = await this.db.query<{ actor_id: string; active_role: Role; kind: ActorKind; owner: string | null }>(
-      `select s.actor_id, s.active_role, a.kind, a.owner_id as owner
+  private async session(id: string): Promise<Session> {
+    const r = await this.db.query<Omit<Session, 'access'>>(
+      `select s.actor_id, s.active_role, s.kolab_id as kolab, a.kind, a.owner_id as owner
          from session s join actor a on a.id = s.actor_id
         where s.id = $1 and s.ended_at is null`, [id]);
     if (!r.rows[0]) throw new RoleError(`no open session ${id}`);
-    return r.rows[0];
+    const s = { ...r.rows[0], access: await accessIn(this.db, r.rows[0].actor_id, r.rows[0].kolab) };
+    // Access is computed on each use, so a session narrows the moment its access (or, for an
+    // agent, its owner's) does. One that can no longer reach its kolab at all is ended.
+    if (!s.access.level) throw new AccessError(`${s.actor_id} can no longer reach kolab ${s.kolab}`);
+    return s;
   }
 
-  private async requireLayer(sessionId: string, layer: Layer) {
+  /**
+   * A session that may write `layer` in its kolab: its role's layer, covered by its access.
+   * With `kolab`, what it writes must be in the session's own kolab.
+   */
+  private async requireLayer(sessionId: string, layer: Layer, kolab?: string) {
     const s = await this.session(sessionId);
     if (LAYER_OF_ROLE[s.active_role] !== layer) {
       throw new RoleError(`a ${s.active_role} session may not write the ${layer} layer`);
     }
+    if (kolab !== undefined && kolab !== s.kolab) throw new AccessError(`that is not in kolab ${s.kolab}, the kolab this session works in`);
+    if (!s.access.layers.includes(layer)) {
+      throw new AccessError(`${s.actor_id} may not write the ${layer} layer of kolab ${s.kolab}: it holds ${describeAccess(s.access)}`
+        + (s.kind === 'agent' ? `, its own grant cut down to its owner ${s.owner}'s` : ''));
+    }
     return s;
+  }
+
+  /** The kolab a session works in, which its actor can still reach (TEN12). */
+  async sessionKolab(sessionId: string): Promise<string> {
+    return (await this.session(sessionId)).kolab;
+  }
+
+  /**
+   * Refuses a node outside the session's kolab, as if it didn't exist, so a session learns
+   * nothing of another kolab (TEN12).
+   */
+  async requireNodeIn(sessionId: string, nodeId: string): Promise<void> {
+    const kolab = await this.sessionKolab(sessionId);
+    const r = await this.db.query(`select 1 from node where id = $1 and kolab_id = $2`, [nodeId, kolab]);
+    if (!r.rows.length) throw new Error(`no node ${nodeId} in kolab ${kolab}`);
+  }
+
+  // ---- accounts, kolabs, teams and grants (TEN1–TEN11) -----------------------
+
+  private async findAccount(id: string) {
+    return (await this.db.query<{ id: string; kind: 'user' | 'organization' }>(`select id, kind from account where id = $1`, [id])).rows[0];
+  }
+
+  /** Registers an organization: an account that owns kolabs and agents, with members and teams. */
+  async addOrganization(id: string, opts: { name?: string } = {}) {
+    if (!ACTOR_ID.test(id) || id === SYSTEM_ACTOR) throw new TenancyError(`"${id}" isn't a valid account id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
+    if (await this.findAccount(id)) throw new TenancyError(`account ${id} already exists`);
+    try {
+      await this.db.query(`insert into account(id, kind, name) values ($1, 'organization', $2)`, [id, opts.name ?? id]);
+    } catch (e) {
+      if (String(e).includes('account_pkey')) throw new TenancyError(`account ${id} already exists`);
+      throw e;
+    }
+  }
+
+  private async requireAccount(id: string, kind?: 'user' | 'organization') {
+    const a = await this.findAccount(id);
+    if (!a) throw new TenancyError(`no account ${id}`);
+    if (kind && a.kind !== kind) throw new TenancyError(`${id} is ${a.kind === 'user' ? 'a user' : 'an organization'}, not ${kind === 'user' ? 'a user' : 'an organization'}`);
+    return a;
+  }
+
+  private async requireKolab(name: string): Promise<KolabRow> {
+    const k = (await this.db.query<KolabRow>(
+      `select id, owner_id as owner, title, visibility, base_permission from kolab where id = $1`, [name])).rows[0];
+    if (!k) throw new TenancyError(`no kolab ${name}`);
+    return k;
+  }
+
+  /**
+   * Creates a kolab owned by an account. Its name is unique across all of Konjir (TEN4), so
+   * one taken by any other account is refused.
+   */
+  async createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel }) {
+    if (!KOLAB_NAME.test(name) || name.length > 100) throw new TenancyError(`"${name}" isn't a valid kolab name: use lowercase letters, digits and '-', starting with a letter or digit`);
+    if (opts.visibility !== undefined && !VISIBILITIES.includes(opts.visibility)) throw new TenancyError(`visibility is one of ${VISIBILITIES.join(', ')}`);
+    if (opts.base !== undefined && !ACCESS_LEVELS.includes(opts.base)) throw new TenancyError(`a base permission is one of ${ACCESS_LEVELS.join(', ')}`);
+    const owner = await this.requireAccount(opts.owner);
+    if (opts.base !== undefined && owner.kind !== 'organization') throw new TenancyError('only an organization\'s kolab has a base permission');
+    const taken = () => new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
+    if ((await this.db.query(`select 1 from kolab where id = $1`, [name])).rows.length) throw taken();
+    try {
+      await this.db.query(`insert into kolab(id, owner_id, title, visibility, base_permission) values ($1, $2, $3, $4, $5)`,
+        [name, opts.owner, opts.title ?? name, opts.visibility ?? 'private', opts.base ?? null]);
+    } catch (e) {
+      if (String(e).includes('kolab_pkey')) throw taken();   // made by another call since the check
+      throw e;
+    }
+  }
+
+  /** Every kolab, or with `owner` that account's. */
+  async listKolabs(opts: { owner?: string } = {}): Promise<KolabRow[]> {
+    return (await this.db.query<KolabRow>(
+      `select id, owner_id as owner, title, visibility, base_permission from kolab
+        where $1::text is null or owner_id = $1 order by id`, [opts.owner ?? null])).rows;
+  }
+
+  /** Adds a user to an organization, or changes their role in it. Owners administer every kolab it owns. */
+  async addMember(org: string, user: string, role: OrgRole = 'member') {
+    if (!ORG_ROLES.includes(role)) throw new TenancyError(`a member's role is one of ${ORG_ROLES.join(', ')}`);
+    await this.requireAccount(org, 'organization');
+    await this.requireAccount(user, 'user');
+    return this.changeAccess((tx) => tx.query(
+      `insert into org_member(org_id, user_id, role) values ($1, $2, $3)
+       on conflict (org_id, user_id) do update set role = excluded.role`, [org, user, role]));
+  }
+
+  /** Removes a user from an organization and its teams. Their sessions narrow, or end if nothing is left. */
+  async removeMember(org: string, user: string) {
+    await this.requireAccount(org, 'organization');
+    return this.changeAccess(async (tx) => {
+      await tx.query(`delete from team_member where user_id = $2 and team_id in (select id from team where org_id = $1)`, [org, user]);
+      await tx.query(`delete from org_member where org_id = $1 and user_id = $2`, [org, user]);
+    });
+  }
+
+  /** Creates a team in an organization, under `parent` (a team of the same organization) if given. Returns its id, `<org>/<name>`. */
+  async addTeam(org: string, name: string, opts: { parent?: string } = {}): Promise<string> {
+    if (!TEAM_NAME.test(name)) throw new TenancyError(`"${name}" isn't a valid team name: use lowercase letters, digits and '-', starting with a letter or digit`);
+    await this.requireAccount(org, 'organization');
+    const id = `${org}/${name}`;
+    const parent = opts.parent === undefined ? null : opts.parent.includes('/') ? opts.parent : `${org}/${opts.parent}`;
+    if (parent && !(await this.db.query(`select 1 from team where id = $1 and org_id = $2`, [parent, org])).rows.length) {
+      throw new TenancyError(`no team ${parent} in ${org} to nest ${id} under`);
+    }
+    if ((await this.db.query(`select 1 from team where id = $1`, [id])).rows.length) throw new TenancyError(`team ${id} already exists`);
+    await this.db.query(`insert into team(id, org_id, name, parent_id) values ($1, $2, $3, $4)`, [id, org, name, parent]);
+    return id;
+  }
+
+  /** Adds a member of the team's organization to the team. */
+  async addTeamMember(team: string, user: string) {
+    const t = (await this.db.query<{ org_id: string }>(`select org_id from team where id = $1`, [team])).rows[0];
+    if (!t) throw new TenancyError(`no team ${team}`);
+    if (!(await this.db.query(`select 1 from org_member where org_id = $1 and user_id = $2`, [t.org_id, user])).rows.length) {
+      throw new TenancyError(`${user} isn't a member of ${t.org_id}; add them to it first`);
+    }
+    return this.changeAccess((tx) => tx.query(`insert into team_member(team_id, user_id) values ($1, $2) on conflict do nothing`, [team, user]));
+  }
+
+  /** Removes a user from a team. Their sessions narrow, or end if nothing is left. */
+  async removeTeamMember(team: string, user: string) {
+    if (!(await this.db.query(`select 1 from team where id = $1`, [team])).rows.length) throw new TenancyError(`no team ${team}`);
+    return this.changeAccess((tx) => tx.query(`delete from team_member where team_id = $1 and user_id = $2`, [team, user]));
+  }
+
+  /**
+   * Grants access to a kolab, replacing any grant the grantee had there: to a person, a team
+   * (`<org>/<team>`, of the organization that owns the kolab) or an agent (TEN9). A Write grant
+   * covers `layers`, both by default (TEN8). An agent may never be granted more than its owner
+   * holds there (D30): a higher level, or a layer its owner can't write, is refused. A grant
+   * that lowers access narrows the grantee's sessions (and its agents'), and ends any that can
+   * no longer reach the kolab.
+   */
+  async grant(kolab: string, to: string, level: AccessLevel, opts: { layers?: Layer[] } = {}) {
+    if (!ACCESS_LEVELS.includes(level)) throw new TenancyError(`a level is one of ${ACCESS_LEVELS.join(', ')}`);
+    const k = await this.requireKolab(kolab);
+    let layers: Layer[];
+    if (level === 'write') {
+      layers = [...new Set(opts.layers ?? LAYERS)];
+      if (!layers.length || layers.some((l) => !LAYERS.includes(l))) throw new TenancyError(`a Write grant names the layers it covers: ${LAYERS.join(', ')}, or both`);
+    } else {
+      layers = level === 'read' || level === 'triage' ? [] : [...LAYERS];
+      if (opts.layers && (opts.layers.length !== layers.length || opts.layers.some((l) => !layers.includes(l)))) {
+        throw new TenancyError(`only a Write grant names its layers: ${level} covers ${layers.length ? 'both' : 'none'}`);
+      }
+    }
+    const grantee = await this.grantee(to, k);
+    return this.changeAccess(async (tx) => {
+      if (grantee.column === 'agent_id') {
+        // Against what its owner holds now, in this transaction.
+        const owner = await ownerAccess(tx, grantee.owner!, kolab);
+        const over = ACCESS_LEVELS.indexOf(level) > (owner.level ? ACCESS_LEVELS.indexOf(owner.level) : -1)
+          || layers.some((l) => !owner.layers.includes(l));
+        if (over) {
+          throw new AccessError(`${to}'s owner ${grantee.owner} holds ${describeAccess(owner)} in kolab ${kolab}, so ${to} can't be granted ${describeAccess({ level, layers })}: an agent never holds more access than its owner`);
+        }
+      }
+      await tx.query(`delete from kolab_grant where kolab_id = $1 and ${grantee.column} = $2`, [kolab, grantee.id]);
+      await tx.query(`insert into kolab_grant(kolab_id, ${grantee.column}, level, functional, technical) values ($1, $2, $3, $4, $5)`,
+        [kolab, grantee.id, level, layers.includes('functional'), layers.includes('technical')]);
+    });
+  }
+
+  /** Removes a grantee's grant on a kolab. Sessions narrow, and any that can no longer reach it end. */
+  async revoke(kolab: string, to: string) {
+    const grantee = await this.grantee(to, await this.requireKolab(kolab));
+    return this.changeAccess((tx) => tx.query(`delete from kolab_grant where kolab_id = $1 and ${grantee.column} = $2`, [kolab, grantee.id]));
+  }
+
+  /** Who a grant names: a team if it has a '/', else an actor: a person (by their user account) or an agent. */
+  private async grantee(to: string, k: KolabRow): Promise<{ column: 'user_id' | 'team_id' | 'agent_id'; id: string; owner?: string }> {
+    if (to.includes('/')) {
+      const t = (await this.db.query<{ org_id: string }>(`select org_id from team where id = $1`, [to])).rows[0];
+      if (!t) throw new TenancyError(`no team ${to}`);
+      if (t.org_id !== k.owner) throw new TenancyError(`team ${to} belongs to ${t.org_id}; only the owning organization's teams are granted access to kolab ${k.id}`);
+      return { column: 'team_id', id: to };
+    }
+    const a = await this.findActor(to);
+    if (!a) {
+      if (await this.findAccount(to)) throw new TenancyError(`${to} is an organization: grant access to its members or teams`);
+      throw new TenancyError(`no person, team or agent ${to}`);
+    }
+    return a.kind === 'person' ? { column: 'user_id', id: to } : { column: 'agent_id', id: to, owner: a.owner! };
+  }
+
+  /** An actor's access to a kolab: for an agent, its own grant cut down to its owner's (D30). */
+  async access(actorId: string, kolab: string): Promise<Access> {
+    return accessIn(this.db, actorId, kolab);
+  }
+
+  /** The kolabs an actor can reach. */
+  async reachable(actorId: string): Promise<string[]> {
+    return (await this.db.query<{ id: string }>(
+      `select k.id from kolab k where (select a.rank from kj_access($1, k.id) a) >= 1 order by k.id`, [actorId])).rows.map((r) => r.id);
+  }
+
+  /**
+   * Changes who holds what, then ends every open session that can no longer reach its kolab,
+   * in the same transaction, and tells listeners so their streams close (D41). Sessions that
+   * can still reach it narrow by themselves: access is computed on each use. Returns how many
+   * sessions ended.
+   */
+  private async changeAccess(fn: (tx: Q) => Promise<unknown>): Promise<{ ended: number }> {
+    return this.inTransaction(async (tx, signal) => {
+      await fn(tx);
+      const r = await tx.query<{ id: string }>(
+        `update session s set ended_at = now()
+          where s.ended_at is null and (select a.rank from kj_access(s.actor_id, s.kolab_id) a) = 0
+         returning s.id`);
+      for (const { id } of r.rows) await signal({ session: 'ended', id: sessionKey(id) });
+      return { ended: r.rows.length };
+    });
   }
 
   // ---- nodes and versions --------------------------------------------------
 
+  /** Creates a node in the session's kolab. */
   async createNode(sessionId: string, kind: Kind, title: string, id: string = ulid()): Promise<string> {
-    await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
-    await this.db.query(`insert into node(id, kind, layer, title) values ($1, $2, $3, $4)`,
-      [id, kind, LAYER_OF_KIND[kind], title]);
+    const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
+    await this.db.query(`insert into node(id, kind, layer, title, kolab_id) values ($1, $2, $3, $4, $5)`,
+      [id, kind, LAYER_OF_KIND[kind], title, s.kolab]);
     return id;
   }
 
@@ -519,8 +786,9 @@ export class Kolab {
    */
   async draft(sessionId: string, nodeId: string,
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
+    await this.requireNodeIn(sessionId, nodeId);   // another kolab's node reads as no node at all
     const node = await this.node(nodeId);
-    const s = await this.requireLayer(sessionId, node.layer);
+    const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
 
     // A variant's new version keeps its foreign parent and carries its
     // existing exceptions forward; a plain node's parent is its own last version.
@@ -540,6 +808,8 @@ export class Kolab {
     let parentEls: ElementRow[] = [];
     if (parentId) {
       const p = await this.version(parentId);
+      // A variant of another kolab's spec is a fork, which comes with the kolab segment in addresses (W1.4).
+      if (p.kolab_id !== s.kolab) throw new AccessError(`parent ${parentId} is not in kolab ${s.kolab}, the kolab this session works in`);
       if (p.state !== 'committed') throw new GateError(`parent ${parentId} has not cleared review`);
       await this.refuseCycle(nodeId, parentId);
       parentEls = await this.elements(parentId);
@@ -761,8 +1031,10 @@ export class Kolab {
     target: string; targetElement?: string; selector?: QuoteSelector;
   }): Promise<string> {
     const src = await this.version(e.source);
-    await this.requireLayer(sessionId, src.layer);
+    const s = await this.requireLayer(sessionId, src.layer, src.kolab_id);
     const tgt = await this.version(e.target);
+    // A link into another kolab needs Read on it (D3), and its address needs the kolab segment (W1.4).
+    if (tgt.kolab_id !== s.kolab) throw new AccessError(`the link target is not in kolab ${s.kolab}, the kolab this session works in`);
     if (tgt.state !== 'committed') {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
@@ -1184,7 +1456,7 @@ export class Kolab {
     const m = await this.markRow(markId);
     if (!m.delta_id || m.state !== 'open') throw new Error(`${markId} is not an open override mark`);
     const v = await this.version(m.version_id);
-    const s = await this.requireLayer(sessionId, v.layer);
+    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
     const deltas = await this.deltas(v.id);
     const d = deltas.find((x) => x.id === m.delta_id)!;
     const parentEls = await this.elements(v.parent_version_id!);
@@ -1226,7 +1498,7 @@ export class Kolab {
   async clear(sessionId: string, markId: string) {
     const m = await this.markRow(markId);
     const v = await this.version(m.version_id);
-    const s = await this.requireLayer(sessionId, v.layer);
+    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
     if (m.delta_id) throw new Error('use resolveOverride for override marks');
     if (m.edge_id) {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
@@ -1301,11 +1573,14 @@ export class Kolab {
     opts: { kind?: QueryKind; from?: Address | string } = {}): Promise<string> {
     const s = await this.session(sessionId);
     const a = typeof address === 'string' ? parseAddress(address) : address;
+    // Anyone with access may ask (Q1), about what is in the kolab they work in.
+    await this.requireNodeIn(sessionId, a.node);
     const r = await this.resolve(a);
     if (!r.versionId || r.status === 'orphan') throw new Error(`cannot ask about ${typeof address === 'string' ? address : JSON.stringify(address)}: it does not resolve`);
     let from: { version: string; element: string | null } | undefined;
     if (opts.from) {
       const f = typeof opts.from === 'string' ? parseAddress(opts.from) : opts.from;
+      await this.requireNodeIn(sessionId, f.node);
       const fr = await this.resolve(f);
       if (!fr.versionId || fr.status === 'orphan') throw new Error(`from ${formatAddress(f)} does not resolve`);
       if ((await this.version(fr.versionId)).layer !== LAYER_OF_ROLE[s.active_role]) {
@@ -1338,7 +1613,7 @@ export class Kolab {
       throw new GateError(`query ${queryId} is about a dirty mark; resolve it with konjir_resolve_override or konjir_clear_mark`);
     }
     const v = await this.version(q.version_id);
-    const s = await this.requireLayer(sessionId, v.layer);
+    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
     // The owner's queue shrinks and the asker's answers grow, in the transaction that answers.
     await this.inTransaction(async (tx, signal) => {
       await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1`, [queryId, answer, s.actor_id]);
@@ -1375,16 +1650,18 @@ export class Kolab {
     const s = await this.session(sessionId);
     return {
       session: sessionId, actor: s.actor_id, kind: s.kind, owner: s.owner,
-      role: s.active_role, layer: LAYER_OF_ROLE[s.active_role],
+      role: s.active_role, layer: LAYER_OF_ROLE[s.active_role], kolab: s.kolab, access: s.access,
     };
   }
 
-  async listNodes(kind?: Kind) {
+  /** Nodes, of one kind if given, in one kolab if given. */
+  async listNodes(kind?: Kind, kolab?: string) {
     return (await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number }>(
       `select n.id, n.kind, n.layer, n.title,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts
-         from node n where $1::text is null or n.kind = $1 order by n.kind, n.id`, [kind ?? null])).rows;
+         from node n where ($1::text is null or n.kind = $1) and ($2::text is null or n.kolab_id = $2)
+        order by n.kind, n.id`, [kind ?? null, kolab ?? null])).rows;
   }
 
   /** Edges into (upstream) or out of (downstream) a version, with human-readable addresses. */
@@ -1412,7 +1689,7 @@ export class Kolab {
   }
 
   /** Open marks with the addresses involved, so an agent can act without more lookups. */
-  async describeMarks(filter: { layer?: Layer; node?: string } = {}) {
+  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string } = {}) {
     const rows = (await this.db.query<MarkRow & {
       node_id: string; seq: number; layer: Layer; trig_node: string; trig_seq: number;
       t_element: string | null; t_selector: QuoteSelector | null; cause_count: number;
@@ -1427,7 +1704,8 @@ export class Kolab {
         where i.state = 'open'
           and ($1::text is null or v.layer = $1)
           and ($2::text is null or v.node_id = $2)
-        order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null])).rows;
+          and ($3::text is null or i.kolab_id = $3)
+        order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null, filter.kolab ?? null])).rows;
     return rows.map((r) => ({
       mark: r.id,
       reason: r.reason,
@@ -1444,7 +1722,7 @@ export class Kolab {
   }
 
   async listQueries(filter: {
-    layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind;
+    layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind; kolab?: string;
   } = {}): Promise<Query[]> {
     const rows = (await this.db.query<{
       id: string; kind: QueryKind; node_id: string; seq: number; element_id: string | null;
@@ -1457,9 +1735,9 @@ export class Kolab {
          left join version fv on fv.id = q.from_version_id
         where ($1::text is null or v.layer = $1) and ($2::text is null or q.state = $2)
           and ($3::text is null or q.raised_by = $3) and ($4::text is null or v.node_id = $4)
-          and ($5::text is null or q.kind = $5)
+          and ($5::text is null or q.kind = $5) and ($6::text is null or q.kolab_id = $6)
         order by q.id`,
-      [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null])).rows;
+      [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null, filter.kolab ?? null])).rows;
     return rows.map((r) => ({
       id: r.id, kind: r.kind,
       address: formatAddress({ node: r.node_id, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }),
@@ -1478,8 +1756,8 @@ export class Kolab {
       `select id, version_id, element_id, question from query where state = 'open'`)).rows;
   }
 
-  async node(id: string): Promise<{ id: string; kind: Kind; layer: Layer; title: string }> {
-    const r = await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string }>(`select * from node where id = $1`, [id]);
+  async node(id: string): Promise<{ id: string; kind: Kind; layer: Layer; title: string; kolab_id: string }> {
+    const r = await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string; kolab_id: string }>(`select * from node where id = $1`, [id]);
     if (!r.rows[0]) throw new Error(`no node ${id}`);
     return r.rows[0];
   }
@@ -1767,6 +2045,43 @@ async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<stri
 async function nextSeq(tx: Q, nodeId: string): Promise<number> {
   const r = await tx.query<{ n: number }>(`select coalesce(max(seq), 0) + 1 as n from version where node_id = $1`, [nodeId]);
   return r.rows[0].n;
+}
+
+/** An open session: its actor, role and kolab, and the actor's access there now. */
+interface Session {
+  actor_id: string; active_role: Role; kolab: string; kind: ActorKind; owner: string | null; access: Access;
+}
+
+/** An actor's access to a kolab, from kj_access: the database is the one place it is computed. */
+async function accessIn(q: Q, actorId: string, kolab: string): Promise<Access> {
+  const r = (await q.query<{ rank: number; functional: boolean; technical: boolean }>(
+    `select rank, functional, technical from kj_access($1, $2)`, [actorId, kolab])).rows[0];
+  return toAccess(r);
+}
+
+function toAccess(r: { rank: number; functional: boolean; technical: boolean } | undefined): Access {
+  if (!r || r.rank < 1) return { level: null, layers: [] };
+  return { level: ACCESS_LEVELS[r.rank - 1], layers: LAYERS.filter((l) => (l === 'functional' ? r.functional : r.technical)) };
+}
+
+/**
+ * What an agent's owner holds in a kolab: a user's own access; an organization holds all of
+ * its own kolabs and nothing of anyone else's (as kj_access computes it).
+ */
+async function ownerAccess(q: Q, owner: string, kolab: string): Promise<Access> {
+  const r = (await q.query<{ kind: string; owns: boolean }>(
+    `select a.kind, exists (select 1 from kolab k where k.id = $2 and k.owner_id = a.id) as owns from account a where a.id = $1`,
+    [owner, kolab])).rows[0];
+  if (r?.kind === 'user') return accessIn(q, owner, kolab);
+  return r?.owns ? { level: 'admin', layers: [...LAYERS] } : { level: null, layers: [] };
+}
+
+/** "Write on the functional layer", "Read", "no access". */
+function describeAccess(a: Access): string {
+  if (!a.level) return 'no access';
+  const level = a.level[0].toUpperCase() + a.level.slice(1);
+  if (a.level !== 'write') return level;
+  return a.layers.length === 2 ? `${level} on both layers` : a.layers.length ? `${level} on the ${a.layers[0]} layer` : `${level} on no layer`;
 }
 
 /** A version committed since another's base: it overtook that one. */

@@ -9,7 +9,7 @@ import pg from 'pg';
 import { listenerConnection, openDb, type Db } from '@konjir/db';
 import { EVENT_CHANNEL, isKolabEvent, maskTokens, sessionKey, type Kolab, type ListenerState } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
-import { els, marksOn, openKolab, rejection, setup, testStore } from '@konjir/engine/testing';
+import { els, marksOn, openKolab, people, rejection, setup, testStore } from '@konjir/engine/testing';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
 
@@ -39,6 +39,7 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   const events = heard(kolab);
 
   const failed = internals(kolab).inTransaction(async (tx, signal) => {
+    await tx.query(`insert into account(id, kind, name) values ('zed', 'user', 'zed')`);
     await tx.query(`insert into actor(id, name, kind) values ('zed', 'zed', 'person')`);
     await signal({ inbox: 'actor', actor: 'zed' });
     throw new Error('the change fails after signalling');
@@ -47,6 +48,7 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   expect((await kolab.listActors()).map((a) => a.id)).toStrictEqual([]);
 
   await internals(kolab).inTransaction(async (tx, signal) => {
+    await tx.query(`insert into account(id, kind, name) values ('zed', 'user', 'zed')`);
     await tx.query(`insert into actor(id, name, kind) values ('zed', 'zed', 'person')`);
     await signal({ inbox: 'actor', actor: 'zed' });
     await signal({ inbox: 'actor', actor: 'zed' });   // a repeat in one transaction is one event
@@ -168,7 +170,7 @@ async function silenceableProxy(databaseUrl: string) {
 
   test('a change made through one Kolab signals the other once, and a rolled-back one signals neither', async () => {
     const { a, b, onA, onB } = await twoKolabs();
-    await b.addActor('alice'); await b.addActor('bob');
+    await people(b, 'alice'); await people(b, 'bob');
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
     await b.createNode(product, 'functional_spec', 'Orders', 'orders');
@@ -200,7 +202,7 @@ async function silenceableProxy(databaseUrl: string) {
 
   test('a session ended through one Kolab reaches the other by its sessionKey, never its token', async () => {
     const { b, onA } = await twoKolabs();
-    await b.addActor('alice');
+    await people(b, 'alice');
     const token = await b.openSession('alice', 'product');
     await b.endSession(token);
     await until(() => onA.length > 0);
@@ -210,7 +212,7 @@ async function silenceableProxy(databaseUrl: string) {
 
   test('an event too long for NOTIFY reaches the other Kolab as a signal to re-read every inbox', async () => {
     const { a, b, onA, onB } = await twoKolabs();
-    await a.addActor('alice'); await a.addActor('bob'); await a.addActor('carol');
+    await people(a, 'alice'); await people(a, 'bob'); await people(a, 'carol');
     await a.openSession('alice', 'product'); await a.openSession('bob', 'engineer');
     const ended = await a.openSession('carol', 'product');
     await a.endSession(ended);
@@ -289,7 +291,7 @@ async function silenceableProxy(databaseUrl: string) {
     const { a, b, url, onA } = await twoKolabs();
     const states: ListenerState[] = [];
     a.onListenerState((s) => states.push(s));
-    await b.addActor('alice'); await b.addActor('bob');
+    await people(b, 'alice'); await people(b, 'bob');
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
     await b.createNode(product, 'functional_spec', 'Orders', 'orders');
@@ -336,7 +338,7 @@ async function silenceableProxy(databaseUrl: string) {
   test('a listener whose connection drops reconnects, and hears changes made after it', async () => {
     const { a, b, url, onA } = await twoKolabs();
     expect(await a.listenerConnected()).toBe(true);
-    await b.addActor('alice');
+    await people(b, 'alice');
     const admin = new pg.Client({ connectionString: url });
     await admin.connect();
     try {
@@ -378,7 +380,7 @@ async function silenceableProxy(databaseUrl: string) {
 
   test('a resync that fails after a reconnect signals nothing, and is retried until everything is signalled', async () => {
     const { a, b, url, onA } = await twoKolabs();
-    await b.addActor('alice'); await b.addActor('bob');
+    await people(b, 'alice'); await people(b, 'bob');
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
     await b.createNode(product, 'functional_spec', 'Orders', 'orders');

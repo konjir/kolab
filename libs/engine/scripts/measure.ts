@@ -7,6 +7,7 @@
  * version re-mints).
  */
 import { Kolab } from '../src/index.js';
+import { people } from '../src/testing.js';
 
 type Mode = { name: string; targetElement: boolean; sourceElement: boolean; wbsWhole: boolean };
 
@@ -19,7 +20,7 @@ const MODES: Mode[] = [
 
 async function run(n: number, mode: Mode) {
   const kolab = await Kolab.open();
-  await kolab.addActor('alice'); await kolab.addActor('bob');
+  await people(kolab, 'alice'); await people(kolab, 'bob');
   const product = await kolab.openSession('alice', 'product');
   const engineer = await kolab.openSession('bob', 'engineer');
   const range = [...Array(n).keys()];

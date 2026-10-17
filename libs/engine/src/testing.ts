@@ -92,11 +92,29 @@ export async function closeOpened() {
   if (errors.length > 1) throw new AggregateError(errors, `${errors.length} teardown steps failed`);
 }
 
+/** The kolab tests work in, owned by the organization `test-org`. */
+export const TEST_KOLAB = 'test';
+
+/**
+ * Adds each person, with Write on both layers of the test kolab, which is made (owned by the
+ * organization `test-org`) the first time. With `owner`, each is an agent of that account
+ * instead, granted Write on both layers too.
+ */
+export async function people(kolab: Kolab, ids: string | string[], opts: { owner?: string } = {}) {
+  if (!(await kolab.listKolabs()).some((k) => k.id === TEST_KOLAB)) {
+    await kolab.addOrganization('test-org');
+    await kolab.createKolab(TEST_KOLAB, { owner: 'test-org' });
+  }
+  for (const id of [ids].flat()) {
+    await kolab.addActor(id, { owner: opts.owner });
+    await kolab.grant(TEST_KOLAB, id, 'write');
+  }
+}
+
 export async function setup(reviewer?: Reviewer) {
   const kolab = await openKolab({ reviewer });
-  await kolab.addActor('alice');   // product owner
-  await kolab.addActor('bob');     // engineer
-  await kolab.addActor('carol');   // holds both roles, one at a time
+  // alice is the product owner, bob the engineer; carol holds both roles, one at a time.
+  await people(kolab, ['alice', 'bob', 'carol']);
   const product = await kolab.openSession('alice', 'product');
   const engineer = await kolab.openSession('bob', 'engineer');
   return { kolab, product, engineer };

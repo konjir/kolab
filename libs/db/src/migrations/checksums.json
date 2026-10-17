@@ -4,5 +4,6 @@
   "0003_version_base.sql": "05b13fc5060da5380667aec9e84bad91c39dd9421ad417f2fc2be5b202bd3315",
   "0004_rebase_failed.sql": "f6c12e9a0949c69873a1978b5630b0c33a138c28faee12ca45092ec242f0b9ac",
   "0005_optional_case_file.sql": "e18e37ef178db26ed708530f899d7a0ecedf2976d7dc3694cb111c569efda027",
+  "0006_accounts_kolabs.sql": "3f82d2cb5910106e1a95e825c2a284ca15c93617eafb99c5e7283911a71fbdbe",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

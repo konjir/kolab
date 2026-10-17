@@ -28,6 +28,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import type { Reviewer } from '@konjir/types';
 import { GateError, Kolab, structuralReviewer } from '../src/index.js';
+import { people } from '../src/testing.js';
 
 type Shape = { E: number; W: number; D: number; B: number; K: number; F: number };
 type Backend = { name: string; url?: () => Promise<string>; stop?: () => Promise<void> };
@@ -78,7 +79,7 @@ async function peakRss<T>(fn: () => Promise<T>): Promise<[T, number]> {
 const text = (i: number, gen = 1) => `Element ${i} holds, as of revision ${gen}.`;
 
 async function family(kolab: Kolab, s: Shape) {
-  await kolab.addActor('alice');
+  await people(kolab, 'alice');
   const product = await kolab.openSession('alice', 'product');
   const range = [...Array(s.E).keys()];
   const P = await kolab.createNode(product, 'functional_spec', 'Parent', 'P');
@@ -203,7 +204,7 @@ async function probe(backend: Backend, s: Shape) {
   instrument(kolab);
   try {
     const { product, P, next, depth } = await family(kolab, s);
-    await kolab.addActor('dave');
+    await people(kolab, 'dave');
     const other = await kolab.openSession('dave', 'product');
     const U = await kolab.createNode(other, 'functional_spec', 'Unrelated', 'U');
     let u = 0;
@@ -304,7 +305,7 @@ async function raceKolab(backend: Backend) {
 
 /** P@1 and `roots` variants V0, V1, …, each with `children` variants under it (V0.0, …). */
 async function raceFamily(kolab: Kolab, roots: number, children = 0) {
-  await kolab.addActor('alice');
+  await people(kolab, 'alice');
   const s = await kolab.openSession('alice', 'product');
   await kolab.createNode(s, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(s, 'P', { elements: [0, 1, 2].map((i) => ({ id: `E${i}`, text: `Parent element ${i}, rev 1.` })) });
@@ -461,7 +462,7 @@ async function race2b(backend: Backend, n = 10) {
     const { kolab } = await raceKolab(backend);
     try {
       const { s } = await raceFamily(kolab, 1);
-      await kolab.addActor('bob');
+      await people(kolab, 'bob');
       const s2 = await kolab.openSession('bob', 'product');
       const rs = await Promise.allSettled([
         kolab.commit(s, 'V0', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] }),

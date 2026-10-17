@@ -7,12 +7,31 @@
 
 export const ROLES = ['product', 'engineer'] as const;
 export type Role = typeof ROLES[number];
-/** A person, or an agent owned by a person (D30). Agents owned by an organization come with W1.3. */
+/** A person, or an agent owned by an account: a user or an organization (D30). */
 export const ACTOR_KINDS = ['person', 'agent'] as const;
 export type ActorKind = typeof ACTOR_KINDS[number];
+/** `owner` is the account that owns an agent: a user (a person, by the same id) or an organization. */
 export interface Actor { id: string; name: string; kind: ActorKind; owner: string | null }
+/** An account owns kolabs and agents (TEN2). A person is a user, by the same id. */
+export const ACCOUNT_KINDS = ['user', 'organization'] as const;
+export type AccountKind = typeof ACCOUNT_KINDS[number];
+/** A member of an organization, or one of its owners, who administer all of its kolabs (TEN10). */
+export const ORG_ROLES = ['member', 'owner'] as const;
+export type OrgRole = typeof ORG_ROLES[number];
+/** The levels of access to a kolab, lowest first (TEN7). A Write grant names its layers (TEN8). */
+export const ACCESS_LEVELS = ['read', 'triage', 'write', 'maintain', 'admin'] as const;
+export type AccessLevel = typeof ACCESS_LEVELS[number];
+/** Who can read a kolab without a grant: everyone, nobody, or the owning organization's members (TEN6). */
+export const VISIBILITIES = ['public', 'private', 'internal'] as const;
+export type Visibility = typeof VISIBILITIES[number];
 /**
- * Who wrote a version: the actor, the person who owns it when it's an agent, and the role it
+ * An actor's access to a kolab: its level (null for none) and the layers it may write. An
+ * agent's is its own grant, cut down to its owner's (D30).
+ */
+export interface Access { level: AccessLevel | null; layers: Layer[] }
+export interface KolabRow { id: string; owner: string; title: string; visibility: Visibility; base_permission: AccessLevel | null }
+/**
+ * Who wrote a version: the actor, the account that owns it when it's an agent, and the role it
  * was acting in. Kolab's own rebases are written by the actor `kolab`, of kind `system`.
  */
 export interface Author { actor: string; kind: ActorKind | 'system'; owner: string | null; role: string }
@@ -62,6 +81,8 @@ export interface VersionRow {
   /** The node's live version when this one was drafted: what it was built on. Null for a node's first. */
   base_version_id: string | null;
   layer: Layer; state: 'drafted' | 'committed' | 'rejected'; actor_id: string; active_role: string;
+  /** The kolab the version's node is in. */
+  kolab_id?: string;
 }
 
 export interface MarkRow {

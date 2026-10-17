@@ -4,7 +4,7 @@
 // Postgres. `npm run rebase-storm -- --races` prints the same races as RACE or SAFE.
 import { expect, test } from '@jest/globals';
 import { GateError, Kolab, structuralReviewer } from '@konjir/engine';
-import { els, marksOn, rejection, setup, textOf } from '@konjir/engine/testing';
+import { els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { ReviewContext, Reviewer } from '@konjir/types';
 
 type Hook = (ctx: ReviewContext) => Promise<void>;
@@ -62,7 +62,7 @@ const noteOf = async (kolab: Kolab, id: string) =>
 
 test('two commits to one node built on the same version: the second is rejected as stale with a GateError', async () => {
   const { kolab, product } = await setup();
-  await kolab.addActor('dave');
+  await people(kolab, 'dave');
   const dave = await kolab.openSession('dave', 'product');
   const { ids } = await family(kolab, product, 1);
   // Both drafted on V0@1, at once: each takes a number of its own.
@@ -88,7 +88,7 @@ test('two commits to one node built on the same version: the second is rejected 
 
 test('a commit to a node while another draft of it is in review rejects that draft, even after the reviewer passed it', async () => {
   const { kolab, product, setHook } = await hooked();
-  await kolab.addActor('dave');
+  await people(kolab, 'dave');
   const dave = await kolab.openSession('dave', 'product');
   const B = await kolab.createNode(product, 'functional_spec', 'B', 'B');
   await kolab.commit(product, B, { elements: els({ b1: 'v1' }) });
@@ -165,7 +165,7 @@ test('a draft overtaken only by Kolab\'s own rebases before review still folds a
 
 test('a human commit between judging a draft overtaken by rebases and folding it makes the fold stale, not lost', async () => {
   const { kolab, product } = await setup();
-  await kolab.addActor('dave');
+  await people(kolab, 'dave');
   const dave = await kolab.openSession('dave', 'product');
   const { next } = await family(kolab, product, 1);
   const draft = await kolab.draft(product, 'V0', add('A', 'Alice adds A.'));

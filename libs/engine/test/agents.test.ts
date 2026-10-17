@@ -1,15 +1,16 @@
-// Agents are actors of their own (W1.14; D30, DAT10, ENF4, ENF5, ROL4): each is owned by a
-// person, holds its own sessions, and is the author of what it writes.
+// Agents are actors of their own (W1.14; D30, DAT10, ENF4, ENF5, ROL4): each is owned by an
+// account, holds its own sessions, and is the author of what it writes.
 import { expect, test } from '@jest/globals';
 import { ActorError } from '@konjir/engine';
-import { els, openKolab, rejection } from '@konjir/engine/testing';
+import { TEST_KOLAB, els, openKolab, people, rejection } from '@konjir/engine/testing';
 
+/** Alice, with Write on both layers of the test kolab, and three agents of hers with the same. */
 async function aliceAndHerAgents() {
   const kolab = await openKolab();
+  await people(kolab, []);
   await kolab.addActor('alice', { name: 'Alice' });
-  await kolab.addActor('alice-pm', { owner: 'alice' });
-  await kolab.addActor('alice-pm-2', { owner: 'alice' });
-  await kolab.addActor('alice-eng', { owner: 'alice' });
+  await kolab.grant(TEST_KOLAB, 'alice', 'write');
+  await people(kolab, ['alice-pm', 'alice-pm-2', 'alice-eng'], { owner: 'alice' });
   return kolab;
 }
 
@@ -22,6 +23,7 @@ test('two agents of one person hold sessions at the same time, and each version 
 
   expect(await kolab.sessionInfo(pm)).toStrictEqual({
     session: pm, actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
+    kolab: TEST_KOLAB, access: { level: 'write', layers: ['functional', 'technical'] },
   });
   expect(await kolab.sessionInfo(pm2)).toMatchObject({ actor: 'alice-pm-2', kind: 'agent', owner: 'alice' });
   expect(await kolab.sessionInfo(self)).toMatchObject({ actor: 'alice', kind: 'person', owner: null });
@@ -67,9 +69,9 @@ test('one open session per agent: an agent with a session must end it before ope
   expect(await kolab.sessionInfo(await kolab.openSession('alice-pm', 'engineer'))).toMatchObject({ actor: 'alice-pm', role: 'engineer' });
 });
 
-test("an agent's owner must be a person who exists", async () => {
+test("an agent's owner must be an account that exists", async () => {
   const kolab = await aliceAndHerAgents();
-  expect(await rejection(kolab.addActor('stray', { owner: 'nobody' }))).toMatch(/ActorError: no actor nobody to own stray/);
+  expect(await rejection(kolab.addActor('stray', { owner: 'nobody' }))).toMatch(/ActorError: no account nobody to own stray/);
   expect(await rejection(kolab.addActor('sub-agent', { owner: 'alice-pm' }))).toMatch(/ActorError: alice-pm is an agent/);
   await expect(kolab.openSession('nobody', 'product')).rejects.toBeInstanceOf(ActorError);
   expect(await kolab.listActors({ owner: 'alice' })).toStrictEqual([
@@ -80,14 +82,15 @@ test("an agent's owner must be a person who exists", async () => {
   expect(await kolab.actor('alice')).toStrictEqual({ id: 'alice', name: 'Alice', kind: 'person', owner: null });
 });
 
-test('the database refuses an agent with no owner, a person with one, an agent owned by an agent, and a bad id', async () => {
+test('the database refuses an agent with no owner, a person with one, an agent owned by an agent, a person with no user account, and a bad id', async () => {
   const kolab = await aliceAndHerAgents();
   const insert = (id: string, kind: string, owner: string | null) =>
     kolab.db.query(`insert into actor(id, name, kind, owner_id) values ($1, $1, $2, $3)`, [id, kind, owner]);
   expect(await rejection(insert('orphan', 'agent', null))).toMatch(/actor_owner_check/);
   expect(await rejection(insert('owned-person', 'person', 'alice'))).toMatch(/actor_owner_check/);
-  expect(await rejection(insert('sub-agent', 'agent', 'alice-pm'))).toMatch(/actor_owner_is_person/);
-  expect(await rejection(insert('stray', 'agent', 'nobody'))).toMatch(/actor_owner_is_person/);
+  expect(await rejection(insert('sub-agent', 'agent', 'alice-pm'))).toMatch(/actor_owner_is_account/);
+  expect(await rejection(insert('stray', 'agent', 'nobody'))).toMatch(/actor_owner_is_account/);
+  expect(await rejection(insert('no-account', 'person', null))).toMatch(/actor_person_is_user/);
   expect(await rejection(insert('robot', 'robot', null))).toMatch(/actor_kind_check/);
   expect(await rejection(insert('kolab', 'person', null))).toMatch(/actor_id_check/);
   expect(await rejection(insert('', 'person', null))).toMatch(/actor_id_check/);
