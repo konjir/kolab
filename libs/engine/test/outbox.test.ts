@@ -25,7 +25,7 @@ async function stoppingAt(store: Store, at: (ctx: CheckContext) => boolean) {
     reached();
     return new Promise(() => undefined);
   };
-  const kolab = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS });
+  const kolab = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS, closeWaitMs: 0 });
   return { kolab, stopped };
 }
 
@@ -34,7 +34,9 @@ const die = (kolab: Kolab) => kolab.db.close();
 
 /** Opens the database again in a new Kolab, once any claim the dead process held has lapsed. */
 async function restart(store: Store) {
-  if (onPostgres) await new Promise((r) => setTimeout(r, LEASE_MS + 100));
+  // The dead process's claims lapse unrenewed. (A PGlite directory opened in a fresh process frees
+  // them at once; here the dead Kolab is in this process still, so they lapse as on Postgres.)
+  await new Promise((r) => setTimeout(r, LEASE_MS + 100));
   return openKolab({ ...store, outboxLeaseMs: LEASE_MS });
 }
 
@@ -102,7 +104,7 @@ test('an approval recorded before its process stops is folded and committed once
   await a.stopped;
   // The verdict is a row, and so is the work it still owes.
   expect(await verdicts(a.kolab, v2)).toStrictEqual([{ reviewer_id: 'dave', state: 'approved' }]);
-  expect(await jobs(a.kolab)).toMatchObject([{ kind: 'settle_approval', version_id: v2 }]);
+  expect(await jobs(a.kolab)).toMatchObject([{ kind: 'settle', version_id: v2 }]);
   await die(a.kolab);
 
   const b = await restart(store);
@@ -211,7 +213,7 @@ test('a cascade that fails is freed with its error and retried by the worker unt
 
 test('a node\'s cascades run in commit order: its next commit first finishes the cascade a stopped process owed the version before it', async () => {
   const store = await persistentStore();
-  const k = await openKolab({ ...store, outboxLeaseMs: LEASE_MS });
+  const k = await openKolab({ ...store, outboxLeaseMs: LEASE_MS, closeWaitMs: 0 });
   await people(k, 'alice', { layers: ['functional'] });
   await people(k, 'bob', { layers: ['technical'] });
   const alice = await k.openSession('alice', 'product');
@@ -334,4 +336,234 @@ test('an answer and everything it causes commit together, or not at all', async 
   for (let i = 0; i < 100 && (await jobs(a)).length; i++) await new Promise((r) => setTimeout(r, 50));
   expect(await jobs(a)).toStrictEqual([]);
   expect(await textOf(a, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
+});
+
+/** A promise and the function that settles it, for holding a step until a test lets it go. */
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((r) => { open = r; });
+  return { open, opened };
+}
+
+/** S@1 with R1, and Bob's binding B@1, whose b1 relies on R1; S@2 changes R1, so B@1 carries a changed mark. */
+async function bindingWithMark(k: Kolab) {
+  await people(k, 'alice', { layers: ['functional'] });
+  await people(k, 'bob', { layers: ['technical'] });
+  const alice = await k.openSession('alice', 'product');
+  const bob = await k.openSession('bob', 'engineer');
+  await k.createNode(alice, 'functional_spec', 'S', 'S');
+  const s1 = await k.commit(alice, 'S', { elements: els({ R1: 'Orders can be cancelled.' }) });
+  await k.createNode(bob, 'technical_binding', 'B', 'B');
+  const b1 = await k.draft(bob, 'B', { elements: els({ b1: 'A cancel endpoint.' }) });
+  await k.link(bob, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
+  expect((await k.review(b1)).ok).toBe(true);
+  await k.commit(alice, 'S', { elements: els({ R1: 'Orders can be cancelled by staff.' }) });
+  expect((await marksOn(k, 'B')).map((m) => [m.reason, m.version_id])).toStrictEqual([['changed', b1]]);
+  return { alice, bob, b1 };
+}
+
+/** What a binding whose cascades all ran in order shows: its link and its mark on its latest version. */
+async function expectCarriedToLatest(k: Kolab) {
+  const latest = (await k.latestCommitted('B'))!;
+  expect(latest.seq).toBe(3);
+  expect((await k.lineage(latest.id, 'upstream')).map((e) => [e.source, e.target])).toStrictEqual([['kj:B@3#b1', 'kj:S@1#R1']]);
+  expect((await marksOn(k, 'B')).map((m) => [m.reason, m.version_id])).toStrictEqual([['changed', latest.id]]);
+  expect(await jobs(k)).toStrictEqual([]);
+}
+
+const supersedeRead = (sql: string, params?: unknown[]) =>
+  sql.includes("seq < $2 and state = 'committed' order by seq desc limit 1") && params?.[0] === 'B';
+
+test('a node\'s later commit waits for the cascade another run holds, and runs once that one is done, in commit order', async () => {
+  const k = await openKolab({ ...(await persistentStore()), outboxLeaseMs: LEASE_MS });
+  const { bob } = await bindingWithMark(k);
+  // B@2's cascade is held up as it starts to carry B@1's link and mark forward.
+  const held = gate();
+  const reached = gate();
+  const query = k.db.query.bind(k.db);
+  let armed = true;
+  k.db.query = (async (sql: string, params?: unknown[]) => {
+    if (armed && supersedeRead(sql, params)) { armed = false; reached.open(); await held.opened; }
+    return query(sql, params);
+  }) as typeof k.db.query;
+  const b2 = k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b2', text: 'A refund endpoint.' }] });
+  await reached.opened;
+  // B@3 commits meanwhile; its cascade waits behind B@2's, which this process holds.
+  await k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b3', text: 'A status endpoint.' }] });
+  expect((await jobs(k)).map((j) => [j.kind, !!j.claimed_by])).toStrictEqual([['after_commit', true], ['after_commit', false]]);
+  expect(await k.drainOutbox()).toBe(0);   // nor does the worker run it out of turn
+  // A lease's worth later the held cascade still holds its claim: it is renewed while it runs.
+  await new Promise((r) => setTimeout(r, LEASE_MS * 2));
+  expect(await k.drainOutbox()).toBe(0);
+  held.open();
+  await b2;
+  // B@2's cascade, then B@3's: the link and the mark reach B@3.
+  await expectCarriedToLatest(k);
+});
+
+test('a node\'s later commit waits for a cascade that failed, rather than run ahead of it, and both run in order once it is retried', async () => {
+  const k = await openKolab({ ...(await persistentStore()), outboxLeaseMs: LEASE_MS });
+  const { bob, b1 } = await bindingWithMark(k);
+  const proto = Object.getPrototypeOf(k.db);
+  const query = proto.query;
+  let armed = true;
+  proto.query = async function (sql: string, params?: unknown[]) {
+    if (armed && supersedeRead(sql, params)) { armed = false; throw new Error('Connection terminated unexpectedly'); }
+    return query.call(this, sql, params);
+  };
+  try {
+    expect(await rejection(k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b2', text: 'A refund endpoint.' }] })))
+      .toMatch(/^CascadeError: B@2 committed, but its cascade did not finish/);
+  } finally { proto.query = query; }
+  // B@3 commits, and its cascade waits: B@2's is backing off, and runs first.
+  await k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b3', text: 'A status endpoint.' }] });
+  expect((await marksOn(k, 'B')).map((m) => m.version_id)).toStrictEqual([b1]);
+  expect(await k.lineage((await k.latestCommitted('B'))!.id, 'upstream')).toStrictEqual([]);
+  expect(await jobs(k)).toHaveLength(2);
+  await new Promise((r) => setTimeout(r, 1100));
+  await k.drainOutbox();
+  await expectCarriedToLatest(k);
+});
+
+test('a run that lost its claim to another touches nothing of the job, which the other run finishes once', async () => {
+  const store = await persistentStore();
+  const first = gate(); const firstReached = gate();
+  const second = gate(); const secondReached = gate();
+  let calls = 0;
+  const checks: Checks = async (ctx) => {
+    if (ctx.version.node_id !== 'V' || ctx.version.active_role !== 'system') return structuralChecks(ctx);
+    calls++;
+    if (calls === 1) { firstReached.open(); await first.opened; }
+    else if (calls === 2) { secondReached.open(); await second.opened; }
+    return structuralChecks(ctx);
+  };
+  const k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS });
+  await people(k, 'alice', { layers: ['functional'] });
+  const alice = await k.openSession('alice', 'product');
+  await k.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
+  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
+
+  const p2 = k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  await firstReached.opened;
+  const claimOf = async () => (await k.db.query<{ claim: string | null; attempts: number }>(`select claim, attempts from outbox where kind = 'after_commit'`)).rows;
+  const [{ claim: token1 }] = await claimOf();
+  // Its renewals fail, as on a saturated pool, so its lease lapses; the worker takes the job.
+  const query = k.db.query.bind(k.db);
+  k.db.query = (async (sql: string, params?: unknown[]) => {
+    if (sql.startsWith('update outbox set claimed_until') && params?.[0] === token1) throw new Error('timeout exceeded when trying to connect');
+    return query(sql, params);
+  }) as typeof k.db.query;
+  await new Promise((r) => setTimeout(r, LEASE_MS * 2));
+  const drained = k.drainOutbox();
+  await secondReached.opened;
+  const [{ claim: token2, attempts }] = await claimOf();
+  expect(token2).not.toBe(token1);
+  expect(attempts).toBe(2);
+
+  // The first run goes on, finds its claim lost and stops; the job is the second run's still.
+  first.open();
+  const p2id = await p2;
+  expect(await claimOf()).toStrictEqual([{ claim: token2, attempts: 2 }]);
+  // Nor can a stale token free or fail it.
+  await (k as unknown as { fail(j: object, e: unknown): Promise<void> }).fail({ token: token1, kind: 'after_commit', versionId: p2id }, new Error('late'));
+  expect(await claimOf()).toStrictEqual([{ claim: token2, attempts: 2 }]);
+
+  second.open();
+  expect(await drained).toBe(1);
+  expect(await jobs(k)).toStrictEqual([]);
+  // V was rebased onto P@2 once.
+  const committed = (await history(k, 'V')).filter((v) => v.state === 'committed').map((v) => v.active_role);
+  expect(committed).toStrictEqual(['product', 'system']);
+  expect(await textOf(k, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
+});
+
+test('a job that keeps failing is dead after ten attempts: no worker runs it until an admin retries it', async () => {
+  const k = await openKolab({ ...(await persistentStore()), outboxLeaseMs: LEASE_MS });
+  const { bob } = await bindingWithMark(k);
+  const proto = Object.getPrototypeOf(k.db);
+  const query = proto.query;
+  let failing = true;
+  proto.query = async function (sql: string, params?: unknown[]) {
+    if (failing && supersedeRead(sql, params)) throw new Error('Connection terminated unexpectedly');
+    return query.call(this, sql, params);
+  };
+  try {
+    expect(await rejection(k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b2', text: 'A refund endpoint.' }] }))).toMatch(/^CascadeError/);
+    // Nine attempts on, its backoff over, it fails a tenth time.
+    await k.db.query(`update outbox set attempts = 9, run_after = clock_timestamp()`);
+    expect(await k.drainOutbox()).toBe(0);
+  } finally { proto.query = query; }
+  const [dead] = await k.outboxJobs({ state: 'dead' });
+  expect(dead).toMatchObject({ kind: 'after_commit', state: 'dead', subject: 'kj:test/B@2', attempts: 10, last_error: expect.stringMatching(/Connection terminated unexpectedly/) });
+  await k.db.query(`update outbox set run_after = clock_timestamp()`);
+  expect(await k.drainOutbox()).toBe(0);
+  failing = false;
+  expect(await k.retryOutboxJob(dead.id)).toBe(true);
+  expect(await k.drainOutbox()).toBe(1);
+  expect(await k.outboxJobs()).toStrictEqual([]);
+  expect((await marksOn(k, 'B')).map((m) => m.version_id)).toStrictEqual([(await k.latestCommitted('B'))!.id]);
+});
+
+test('a ruling applied through the admin token, overtaken by Kolab\'s rebase as it commits, is applied once by the next process if its own stops mid-fold (D47)', async () => {
+  const store = await persistentStore();
+  let k!: Kolab;
+  let alice!: string;
+  let stopped!: () => void;
+  const reached = new Promise<void>((r) => { stopped = r; });
+  const checks: Checks = async (ctx) => {
+    if (ctx.version.node_id === 'V' && ctx.version.active_role === 'product') {
+      if (ctx.version.folded_from) { stopped(); return new Promise(() => undefined); }
+      // As the ruling's version is checked, Alice commits P@2, and Kolab rebases V past it.
+      await k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+    }
+    return structuralChecks(ctx);
+  };
+  k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS, closeWaitMs: 0 });
+  await people(k, 'alice', { layers: ['functional'] });
+  alice = await k.openSession('alice', 'product');
+  await k.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
+  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
+  void k.applyRuling('V', { deltas: [{ kind: 'add', element: 'D', text: 'Ruled: V adds D.' }] }, { id: 'D99', actor: 'alice' }).catch(() => undefined);
+  await reached;
+  expect((await jobs(k)).map((j) => j.kind)).toStrictEqual(['settle']);
+  await die(k);
+
+  const b = await restart(store);
+  expect(await b.drainOutbox()).toBe(1);
+  expect(await jobs(b)).toStrictEqual([]);
+  expect(await textOf(b, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.', D: 'Ruled: V adds D.' });
+  const h = await history(b, 'V');
+  expect(h.filter((v) => v.state === 'committed' && v.active_role === 'product' && v.folded !== null)).toMatchObject([
+    { review_note: expect.stringMatching(/^Applied as ruling D99 through the admin token/) },
+  ]);
+  expect(h.filter((v) => v.state === 'drafted')).toStrictEqual([]);
+});
+
+test('closing waits for the outbox work this process is running, then frees nothing it finished', async () => {
+  const store = await persistentStore();
+  const held = gate(); const reached = gate();
+  const checks: Checks = async (ctx) => {
+    if (ctx.version.node_id === 'V' && ctx.version.active_role === 'system') { reached.open(); await held.opened; }
+    return structuralChecks(ctx);
+  };
+  const k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS, closeWaitMs: 5_000 });
+  await people(k, 'alice', { layers: ['functional'] });
+  const alice = await k.openSession('alice', 'product');
+  await k.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
+  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
+  const p2 = k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  await reached.opened;
+  const closing = k.close();
+  setTimeout(() => held.open(), 200);
+  await closing;
+  await p2;
+  const b = await openKolab(store);
+  expect(await jobs(b)).toStrictEqual([]);
+  expect(await textOf(b, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
 });

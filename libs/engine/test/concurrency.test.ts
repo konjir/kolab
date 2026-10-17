@@ -306,6 +306,13 @@ function failOnce(kolab: Kolab, when: (sql: string, params?: unknown[]) => boole
 const supersedeRead = (node: string) => (sql: string, params?: unknown[]) =>
   sql.includes("seq < $2 and state = 'committed' order by seq desc limit 1") && params?.[0] === node;
 
+/** Waits out a failed cascade's first backoff (1 s), then has the outbox's jobs run (W1.8). */
+async function retried(kolab: Kolab) {
+  await new Promise((r) => setTimeout(r, 1100));
+  await kolab.drainOutbox();
+  expect((await kolab.db.query(`select 1 from outbox`)).rows).toStrictEqual([]);
+}
+
 test('a failure in a committed rebase\'s own cascade fails the parent\'s commit with a CascadeError, and marks nothing', async () => {
   const { kolab, product } = await setup();
   const { ids, next } = await family(kolab, product, 2);
@@ -317,8 +324,11 @@ test('a failure in a committed rebase\'s own cascade fails the parent\'s commit 
   expect(error).toMatch(/^CascadeError: V0@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
   expect(await stranded(kolab, ['V0'])).toStrictEqual([]);   // V0's rebase stands
   expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
-  // The storm stopped loudly. Whatever it hadn't reached catches up on the parent's next commit.
+  // The storm stopped loudly. Its cascades wait in the outbox (W1.8), and the parent's next commit
+  // waits behind them, in commit order. Once their backoff is over, the worker catches everything up.
   await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
+  expect(await stranded(kolab, ids)).toStrictEqual(['V0', 'V1']);
+  await retried(kolab);
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
 
@@ -333,6 +343,7 @@ test('a lost connection during a variant\'s rebase fails the parent\'s commit, r
   expect(await stranded(kolab, ids)).toContain('V1');
   expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
   await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
+  await retried(kolab);
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
 

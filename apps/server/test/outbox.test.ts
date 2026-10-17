@@ -15,7 +15,7 @@ test('a server that boots finishes the cascade a stopped process owed, without b
     reached();
     return new Promise(() => undefined);
   };
-  const a = await openKolab({ ...store, checks, outboxLeaseMs: 300 });
+  const a = await openKolab({ ...store, checks, outboxLeaseMs: 300, closeWaitMs: 0 });
   await people(a, 'alice', { layers: ['functional'] });
   const alice = await a.openSession('alice', 'product');
   await a.createNode(alice, 'functional_spec', 'P', 'P');

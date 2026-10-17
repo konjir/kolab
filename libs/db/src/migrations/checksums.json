@@ -8,6 +8,6 @@
   "0007_review_flow.sql": "3ed6f9e1951dc8537183f341148076eed284f33107e0659d6d7090b3a1c1e751",
   "0008_node_names.sql": "21a715a9ef692bf28ef94f1ae2aebf6931d71e47e9fbc2f35d0ac7b2e5e63ab3",
   "0009_drop_submission_findings.sql": "3cb728c26af418bf4b608557126385a23b3e74425cb54cbec338ddb24ed5b1e7",
-  "0010_durable_waits.sql": "dd0fa58ffce7759fdea33c8ea2712f576d2cfde12a9c70f7fbe842535d1ec918",
+  "0010_durable_waits.sql": "8672fa8e25c4015ad832ba43e173a020c2eec7a009e3a3714ed44b3f0c82ba17",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

@@ -67,12 +67,15 @@ export type ReviewVerdictKind = typeof REVIEW_VERDICTS[number];
 export const REVIEW_REQUEST_STATES = ['open', 'approved', 'changes_requested', 'withdrawn'] as const;
 export type ReviewRequestState = typeof REVIEW_REQUEST_STATES[number];
 /**
- * The work a transactional outbox job owes (REV3, W1.8): a committed version's cascade, and an
- * approved version that was overtaken, to fold or reject. Durable asynchronous rebasing (D43)
- * adds its kinds here.
+ * The work a transactional outbox job owes (REV3, W1.8): a committed version's cascade, and a
+ * version overtaken while it waited, to fold or reject. Durable asynchronous rebasing (D43) adds
+ * its kinds here.
  */
-export const OUTBOX_KINDS = ['after_commit', 'settle_approval'] as const;
+export const OUTBOX_KINDS = ['after_commit', 'settle'] as const;
 export type OutboxKind = typeof OUTBOX_KINDS[number];
+/** An outbox job is pending until done, or dead after too many failed attempts, until an admin retries it. */
+export const OUTBOX_STATES = ['pending', 'dead'] as const;
+export type OutboxState = typeof OUTBOX_STATES[number];
 /** The two kinds of finding a reviewer reports (VER8). */
 export const FINDING_KINDS = ['contradiction', 'layer_leak'] as const;
 export type FindingKind = typeof FINDING_KINDS[number];
