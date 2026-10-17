@@ -14,12 +14,21 @@ const RUN_NAME = /^kj_test_([0-9a-z]{7})[0-9a-f]{4}_[0-9a-f]{12}$/;
 const DAY = 24 * 60 * 60;
 
 export default async function globalTeardown() {
+  let dropError;
   try {
     await dropDatabases();
-  } finally {
-    // Stopped even if a drop failed, so a failed teardown never leaves the container running.
-    await globalThis.__konjirPostgres?.stop();
+  } catch (e) {
+    dropError = e;
   }
+  // Stopped even if a drop failed, so a failed teardown never leaves the container running. If
+  // stopping fails too, both errors are thrown, so the drop's isn't lost behind the container's.
+  try {
+    await globalThis.__konjirPostgres?.stop();
+  } catch (e) {
+    if (dropError) throw new AggregateError([dropError, e], 'dropping the test databases and stopping the container both failed');
+    throw e;
+  }
+  if (dropError) throw dropError;
 }
 
 /**
