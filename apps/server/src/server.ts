@@ -23,6 +23,9 @@ export async function startServer(opts: {
   );
   const host = opts.host ?? '127.0.0.1';
   await app.listen(opts.port ?? 0, host);
+  // Its own Kolab runs the outbox (REV3, W1.8): at once, for work a stopped process left, then as
+  // jobs fall due. A Kolab given to it is its owner's to start.
+  if (!opts.kolab) kolab.startWorker();
   const http = app.getHttpServer() as HttpServer;
   const { port } = http.address() as AddressInfo;
   let closing: Promise<void> | undefined;

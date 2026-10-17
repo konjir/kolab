@@ -96,12 +96,14 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
-    // without case files (0005), before accounts and kolabs (0006), before the review flow (0007)
-    // and before node names per kolab (0008), newest first (0009 only dropped what 0007 added, so
-    // its undoing is in 0007's). The people and the spec stay.
+    // without case files (0005), before accounts and kolabs (0006), before the review flow (0007),
+    // before node names per kolab (0008) and before the outbox (0010), newest first (0009 only
+    // dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop table outbox;
+      drop function kj_outbox_kolab();
       ${['node', 'version', 'element', 'query'].map((t) => `drop policy kolab_read on ${t}; create policy kolab_read on ${t} for select to kj_agent using (kolab_id = (select kj_session_kolab()));`).join('\n')}
       drop function kj_session_readable_kolabs();
       drop trigger node_name_fixed on node;
