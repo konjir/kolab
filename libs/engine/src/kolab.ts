@@ -564,7 +564,8 @@ export class Kolab {
           return { state: 'lost' as const };
         }
         if (error instanceof Deferred) {
-          await this.db.query(`update outbox set claim = null, claimed_by = null, claimed_until = null, attempts = greatest(attempts - 1, 0) where claim = $1`, [job.token]).catch(() => undefined);
+          // Run after all, if what it waited for finished meanwhile (release).
+          if (await this.release(job).catch(() => false)) return { state: 'done' as const, result: undefined as T };
           return { state: 'deferred' as const };
         }
         await this.fail(job, error).catch(() => undefined);
@@ -575,6 +576,22 @@ export class Kolab {
     })();
     this.running.add(run);
     try { return await run; } finally { this.running.delete(run); }
+  }
+
+  /**
+   * Releases a job deferred behind an earlier cascade of its node, telling every process's worker
+   * in the same transaction. The earlier one may have finished meanwhile, while this process still
+   * held this one, so that its finisher couldn't run it: if nothing earlier is left, it runs now.
+   * Returns whether it has run.
+   */
+  private async release(job: { token: string; kind: OutboxKind; versionId: string }): Promise<boolean> {
+    await this.inTransaction(async (tx) => {
+      await tx.query(`update outbox set claim = null, claimed_by = null, claimed_until = null, attempts = greatest(attempts - 1, 0) where claim = $1`, [job.token]);
+      await this.notifyWork(tx);
+    });
+    const node = (await this.db.query<{ node_id: string }>(`select node_id from version where id = $1`, [job.versionId])).rows[0]?.node_id;
+    if (node) await this.drainNode(node);
+    return !(await this.db.query(`select 1 from outbox where kind = $1 and version_id = $2`, [job.kind, job.versionId])).rows.length;
   }
 
   /**
@@ -1555,8 +1572,8 @@ export class Kolab {
     });
     if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
     if (late && late !== 'waiting') return this.settle(v, late, approvedBy, ruling);
-    await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim));
-    return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}) };
+    const queued = !(await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim))).ran;
+    return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}), ...(queued ? { cascade: 'queued' as const } : {}) };
   }
 
   /**
@@ -1586,8 +1603,8 @@ export class Kolab {
     const late = await this.commitStep(v, note, { from: 'in_review' });
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
     if (late && late !== 'waiting') return this.settle(v, late);
-    await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim));
-    return { ok: true, note, version: v.id, unreviewed: true };
+    const queued = !(await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim))).ran;
+    return { ok: true, note, version: v.id, unreviewed: true, ...(queued ? { cascade: 'queued' as const } : {}) };
   }
 
   /**
@@ -1729,8 +1746,8 @@ export class Kolab {
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
     // Overtaken while it waited: the approval stands, and its settle job folds or rejects it.
     if (late) return this.settle(v, late, s.actor_id);
-    await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim));
-    return { ok: true, note, version: v.id, findings };
+    const queued = !(await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim))).ran;
+    return { ok: true, note, version: v.id, findings, ...(queued ? { cascade: 'queued' as const } : {}) };
   }
 
   /**
@@ -1768,6 +1785,15 @@ export class Kolab {
     const waiting: VersionState = payload.approvedBy ? 'in_review' : 'drafted';
     if (v.state !== waiting) return { ok: v.state === 'committed', note: (await this.reviewNote(v.id)) ?? undefined, version: v.id };
     const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
+    // A fold of it that a stopped or failed run already made, in review or committed, is the
+    // result: the version is settled as folded into it, and folded no second time.
+    const fold = (await this.db.query<{ id: string; state: VersionState }>(
+      `select id, state from version where folded_from = $1 and node_id = $2 and seq > $3 and state in ('in_review', 'committed')
+        order by seq desc limit 1`, [v.folded_from ?? v.id, v.node_id, v.seq])).rows[0];
+    if (fold) {
+      await this.reject(v.id, `folded into ${fold.id}`);
+      return { ok: fold.state === 'committed', version: fold.id, ...(fold.state === 'in_review' ? { in_review: true } : {}) };
+    }
     const newer = await overtakenBy(this.db, v);
     if (!newer) throw new Error(`${here} is ${v.state} and no longer overtaken; nothing to settle`);
     await this.asSystem((tx) => tx.query(
@@ -2137,6 +2163,7 @@ export class Kolab {
   // ---- the cascade ---------------------------------------------------------
 
   private async onCommit(versionId: string, claim: Claim) {
+    claim.check();
     const v = await this.version(versionId);
     await this.withdrawStale(v);
     await this.supersedePrevious(v);
@@ -2148,10 +2175,12 @@ export class Kolab {
       `select e.* from edge e
          join version t on t.id = e.target_version_id
          join version s on s.id = e.source_version_id
-        where t.node_id = $1 and e.target_version_id <> $2
+        where t.node_id = $1 and t.seq < $2::int
           and ${LIVE('s')}
           and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`,
-      [v.node_id, v.id]);
+      [v.node_id, v.seq]);
+    // Only edges pinned to versions older than this one: a cascade run late (W1.8) never touches an
+    // edge a newer version's commit, or its dependent's catch-up, has re-pinned already.
     for (const e of inbound.rows) await this.checkEdge(e, v.id);
 
     // 2. Catch-up: if this version was drafted while its upstream moved on, its
@@ -2225,19 +2254,23 @@ export class Kolab {
    */
   private async checkEdge(e: EdgeRow, against: string): Promise<void> {
     const r = await this.resolveIn(against, e.target_element_id, e.target_selector);
+    const source = (await this.db.query<{ node_id: string }>(`select node_id from version where id = $1`, [e.source_version_id])).rows[0].node_id;
     if (r.status === 'ok' && r.fingerprint === e.target_fingerprint) {
       // Content-identical: a cheap pointer bump, not a regeneration.
       await this.asSystem((tx) => tx.query(`update edge set target_version_id = $2 where id = $1`, [e.id, against]));
       return;
     }
     const reason = r.status === 'orphan' ? 'orphaned' : r.status === 'fuzzy' ? 'fuzzy_reanchor' : 'changed';
+    // Checked again, and marked, under the dependent's lock: two runs of one cascade that overlap
+    // (a lost claim, W1.8) mark the edge once.
     await this.asSystem(async (tx, signal) => {
+      if ((await tx.query(`select 1 from invalidation where edge_id = $1 and state = 'open'`, [e.id])).rows.length) return;
       const m = {
         version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: against, reason,
       };
       const id = await this.markIn(tx, signal, m);
       await this.propagateIn(tx, signal, { id, ...m });
-    });
+    }, source);
   }
 
   /**

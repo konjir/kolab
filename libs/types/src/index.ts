@@ -149,6 +149,11 @@ export type ReviewVerdict = { ok: boolean; note?: string; findings?: Finding[] }
 export type GateResult = ReviewVerdict & {
   version: string; stale?: boolean;
   in_review?: boolean; reviewers?: string[]; unreviewed?: boolean;
+  /**
+   * The version committed, but its cascade waits in the outbox behind an earlier cascade of its
+   * node that is still running elsewhere, backing off or dead (W1.8): it runs once that one is done.
+   */
+  cascade?: 'queued';
 };
 
 /** A review request as a reviewer's inbox shows it. Its subject is a version; work packages come later (VER17). */

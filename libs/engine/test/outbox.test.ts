@@ -415,8 +415,9 @@ test('a node\'s later commit waits for a cascade that failed, rather than run ah
     expect(await rejection(k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b2', text: 'A refund endpoint.' }] })))
       .toMatch(/^CascadeError: B@2 committed, but its cascade did not finish/);
   } finally { proto.query = query; }
-  // B@3 commits, and its cascade waits: B@2's is backing off, and runs first.
-  await k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b3', text: 'A status endpoint.' }] });
+  // B@3 commits, and its cascade waits: B@2's is backing off, and runs first. The result says so.
+  const b3 = await k.review(await k.draft(bob, 'B', { deltas: [{ kind: 'add', element: 'b3', text: 'A status endpoint.' }] }));
+  expect(b3).toMatchObject({ ok: true, cascade: 'queued' });
   expect((await marksOn(k, 'B')).map((m) => m.version_id)).toStrictEqual([b1]);
   expect(await k.lineage((await k.latestCommitted('B'))!.id, 'upstream')).toStrictEqual([]);
   expect(await jobs(k)).toHaveLength(2);
@@ -566,4 +567,74 @@ test('closing waits for the outbox work this process is running, then frees noth
   const b = await openKolab(store);
   expect(await jobs(b)).toStrictEqual([]);
   expect(await textOf(b, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
+});
+
+/** Makes the first query matching `when` fail as a dropped connection would; returns a function that restores it. */
+function failOnce(k: Kolab, when: (sql: string, params?: unknown[]) => boolean) {
+  const proto = Object.getPrototypeOf(k.db);
+  const query = proto.query;
+  let armed = true;
+  proto.query = async function (sql: string, params?: unknown[]) {
+    if (armed && when(sql, params)) { armed = false; throw new Error('Connection terminated unexpectedly'); }
+    return query.call(this, sql, params);
+  };
+  return () => { proto.query = query; };
+}
+
+test('a cascade retried late leaves alone an edge a newer version\'s catch-up has already re-pinned', async () => {
+  const k = await openKolab({ ...(await persistentStore()), outboxLeaseMs: LEASE_MS });
+  await people(k, 'alice', { layers: ['functional'] });
+  await people(k, 'bob', { layers: ['technical'] });
+  const alice = await k.openSession('alice', 'product');
+  const bob = await k.openSession('bob', 'engineer');
+  await k.createNode(alice, 'functional_spec', 'S', 'S');
+  const s1 = await k.commit(alice, 'S', { elements: els({ R1: 'Orders can be cancelled.' }) });
+  await k.createNode(bob, 'technical_binding', 'B', 'B');
+  const b1 = await k.draft(bob, 'B', { elements: els({ b1: 'A cancel endpoint.' }) });
+  await k.link(bob, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
+  expect((await k.review(b1)).ok).toBe(true);
+  // S@2 changes R1, and its cascade fails before it reaches B.
+  const restore = failOnce(k, (sql, params) => sql.includes('t.seq < $2::int') && params?.[0] === 'S');
+  try {
+    expect(await rejection(k.commit(alice, 'S', { elements: els({ R1: 'Orders can be cancelled by staff.' }) }))).toMatch(/^CascadeError: S@2/);
+  } finally { restore(); }
+  // S@3 puts R1 back; its cascade waits behind S@2's.
+  expect(await k.review(await k.draft(alice, 'S', { elements: els({ R1: 'Orders can be cancelled.' }) }))).toMatchObject({ ok: true, cascade: 'queued' });
+  // Bob commits B@2, whose catch-up finds R1 as it linked it, and re-pins the link to S@3.
+  await k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b2', text: 'A refund endpoint.' }] });
+  const b2 = (await k.latestCommitted('B'))!.id;
+  expect((await k.lineage(b2, 'upstream')).map((e) => e.target)).toStrictEqual(['kj:S@3#R1']);
+  // S@2's cascade, retried, then S@3's, leave it so: no mark for a change that was undone.
+  await new Promise((r) => setTimeout(r, 1100));
+  await k.drainOutbox();
+  expect(await jobs(k)).toStrictEqual([]);
+  expect(await marksOn(k, 'B')).toStrictEqual([]);
+  expect((await k.lineage(b2, 'upstream')).map((e) => e.target)).toStrictEqual(['kj:S@3#R1']);
+});
+
+test('a settle job run again finds the fold it already made in review, and folds nothing twice', async () => {
+  const k = await openKolab({ ...(await persistentStore()), outboxLeaseMs: LEASE_MS });
+  await people(k, ['alice', 'dave'], { layers: ['functional'] });
+  const alice = await k.openSession('alice', 'product');
+  const dave = await k.openSession('dave', 'product');
+  await k.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await commitReviewed(k, alice, dave, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
+  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await commitReviewed(k, alice, dave, 'V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
+  const v2 = await k.draft(alice, 'V', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] });
+  await commitReviewed(k, alice, dave, 'P', { elements: els({ E1: 'Parent one, revised.', E2: 'Parent two.' }) });
+  // Submitting V@2 folds it, and the fold goes into review; settling V@2 as folded into it fails once.
+  const restore = failOnce(k, (sql, params) => sql.startsWith(`update version set state = 'rejected'`) && params?.[0] === v2 && String(params?.[1]).startsWith('folded into'));
+  try {
+    expect(await rejection(k.review(v2))).toMatch(/Connection terminated unexpectedly/);
+  } finally { restore(); }
+  expect((await jobs(k)).map((j) => j.kind)).toStrictEqual(['settle']);
+  await new Promise((r) => setTimeout(r, 1100));
+  expect(await k.drainOutbox()).toBe(1);
+  const h = await history(k, 'V');
+  const folds = h.filter((v) => v.folded === 2);
+  expect(folds.map((v) => v.state)).toStrictEqual(['in_review']);
+  expect(h.find((v) => v.seq === 2)).toMatchObject({ state: 'rejected', review_note: expect.stringMatching(/^folded into /) });
+  expect((await k.reviewRequests({ reviewer: 'dave' })).map((r) => r.subject)).toStrictEqual([`kj:V@${folds[0].seq}`]);
+  expect(await jobs(k)).toStrictEqual([]);
 });
