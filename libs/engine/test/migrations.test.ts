@@ -292,6 +292,43 @@ test('a database at 0003 reaches 0004: marks from failed rebases become rebase_f
   } finally { await kolab.close(); }
 });
 
+test('a database at 0004 reaches 0005: a ruling can be stored with no case file, and has a verdict exactly when it has one', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'optional_case_file');
+  expect(at).toBe(4);
+  await withDb(async (db) => {
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at) })).toStrictEqual({ baselined: false, applied: versions.slice(0, at) });
+    await db.exec(`
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into node(id, kind, layer, title) values ('orders', 'functional_spec', 'functional', 'Orders');
+      insert into version(id, node_id, seq, layer, state, actor_id, active_role) values
+        ('v1', 'orders', 1, 'functional', 'committed', 'lee', 'product');
+      insert into case_file(id, version_id, element_id, state) values ('c1', 'v1', 'R1', 'ruled');
+      insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r1', 'c1', 'lee', 'sustained', 'The spec stands.');`);
+    // Before: a ruling needs a case file.
+    expect(await rejection(db.query(`insert into ruling(id, actor_id, verdict, text) values ('r0', 'lee', 'sustained', 'No case.')`)))
+      .toMatch(/case_file_id/);
+
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
+    // A ruling given directly (CASE3, D16): its author and text, no case file and no verdict.
+    await db.exec(`insert into ruling(id, actor_id, text) values ('d16', 'lee', 'A ruling can stand without a case file.')`);
+    expect((await db.query(`select id, case_file_id, actor_id, verdict, text from ruling order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'd16', case_file_id: null, actor_id: 'lee', verdict: null, text: 'A ruling can stand without a case file.' },
+      { id: 'r1', case_file_id: 'c1', actor_id: 'lee', verdict: 'sustained', text: 'The spec stands.' },
+    ]);
+    // A verdict is said of a case file's position (CASE2): one without the other is refused.
+    expect(await rejection(db.query(`insert into ruling(id, actor_id, verdict, text) values ('r2', 'lee', 'overruled', 'No case.')`)))
+      .toMatch(/ruling_verdict_with_case_file/);
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, text) values ('r3', 'c1', 'lee', 'No verdict.')`)))
+      .toMatch(/ruling_verdict_with_case_file/);
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r4', 'c1', 'lee', 'maybe', 'Neither.')`)))
+      .toMatch(/ruling_verdict_check/);
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r5', 'nope', 'lee', 'sustained', 'No such case.')`)))
+      .toMatch(/ruling_case_file_id_fkey/);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+});
+
 // ---- the runner, with migrations of the test's own ---------------------------------
 
 const m = (version: number, sql: string): Migration => ({ version, name: `m${version}`, sql });

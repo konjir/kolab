@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 205 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 206 unit, scenario, regression, migration, concurrency, agent, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -311,5 +311,5 @@ Their feedback drove these changes:
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **The cascade isn't durable.** A commit's cascade runs after it commits, in the calling process. If that process stops part way, or the cascade stops on a `CascadeError`, variants it hadn't reached stay on the old parent, with no mark, until the parent or the variant commits again.
-- **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case.
+- **Case files, positions and rulings** exist in the schema but have no verbs yet. Queries cover the common case. A ruling's case file is optional (migration 0005, DAT9): a ruling given directly, as the Decisions Log's are (D16), has no case file and no verdict, since a verdict sustains or overrules a case file's position. A ruling has a verdict exactly when it has a case file. Rulings don't record their date yet (CASE4).
 - **Push is a signal, not a message.** Kolab signals an inbox over `subscriptions/listen`, and the agent reads what changed. Under the 2025 protocol, which has no listen stream, agents still poll `list_stale` and `list_queries`. Claude Code needs `konjir watch --once` (see *Questions, notes and push*). A Claude Code channel would need a local stdio bridge, because channels don't work over HTTP.
