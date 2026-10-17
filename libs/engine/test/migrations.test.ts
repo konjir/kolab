@@ -212,57 +212,81 @@ test('a database at 0002 reaches 0003: settled versions get the base the old che
   } finally { await kolab.close(); }
 });
 
-test('a database at 0003 reaches 0004: open marks from failed rebases become one rebase_failed per variant, which the next rebase that passes settles', async () => {
+test('a database at 0003 reaches 0004: marks from failed rebases become rebase_failed, one open per variant on its live version, each with a question', async () => {
   const store = await persistentStore();
   await withDb(async (db) => {
     expect(await migrate(db, { migrations: MIGRATIONS.slice(0, 3) })).toStrictEqual({ baselined: false, applied: [1, 2, 3] });
-    // P's p2 and p3 failed to rebase variant V (two marks, from before W1.17's dedupe) and p3
-    // failed W (a mark whose question was never written). V also has an older, settled failure
-    // and a changed mark, which stay as they are.
+    // P is at p4. Variant V sits on p1. Before W1.17, rebases onto p2 and p3 failed, leaving mA
+    // and mB; then W1.17 re-pointed the older, mA, at p4's failure and reworded its question.
+    // V also has an older, settled failure (m0) and a changed mark (m4).
+    // W's failure has no question: W1.17's first commit could swallow a failure to ask.
+    // X's failure was marked on x1 just after x2 superseded it, with no lock to stop it.
+    // Y's failure sits on y0, but Y has since committed y1 onto p4, P's latest.
     await db.exec(`
       insert into actor(id, name) values ('lee', 'Lee');
       insert into session(id, actor_id, active_role) values ('kjs_lee', 'lee', 'product');
       insert into node(id, kind, layer, title) values
         ('P', 'functional_spec', 'functional', 'P'), ('V', 'functional_spec', 'functional', 'V'),
-        ('W', 'functional_spec', 'functional', 'W');
+        ('W', 'functional_spec', 'functional', 'W'), ('X', 'functional_spec', 'functional', 'X'),
+        ('Y', 'functional_spec', 'functional', 'Y');
       insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role) values
         ('p1', 'P', 1, null, null, 'functional', 'committed', 'lee', 'product'),
         ('p2', 'P', 2, null, 'p1', 'functional', 'committed', 'lee', 'product'),
         ('p3', 'P', 3, null, 'p2', 'functional', 'committed', 'lee', 'product'),
+        ('p4', 'P', 4, null, 'p3', 'functional', 'committed', 'lee', 'product'),
         ('v1', 'V', 1, 'p1', null, 'functional', 'committed', 'lee', 'product'),
-        ('w1', 'W', 1, 'p1', null, 'functional', 'committed', 'lee', 'product');
+        ('w1', 'W', 1, 'p1', null, 'functional', 'committed', 'lee', 'product'),
+        ('x1', 'X', 1, 'p1', null, 'functional', 'committed', 'lee', 'product'),
+        ('x2', 'X', 2, 'p1', 'x1', 'functional', 'committed', 'lee', 'product'),
+        ('y0', 'Y', 1, 'p1', null, 'functional', 'committed', 'lee', 'product'),
+        ('y1', 'Y', 2, 'p4', 'y0', 'functional', 'committed', 'lee', 'product');
       insert into element(version_id, element_id, ord, text, fingerprint) values
         ('p1', 'E1', 0, 'One.', 'x'), ('p2', 'E1', 0, 'Two.', 'x'), ('p3', 'E1', 0, 'Three.', 'x'),
-        ('v1', 'E1', 0, 'One.', 'x'), ('w1', 'E1', 0, 'One.', 'x');
+        ('p4', 'E1', 0, 'Four.', 'x'), ('v1', 'E1', 0, 'One.', 'x'), ('w1', 'E1', 0, 'One.', 'x'),
+        ('x1', 'E1', 0, 'One.', 'x'), ('x2', 'E1', 0, 'One.', 'x'), ('y0', 'E1', 0, 'One.', 'x'),
+        ('y1', 'E1', 0, 'Four.', 'x');
       insert into invalidation(id, version_id, triggered_by, reason, state, cleared_by, created_at) values
         ('m0', 'v1', 'p1', 'review_failed', 'cleared', 'rebase v0 passed review', '2026-01-01'),
-        ('m1', 'v1', 'p2', 'review_failed', 'open', null, '2026-01-02'),
-        ('m2', 'v1', 'p3', 'review_failed', 'open', null, '2026-01-03'),
+        ('mA', 'v1', 'p4', 'review_failed', 'open', null, '2026-01-02'),
+        ('mB', 'v1', 'p3', 'review_failed', 'open', null, '2026-01-03'),
         ('m3', 'w1', 'p3', 'review_failed', 'open', null, '2026-01-03'),
-        ('m4', 'v1', 'p2', 'changed', 'open', null, '2026-01-02');
+        ('m4', 'v1', 'p2', 'changed', 'open', null, '2026-01-02'),
+        ('mX', 'x1', 'p3', 'review_failed', 'open', null, '2026-01-03'),
+        ('mY', 'y0', 'p3', 'review_failed', 'open', null, '2026-01-03');
       insert into query(id, version_id, invalidation_id, question) values
-        ('q1', 'v1', 'm1', 'Rebasing onto the new parent failed review: no.'),
-        ('q2', 'v1', 'm2', 'Rebasing onto the new parent failed review: still no.');`);
+        ('qA', 'v1', 'mA', 'Rebasing onto the new parent failed review: p4 says no.'),
+        ('qB', 'v1', 'mB', 'Rebasing onto the new parent failed review: p3 says no.'),
+        ('qX', 'x1', 'mX', 'Rebasing onto the new parent failed review: no.'),
+        ('qY', 'y0', 'mY', 'Rebasing onto the new parent failed review: no.');`);
 
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(3) });
-    expect((await db.query(`select id, reason, state, cleared_by from invalidation order by id`)).rows).toStrictEqual([
-      { id: 'm0', reason: 'review_failed', state: 'cleared', cleared_by: 'rebase v0 passed review' },
-      { id: 'm1', reason: 'rebase_failed', state: 'cleared', cleared_by: 'merged into m2 by migration 0004' },
-      { id: 'm2', reason: 'rebase_failed', state: 'open', cleared_by: null },
-      { id: 'm3', reason: 'rebase_failed', state: 'open', cleared_by: null },
-      { id: 'm4', reason: 'changed', state: 'open', cleared_by: null },
+    expect((await db.query(`select id, version_id, triggered_by, reason, state, cleared_by from invalidation order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'm0', version_id: 'v1', triggered_by: 'p1', reason: 'rebase_failed', state: 'cleared', cleared_by: 'rebase v0 passed review' },
+      { id: 'm3', version_id: 'w1', triggered_by: 'p3', reason: 'rebase_failed', state: 'open', cleared_by: null },
+      { id: 'm4', version_id: 'v1', triggered_by: 'p2', reason: 'changed', state: 'open', cleared_by: null },
+      // The newest parent wins, not the newest mark.
+      { id: 'mA', version_id: 'v1', triggered_by: 'p4', reason: 'rebase_failed', state: 'open', cleared_by: null },
+      { id: 'mB', version_id: 'v1', triggered_by: 'p3', reason: 'rebase_failed', state: 'cleared', cleared_by: 'merged into mA by migration 0004' },
+      // Moved to X's live version, where the engine finds it.
+      { id: 'mX', version_id: 'x2', triggered_by: 'p3', reason: 'rebase_failed', state: 'open', cleared_by: null },
+      { id: 'mY', version_id: 'y1', triggered_by: 'p3', reason: 'rebase_failed', state: 'cleared',
+        cleared_by: "settled by migration 0004: y1 sits on the parent's latest version" },
     ]);
-    expect((await db.query(`select id, state, answer from query order by id`)).rows).toStrictEqual([
-      { id: 'q1', state: 'answered', answer: 'superseded by the newer failed rebase in mark m2' },
-      { id: 'q2', state: 'open', answer: null },
+    expect((await db.query(`select id, invalidation_id, state, answer from query order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'q0004_m3', invalidation_id: 'm3', state: 'open', answer: null },
+      { id: 'qA', invalidation_id: 'mA', state: 'open', answer: null },
+      { id: 'qB', invalidation_id: 'mB', state: 'answered', answer: 'merged into mark mA, the one failed rebase this variant keeps open' },
+      { id: 'qX', invalidation_id: 'mX', state: 'open', answer: null },
+      { id: 'qY', invalidation_id: 'mY', state: 'answered', answer: "resolved: the variant sits on its parent's latest version" },
     ]);
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
   const kolab = await Kolab.open(store);
   try {
-    // P's next commit rebases both variants, and each rebase that passes settles its mark.
-    await kolab.commit('kjs_lee', 'P', { elements: els({ E1: 'Four.' }) });
+    expect((await kolab.openQueries()).find((q) => q.id === 'q0004_m3')?.question).toMatch(/^Rebasing onto the new parent failed; the reason was not recorded\./);
+    // P's next commit rebases the variants, and each rebase that passes settles its mark.
+    await kolab.commit('kjs_lee', 'P', { elements: els({ E1: 'Five.' }) });
     expect((await kolab.openMarks()).map((m) => m.reason)).toStrictEqual(['changed']);
     expect((await kolab.openQueries())).toStrictEqual([]);
   } finally { await kolab.close(); }

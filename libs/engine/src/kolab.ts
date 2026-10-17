@@ -774,6 +774,22 @@ export class Kolab {
     if (p.node_id === nodeId) return;
     const latestParent = (await this.latestCommitted(p.node_id))!;
     if (latestParent.id !== p.id) await this.rebaseOrMark(live, latestParent);
+    else await this.settleRebaseFailed(live);
+  }
+
+  /**
+   * A variant whose live version sits on its parent's latest version has nothing left to
+   * rebase, so its open rebase_failed mark settles, with its question: whether a rebase of
+   * Kolab's passed or the variant committed onto that version itself (D44).
+   */
+  private async settleRebaseFailed(live: VersionRow) {
+    const open = await this.db.query<{ id: string }>(
+      `select i.id from invalidation i join version v on v.id = i.version_id
+        where v.node_id = $1 and i.reason = 'rebase_failed' and i.state = 'open'`, [live.node_id]);
+    for (const { id } of open.rows) {
+      await this.closeMark(id, `${live.node_id}@${live.seq} sits on the parent's latest version`,
+        `resolved: ${live.node_id}@${live.seq} sits on the parent's latest version`);
+    }
   }
 
   /** Re-resolve an edge against a newer target version: re-pin if unchanged, else mark. */
@@ -853,19 +869,26 @@ export class Kolab {
   /**
    * Marks a variant whose rebase failed, on its live version, with a question. A variant holds
    * at most one open rebase_failed mark (D44): a later failure re-points that mark at the newer
-   * parent and rewords its question instead of adding another. A rebase that passes settles it.
+   * parent, moves it to the live version and rewords its question instead of adding another.
+   * Should a variant ever hold more than one, the canonical one is the one whose parent version
+   * is newest, then the newest created: the rule migration 0004 used to merge them. The mark
+   * settles when the variant sits on its parent's latest version (settleRebaseFailed).
    */
   private async rebaseFailed(nodeId: string, newParent: string, question: string) {
     const live = (await this.latestCommitted(nodeId))!.id;
     const open = (await this.db.query<{ id: string }>(
-      `select id from invalidation where version_id = $1 and reason = 'rebase_failed' and state = 'open' order by id limit 1`, [live])).rows[0];
+      `select i.id from invalidation i
+         join version v on v.id = i.version_id
+         join version t on t.id = i.triggered_by
+        where v.node_id = $1 and i.reason = 'rebase_failed' and i.state = 'open'
+        order by t.seq desc, i.created_at desc, i.id desc limit 1`, [nodeId])).rows[0];
     if (!open) {
       const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent, reason: 'rebase_failed' });
       await this.ask(live, null, markId, question);
       return;
     }
     await this.asSystem(async (tx, signal) => {
-      await tx.query(`update invalidation set triggered_by = $2 where id = $1`, [open.id, newParent]);
+      await tx.query(`update invalidation set triggered_by = $2, version_id = $3 where id = $1`, [open.id, newParent, live]);
       await tx.query(`update query set question = $2 where invalidation_id = $1 and state = 'open'`, [open.id, question]);
       await this.signalLayerOf(tx, signal, live);
     });
@@ -950,12 +973,8 @@ export class Kolab {
       await this.rebaseFailed(child.node_id, newParent.id, `Rebasing onto the new parent failed review: ${verdict.note ?? ''}`);
       return verdict;
     }
-    // A successful rebase settles any earlier failed one (its mark moved here on supersede).
-    const failed = await this.db.query<{ id: string }>(
-      `select id from invalidation where version_id = $1 and reason = 'rebase_failed' and state = 'open'`, [verdict.version]);
-    for (const { id: mid } of failed.rows) {
-      await this.closeMark(mid, `rebase ${verdict.version} passed review`, 'resolved by a later rebase');
-    }
+    // A rebase that passed settled any earlier failed one in its own cascade: the variant's
+    // catch-up found it on the parent's latest version (settleRebaseFailed).
     return verdict;
   }
 
@@ -1414,7 +1433,7 @@ const NEXT_STEP: Record<string, string> = {
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',
   review_failed: 'The review gate rejected this version. Draft a version that resolves what the query names.',
-  rebase_failed: 'Rebasing onto the new parent failed, for the reason the query gives. Commit a version that resolves it (your commit rebases onto the parent), or wait for the parent\'s next commit; the next rebase that passes settles this mark.',
+  rebase_failed: 'Rebasing onto the new parent failed, for the reason the query gives. Commit a version that resolves it: on your current parent, and Kolab rebases it onto the new one; or with parent set to the parent\'s latest version. Or wait for the parent\'s next commit. The mark and its question settle once this variant sits on its parent\'s latest version.',
   role_boundary: 'The review gate thinks this crosses the layer boundary. A question went to the layer that owns the answer; the mark clears when it is answered. Meanwhile, work continues at risk.',
   query_answered: 'A question this element was waiting on has been answered. Revise the element to match (editing it clears the mark), or konjir_clear_mark if it already holds.',
 };

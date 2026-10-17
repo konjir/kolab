@@ -202,6 +202,26 @@ test('a later successful rebase settles an earlier rebase_failed mark', async ()
   await kolab.close();
 });
 
+test("a variant's own commit onto the parent's latest version settles its rebase_failed mark and question", async () => {
+  let rejectSystem = true;
+  const { kolab, product } = await setup(({ version }) =>
+    rejectSystem && version.active_role === 'system' ? { ok: false, note: 'no' } : { ok: true });
+  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
+  const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
+  await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
+  const p2 = await kolab.commit(product, P, { elements: els({ E1: 'two' }) });
+  expect((await marksOn(kolab, C)).map((m) => m.reason)).toStrictEqual(['rebase_failed']);
+  expect((await kolab.openQueries()).length).toBe(1);
+
+  // No rebase runs: the commit is already on p2. Kolab's own rebases are still rejected.
+  const c = await kolab.commit(product, C, { parent: p2, deltas: [{ kind: 'add', element: 'X', text: 'x fixed' }] });
+  expect((await kolab.latestCommitted(C))!).toMatchObject({ id: c, parent_version_id: p2 });
+  expect(await marksOn(kolab, C)).toStrictEqual([]);
+  expect(await kolab.openQueries()).toStrictEqual([]);
+  await kolab.close();
+});
+
 test('propagation skips only the changed element, not the whole triggering node', async () => {
   const { kolab, product } = await setup();
   const A = await kolab.createNode(product, 'functional_spec', 'A', 'A');
