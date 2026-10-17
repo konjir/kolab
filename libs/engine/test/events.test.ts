@@ -170,7 +170,7 @@ async function silenceableProxy(databaseUrl: string) {
 
   test('a change made through one Kolab signals the other once, and a rolled-back one signals neither', async () => {
     const { a, b, onA, onB } = await twoKolabs();
-    await people(b, 'alice'); await people(b, 'bob');
+    await people(b, 'alice', { layers: ['functional'] }); await people(b, 'bob', { layers: ['technical'] });
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
     await b.createNode(product, 'functional_spec', 'Orders', 'orders');
@@ -291,7 +291,7 @@ async function silenceableProxy(databaseUrl: string) {
     const { a, b, url, onA } = await twoKolabs();
     const states: ListenerState[] = [];
     a.onListenerState((s) => states.push(s));
-    await people(b, 'alice'); await people(b, 'bob');
+    await people(b, 'alice', { layers: ['functional'] }); await people(b, 'bob', { layers: ['technical'] });
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
     await b.createNode(product, 'functional_spec', 'Orders', 'orders');
@@ -380,7 +380,7 @@ async function silenceableProxy(databaseUrl: string) {
 
   test('a resync that fails after a reconnect signals nothing, and is retried until everything is signalled', async () => {
     const { a, b, url, onA } = await twoKolabs();
-    await people(b, 'alice'); await people(b, 'bob');
+    await people(b, 'alice', { layers: ['functional'] }); await people(b, 'bob', { layers: ['technical'] });
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
     await b.createNode(product, 'functional_spec', 'Orders', 'orders');

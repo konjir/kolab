@@ -5,11 +5,12 @@ import {
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
-  ACCESS_LEVELS, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, VISIBILITIES,
+  ACCESS_LEVELS, FINDING_KINDS, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
   type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type ReviewContext, type ReviewVerdict,
-  type Reviewer, type Role, type VersionRow,
+  type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Reviewer, type Role, type SubmissionView, type VersionRow,
+  type VersionState,
 } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
@@ -30,7 +31,9 @@ interface EdgeRow {
 
 /**
  * An override resolution waiting on its review (W2.5): what commitStep records, in the transaction
- * that commits the resolution, before its cascade runs.
+ * that commits the resolution, before its cascade runs. It waits on the resolution's version
+ * (version.resolves, W1.6), so a review that takes days, or a restart, loses nothing, and a fold
+ * of the resolution carries it. Only the version that commits records anything.
  */
 interface Ruling {
   markId: string; actor: string; resolution: OverrideResolution; amendedText: string | null;
@@ -72,6 +75,20 @@ const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 /** The author of Kolab's own work, in the role 'system'. Never an actor. */
 export const SYSTEM_ACTOR = 'kolab';
 export class GateError extends Error { name = 'GateError'; }
+
+/**
+ * Thrown inside a fold's commit step when the version it folds was settled meanwhile, abandoned by
+ * its author, say: the fold, `fold`, must not commit an edit its author withdrew.
+ */
+class OriginalSettled extends GateError {
+  constructor(readonly fold: string, message: string) { super(message); }
+}
+
+/** How many approvals a version needs to commit: one, from another actor with Write on its layer (D19, D25). */
+export const REQUIRED_APPROVALS = 1;
+
+/** The role that writes a layer. */
+const ROLE_OF_LAYER = Object.fromEntries(ROLES.map((r) => [LAYER_OF_ROLE[r], r])) as Record<Layer, Role>;
 /** Thrown by review when the reviewer itself fails with anything but ReviewUnavailableError. The draft stays drafted. */
 export class ReviewerError extends Error { name = 'ReviewerError'; }
 /**
@@ -150,7 +167,7 @@ function isNotice(x: unknown): x is Notice {
 // ---------------------------------------------------------------------------
 
 export class Kolab {
-  private constructor(readonly db: Db, private reviewer: Reviewer) {}
+  private constructor(readonly db: Db, private reviewer: Reviewer, private checks: Reviewer) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
   /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
@@ -164,8 +181,12 @@ export class Kolab {
   /**
    * Postgres at `databaseUrl`; otherwise PGlite, in memory by default or persisted to `dataDir`
    * across restarts. The database is first brought to the newest migration (DAT2).
+   *
+   * `reviewer` judges people's versions on submission (structural checks by default; until W1.7,
+   * optionally the Bedrock reviewer). `checks` are the structural checks that alone judge Kolab's
+   * own rebases (VER12); tests wrap them to inject a write at an exact point.
    */
-  static async open(opts: { reviewer?: Reviewer; dataDir?: string; databaseUrl?: string } = {}): Promise<Kolab> {
+  static async open(opts: { reviewer?: Reviewer; checks?: Reviewer; dataDir?: string; databaseUrl?: string } = {}): Promise<Kolab> {
     const db = openDb(opts);
     try {
       await migrate(db);
@@ -173,7 +194,7 @@ export class Kolab {
       await db.close().catch(() => undefined);
       throw e;
     }
-    return new Kolab(db, opts.reviewer ?? structuralReviewer);
+    return new Kolab(db, opts.reviewer ?? structuralReviewer, opts.checks ?? structuralReviewer);
   }
 
   async close() {
@@ -267,17 +288,6 @@ export class Kolab {
       return;
     }
   }
-
-  /**
-   * Override resolutions in review, by the id of the draft that resolves (W2.5). commitStep
-   * records a ruling in the transaction that commits its draft, before that commit's cascade:
-   * the precedent, so the cascade's own rebases follow it (OVR9), and the mark and question
-   * closed with the ruling. Nothing is visible while the review runs, nothing outlives a draft
-   * that doesn't commit or a crash, and of two resolutions of one mark only the one that commits
-   * records anything. W1.6 moves this onto the version (version.resolves); wherever it lives, the
-   * precedent insert must stay in the commit step's transaction, before onCommit.
-   */
-  private rulings = new Map<string, Ruling>();
 
   private dropCount = 0;
   /** How many notifications on the channel this Kolab has dropped: not JSON, or not a Kolab event. */
@@ -826,6 +836,31 @@ export class Kolab {
     await this.requireNodeIn(sessionId, nodeId);   // another kolab's node reads as no node at all
     const node = await this.node(nodeId);
     const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
+    return this.writeDraft(nodeId, node.layer, s, input, (fn) => this.asAgent(sessionId, fn, nodeId));
+  }
+
+  /**
+   * Applies a ruling of Lee's to a node (D47): a new version, written as `actor` in the role that
+   * writes the node's layer, that commits after structural checks only, with no review request,
+   * as Kolab's own rebases do (VER12): the ruling is already the approval. Only the admin token
+   * reaches it (konjir_admin_apply_ruling); an agent session never does. It goes through the same
+   * per-node commit step as any other commit, so a stale one is rejected (CAS7), and its note
+   * records the ruling and who applied it.
+   */
+  async applyRuling(nodeId: string, input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string },
+    ruling: { id: string; actor: string }): Promise<GateResult> {
+    if (!/^D\d+$/.test(ruling.id)) throw new GateError(`a ruling is named by its Decisions Log ID, such as D47, not "${ruling.id}"`);
+    const node = await this.node(nodeId);
+    await this.actor(ruling.actor);
+    const author = { actor_id: ruling.actor, active_role: ROLE_OF_LAYER[node.layer], kolab: node.kolab_id };
+    const id = await this.writeDraft(nodeId, node.layer, author, input, (fn) => this.asSystem(fn, nodeId));
+    return this.judge(id, undefined, ruling.id);
+  }
+
+  /** A draft's version, with its elements and deltas, written by `as` (an agent's session, or Kolab). */
+  private async writeDraft(nodeId: string, layer: Layer, s: { actor_id: string; active_role: string; kolab: string },
+    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string },
+    as: (fn: (tx: Q, signal: Signal) => Promise<void>) => Promise<void>): Promise<string> {
 
     // A variant's new version keeps its foreign parent and carries its
     // existing exceptions forward; a plain node's parent is its own last version.
@@ -872,10 +907,10 @@ export class Kolab {
     const els = materialize(parentEls, deltaRows);
     const id = ulid();
     // Built on the live version read above: if the node moves on before this commits, review sees it.
-    await this.asAgent(sessionId, async (tx) => writeVersion(tx, {
+    await as(async (tx) => writeVersion(tx, {
       id, node_id: nodeId, seq: await nextSeq(tx, nodeId), parent_version_id: parentId, base_version_id: latest?.id ?? null,
-      layer: node.layer, actor_id: s.actor_id, active_role: s.active_role,
-    }, els, deltaRows), nodeId);
+      layer, actor_id: s.actor_id, active_role: s.active_role,
+    }, els, deltaRows));
     return id;
   }
 
@@ -890,23 +925,45 @@ export class Kolab {
   }
 
   /**
-   * The review gate: drafted -> committed | rejected. Commit runs the cascade.
+   * Submits a draft: Kolab's checks, then review (REV2, REV4). Drafted -> in_review, or
+   * drafted -> committed | rejected.
+   *
+   * A version of a person's or an agent's runs the reviewer Kolab is configured with (structural
+   * checks, or until W1.7 the Bedrock reviewer). If it passes, it moves to in_review, with a review
+   * request for each other actor holding Write on its layer (reviewersFor), and commits once one of
+   * them approves (recordReview). With no such reviewer, the checks alone commit it, and its review
+   * note says so (VER11). A rebase Kolab makes itself commits after structural checks only (VER12).
    *
    * Optimistic concurrency (CAS7): a draft commits only while its node's live
    * version is still its base, the version it was built on. Otherwise it was
    * overtaken; see settleOvertaken. The check runs before the reviewer, to spare
-   * it a stale draft, and again in the commit step, under the node's lock, so
-   * nothing can commit between the check and the commit (W1.17).
-   * The result names the version that actually committed.
+   * it a stale draft, again under the node's lock as the draft enters review, and again in the
+   * commit step, under the node's lock, so nothing can commit between the check and the commit
+   * (W1.17). The result names the version that actually committed, or that waits in review.
    */
   async review(versionId: string): Promise<GateResult> {
+    return this.judge(versionId);
+  }
+
+  /**
+   * `approvedBy`: this is a fold of a version already approved, which commits on structural checks,
+   * carrying the approval, and only while that version is still in review (foldRecord).
+   */
+  private async judge(versionId: string, approvedBy?: string, ruling?: string): Promise<GateResult> {
     const v = await this.version(versionId);
-    if (v.state !== 'drafted') throw new GateError(`${versionId} is ${v.state}, not drafted`);
+    const here = `${v.node_id}@${v.seq}`;
+    if (v.state === 'in_review' && !approvedBy) return this.resubmit(v);
+    if (v.state !== 'drafted') throw new GateError(`${here} is ${v.state}, not drafted`);
     const newer = await overtakenBy(this.db, v);
-    if (newer) return this.settleOvertaken(v, newer);
+    if (newer) return this.settleOvertaken(v, newer, approvedBy);
+    const human = v.active_role !== 'system';
+    const plan = PLAN_KINDS.includes((await this.node(v.node_id)).kind);
+    // Kolab's own rebases, folds of approved versions and plan versions get structural checks only
+    // (VER12, VER3, PLN2).
+    const gate = human && !approvedBy && !plan && !ruling ? this.reviewer : this.checks;
     let verdict: ReviewVerdict;
     try {
-      verdict = await this.reviewer(await this.reviewContext(v));
+      verdict = await gate(await this.reviewContext(v));
     } catch (e) {
       if (e instanceof ReviewUnavailableError) {
         return { ok: false, note: `Review could not run: ${e.message}. The draft is unchanged; resubmit it later.`, version: versionId, retryable: true };
@@ -914,47 +971,304 @@ export class Kolab {
       throw new ReviewerError(`the reviewer failed on ${versionId}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
     if (!verdict.ok) {
-      await this.reject(versionId, verdict.note ?? null);
+      // A person's version goes back to its author, still drafted, with the reason (VER2, D33);
+      // Kolab's own rebases, and folds, have no author to return to and are rejected.
+      if (!human || v.folded_from) await this.reject(versionId, verdict.note ?? null);
+      else await this.asSystem((tx) => tx.query(`update version set review_note = $2 where id = $1 and state = 'drafted'`, [versionId, verdict.note ?? null]));
       return { ...verdict, version: versionId };
     }
+    let note = verdict.note ?? null;
+    let unreviewed = false;
+    if (human && approvedBy) {
+      note = `Approved by ${approvedBy}, then rebased by Kolab onto its node's newer version; ${note ?? ''}`.trim();
+    } else if (ruling) {
+      note = `Applied as ruling ${ruling} through the admin token, written as ${v.actor_id}: the ruling is the approval, so structural checks alone committed it, without review (D47). ${note ?? ''}`.trim();
+    } else if (human && plan) {
+      note = `${note ?? ''} A plan version commits after structural checks, without review (PLN2).`.trim();
+    } else if (human) {
+      const reviewers = await this.reviewersFor(v);
+      if (reviewers.length) {
+        const leaks = verdict.findings?.length ? ` The configured reviewer also reported: ${verdict.findings.map((f) => `${f.kind} in ${f.elements.join(', ')}: ${f.explanation}`).join(' ')}` : '';
+        const inReview = `${note ?? 'Kolab\'s checks passed.'}${leaks} Waiting for one approval from ${reviewers.join(', ')}.`;
+        const late = await this.enterReview(v, reviewers, inReview, verdict.findings ?? []);
+        if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
+        if (late) return this.settleOvertaken(v, late);
+        return { ok: false, note: inReview, version: versionId, in_review: true, reviewers };
+      }
+      unreviewed = true;
+      note = `${note ?? ''} ${NO_REVIEWER(v.layer)}`.trim();
+    }
     // The node may have moved on while the reviewer ran, which with a semantic gate takes seconds.
-    const late = await this.commitStep(v, verdict.note ?? null);
-    if (typeof late === 'string') return { ok: false, note: late, version: versionId };
-    if (late) return this.settleOvertaken(v, late);
+    const late = await this.commitStep(v, note, approvedBy ? { record: (tx, signal, overtaken) => this.foldRecord(tx, signal, v, overtaken) } : {});
+    if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
+    if (late && late !== 'waiting') return this.settleOvertaken(v, late, approvedBy);
+    await this.afterCommit(v, verdict.findings ?? []);
+    return { ...verdict, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}) };
+  }
+
+  /**
+   * A version resubmitted while it waits in review: reviewers are found again (reviewersFor). If any
+   * remain, each gets an open request and anyone no longer eligible loses theirs. If none remain,
+   * Kolab's structural checks commit it, unreviewed, as they would have at submission (VER11).
+   */
+  private async resubmit(v: VersionRow): Promise<GateResult> {
+    const reviewers = await this.reviewersFor(v);
+    if (reviewers.length) {
+      await this.asSystem(async (tx, signal) => {
+        const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
+        if (now !== 'in_review') throw new GateError(`${v.node_id}@${v.seq} is ${now}, no longer in review`);
+        await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' and reviewer_id <> all($2)`, [v.id, reviewers]);
+        const open = new Set((await tx.query<{ reviewer_id: string }>(`select reviewer_id from review_request where version_id = $1 and state = 'open'`, [v.id])).rows.map((r) => r.reviewer_id));
+        for (const reviewer of reviewers.filter((x) => !open.has(x))) {
+          await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
+        }
+        await signal({ inbox: 'layer', layer: v.layer });
+        await signal({ inbox: 'actor', actor: v.actor_id });
+      }, v.node_id);
+      return { ok: false, note: `Still in review: waiting for one approval from ${reviewers.join(', ')}.`, version: v.id, in_review: true, reviewers };
+    }
+    const verdict = await this.checks(await this.reviewContext(v));
+    if (!verdict.ok) return { ...verdict, version: v.id, in_review: true };
+    const note = `${verdict.note ?? ''} Everyone who could review it has gone: ${NO_REVIEWER(v.layer)}`.trim();
+    const late = await this.commitStep(v, note, { from: 'in_review' });
+    if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
+    if (late && late !== 'waiting') return this.settleOvertaken(v, late);
+    await this.afterCommit(v, []);
+    return { ok: true, note, version: v.id, unreviewed: true };
+  }
+
+  /**
+   * Run in an approved fold's commit step, under the node's lock (`v` is the fold). Unless the fold
+   * was overtaken in turn, the version it folds must still be in review: an author who abandoned it
+   * meanwhile keeps the edit out. That version is settled as folded into this one, in the same
+   * transaction, and its approvals are copied onto the fold, so the author's answers show the fold
+   * committed with the approval.
+   */
+  private async foldRecord(tx: Q, signal: Signal, v: VersionRow, overtaken: boolean): Promise<boolean> {
+    if (overtaken || !v.folded_from) return true;
+    const o = (await tx.query<{ state: VersionState; review_note: string | null; node_id: string; seq: number; layer: Layer; actor_id: string }>(
+      `select state, review_note, node_id, seq, layer, actor_id from version where id = $1`, [v.folded_from])).rows[0];
+    if (o.state !== 'in_review') {
+      throw new OriginalSettled(v.id, `${o.node_id}@${o.seq} was ${o.review_note ?? o.state} while Kolab folded it onto its node's newer version; nothing committed`);
+    }
+    const approvals = (await tx.query<{ reviewer_id: string; note: string | null; findings: Finding[] | null }>(
+      `select reviewer_id, note, findings from review_request where version_id = $1 and state = 'approved' order by created_at, reviewer_id`, [v.folded_from])).rows;
+    for (const a of approvals) {
+      await tx.query(`insert into review_request(id, version_id, reviewer_id, state, note, findings, decided_at) values ($1, $2, $3, 'approved', $4, $5, now())`,
+        [ulid(), v.id, a.reviewer_id, a.note, a.findings ? JSON.stringify(a.findings) : null]);
+    }
+    await tx.query(`update version set state = 'rejected', review_note = $2 where id = $1`, [v.folded_from, `folded into ${v.id}`]);
+    await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.folded_from]);
+    await signal({ inbox: 'layer', layer: o.layer });
+    await signal({ inbox: 'actor', actor: o.actor_id });
+    return true;
+  }
+
+  /**
+   * Who may review a version (VER11, VER16, D25, D33): every actor other than its author whose
+   * access in the version's kolab includes Write on its layer (kj_access: its grants, its teams'
+   * and its organization's, an agent's cut down to its owner's), connected or not, whatever role
+   * any session of its is in. Separation of duty is per agent, so another agent of the author's
+   * owner counts, and so does the owner.
+   */
+  async reviewersFor(v: Pick<VersionRow, 'actor_id' | 'layer' | 'kolab_id'>): Promise<string[]> {
+    const r = await this.db.query<{ id: string }>(
+      `select a.id from actor a cross join lateral kj_access(a.id, $1) x
+        where a.id <> $2 and x.rank >= 3 and (case $3 when 'functional' then x.functional else x.technical end)
+        order by a.id`,
+      [v.kolab_id, v.actor_id, v.layer]);
+    return r.rows.map((x) => x.id);
+  }
+
+  /**
+   * Drafted -> in_review, with an open review request for each reviewer, under the node's lock,
+   * so a draft that something overtook never enters review: that returns the overtakers instead.
+   * Each request lands in its reviewer's inbox, and the author's answers show the submission.
+   */
+  private enterReview(v: VersionRow, reviewers: string[], note: string, findings: Finding[]): Promise<Overtaker[] | { refused: string } | undefined> {
+    return this.asSystem(async (tx, signal) => {
+      const newer = await overtakenBy(tx, v);
+      if (newer) return newer;
+      const refused = await this.authorRefusal(tx, signal, v);
+      if (refused) return { refused };
+      // A layer leak the checks found waits with the version, to be raised when it commits (VER9).
+      const leaks = findings.filter((f) => f.kind === 'layer_leak');
+      const r = await tx.query(`update version set state = 'in_review', review_note = $2, findings = $3 where id = $1 and state = 'drafted' returning id`,
+        [v.id, note, leaks.length ? JSON.stringify(leaks) : null]);
+      if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
+      for (const reviewer of reviewers) {
+        await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
+      }
+      await signal({ inbox: 'layer', layer: v.layer });
+      await signal({ inbox: 'actor', actor: v.actor_id });
+      return undefined;
+    }, v.node_id);
+  }
+
+  /**
+   * A reviewer's verdict on a version in review (konjir_review; REV2, VER6, VER8, VER9). The
+   * reviewer must hold Write on the version's layer and not be its author. An approval commits the
+   * version once it has REQUIRED_APPROVALS, through the same serialized commit step as any other;
+   * its layer leaks commit and raise questions, while a contradiction may only come with a request
+   * for changes. A request for changes returns the version to drafted, for its author to resubmit
+   * or redraft, and withdraws the other requests. A version overtaken while it waited is settled
+   * as any other: folded if only Kolab's rebases overtook it, else rejected as stale.
+   */
+  async recordReview(sessionId: string, versionId: string,
+    input: { verdict: ReviewVerdictKind; note?: string; findings?: Finding[] }): Promise<GateResult> {
+    const v = await this.version(versionId);
+    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
+    const here = `${v.node_id}@${v.seq}`;
+    if (s.actor_id === v.actor_id) throw new GateError(`${s.actor_id} wrote ${here}; another actor with Write on the ${v.layer} layer must review it`);
+    const findings = input.findings ?? [];
+    for (const f of findings) {
+      if (!FINDING_KINDS.includes(f.kind)) throw new GateError(`a finding is a contradiction or a layer_leak, not ${f.kind}`);
+      if (!f.elements?.length || !f.explanation?.trim()) throw new GateError('each finding names the elements involved and explains itself');
+    }
+    if (input.verdict === 'approve' && findings.some((f) => f.kind === 'contradiction')) {
+      throw new GateError('a contradiction stops a version from committing (VER9): request changes instead of approving');
+    }
+    /** Why a version can't take a verdict: what settled it, from its own record. */
+    const settled = (state: VersionState, note: string | null) => new GateError(
+      state === 'committed' ? `${here} is committed already: ${note ?? 'another verdict committed it'}`
+        : state === 'rejected' ? `${here} was rejected (${note ?? 'no reason recorded'}); there is nothing to review`
+          : `${here} is back with its author as a draft (${note ?? 'not submitted'}); it isn't in review`);
+    if (v.state !== 'in_review') throw settled(v.state, (await this.reviewNote(v.id)));
+    const said = input.note?.trim() ? `: ${input.note.trim()}` : '.';
+    const record = async (tx: Q, state: ReviewRequestState) => {
+      const now = (await tx.query<{ state: VersionState; review_note: string | null }>(`select state, review_note from version where id = $1`, [v.id])).rows[0];
+      if (now.state !== 'in_review') throw settled(now.state, now.review_note);
+      const json = findings.length ? JSON.stringify(findings) : null;
+      const mine = await tx.query(
+        `update review_request set state = $3, note = $4, findings = $5, decided_at = now()
+          where version_id = $1 and reviewer_id = $2 and state = 'open' returning id`,
+        [v.id, s.actor_id, state, input.note ?? null, json]);
+      if (!mine.rows.length) {
+        // A reviewer who gained Write on the layer after the version was submitted.
+        await tx.query(`insert into review_request(id, version_id, reviewer_id, state, note, findings, decided_at)
+                        values ($1, $2, $3, $4, $5, $6, now())`, [ulid(), v.id, s.actor_id, state, input.note ?? null, json]);
+      }
+    };
+
+    if (input.verdict === 'request_changes') {
+      await this.asSystem(async (tx, signal) => {
+        await record(tx, 'changes_requested');
+        await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.id]);
+        await tx.query(`update version set state = 'drafted', review_note = $2 where id = $1`, [v.id, `Changes requested by ${s.actor_id}${said}`]);
+        await signal({ inbox: 'layer', layer: v.layer });
+        await signal({ inbox: 'actor', actor: v.actor_id });
+      }, v.node_id);
+      return { ok: false, note: `Changes requested by ${s.actor_id}${said}`, version: v.id, findings };
+    }
+
+    const note = `Approved by ${s.actor_id}${said}`;
+    const late = await this.commitStep(v, note, {
+      from: 'in_review',
+      record: async (tx, signal) => {
+        await record(tx, 'approved');
+        const approvals = await tx.query<{ n: number }>(
+          `select count(*)::int as n from review_request where version_id = $1 and state = 'approved'`, [v.id]);
+        await signal({ inbox: 'layer', layer: v.layer });
+        await signal({ inbox: 'actor', actor: v.actor_id });
+        return approvals.rows[0].n >= REQUIRED_APPROVALS;
+      },
+    });
+    if (late === 'waiting') return { ok: false, note: `${note} More approvals are needed.`, version: v.id, in_review: true };
+    if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
+    if (late) return this.settleOvertaken(v, late, s.actor_id);
+    await this.afterCommit(v, findings);
+    return { ok: true, note, version: v.id, findings };
+  }
+
+  /**
+   * An author abandons their own draft, in review or not: it is rejected (VER2), and any review
+   * requests for it are withdrawn. The check and the change happen under the node's lock, as a
+   * commit's do, so an abandon never lands on a version an approval just committed. Returns the
+   * state it leaves, or throws when the version was already settled.
+   */
+  async abandon(sessionId: string, versionId: string): Promise<VersionState> {
+    const v = await this.version(versionId);
+    const s = await this.session(sessionId);
+    const here = `${v.node_id}@${v.seq}`;
+    if (s.actor_id !== v.actor_id) throw new GateError(`only ${v.actor_id}, who wrote ${here}, can abandon it`);
+    await this.asSystem(async (tx, signal) => {
+      const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
+      if (now !== 'drafted' && now !== 'in_review') throw new GateError(`${here} is ${now}; only a draft or a version in review can be abandoned`);
+      await this.rejectIn(tx, signal, v.id, `abandoned by ${s.actor_id}`);
+    }, v.node_id);
+    return 'rejected';
+  }
+
+  private async reviewNote(versionId: string): Promise<string | null> {
+    return (await this.db.query<{ review_note: string | null }>(`select review_note from version where id = $1`, [versionId])).rows[0]?.review_note ?? null;
+  }
+
+  /**
+   * The cascade a commit runs, and what the version's review found: layer leaks become marks and
+   * questions. (A resolution of an override it carries recorded its ruling in the commit step.)
+   */
+  private async afterCommit(v: VersionRow, findings: Finding[]) {
     try {
-      await this.onCommit(versionId);
-      await this.raiseLayerLeaks(v, verdict.findings ?? []);
+      await this.onCommit(v.id);
+      await this.raiseLayerLeaks(v, await this.findingsOf(v.id, findings));
     } catch (e) {
       if (e instanceof CascadeError) throw e;   // a variant's cascade, further down, names itself
       throw new CascadeError(`${v.node_id}@${v.seq} committed, but its cascade did not finish: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
-    return { ...verdict, version: versionId };
+  }
+
+  /**
+   * What a committed version's review found, once each: `given`, the layer leaks Kolab's checks
+   * kept on it at submission, and its approvers' findings (VER9).
+   */
+  private async findingsOf(versionId: string, given: Finding[]): Promise<Finding[]> {
+    const stored = (await this.db.query<{ findings: Finding[] | null }>(
+      `select findings from version where id = $1
+       union all select findings from review_request where version_id = $1 and state = 'approved'`, [versionId])).rows;
+    const all = [...given, ...stored.flatMap((r) => r.findings ?? [])];
+    const seen = new Set<string>();
+    return all.filter((f) => { const k = JSON.stringify([f.kind, f.elements, f.explanation]); return !seen.has(k) && !!seen.add(k); });
+  }
+
+  /**
+   * A version enters review, or commits, only while its author may still write its layer there
+   * (D30): one whose author lost Write since drafting is rejected, whoever submits or approves it,
+   * and this says why. Kolab's own rebases carry no author to check. Run under the node's lock.
+   */
+  private async authorRefusal(tx: Q, signal: Signal, v: VersionRow): Promise<string | undefined> {
+    if (v.active_role === 'system') return undefined;
+    const author = await accessIn(tx, v.actor_id, v.kolab_id!);
+    if (author.layers.includes(v.layer)) return undefined;
+    const refused = `rejected: its author ${v.actor_id} no longer holds Write on the ${v.layer} layer of kolab ${v.kolab_id} (${describeAccess(author)})`;
+    await this.rejectIn(tx, signal, v.id, refused);
+    return refused;
   }
 
   /**
    * The commit step, serialized per node (W1.17). Under a lock on the node's row, the version
    * commits only if the node's live version is still its base. Otherwise it commits nothing and
-   * returns the versions that overtook it.
+   * returns the versions that overtook it. `from` is the state it commits from: drafted, or
+   * in_review for an approval. `record`, run first under the same lock, records the verdict
+   * that commits it, which stands even if the version was overtaken (`overtaken` says whether
+   * it was); it returns whether the version now has the approvals it needs, and if not, nothing
+   * commits and this returns 'waiting'.
    */
-  private commitStep(v: VersionRow, note: string | null): Promise<Overtaker[] | string | undefined> {
+  private commitStep(v: VersionRow, note: string | null, opts: {
+    from?: 'drafted' | 'in_review'; record?: (tx: Q, signal: Signal, overtaken: boolean) => Promise<boolean>;
+  } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | undefined> {
+    const from = opts.from ?? 'drafted';
     return this.asSystem(async (tx, signal) => {
       const newer = await overtakenBy(tx, v);
+      if (opts.record && !(await opts.record(tx, signal, !!newer))) return 'waiting' as const;
       if (newer) return newer;
-      // A draft commits only while its author may still write its layer there (D30): one whose
-      // author lost Write since drafting is rejected, whoever submits it. Kolab's own rebases
-      // carry no author to check.
-      if (v.active_role !== 'system') {
-        const author = await accessIn(tx, v.actor_id, v.kolab_id!);
-        if (!author.layers.includes(v.layer)) {
-          const refused = `rejected: its author ${v.actor_id} no longer holds Write on the ${v.layer} layer of kolab ${v.kolab_id} (${describeAccess(author)})`;
-          await tx.query(`update version set state = 'rejected', review_note = $2 where id = $1 and state = 'drafted'`, [v.id, refused]);
-          return refused;
-        }
-      }
-      const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = 'drafted' returning id`,
-        [v.id, note]);
-      if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
-      const ruling = this.rulings.get(v.id);
+      const refused = await this.authorRefusal(tx, signal, v);
+      if (refused) return { refused };
+      const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = $3 returning id`,
+        [v.id, note, from]);
+      if (!r.rows.length) throw new GateError(`${v.id} is no longer ${from === 'drafted' ? 'drafted' : 'in review'}: another review settled it first`);
+      await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.id]);
+      // An override resolution records its ruling as it commits, before its cascade (W2.5, OVR9).
+      const ruling = (await tx.query<{ resolves: Ruling | null }>(`select resolves from version where id = $1`, [v.id])).rows[0]?.resolves;
       if (ruling) await this.recordRuling(tx, signal, ruling);
       return undefined;
     }, v.node_id);
@@ -967,8 +1281,13 @@ export class Kolab {
    * if anything else commits meanwhile, the fold is overtaken in turn and judged again. When
    * anyone else's commit overtook the draft, it is rejected for redrafting. A rebase of Kolab's
    * own that was overtaken is dropped; its caller (rebase) catches up whatever overtook it.
+   *
+   * The same holds for a version in review, at its approval or when someone else commits to its
+   * node while it waits (withdrawStale). `approvedBy` names the reviewer who approved it: its fold
+   * then commits on structural checks, since the edit it carries was reviewed; a fold of a version
+   * not yet reviewed goes into review itself.
    */
-  private async settleOvertaken(v: VersionRow, newer: Overtaker[]): Promise<GateResult> {
+  private async settleOvertaken(v: VersionRow, newer: Overtaker[], approvedBy?: string): Promise<GateResult> {
     if (v.active_role === 'system') {
       const note = `superseded: ${v.node_id} committed a newer version while this rebase waited`;
       await this.reject(v.id, note);
@@ -984,8 +1303,17 @@ export class Kolab {
     const latestParent = (await this.latestCommitted(parent.node_id))!;
     // Folding keeps the draft's authorship (so a later stale draft still sees a
     // human commit and is rejected) and the dependencies the draft declared.
-    const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id, ruling: this.rulings.get(v.id) });
-    await this.reject(v.id, folded.ok ? `folded into ${folded.version}`
+    let folded: GateResult;
+    try {
+      folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id, approvedBy });
+    } catch (e) {
+      // The author abandoned the approved version while it was being folded: drop the fold.
+      if (!(e instanceof OriginalSettled)) throw e;
+      await this.reject(e.fold, `not committed: ${e.message}`);
+      return { ok: false, note: e.message, version: v.id };
+    }
+    // An approved fold settled its original as it committed (foldRecord); any other is settled here.
+    await this.reject(v.id, folded.ok || folded.in_review ? `folded into ${folded.version}`
       : `overtaken by Kolab's rebases; folding it into ${folded.version} failed: ${folded.note ?? ''}`);
     return folded;
   }
@@ -1033,18 +1361,53 @@ export class Kolab {
     }
   }
 
-  /** Rejects a draft. Only commitStep commits one; a version another review already settled stays as it is. */
-  private async reject(versionId: string, note: string | null) {
-    await this.asSystem((tx) => tx.query(`update version set state = 'rejected', review_note = $2 where id = $1 and state = 'drafted'`,
-      [versionId, note]));
+  /**
+   * Rejects a draft, or a version in review, and withdraws its open review requests, so they leave
+   * their reviewers' inboxes and the author's answers show the outcome. Only commitStep commits
+   * one; a version another review already settled stays as it is.
+   */
+  private reject(versionId: string, note: string | null): Promise<boolean> {
+    return this.asSystem((tx, signal) => this.rejectIn(tx, signal, versionId, note));
   }
 
-  /** draft + review, for callers that don't need the two steps apart. Returns the committed version. */
+  /** reject, inside a transaction of the caller's. Returns whether anything changed. */
+  private async rejectIn(tx: Q, signal: Signal, versionId: string, note: string | null): Promise<boolean> {
+    const r = await tx.query<{ layer: Layer; actor_id: string }>(
+      `update version set state = 'rejected', review_note = $2 where id = $1 and state in ('drafted', 'in_review') returning layer, actor_id`,
+      [versionId, note]);
+    const withdrawn = await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' returning id`, [versionId]);
+    if (r.rows[0] && withdrawn.rows.length) {
+      await signal({ inbox: 'layer', layer: r.rows[0].layer });
+      await signal({ inbox: 'actor', actor: r.rows[0].actor_id });
+    }
+    return r.rows.length > 0;
+  }
+
+  /**
+   * A version that committed overtook every other version of its node in review: unless it is a
+   * rebase of Kolab's own, which they fold onto at approval instead, they are stale (CAS7), so
+   * they are rejected now, and leave their reviewers' inboxes, rather than when approved.
+   */
+  private async withdrawStale(v: VersionRow) {
+    if (v.active_role === 'system') return;
+    const waiting = await this.db.query<{ id: string }>(
+      `select id from version where node_id = $1 and state = 'in_review' and id <> $2 order by seq`, [v.node_id, v.id]);
+    for (const { id } of waiting.rows) {
+      await this.reject(id, `stale draft: ${v.node_id}@${v.seq}, by ${v.actor_id}, committed while this waited in review; redraft against it`);
+    }
+  }
+
+  /**
+   * draft + review, for callers that don't need the two steps apart. Returns the committed version.
+   * A version that waits in review (it has reviewers) throws a GateError; draft and review it apart.
+   */
   async commit(sessionId: string, nodeId: string,
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
     const id = await this.draft(sessionId, nodeId, input);
     const result = await this.review(id);
-    if (!result.ok) throw new GateError(`review rejected: ${result.note ?? ''}`);
+    if (result.in_review) throw new GateError(`${nodeId} waits in review by ${result.reviewers?.join(', ') ?? 'its reviewers'}; it commits once one approves it`);
+    if (result.stale) throw new GateError(`review rejected: ${result.note ?? ''}`);
+    if (!result.ok) throw new GateError(`the checks returned it to its author, still drafted: ${result.note ?? ''}`);
     return result.version;
   }
 
@@ -1151,6 +1514,7 @@ export class Kolab {
 
   private async onCommit(versionId: string) {
     const v = await this.version(versionId);
+    await this.withdrawStale(v);
     await this.supersedePrevious(v);
     await this.markStaleOverrides(v);
     await this.clearAddressed(v);
@@ -1349,7 +1713,7 @@ export class Kolab {
    * nothing depends on the overtaking version's own cascade getting that far.
    */
   private async rebase(child: VersionRow, newParent: VersionRow,
-    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string; ruling?: Ruling } = {}): Promise<GateResult> {
+    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string; approvedBy?: string } = {}): Promise<GateResult> {
     const parentEls = await this.elements(newParent.id);
     const byId = new Map(parentEls.map((e) => [e.element_id, e]));
     const oldEls = new Map((await this.elements(child.id)).map((e) => [e.element_id, e]));
@@ -1399,26 +1763,30 @@ export class Kolab {
         actor_id: opts.author?.actor_id ?? SYSTEM_ACTOR, active_role: opts.author?.active_role ?? 'system',
       }, els, kept);
       if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
+      if (opts.author) {
+        // A fold carries what waits on the person's version: the resolution it makes and the leaks
+        // its checks found, and remembers the version it folds, the first of a chain of folds.
+        await tx.query(`update version f set folded_from = $2, resolves = c.resolves, findings = c.findings
+                          from version c where f.id = $1 and c.id = $3`, [id, child.folded_from ?? child.id, child.id]);
+      }
     }, child.node_id);
 
-    // The rebased child goes through the review gate like any other version. A fold of an
-    // override resolution carries its ruling, to record if the fold commits.
+    // A rebase of Kolab's own commits after structural checks only (VER12). A fold carries a
+    // person's edit: approved already, it does the same; otherwise it goes into review.
     let verdict: GateResult;
-    if (opts.ruling) this.rulings.set(id, opts.ruling);
     try {
-      verdict = await this.review(id);
+      verdict = await this.judge(id, opts.approvedBy);
     } catch (e) {
       // The reviewer fell over: the rebase never committed, and nothing will resubmit it.
       if (e instanceof ReviewerError) await this.reject(id, e.message);
       throw e;
-    } finally {
-      this.rulings.delete(id);
     }
     if (verdict.stale) {
       // Overtaken, it failed nothing. Whatever overtook it may still be behind the parent.
       await this.catchUp(child.node_id);
       return verdict;
     }
+    if (verdict.in_review) return verdict;   // a fold, waiting for its reviewers
     if (!verdict.ok) {
       // The node stays on whatever it last committed; the mark goes there.
       if (verdict.retryable) await this.reject(verdict.version, verdict.note ?? null);
@@ -1534,20 +1902,17 @@ export class Kolab {
       id, node_id: v.node_id, seq: await nextSeq(tx, v.node_id), parent_version_id: v.parent_version_id,
       base_version_id: v.id, layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
     }, materialize(parentEls, next), next), v.node_id);
-
-    // The resolution is itself a new version: it must clear the gate before the mark closes, the
-    // query is answered, or precedent is set. commitStep records all three as it commits, before
-    // the cascade (see `rulings`).
-    this.rulings.set(id, {
+    const ruling: Ruling = {
       markId, actor: s.actor_id, resolution, amendedText: amendedText ?? null,
       triple: pe ? [d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!)] : undefined,
-    });
-    let verdict: GateResult;
-    try {
-      verdict = await this.review(id);
-    } finally {
-      this.rulings.delete(id);
-    }
+    };
+    await this.asSystem((tx) => tx.query(`update version set resolves = $2 where id = $1`, [id, JSON.stringify(ruling)]));
+
+    // The resolution is itself a new version: it must clear the gate, and its review if it has
+    // reviewers, before the mark closes, the query is answered, or precedent is set. The ruling waits
+    // on the version (version.resolves), and commitStep records all three as it commits, before the
+    // cascade, whenever that is.
+    const verdict = await this.review(id);
     return { version: id, verdict };
   }
 
@@ -1572,7 +1937,7 @@ export class Kolab {
   }
 
   /**
-   * A resolution's ruling, inside the transaction that commits it (`rulings`): the precedent for
+   * A resolution's ruling, inside the transaction that commits it (version.resolves): the precedent for
    * its triple in its kolab, unless one already stands there (the first ruling stands), and its mark closed, with
    * its question answered by the ruling and the actor who made it.
    */
@@ -1716,10 +2081,11 @@ export class Kolab {
 
   /** Nodes, of one kind if given, in one kolab if given. */
   async listNodes(kind?: Kind, kolab?: string) {
-    return (await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number }>(
+    return (await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }>(
       `select n.id, n.kind, n.layer, n.title,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
-              (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts
+              (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts,
+              (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review
          from node n where ($1::text is null or n.kind = $1) and ($2::text is null or n.kolab_id = $2)
         order by n.kind, n.id`, [kind ?? null, kolab ?? null])).rows;
   }
@@ -1805,6 +2171,55 @@ export class Kolab {
       from: r.from_node ? formatAddress({ node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }) : null,
       mark: r.mark,
     }));
+  }
+
+  /**
+   * Open review requests, each waiting in its reviewer's inbox (REV2, VER17), oldest first. With
+   * `reviewer`, only theirs; with `layer`, only on versions of that layer.
+   */
+  async reviewRequests(filter: { reviewer?: string; layer?: Layer; kolab?: string } = {}): Promise<ReviewRequestView[]> {
+    const rows = (await this.db.query<{ id: string; node_id: string; seq: number; author: string; reviewer: string; created_at: Date | string }>(
+      `select r.id, v.node_id, v.seq, v.actor_id as author, r.reviewer_id as reviewer, r.created_at
+         from review_request r join version v on v.id = r.version_id
+        where r.state = 'open' and v.state = 'in_review'
+          and ($1::text is null or r.reviewer_id = $1) and ($2::text is null or v.layer = $2) and ($3::text is null or r.kolab_id = $3)
+        order by r.created_at, r.reviewer_id, r.id`, [filter.reviewer ?? null, filter.layer ?? null, filter.kolab ?? null])).rows;
+    return rows.map((r) => ({
+      request: r.id, subject: `kj:${r.node_id}@${r.seq}`, subject_kind: 'version' as const, author: r.author, reviewer: r.reviewer,
+      requested_at: new Date(r.created_at).toISOString(),
+      next: `Read it with konjir_read_node node=${r.node_id} version=${r.seq}. Check each element states one testable intent, that no two contradict each other or what they link to, and that none belongs to the other layer. Then konjir_review node=${r.node_id} version=${r.seq} verdict=approve, or verdict=request_changes with a note and findings (contradiction or layer_leak, naming the elements).`,
+    }));
+  }
+
+  /**
+   * An author's versions that went into review, newest first, with each verdict: what their
+   * answers show them, so a request for changes, an approval or a stale draft reaches them.
+   */
+  async submissions(author: string, opts: { kolab?: string; limit?: number } = {}): Promise<SubmissionView[]> {
+    const versions = (await this.db.query<VersionRow & { review_note: string | null }>(
+      `select v.* from version v
+        where v.actor_id = $1 and exists (select 1 from review_request r where r.version_id = v.id)
+          and ($3::text is null or v.kolab_id = $3)
+        order by v.created_at desc, v.id desc limit $2`, [author, opts.limit ?? 20, opts.kolab ?? null])).rows;
+    const out: SubmissionView[] = [];
+    for (const v of versions) {
+      const verdicts = (await this.db.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; findings: Finding[] | null }>(
+        `select reviewer_id, state, note, findings from review_request where version_id = $1 order by created_at, reviewer_id, id`, [v.id])).rows;
+      const subject = `kj:${v.node_id}@${v.seq}`;
+      const fold = v.state === 'rejected' ? (await this.db.query<{ node_id: string; seq: number }>(
+        `select node_id, seq from version where folded_from = $1 order by (state = 'committed') desc, seq desc limit 1`, [v.id])).rows[0] : undefined;
+      const foldedInto = fold && v.review_note?.startsWith('folded into ') ? `kj:${fold.node_id}@${fold.seq}` : undefined;
+      out.push({
+        subject, state: v.state, note: v.review_note, ...(foldedInto ? { folded_into: foldedInto } : {}),
+        verdicts: verdicts.map((r) => ({ reviewer: r.reviewer_id, state: r.state, note: r.note, findings: r.findings ?? [] })),
+        next: v.state === 'in_review' ? 'Waiting for a reviewer; nothing to do.'
+          : v.state === 'drafted' ? `Changes were requested. Draft a new version that addresses them (and konjir_abandon node=${v.node_id} version=${v.seq}), or resubmit this one unchanged with konjir_submit_for_review if you disagree, saying why with konjir_annotate.`
+          : v.state === 'committed' ? 'Committed.'
+          : foldedInto ? `Folded into ${foldedInto}, which carries this edit, onto Kolab's rebase; nothing to do.`
+          : 'Rejected; see the note.',
+      });
+    }
+    return out;
   }
 
   async openMarks(): Promise<MarkRow[]> {
@@ -1937,6 +2352,10 @@ export const structuralReviewer: Reviewer = ({ elements }) => {
     ? { ok: false, note: `Structural review failed: ${problems.join('; ')}.` }
     : { ok: true, note: 'Structural review passed (non-empty, no duplicates, well-formed tree). No semantic reviewer is configured, so contradictions and layer leaks were not checked.' };
 };
+
+/** What a commit with no reviewer says (VER11). */
+const NO_REVIEWER = (layer: Layer) =>
+  `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`;
 
 const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it.',
@@ -2153,6 +2572,9 @@ function describeAccess(a: Access): string {
   if (a.level !== 'write') return level;
   return a.layers.length === 2 ? `${level} on both layers` : a.layers.length ? `${level} on the ${a.layers[0]} layer` : `${level} on no layer`;
 }
+
+/** Whether a commit step refused the version, because its author can no longer write its layer. */
+const isRefused = (x: unknown): x is { refused: string } => typeof x === 'object' && x !== null && 'refused' in x;
 
 /** A version committed since another's base: it overtook that one. */
 type Overtaker = { id: string; active_role: string };

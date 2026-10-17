@@ -204,9 +204,11 @@ async function probe(backend: Backend, s: Shape) {
   instrument(kolab);
   try {
     const { product, P, next, depth } = await family(kolab, s);
-    await people(kolab, 'dave');
-    const other = await kolab.openSession('dave', 'product');
-    const U = await kolab.createNode(other, 'functional_spec', 'Unrelated', 'U');
+    // An engineer, so the product owner stays the only one on her layer and her edits commit
+    // without waiting for review (W1.6).
+    await people(kolab, 'dave', { layers: ['technical'] });
+    const other = await kolab.openSession('dave', 'engineer');
+    const U = await kolab.createNode(other, 'technical_binding', 'Unrelated', 'U');
     let u = 0;
     const unrelated = () => kolab.commit(other, U, { elements: [{ id: 'X', text: `Unrelated revision ${++u}.` }] });
     const variants = [...depth.keys()].reverse();
@@ -299,7 +301,8 @@ type Hook = (ctx: Parameters<Reviewer>[0]) => Promise<void>;
 async function raceKolab(backend: Backend) {
   let hook: Hook | undefined;
   const reviewer: Reviewer = async (ctx) => { await hook?.(ctx); return structuralReviewer(ctx); };
-  const kolab = await Kolab.open({ reviewer, ...(backend.url ? { databaseUrl: await backend.url() } : {}) });
+  // The hook runs before people's reviews and before the structural checks of Kolab's own rebases (W1.6).
+  const kolab = await Kolab.open({ reviewer, checks: reviewer, ...(backend.url ? { databaseUrl: await backend.url() } : {}) });
   return { kolab, setHook: (h: Hook | undefined) => { hook = h; } };
 }
 
@@ -464,9 +467,15 @@ async function race2b(backend: Backend, n = 10) {
       const { s } = await raceFamily(kolab, 1);
       await people(kolab, 'bob');
       const s2 = await kolab.openSession('bob', 'product');
+      // Each one's version waits in review, and the other approves it (W1.6).
+      const reviewed = async (author: string, reviewer: string, element: string, text: string) => {
+        const r = await kolab.review(await kolab.draft(author, 'V0', { deltas: [{ kind: 'add', element, text }] }));
+        const done = r.in_review ? await kolab.recordReview(reviewer, r.version, { verdict: 'approve' }) : r;
+        if (!done.ok) throw new GateError(`review rejected: ${done.note ?? ''}`);
+      };
       const rs = await Promise.allSettled([
-        kolab.commit(s, 'V0', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] }),
-        kolab.commit(s2, 'V0', { deltas: [{ kind: 'add', element: 'B', text: 'Bob adds B.' }] }),
+        reviewed(s, s2, 'A', 'Alice adds A.'),
+        reviewed(s2, s, 'B', 'Bob adds B.'),
       ]);
       const ok = rs.filter((r) => r.status === 'fulfilled').length;
       const kept = [] as string[];

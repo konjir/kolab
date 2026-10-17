@@ -72,7 +72,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://inbox/{layer}',
     isTemplate: true,
     title: 'A layer\'s work queue',
-    description: 'Open questions and notes the layer owns, and open marks on its work. Subscribe to your own layer\'s inbox; it is updated whenever that queue changes.',
+    description: 'Open questions and notes the layer owns, open marks on its work, and the review requests waiting for you on it. Subscribe to your own layer\'s inbox; it is updated whenever that queue changes.',
     mimeType: 'application/json',
   })
   async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -82,10 +82,13 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (!session) throw new RoleError('reading an inbox needs an agent session token');
     // The layer's queue in the session's own kolab (TEN12).
     const kolab = await this.kolab.sessionKolab(session);
+    const me = await this.kolab.sessionInfo(session);
     const body = {
       layer,
       queries: await this.kolab.listQueries({ layer, state: 'open', kolab }),
       marks: await this.kolab.describeMarks({ layer, kolab }),
+      // Each review request waits in its own reviewer's inbox (REV2).
+      reviews: await this.kolab.reviewRequests({ layer, reviewer: me.actor, kolab }),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
@@ -95,7 +98,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://answers/{actor}',
     isTemplate: true,
     title: 'Answers to what you raised',
-    description: 'Your questions and notes with their replies. Updated whenever one of them is answered.',
+    description: 'Your questions and notes with their replies, and the versions you submitted for review with their verdicts. Updated whenever one of them is answered or reviewed.',
     mimeType: 'application/json',
   })
   async answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -103,7 +106,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (!session) throw new RoleError('reading answers needs an agent session token');
     const me = await this.kolab.sessionInfo(session);
     if (decodeURIComponent(String(vars.actor)) !== me.actor) throw new RoleError('you can only read your own answers');
-    const body = { actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }) };
+    const body = { actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }) };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
 }

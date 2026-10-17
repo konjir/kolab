@@ -1,7 +1,8 @@
 // Regressions for the bugs W2.5's property tests (properties.test.ts) found, each the
 // counterexample fast-check shrank to, written out by hand, and for the review of PR #28.
 import { expect, test } from '@jest/globals';
-import { els, marksOn, people, setup, textOf } from '@konjir/engine/testing';
+import type { GateResult } from '@konjir/types';
+import { approved, commitReviewed, els, marksOn, people, setup, textOf } from '@konjir/engine/testing';
 
 test('a mark spreads downstream through a link that carries a mark of its own (LNK5)', async () => {
   const { kolab, product, engineer } = await setup();
@@ -141,11 +142,12 @@ test('of two resolutions of one mark, only the one that commits sets precedent a
   await people(kolab, 'dana');
   const dana = await kolab.openSession('dana', 'product');
 
-  // Alice amends; while her draft is in review, Dana adopts the parent's text and commits first.
-  let danas: Awaited<ReturnType<typeof kolab.resolveOverride>> | undefined;
-  during = async () => { danas = await kolab.resolveOverride(dana, a.id, 'adopt_parent'); };
+  // Alice amends; while her draft is in review, Dana adopts the parent's text and commits first:
+  // with two product owners, each one's resolution waits for the other's approval (W1.6).
+  let danas: GateResult | undefined;
+  during = async () => { danas = await approved(kolab, product, (await kolab.resolveOverride(dana, a.id, 'adopt_parent')).verdict); };
   const alices = await kolab.resolveOverride(product, a.id, 'amend', 'Timeout is 20 minutes.');
-  expect(danas!.verdict.ok).toBe(true);
+  expect(danas!.ok).toBe(true);
   expect(alices.verdict).toMatchObject({ ok: false, stale: true });
 
   expect((await kolab.db.query(`select resolution, ruled_by from precedent`)).rows).toStrictEqual([{ resolution: 'adopt_parent', ruled_by: 'dana' }]);
@@ -153,7 +155,7 @@ test('of two resolutions of one mark, only the one that commits sets precedent a
     .toStrictEqual([{ state: 'answered', answer: 'adopt_parent', answered_by: 'dana' }]);
   expect((await textOf(kolab, 'A')).E1).toBe('Timeout is 10 minutes.');
   // B follows Dana's ruling on P's next commit.
-  await kolab.commit(product, 'P', { elements: els({ E1: 'Timeout is 10 minutes.', E2: 'Logo top-center.' }) });
+  await commitReviewed(kolab, product, dana, 'P', { elements: els({ E1: 'Timeout is 10 minutes.', E2: 'Logo top-center.' }) });
   expect((await textOf(kolab, 'B')).E1).toBe('Timeout is 10 minutes.');
 });
 

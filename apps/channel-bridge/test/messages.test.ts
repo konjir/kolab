@@ -45,3 +45,31 @@ test('the startup summary lists waiting work, and is silent for an empty inbox',
     'Read konjir://inbox/functional, or call konjir_list_queries, before acting.',
   ]);
 });
+
+test('a new review request for the session starts a turn that says how to review it; a verdict on its own submission does too (W1.6)', () => {
+  const request = { request: 'RR1', subject: 'kj:orders@2', author: 'pm-2', next: 'Read it, then konjir_review node=orders version=2.' };
+  const m = describeChange(URI, inbox([]), { ...inbox([]), reviews: [request] })!;
+  expect(m.meta).toMatchObject({ kind: 'inbox', review_requests: '1' });
+  expect(m.content.split('\n')).toStrictEqual([
+    'Your functional inbox changed: 0 open questions and notes, 0 open marks, 1 review request for you.',
+    'New review request for you:',
+    '- review kj:orders@2, by pm-2. Next: Read it, then konjir_review node=orders version=2.',
+    'Read konjir://inbox/functional, or call konjir_list_reviews, before acting.',
+  ]);
+  // The request leaving the inbox sends nothing.
+  expect(describeChange(URI, { ...inbox([]), reviews: [request] }, { ...inbox([]), reviews: [] })).toBeNull();
+  expect(describeStartup([{ uri: URI, body: { ...inbox([]), reviews: [request] } }])!.content).toMatch(/^Your functional inbox already holds 0 open questions and notes, 0 open marks, 1 review request for you:\n- review kj:orders@2/);
+
+  const ANSWERS = 'konjir://answers/pm';
+  const waiting = { actor: 'pm', queries: [], submissions: [{ subject: 'kj:orders@2', state: 'in_review', note: null }] };
+  const back = { actor: 'pm', queries: [], submissions: [{ subject: 'kj:orders@2', state: 'drafted', note: 'Changes requested by pm-2: split R1.' }] };
+  const v = describeChange(ANSWERS, waiting, back)!;
+  expect(v.meta).toMatchObject({ kind: 'answers', reviewed: '1' });
+  expect(v.content.split('\n')).toStrictEqual([
+    'A version you submitted has been reviewed:',
+    '- kj:orders@2 is drafted: "Changes requested by pm-2: split R1."',
+    'Read konjir://answers/pm, or call konjir_list_reviews, for the verdicts and what to do next.',
+  ]);
+  // Submitting, which puts it in review, isn't news to the session that did it.
+  expect(describeChange(ANSWERS, { actor: 'pm', queries: [], submissions: [] }, waiting)).toBeNull();
+});

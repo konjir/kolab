@@ -1,5 +1,5 @@
 import { expect, test } from '@jest/globals';
-import { setup, els, marksOn, textOf } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, people, setup, textOf } from '@konjir/engine/testing';
 
 const PARENT_V1 = {
   E1: 'Background is white.',
@@ -99,24 +99,50 @@ test('precedent: the same (base, parent, child) triple resolves itself next time
   await kolab.close();
 });
 
-test('the review gate catches what the three-way rule cannot see', async () => {
-  // Toy reviewer: one spec may not state two different header colors.
+test('a rebase Kolab makes commits after structural checks only, without review, even past what a reviewer would catch (VER12, D19)', async () => {
+  // Toy reviewer: one spec may not state two different header colors. It runs on people's
+  // versions only; Kolab's own rebases get the structural checks alone.
+  let reviewed = 0;
   const { kolab, product } = await setup(({ elements }) => {
+    reviewed++;
     const colors = new Set(elements.flatMap((e) => /Header is (\w+)/.exec(e.text)?.[1] ?? []));
     return colors.size > 1 ? { ok: false, note: `header color conflict: ${[...colors].join(' vs ')}` } : { ok: true };
   });
+  await people(kolab, 'dave', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product');   // a reviewer for alice's versions
+  const parent = await kolab.createNode(product, 'functional_spec', 'Theme', 'Q');
+  const q1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ A1: 'Header is blue.' }) });
+  const child = await kolab.createNode(product, 'functional_spec', 'Theme for Acme', 'QC');
+  const c1 = await commitReviewed(kolab, product, dave, child, { parent: q1, deltas: [{ kind: 'override', element: 'A1', text: 'Header is green.' }] });
+  expect(reviewed).toBe(2);
+
+  // Parent adds a different element, consistent with itself, that contradicts
+  // the child's override. No shared element, so the three-way rule sees nothing,
+  // and the rebase commits on structural checks, with no review request.
+  await commitReviewed(kolab, product, dave, parent, { elements: els({ A1: 'Header is blue.', A2: 'Header is blue on mobile too.' }) });
+  expect(reviewed).toBe(3);   // the parent's own version only
+
+  const rebased = (await kolab.latestCommitted(child))!;
+  expect(rebased.id).not.toBe(c1);
+  expect([rebased.active_role, rebased.state]).toStrictEqual(['system', 'committed']);
+  expect(await kolab.reviewRequests()).toStrictEqual([]);
+  expect((await kolab.db.query(`select 1 from review_request where version_id = $1`, [rebased.id])).rows).toStrictEqual([]);
+  expect(await textOf(kolab, child)).toStrictEqual({ A1: 'Header is green.', A2: 'Header is blue on mobile too.' });
+  expect(await kolab.openMarks()).toStrictEqual([]);
+  await kolab.close();
+});
+
+test('a rebase that fails the structural checks leaves its variant a rebase_failed mark and question', async () => {
+  const { kolab, product } = await setup();
   const parent = await kolab.createNode(product, 'functional_spec', 'Theme', 'Q');
   const q1 = await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.' }) });
   const child = await kolab.createNode(product, 'functional_spec', 'Theme for Acme', 'QC');
   const c1 = await kolab.commit(product, child, { parent: q1, deltas: [{ kind: 'override', element: 'A1', text: 'Header is green.' }] });
-
-  // Parent adds a different element, consistent with itself, that contradicts
-  // the child's override. No shared element, so the three-way rule sees nothing.
-  await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.', A2: 'Header is blue on mobile too.' }) });
+  // The parent adds, word for word, the text the child overrides A1 with.
+  await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.', A2: 'Header is green.' }) });
 
   expect((await kolab.latestCommitted(child))!.id).toBe(c1); // child stays on its old parent
-  const marks = await kolab.openMarks();
-  expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[c1, 'rebase_failed']]);
-  expect((await kolab.openQueries())[0].question).toMatch(/green vs blue/);
+  expect((await kolab.openMarks()).map((m) => [m.version_id, m.reason])).toStrictEqual([[c1, 'rebase_failed']]);
+  expect((await kolab.openQueries())[0].question).toMatch(/A2 repeats A1 word for word/);
   await kolab.close();
 });

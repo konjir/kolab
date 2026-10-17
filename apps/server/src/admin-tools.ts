@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { Kolab } from '@konjir/engine';
-import { ACCESS_LEVELS, LAYERS, ORG_ROLES, ROLES, VISIBILITIES } from '@konjir/types';
+import { GateError, Kolab } from '@konjir/engine';
+import { parseAddress } from '@konjir/address';
+import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, ROLES, VISIBILITIES } from '@konjir/types';
 import { fail, ok } from './results.js';
 import { KOLAB } from './tokens.js';
 
@@ -39,6 +40,14 @@ const grant = z.object({
 });
 const revoke = z.object({ kolab: z.string(), to: z.string() });
 const access = z.object({ actor: z.string(), kolab: z.string() });
+const applyRuling = z.object({
+  ruling: z.string().regex(/^D\d+$/).describe('The ruling being applied, by its Decisions Log ID, e.g. D46'),
+  actor: z.string().describe('Who the version is written as, e.g. mirror-product; it writes in the role of the node\'s layer'),
+  node: z.string(),
+  elements: z.array(z.object({ id: z.string().optional(), text: z.string(), parent: z.string().optional() })).optional(),
+  deltas: z.array(z.object({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional() })).optional(),
+  parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2'),
+});
 
 /** Verbs for the admin token only: the scope guard refuses them to agent sessions. */
 @Injectable()
@@ -81,6 +90,29 @@ export class AdminTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async endSession({ token }: z.infer<typeof endSession>) {
     try { await this.kolab.endSession(token); return ok({ ended: token }); } catch (e) { return fail(e); }
+  }
+
+  @McpTool({
+    name: 'konjir_admin_apply_ruling',
+    description: 'Admin: apply a ruling of Lee\'s to a node (D47): a new version, written as the actor given, that commits after structural checks only, with no review request, since the ruling is already the approval. Its review note records the ruling. It goes through the same per-node commit step as any other commit, so it is rejected as stale if the node moved on meanwhile. Agent sessions can\'t reach it.',
+    schema: applyRuling,
+  })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async applyRuling(a: z.infer<typeof applyRuling>) {
+    try {
+      if (!a.elements === !a.deltas) throw new Error('send exactly one of elements or deltas');
+      let parent: string | undefined;
+      if (a.parent) {
+        const p = parseAddress(a.parent);
+        const v = p.version === undefined ? await this.kolab.latestCommitted(p.node)
+          : (await this.kolab.db.query<{ id: string; state: string }>(`select id, state from version where node_id = $1 and seq = $2`, [p.node, p.version])).rows[0];
+        if (!v || v.state !== 'committed') throw new GateError(`${a.parent} is not a committed version`);
+        parent = v.id;
+      }
+      const r = await this.kolab.applyRuling(a.node, { elements: a.elements, deltas: a.deltas, parent }, { id: a.ruling, actor: a.actor });
+      const v = await this.kolab.version(r.version);
+      return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? `kj:${a.node}@${v.seq}` : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null });
+    } catch (e) { return fail(e); }
   }
 }
 

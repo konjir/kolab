@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
-import type { Reviewer } from '@konjir/types';
+import type { AccessLevel, DeltaInput, ElementInput, GateResult, Layer, Reviewer } from '@konjir/types';
 import { Kolab } from './kolab.js';
 
 /**
@@ -98,23 +98,31 @@ export const TEST_KOLAB = 'test';
 /**
  * Adds each person, with Write on both layers of the test kolab, which is made (owned by the
  * organization `test-org`) the first time. With `owner`, each is an agent of that account
- * instead, granted Write on both layers too.
+ * instead, granted Write on both layers too. With `layers`, Write covers only those; with
+ * `level`, another level of access than Write.
  */
-export async function people(kolab: Kolab, ids: string | string[], opts: { owner?: string } = {}) {
+export async function people(kolab: Kolab, ids: string | string[], opts: { owner?: string; layers?: Layer[]; level?: AccessLevel } = {}) {
   if (!(await kolab.listKolabs()).some((k) => k.id === TEST_KOLAB)) {
     await kolab.addOrganization('test-org');
     await kolab.createKolab(TEST_KOLAB, { owner: 'test-org' });
   }
   for (const id of [ids].flat()) {
     await kolab.addActor(id, { owner: opts.owner });
-    await kolab.grant(TEST_KOLAB, id, 'write');
+    await kolab.grant(TEST_KOLAB, id, opts.level ?? 'write', opts.layers ? { layers: opts.layers } : {});
   }
 }
 
-export async function setup(reviewer?: Reviewer) {
-  const kolab = await openKolab({ reviewer });
-  // alice is the product owner, bob the engineer; carol holds both roles, one at a time.
-  await people(kolab, ['alice', 'bob', 'carol']);
+/**
+ * `reviewer` judges people's versions; `checks`, Kolab's own rebases (Kolab.open). Alice writes
+ * the functional layer and Bob the technical one, so each is alone on a layer and commits on the
+ * checks alone (VER11); a test that wants review adds another writer. Carol only reads, and
+ * holds either role, one at a time.
+ */
+export async function setup(reviewer?: Reviewer, checks?: Reviewer) {
+  const kolab = await openKolab({ reviewer, checks });
+  await people(kolab, 'alice', { layers: ['functional'] });
+  await people(kolab, 'bob', { layers: ['technical'] });
+  await people(kolab, 'carol', { level: 'read' });
   const product = await kolab.openSession('alice', 'product');
   const engineer = await kolab.openSession('bob', 'engineer');
   return { kolab, product, engineer };
@@ -156,4 +164,20 @@ export async function marksOn(kolab: Kolab, nodeId: string) {
 export async function textOf(kolab: Kolab, nodeId: string) {
   const v = (await kolab.latestCommitted(nodeId))!;
   return Object.fromEntries((await kolab.elements(v.id)).map((e) => [e.element_id, e.text]));
+}
+
+/**
+ * Draft and submit a version by `author`, and if it waits in review, approve it as `reviewer`
+ * (W1.6). Returns the version that committed; throws if it didn't commit.
+ */
+export async function commitReviewed(kolab: Kolab, author: string, reviewer: string, nodeId: string,
+  input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
+  const r = await approved(kolab, reviewer, await kolab.review(await kolab.draft(author, nodeId, input)));
+  if (!r.ok) throw new Error(`expected ${nodeId} to commit: ${r.note ?? ''}`);
+  return r.version;
+}
+
+/** If `r` left a version in review, approve it as `reviewer`; the outcome either way. */
+export async function approved(kolab: Kolab, reviewer: string, r: GateResult): Promise<GateResult> {
+  return r.in_review ? kolab.recordReview(reviewer, r.version, { verdict: 'approve' }) : r;
 }

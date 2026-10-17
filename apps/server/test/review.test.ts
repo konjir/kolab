@@ -17,7 +17,7 @@ function fakeModel() {
 
 async function kolabWith(call: ModelCall) {
   const kolab = await openKolab({ reviewer: modelReviewer(call) });
-  await people(kolab, 'alice'); await people(kolab, 'bob');
+  await people(kolab, 'alice', { layers: ['functional'] }); await people(kolab, 'bob', { layers: ['technical'] });
   return { kolab, product: await kolab.openSession('alice', 'product'), engineer: await kolab.openSession('bob', 'engineer') };
 }
 
