@@ -222,7 +222,7 @@ async function probe(backend: Backend, s: Shape) {
     const idleUnrelated: number[] = [], idleVariant: number[] = [];
     for (let i = 0; i < 10; i++) idleUnrelated.push((await time(unrelated)).ms);
     for (let i = 0; i < 10; i++) idleVariant.push((await time(variantEdit)).ms);
-    const failedBefore = await reviewFailed(kolab);
+    const failedBefore = await rebaseFailed(kolab);
 
     let running = true;
     const during = { unrelated: [] as number[], variant: [] as number[], errors: [] as string[] };
@@ -268,7 +268,7 @@ async function probe(backend: Backend, s: Shape) {
       idleVariant: summary(idleVariant), duringVariant: summary(during.variant),
       errors: [...new Set(during.errors.map((e) => e.replace(/V[\d.]+/g, 'V…').slice(0, 160)))],
       errorCount: during.errors.length,
-      reviewFailedMarks: (await reviewFailed(kolab)) - failedBefore,
+      rebaseFailedMarks: (await rebaseFailed(kolab)) - failedBefore,
       variantsBehindParent: behind,
       humanEditsCommitted: edits,
       humanEditsLost: lost,
@@ -278,8 +278,8 @@ async function probe(backend: Backend, s: Shape) {
   }
 }
 
-async function reviewFailed(kolab: Kolab) {
-  return (await kolab.db.query<{ n: number }>(`select count(*)::int as n from invalidation where reason = 'review_failed'`)).rows[0].n;
+async function rebaseFailed(kolab: Kolab) {
+  return (await kolab.db.query<{ n: number }>(`select count(*)::int as n from invalidation where reason = 'rebase_failed'`)).rows[0].n;
 }
 
 // ---------------------------------------------------------------------------

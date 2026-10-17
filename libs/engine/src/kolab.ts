@@ -852,15 +852,15 @@ export class Kolab {
 
   /**
    * Marks a variant whose rebase failed, on its live version, with a question. A variant holds
-   * at most one open review_failed mark: a later failure re-points that mark at the newer parent
-   * and rewords its question instead of adding another. A rebase that passes settles it.
+   * at most one open rebase_failed mark (D44): a later failure re-points that mark at the newer
+   * parent and rewords its question instead of adding another. A rebase that passes settles it.
    */
   private async rebaseFailed(nodeId: string, newParent: string, question: string) {
     const live = (await this.latestCommitted(nodeId))!.id;
     const open = (await this.db.query<{ id: string }>(
-      `select id from invalidation where version_id = $1 and reason = 'review_failed' and state = 'open' order by id limit 1`, [live])).rows[0];
+      `select id from invalidation where version_id = $1 and reason = 'rebase_failed' and state = 'open' order by id limit 1`, [live])).rows[0];
     if (!open) {
-      const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent, reason: 'review_failed' });
+      const markId = await this.mark({ version_id: live, element_id: null, triggered_by: newParent, reason: 'rebase_failed' });
       await this.ask(live, null, markId, question);
       return;
     }
@@ -952,7 +952,7 @@ export class Kolab {
     }
     // A successful rebase settles any earlier failed one (its mark moved here on supersede).
     const failed = await this.db.query<{ id: string }>(
-      `select id from invalidation where version_id = $1 and reason = 'review_failed' and state = 'open'`, [verdict.version]);
+      `select id from invalidation where version_id = $1 and reason = 'rebase_failed' and state = 'open'`, [verdict.version]);
     for (const { id: mid } of failed.rows) {
       await this.closeMark(mid, `rebase ${verdict.version} passed review`, 'resolved by a later rebase');
     }
@@ -1413,7 +1413,8 @@ const NEXT_STEP: Record<string, string> = {
   upstream_dirty: 'Something this depends on is dirty. Wait for that mark to clear, or check it yourself and clear the upstream mark.',
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',
-  review_failed: 'Rebasing onto the new parent failed review. Draft a version that resolves the contradiction named in the query.',
+  review_failed: 'The review gate rejected this version. Draft a version that resolves what the query names.',
+  rebase_failed: 'Rebasing onto the new parent failed, for the reason the query gives. Commit a version that resolves it (your commit rebases onto the parent), or wait for the parent\'s next commit; the next rebase that passes settles this mark.',
   role_boundary: 'The review gate thinks this crosses the layer boundary. A question went to the layer that owns the answer; the mark clears when it is answered. Meanwhile, work continues at risk.',
   query_answered: 'A question this element was waiting on has been answered. Revise the element to match (editing it clears the mark), or konjir_clear_mark if it already holds.',
 };

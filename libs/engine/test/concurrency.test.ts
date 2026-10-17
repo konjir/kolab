@@ -276,7 +276,7 @@ test('a rebase that throws marks its variant, and the storm carries on to the re
 
   expect(await stranded(kolab, ids)).toStrictEqual(['V1']);
   const marks = (await marksOn(kolab, 'V1')).filter((m) => m.reason !== 'override_stale');
-  expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[(await kolab.latestCommitted('V1'))!.id, 'review_failed']]);
+  expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[(await kolab.latestCommitted('V1'))!.id, 'rebase_failed']]);
   const [q] = (await kolab.openQueries()).filter((x) => x.question.startsWith('Rebasing'));
   expect(q.question).toMatch(/^Rebasing onto the new parent failed: the reviewer failed on \S+: the reviewer fell over\./);
   // The rebase the reviewer fell over on is rejected, not left drafted for anyone to resubmit.
@@ -312,7 +312,7 @@ test('a failure in a committed rebase\'s own cascade fails the parent\'s commit 
   expect(fail.fired()).toBe(true);
   expect(error).toMatch(/^CascadeError: V0@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
   expect(await stranded(kolab, ['V0'])).toStrictEqual([]);   // V0's rebase stands
-  expect((await kolab.openMarks()).filter((m) => m.reason === 'review_failed')).toStrictEqual([]);
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
   // The storm stopped loudly. Whatever it hadn't reached catches up on the parent's next commit.
   await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
   expect(await stranded(kolab, ids)).toStrictEqual([]);
@@ -327,7 +327,7 @@ test('a lost connection during a variant\'s rebase fails the parent\'s commit, r
 
   expect(error).toMatch(/^CascadeError: P@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
   expect(await stranded(kolab, ids)).toContain('V1');
-  expect((await kolab.openMarks()).filter((m) => m.reason === 'review_failed')).toStrictEqual([]);
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
   await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
@@ -352,15 +352,16 @@ test('a storm\'s rebase dropped as overtaken catches up the version that overtoo
   expect((await kolab.openMarks()).filter((m) => m.reason !== 'override_stale')).toStrictEqual([]);
 });
 
-test('a variant whose rebases keep failing holds one review_failed mark and one question, re-pointed at the newest parent', async () => {
+test('a variant whose rebases keep failing holds one rebase_failed mark and one question, re-pointed at the newest parent', async () => {
   const { kolab, product } = await hooked(async (ctx) =>
     (ctx.version.active_role === 'system' && ctx.version.node_id === 'V0' ? { ok: false, note: 'contradicts itself' } : structuralReviewer(ctx)));
   const { next } = await family(kolab, product, 1);
   await kolab.commit(product, 'P', { elements: next });
   const p3 = await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
 
-  const marks = (await marksOn(kolab, 'V0')).filter((m) => m.reason === 'review_failed');
+  const marks = (await marksOn(kolab, 'V0')).filter((m) => m.reason === 'rebase_failed');
   expect(marks.map((m) => m.triggered_by)).toStrictEqual([p3]);
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'review_failed')).toStrictEqual([]);
   expect((await kolab.openQueries()).filter((q) => q.question.startsWith('Rebasing')).length).toBe(1);
 });
 

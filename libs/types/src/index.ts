@@ -33,7 +33,7 @@ export type OverrideResolution = typeof OVERRIDE_RESOLUTIONS[number];
 /** Why a mark (an invalidation) was raised. */
 export const MARK_REASONS = [
   'changed', 'fuzzy_reanchor', 'orphaned', 'override_stale', 'override_orphaned',
-  'upstream_dirty', 'review_failed', 'role_boundary', 'query_answered',
+  'upstream_dirty', 'review_failed', 'rebase_failed', 'role_boundary', 'query_answered',
 ] as const;
 export type MarkReason = typeof MARK_REASONS[number];
 
