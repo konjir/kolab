@@ -142,7 +142,7 @@ alter table account add constraint account_id_check
 -- Konjir's kolab a different owner than this says.
 do $$
 begin
-  if exists (select 1 from account where id = 'konjir') then
+  if exists (select 1 from account where id = 'konjir') or exists (select 1 from actor where id = 'konjir') then
     raise exception 'migration 0006: an actor named konjir exists, so the organization konjir that owns the existing data can''t be made; rename that actor first';
   end if;
 end
@@ -303,7 +303,7 @@ create trigger kolab_fixed before update of kolab_id on precedent          for e
 -- a node's kolab to its session's, and a precedent's to the kolab of the version whose override
 -- it settled (the engine alone guarantees that one).
 create function kj_kolab_of_parent() returns trigger
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
 begin
   if tg_table_name = 'version' then
     new.kolab_id := (select n.kolab_id from node n where n.id = new.node_id);
@@ -350,7 +350,7 @@ $$;
 -- kolab, so on a person's own kolab it gives nothing; Kolab also refuses to set one there.
 create function kj_person_access(p_user text, p_kolab text,
   out rank int, out functional boolean, out technical boolean)
-language sql stable security definer set search_path = public as $$
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
   with recursive teams(id) as (
     select tm.team_id from team_member tm where tm.user_id = p_user
     union
@@ -383,7 +383,7 @@ $$;
 -- organization holds all of its own kolabs and nothing of anyone else's.
 create function kj_access(p_actor text, p_kolab text,
   out rank int, out functional boolean, out technical boolean)
-language plpgsql stable security definer set search_path = public as $$
+language plpgsql stable security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
   a_kind text; a_owner text; o_kind text;
   o_rank int; o_functional boolean; o_technical boolean;
@@ -417,7 +417,7 @@ $$;
 
 -- The kolab the current session works in, while its actor can still reach it; otherwise null.
 create function kj_session_kolab() returns text
-language sql stable security definer set search_path = public as $$
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
   select s.kolab_id from session s
    where s.id = current_setting('kj.session', true) and s.ended_at is null
      and (select a.rank from kj_access(s.actor_id, s.kolab_id) a) >= 1
@@ -426,7 +426,7 @@ $$;
 -- The layer the current session may write now: its role's layer, while its actor's access in
 -- its kolab covers that layer. Null otherwise, which every agent_layer policy then refuses.
 create or replace function kj_session_layer() returns text
-language sql stable security definer set search_path = public as $$
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
   select l.layer
     from session s
    cross join lateral (select case s.active_role when 'product' then 'functional' when 'engineer' then 'technical' end as layer) l
@@ -447,6 +447,20 @@ grant execute on function kj_session_kolab(), kj_session_layer(), kj_session_act
 -- kj_agent reads no sessions (each id is a bearer token) and no actors; the security definer
 -- helpers above read them for it.
 revoke select on session, actor from kj_agent;
+
+-- A security definer function runs with its owner's rights, so it must never resolve a name to
+-- a table its caller made. Each one above searches pg_catalog, then public, then pg_temp last;
+-- 0001's and 0002's are pinned the same way here. And no role but the database's owner and
+-- those it grants may make temporary tables at all, so kj_agent can't make one to shadow
+-- anything: Kolab makes none.
+alter function kj_session_layer() set search_path = pg_catalog, public, pg_temp;
+alter function kj_session_actor() set search_path = pg_catalog, public, pg_temp;
+alter function kj_session_role()  set search_path = pg_catalog, public, pg_temp;
+do $$
+begin
+  execute format('revoke temporary on database %I from public', current_database());
+end
+$$;
 
 -- ---------------------------------------------------------------------------
 -- Row-level security: an agent reads and writes only its session's kolab (TEN12, DAT10)
@@ -494,8 +508,9 @@ create policy kolab_write on query   as restrictive for insert to kj_agent with 
 -- (Postgres refuses the recursion), so whether a draft's base is a committed version of its node
 -- is asked of a function. version_base_kolab_fkey keeps the base in the draft's kolab.
 create function kj_committed_version_of(p_version text, p_node text) returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from version b where b.id = p_version and b.node_id = p_node and b.state = 'committed')
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+  select exists (select 1 from public.version b where b.id = p_version and b.node_id = p_node and b.state = 'committed'
+                  and b.kolab_id = (select public.kj_session_kolab()))
 $$;
 revoke execute on function kj_committed_version_of(text, text) from public;
 grant execute on function kj_committed_version_of(text, text) to kj_agent;

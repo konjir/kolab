@@ -400,3 +400,35 @@ test("a team's grant counts only on its own organization's kolabs, even after th
   await kolab.db.query(`update kolab set owner_id = 'pat' where id = 'api'`);
   expect((await kolab.access('tom', 'api')).level).toBeNull();
 });
+
+// ---- verification review (PR #27) --------------------------------------------------------
+
+test("kj_agent can't make a temporary table, and one shadowing session doesn't change who a session is", async () => {
+  const { kolab, alice, bob } = await twoAccounts();
+  expect(await rejection(asAgent(kolab, bob, `create temp table session (id text)`))).toMatch(/permission denied/);
+  expect(await rejection(asAgent(kolab, bob, `create temp table x (id text)`))).toMatch(/permission denied/);
+
+  // Kolab's own login can still make one on this connection; a forged session row in it, naming
+  // bob's token in alice's kolab as alice, must not reach the session helpers.
+  const helpers = await kolab.db.transaction(async (tx) => {
+    await tx.exec(`create temp table session (id text, actor_id text, active_role text, kolab_id text, ended_at timestamptz) on commit drop`);
+    await tx.query(`insert into pg_temp.session values ($1, 'alice', 'product', 'orders', null)`, [bob]);
+    await tx.exec('set local role kj_agent');
+    await tx.query(`select set_config('kj.session', $1, true)`, [bob]);
+    const r = await tx.query<Record<string, string>>(
+      `select kj_session_kolab() as kolab, kj_session_actor() as actor, kj_session_role() as role, kj_session_layer() as layer`);
+    const nodes = await tx.query<{ id: string }>(`select id from node`);
+    return { ...r.rows[0], nodes: nodes.rows.map((n) => n.id) };
+  });
+  expect(helpers).toStrictEqual({ kolab: 'billing', actor: 'bob', role: 'product', layer: 'functional', nodes: ['billing-spec'] });
+  expect((await kolab.sessionInfo(alice)).kolab).toBe('orders');
+});
+
+test("every security definer function searches pg_temp last", async () => {
+  const kolab = await openKolab();
+  const r = await kolab.db.query<{ name: string; config: string[] | null }>(
+    `select proname as name, proconfig as config from pg_proc
+      where pronamespace = 'public'::regnamespace and prosecdef order by proname`);
+  expect(r.rows.length).toBeGreaterThanOrEqual(8);
+  for (const f of r.rows) expect(`${f.name}: ${f.config?.join(';')}`).toBe(`${f.name}: search_path=pg_catalog, public, pg_temp`);
+});
