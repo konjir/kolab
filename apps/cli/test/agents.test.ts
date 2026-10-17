@@ -1,5 +1,6 @@
 // Agents as actors of their own, over real HTTP (W1.14; D30, ENF4, ENF5, ROL4): an admin adds two
-// agents for one person, each holds its own session at the same time, and each version names its agent.
+// agents for one person, each holds its own session at the same time, and each version names its
+// agent. And accounts, kolabs and grants over the admin verbs (W1.3; TEN4, TEN11, TEN12).
 import { expect, test } from '@jest/globals';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
@@ -15,7 +16,10 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   expect(await call(admin, 'admin_add_actor', { id: 'alice', name: 'Alice' })).toStrictEqual({ actor: 'alice', kind: 'person', owner: null });
   expect(await call(admin, 'admin_add_actor', { id: 'alice-pm', owner: 'alice' })).toStrictEqual({ actor: 'alice-pm', kind: 'agent', owner: 'alice' });
   await call(admin, 'admin_add_actor', { id: 'alice-pm-2', owner: 'alice' });
-  expect(await rejection(call(admin, 'admin_add_actor', { id: 'sub', owner: 'alice-pm' }))).toMatch(/alice-pm is an agent; an agent's owner must be a person/);
+  expect(await rejection(call(admin, 'admin_add_actor', { id: 'sub', owner: 'alice-pm' }))).toMatch(/alice-pm is an agent; an agent's owner must be a person or an organization/);
+  await call(admin, 'admin_add_kolab', { name: 'checkout', owner: 'alice' });
+  await call(admin, 'admin_grant', { kolab: 'checkout', to: 'alice-pm', level: 'write', layers: ['functional'] });
+  await call(admin, 'admin_grant', { kolab: 'checkout', to: 'alice-pm-2', level: 'write' });
   expect(await call(admin, 'admin_list_actors', { owner: 'alice' })).toStrictEqual({ actors: [
     { id: 'alice-pm', name: 'alice-pm', kind: 'agent', owner: 'alice' },
     { id: 'alice-pm-2', name: 'alice-pm-2', kind: 'agent', owner: 'alice' },
@@ -33,6 +37,7 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
 
   expect(await call(one.client, 'whoami')).toStrictEqual({
     session: one.token, actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
+    kolab: 'checkout', access: { level: 'write', layers: ['functional'] },
     subscribe: ['konjir://inbox/functional', 'konjir://answers/alice-pm'],
   });
   expect(await call(two.client, 'whoami')).toMatchObject({ actor: 'alice-pm-2', kind: 'agent', owner: 'alice' });
@@ -56,8 +61,11 @@ test('over MCP, an agent whose draft another agent overtook is told it is stale,
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
   const admin = await connect(server.url, ADMIN);
   closeAtEnd(server, admin);
+  await call(admin, 'admin_add_organization', { id: 'shop' });
+  await call(admin, 'admin_add_kolab', { name: 'checkout', owner: 'shop' });
   const session = async (actor: string) => {
     await call(admin, 'admin_add_actor', { id: actor });
+    await call(admin, 'admin_grant', { kolab: 'checkout', to: actor, level: 'write' });
     const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
     const client = await connect(server.url, token);
     closeAtEnd(client);
@@ -77,4 +85,56 @@ test('over MCP, an agent whose draft another agent overtook is told it is stale,
     review: 'stale draft: the node committed a newer version; redraft against it',
     next: expect.stringMatching(/^Stale: someone else committed to checkout after you drafted/),
   });
+});
+
+test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name is refused, and an agent gets no more than its owner', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_actor', { id: 'ann' });
+  await call(admin, 'admin_add_organization', { id: 'acme', name: 'Acme' });
+  expect(await call(admin, 'admin_add_kolab', { name: 'orders', owner: 'ann' })).toStrictEqual({ kolab: 'orders', owner: 'ann', visibility: 'private', base: null });
+  await call(admin, 'admin_add_kolab', { name: 'billing', owner: 'acme' });
+  expect(await rejection(call(admin, 'admin_add_kolab', { name: 'orders', owner: 'acme' }))).toMatch(/TenancyError: the kolab name orders is taken: kolab names are unique across all of Konjir/);
+  expect(await call(admin, 'admin_list_kolabs', {})).toMatchObject({ kolabs: [{ id: 'billing', owner: 'acme' }, { id: 'orders', owner: 'ann' }] });
+
+  // An agent of the organization, and one of ann's that may not reach acme's kolab.
+  await call(admin, 'admin_add_actor', { id: 'acme-bot', owner: 'acme' });
+  await call(admin, 'admin_add_actor', { id: 'ann-pm', owner: 'ann' });
+  await call(admin, 'admin_grant', { kolab: 'billing', to: 'acme-bot', level: 'write', layers: ['functional'] });
+  expect(await rejection(call(admin, 'admin_grant', { kolab: 'billing', to: 'ann-pm', level: 'read' }))).toMatch(/AccessError: ann-pm's owner ann holds no access in kolab billing/);
+  await call(admin, 'admin_grant', { kolab: 'orders', to: 'ann-pm', level: 'write' });
+  expect(await call(admin, 'admin_access', { actor: 'ann-pm', kolab: 'orders' })).toStrictEqual({ actor: 'ann-pm', kolab: 'orders', level: 'write', layers: ['functional', 'technical'] });
+
+  const client = async (actor: string, kolab?: string) => {
+    const { token, kolab: k } = await call(admin, 'admin_open_session', { actor, role: 'product', ...(kolab && { kolab }) }) as { token: string; kolab: string };
+    const c = await connect(server.url, token);
+    closeAtEnd(c);
+    return { c, k };
+  };
+  const bot = await client('acme-bot');
+  const pm = await client('ann-pm', 'orders');
+  expect([bot.k, pm.k]).toStrictEqual(['billing', 'orders']);
+  expect(await rejection(call(admin, 'admin_open_session', { actor: 'ann', role: 'product', kolab: 'billing' }))).toMatch(/AccessError: ann has no access to kolab billing/);
+
+  await call(bot.c, 'create_node', { kind: 'functional_spec', title: 'Billing', id: 'billing-spec' });
+  await call(bot.c, 'draft', { node: 'billing-spec', elements: [{ id: 'B1', text: 'Invoices are monthly.' }] });
+  await call(bot.c, 'submit_for_review', { node: 'billing-spec', version: 1 });
+  await call(pm.c, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders-spec' });
+
+  // Neither sees the other's node: not in a list, not by name, not to link or ask about.
+  expect((await call(pm.c, 'list_nodes') as unknown as { id: string }[]).map((n) => n.id)).toStrictEqual(['orders-spec']);
+  expect((await call(bot.c, 'list_nodes') as unknown as { id: string }[]).map((n) => n.id)).toStrictEqual(['billing-spec']);
+  expect(await rejection(call(pm.c, 'read_node', { node: 'billing-spec' }))).toMatch(/no node billing-spec in kolab orders/);
+  expect(await rejection(call(pm.c, 'resolve', { address: 'kj:billing-spec#B1' }))).toMatch(/no node billing-spec in kolab orders/);
+  expect(await rejection(call(pm.c, 'ask', { address: 'kj:billing-spec#B1', question: 'Why monthly?' }))).toMatch(/no node billing-spec in kolab orders/);
+  expect(await rejection(call(pm.c, 'draft', { node: 'billing-spec', elements: [{ id: 'B1', text: 'Weekly.' }] }))).toMatch(/no node billing-spec in kolab orders/);
+
+  // Her agent's grant drops to Read: its session narrows. When it goes, the session ends and its token is refused.
+  expect(await call(admin, 'admin_grant', { kolab: 'orders', to: 'ann-pm', level: 'read' })).toMatchObject({ ended_sessions: 0 });
+  expect(await call(pm.c, 'whoami')).toMatchObject({ kolab: 'orders', access: { level: 'read', layers: [] } });
+  expect(await rejection(call(pm.c, 'draft', { node: 'orders-spec', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] })))
+    .toMatch(/AccessError: ann-pm may not write the functional layer of kolab orders: it holds Read/);
+  expect(await call(admin, 'admin_revoke', { kolab: 'orders', to: 'ann-pm' })).toStrictEqual({ kolab: 'orders', revoked: 'ann-pm', ended_sessions: 1 });
+  expect(await rejection(call(pm.c, 'whoami'))).toMatch(/token/i);
 });

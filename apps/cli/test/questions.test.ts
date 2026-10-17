@@ -6,7 +6,7 @@ import { Kolab, RoleError } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { closeAtEnd, els, marksOn, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
+import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -89,14 +89,34 @@ test('a database from the previous release is migrated on open', async () => {
   const store = await persistentStore();
   {
     let kolab = await Kolab.open(store);
-    await kolab.addActor('alice'); await kolab.addActor('bob');
+    await people(kolab, ['alice', 'bob']);
     const product = await kolab.openSession('alice', 'product');
     await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
-    // agents (0002), before version bases (0003), before rebase_failed (0004) and before rulings
-    // without case files (0005). The people and the spec stay.
+    // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
+    // without case files (0005) and before accounts and kolabs (0006), newest first. The people
+    // and the spec stay.
+    const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
+    const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      ${['node', ...keyed].map((t) => `drop policy kolab_read on ${t};`).join('\n')}
+      ${['version', 'element', 'delta', 'edge', 'query'].map((t) => `drop policy kolab_write on ${t}; create policy read_all on ${t} for select using (true);`).join('\n')}
+      ${newlyRls.map((t) => `drop policy system_all on ${t}; alter table ${t} disable row level security;`).join('\n')}
+      ${keyed.filter((t) => t !== 'precedent').map((t) => `drop trigger kolab_of_parent on ${t};`).join('\n')}
+      drop function kj_kolab_of_parent();
+      create or replace function kj_session_layer() returns text
+      language sql stable security definer as $$
+        select case s.active_role when 'product' then 'functional' when 'engineer' then 'technical' end
+        from session s
+        where s.id = current_setting('kj.session', true) and s.ended_at is null
+      $$;
+      drop function kj_session_kolab(), kj_access(text, text), kj_person_access(text, text), kj_level_rank(text);
+      ${['session', 'node', ...keyed].map((t) => `alter table ${t} drop column kolab_id;`).join('\n')}
+      alter table actor drop constraint actor_person_is_user, drop column account_kind, drop constraint actor_owner_is_account;
+      alter table actor add column owner_kind text generated always as (case when owner_id is not null then 'person' end) stored,
+                        add constraint actor_owner_is_person foreign key (owner_id, owner_kind) references actor(id, kind);
+      drop table kolab_grant, kolab, team_member, team, org_member, account;
       drop table kj_migration;
       drop policy agent_layer on version;
       create policy agent_layer on version for insert to kj_agent
@@ -155,6 +175,9 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   closeAtEnd(admin);
   const agent = async (actor: string, role: 'product' | 'engineer') => {
     await call(admin, 'admin_add_actor', { id: actor });
+    await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
     const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
     const c = await connect(server.url, token);
     closeAtEnd(c);

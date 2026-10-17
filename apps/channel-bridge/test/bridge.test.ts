@@ -22,6 +22,7 @@ async function agentToken(url: string) {
   const admin = new Client({ name: 't', version: '0' }, { versionNegotiation: { mode: 'auto' } });
   await admin.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${ADMIN}` } } }));
   await admin.callTool({ name: 'konjir_admin_add_actor', arguments: { id: 'pm' } });
+  await admin.callTool({ name: 'konjir_admin_add_kolab', arguments: { name: 'test', owner: 'pm' } });
   const r = await admin.callTool({ name: 'konjir_admin_open_session', arguments: { actor: 'pm', role: 'product' } });
   await admin.close();
   return (r.structuredContent as { token: string }).token;

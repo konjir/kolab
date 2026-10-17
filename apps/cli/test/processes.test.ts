@@ -6,7 +6,7 @@ import { expect, test } from '@jest/globals';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { startServer } from '@konjir/server';
-import { closeAtEnd, els, openKolab, testStore } from '@konjir/engine/testing';
+import { closeAtEnd, els, openKolab, people, testStore } from '@konjir/engine/testing';
 import { call, connect, watch } from '../src/cli.js';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -67,6 +67,9 @@ async function until(cond: () => boolean, ms = 10_000) {
   closeAtEnd(adminB);
   const session = async (actor: string, role: 'product' | 'engineer') => {
     await call(adminB, 'admin_add_actor', { id: actor });
+    await call(adminB, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
+  await call(adminB, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
+  await call(adminB, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
     return (await call(adminB, 'admin_open_session', { actor, role }) as { token: string }).token;
   };
   const pmToken = await session('pm', 'product');
@@ -132,7 +135,7 @@ async function until(cond: () => boolean, ms = 10_000) {
   const a = await startServer({ adminToken: 'admin', databaseUrl });
   closeAtEnd(a);
   const b = await openKolab({ databaseUrl });
-  await b.addActor('pm'); await b.addActor('eng');
+  await people(b, ['pm', 'eng']);
   const pmToken = await b.openSession('pm', 'product');
   const engToken = await b.openSession('eng', 'engineer');
   await b.createNode(pmToken, 'functional_spec', 'Orders', 'orders');

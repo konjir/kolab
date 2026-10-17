@@ -72,7 +72,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_whoami',
-    description: 'Show the actor, role and layer your session token carries (an agent also names the person who owns it), and the inbox resources to subscribe to for pushed updates.',
+    description: 'Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the inbox resources to subscribe to for pushed updates.',
     annotations: { readOnlyHint: true },
   })
   whoami(_: unknown, context?: McpToolContext) {
@@ -84,12 +84,12 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_nodes',
-    description: 'List specs, bindings, WBS, work packages and implementations, with their latest committed version number.',
+    description: 'List the specs, bindings, WBS, work packages and implementations in your kolab, with their latest committed version number.',
     schema: listNodes,
     annotations: { readOnlyHint: true },
   })
   listNodes({ kind }: z.infer<typeof listNodes>, context?: McpToolContext) {
-    return asAgent(context, () => this.kolab.listNodes(kind));
+    return asAgent(context, async (s) => this.kolab.listNodes(kind, await this.kolab.sessionKolab(s)));
   }
 
   @McpTool({
@@ -99,7 +99,8 @@ export class AgentTools {
     annotations: { readOnlyHint: true },
   })
   resolve({ address: a }: z.infer<typeof resolve>, context?: McpToolContext) {
-    return asAgent(context, async () => {
+    return asAgent(context, async (s) => {
+      await this.kolab.requireNodeIn(s, parseAddress(a).node);
       const r = await this.kolab.resolve(a);
       const v = r.versionId ? await this.kolab.version(r.versionId) : undefined;
       return { address: a, status: r.status, version: v?.seq ?? null, content: 'content' in r ? r.content : null };
@@ -113,8 +114,9 @@ export class AgentTools {
     annotations: { readOnlyHint: true },
   })
   readNode({ node, version }: z.infer<typeof readNode>, context?: McpToolContext) {
-    return asAgent(context, async () => {
+    return asAgent(context, async (s) => {
       const kolab = this.kolab;
+      await kolab.requireNodeIn(s, node);
       const v = version === undefined
         ? await kolab.latestCommitted(node)
         : (await kolab.db.query<{ id: string }>(`select id from version where node_id = $1 and seq = $2`, [node, version])).rows[0];
@@ -144,7 +146,8 @@ export class AgentTools {
     annotations: { readOnlyHint: true },
   })
   lineage({ node, direction }: z.infer<typeof lineage>, context?: McpToolContext) {
-    return asAgent(context, async () => {
+    return asAgent(context, async (s) => {
+      await this.kolab.requireNodeIn(s, node);
       const v = await this.kolab.latestCommitted(node);
       if (!v) throw new Error(`${node} has no committed version`);
       return { node, version: v.seq, direction, edges: await this.kolab.lineage(v.id, direction) };
@@ -160,7 +163,7 @@ export class AgentTools {
   listStale({ all_layers, node }: z.infer<typeof listStale>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
-      return { marks: await this.kolab.describeMarks({ layer: all_layers ? undefined : me.layer, node }) };
+      return { marks: await this.kolab.describeMarks({ layer: all_layers ? undefined : me.layer, node, kolab: me.kolab }) };
     });
   }
 
@@ -173,8 +176,8 @@ export class AgentTools {
   listQueries({ mine, all_layers, state, kind, node }: z.infer<typeof listQueries>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
-      if (mine) return { queries: await this.kolab.listQueries({ raisedBy: me.actor, state, kind, node }) };
-      return { queries: await this.kolab.listQueries({ layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node }) };
+      if (mine) return { queries: await this.kolab.listQueries({ raisedBy: me.actor, state, kind, node, kolab: me.kolab }) };
+      return { queries: await this.kolab.listQueries({ layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node, kolab: me.kolab }) };
     });
   }
 
@@ -182,7 +185,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_node',
-    description: 'Create a node. Its kind fixes its layer: functional_spec and prototype are functional; the rest are technical.',
+    description: 'Create a node in your kolab. Its kind fixes its layer: functional_spec and prototype are functional; the rest are technical.',
     schema: createNode,
     annotations: { readOnlyHint: false, idempotentHint: false },
   })
@@ -202,7 +205,7 @@ export class AgentTools {
         if (!l.source_element && !l.element) throw new Error(`each link needs source_element (the element in your draft); missing for target ${l.target}`);
       }
       if (!a.elements === !a.deltas) throw new Error('send exactly one of elements or deltas');
-      const parent = a.parent ? await versionIdOf(kolab, a.parent) : undefined;
+      const parent = a.parent ? await versionIdOf(kolab, s, a.parent) : undefined;
       const id = await kolab.draft(s, a.node, { elements: a.elements, deltas: a.deltas, parent });
       const v = await kolab.version(id);
       const linked: string[] = [];
@@ -221,14 +224,14 @@ export class AgentTools {
     schema: submit,
   })
   submitForReview({ node, version }: z.infer<typeof submit>, context?: McpToolContext) {
-    return asAgent(context, async () => {
+    return asAgent(context, async (s) => {
       const kolab = this.kolab;
-      const id = await versionIdOf(kolab, `kj:${node}@${version}`, true);
+      const id = await versionIdOf(kolab, s, `kj:${node}@${version}`, true);
       const r = await kolab.review(id);
       const v = await kolab.version(r.version);
       return {
         ok: r.ok, review: r.note ?? null, committed: r.ok ? `kj:${node}@${v.seq}` : null, stale: r.stale ?? false,
-        stale_after_commit: r.ok ? await kolab.describeMarks({ node }) : [],
+        stale_after_commit: r.ok ? await kolab.describeMarks({ node, kolab: await kolab.sessionKolab(s) }) : [],
         next: r.ok ? 'Committed. Others can now link to it; check konjir_list_stale.'
           : r.retryable ? `Not reviewed yet; the draft is intact. Resubmit with konjir_submit_for_review node=${node} version=${version} shortly.`
           : r.stale ? `Stale: someone else committed to ${node} after you drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
@@ -305,13 +308,15 @@ async function linkOne(kolab: Kolab, session: string,
   }
   return kolab.link(session, {
     kind: a.kind,
-    source: await versionIdOf(kolab, a.source, true), sourceElement: a.source_element ?? src.element,
-    target: await versionIdOf(kolab, a.target), targetElement: tgt.element, selector: tgt.selector,
+    source: await versionIdOf(kolab, session, a.source, true), sourceElement: a.source_element ?? src.element,
+    target: await versionIdOf(kolab, session, a.target), targetElement: tgt.element, selector: tgt.selector,
   });
 }
 
-async function versionIdOf(kolab: Kolab, addr: string, allowDraft = false): Promise<string> {
+/** The version an address names, in the session's kolab only (TEN12). */
+async function versionIdOf(kolab: Kolab, session: string, addr: string, allowDraft = false): Promise<string> {
   const a = parseAddress(addr);
+  await kolab.requireNodeIn(session, a.node);
   if (a.version === undefined) {
     const v = await kolab.latestCommitted(a.node);
     if (!v) throw new Error(`${a.node} has no committed version`);

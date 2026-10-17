@@ -13,11 +13,15 @@ async function boot() {
   const admin = await connect(server.url, ADMIN);
   closeAtEnd(server, admin);
   await call(admin, 'admin_add_actor', { id: 'lee' });
+  await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_grant', { kolab: 'test', to: 'lee', level: 'write' });
   return { server, admin };
 }
 
 async function agent(server: KonjirServer, admin: Client, id: string, role: 'product' | 'engineer', owner?: string) {
   await call(admin, 'admin_add_actor', { id, ...(owner && { owner }) });
+  await call(admin, 'admin_grant', { kolab: 'test', to: id, level: 'write' });
   const { token } = await call(admin, 'admin_open_session', { actor: id, role }) as { token: string };
   const client = await connect(server.url, token);
   closeAtEnd(client);

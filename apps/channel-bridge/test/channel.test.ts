@@ -32,6 +32,9 @@ async function boot(store: Store, port = 0) {
 async function session(server: KonjirServer, actor: string, role: 'product' | 'engineer') {
   const admin = await kolabClient(server.url, ADMIN);
   await call(admin, 'admin_add_actor', { id: actor }).catch(() => undefined);
+  await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write' });
   const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
   await admin.close();
   return { token, client: await kolabClient(server.url, token) };

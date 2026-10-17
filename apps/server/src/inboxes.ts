@@ -78,11 +78,14 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
   async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
     const layer = String(vars.layer) as Layer;
     if (!LAYERS.includes(layer)) throw new Error(`no inbox ${uri.href}`);
-    if (!sessionOf(context?.authInfo)) throw new RoleError('reading an inbox needs an agent session token');
+    const session = sessionOf(context?.authInfo);
+    if (!session) throw new RoleError('reading an inbox needs an agent session token');
+    // The layer's queue in the session's own kolab (TEN12).
+    const kolab = await this.kolab.sessionKolab(session);
     const body = {
       layer,
-      queries: await this.kolab.listQueries({ layer, state: 'open' }),
-      marks: await this.kolab.describeMarks({ layer }),
+      queries: await this.kolab.listQueries({ layer, state: 'open', kolab }),
+      marks: await this.kolab.describeMarks({ layer, kolab }),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
@@ -100,7 +103,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (!session) throw new RoleError('reading answers needs an agent session token');
     const me = await this.kolab.sessionInfo(session);
     if (decodeURIComponent(String(vars.actor)) !== me.actor) throw new RoleError('you can only read your own answers');
-    const body = { actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor }) };
+    const body = { actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }) };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
 }
