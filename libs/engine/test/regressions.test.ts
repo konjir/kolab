@@ -179,7 +179,7 @@ test('folding carries the dependencies the draft declared', async () => {
   await kolab.close();
 });
 
-test('a later successful rebase settles an earlier review_failed mark', async () => {
+test('a later successful rebase settles an earlier rebase_failed mark', async () => {
   let rejectSystem = true;
   const { kolab, product } = await setup(({ version }) =>
     rejectSystem && version.active_role === 'system' ? { ok: false, note: 'no' } : { ok: true });
@@ -188,7 +188,11 @@ test('a later successful rebase settles an earlier review_failed mark', async ()
   const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   await kolab.commit(product, P, { elements: els({ E1: 'two' }) });
-  expect((await marksOn(kolab, C)).map((m) => m.reason)).toStrictEqual(['review_failed']);
+  expect((await marksOn(kolab, C)).map((m) => m.reason)).toStrictEqual(['rebase_failed']);
+  // The inbox tells a failed rebase from a rejected review (D44).
+  const [described] = await kolab.describeMarks({ node: C });
+  expect(described).toMatchObject({ reason: 'rebase_failed', because: `parent ${P} version 2` });
+  expect(described.next).toMatch(/^Rebasing onto the new parent failed/);
 
   rejectSystem = false;
   await kolab.commit(product, P, { elements: els({ E1: 'three' }) });

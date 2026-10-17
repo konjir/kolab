@@ -94,7 +94,8 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
-    // agents (0002) and before version bases (0003). The people and the spec stay.
+    // agents (0002), before version bases (0003) and before rebase_failed (0004). The people and
+    // the spec stay.
     await kolab.db.exec(`
       drop table kj_migration;
       drop policy agent_layer on version;

@@ -116,7 +116,7 @@ test('the review gate catches what the three-way rule cannot see', async () => {
 
   expect((await kolab.latestCommitted(child))!.id).toBe(c1); // child stays on its old parent
   const marks = await kolab.openMarks();
-  expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[c1, 'review_failed']]);
+  expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[c1, 'rebase_failed']]);
   expect((await kolab.openQueries())[0].question).toMatch(/green vs blue/);
   await kolab.close();
 });

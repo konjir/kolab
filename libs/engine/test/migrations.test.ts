@@ -212,6 +212,62 @@ test('a database at 0002 reaches 0003: settled versions get the base the old che
   } finally { await kolab.close(); }
 });
 
+test('a database at 0003 reaches 0004: open marks from failed rebases become one rebase_failed per variant, which the next rebase that passes settles', async () => {
+  const store = await persistentStore();
+  await withDb(async (db) => {
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, 3) })).toStrictEqual({ baselined: false, applied: [1, 2, 3] });
+    // P's p2 and p3 failed to rebase variant V (two marks, from before W1.17's dedupe) and p3
+    // failed W (a mark whose question was never written). V also has an older, settled failure
+    // and a changed mark, which stay as they are.
+    await db.exec(`
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into session(id, actor_id, active_role) values ('kjs_lee', 'lee', 'product');
+      insert into node(id, kind, layer, title) values
+        ('P', 'functional_spec', 'functional', 'P'), ('V', 'functional_spec', 'functional', 'V'),
+        ('W', 'functional_spec', 'functional', 'W');
+      insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role) values
+        ('p1', 'P', 1, null, null, 'functional', 'committed', 'lee', 'product'),
+        ('p2', 'P', 2, null, 'p1', 'functional', 'committed', 'lee', 'product'),
+        ('p3', 'P', 3, null, 'p2', 'functional', 'committed', 'lee', 'product'),
+        ('v1', 'V', 1, 'p1', null, 'functional', 'committed', 'lee', 'product'),
+        ('w1', 'W', 1, 'p1', null, 'functional', 'committed', 'lee', 'product');
+      insert into element(version_id, element_id, ord, text, fingerprint) values
+        ('p1', 'E1', 0, 'One.', 'x'), ('p2', 'E1', 0, 'Two.', 'x'), ('p3', 'E1', 0, 'Three.', 'x'),
+        ('v1', 'E1', 0, 'One.', 'x'), ('w1', 'E1', 0, 'One.', 'x');
+      insert into invalidation(id, version_id, triggered_by, reason, state, cleared_by, created_at) values
+        ('m0', 'v1', 'p1', 'review_failed', 'cleared', 'rebase v0 passed review', '2026-01-01'),
+        ('m1', 'v1', 'p2', 'review_failed', 'open', null, '2026-01-02'),
+        ('m2', 'v1', 'p3', 'review_failed', 'open', null, '2026-01-03'),
+        ('m3', 'w1', 'p3', 'review_failed', 'open', null, '2026-01-03'),
+        ('m4', 'v1', 'p2', 'changed', 'open', null, '2026-01-02');
+      insert into query(id, version_id, invalidation_id, question) values
+        ('q1', 'v1', 'm1', 'Rebasing onto the new parent failed review: no.'),
+        ('q2', 'v1', 'm2', 'Rebasing onto the new parent failed review: still no.');`);
+
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(3) });
+    expect((await db.query(`select id, reason, state, cleared_by from invalidation order by id`)).rows).toStrictEqual([
+      { id: 'm0', reason: 'review_failed', state: 'cleared', cleared_by: 'rebase v0 passed review' },
+      { id: 'm1', reason: 'rebase_failed', state: 'cleared', cleared_by: 'merged into m2 by migration 0004' },
+      { id: 'm2', reason: 'rebase_failed', state: 'open', cleared_by: null },
+      { id: 'm3', reason: 'rebase_failed', state: 'open', cleared_by: null },
+      { id: 'm4', reason: 'changed', state: 'open', cleared_by: null },
+    ]);
+    expect((await db.query(`select id, state, answer from query order by id`)).rows).toStrictEqual([
+      { id: 'q1', state: 'answered', answer: 'superseded by the newer failed rebase in mark m2' },
+      { id: 'q2', state: 'open', answer: null },
+    ]);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    // P's next commit rebases both variants, and each rebase that passes settles its mark.
+    await kolab.commit('kjs_lee', 'P', { elements: els({ E1: 'Four.' }) });
+    expect((await kolab.openMarks()).map((m) => m.reason)).toStrictEqual(['changed']);
+    expect((await kolab.openQueries())).toStrictEqual([]);
+  } finally { await kolab.close(); }
+});
+
 // ---- the runner, with migrations of the test's own ---------------------------------
 
 const m = (version: number, sql: string): Migration => ({ version, name: `m${version}`, sql });
