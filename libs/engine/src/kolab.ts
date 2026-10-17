@@ -75,6 +75,24 @@ export const EVENT_CHANNEL = 'konjir_events';
  */
 type Notice = { from: string; event: KolabEvent } | { from: string; resync: true };
 
+/**
+ * What a Kolab's listener goes through after `listen` (API5): its connection is lost; it is back
+ * and every subscriber has been told to re-read (`restored`); or it is back but telling them
+ * failed, and is retried in `retryInMs` (`error` is fit to log).
+ */
+export type ListenerState =
+  | { state: 'lost' }
+  | { state: 'restored' }
+  | { state: 'resync_failed'; retryInMs: number; error: string };
+
+/** A session token's pattern: a session id, which is its bearer token. */
+const SESSION_TOKEN = /kjs_[A-Za-z0-9_-]+/g;
+
+/** An error's message, fit to log: any session token in it is masked. */
+export function maskTokens(e: unknown): string {
+  return String((e as { message?: unknown })?.message ?? e).replace(SESSION_TOKEN, 'kjs_***');
+}
+
 const isObject = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
 const hasKeys = (x: Record<string, unknown>, ...keys: string[]) =>
@@ -109,6 +127,10 @@ export class Kolab {
   /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
   private readonly origin = randomBytes(9).toString('base64url');
   private listening?: Promise<Listening | undefined>;
+  private listenerWatchers = new Set<(s: ListenerState) => void>();
+  /** Counts the listener's losses and reconnects, so a resync can tell it has been overtaken. */
+  private listenEpoch = 0;
+  private closed = false;
 
   /**
    * Postgres at `databaseUrl`; otherwise PGlite, in memory by default or persisted to `dataDir`
@@ -126,6 +148,7 @@ export class Kolab {
   }
 
   async close() {
+    this.closed = true;
     const listening = this.listening;
     this.listening = undefined;
     await (await listening?.catch(() => undefined))?.close();
@@ -155,9 +178,8 @@ export class Kolab {
   async listen(): Promise<void> {
     this.listening ??= this.db.listen(EVENT_CHANNEL, (p) => this.heard(p), {
       applicationName: this.listenerName,
-      onListening: ({ reconnected }) => {
-        if (reconnected) void this.resync().catch((e) => console.error(`kolab: could not resync after the listener reconnected: ${errorText(e)}`));
-      },
+      onListening: ({ reconnected }) => { if (reconnected) void this.resyncAfterReconnect(); },
+      onConnectionLost: () => { this.listenEpoch++; this.tellListener({ state: 'lost' }); },
       onBadPayload: () => this.dropped('isn\'t JSON'),
     });
     try {
@@ -177,6 +199,46 @@ export class Kolab {
     return l?.connected();
   }
 
+  /**
+   * Be told what this Kolab's listener goes through after `listen`: lost, restored once every
+   * subscriber has been told to re-read, or a resync that failed and will be retried. Returns an
+   * unsubscribe function.
+   */
+  onListenerState(fn: (s: ListenerState) => void): () => void {
+    this.listenerWatchers.add(fn);
+    return () => { this.listenerWatchers.delete(fn); };
+  }
+
+  private tellListener(s: ListenerState) {
+    for (const fn of this.listenerWatchers) {
+      try { fn(s); } catch { /* a watcher's failure is its own */ }
+    }
+  }
+
+  /**
+   * After the listener reconnects: resync until it succeeds, backing off from 1 s to 30 s, unless
+   * the listener is lost again first (its next reconnect resyncs) or this Kolab closes. Only a
+   * resync that signalled everything reports `restored`.
+   */
+  private async resyncAfterReconnect() {
+    const epoch = ++this.listenEpoch;
+    const overtaken = () => epoch !== this.listenEpoch || this.closed;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.resync();
+      } catch (e) {
+        if (overtaken()) return;
+        const retryInMs = Math.min(1000 * 2 ** attempt, 30_000);
+        this.tellListener({ state: 'resync_failed', retryInMs, error: maskTokens(e) });
+        await new Promise((r) => setTimeout(r, retryInMs).unref());
+        if (overtaken()) return;
+        continue;
+      }
+      if (!overtaken()) this.tellListener({ state: 'restored' });
+      return;
+    }
+  }
+
   private dropCount = 0;
   /** How many notifications on the channel this Kolab has dropped: not JSON, or not a Kolab event. */
   get droppedNotifications() { return this.dropCount; }
@@ -193,7 +255,7 @@ export class Kolab {
     const n = isNotice(p) ? p : undefined;
     if (!n) return this.dropped('isn\'t a Kolab event');
     if (n.from === this.origin) return; // told our own listeners when it committed
-    if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${errorText(e)}`));
+    if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${maskTokens(e)}`));
     else this.dispatch(n.event);
   }
 
@@ -207,11 +269,12 @@ export class Kolab {
    * a change too big to name, or after missing changes while the listener reconnected. That is
    * every layer's inbox, and the answers of each actor with an open session, since only an open
    * session can subscribe to them (an ended one's streams are closed before the next signal).
-   * One query. Each subscriber re-reads; an inbox that didn't change reads the same.
+   * One query, before anything is signalled, so a failure signals nothing and the whole resync
+   * can be retried. Each subscriber re-reads; an inbox that didn't change reads the same.
    */
-  async resync() {
-    for (const layer of LAYERS) this.dispatch({ inbox: 'layer', layer });
+  private async resync() {
     const r = await this.db.query<{ actor: string }>(`select distinct actor_id as actor from session where ended_at is null order by actor_id`);
+    for (const layer of LAYERS) this.dispatch({ inbox: 'layer', layer });
     for (const { actor } of r.rows) this.dispatch({ inbox: 'actor', actor });
   }
 
@@ -1654,9 +1717,4 @@ async function writeVersion(tx: Q, v: Omit<VersionRow, 'state'>, els: ElementRow
       [ulid(), v.id, d.element_id, d.kind, d.text, d.parent_element_id, d.ord,
         d.base_version_id, d.base_fingerprint, d.state]);
   }
-}
-
-/** An error's message, fit to log: any session token in it is masked. */
-function errorText(e: unknown) {
-  return String((e as { message?: unknown })?.message ?? e).replace(/kjs_[A-Za-z0-9_-]+/g, 'kjs_***');
 }

@@ -4,10 +4,10 @@
 // stand in for two processes here: each has its own pool and its own listener connection.
 // apps/cli/test/processes.test.ts runs two real server processes.
 import { describe, expect, test } from '@jest/globals';
-import { createServer, type Socket } from 'node:net';
+import { createServer, Socket as NetSocket, type Socket } from 'node:net';
 import pg from 'pg';
-import { openDb, type Db } from '@konjir/db';
-import { EVENT_CHANNEL, isKolabEvent, sessionKey, type Kolab } from '@konjir/engine';
+import { listenerConnection, openDb, type Db } from '@konjir/db';
+import { EVENT_CHANNEL, isKolabEvent, maskTokens, sessionKey, type Kolab, type ListenerState } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { els, marksOn, openKolab, rejection, setup, testStore } from '@konjir/engine/testing';
 
@@ -110,6 +110,50 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
     { session: 'ended', id: 'kjs_a-raw-token' }, { session: 'open', id: sessionKey('kjs_x') },
   ].some(isKolabEvent)).toBe(false);
 });
+
+test('the listening connection notices a silent drop: bounded checks, early keepalive, bounded connects', () => {
+  expect(listenerConnection('postgres://kolab@db/kolab', 'kolab-listen-x')).toStrictEqual({
+    connectionString: 'postgres://kolab@db/kolab',
+    application_name: 'kolab-listen-x',
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    query_timeout: 5_000,
+    connectionTimeoutMillis: 10_000,
+    paranoidChecking: 10_000,
+  });
+});
+
+test('maskTokens masks every session token in an error', () => {
+  expect(maskTokens(new Error('no session kjs_AbC-1_x or kjs_z'))).toBe('no session kjs_*** or kjs_***');
+  expect(maskTokens('kjs_q')).toBe('kjs_***');
+});
+
+/** A TCP proxy to Postgres that can go silent: it stops passing bytes either way, and closes nothing, as a dropped route would. */
+async function silenceableProxy(databaseUrl: string) {
+  const target = new URL(databaseUrl);
+  let silent = false;
+  const sockets = new Set<Socket>();
+  const server = createServer((client) => {
+    const upstream = new NetSocket();
+    sockets.add(client); sockets.add(upstream);
+    const born = silent;
+    upstream.connect(Number(target.port || 5432), target.hostname);
+    client.on('data', (d: Buffer) => { if (!silent && !born) upstream.write(d); });
+    upstream.on('data', (d: Buffer) => { if (!silent && !born) client.write(d); });
+    const drop = () => { if (!silent) { client.destroy(); upstream.destroy(); } };
+    client.on('close', drop); upstream.on('close', drop);
+    client.on('error', () => undefined); upstream.on('error', () => undefined);
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const url = new URL(databaseUrl);
+  url.hostname = '127.0.0.1';
+  url.port = String((server.address() as { port: number }).port);
+  return {
+    url: url.toString(),
+    silence: (on: boolean) => { silent = on; },
+    close: async () => { for (const s of sockets) s.destroy(); await new Promise<void>((r) => server.close(() => r())); },
+  };
+}
 
 // PGlite is one process, with no one else to tell: Kolab.listen does nothing there.
 (onPostgres ? describe : describe.skip)('across processes, on Postgres', () => {
@@ -243,6 +287,8 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
 
   test('a change committed while a Kolab\'s listener is reconnecting reaches that Kolab\'s listeners once it\'s back', async () => {
     const { a, b, url, onA } = await twoKolabs();
+    const states: ListenerState[] = [];
+    a.onListenerState((s) => states.push(s));
     await b.addActor('alice'); await b.addActor('bob');
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
@@ -274,6 +320,7 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
         { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
         { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
       ]);
+      expect(states).toStrictEqual([{ state: 'lost' }, { state: 'restored' }]);
 
       // And it hears what's committed from then on.
       onA.length = 0;
@@ -328,4 +375,87 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
       await admin.end();
     }
   }, 40_000);
+
+  test('a resync that fails after a reconnect signals nothing, and is retried until everything is signalled', async () => {
+    const { a, b, url, onA } = await twoKolabs();
+    await b.addActor('alice'); await b.addActor('bob');
+    const product = await b.openSession('alice', 'product');
+    const engineer = await b.openSession('bob', 'engineer');
+    await b.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await b.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
+    const q = await b.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
+    await settle();
+    const states: ListenerState[] = [];
+    let atFailure: KolabEvent[] | undefined;
+    a.onListenerState((s) => { states.push(s); if (s.state === 'resync_failed') atFailure = [...onA]; });
+    // The resync's session query fails once, as the pool's first query after a failover might.
+    const query = a.db.query.bind(a.db);
+    let failed = 0;
+    a.db.query = (async (text: string, params?: unknown[]) => {
+      if (/from session where ended_at is null/.test(text) && failed++ === 0) throw new Error('connection terminated unexpectedly');
+      return query(text, params);
+    }) as Db['query'];
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    const originals = { error: console.error, warn: console.warn };
+    console.error = console.warn = () => undefined;
+    try {
+      onA.length = 0;
+      await admin.query(`select pg_terminate_backend(pid) from pg_stat_activity where application_name = $1`,
+        [`kolab-listen-${(a as unknown as { origin: string }).origin}`]);
+      await until(async () => (await a.listenerConnected()) === false);
+      await b.answerQuery(product, q, 'Office staff.');   // bob's answers change while a can't hear it
+
+      await until(() => states.some((s) => s.state === 'restored'), 20_000);
+      expect(states).toStrictEqual([
+        { state: 'lost' },
+        { state: 'resync_failed', retryInMs: 1000, error: 'connection terminated unexpectedly' },
+        { state: 'restored' },
+      ]);
+      expect(atFailure).toStrictEqual([]);   // the failed attempt signalled nothing
+      expect(onA).toStrictEqual([
+        { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
+        { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
+      ]);
+    } finally {
+      Object.assign(console, originals);
+      a.db.query = query;
+      await admin.end();
+    }
+  }, 40_000);
+
+  test('a listening connection that goes silent, with no FIN or RST, is noticed, reconnected and resynced', async () => {
+    const store = await testStore();
+    const proxy = await silenceableProxy(store.databaseUrl!);
+    const b = await openKolab(store);
+    const db = openDb({ databaseUrl: proxy.url });
+    const heard: unknown[] = [];
+    const listening: boolean[] = [];
+    let lost = 0;
+    const originals = { error: console.error, warn: console.warn };
+    console.error = console.warn = () => undefined;
+    let l: Awaited<ReturnType<Db['listen']>>;
+    try {
+      l = await db.listen(EVENT_CHANNEL, (p) => heard.push(p), {
+        applicationName: 'kolab-listen-silent', onListening: ({ reconnected }) => listening.push(reconnected), onConnectionLost: () => { lost++; },
+      });
+      expect(l!.connected()).toBe(true);
+      proxy.silence(true);
+      const t0 = Date.now();
+      await until(() => !l!.connected(), 30_000);
+      expect(Date.now() - t0).toBeLessThan(25_000);   // the 10 s check, unanswered for 5 s
+      expect(lost).toBe(1);
+      proxy.silence(false);
+      await until(() => l!.connected(), 40_000);
+      expect(listening).toStrictEqual([false, true]);
+      await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', actor: 'after-silence' }));
+      await until(() => heard.length > 0);
+      expect(heard).toStrictEqual([{ from: (b as unknown as { origin: string }).origin, event: { inbox: 'actor', actor: 'after-silence' } }]);
+    } finally {
+      Object.assign(console, originals);
+      await l!?.close();
+      await db.close();
+      await proxy.close();
+    }
+  }, 90_000);
 });

@@ -31,7 +31,8 @@ export interface Db {
    * connect to the database can NOTIFY. Whatever `fn` throws is logged by the error's name and
    * goes no further. A payload that isn't JSON at all never reaches `fn`, and costs no
    * reconnect: it goes to `hooks.onBadPayload`, which is never given the payload. The connection
-   * is named `application_name` (at most 63 bytes). Resolves once the LISTEN is in place, and
+   * is named `application_name` (at most 63 bytes), and set up so that a connection that dies
+   * silently is noticed (listenerConnection). Resolves once the LISTEN is in place, and
    * rejects, leaving nothing behind, if it can't be. On PGlite it resolves to undefined: nothing
    * else can write to its database.
    */
@@ -46,8 +47,33 @@ export interface ListenHooks {
    * was notified while it was down was missed, so a caller re-reads what it serves then.
    */
   onListening?(e: { reconnected: boolean }): void;
+  /** The connection is lost, once per loss, before any retry; notifications are missed until onListening. */
+  onConnectionLost?(): void;
   /** A notification whose payload isn't JSON was dropped. */
   onBadPayload?(): void;
+}
+
+/**
+ * The listening connection's settings. A connection can die without a word: after a failover or
+ * a NAT drop, no FIN or RST may reach this side, and pg would wait on it for as long as TCP
+ * retransmits (some 15 minutes on Linux) while the listener still thought it was listening. So
+ * pg-listen checks it every 10 s (`select pg_backend_pid()`), and a check unanswered in 5 s fails
+ * it, at which the listener reconnects: a silent drop is noticed within about 15 s. TCP keepalive
+ * starts after 10 s idle rather than the OS's 2 hours, and a connect that hangs gives up after
+ * 10 s, so a retry can't wait forever on a server that doesn't answer.
+ */
+export function listenerConnection(databaseUrl: string, applicationName: string) {
+  return {
+    connectionString: databaseUrl,
+    application_name: applicationName,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    query_timeout: 5_000,
+    connectionTimeoutMillis: 10_000,
+    // pg-listen's own option, which the listener passes on to it; not a retry option, so the
+    // listener still owns every retry.
+    paranoidChecking: 10_000,
+  };
 }
 
 export interface Listening {
@@ -67,6 +93,7 @@ export function openDb(opts: { databaseUrl?: string; dataDir?: string } = {}): D
 
 // Loaded on first use, on Postgres only: its listener brings in pg-listen, which PGlite and the
 // CLI's client verbs never need. The /listener entry is the package without NestJS.
+type PgClientConfig = import('@onivoro/server-pg-notify/listener').PgClientConfig;
 let pgNotify: Promise<typeof import('@onivoro/server-pg-notify/listener')> | undefined;
 const loadPgNotify = () => (pgNotify ??= import('@onivoro/server-pg-notify/listener'));
 
@@ -120,12 +147,13 @@ class KyselyDb implements Db {
   async listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string } & ListenHooks): Promise<Listening | undefined> {
     if (!this.databaseUrl) return undefined;
     const { NotificationListener } = await loadPgNotify();
-    const { onListening, onBadPayload } = opts;
+    const { onListening, onConnectionLost, onBadPayload } = opts;
     const listener = new (class extends NotificationListener<unknown> {
       onNotification(payload: unknown) { fn(payload); }
       protected override onListening(e: { reconnected: boolean }) { onListening?.(e); }
+      protected override onConnectionLost() { onConnectionLost?.(); }
       protected override onBadPayload() { onBadPayload?.(); }
-    })(channel, { connectionString: this.databaseUrl, application_name: opts.applicationName }, { logger: listenerLogger });
+    })(channel, listenerConnection(this.databaseUrl, opts.applicationName) as PgClientConfig, { logger: listenerLogger });
     // A failed boot closes its connection and schedules no retry.
     await listener.onModuleInit();
     return { connected: () => listener.isListening, close: () => listener.onModuleDestroy() };
