@@ -94,8 +94,8 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
-    // agents (0002), before version bases (0003) and before rebase_failed (0004). The people and
-    // the spec stay.
+    // agents (0002), before version bases (0003), before rebase_failed (0004) and before rulings
+    // without case files (0005). The people and the spec stay.
     await kolab.db.exec(`
       drop table kj_migration;
       drop policy agent_layer on version;
@@ -127,7 +127,9 @@ test('a database from the previous release is migrated on open', async () => {
       alter table invalidation drop constraint invalidation_reason_check;
       alter table invalidation add constraint invalidation_reason_check check (reason in
         ('changed','fuzzy_reanchor','orphaned','override_stale','override_orphaned',
-         'upstream_dirty','review_failed','role_boundary'));`);
+         'upstream_dirty','review_failed','role_boundary'));
+      alter table ruling drop constraint ruling_verdict_with_case_file;
+      alter table ruling alter column case_file_id set not null, alter column verdict set not null;`);
     await kolab.close();
 
     kolab = await Kolab.open(store);
