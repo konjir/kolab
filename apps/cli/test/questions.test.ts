@@ -128,7 +128,8 @@ test('a database from the previous release is migrated on open', async () => {
       alter table invalidation add constraint invalidation_reason_check check (reason in
         ('changed','fuzzy_reanchor','orphaned','override_stale','override_orphaned',
          'upstream_dirty','review_failed','role_boundary'));
-      alter table ruling drop constraint ruling_verdict_with_case_file;
+      alter table position drop column verdict;
+      alter table ruling drop column replaces, drop column element_id, drop column version_id;
       alter table ruling alter column case_file_id set not null, alter column verdict set not null;`);
     await kolab.close();
 
