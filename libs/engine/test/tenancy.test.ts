@@ -355,12 +355,11 @@ test("submitting a draft needs Write on its layer, and a draft whose author lost
   expect((await kolab.version(dans)).state).toBe('rejected');
 });
 
-test("a node name taken anywhere is refused the same way, saying nothing of whose it is", async () => {
+test("a node name another kolab has is free here, and the name taken here is refused naming only this kolab (W1.4)", async () => {
   const { kolab, alice, bob } = await twoAccounts();
-  const theirs = await rejection(kolab.createNode(bob, 'functional_spec', 'X', 'orders-spec'));
-  const mine = await rejection(kolab.createNode(alice, 'functional_spec', 'X', 'orders-spec'));
-  expect(theirs).toBe('GateError: the node name orders-spec is taken; choose another');
-  expect(mine).toBe(theirs);
+  expect(await kolab.createNode(bob, 'functional_spec', 'X', 'orders-spec')).toMatch(/^~[0-9A-Z]{26}$/);
+  expect(await rejection(kolab.createNode(alice, 'functional_spec', 'X', 'orders-spec'))).toBe('GateError: the node name orders-spec is taken in kolab orders; choose another');
+  expect((await kolab.listNodes(undefined, 'billing')).map((n) => n.name)).toStrictEqual(['billing-spec', 'orders-spec']);
 });
 
 test('a public kolab is no default: openSession picks only from kolabs an actor owns, belongs to or is granted', async () => {

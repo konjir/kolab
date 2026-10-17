@@ -101,7 +101,7 @@ Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir st
 Push:      konjir watch prints your inbox, then a JSON line each time it changes (questions, notes,
            answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
            prints it and exits.
-Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
+Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; kj:<node> is a node in your kolab
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
 Version:   konjir --version
 ${defaultReviewModel === undefined ? `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.` : `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]

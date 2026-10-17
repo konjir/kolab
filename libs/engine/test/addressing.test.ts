@@ -1,6 +1,6 @@
 import { expect, test } from '@jest/globals';
 import { formatAddress, parseAddress, resolveSpan } from '@konjir/address';
-import { setup, els, thrown } from '@konjir/engine/testing';
+import { setup, els, rejection, TEST_KOLAB, thrown } from '@konjir/engine/testing';
 
 test('address grammar round-trips at every granularity', () => {
   for (const s of [
@@ -148,10 +148,13 @@ test('resolve() follows the address scope and floats to the latest committed ver
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
   await kolab.commit(product, spec, { elements: els({ R1: 'Timeout is 30 seconds.' }) });
   await kolab.commit(product, spec, { elements: els({ R1: 'Timeout is 10 seconds.' }) });
-  const pinned = await kolab.resolve('kj:S@1#R1');
-  const floating = await kolab.resolve('kj:S#R1');
+  // Inside its kolab the short form is enough; the full form names the kolab too (DAT11).
+  const pinned = await kolab.resolve(`kj:${TEST_KOLAB}/S@1#R1`, { session: product });
+  const floating = await kolab.resolve('kj:S#R1', { session: product });
   expect(pinned.status === 'ok' && pinned.content).toBe('Timeout is 30 seconds.');
   expect(floating.status === 'ok' && floating.content).toBe('Timeout is 10 seconds.');
-  expect((await kolab.resolve('kj:S#R9')).status).toBe('orphan');
+  expect((await kolab.resolve('kj:S#R9', { session: product })).status).toBe('orphan');
+  expect((await kolab.resolve('kj:S@9#R1', { system: TEST_KOLAB })).status).toBe('orphan');
+  expect(await rejection(kolab.resolve('kj:T#R1', { session: product }))).toMatch(/no node T in kolab test/);
   await kolab.close();
 });

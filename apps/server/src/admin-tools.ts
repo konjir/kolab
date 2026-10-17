@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { GateError, Kolab } from '@konjir/engine';
-import { parseAddress } from '@konjir/address';
+import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, ROLES, VISIBILITIES } from '@konjir/types';
 import { fail, ok } from './results.js';
 import { KOLAB } from './tokens.js';
@@ -43,10 +43,10 @@ const access = z.object({ actor: z.string(), kolab: z.string() });
 const applyRuling = z.object({
   ruling: z.string().regex(/^D\d+$/).describe('The ruling being applied, by its Decisions Log ID, e.g. D46'),
   actor: z.string().describe('Who the version is written as, e.g. mirror-product; it writes in the role of the node\'s layer'),
-  node: z.string(),
+  node: z.string().describe('The node, as <kolab>/<node> (e.g. kolab/kolab-binding), or its name alone when no other kolab has a node of that name'),
   elements: z.array(z.object({ id: z.string().optional(), text: z.string(), parent: z.string().optional() })).optional(),
   deltas: z.array(z.object({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional() })).optional(),
-  parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2'),
+  parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
 });
 
 /** Verbs for the admin token only: the scope guard refuses them to agent sessions. */
@@ -101,17 +101,20 @@ export class AdminTools {
   async applyRuling(a: z.infer<typeof applyRuling>) {
     try {
       if (!a.elements === !a.deltas) throw new Error('send exactly one of elements or deltas');
+      // The admin token works in no kolab, so the node is named with its kolab, or by a name only one kolab has.
+      const node = await this.kolab.nodeForAdmin(a.node);
       let parent: string | undefined;
       if (a.parent) {
         const p = parseAddress(a.parent);
-        const v = p.version === undefined ? await this.kolab.latestCommitted(p.node)
-          : (await this.kolab.db.query<{ id: string; state: string }>(`select id, state from version where node_id = $1 and seq = $2`, [p.node, p.version])).rows[0];
+        if (p.kolab !== undefined && p.kolab !== node.kolab_id) throw new GateError(`${a.parent} is not in kolab ${node.kolab_id}, the node's kolab`);
+        const { version: v } = await this.kolab.locateVersion({ system: node.kolab_id }, p);
         if (!v || v.state !== 'committed') throw new GateError(`${a.parent} is not a committed version`);
         parent = v.id;
       }
-      const r = await this.kolab.applyRuling(a.node, { elements: a.elements, deltas: a.deltas, parent }, { id: a.ruling, actor: a.actor });
+      const r = await this.kolab.applyRuling(node.id, { elements: a.elements, deltas: a.deltas, parent }, { id: a.ruling, actor: a.actor });
       const v = await this.kolab.version(r.version);
-      return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? `kj:${a.node}@${v.seq}` : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null });
+      const at = formatAddress({ kolab: node.kolab_id, node: node.name, version: v.seq });
+      return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? at : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null });
     } catch (e) { return fail(e); }
   }
 }

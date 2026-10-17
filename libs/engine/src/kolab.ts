@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ulid } from 'ulid';
 import {
-  type Address, type QuoteSelector, fingerprint, formatAddress, MAX_QUOTE, normalize, parseAddress, resolveSpan,
+  type Address, type QuoteSelector, fingerprint, formatAddress, isKolabName, isNodeName, MAX_QUOTE, normalize, parseAddress,
+  parseNodeRef, resolveSpan,
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
@@ -59,8 +60,6 @@ export class AccessError extends Error { name = 'AccessError'; }
 /** About accounts, kolabs, teams and grants: one that doesn't exist or already does, or an invalid name. */
 export class TenancyError extends Error { name = 'TenancyError'; }
 
-/** A kolab's short name: lowercase letters, digits and '-', starting with a letter or digit (kolab_name_check). */
-const KOLAB_NAME = /^[a-z0-9][a-z0-9-]*$/;
 /** A team's name within its organization (team_name_check). */
 const TEAM_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -559,13 +558,136 @@ export class Kolab {
   }
 
   /**
-   * Refuses a node outside the session's kolab, as if it didn't exist, so a session learns
-   * nothing of another kolab (TEN12).
+   * Refuses a node, by its id, outside the session's kolab, as if it didn't exist, so a session
+   * learns nothing of another kolab (TEN12).
    */
   async requireNodeIn(sessionId: string, nodeId: string): Promise<void> {
     const kolab = await this.sessionKolab(sessionId);
     const r = await this.db.query(`select 1 from node where id = $1 and kolab_id = $2`, [nodeId, kolab]);
     if (!r.rows.length) throw new Error(`no node ${nodeId} in kolab ${kolab}`);
+  }
+
+  // ---- naming nodes (DAT11, ADR3) --------------------------------------------
+
+  /**
+   * Runs reads for `where`. A session's run as kj_agent in that session, so row-level security
+   * bounds them as well as Kolab: its own kolab, and in any other it holds Read on, only nodes and
+   * committed versions with their elements and questions (0008). Kolab's own (`system`) run on
+   * its login, unchecked.
+   */
+  private read<T>(where: Where, fn: (q: Q) => Promise<T>): Promise<T> {
+    return 'session' in where ? this.asAgent(where.session, (tx) => fn(tx)) : fn(this.db);
+  }
+
+  /** The node called `name` in `kolab`, if there is one. */
+  private async findNode(q: Q, kolab: string, name: string): Promise<NodeRow | undefined> {
+    return (await q.query<NodeRow>(`select * from node where kolab_id = $1 and name = $2`, [kolab, name])).rows[0];
+  }
+
+  /**
+   * Where a session reads `kolab` (its own when undefined): its own kolab, or another it holds at
+   * least Read on (TEN12). Kolab's own reads (`system`) check nothing. Anything else is refused
+   * exactly as a node that doesn't exist, so the refusal says nothing of whether the kolab or the
+   * node does. Row-level security repeats this as the reads run (read).
+   */
+  private async readingKolab(where: Where, kolab: string | undefined, name: string): Promise<string> {
+    if ('system' in where) return kolab ?? where.system;
+    const s = await this.session(where.session);
+    if (kolab === undefined || kolab === s.kolab) return s.kolab;
+    if (!(await accessIn(this.db, s.actor_id, kolab)).level) throw new Error(`no node ${name} in kolab ${kolab}`);
+    return kolab;
+  }
+
+  /**
+   * The node an address or node reference names, read from `where` (DAT11, ADR3, D8). The short
+   * form, `kj:<node>` or `<node>`, is the node of that name in the session's kolab (or the kolab
+   * `system` names). The full form, `kj:<kolab>/<node>` or `<kolab>/<node>`, names its kolab, and
+   * resolves from anywhere: in another kolab than the session's, it needs Read there (TEN12).
+   */
+  async locateNode(where: Where, ref: { kolab?: string; node: string } | string): Promise<NodeRow> {
+    const r = typeof ref === 'string' ? parseNodeRef(ref) : ref;
+    const kolab = await this.readingKolab(where, r.kolab, r.node);
+    const node = await this.read(where, (q) => this.findNode(q, kolab, r.node));
+    if (!node) throw new Error(`no node ${r.node} in kolab ${kolab}`);
+    return node;
+  }
+
+  /**
+   * The node the admin token names (it works in no kolab): `<kolab>/<node>`, or a name alone when
+   * exactly one kolab has a node of that name. A name several kolabs have is refused, naming them.
+   */
+  async nodeForAdmin(ref: string): Promise<NodeRow> {
+    const r = parseNodeRef(ref);
+    if (r.kolab !== undefined) return this.locateNode({ system: r.kolab }, r);
+    const all = (await this.db.query<NodeRow>(`select * from node where name = $1 order by kolab_id`, [r.node])).rows;
+    if (all.length === 1) return all[0];
+    if (!all.length) throw new Error(`no node ${r.node} in any kolab`);
+    throw new GateError(`kolabs ${all.map((n) => n.kolab_id).join(', ')} each have a node ${r.node}: name it as <kolab>/${r.node}`);
+  }
+
+  /**
+   * The node a session names for work in its own kolab: what it lists, drafts, submits, links
+   * from or asks about. A full form naming another kolab is refused, from the address alone, so
+   * the refusal says nothing of that kolab: `what` says what can't yet cross kolabs.
+   */
+  async nodeIn(sessionId: string, ref: { kolab?: string; node: string } | string, what = 'working on a node'): Promise<NodeRow> {
+    const r = typeof ref === 'string' ? parseNodeRef(ref) : ref;
+    const s = await this.session(sessionId);
+    if (r.kolab !== undefined && r.kolab !== s.kolab) {
+      throw new AccessError(`${r.kolab}/${r.node} is in kolab ${r.kolab}, and this session works in kolab ${s.kolab}: ${what} across kolabs isn't supported yet`);
+    }
+    return this.locateNode({ session: sessionId }, { node: r.node });
+  }
+
+  /**
+   * The version an address names: the one it pins, or with no @version its node's latest
+   * committed version. Undefined if there is none. Read from `where`, as locateNode.
+   */
+  async locateVersion(where: Where, address: Address | string): Promise<{ node: NodeRow; version?: VersionRow }> {
+    const a = typeof address === 'string' ? parseAddress(address) : address;
+    const node = await this.locateNode(where, a);
+    const version = await this.read(where, async (q) => (a.version === undefined
+      ? await q.query<VersionRow>(`select * from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [node.id])
+      : await q.query<VersionRow>(`select * from version where node_id = $1 and seq = $2`, [node.id, a.version])).rows[0]);
+    // A reader outside the node's kolab sees only committed versions: another kolab's drafts and
+    // rejected versions are as if they weren't there (row-level security holds it to this too).
+    if (version && version.state !== 'committed' && 'session' in where && (await this.sessionKolab(where.session)) !== node.kolab_id) {
+      return { node, version: undefined };
+    }
+    return { node, version };
+  }
+
+  /**
+   * A node's version as a session reads it, with its elements and the questions on the node
+   * (DAT11): one of its own kolab's, or `<kolab>/<node>` in another it holds Read on, where only
+   * committed versions show. Every read runs as kj_agent, so row-level security bounds it too.
+   * Addresses in the questions are written to be read in the session's kolab.
+   */
+  async readNode(sessionId: string, ref: string, version?: number) {
+    const where = { session: sessionId };
+    const { node, version: v } = await this.locateVersion(where, { ...parseNodeRef(ref), version });
+    if (!v) throw new Error(`${ref} has no ${version === undefined ? 'committed version' : `version ${version}`}`);
+    const from = await this.sessionKolab(sessionId);
+    return this.read(where, async (q) => ({
+      node, version: v, from,
+      elements: await this.elements(v.id, q),
+      queries: await this.listQueries({ node: node.id, from }, q),
+    }));
+  }
+
+  /**
+   * The version an address names for a write in the session's kolab: a link's source or target,
+   * or a variant's parent. Another kolab's is refused (links across kolabs, LNK8, and forks wait
+   * on a binding decision). A draft only with `allowDraft`.
+   */
+  async versionIn(sessionId: string, address: Address | string, opts: { allowDraft?: boolean; what: string }): Promise<VersionRow> {
+    const a = typeof address === 'string' ? parseAddress(address) : address;
+    const node = await this.nodeIn(sessionId, a, opts.what);
+    const { version } = await this.locateVersion({ session: sessionId }, { node: node.name, version: a.version });
+    const at = formatAddress({ node: node.name, version: a.version });
+    if (!version) throw new Error(a.version === undefined ? `${node.name} has no committed version` : `${node.name} has no version ${a.version}`);
+    if (!opts.allowDraft && version.state !== 'committed') throw new GateError(`${at} is ${version.state}, not committed`);
+    return version;
   }
 
   // ---- accounts, kolabs, teams and grants (TEN1–TEN11) -----------------------
@@ -605,7 +727,7 @@ export class Kolab {
    * one taken by any other account is refused.
    */
   async createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel }) {
-    if (!KOLAB_NAME.test(name) || name.length > 100) throw new TenancyError(`"${name}" isn't a valid kolab name: use lowercase letters, digits and '-', starting with a letter or digit`);
+    if (!isKolabName(name)) throw new TenancyError(`"${name}" isn't a valid kolab name: use lowercase letters, digits and '-', starting with a letter or digit`);
     if (opts.visibility !== undefined && !VISIBILITIES.includes(opts.visibility)) throw new TenancyError(`visibility is one of ${VISIBILITIES.join(', ')}`);
     if (opts.base !== undefined && !ACCESS_LEVELS.includes(opts.base)) throw new TenancyError(`a base permission is one of ${ACCESS_LEVELS.join(', ')}`);
     const owner = await this.requireAccount(opts.owner);
@@ -786,20 +908,29 @@ export class Kolab {
 
   // ---- nodes and versions --------------------------------------------------
 
-  /** Creates a node in the session's kolab. */
-  async createNode(sessionId: string, kind: Kind, title: string, id: string = ulid()): Promise<string> {
+  /**
+   * Creates a node in the session's kolab, called `name` (a ULID by default), and returns its id.
+   * A name is unique within its kolab, not across Konjir: addresses carry the kolab (DAT11, D8).
+   * The id is the name, or '~' and a ULID when another kolab's node already holds that id; either
+   * way, nothing outside the session's kolab shows (TEN12).
+   */
+  async createNode(sessionId: string, kind: Kind, title: string, name: string = ulid()): Promise<string> {
+    if (!isNodeName(name)) throw new GateError(`"${name}" isn't a valid node name: it may not contain '/', '@', '#', '~' or whitespace`);
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
-    try {
-      await this.db.query(`insert into node(id, kind, layer, title, kolab_id) values ($1, $2, $3, $4, $5)`,
-        [id, kind, LAYER_OF_KIND[kind], title, s.kolab]);
-    } catch (e) {
-      // Node names are still unique across all of Konjir until addresses carry their kolab
-      // (W1.4). The refusal is the same whichever kolab holds the name, so it says nothing of
-      // another kolab's nodes.
-      if (String(e).includes('node_pkey')) throw new GateError(`the node name ${id} is taken; choose another`);
-      throw e;
+    const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
+    if (await this.findNode(this.db, s.kolab, name)) throw taken();
+    // Each candidate id in turn: the name, then '~' and a ULID, which no name can be (node_id_name_check).
+    for (const id of [name, `~${ulid()}`]) {
+      try {
+        await this.db.query(`insert into node(id, name, kind, layer, title, kolab_id) values ($1, $2, $3, $4, $5, $6)`,
+          [id, name, kind, LAYER_OF_KIND[kind], title, s.kolab]);
+        return id;
+      } catch (e) {
+        if (String(e).includes('node_kolab_name_key')) throw taken();   // made by another call since the check
+        if (!String(e).includes('node_pkey')) throw e;
+      }
     }
-    return id;
+    throw taken();   // a ULID taken too: never, in practice
   }
 
   async version(id: string): Promise<VersionRow> {
@@ -814,8 +945,8 @@ export class Kolab {
     return r.rows[0];
   }
 
-  async elements(versionId: string): Promise<ElementRow[]> {
-    const r = await this.db.query<ElementRow>(
+  async elements(versionId: string, q: Q = this.db): Promise<ElementRow[]> {
+    const r = await q.query<ElementRow>(
       `select element_id, parent_element_id, ord, text, fingerprint from element where version_id = $1 order by ord`,
       [versionId]);
     return r.rows;
@@ -885,7 +1016,7 @@ export class Kolab {
     let parentEls: ElementRow[] = [];
     if (parentId) {
       const p = await this.version(parentId);
-      // A variant of another kolab's spec is a fork, which comes with the kolab segment in addresses (W1.4).
+      // A variant of another kolab's spec is a fork, which waits on a binding decision (KON).
       if (p.kolab_id !== s.kolab) throw new AccessError(`parent ${parentId} is not in kolab ${s.kolab}, the kolab this session works in`);
       if (p.state !== 'committed') throw new GateError(`parent ${parentId} has not cleared review`);
       await this.refuseCycle(nodeId, parentId);
@@ -956,7 +1087,7 @@ export class Kolab {
    */
   private async judge(versionId: string, approvedBy?: string, ruling?: string): Promise<GateResult> {
     const v = await this.version(versionId);
-    const here = `${v.node_id}@${v.seq}`;
+    const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
     if (v.state === 'in_review' && !approvedBy) return this.resubmit(v);
     if (v.state !== 'drafted') throw new GateError(`${here} is ${v.state}, not drafted`);
     const newer = await overtakenBy(this.db, v);
@@ -1022,7 +1153,7 @@ export class Kolab {
     if (reviewers.length) {
       await this.asSystem(async (tx, signal) => {
         const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
-        if (now !== 'in_review') throw new GateError(`${v.node_id}@${v.seq} is ${now}, no longer in review`);
+        if (now !== 'in_review') throw new GateError(`${await nameIn(tx, v.node_id)}@${v.seq} is ${now}, no longer in review`);
         await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' and reviewer_id <> all($2)`, [v.id, reviewers]);
         const open = new Set((await tx.query<{ reviewer_id: string }>(`select reviewer_id from review_request where version_id = $1 and state = 'open'`, [v.id])).rows.map((r) => r.reviewer_id));
         for (const reviewer of reviewers.filter((x) => !open.has(x))) {
@@ -1055,7 +1186,7 @@ export class Kolab {
     const o = (await tx.query<{ state: VersionState; review_note: string | null; node_id: string; seq: number; layer: Layer; actor_id: string }>(
       `select state, review_note, node_id, seq, layer, actor_id from version where id = $1`, [v.folded_from])).rows[0];
     if (o.state !== 'in_review') {
-      throw new OriginalSettled(v.id, `${o.node_id}@${o.seq} was ${o.review_note ?? o.state} while Kolab folded it onto its node's newer version; nothing committed`);
+      throw new OriginalSettled(v.id, `${await nameIn(tx, o.node_id)}@${o.seq} was ${o.review_note ?? o.state} while Kolab folded it onto its node's newer version; nothing committed`);
     }
     const approvals = (await tx.query<{ reviewer_id: string; note: string | null; findings: Finding[] | null }>(
       `select reviewer_id, note, findings from review_request where version_id = $1 and state = 'approved' order by created_at, reviewer_id`, [v.folded_from])).rows;
@@ -1124,7 +1255,7 @@ export class Kolab {
     input: { verdict: ReviewVerdictKind; note?: string; findings?: Finding[] }): Promise<GateResult> {
     const v = await this.version(versionId);
     const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
-    const here = `${v.node_id}@${v.seq}`;
+    const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
     if (s.actor_id === v.actor_id) throw new GateError(`${s.actor_id} wrote ${here}; another actor with Write on the ${v.layer} layer must review it`);
     const findings = input.findings ?? [];
     for (const f of findings) {
@@ -1195,7 +1326,7 @@ export class Kolab {
   async abandon(sessionId: string, versionId: string): Promise<VersionState> {
     const v = await this.version(versionId);
     const s = await this.session(sessionId);
-    const here = `${v.node_id}@${v.seq}`;
+    const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
     if (s.actor_id !== v.actor_id) throw new GateError(`only ${v.actor_id}, who wrote ${here}, can abandon it`);
     await this.asSystem(async (tx, signal) => {
       const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
@@ -1219,7 +1350,7 @@ export class Kolab {
       await this.raiseLayerLeaks(v, await this.findingsOf(v.id, findings));
     } catch (e) {
       if (e instanceof CascadeError) throw e;   // a variant's cascade, further down, names itself
-      throw new CascadeError(`${v.node_id}@${v.seq} committed, but its cascade did not finish: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+      throw new CascadeError(`${await this.nameOf(v.node_id)}@${v.seq} committed, but its cascade did not finish: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
   }
 
@@ -1295,7 +1426,7 @@ export class Kolab {
    */
   private async settleOvertaken(v: VersionRow, newer: Overtaker[], approvedBy?: string, ruling?: string): Promise<GateResult> {
     if (v.active_role === 'system') {
-      const note = `superseded: ${v.node_id} committed a newer version while this rebase waited`;
+      const note = `superseded: ${await this.nameOf(v.node_id)} committed a newer version while this rebase waited`;
       await this.reject(v.id, note);
       return { ok: false, note, version: v.id, stale: true };
     }
@@ -1326,15 +1457,16 @@ export class Kolab {
   }
 
   private async reviewContext(v: VersionRow): Promise<ReviewContext> {
-    const edges = await this.db.query<EdgeRow & { tnode: string; tseq: number }>(
-      `select e.*, t.node_id as tnode, t.seq as tseq from edge e join version t on t.id = e.target_version_id
+    const edges = await this.db.query<EdgeRow & { tnode: string; tkolab: string; tseq: number }>(
+      `select e.*, tn.name as tnode, tn.kolab_id as tkolab, t.seq as tseq
+         from edge e join version t on t.id = e.target_version_id join node tn on tn.id = t.node_id
         where e.source_version_id = $1 order by e.id`, [v.id]);
     const upstream = [];
     for (const e of edges.rows) {
       const r = await this.resolveIn(e.target_version_id, e.target_element_id, e.target_selector);
       upstream.push({
         element: e.source_element_id,
-        target: formatAddress({ node: e.tnode, version: e.tseq, element: e.target_element_id ?? undefined, selector: e.target_selector ?? undefined }),
+        target: formatAddress({ kolab: e.tkolab, node: e.tnode, version: e.tseq, element: e.target_element_id ?? undefined, selector: e.target_selector ?? undefined }, { from: v.kolab_id }),
         text: r.status === 'orphan' || !e.target_element_id ? null : r.content,
       });
     }
@@ -1351,18 +1483,18 @@ export class Kolab {
     for (const f of findings.filter((x) => x.kind === 'layer_leak')) {
       const element = f.elements[0] ?? null;
       const markId = await this.mark({ version_id: v.id, element_id: element, triggered_by: v.id, reason: 'role_boundary', note: f.explanation });
-      const here = formatAddress({ node: v.node_id, version: v.seq, element: element ?? undefined });
+      const here = formatAddress({ node: node.name, version: v.seq, element: element ?? undefined });
       if (node.layer === 'functional') {
         await this.ask(v.id, element, markId,
           `The review gate thinks ${here} specifies implementation, not behavior: ${f.explanation} Rewrite it as behavior, or answer to keep it as is.`);
         continue;
       }
-      const link = (await this.db.query<{ target_version_id: string; target_element_id: string | null; tnode: string; tseq: number }>(
-        `select e.target_version_id, e.target_element_id, t.node_id as tnode, t.seq as tseq
-           from edge e join version t on t.id = e.target_version_id
+      const link = (await this.db.query<{ target_version_id: string; target_element_id: string | null; tnode: string; tkolab: string; tseq: number }>(
+        `select e.target_version_id, e.target_element_id, tn.name as tnode, tn.kolab_id as tkolab, t.seq as tseq
+           from edge e join version t on t.id = e.target_version_id join node tn on tn.id = t.node_id
           where e.source_version_id = $1 and e.source_element_id is not distinct from $2 and t.layer = 'functional'
           order by e.id limit 1`, [v.id, element])).rows[0];
-      const spec = link ? formatAddress({ node: link.tnode, version: link.tseq, element: link.target_element_id ?? undefined }) : 'the spec';
+      const spec = link ? formatAddress({ kolab: link.tkolab, node: link.tnode, version: link.tseq, element: link.target_element_id ?? undefined }, { from: node.kolab_id }) : 'the spec';
       await this.ask(link?.target_version_id ?? v.id, link?.target_element_id ?? element, markId,
         `The review gate thinks binding ${here} changes behavior beyond ${spec}: ${f.explanation} If this behavior is intended, amend the spec and answer; if not, answer "no" and the binding must change.`);
     }
@@ -1399,8 +1531,9 @@ export class Kolab {
     if (v.active_role === 'system') return;
     const waiting = await this.db.query<{ id: string }>(
       `select id from version where node_id = $1 and state = 'in_review' and id <> $2 order by seq`, [v.node_id, v.id]);
+    const at = `${await this.nameOf(v.node_id)}@${v.seq}`;
     for (const { id } of waiting.rows) {
-      await this.reject(id, `stale draft: ${v.node_id}@${v.seq}, by ${v.actor_id}, committed while this waited in review; redraft against it`);
+      await this.reject(id, `stale draft: ${at}, by ${v.actor_id}, committed while this waited in review; redraft against it`);
     }
   }
 
@@ -1412,7 +1545,7 @@ export class Kolab {
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
     const id = await this.draft(sessionId, nodeId, input);
     const result = await this.review(id);
-    if (result.in_review) throw new GateError(`${nodeId} waits in review by ${result.reviewers?.join(', ') ?? 'its reviewers'}; it commits once one approves it`);
+    if (result.in_review) throw new GateError(`${await this.nameOf(nodeId)} waits in review by ${result.reviewers?.join(', ') ?? 'its reviewers'}; it commits once one approves it`);
     if (result.stale) throw new GateError(`review rejected: ${result.note ?? ''}`);
     if (!result.ok) throw new GateError(`the checks returned it to its author, still drafted: ${result.note ?? ''}`);
     return result.version;
@@ -1420,36 +1553,24 @@ export class Kolab {
 
   // ---- addressing ----------------------------------------------------------
 
-  /** Resolve an address (string or object) to content + fingerprint. */
-  async resolve(address: Address | string): Promise<Resolution & { versionId?: string }> {
+  /**
+   * Resolve an address (string or object) to content + fingerprint, read from `where` (DAT11).
+   * The short form names a node in the session's kolab (or the kolab `where` gives); the full
+   * form names its kolab and resolves from anywhere its reader holds Read (locateNode). Without
+   * `where`, only the full form resolves. A node that isn't there, or can't be read, is refused;
+   * a version or element that isn't there is an orphan.
+   */
+  async resolve(address: Address | string, where: Where): Promise<Resolution & { versionId?: string }> {
     const a = typeof address === 'string' ? parseAddress(address) : address;
-    let v: VersionRow | undefined;
-    if (a.version !== undefined) {
-      const r = await this.db.query<VersionRow>(`select * from version where node_id = $1 and seq = $2`, [a.node, a.version]);
-      v = r.rows[0];
-    } else {
-      v = await this.latestCommitted(a.node);
-    }
+    const { version: v } = await this.locateVersion(where, a);
     if (!v) return { status: 'orphan' };
-    return { ...(await this.resolveIn(v.id, a.element ?? null, a.selector ?? null)), versionId: v.id };
+    const els = await this.read(where, (q) => this.elements(v.id, q));
+    return { ...resolveInElements(els, a.element ?? null, a.selector ?? null), versionId: v.id };
   }
 
+  /** Kolab's own resolution of a scope within a version it already holds, unchecked. */
   async resolveIn(versionId: string, elementId: string | null, selector: QuoteSelector | null): Promise<Resolution> {
-    const els = await this.elements(versionId);
-    if (!elementId) {
-      const content = els.map((e) => `${e.element_id}:${e.parent_element_id ?? ''}:${e.fingerprint}`).join('\n');
-      return { status: 'ok', content, fingerprint: fingerprint(content) };
-    }
-    const subtree = subtreeText(els, elementId);
-    if (subtree === undefined) return { status: 'orphan' };
-    if (!selector) return { status: 'ok', content: subtree, fingerprint: fingerprint(subtree) };
-    const span = resolveSpan(subtree, selector);
-    if (span.status === 'orphan') return { status: 'orphan' };
-    return {
-      status: span.status === 'exact' ? 'ok' : 'fuzzy',
-      content: span.content,
-      fingerprint: fingerprint(span.content),
-    };
+    return resolveInElements(await this.elements(versionId), elementId, selector);
   }
 
   // ---- edges ---------------------------------------------------------------
@@ -1462,7 +1583,8 @@ export class Kolab {
     const src = await this.version(e.source);
     const s = await this.requireLayer(sessionId, src.layer, src.kolab_id);
     const tgt = await this.version(e.target);
-    // A link into another kolab needs Read on it (D3), and its address needs the kolab segment (W1.4).
+    // A link into another kolab needs Read on it and a mark when that goes (LNK8, D3), which wait
+    // on a binding decision: until then, a link stays inside its kolab.
     if (tgt.kolab_id !== s.kolab) throw new AccessError(`the link target is not in kolab ${s.kolab}, the kolab this session works in`);
     if (tgt.state !== 'committed') {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
@@ -1499,7 +1621,8 @@ export class Kolab {
    */
   private async linkRefusal(tgt: VersionRow, elementId: string | null, selector: QuoteSelector | null,
     status: 'fuzzy' | 'orphan'): Promise<string> {
-    const at = (sel?: QuoteSelector) => formatAddress({ node: tgt.node_id, version: tgt.seq, element: elementId ?? undefined, selector: sel });
+    const name = (await this.node(tgt.node_id)).name;
+    const at = (sel?: QuoteSelector) => formatAddress({ node: name, version: tgt.seq, element: elementId ?? undefined, selector: sel });
     const subtree = elementId ? subtreeText(await this.elements(tgt.id), elementId) : undefined;
     if (subtree === undefined) {
       return `target does not resolve exactly (orphan): ${at()} has no element ${elementId}. Read the target with konjir_read_node and link to an element it has.`;
@@ -1598,8 +1721,8 @@ export class Kolab {
       `select i.id from invalidation i join version v on v.id = i.version_id
         where v.node_id = $1 and i.reason = 'rebase_failed' and i.state = 'open'`, [live.node_id]);
     for (const { id } of open.rows) {
-      await this.closeMark(id, `${live.node_id}@${live.seq} sits on the parent's latest version`,
-        `resolved: ${live.node_id}@${live.seq} sits on the parent's latest version`);
+      const at = `${await this.nameOf(live.node_id)}@${live.seq}`;
+      await this.closeMark(id, `${at} sits on the parent's latest version`, `resolved: ${at} sits on the parent's latest version`);
     }
   }
 
@@ -1827,6 +1950,7 @@ export class Kolab {
       .filter((e) => was.get(e.element_id)?.fingerprint !== e.fingerprint || was.get(e.element_id)?.parent_element_id !== e.parent_element_id)
       .map((e) => e.element_id);
     if (!revised.length) return;
+    const addressedBy = `addressed by version ${v.seq} of ${await this.nameOf(v.node_id)}`;
     const marks = await this.db.query<MarkRow & { target_node: string }>(
       `select i.*, tv.node_id as target_node
          from invalidation i
@@ -1843,7 +1967,7 @@ export class Kolab {
       if (r.status === 'orphan') continue;
       await this.asSystem((tx) => tx.query(
         `update edge set target_version_id = $2, target_fingerprint = $3 where id = $1`, [e.id, latest.id, r.fingerprint]));
-      await this.closeMark(m.id, `addressed by version ${v.seq} of ${v.node_id}`);
+      await this.closeMark(m.id, addressedBy);
     }
     const answered = await this.db.query<{ id: string }>(
       `select i.id from invalidation i
@@ -1851,7 +1975,7 @@ export class Kolab {
         where i.version_id = me.id and i.state = 'open' and i.element_id = any($2)
           and i.reason in ('query_answered', 'upstream_dirty')
           and i.created_at < me.created_at`, [v.id, revised]);
-    for (const m of answered.rows) await this.closeMark(m.id, `addressed by version ${v.seq} of ${v.node_id}`);
+    for (const m of answered.rows) await this.closeMark(m.id, addressedBy);
   }
 
   /**
@@ -2005,15 +2129,16 @@ export class Kolab {
     opts: { kind?: QueryKind; from?: Address | string } = {}): Promise<string> {
     const s = await this.session(sessionId);
     const a = typeof address === 'string' ? parseAddress(address) : address;
-    // Anyone with access may ask (Q1), about what is in the kolab they work in.
-    await this.requireNodeIn(sessionId, a.node);
-    const r = await this.resolve(a);
+    // Anyone with access may ask (Q1), about what is in the kolab they work in: a question
+    // across kolabs would cross with a link's rules (LNK8), which wait on a binding decision.
+    await this.nodeIn(sessionId, a, 'asking');
+    const r = await this.resolve(a, { session: sessionId });
     if (!r.versionId || r.status === 'orphan') throw new Error(`cannot ask about ${typeof address === 'string' ? address : JSON.stringify(address)}: it does not resolve`);
     let from: { version: string; element: string | null } | undefined;
     if (opts.from) {
       const f = typeof opts.from === 'string' ? parseAddress(opts.from) : opts.from;
-      await this.requireNodeIn(sessionId, f.node);
-      const fr = await this.resolve(f);
+      await this.nodeIn(sessionId, f, 'waiting on an answer');
+      const fr = await this.resolve(f, { session: sessionId });
       if (!fr.versionId || fr.status === 'orphan') throw new Error(`from ${formatAddress(f)} does not resolve`);
       if ((await this.version(fr.versionId)).layer !== LAYER_OF_ROLE[s.active_role]) {
         throw new RoleError(`from must be an element of your own layer (${LAYER_OF_ROLE[s.active_role]})`);
@@ -2068,7 +2193,7 @@ export class Kolab {
     const fromNode = (await this.version(q.from_version_id!)).node_id;
     const live = await this.latestCommitted(fromNode) ?? await this.version(q.from_version_id!);
     if (q.from_element_id && !(await this.elements(live.id)).some((e) => e.element_id === q.from_element_id)) return;
-    const on = formatAddress({ node: asked.node_id, element: q.element_id ?? undefined });
+    const on = formatAddress({ node: await this.nameOf(asked.node_id), element: q.element_id ?? undefined });
     await this.mark({
       version_id: live.id, element_id: q.from_element_id, reason: 'query_answered',
       triggered_by: (await this.latestCommitted(asked.node_id))?.id ?? asked.id,
@@ -2086,86 +2211,102 @@ export class Kolab {
     };
   }
 
-  /** Nodes, of one kind if given, in one kolab if given. */
+  /** Nodes, of one kind if given, in one kolab if given, with the names addresses give them. */
   async listNodes(kind?: Kind, kolab?: string) {
-    return (await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }>(
-      `select n.id, n.kind, n.layer, n.title,
+    return (await this.db.query<{ id: string; name: string; kolab: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }>(
+      `select n.id, n.name, n.kolab_id as kolab, n.kind, n.layer, n.title,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review
          from node n where ($1::text is null or n.kind = $1) and ($2::text is null or n.kolab_id = $2)
-        order by n.kind, n.id`, [kind ?? null, kolab ?? null])).rows;
+        order by n.kind, n.name, n.kolab_id`, [kind ?? null, kolab ?? null])).rows;
   }
 
-  /** Edges into (upstream) or out of (downstream) a version, with human-readable addresses. */
+  /**
+   * Edges into (upstream) or out of (downstream) a version, with human-readable addresses: the
+   * short form in the version's own kolab.
+   */
   async lineage(versionId: string, direction: 'upstream' | 'downstream') {
+    const cols = `e.id, e.kind, e.source_element_id, sn.name as source_node, sn.kolab_id as source_kolab, sv.seq as source_seq,
+                  e.target_element_id, e.target_selector, tn.name as target_node, tn.kolab_id as target_kolab, tv.seq as target_seq
+             from edge e join version sv on sv.id = e.source_version_id join version tv on tv.id = e.target_version_id
+             join node sn on sn.id = sv.node_id join node tn on tn.id = tv.node_id`;
     const sql = direction === 'upstream'
-      ? `select e.id, e.kind, e.source_element_id, sv.node_id as source_node, sv.seq as source_seq,
-                e.target_element_id, e.target_selector, tv.node_id as target_node, tv.seq as target_seq
-           from edge e join version sv on sv.id = e.source_version_id join version tv on tv.id = e.target_version_id
-          where e.source_version_id = $1`
-      : `select e.id, e.kind, e.source_element_id, sv.node_id as source_node, sv.seq as source_seq,
-                e.target_element_id, e.target_selector, tv.node_id as target_node, tv.seq as target_seq
-           from edge e join version sv on sv.id = e.source_version_id join version tv on tv.id = e.target_version_id
-          where tv.node_id = (select node_id from version where id = $1)
-            and ${LIVE('sv')}`;
+      ? `select ${cols} where e.source_version_id = $1`
+      : `select ${cols} where tv.node_id = (select node_id from version where id = $1) and ${LIVE('sv')}`;
+    const from = (await this.version(versionId)).kolab_id;
     const rows = (await this.db.query<{
-      id: string; kind: string; source_element_id: string | null; source_node: string; source_seq: number;
-      target_element_id: string | null; target_selector: QuoteSelector | null; target_node: string; target_seq: number;
+      id: string; kind: string; source_element_id: string | null; source_node: string; source_kolab: string; source_seq: number;
+      target_element_id: string | null; target_selector: QuoteSelector | null; target_node: string; target_kolab: string; target_seq: number;
     }>(sql, [versionId])).rows;
     return rows.map((r) => ({
       edge: r.id,
       kind: r.kind,
-      source: formatAddress({ node: r.source_node, version: r.source_seq, element: r.source_element_id ?? undefined }),
-      target: formatAddress({ node: r.target_node, version: r.target_seq, element: r.target_element_id ?? undefined, selector: r.target_selector ?? undefined }),
+      source: formatAddress({ kolab: r.source_kolab, node: r.source_node, version: r.source_seq, element: r.source_element_id ?? undefined }, { from }),
+      target: formatAddress({ kolab: r.target_kolab, node: r.target_node, version: r.target_seq, element: r.target_element_id ?? undefined, selector: r.target_selector ?? undefined }, { from }),
     }));
   }
 
-  /** Open marks with the addresses involved, so an agent can act without more lookups. */
+  /**
+   * Open marks with the addresses involved, so an agent can act without more lookups. `node` is a
+   * node's id. Addresses are in the short form of the mark's own kolab.
+   */
   async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string } = {}) {
     const rows = (await this.db.query<MarkRow & {
-      node_id: string; seq: number; layer: Layer; trig_node: string; trig_seq: number;
-      t_element: string | null; t_selector: QuoteSelector | null; cause_count: number;
+      node: string; seq: number; layer: Layer; trig_node: string; trig_kolab: string; trig_seq: number;
+      t_element: string | null; t_selector: QuoteSelector | null; cause_count: number; kolab_id: string;
     }>(
-      `select i.*, v.node_id, v.seq, v.layer, tv.node_id as trig_node, tv.seq as trig_seq,
+      `select i.*, n.name as node, v.seq, v.layer, tn.name as trig_node, tn.kolab_id as trig_kolab, tv.seq as trig_seq,
               e.target_element_id as t_element, e.target_selector as t_selector,
               (select count(*)::int from invalidation_cause c where c.mark_id = i.id) as cause_count
          from invalidation i
          join version v on v.id = i.version_id
+         join node n on n.id = v.node_id
          join version tv on tv.id = i.triggered_by
+         join node tn on tn.id = tv.node_id
          left join edge e on e.id = i.edge_id
         where i.state = 'open'
           and ($1::text is null or v.layer = $1)
           and ($2::text is null or v.node_id = $2)
           and ($3::text is null or i.kolab_id = $3)
         order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null, filter.kolab ?? null])).rows;
-    return rows.map((r) => ({
-      mark: r.id,
-      reason: r.reason,
-      dirty: formatAddress({ node: r.node_id, version: r.seq, element: r.element_id ?? undefined }),
-      layer: r.layer,
-      because: r.reason === 'query_answered' ? r.note ?? 'your question was answered'
-        : r.note ? `review gate: ${r.note}`
-        : r.edge_id
-        ? `${formatAddress({ node: r.trig_node, element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} changed in version ${r.trig_seq}`
-        : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
-        : `parent ${r.trig_node} version ${r.trig_seq}`,
-      next: NEXT_STEP[r.reason] ?? '',
-    }));
+    return rows.map((r) => {
+      const from = r.kolab_id;
+      const trig = (a: Omit<Address, 'node' | 'kolab'>) => formatAddress({ kolab: r.trig_kolab, node: r.trig_node, ...a }, { from });
+      return {
+        mark: r.id,
+        reason: r.reason,
+        dirty: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }),
+        layer: r.layer,
+        because: r.reason === 'query_answered' ? r.note ?? 'your question was answered'
+          : r.note ? `review gate: ${r.note}`
+          : r.edge_id
+          ? `${trig({ element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} changed in version ${r.trig_seq}`
+          : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
+          : `parent ${trig({}).slice('kj:'.length)} version ${r.trig_seq}`,
+        next: NEXT_STEP[r.reason] ?? '',
+      };
+    });
   }
 
+  /**
+   * Questions and notes. `node` is a node's id. Addresses are written to be read in kolab `from`:
+   * by default the query's own, where the short form is enough.
+   */
   async listQueries(filter: {
-    layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind; kolab?: string;
-  } = {}): Promise<Query[]> {
-    const rows = (await this.db.query<{
-      id: string; kind: QueryKind; node_id: string; seq: number; element_id: string | null;
+    layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind; kolab?: string; from?: string;
+  } = {}, q: Q = this.db): Promise<Query[]> {
+    const rows = (await q.query<{
+      id: string; kind: QueryKind; node: string; seq: number; element_id: string | null; kolab_id: string;
       selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
-      raised_by: string | null; mark: string | null; from_node: string | null; from_seq: number | null; from_element_id: string | null;
+      raised_by: string | null; mark: string | null; from_node: string | null; from_kolab: string | null; from_seq: number | null; from_element_id: string | null;
     }>(
-      `select q.id, q.kind, v.node_id, v.seq, q.element_id, q.selector, q.question, q.state, q.answer, q.answered_by,
-              q.raised_by, q.invalidation_id as mark, fv.node_id as from_node, fv.seq as from_seq, q.from_element_id
+      `select q.id, q.kind, n.name as node, v.seq, q.element_id, q.kolab_id, q.selector, q.question, q.state, q.answer, q.answered_by,
+              q.raised_by, q.invalidation_id as mark, fn.name as from_node, fn.kolab_id as from_kolab, fv.seq as from_seq, q.from_element_id
          from query q join version v on v.id = q.version_id
+         join node n on n.id = v.node_id
          left join version fv on fv.id = q.from_version_id
+         left join node fn on fn.id = fv.node_id
         where ($1::text is null or v.layer = $1) and ($2::text is null or q.state = $2)
           and ($3::text is null or q.raised_by = $3) and ($4::text is null or v.node_id = $4)
           and ($5::text is null or q.kind = $5) and ($6::text is null or q.kolab_id = $6)
@@ -2173,9 +2314,9 @@ export class Kolab {
       [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null, filter.kolab ?? null])).rows;
     return rows.map((r) => ({
       id: r.id, kind: r.kind,
-      address: formatAddress({ node: r.node_id, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }),
+      address: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }, { from: filter.from ?? r.kolab_id }),
       question: r.question, state: r.state, answer: r.answer, answered_by: r.answered_by, raised_by: r.raised_by,
-      from: r.from_node ? formatAddress({ node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }) : null,
+      from: r.from_node ? formatAddress({ kolab: r.from_kolab!, node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }, { from: filter.from ?? r.kolab_id }) : null,
       mark: r.mark,
     }));
   }
@@ -2186,8 +2327,8 @@ export class Kolab {
    */
   async reviewRequests(filter: { reviewer?: string; layer?: Layer; kolab?: string } = {}): Promise<ReviewRequestView[]> {
     const rows = (await this.db.query<{ id: string; node_id: string; seq: number; author: string; reviewer: string; created_at: Date | string }>(
-      `select r.id, v.node_id, v.seq, v.actor_id as author, r.reviewer_id as reviewer, r.created_at
-         from review_request r join version v on v.id = r.version_id
+      `select r.id, n.name as node_id, v.seq, v.actor_id as author, r.reviewer_id as reviewer, r.created_at
+         from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
         where r.state = 'open' and v.state = 'in_review'
           and ($1::text is null or r.reviewer_id = $1) and ($2::text is null or v.layer = $2) and ($3::text is null or r.kolab_id = $3)
         order by r.created_at, r.reviewer_id, r.id`, [filter.reviewer ?? null, filter.layer ?? null, filter.kolab ?? null])).rows;
@@ -2212,15 +2353,16 @@ export class Kolab {
     for (const v of versions) {
       const verdicts = (await this.db.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; findings: Finding[] | null }>(
         `select reviewer_id, state, note, findings from review_request where version_id = $1 order by created_at, reviewer_id, id`, [v.id])).rows;
-      const subject = `kj:${v.node_id}@${v.seq}`;
+      const name = await this.nameOf(v.node_id);
+      const subject = `kj:${name}@${v.seq}`;
       const fold = v.state === 'rejected' ? (await this.db.query<{ node_id: string; seq: number }>(
-        `select node_id, seq from version where folded_from = $1 order by (state = 'committed') desc, seq desc limit 1`, [v.id])).rows[0] : undefined;
+        `select n.name as node_id, f.seq from version f join node n on n.id = f.node_id where f.folded_from = $1 order by (f.state = 'committed') desc, f.seq desc limit 1`, [v.id])).rows[0] : undefined;
       const foldedInto = fold && v.review_note?.startsWith('folded into ') ? `kj:${fold.node_id}@${fold.seq}` : undefined;
       out.push({
         subject, state: v.state, note: v.review_note, ...(foldedInto ? { folded_into: foldedInto } : {}),
         verdicts: verdicts.map((r) => ({ reviewer: r.reviewer_id, state: r.state, note: r.note, findings: r.findings ?? [] })),
         next: v.state === 'in_review' ? 'Waiting for a reviewer; nothing to do.'
-          : v.state === 'drafted' ? `Changes were requested. Draft a new version that addresses them (and konjir_abandon node=${v.node_id} version=${v.seq}), or resubmit this one unchanged with konjir_submit_for_review if you disagree, saying why with konjir_annotate.`
+          : v.state === 'drafted' ? `Changes were requested. Draft a new version that addresses them (and konjir_abandon node=${name} version=${v.seq}), or resubmit this one unchanged with konjir_submit_for_review if you disagree, saying why with konjir_annotate.`
           : v.state === 'committed' ? 'Committed.'
           : foldedInto ? `Folded into ${foldedInto}, which carries this edit, onto Kolab's rebase; nothing to do.`
           : 'Rejected; see the note.',
@@ -2238,8 +2380,14 @@ export class Kolab {
       `select id, version_id, element_id, question from query where state = 'open'`)).rows;
   }
 
-  async node(id: string): Promise<{ id: string; kind: Kind; layer: Layer; title: string; kolab_id: string }> {
-    const r = await this.db.query<{ id: string; kind: Kind; layer: Layer; title: string; kolab_id: string }>(`select * from node where id = $1`, [id]);
+  /** The name addresses give a node, by its id. */
+  private async nameOf(id: string): Promise<string> {
+    return (await this.node(id)).name;
+  }
+
+  /** A node by its id. */
+  async node(id: string): Promise<NodeRow> {
+    const r = await this.db.query<NodeRow>(`select * from node where id = $1`, [id]);
     if (!r.rows[0]) throw new Error(`no node ${id}`);
     return r.rows[0];
   }
@@ -2252,18 +2400,18 @@ export class Kolab {
    * same node (ordinary evolution), and refuse if this node reappears.
    */
   private async refuseCycle(nodeId: string, parentId: string) {
-    const r = await this.db.query<{ node_id: string }>(
+    const r = await this.db.query<{ node_id: string; name: string }>(
       `with recursive up(id, node_id, parent_version_id, depth) as (
          select id, node_id, parent_version_id, 0 from version where id = $1
          union all
          select v.id, v.node_id, v.parent_version_id, u.depth + 1
            from version v join up u on v.id = u.parent_version_id
        )
-       select node_id from up order by depth`, [parentId]);
-    const chain = r.rows.map((x) => x.node_id).filter((n, i, a) => i === 0 || a[i - 1] !== n);
-    if (chain[0] === nodeId) chain.shift();
-    if (chain.includes(nodeId)) {
-      throw new GateError(`${nodeId} would inherit from itself through ${chain.join(' -> ')}`);
+       select up.node_id, n.name from up join node n on n.id = up.node_id order by depth`, [parentId]);
+    const chain = r.rows.filter((n, i, a) => i === 0 || a[i - 1].node_id !== n.node_id);
+    if (chain[0]?.node_id === nodeId) chain.shift();
+    if (chain.some((n) => n.node_id === nodeId)) {
+      throw new GateError(`${await this.nameOf(nodeId)} would inherit from itself through ${chain.map((n) => n.name).join(' -> ')}`);
     }
   }
 
@@ -2309,6 +2457,7 @@ export class Kolab {
     const p = prev.rows[0];
     if (!p) return;
     const live = new Set((await this.elements(v.id)).map((e) => e.element_id));
+    const at = `${await this.nameOf(v.node_id)}@${v.seq}`;
     await this.asSystem(async (tx, signal) => {
       await copyEdges(tx, p.id, v.id, live);
       // Edge and transitive marks move to the new version.
@@ -2327,7 +2476,7 @@ export class Kolab {
       // it, since nobody ruled; a resolution closed its own mark and question as it committed.
       if (settled.rows.length) {
         await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where invalidation_id = any($1) and state = 'open'`,
-          [settled.rows.map((r) => r.id), `resolved: ${v.node_id}@${v.seq} no longer holds this override dirty or orphaned`, SYSTEM_ACTOR]);
+          [settled.rows.map((r) => r.id), `resolved: ${at} no longer holds this override dirty or orphaned`, SYSTEM_ACTOR]);
         await signal({ inbox: 'layer', layer: v.layer });
       }
     });
@@ -2524,6 +2673,11 @@ async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<stri
   }
 }
 
+/** A node's name, by its id, read in `q` (inside a transaction, where `this.db` can't be used on PGlite). */
+async function nameIn(q: Q, nodeId: string): Promise<string> {
+  return (await q.query<{ name: string }>(`select name from node where id = $1`, [nodeId])).rows[0].name;
+}
+
 /**
  * The node's next version number. Call it only in a transaction that holds the node's lock
  * (inTransaction's `lock`), which keeps two writers from taking the same number.
@@ -2532,6 +2686,17 @@ async function nextSeq(tx: Q, nodeId: string): Promise<number> {
   const r = await tx.query<{ n: number }>(`select coalesce(max(seq), 0) + 1 as n from version where node_id = $1`, [nodeId]);
   return r.rows[0].n;
 }
+
+/** A node: `name` is how addresses name it, unique in its kolab; `id` is Kolab's own key for it. */
+export interface NodeRow { id: string; name: string; kind: Kind; layer: Layer; title: string; kolab_id: string }
+
+/**
+ * Where an address is read: in a session, which reads its own kolab and any other it holds Read
+ * on, as kj_agent under row-level security; or `system`, Kolab's own reads, on its login with no
+ * access checked, where the short form names a node in that kolab. Never give `system` for
+ * anything a session asked for.
+ */
+export type Where = { session: string } | { system: string };
 
 /** An open session: its actor, role and kolab, and the actor's access there now. */
 interface Session {
@@ -2620,4 +2785,22 @@ async function writeVersion(tx: Q, v: Omit<VersionRow, 'state'>, els: ElementRow
       [ulid(), v.id, d.element_id, d.kind, d.text, d.parent_element_id, d.ord,
         d.base_version_id, d.base_fingerprint, d.state]);
   }
+}
+
+/** Resolves a scope (whole version, element subtree, or span) within a version's elements. */
+function resolveInElements(els: ElementRow[], elementId: string | null, selector: QuoteSelector | null): Resolution {
+  if (!elementId) {
+    const content = els.map((e) => `${e.element_id}:${e.parent_element_id ?? ''}:${e.fingerprint}`).join('\n');
+    return { status: 'ok', content, fingerprint: fingerprint(content) };
+  }
+  const subtree = subtreeText(els, elementId);
+  if (subtree === undefined) return { status: 'orphan' };
+  if (!selector) return { status: 'ok', content: subtree, fingerprint: fingerprint(subtree) };
+  const span = resolveSpan(subtree, selector);
+  if (span.status === 'orphan') return { status: 'orphan' };
+  return {
+    status: span.status === 'exact' ? 'ok' : 'fuzzy',
+    content: span.content,
+    fingerprint: fingerprint(span.content),
+  };
 }

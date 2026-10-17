@@ -157,7 +157,8 @@ export interface SubmissionView {
 export interface ReviewContext {
   version: VersionRow;
   elements: ElementRow[];
-  node: { id: string; kind: Kind; layer: Layer; title: string };
+  /** `name` is how addresses name the node, in `kolab_id`; `id` is Kolab's own key for it. */
+  node: { id: string; name: string; kind: Kind; layer: Layer; title: string; kolab_id: string };
   /** For each link out of this version: which element relies on what, and that target's text. */
   upstream: { element: string | null; target: string; text: string | null }[];
 }

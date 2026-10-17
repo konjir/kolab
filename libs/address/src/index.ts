@@ -16,8 +16,12 @@ export interface QuoteSelector {
  *   node version only          -> whole version
  *   + element                  -> one requirement (and its sub-elements)
  *   + selector                 -> a span inside that requirement
+ *
+ * `kolab` is the kolab segment (ADR3, D8). Absent, the address is the short form, which means
+ * the node of that name in the kolab it is read in.
  */
 export interface Address {
+  kolab?: string;
   node: string;
   version?: number;          // absent = floating (resolve to latest committed)
   element?: string;
@@ -30,28 +34,72 @@ export function scopeOf(a: Address): Scope {
   return a.selector ? 'span' : a.element ? 'element' : 'version';
 }
 
-/** kj:<node>[@<version>][#<element>][~q(<json selector>)] */
-export function formatAddress(a: Address): string {
-  let s = `kj:${a.node}`;
+/**
+ * A kolab's short name, its addresses' kolab segment: lowercase letters, digits and '-', starting
+ * with a letter or digit, at most KOLAB_NAME_MAX characters. Unique across all of Konjir (TEN4).
+ */
+export const KOLAB_NAME = /^[a-z0-9][a-z0-9-]*$/;
+export const KOLAB_NAME_MAX = 100;
+
+/**
+ * A node's name, unique within its kolab: anything but '/', '@', '#', '~' and whitespace, which
+ * the address grammar uses to find where the name starts and ends.
+ */
+export const NODE_NAME = /^[^/@#~\s]+$/;
+
+export function isKolabName(s: string): boolean {
+  return KOLAB_NAME.test(s) && s.length <= KOLAB_NAME_MAX;
+}
+
+export function isNodeName(s: string): boolean {
+  return NODE_NAME.test(s);
+}
+
+/**
+ * kj:[<kolab>/]<node>[@<version>][#<element>][~q(<json selector>)] (ADR3, DAT11).
+ *
+ * With `from`, the kolab the address will be read in, the kolab segment is left out when it is
+ * that kolab: inside a kolab, the short form is enough.
+ */
+export function formatAddress(a: Address, opts: { from?: string } = {}): string {
+  let s = a.kolab !== undefined && a.kolab !== opts.from ? `kj:${a.kolab}/${a.node}` : `kj:${a.node}`;
   if (a.version !== undefined) s += `@${a.version}`;
   if (a.element) s += `#${a.element}`;
   if (a.selector) s += `~q(${JSON.stringify(a.selector)})`;
   return s;
 }
 
-const ADDRESS_RE = /^kj:([^@#~]+)(?:@(\d+))?(?:#([^~]+))?(?:~q\((.*)\))?$/;
+// The kolab segment, if any, is everything before the first '/', which a node's name never has.
+const ADDRESS_RE = /^kj:(?:([^/@#~]*)\/)?([^/@#~]*)(?:@(\d+))?(?:#([^~]+))?(?:~q\((.*)\))?$/;
 
 export function parseAddress(s: string): Address {
   const m = ADDRESS_RE.exec(s);
-  if (!m) throw new Error(`not a Konjir address: ${s}`);
-  const [, node, version, element, sel] = m;
+  if (!m) throw new Error(`not a Konjir address: ${s}. An address is kj:[<kolab>/]<node>[@<version>][#<element>][~q(<selector>)]`);
+  const [, kolab, node, version, element, sel] = m;
+  if (kolab !== undefined && !isKolabName(kolab)) {
+    throw new Error(`not a Konjir address: ${s}. Its kolab, "${kolab}", isn't a kolab name: lowercase letters, digits and '-', starting with a letter or digit`);
+  }
+  if (!isNodeName(node)) throw new Error(`not a Konjir address: ${s}. It names no node`);
   if (sel && !element) throw new Error(`a selector needs an element: ${s}`);
   return {
+    ...(kolab !== undefined ? { kolab } : {}),
     node,
     version: version === undefined ? undefined : Number(version),
     element: element || undefined,
     selector: sel ? (JSON.parse(sel) as QuoteSelector) : undefined,
   };
+}
+
+/**
+ * A node named on its own, as verbs that take a node do: `<node>`, or `<kolab>/<node>`, or a
+ * whole address naming no version, element or selector (`kj:[<kolab>/]<node>`).
+ */
+export function parseNodeRef(s: string): { kolab?: string; node: string } {
+  const a = parseAddress(s.startsWith('kj:') ? s : `kj:${s}`);
+  if (a.version !== undefined || a.element || a.selector) {
+    throw new Error(`"${s}" names a version, element or span; name the node alone, as <node> or <kolab>/<node>`);
+  }
+  return a.kolab !== undefined ? { kolab: a.kolab, node: a.node } : { node: a.node };
 }
 
 export function normalize(text: string): string {
