@@ -9,9 +9,9 @@ import { expect, test } from '@jest/globals';
 import {
   BASELINE, MIGRATIONS, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
-import { Kolab } from '@konjir/engine';
-import { els, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
-import { ACTOR_KINDS, MARK_REASONS, QUERY_KINDS } from '@konjir/types';
+import { Kolab, sessionKey } from '@konjir/engine';
+import { els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
+import { ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, MARK_REASONS, ORG_ROLES, QUERY_KINDS, VISIBILITIES } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
 
@@ -81,14 +81,14 @@ test('a fresh database reaches the current schema through the files, and Kolab w
 
   const kolab = await Kolab.open(store);
   try {
-    await kolab.addActor('alice');
+    await people(kolab, 'alice');
     const product = await kolab.openSession('alice', 'product');
     await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS and ACTOR_KINDS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS and VISIBILITIES", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -99,6 +99,11 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS an
     expect(await check('invalidation_reason_check')).toStrictEqual([...MARK_REASONS].sort());
     expect(await check('query_kind_check')).toStrictEqual([...QUERY_KINDS].sort());
     expect(await check('actor_kind_check')).toStrictEqual([...ACTOR_KINDS].sort());
+    expect(await check('account_kind_check')).toStrictEqual([...ACCOUNT_KINDS].sort());
+    expect(await check('org_member_role_check')).toStrictEqual([...ORG_ROLES].sort());
+    expect(await check('kolab_grant_level_check')).toStrictEqual([...ACCESS_LEVELS].sort());
+    expect(await check('kolab_base_permission_check')).toStrictEqual([...ACCESS_LEVELS].sort());
+    expect(await check('kolab_visibility_check')).toStrictEqual([...VISIBILITIES].sort());
   });
 });
 
@@ -150,10 +155,10 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
       insert into element(version_id, element_id, ord, text, fingerprint) values ('v1', 'R1', 0, 'Orders can be cancelled.', 'x');`);
 
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(1) });
-    expect((await db.query(`select id, kind, owner_id, owner_kind from actor order by id collate "C"`)).rows).toStrictEqual([
-      { id: 'Pat Smith', kind: 'person', owner_id: null, owner_kind: null },
-      { id: 'eng-1', kind: 'person', owner_id: null, owner_kind: null },
-      { id: 'lee', kind: 'person', owner_id: null, owner_kind: null },
+    expect((await db.query(`select id, kind, owner_id from actor order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'Pat Smith', kind: 'person', owner_id: null },
+      { id: 'eng-1', kind: 'person', owner_id: null },
+      { id: 'lee', kind: 'person', owner_id: null },
     ]);
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
@@ -162,9 +167,11 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
   try {
     expect(await kolab.sessionInfo('kjs_old')).toStrictEqual({
       session: 'kjs_old', actor: 'lee', kind: 'person', owner: null, role: 'product', layer: 'functional',
+      kolab: 'kolab', access: { level: 'write', layers: ['functional', 'technical'] },   // 0006
     });
     expect(await kolab.author('v1')).toStrictEqual({ actor: 'lee', kind: 'person', owner: null, role: 'product' });
     await kolab.addActor('lee-pm', { owner: 'lee' });
+    await kolab.grant('kolab', 'lee-pm', 'write');
     const token = await kolab.openSession('lee-pm', 'product');   // beside Lee's own open session
     const v2 = await kolab.commit(token, 'orders', { elements: els({ R1: 'Orders can be cancelled within an hour.' }) });
     expect(await kolab.author(v2)).toStrictEqual({ actor: 'lee-pm', kind: 'agent', owner: 'lee', role: 'product' });
@@ -333,18 +340,89 @@ test('a database at 0004 reaches 0005: a ruling can be stored with no case file,
 
     // A ruling rules on a case file or on a version, never neither or both, and an element only
     // within a version.
+    // (From 0006 a ruling on nothing has no kolab either, which the database refuses first.)
     expect(await rejection(db.query(`insert into ruling(id, actor_id, text) values ('r2', 'lee', 'On nothing.')`)))
-      .toMatch(/ruling_subject_check/);
+      .toMatch(/ruling_subject_check|null value in column "kolab_id" of relation "ruling"/);
     expect(await rejection(db.query(`insert into ruling(id, case_file_id, version_id, actor_id, text) values ('r3', 'c1', 'v1', 'lee', 'Both.')`)))
       .toMatch(/ruling_subject_check/);
     expect(await rejection(db.query(`insert into ruling(id, case_file_id, element_id, actor_id, text) values ('r4', 'c1', 'R1', 'lee', 'Stray element.')`)))
       .toMatch(/ruling_subject_check/);
     expect(await rejection(db.query(`insert into ruling(id, version_id, actor_id, text) values ('r5', 'nope', 'lee', 'No such version.')`)))
-      .toMatch(/ruling_version_id_fkey/);
+      .toMatch(/ruling_version_id_fkey|null value in column "kolab_id" of relation "ruling"/);   // 0006: no version, no kolab
     expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r6', 'c1', 'lee', 'maybe', 'Neither.')`)))
       .toMatch(/ruling_verdict_check/);
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+});
+
+test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the organization konjir, and everyone keeps working in it', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'accounts_kolabs');
+  await withDb(async (db) => {
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at) })).toStrictEqual({ baselined: false, applied: versions.slice(0, at) });
+    // The test server before this release: the mirror's people and agents, an open session each,
+    // a spec and a binding linked to it, a mark, a question, a precedent and a direct ruling.
+    await db.exec(`
+      insert into actor(id, name) values ('lee', 'Lee'), ('mirror-product', 'mirror-product'), ('pat', 'Pat');
+      insert into actor(id, name, kind, owner_id) values ('lee-pm', 'lee-pm', 'agent', 'lee');
+      insert into session(id, actor_id, active_role) values ('kjs_lee', 'lee', 'product'), ('kjs_pm', 'lee-pm', 'product');
+      insert into node(id, kind, layer, title) values
+        ('kolab', 'functional_spec', 'functional', 'Kolab'), ('kolab-binding', 'technical_binding', 'technical', 'Binding');
+      insert into version(id, node_id, seq, layer, state, actor_id, active_role) values
+        ('s1', 'kolab', 1, 'functional', 'committed', 'mirror-product', 'product'),
+        ('b1', 'kolab-binding', 1, 'technical', 'committed', 'mirror-product', 'engineer');
+      insert into element(version_id, element_id, ord, text, fingerprint) values
+        ('s1', 'TEN1', 0, 'Konjir is one hosted service.', 'x'), ('b1', 'DEP1', 0, 'One Kolab service on AWS.', 'y');
+      insert into delta(id, version_id, element_id, kind, text) values ('d1', 's1', 'TEN1', 'add', 'Konjir is one hosted service.');
+      insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint)
+        values ('e1', 'dependency', 'b1', 'DEP1', 's1', 'TEN1', 'x');
+      insert into invalidation(id, version_id, element_id, edge_id, triggered_by, reason) values ('m1', 'b1', 'DEP1', 'e1', 's1', 'changed');
+      insert into query(id, version_id, element_id, question, raised_by) values ('q1', 's1', 'TEN1', 'One per region?', 'lee-pm');
+      insert into precedent(id, base_fingerprint, parent_fingerprint, child_fingerprint, resolution, ruled_by)
+        values ('p1', 'a', 'b', 'c', 'reaffirm', 'lee');
+      insert into ruling(id, actor_id, version_id, text) values ('d12', 'lee', 's1', 'Konjir is one hosted service.');`);
+
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
+    expect((await db.query(`select id, owner_id, title, visibility from kolab`)).rows).toStrictEqual([{ id: 'kolab', owner_id: 'konjir', title: 'Kolab', visibility: 'private' }]);
+    expect((await db.query(`select id, kind from account order by id collate "C"`)).rows).toStrictEqual([
+      { id: 'konjir', kind: 'organization' }, { id: 'lee', kind: 'user' }, { id: 'mirror-product', kind: 'user' }, { id: 'pat', kind: 'user' },
+    ]);
+    expect((await db.query(`select user_id, role from org_member where org_id = 'konjir' order by user_id collate "C"`)).rows).toStrictEqual([
+      { user_id: 'lee', role: 'member' }, { user_id: 'mirror-product', role: 'member' }, { user_id: 'pat', role: 'member' },
+    ]);
+    expect((await db.query(`select coalesce(user_id, agent_id) as who, level, functional, technical from kolab_grant order by coalesce(user_id, agent_id) collate "C"`)).rows).toStrictEqual([
+      { who: 'lee', level: 'write', functional: true, technical: true },
+      { who: 'lee-pm', level: 'write', functional: true, technical: true },
+      { who: 'mirror-product', level: 'write', functional: true, technical: true },
+      { who: 'pat', level: 'write', functional: true, technical: true },
+    ]);
+    // Every row is keyed by it.
+    for (const t of ['session', 'node', 'version', 'element', 'delta', 'edge', 'invalidation', 'query', 'precedent', 'ruling']) {
+      expect(`${t}: ${JSON.stringify((await db.query(`select distinct kolab_id from ${t}`)).rows)}`).toBe(`${t}: [{"kolab_id":"kolab"}]`);
+    }
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    // Open sessions keep working, in kolab, with the access everyone had before.
+    expect(await kolab.sessionInfo('kjs_pm')).toMatchObject({ actor: 'lee-pm', owner: 'lee', kolab: 'kolab', access: { level: 'write', layers: ['functional', 'technical'] } });
+    const v2 = await kolab.commit('kjs_pm', 'kolab', { elements: els({ TEN1: 'Konjir is one hosted service that every account shares.' }) });
+    expect(await kolab.author(v2)).toStrictEqual({ actor: 'lee-pm', kind: 'agent', owner: 'lee', role: 'product' });
+    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.id)).toStrictEqual(['kolab', 'kolab-binding']);
+    // An agent of the organization now, which a person's agent couldn't be before.
+    await kolab.addActor('konjir-bot', { owner: 'konjir' });
+    await kolab.grant('kolab', 'konjir-bot', 'read');
+    expect(await kolab.access('konjir-bot', 'kolab')).toStrictEqual({ level: 'read', layers: [] });
+    // Lee's grant can shrink like anyone's: her agent's open session narrows to it.
+    await kolab.grant('kolab', 'lee', 'write', { layers: ['technical'] });
+    expect((await kolab.sessionInfo('kjs_pm')).access).toStrictEqual({ level: 'write', layers: ['technical'] });
+    const ended: string[] = [];
+    kolab.onEvent((e) => { if ('session' in e) ended.push(e.id); });
+    // With no grant, and no base permission for members, Lee reaches nothing: her session ends, and so does her agent's.
+    expect(await kolab.revoke('kolab', 'lee')).toStrictEqual({ ended: 2 });
+    expect(ended.sort()).toStrictEqual([sessionKey('kjs_lee'), sessionKey('kjs_pm')].sort());
+  } finally { await kolab.close(); }
 });
 
 // ---- the runner, with migrations of the test's own ---------------------------------

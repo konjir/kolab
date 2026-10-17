@@ -1,7 +1,7 @@
 // Regressions for the six bugs found in the first adversarial review.
 import { expect, test } from '@jest/globals';
 import { GateError } from '@konjir/engine';
-import { setup, els, marksOn, textOf, rejection } from '@konjir/engine/testing';
+import { setup, els, marksOn, people, textOf, rejection } from '@konjir/engine/testing';
 
 test('a pending draft does not hide its node from the cascade; the draft catches up on commit', async () => {
   const { kolab, product, engineer } = await setup();
@@ -37,7 +37,7 @@ test('a variant drafted while its parent moved on is rebased when the draft comm
 
 test('optimistic concurrency: a draft overtaken by a human commit is rejected, not silently merged', async () => {
   const { kolab, engineer } = await setup();
-  await kolab.addActor('dave');
+  await people(kolab, 'dave');
   const dave = await kolab.openSession('dave', 'engineer');
   const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
   await kolab.commit(engineer, B, { elements: els({ b1: 'v1' }) });
@@ -142,7 +142,7 @@ test('an equivalence pair does not flag the version that was just committed', as
 
 test('folding keeps the draft author, so a second stale draft is rejected instead of erasing the first', async () => {
   const { kolab, product } = await setup();
-  await kolab.addActor('erin');
+  await people(kolab, 'erin');
   const erin = await kolab.openSession('erin', 'product');
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
