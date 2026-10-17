@@ -1,18 +1,15 @@
 // End to end over real HTTP: two agents with different roles, one Kolab server.
-import { afterAll, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
-import { persistentStore, rejection, testStore, type Store } from '@konjir/engine/testing';
+import { closeAtEnd, persistentStore, rejection, testStore, type Store } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
-
-const open: { close(): Promise<void> }[] = [];
-afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
 
 async function boot(store?: Store) {
   const server = await startServer({ adminToken: ADMIN, ...(store ?? await testStore()) });
   const admin = await connect(server.url, ADMIN);
-  open.push(server, admin);
+  closeAtEnd(server, admin);
   return { server, admin };
 }
 
@@ -20,7 +17,7 @@ async function agentFor(url: string, admin: Awaited<ReturnType<typeof connect>>,
   await call(admin, 'admin_add_actor', { id: actor }).catch(() => undefined);
   const { token } = (await call(admin, 'admin_open_session', { actor, role })) as { token: string };
   const client = await connect(url, token);
-  open.push(client);
+  closeAtEnd(client);
   return { token, client };
 }
 

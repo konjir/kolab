@@ -29,7 +29,9 @@ npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 npm run rebase-storm      # one parent commit rebasing many variants (W2.7); results in libs/engine/scripts/REBASE-STORMS.md
 ```
 
-CI (`.github/workflows/ci.yml`) runs the equivalents of `npm test` (with typecheck and build) and `npm run test:postgres` on every pull request into main and every push to main, as two checks, Test on PGlite and Test on Postgres. Each runs only the Nx projects affected since the base: main for a pull request, the last passing commit for main. Both run as production does: on arm64, with the Node version that `deploy/terraform/modules/kolab/main.tf` installs (`node_version`).
+CI (`.github/workflows/ci.yml`) runs three checks on every pull request into main and every push to main. Test on PGlite and Test on Postgres run the equivalents of `npm test` (with typecheck and build) and `npm run test:postgres`. Each runs only the Nx projects affected since the base: main for a pull request, the last passing commit for main. Both run as production does: on arm64, with the Node version that `deploy/terraform/modules/kolab/main.tf` installs (`node_version`). Check Terraform runs `terraform fmt -check -recursive`, then `terraform init -backend=false` and `terraform validate`, on `deploy/terraform`, with no AWS credentials. It runs on every change, so main can require it.
+
+A test file tears down in one order: its servers and clients, then its Kolabs, then its databases. `jest.setup.js` runs `closeOpened` from `@konjir/engine/testing` after each file, which does that. So a test registers each server, client or child process it starts with `closeAtEnd`, and opens Kolabs with `openKolab` or `setup`, rather than closing them in an `afterAll` of its own: Jest runs `jest.setup.js`'s `afterAll` before the file's own.
 
 The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.
 

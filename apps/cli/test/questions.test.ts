@@ -1,12 +1,12 @@
 // Questions and notes across the layer boundary: the engineer asks or
 // annotates the spec, the answer comes back to the element that waited on it,
 // and every inbox change is pushed to subscribed agents.
-import { afterEach, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { Kolab, RoleError } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { els, marksOn, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
+import { closeAtEnd, els, marksOn, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -145,21 +145,16 @@ test('a database from the previous release is migrated on open', async () => {
 
 // ---- over MCP --------------------------------------------------------------------
 
-const open: { close(): Promise<void> }[] = [];
-// After each test, not after all: jest.setup.js's afterAll drops the test databases, and it runs
-// before this file's own, so servers must close first or their idle connections are cut.
-afterEach(async () => { for (const o of open.splice(0).reverse()) await o.close().catch(() => undefined); });
-
 test('over MCP: questions sit beside the spec element, and answers are pushed to the asker', async () => {
   const server = await startServer({ adminToken: 'admin', ...(await testStore()) });
-  open.push(server);
+  closeAtEnd(server);
   const admin = await connect(server.url, 'admin');
-  open.push(admin);
+  closeAtEnd(admin);
   const agent = async (actor: string, role: 'product' | 'engineer') => {
     await call(admin, 'admin_add_actor', { id: actor });
     const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
     const c = await connect(server.url, token);
-    open.push(c);
+    closeAtEnd(c);
     return c;
   };
   const pm = await agent('pm', 'product');
@@ -174,7 +169,7 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   });
   const wPm = await watch(pm, (uri, body) => { pushed.push({ who: 'pm', uri, body: body as never }); });
   const wEng = await watch(eng, (uri, body) => { pushed.push({ who: 'eng', uri, body: body as never }); });
-  open.push(wPm.subscription, wEng.subscription);
+  closeAtEnd(wPm.subscription, wEng.subscription);
 
   await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });

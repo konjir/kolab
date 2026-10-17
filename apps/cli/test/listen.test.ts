@@ -1,20 +1,17 @@
 // Ending a session closes its subscriptions/listen streams, and nothing more is signalled to them (API4, D41).
-import { afterAll, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import type { Client } from '@modelcontextprotocol/client';
 import { startServer, type KonjirServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
-import { testStore } from '@konjir/engine/testing';
+import { closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'listen-test-admin';
 const INBOX = 'konjir://inbox/functional';
 
-const open: { close(): Promise<void> }[] = [];
-afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
-
 async function boot() {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
   const admin = await connect(server.url, ADMIN);
-  open.push(server, admin);
+  closeAtEnd(server, admin);
   await call(admin, 'admin_add_actor', { id: 'lee' });
   return { server, admin };
 }
@@ -23,7 +20,7 @@ async function agent(server: KonjirServer, admin: Client, id: string, role: 'pro
   await call(admin, 'admin_add_actor', { id, ...(owner && { owner }) });
   const { token } = await call(admin, 'admin_open_session', { actor: id, role }) as { token: string };
   const client = await connect(server.url, token);
-  open.push(client);
+  closeAtEnd(client);
   const updates: string[] = [];
   client.setNotificationHandler('notifications/resources/updated', (n) => { updates.push(n.params.uri); });
   return { token, client, updates };

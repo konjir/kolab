@@ -1,22 +1,19 @@
 // End to end: Kolab in-process, the bridge as a child process on stdio (started the way the
 // plugin's .mcp.json starts it), and this test as the Claude Code side of the pipe.
-import { afterAll, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { resolve } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { startServer, type KonjirServer } from '@konjir/server';
-import { persistentStore, type Store } from '@konjir/engine/testing';
+import { closeAtEnd, persistentStore, type Store } from '@konjir/engine/testing';
 
 const ADMIN = 'channel-test-admin';
 const START = resolve(import.meta.dirname, '../scripts/start.sh');
 
-const open: { close(): Promise<void> }[] = [];
-afterAll(async () => { for (const o of open.reverse()) await o.close().catch(() => undefined); });
-
 async function kolabClient(url: string, token: string) {
   const c = new Client({ name: 'channel-test', version: '0' }, { versionNegotiation: { mode: 'auto' } });
   await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
-  open.push(c);
+  closeAtEnd(c);
   return c;
 }
 
@@ -28,7 +25,7 @@ async function call(c: Client, name: string, args: Record<string, unknown> = {})
 
 async function boot(store: Store, port = 0) {
   const server = await startServer({ adminToken: ADMIN, port, ...store });
-  open.push(server);
+  closeAtEnd(server);
   return server;
 }
 
@@ -57,7 +54,7 @@ async function bridge(url: string, token: string, options: ConstructorParameters
     if (n.method === 'notifications/claude/channel') messages.push(n.params as unknown as Channel);
   };
   await claude.connect(transport);
-  open.push(claude);
+  closeAtEnd(claude);
   const until = async <T>(what: string, check: () => T | undefined, ms = 20_000): Promise<T> => {
     const end = Date.now() + ms;
     for (;;) {

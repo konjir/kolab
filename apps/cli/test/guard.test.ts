@@ -1,18 +1,14 @@
 // The DNS-rebinding guard on /mcp: a page that rebinds a name to 127.0.0.1 must not reach Kolab,
 // whatever Host or forwarding headers it sends. Locally Kolab answers loopback host names on any
 // port; behind the TLS proxy, its public host name. Foreign browser origins are refused.
-import { afterEach, expect, test } from '@jest/globals';
+import { expect, test } from '@jest/globals';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { startServer } from '@konjir/server';
-import { testStore } from '@konjir/engine/testing';
+import { closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'guard-admin';
 const PUBLIC = 'kolab.example.com';
-const open: { close(): Promise<void> }[] = [];
-// After each test, not after all: jest.setup.js's afterAll drops the test databases, and it runs
-// before this file's own, so servers must close first or their idle connections are cut.
-afterEach(async () => { for (const s of open.splice(0)) await s.close(); });
 
 /** POST tools/list to the server on `port`, with these headers; resolves to the status code. */
 function post(port: number, headers: Record<string, string>) {
@@ -42,7 +38,7 @@ function freePort() {
 
 async function boot(publicHost?: string) {
   const port = await freePort();
-  open.push(await startServer({ adminToken: ADMIN, port, publicHost, ...(await testStore()) }));
+  closeAtEnd(await startServer({ adminToken: ADMIN, port, publicHost, ...(await testStore()) }));
   return port;
 }
 
