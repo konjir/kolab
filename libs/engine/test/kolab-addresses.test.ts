@@ -105,9 +105,8 @@ test('the full form resolves wherever its reader holds Read, and elsewhere is no
   expect(await kolab.sessionOpen(pm)).toBe(true);
 
   // A public kolab: any person reads it; an agent still needs a grant of its own.
-  await kolab.createKolab('docs', { owner: 'bob', visibility: 'public' });
   await kolab.addActor('erin');
-  await kolab.grant('docs', 'erin', 'write');
+  await kolab.createKolab('docs', { owner: 'erin', visibility: 'public' });
   const erin = await kolab.openSession('erin', 'product', { kolab: 'docs' });
   await kolab.createNode(erin, 'functional_spec', 'Guide', 'guide');
   await kolab.commit(erin, 'guide', { elements: els({ G1: 'Read the guide first.' }) });
@@ -143,20 +142,31 @@ test('a link, a variant or a question across kolabs is refused, by the address a
 test('every address and message Kolab gives names a node by its name, never its id', async () => {
   const seen: ReviewContext[] = [];
   const { kolab, bob, theirs } = await twoCheckouts({ reviewer: (ctx) => { seen.push(ctx); return structuralReviewer(ctx); } });
-  // An engineer in each kolab, and a binding called impl in each: billing's gets a generated id.
-  for (const [actor, k] of [['eve', 'orders'], ['dan', 'billing']] as const) {
+  // Engineers in each kolab, and a binding called impl in each: billing's gets a generated id.
+  for (const [actor, k] of [['eve', 'orders'], ['dan', 'billing'], ['fay', 'billing']] as const) {
     await kolab.addActor(actor);
-    await kolab.grant(k, actor, 'write');
+    await kolab.grant(k, actor, 'write', { layers: ['technical'] });
   }
   const eve = await kolab.openSession('eve', 'engineer', { kolab: 'orders' });
   const dan = await kolab.openSession('dan', 'engineer', { kolab: 'billing' });
+  const fay = await kolab.openSession('fay', 'engineer', { kolab: 'billing' });
   expect(await kolab.createNode(eve, 'technical_binding', 'Impl', 'impl')).toBe('impl');
   const impl = await kolab.createNode(dan, 'technical_binding', 'Impl', 'impl');
   expect(impl).toMatch(GENERATED);
 
   const v1 = await kolab.draft(dan, impl, { elements: els({ b1: 'A job sends invoices on the first of the month.' }) });
   await kolab.link(dan, { kind: 'dependency', source: v1, sourceElement: 'b1', target: (await kolab.latestCommitted(theirs))!.id, targetElement: 'R1' });
-  expect((await kolab.review(v1)).ok).toBe(true);
+  // It waits in review (W1.6), by bob and fay, and every review listing and message names it by name.
+  expect(await kolab.review(v1)).toMatchObject({ in_review: true });
+  const requests = await kolab.reviewRequests({ kolab: 'billing' });
+  expect(requests.map((r) => [r.subject, r.reviewer])).toStrictEqual([['kj:impl@1', 'bob'], ['kj:impl@1', 'fay']]);
+  expect(requests[0].next).toMatch(/konjir_read_node node=impl version=1\..*konjir_review node=impl version=1 /);
+  expect(await rejection(kolab.recordReview(dan, v1, { verdict: 'approve' }))).toMatch(/dan wrote impl@1; another actor/);
+  expect(await rejection(kolab.abandon(fay, v1))).toMatch(/only dan, who wrote impl@1, can abandon it/);
+  expect((await kolab.recordReview(fay, v1, { verdict: 'approve' })).ok).toBe(true);
+  expect((await kolab.submissions('dan', { kolab: 'billing' })).map((x) => [x.subject, x.state])).toStrictEqual([['kj:impl@1', 'committed']]);
+  const reviewSaid = JSON.stringify({ requests, submissions: await kolab.submissions('dan', { kolab: 'billing' }) });
+  expect(reviewSaid).not.toContain(impl);
   const q = await kolab.raiseQuery(dan, 'kj:checkout#R1', 'Which day of the month?', { from: 'kj:impl#b1' });
   await kolab.answerQuery(bob, q, 'The first.');
   await kolab.commit(bob, theirs, { elements: els({ R1: 'Invoices are sent weekly.' }) });
@@ -177,6 +187,13 @@ test('every address and message Kolab gives names a node by its name, never its 
   expect(said.downstream.map((e) => [e.source, e.target])).toStrictEqual([['kj:impl@1#b1', 'kj:checkout@1#R1']]);
   expect(said.review).toStrictEqual([{ node: 'impl', upstream: [{ element: 'b1', target: 'kj:checkout@1#R1', text: 'Invoices are sent monthly.' }] }]);
   expect(JSON.stringify(said)).not.toContain(impl);
+  // A draft that waits in review when another commits is rejected as stale, by name.
+  const v2 = await kolab.draft(dan, impl, { elements: els({ b1: 'A job sends invoices on Mondays.' }) });
+  expect(await kolab.review(v2)).toMatchObject({ in_review: true });
+  const v3 = await kolab.draft(fay, impl, { elements: els({ b1: 'A job sends invoices weekly.' }) });
+  await kolab.review(v3);
+  expect((await kolab.recordReview(dan, v3, { verdict: 'approve' })).ok).toBe(true);
+  expect(((await kolab.version(v2)) as { review_note?: string }).review_note).toMatch(/^stale draft: impl@3, by fay, committed while this waited in review/);
   expect(JSON.stringify(said)).not.toContain(theirs);
 
   // A variant loop names the nodes by name too.
@@ -191,6 +208,18 @@ test("a session works on its own kolab's nodes by name, and is told plainly when
   expect(await rejection(kolab.nodeIn(alice, 'billing/checkout', 'drafting'))).toBe('AccessError: billing/checkout is in kolab billing, and this session works in kolab orders: drafting across kolabs isn\'t supported yet');
   expect(await rejection(kolab.nodeIn(alice, 'missing'))).toBe('Error: no node missing in kolab orders');
   expect(await rejection(kolab.nodeIn(alice, 'checkout@2'))).toMatch(/names a version, element or span; name the node alone/);
+});
+
+test('the admin token, which works in no kolab, names a node with its kolab, or by a name only one kolab has (admin_apply_ruling)', async () => {
+  const { kolab, theirs } = await twoCheckouts();
+  expect(await rejection(kolab.nodeForAdmin('checkout'))).toBe('GateError: kolabs billing, orders each have a node checkout: name it as <kolab>/checkout');
+  expect((await kolab.nodeForAdmin('billing/checkout')).id).toBe(theirs);
+  expect((await kolab.nodeForAdmin('kj:orders/checkout')).id).toBe('checkout');
+  expect(await rejection(kolab.nodeForAdmin('missing'))).toBe('Error: no node missing in any kolab');
+  const r = await kolab.applyRuling((await kolab.nodeForAdmin('billing/checkout')).id, { elements: els({ R1: 'Invoices are sent quarterly.' }) }, { id: 'D99', actor: 'bob' });
+  expect(r.ok).toBe(true);
+  expect(text(await kolab.resolve('kj:checkout#R1', { system: 'billing' }))).toBe('Invoices are sent quarterly.');
+  expect(text(await kolab.resolve('kj:checkout#R1', { system: 'orders' }))).toBe('Orders ship within a day.');
 });
 
 /** Runs `sql` as kj_agent in `session`, as Kolab runs a session's reads, so row-level security applies. */
