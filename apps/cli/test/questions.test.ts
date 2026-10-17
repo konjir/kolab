@@ -97,7 +97,8 @@ test('a database from the previous release is migrated on open', async () => {
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
     // without case files (0005), before accounts and kolabs (0006), before the review flow (0007)
-    // and before node names per kolab (0008), newest first. The people and the spec stay.
+    // and before node names per kolab (0008), newest first (0009 only dropped what 0007 added, so
+    // its undoing is in 0007's). The people and the spec stay.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
@@ -108,7 +109,7 @@ test('a database from the previous release is migrated on open', async () => {
       alter table node drop column name cascade;
       drop table review_request;
       drop function kj_review_request_kolab();
-      alter table version drop column resolves, drop column findings, drop column folded_from;
+      alter table version drop column resolves, drop column folded_from;
       alter table version drop constraint version_state_check;
       alter table version add constraint version_state_check check (state in ('drafted','committed','rejected'));
       ${['node', ...keyed].map((t) => `drop policy kolab_read on ${t};`).join('\n')}

@@ -91,6 +91,16 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   const text = prompt.messages.map((m) => (m.content.type === 'text' ? m.content.text : '')).join('');
   expect(text).toMatch(/Fetch fresh/);
   expect(text).toMatch(/Do saved carts expire\?" -> "After 30 days\./);
+  expect(text).toMatch(/konjir_reviewer_instructions/);
+
+  // So do the reviewer's instructions (REV5): the same rules for every session and the admin token.
+  expect((await pm.client.listPrompts()).prompts.map((p) => p.name).sort()).toStrictEqual(['konjir_operating_instructions', 'konjir_reviewer_instructions']);
+  const reviewer = async (c: typeof admin) => (await c.getPrompt({ name: 'konjir_reviewer_instructions' })).messages
+    .map((m) => (m.content.type === 'text' ? m.content.text : '')).join('');
+  const forReviewers = await reviewer(eng.client);
+  expect(forReviewers).toMatch(/^Konjir reviewer instructions\./);
+  expect(forReviewers).toMatch(/verdict=request_changes note=/);
+  expect(await reviewer(admin)).toBe(forReviewers);
 
   for (const c of [pm.client, eng.client, admin]) await c.close();
   await server.close();

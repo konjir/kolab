@@ -13,7 +13,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { expect, test } from '@jest/globals';
 import fc from 'fast-check';
-import { GateError, structuralReviewer, type Kolab } from '@konjir/engine';
+import { GateError, structuralChecks, type Kolab } from '@konjir/engine';
 import { setup } from '@konjir/engine/testing';
 import {
   FUNCTIONAL, LINKS, Model, NODES, P_ORDER, P_PARENTS, PLAIN, VETO, fp, linkKey, textFor, vetoed,
@@ -60,7 +60,7 @@ let runs = 0;
 /** The review gate: structural checks, and a veto on any version that holds a vetoed text. Plan versions skip it (PLN2). */
 const reviewer: Parameters<typeof setup>[0] = (ctx) => {
   const veto = ctx.elements.find((e) => vetoed(e.text));
-  return veto ? { ok: false, note: `vetoed: ${veto.element_id}` } : structuralReviewer(ctx);
+  return veto ? { ok: false, note: `vetoed: ${veto.element_id}` } : structuralChecks(ctx);
 };
 
 /** Builds the family in Kolab and in the model. */

@@ -100,8 +100,9 @@ test('precedent: the same (base, parent, child) triple resolves itself next time
 });
 
 test('a rebase Kolab makes commits after structural checks only, without review, even past what a reviewer would catch (VER12, D19)', async () => {
-  // Toy reviewer: one spec may not state two different header colors. It runs on people's
-  // versions only; Kolab's own rebases get the structural checks alone.
+  // Toy submission checks, standing in for a reviewer: one spec may not state two different
+  // header colors. They run on people's versions only; Kolab's own rebases get the structural
+  // checks alone.
   let reviewed = 0;
   const { kolab, product } = await setup(({ elements }) => {
     reviewed++;

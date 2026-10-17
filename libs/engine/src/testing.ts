@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
-import type { AccessLevel, DeltaInput, ElementInput, GateResult, Layer, Reviewer } from '@konjir/types';
+import type { AccessLevel, DeltaInput, ElementInput, GateResult, Layer, Checks } from '@konjir/types';
 import { Kolab } from './kolab.js';
 
 /**
@@ -113,13 +113,14 @@ export async function people(kolab: Kolab, ids: string | string[], opts: { owner
 }
 
 /**
- * `reviewer` judges people's versions; `checks`, Kolab's own rebases (Kolab.open). Alice writes
+ * `submissionChecks` check people's versions as they are submitted; `checks`, everything else,
+ * Kolab's own rebases included (Kolab.open). Both default to the structural checks. Alice writes
  * the functional layer and Bob the technical one, so each is alone on a layer and commits on the
  * checks alone (VER11); a test that wants review adds another writer. Carol only reads, and
  * holds either role, one at a time.
  */
-export async function setup(reviewer?: Reviewer, checks?: Reviewer) {
-  const kolab = await openKolab({ reviewer, checks });
+export async function setup(submissionChecks?: Checks, checks?: Checks) {
+  const kolab = await openKolab({ submissionChecks, checks });
   await people(kolab, 'alice', { layers: ['functional'] });
   await people(kolab, 'bob', { layers: ['technical'] });
   await people(kolab, 'carol', { level: 'read' });

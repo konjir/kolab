@@ -5,7 +5,7 @@
  *   konjir serve [--port 7420] [--data .konjir] [--admin-token T]
  *                [--database-url postgres://…]
  *   konjir tools
- *   konjir instructions
+ *   konjir instructions [reviewer]
  *   konjir resolve <address>
  *   konjir read <node> [version]
  *   konjir stale [all]
@@ -19,9 +19,8 @@
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { randomBytes } from 'node:crypto';
-import type { Reviewer } from '@konjir/types';
 
-// The server, with the Bedrock SDK and the database, is imported only by the
+// The server, with NestJS and the database, is imported only by the
 // commands that need it, so the client verbs start without loading it. The published
 // konjir (the npm package and the single-file binaries) is the client alone: it leaves
 // @konjir/server out, so serve is only for a Kolab checkout.
@@ -88,9 +87,10 @@ export async function call(client: Client, verb: string, args: Record<string, un
   return r.structuredContent ?? text;
 }
 
-const usage = (defaultReviewModel: string | undefined) => `konjir — Kolab from a shell. Same verbs as the MCP server.
+const usage = (canServe: boolean) => `konjir — Kolab from a shell. Same verbs as the MCP server.
 
   konjir instructions          the operating rules and precedent (read this first)
+  konjir instructions reviewer how to review a version that waits for you
   konjir tools                 every verb, one line each
   konjir help <verb>           a verb's description and parameters
   konjir <verb> key=value ...  call a verb; values parse as JSON when they can,
@@ -104,9 +104,8 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
 Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; kj:<node> is a node in your kolab
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
 Version:   konjir --version
-${defaultReviewModel === undefined ? `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.` : `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
-        KONJIR_REVIEW=bedrock uses KONJIR_REVIEW_MODEL (default ${defaultReviewModel}) with the
-        server's own AWS credentials (AWS_REGION, AWS_PROFILE or the default AWS chain).`}`;
+${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--public-host kolab.example.com]
+        Kolab runs structural checks only and makes no model calls; reviewing agents review.` : `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.`}`;
 
 function parseKv(argv: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -139,36 +138,26 @@ export async function main(argv: string[]) {
 
   if (!cmd || ((cmd === 'help' || cmd === '--help') && !rest[0])) {
     // Without the server (the published client), help leaves out serve.
-    const model = await server().then((s) => s.DEFAULT_REVIEW_MODEL, (e: unknown) => { if (e instanceof ClientOnly) return undefined; throw e; });
-    console.log(usage(model)); return;
+    const canServe = await server().then(() => true, (e: unknown) => { if (e instanceof ClientOnly) return false; throw e; });
+    console.log(usage(canServe)); return;
   }
 
   if (cmd === 'serve') {
-    const { DEFAULT_REVIEW_MODEL, bedrockReviewer, startServer } = await server();
+    const { startServer } = await server();
     const port = Number(flag(rest, 'port') ?? 7420);
     const dataDir = flag(rest, 'data') ?? '.konjir';
     const adminToken = flag(rest, 'admin-token') ?? process.env.KONJIR_ADMIN_TOKEN ?? randomBytes(18).toString('base64url');
-    const reviewMode = flag(rest, 'review') ?? process.env.KONJIR_REVIEW ?? 'structural';
-    let reviewer: Reviewer | undefined;
-    if (reviewMode === 'bedrock') {
-      const model = process.env.KONJIR_REVIEW_MODEL ?? DEFAULT_REVIEW_MODEL;
-      const spent = { input: 0, output: 0, calls: 0, cached: 0 };
-      reviewer = bedrockReviewer({
-        model,
-        onUsage: (u) => {
-          if (u.cached) spent.cached++; else { spent.calls++; spent.input += u.inputTokens; spent.output += u.outputTokens; }
-          console.error(`review ${u.cached ? '(cache hit)' : `${u.inputTokens} in / ${u.outputTokens} out`} · totals: ${spent.calls} calls, ${spent.cached} cache hits, ${spent.input} in, ${spent.output} out`);
-        },
-      });
-      console.log(`review: ${model} on Amazon Bedrock (${process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'region from AWS config'}), using this server's AWS credentials`);
-    } else if (reviewMode !== 'structural') {
-      throw new Error(`unknown review mode "${reviewMode}"; use structural or bedrock`);
-    } else {
-      console.log('review: structural only (set KONJIR_REVIEW=bedrock for semantic review)');
+    // Kolab makes no model calls (REV5): its checks are structural, and reviewing agents review.
+    // The test server's boot script still sets KONJIR_REVIEW=structural, which changes nothing. A
+    // setting that asks for a model reviewer is ignored too, but said so, rather than silently.
+    const retired = flag(rest, 'review') ?? process.env.KONJIR_REVIEW;
+    if (retired !== undefined && retired !== 'structural') {
+      console.error(`warning: ignoring review mode "${retired}" (KONJIR_REVIEW or --review): Kolab has no model reviewer any more (W1.7). Its checks are structural, and agents review through konjir_review.`);
     }
+    console.log('review: Kolab\'s structural checks, then reviewing agents (konjir_review); Kolab makes no model calls');
     const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
     const databaseUrl = flag(rest, 'database-url') ?? process.env.KONJIR_DATABASE_URL;
-    const s = await startServer({ port, dataDir, databaseUrl, adminToken, reviewer, publicHost });
+    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost });
     console.log(`Kolab listening on ${s.url}`);
     console.log(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);
@@ -238,7 +227,8 @@ export async function main(argv: string[]) {
         break;
       }
       case 'instructions': {
-        const p = await client.getPrompt({ name: 'konjir_operating_instructions' });
+        if (rest[0] !== undefined && rest[0] !== 'reviewer') throw new Error(`konjir instructions [reviewer]: no instructions "${rest[0]}"`);
+        const p = await client.getPrompt({ name: rest[0] === 'reviewer' ? 'konjir_reviewer_instructions' : 'konjir_operating_instructions' });
         result = p.messages.map((m) => (m.content.type === 'text' ? m.content.text : '')).join('\n'); break;
       }
       case 'resolve': result = await call(client, 'resolve', { address: rest[0] }); break;

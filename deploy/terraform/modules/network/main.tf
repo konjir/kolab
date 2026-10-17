@@ -71,7 +71,7 @@ resource "aws_vpc_security_group_ingress_rule" "http" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# Outbound: package downloads (Node, Caddy, npm), AWS APIs (S3, SSM, Bedrock), Let's Encrypt.
+# Outbound: package downloads (Node, Caddy, npm), AWS APIs (S3, SSM), Let's Encrypt.
 resource "aws_vpc_security_group_egress_rule" "all" {
   security_group_id = aws_security_group.web.id
   description       = "Outbound HTTPS and DNS for installs and AWS APIs"

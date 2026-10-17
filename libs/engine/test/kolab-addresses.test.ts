@@ -3,8 +3,8 @@
 // kolab only. Links, variants and questions stay inside one kolab until the binding decides how
 // they cross (LNK8, KON).
 import { expect, test } from '@jest/globals';
-import { structuralReviewer, type Kolab } from '@konjir/engine';
-import type { Resolution, ReviewContext } from '@konjir/types';
+import { structuralChecks, type Kolab } from '@konjir/engine';
+import type { CheckContext, Resolution } from '@konjir/types';
 import { els, openKolab, rejection } from '@konjir/engine/testing';
 
 const text = (r: Resolution) => (r.status === 'orphan' ? r.status : r.content);
@@ -140,8 +140,8 @@ test('a link, a variant or a question across kolabs is refused, by the address a
 });
 
 test('every address and message Kolab gives names a node by its name, never its id', async () => {
-  const seen: ReviewContext[] = [];
-  const { kolab, bob, theirs } = await twoCheckouts({ reviewer: (ctx) => { seen.push(ctx); return structuralReviewer(ctx); } });
+  const seen: CheckContext[] = [];
+  const { kolab, bob, theirs } = await twoCheckouts({ submissionChecks: (ctx) => { seen.push(ctx); return structuralChecks(ctx); } });
   // Engineers in each kolab, and a binding called impl in each: billing's gets a generated id.
   for (const [actor, k] of [['eve', 'orders'], ['dan', 'billing'], ['fay', 'billing']] as const) {
     await kolab.addActor(actor);
@@ -176,7 +176,7 @@ test('every address and message Kolab gives names a node by its name, never its 
     queries: await kolab.listQueries({ kolab: 'billing' }),
     upstream: await kolab.lineage((await kolab.latestCommitted(impl))!.id, 'upstream'),
     downstream: await kolab.lineage((await kolab.latestCommitted(theirs))!.id, 'downstream'),
-    review: seen.filter((c) => c.node.id === impl).map((c) => ({ node: c.node.name, upstream: c.upstream })),
+    checks: seen.filter((c) => c.node.id === impl).map((c) => ({ node: c.node.name, kolab: c.node.kolab_id })),
   };
   expect(said.marks.map((m) => [m.reason, m.dirty, m.because])).toStrictEqual([
     ['query_answered', 'kj:impl@1#b1', 'kj:checkout#R1: you asked "Which day of the month?"; answered: "The first."'],
@@ -185,7 +185,7 @@ test('every address and message Kolab gives names a node by its name, never its 
   expect(said.queries.map((x) => [x.address, x.from])).toStrictEqual([['kj:checkout@1#R1', 'kj:impl@1#b1']]);
   expect(said.upstream.map((e) => [e.source, e.target])).toStrictEqual([['kj:impl@1#b1', 'kj:checkout@1#R1']]);
   expect(said.downstream.map((e) => [e.source, e.target])).toStrictEqual([['kj:impl@1#b1', 'kj:checkout@1#R1']]);
-  expect(said.review).toStrictEqual([{ node: 'impl', upstream: [{ element: 'b1', target: 'kj:checkout@1#R1', text: 'Invoices are sent monthly.' }] }]);
+  expect(said.checks).toStrictEqual([{ node: 'impl', kolab: 'billing' }]);
   expect(JSON.stringify(said)).not.toContain(impl);
   // A draft that waits in review when another commits is rejected as stale, by name.
   const v2 = await kolab.draft(dan, impl, { elements: els({ b1: 'A job sends invoices on Mondays.' }) });
