@@ -6,7 +6,7 @@ import { expect, test } from '@jest/globals';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { startServer } from '@konjir/server';
-import { closeAtEnd, testStore } from '@konjir/engine/testing';
+import { closeAtEnd, els, openKolab, testStore } from '@konjir/engine/testing';
 import { call, connect, watch } from '../src/cli.js';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -122,4 +122,56 @@ async function until(cond: () => boolean, ms = 10_000) {
   expect(await settled(subscriptions.eng.closed, 2000)).toBe('graceful');
   expect(Date.now() - t0).toBeLessThan(2000);
   expect(await settled(subscriptions.pm.closed, 100)).toBe('open');
+}, 60_000);
+
+// The listener re-establishes a lost LISTEN connection; what was committed meanwhile reaches
+// that process's subscribers once it's back, as the Kolab resyncs (W2.10, D46). The other
+// process here is a Kolab in this test: only its writes matter.
+(onPostgres ? test : test.skip)('a change committed while a server\'s listener reconnects reaches its subscribers once it\'s back', async () => {
+  const { databaseUrl } = await testStore();
+  const a = await startServer({ adminToken: 'admin', databaseUrl });
+  closeAtEnd(a);
+  const b = await openKolab({ databaseUrl });
+  await b.addActor('pm'); await b.addActor('eng');
+  const pmToken = await b.openSession('pm', 'product');
+  const engToken = await b.openSession('eng', 'engineer');
+  await b.createNode(pmToken, 'functional_spec', 'Orders', 'orders');
+  await b.commit(pmToken, 'orders', { elements: els({ R8: 'Office staff can cancel an order.' }) });
+
+  const pm = await connect(a.url, pmToken);
+  closeAtEnd(pm);
+  const pushed: { uri: string; questions: string[] }[] = [];
+  const w = await watch(pm, (uri, body) => {
+    pushed.push({ uri, questions: ((body as { queries?: { question: string }[] }).queries ?? []).map((q) => q.question) });
+  });
+  closeAtEnd(w.subscription);
+
+  const originals = { error: console.error, warn: console.warn };
+  console.error = console.warn = () => undefined;   // the listener's own lines about the loss
+  try {
+    // Drop A's listening connection, and only that, as the same login may.
+    const killed = await b.db.query<{ ok: boolean }>(
+      `select pg_terminate_backend(pid) as ok from pg_stat_activity where application_name = $1`,
+      [`kolab-listen-${(a.kolab as unknown as { origin: string }).origin}`]);
+    expect(killed.rows.map((r) => r.ok)).toStrictEqual([true]);
+    const down = Date.now() + 5000;
+    while ((await a.kolab.listenerConnected()) !== false) {
+      if (Date.now() > down) throw new Error('the listener never noticed');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // The engineer asks through the other process while A can't hear it.
+    await b.raiseQuery(engToken, 'kj:orders#R8', 'From which statuses?');
+    expect(await a.kolab.listenerConnected()).toBe(false);
+    await settle();
+    expect(pushed).toStrictEqual([]);
+
+    // Once A's listener is back, product, listening on A, hears it and reads the question.
+    await until(() => pushed.some((p) => p.uri === 'konjir://inbox/functional'), 20_000);
+    expect(await a.kolab.listenerConnected()).toBe(true);
+    expect(pushed.find((p) => p.uri === 'konjir://inbox/functional')!.questions).toStrictEqual(['From which statuses?']);
+    expect(await settled(w.subscription.closed, 100)).toBe('open');
+  } finally {
+    Object.assign(console, originals);
+  }
 }, 60_000);

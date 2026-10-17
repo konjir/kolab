@@ -147,9 +147,19 @@ export class Kolab {
    * Hear the events of other Kolab processes on this database (API5), over Postgres
    * LISTEN/NOTIFY on one connection of this process's own. Idempotent. On PGlite there are no
    * other processes, and it does nothing.
+   *
+   * When the connection is lost, the listener re-establishes it. Whatever was committed
+   * meanwhile wasn't heard, so once the LISTEN is back this Kolab resyncs: its own listeners
+   * are told to re-read everything a subscriber could hold.
    */
   async listen(): Promise<void> {
-    this.listening ??= this.db.listen(EVENT_CHANNEL, (p) => this.heard(p), { applicationName: this.listenerName });
+    this.listening ??= this.db.listen(EVENT_CHANNEL, (p) => this.heard(p), {
+      applicationName: this.listenerName,
+      onListening: ({ reconnected }) => {
+        if (reconnected) void this.resync().catch((e) => console.error(`kolab: could not resync after the listener reconnected: ${errorText(e)}`));
+      },
+      onBadPayload: () => this.dropped('isn\'t JSON'),
+    });
     try {
       await this.listening;
     } catch (e) {
@@ -159,13 +169,17 @@ export class Kolab {
   }
 
   /**
-   * Whether this Kolab hears other processes now: its LISTEN connection is up, as Postgres sees
-   * it. Undefined when there's no listener to ask: on PGlite, or before `listen` has succeeded.
+   * Whether this Kolab hears other processes now: its LISTEN is in place. Undefined when there's
+   * no listener to ask: on PGlite, or before `listen` has succeeded.
    */
   async listenerConnected(): Promise<boolean | undefined> {
     const l = await this.listening?.catch(() => undefined);
     return l?.connected();
   }
+
+  private dropCount = 0;
+  /** How many notifications on the channel this Kolab has dropped: not JSON, or not a Kolab event. */
+  get droppedNotifications() { return this.dropCount; }
 
   /** The listening connection's application_name, unique to this Kolab. */
   private get listenerName() { return `kolab-listen-${this.origin}`; }
@@ -177,19 +191,28 @@ export class Kolab {
    */
   private heard(p: unknown) {
     const n = isNotice(p) ? p : undefined;
-    if (!n) return void console.error(`kolab: dropped a notification on ${EVENT_CHANNEL} that isn't a Kolab event`);
+    if (!n) return this.dropped('isn\'t a Kolab event');
     if (n.from === this.origin) return; // told our own listeners when it committed
-    if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${e}`));
+    if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${errorText(e)}`));
     else this.dispatch(n.event);
   }
 
+  private dropped(why: string) {
+    this.dropCount++;
+    console.error(`kolab: dropped a notification on ${EVENT_CHANNEL} that ${why} (${this.dropCount} so far)`);
+  }
+
   /**
-   * Signals every inbox and every actor's answers, for a change too big to name. Each listener
-   * re-reads what it holds; an inbox that didn't change reads the same.
+   * Tells this Kolab's listeners that everything a subscriber could hold may have changed: for
+   * a change too big to name, or after missing changes while the listener reconnected. That is
+   * every layer's inbox, and the answers of each actor with an open session, since only an open
+   * session can subscribe to them (an ended one's streams are closed before the next signal).
+   * One query. Each subscriber re-reads; an inbox that didn't change reads the same.
    */
-  private async resync() {
-    for (const layer of ['functional', 'technical'] as const) this.dispatch({ inbox: 'layer', layer });
-    for (const a of await this.listActors()) this.dispatch({ inbox: 'actor', actor: a.id });
+  async resync() {
+    for (const layer of LAYERS) this.dispatch({ inbox: 'layer', layer });
+    const r = await this.db.query<{ actor: string }>(`select distinct actor_id as actor from session where ended_at is null order by actor_id`);
+    for (const { actor } of r.rows) this.dispatch({ inbox: 'actor', actor });
   }
 
   private dispatch(e: KolabEvent) {
@@ -1631,4 +1654,9 @@ async function writeVersion(tx: Q, v: Omit<VersionRow, 'state'>, els: ElementRow
       [ulid(), v.id, d.element_id, d.kind, d.text, d.parent_element_id, d.ord,
         d.base_version_id, d.base_fingerprint, d.state]);
   }
+}
+
+/** An error's message, fit to log: any session token in it is masked. */
+function errorText(e: unknown) {
+  return String((e as { message?: unknown })?.message ?? e).replace(/kjs_[A-Za-z0-9_-]+/g, 'kjs_***');
 }

@@ -166,12 +166,17 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
 
   test('an event too long for NOTIFY reaches the other Kolab as a signal to re-read every inbox', async () => {
     const { a, b, onA, onB } = await twoKolabs();
-    await a.addActor('alice'); await a.addActor('bob');
-    onA.length = 0;
+    await a.addActor('alice'); await a.addActor('bob'); await a.addActor('carol');
+    await a.openSession('alice', 'product'); await a.openSession('bob', 'engineer');
+    const ended = await a.openSession('carol', 'product');
+    await a.endSession(ended);
+    await until(() => onB.some((e) => 'session' in e));   // a told itself at once; b hears it over NOTIFY
+    onA.length = 0; onB.length = 0;
     const long = { inbox: 'actor', actor: 'x'.repeat(9000) } as const;
     await internals(b).inTransaction((_tx, signal) => signal(long));
     expect(onB).toStrictEqual([long]);
     await until(() => onA.length >= 4);
+    // Every inbox, and the answers of each actor with an open session: carol has none, so no one can be listening to hers.
     expect(onA).toStrictEqual([
       { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
       { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
@@ -196,19 +201,87 @@ test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
       expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);   // only the valid one
       expect(errors.filter((e) => e.includes('dropped a notification'))).toHaveLength(2 * 9);   // a and b each drop all nine
       expect(errors.some((e) => e.includes('<script>') || e.includes('str'))).toBe(false);   // no payloads in the log
-
-      // Unparseable JSON makes pg-listen report a connection error and reconnect (see the PR's
-      // onivoro proposal); the process survives and hears the next real event.
-      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{bad']);
-      onA.length = 0;
-      await until(async () => {
-        await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', actor: 'after-bad' }));
-        return onA.length > 0;
-      }, 20_000);
-      expect(onA.every((e) => (e as { actor: string }).actor === 'after-bad')).toBe(true);
-      expect(await a.listenerConnected()).toBe(true);
+      expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([9, 9]);
     } finally {
       console.error = original;
+      await admin.end();
+    }
+  });
+
+  test('a notification that isn\'t JSON is dropped without reconnecting, and the next real event arrives', async () => {
+    const { a, b, url, onA } = await twoKolabs();
+    const logged: string[] = [];
+    const originals = { error: console.error, warn: console.warn, log: console.log };
+    console.error = console.warn = console.log = (...m: unknown[]) => { logged.push(m.map(String).join(' ')); };
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try {
+      const listeners = async () => (await admin.query<{ pid: number }>(
+        `select pid from pg_stat_activity where datname = current_database() and application_name like 'kolab-listen-%' order by pid`,
+      )).rows.map((r) => r.pid);
+      const before = await listeners();
+      expect(before).toHaveLength(2);
+
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{bad-json-payload']);
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"x","event":{"inbox":"actor","actor":"after-bad"}}']);
+      await until(() => onA.length > 0);
+      expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'after-bad' }]);
+      // No reconnect: the same backends, still listening, and nothing was resynced.
+      expect([await a.listenerConnected(), await b.listenerConnected()]).toStrictEqual([true, true]);
+      expect(await listeners()).toStrictEqual(before);
+      await settle();
+      expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'after-bad' }]);
+      // Counted and logged, once by each Kolab, never with the payload.
+      expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([1, 1]);
+      expect(logged.filter((m) => m.includes('isn\'t JSON'))).toHaveLength(2);
+      expect(logged.some((m) => m.includes('bad-json-payload'))).toBe(false);
+    } finally {
+      Object.assign(console, originals);
+      await admin.end();
+    }
+  });
+
+  test('a change committed while a Kolab\'s listener is reconnecting reaches that Kolab\'s listeners once it\'s back', async () => {
+    const { a, b, url, onA } = await twoKolabs();
+    await b.addActor('alice'); await b.addActor('bob');
+    const product = await b.openSession('alice', 'product');
+    const engineer = await b.openSession('bob', 'engineer');
+    await b.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await b.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
+    await settle();
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    const originals = { error: console.error, warn: console.warn };
+    console.error = console.warn = () => undefined;   // the listener's own lines about the loss
+    try {
+      onA.length = 0;
+      // Drop a's listening connection only, as a failover or a network blip would.
+      const killed = await admin.query<{ ok: boolean }>(
+        `select pg_terminate_backend(pid) as ok from pg_stat_activity where application_name = $1`, [`kolab-listen-${(a as unknown as { origin: string }).origin}`]);
+      expect(killed.rows.map((r) => r.ok)).toStrictEqual([true]);
+      await until(async () => (await a.listenerConnected()) === false);
+
+      // While it's down, bob asks alice a question through b: a doesn't hear it...
+      await b.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
+      expect(await a.listenerConnected()).toBe(false);   // committed during the outage
+      expect(onA).toStrictEqual([]);
+
+      // ...until its listener is back, when a resyncs: every inbox, and each open session's answers.
+      await until(async () => (await a.listenerConnected()) === true, 20_000);
+      await until(() => onA.length >= 4);
+      await settle();
+      expect(onA).toStrictEqual([
+        { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
+        { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
+      ]);
+
+      // And it hears what's committed from then on.
+      onA.length = 0;
+      await b.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?');
+      await until(() => onA.length > 0);
+      expect(onA).toStrictEqual([{ inbox: 'layer', layer: 'functional' }]);
+    } finally {
+      Object.assign(console, originals);
       await admin.end();
     }
   }, 40_000);

@@ -25,24 +25,34 @@ export interface Db {
   notify(channel: string, payload: string, oversized: (payload: string) => string): Promise<void>;
   /**
    * Hear `channel` on one connection of its own, apart from the pool, through
-   * @onivoro/server-pg-notify's `NotificationListener`, which re-establishes it when it's lost.
+   * @onivoro/server-pg-notify's `NotificationListener`, which re-establishes it when it's lost,
+   * with backoff (1 s, 2 s, 4 s and so on, up to 30 s, without limit) until it's closed.
    * `fn` gets each payload, parsed as JSON; it should check what it gets, since anyone who can
-   * connect to the database can NOTIFY. Whatever `fn` throws is logged, without the payload,
-   * and goes no further. The connection is named `application_name` (at most 63 bytes), so
-   * `connected` can find it. Resolves once the LISTEN is in place, and rejects, leaving nothing
-   * behind, if it can't be. On PGlite it resolves to undefined: nothing else can write to its
-   * database.
+   * connect to the database can NOTIFY. Whatever `fn` throws is logged by the error's name and
+   * goes no further. A payload that isn't JSON at all never reaches `fn`, and costs no
+   * reconnect: it goes to `hooks.onBadPayload`, which is never given the payload. The connection
+   * is named `application_name` (at most 63 bytes). Resolves once the LISTEN is in place, and
+   * rejects, leaving nothing behind, if it can't be. On PGlite it resolves to undefined: nothing
+   * else can write to its database.
    */
-  listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string }): Promise<Listening | undefined>;
+  listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string } & ListenHooks): Promise<Listening | undefined>;
   close(): Promise<void>;
 }
 
-export interface Listening {
+/** What a listener reports besides its notifications. None of them is given a payload. */
+export interface ListenHooks {
   /**
-   * Whether the listening connection is up now, as Postgres sees it: a backend with its
-   * application_name exists. While it's down, notifications are missed.
+   * The LISTEN is in place: first with `reconnected` false, then true after each loss. What
+   * was notified while it was down was missed, so a caller re-reads what it serves then.
    */
-  connected(): Promise<boolean>;
+  onListening?(e: { reconnected: boolean }): void;
+  /** A notification whose payload isn't JSON was dropped. */
+  onBadPayload?(): void;
+}
+
+export interface Listening {
+  /** Whether the LISTEN is in place now. While it isn't, notifications are missed. */
+  connected(): boolean;
   close(): Promise<void>;
 }
 
@@ -55,10 +65,20 @@ export function openDb(opts: { databaseUrl?: string; dataDir?: string } = {}): D
   return new KyselyDb(new Kysely<unknown>({ dialect: new PGliteDialect(pglite) }), undefined, pglite);
 }
 
-// Loaded on first use, on Postgres only: its listener brings in NestJS's logger and pg-listen,
-// which PGlite and the CLI's client verbs never need.
-let pgNotify: Promise<typeof import('@onivoro/server-pg-notify')> | undefined;
-const loadPgNotify = () => (pgNotify ??= import('@onivoro/server-pg-notify'));
+// Loaded on first use, on Postgres only: its listener brings in pg-listen, which PGlite and the
+// CLI's client verbs never need. The /listener entry is the package without NestJS.
+let pgNotify: Promise<typeof import('@onivoro/server-pg-notify/listener')> | undefined;
+const loadPgNotify = () => (pgNotify ??= import('@onivoro/server-pg-notify/listener'));
+
+/**
+ * The listener's own log lines, in Kolab's format, at warn and error only, as the server logs.
+ * It never puts a payload in them.
+ */
+const listenerLogger = {
+  log: () => undefined,
+  warn: (m: string) => console.warn(`postgres: ${m}`),
+  error: (m: string) => console.error(`postgres: ${m}`),
+};
 
 function pool(connectionString: string) {
   const p = new pg.Pool({ connectionString });
@@ -97,38 +117,18 @@ class KyselyDb implements Db {
     await this.query(q.text, q.values);
   }
 
-  async listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string }): Promise<Listening | undefined> {
+  async listen(channel: string, fn: (payload: unknown) => void, opts: { applicationName: string } & ListenHooks): Promise<Listening | undefined> {
     if (!this.databaseUrl) return undefined;
     const { NotificationListener } = await loadPgNotify();
+    const { onListening, onBadPayload } = opts;
     const listener = new (class extends NotificationListener<unknown> {
-      onNotification(payload: unknown) {
-        // pg-listen calls this from pg's socket handler, where a throw would end the process.
-        try { fn(payload); } catch (e) {
-          console.error(`postgres: a notification on ${channel} failed: ${e instanceof Error ? e.message : 'unknown error'}`);
-        }
-      }
-    })(channel, {
-      connectionString: this.databaseUrl,
-      application_name: opts.applicationName,
-      // pg-listen's own reconnect loop can't be stopped once it starts, so a listener closed
-      // mid-reconnect would go on connecting. With one attempt it makes none and reports the
-      // loss at once, and NotificationListener, which stops when closed, owns every retry:
-      // after 1 s, 2 s, 4 s and so on, up to 30 s, without limit.
-      ...({ retryLimit: 1 } as object),
-    });
-    try {
-      await listener.onModuleInit();
-    } catch (e) {
-      // Its connection's handlers are already attached, and would keep reconnecting it.
-      await listener.onModuleDestroy().catch(() => undefined);
-      throw e;
-    }
-    return {
-      connected: async () => (await this.query(
-        `select 1 from pg_stat_activity where datname = current_database() and application_name = $1`,
-        [opts.applicationName])).rows.length > 0,
-      close: () => listener.onModuleDestroy(),
-    };
+      onNotification(payload: unknown) { fn(payload); }
+      protected override onListening(e: { reconnected: boolean }) { onListening?.(e); }
+      protected override onBadPayload() { onBadPayload?.(); }
+    })(channel, { connectionString: this.databaseUrl, application_name: opts.applicationName }, { logger: listenerLogger });
+    // A failed boot closes its connection and schedules no retry.
+    await listener.onModuleInit();
+    return { connected: () => listener.isListening, close: () => listener.onModuleDestroy() };
   }
 
   private closing?: Promise<void>;
