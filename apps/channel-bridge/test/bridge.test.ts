@@ -82,3 +82,70 @@ test('stop() returns promptly while a request to Kolab hangs', async () => {
   for (const s of sockets) s.destroy();
   await new Promise((r) => silent.close(r));
 });
+
+/**
+ * A fetch that marks each subscriptions/listen request, and a Kolab whose session check does
+ * `atGate` to the check that request's listen gate makes: the second after the mark, the first
+ * being the request's own auth.
+ */
+function atListenGate(server: Awaited<ReturnType<typeof startServer>>, atGate: (id: string, check: (id: string) => Promise<boolean>) => Promise<boolean>) {
+  let checks = -1;
+  const kolab = server.kolab;
+  const sessionOpen = kolab.sessionOpen.bind(kolab);
+  kolab.sessionOpen = async (id) => {
+    if (checks >= 0 && ++checks === 2) { checks = -1; kolab.sessionOpen = sessionOpen; return atGate(id, sessionOpen); }
+    return sessionOpen(id);
+  };
+  const fetchStub: typeof fetch = (input, init) => {
+    if (typeof init?.body === 'string' && init.body.includes('"method":"subscriptions/listen"') && kolab.sessionOpen !== sessionOpen) checks = 0;
+    return fetch(input, init);
+  };
+  return fetchStub;
+}
+
+test('a listen refused in-band as session_ended is the token refused, not Kolab unreachable', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  closeAtEnd(server);
+  const token = await agentToken(server.url);
+  // The session ends between the listen request's auth and its gate.
+  const fetchStub = atListenGate(server, async (id, check) => {
+    await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [id]);
+    return check(id);
+  });
+  const logs: string[] = [];
+  const messages: ChannelMessage[] = [];
+  const bridge = new KolabBridge({
+    url: server.url, token, fetch: fetchStub as never,
+    forward: async (m) => { messages.push(m); }, log: (l) => logs.push(l),
+    backoff: { initialMs: 100, maxMs: 200 },
+  });
+  closeAtEnd({ close: () => bridge.stop() });
+  bridge.start();
+  await until('the refusal', () => logs.some((l) => /refused the token/.test(l)));
+  await bridge.stop();
+  expect(logs.filter((l) => /cannot reach|couldn't open/.test(l))).toStrictEqual([]);
+  expect(messages.map((m) => m.meta.status)).toStrictEqual(['refused']);
+  await server.close();
+});
+
+test('a listen refused in-band because the session couldn\'t be checked is retried', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  closeAtEnd(server);
+  const token = await agentToken(server.url);
+  const fetchStub = atListenGate(server, async () => { throw new Error('connection terminated unexpectedly'); });
+  const logs: string[] = [];
+  let listens = 0;
+  const bridge = new KolabBridge({
+    url: server.url, token, fetch: fetchStub as never,
+    forward: async () => undefined, log: (l) => logs.push(l),
+    backoff: { initialMs: 100, maxMs: 200 },
+  });
+  bridge.onListening = () => { listens++; };
+  closeAtEnd({ close: () => bridge.stop() });
+  bridge.start();
+  await until('the retried listen', () => listens === 1);
+  expect(logs.some((l) => /couldn't open the subscription just now \(gate_failed\); retrying/.test(l))).toBe(true);
+  expect(logs.filter((l) => /refused the token|cannot reach/.test(l))).toStrictEqual([]);
+  await bridge.stop();
+  await server.close();
+});

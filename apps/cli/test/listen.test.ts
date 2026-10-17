@@ -2,7 +2,7 @@
 import { expect, test } from '@jest/globals';
 import type { Client } from '@modelcontextprotocol/client';
 import { startServer, type KonjirServer } from '@konjir/server';
-import { connect, call } from '../src/cli.js';
+import { connect, call, listenRefusal } from '../src/cli.js';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'listen-test-admin';
@@ -121,12 +121,8 @@ test('ending a session closes its listen streams promptly; other sessions, of th
   await server.close();
 });
 
-test('a listen stream opened with a session that has ended is refused in-band, as session_ended', async () => {
-  const { server, admin } = await boot();
-  const pm = await agent(server, admin, 'pm', 'product');
-  await spec(pm.client);
-
-  // The session ends, with no event, between the request's auth check and the stream opening.
+/** Ends the next session whose token is checked, right after that check: between a request's auth and its listen gate. */
+function endAfterAuth(server: KonjirServer) {
   const kolab = server.kolab;
   const sessionOpen = kolab.sessionOpen.bind(kolab);
   kolab.sessionOpen = async (id) => {
@@ -135,6 +131,15 @@ test('a listen stream opened with a session that has ended is refused in-band, a
     await kolab.db.query(`update session set ended_at = now() where id = $1`, [id]);
     return open;
   };
+}
+
+test('a listen stream opened with a session that has ended is refused in-band, as session_ended', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const pm2 = await agent(server, admin, 'pm-2', 'product');
+  await spec(pm.client);
+
+  endAfterAuth(server);
   const res = await fetch(server.url, {
     method: 'POST',
     headers: {
@@ -151,8 +156,45 @@ test('a listen stream opened with a session that has ended is refused in-band, a
   const body = JSON.parse(text.startsWith('{') ? text : text.replace(/^event: message\ndata: /, '').trim()) as { id: string; error?: { code: number; data?: { reason?: string } } };
   expect(body).toMatchObject({ id: 'raw:2', error: { code: -32003, data: { reason: 'session_ended' } } });
 
-  // The SDK client sees the same refusal.
-  await expect(pm.client.listen({ resourceSubscriptions: [INBOX] })).rejects.toThrow();
+  // The SDK client sees the same refusal, with its code and reason.
+  endAfterAuth(server);
+  const refused = await pm2.client.listen({ resourceSubscriptions: [INBOX] }).then(() => undefined, (e: unknown) => e);
+  expect(refused).toMatchObject({ code: -32003, data: { reason: 'session_ended' } });
+  expect(listenRefusal(refused)).toBe('session_ended');
+  await server.close();
+});
+
+test('a listen stream whose session can\'t be checked is refused as gate_failed, with no token in the log', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const kolab = server.kolab;
+  const sessionOpen = kolab.sessionOpen.bind(kolab);
+  let calls = 0;
+  kolab.sessionOpen = async (id) => {
+    if (++calls === 2) { kolab.sessionOpen = sessionOpen; throw new Error(`connection terminated while checking ${id}`); }
+    return sessionOpen(id);
+  };
+  const warned: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  const originalErr = process.stderr.write.bind(process.stderr);
+  const capture = (chunk: unknown) => { warned.push(String(chunk)); return true; };
+  process.stdout.write = capture as typeof process.stdout.write;
+  process.stderr.write = capture as typeof process.stderr.write;
+  let refused: unknown;
+  try {
+    refused = await pm.client.listen({ resourceSubscriptions: [INBOX] }).then(() => undefined, (e: unknown) => e);
+  } finally {
+    process.stdout.write = original;
+    process.stderr.write = originalErr;
+  }
+  expect(refused).toMatchObject({ code: -32003, data: { reason: 'gate_failed' } });
+  expect(listenRefusal(refused)).toBe('gate_failed');
+  expect(warned.join('')).toMatch(/listen-stream gate failed/);
+  expect(warned.join('')).not.toContain(pm.token);
+
+  // A retry opens it.
+  const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });
+  await sub.close();
   await server.close();
 });
 

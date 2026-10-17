@@ -154,11 +154,14 @@ export class KolabBridge {
             content: `The Konjir channel's KONJIR_TOKEN is not an agent session token (it may be the admin token), so it has no inbox to listen to. Restart Claude Code with KONJIR_TOKEN set to this agent's session token from konjir admin_open_session. Tell the user.`,
             meta: { kind: 'bridge', status: 'misconfigured' },
           });
-        } else if (isRefusal(e)) {
+        } else if (isRefusal(e) || listenRefusal(e) === 'session_ended') {
           await this.problem('refused', `Kolab at ${safeUrl(this.opts.url)} refused the token; retrying`, {
             content: `The Konjir channel can't sign in to Kolab at ${safeUrl(this.opts.url)}: Kolab refused its session token (revoked or mistyped). Inbox changes won't arrive until KONJIR_TOKEN is fixed and Claude Code restarts. Tell the user.`,
             meta: { kind: 'bridge', status: 'refused' },
           });
+        } else if (listenRefusal(e)) {
+          // Kolab couldn't check the session just now ('gate_failed', 'gate_timeout') or was shutting down ('closed').
+          await this.problem(`listen-refused:${listenRefusal(e)}`, `Kolab at ${safeUrl(this.opts.url)} couldn't open the subscription just now (${listenRefusal(e)}); retrying with backoff`);
         } else {
           await this.problem(`unreachable:${msg}`, `cannot reach Kolab at ${safeUrl(this.opts.url)} (${msg}); retrying with backoff`);
         }
@@ -236,6 +239,18 @@ export class KolabBridge {
   private sleep(ms: number) {
     return Promise.race([new Promise<void>((r) => setTimeout(r, ms).unref()), this.stopping.then(() => undefined)]);
   }
+}
+
+/**
+ * Why Kolab refused a listen stream in-band (JSON-RPC -32003, "Listen stream refused"), or
+ * undefined for any other error. 'session_ended' is the token revoked, as a 401 is; any other
+ * reason ('gate_failed', 'gate_timeout', 'closed') is worth retrying. (The bridge stands alone,
+ * so this repeats the CLI's listenRefusal rather than import it.)
+ */
+export function listenRefusal(e: unknown): string | undefined {
+  const err = e as { code?: unknown; data?: { reason?: unknown } } | undefined;
+  if (err?.code !== -32003) return undefined;
+  return typeof err.data?.reason === 'string' ? err.data.reason : 'refused';
 }
 
 /** Kolab refused the token: a 401 on connect, or invalid_token on a read. */
