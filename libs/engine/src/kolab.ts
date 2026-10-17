@@ -28,6 +28,16 @@ interface EdgeRow {
   target_selector: QuoteSelector | null; target_fingerprint: string;
 }
 
+/**
+ * An override resolution waiting on its review (W2.5): what commitStep records, in the transaction
+ * that commits the resolution, before its cascade runs.
+ */
+interface Ruling {
+  markId: string; actor: string; resolution: OverrideResolution; amendedText: string | null;
+  /** The (base, parent, child) fingerprints the ruling becomes precedent for; none for an orphan. */
+  triple?: [string | null, string, string];
+}
+
 /** Thrown by a reviewer that could not run (model outage, throttling). The draft stays drafted and can be resubmitted. */
 export class ReviewUnavailableError extends Error { name = 'ReviewUnavailableError'; }
 
@@ -238,6 +248,17 @@ export class Kolab {
       return;
     }
   }
+
+  /**
+   * Override resolutions in review, by the id of the draft that resolves (W2.5). commitStep
+   * records a ruling in the transaction that commits its draft, before that commit's cascade:
+   * the precedent, so the cascade's own rebases follow it (OVR9), and the mark and question
+   * closed with the ruling. Nothing is visible while the review runs, nothing outlives a draft
+   * that doesn't commit or a crash, and of two resolutions of one mark only the one that commits
+   * records anything. W1.6 moves this onto the version (version.resolves); wherever it lives, the
+   * precedent insert must stay in the commit step's transaction, before onCommit.
+   */
+  private rulings = new Map<string, Ruling>();
 
   private dropCount = 0;
   /** How many notifications on the channel this Kolab has dropped: not JSON, or not a Kolab event. */
@@ -598,12 +619,14 @@ export class Kolab {
    * returns the versions that overtook it.
    */
   private commitStep(v: VersionRow, note: string | null): Promise<Overtaker[] | undefined> {
-    return this.asSystem(async (tx) => {
+    return this.asSystem(async (tx, signal) => {
       const newer = await overtakenBy(tx, v);
       if (newer) return newer;
       const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = 'drafted' returning id`,
         [v.id, note]);
       if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
+      const ruling = this.rulings.get(v.id);
+      if (ruling) await this.recordRuling(tx, signal, ruling);
       return undefined;
     }, v.node_id);
   }
@@ -632,7 +655,7 @@ export class Kolab {
     const latestParent = (await this.latestCommitted(parent.node_id))!;
     // Folding keeps the draft's authorship (so a later stale draft still sees a
     // human commit and is rejected) and the dependencies the draft declared.
-    const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id });
+    const folded = await this.rebase(v, latestParent, { author: v, edgesFrom: v.id, base: newer.at(-1)!.id, ruling: this.rulings.get(v.id) });
     await this.reject(v.id, folded.ok ? `folded into ${folded.version}`
       : `overtaken by Kolab's rebases; folding it into ${folded.version} failed: ${folded.note ?? ''}`);
     return folded;
@@ -902,7 +925,10 @@ export class Kolab {
    * Other elements of the triggering version are reachable like any other.
    * It follows every live edge into any version of a node it reaches, not only the version it
    * reached: an edge that carries an open mark of its own is still pinned to an older version, and
-   * its dependent relies on the element all the same (W2.5).
+   * its dependent relies on the element all the same (W2.5). That includes an edge whose own mark
+   * says its target was orphaned: if an element with the same id comes back and is then marked,
+   * the edge's address resolves to it again, so its dependent gets an upstream_dirty mark too.
+   * (Edge lookups by target version have no index of their own yet; see W2.5's follow-up.)
    */
   private async propagate(markId: string) {
     const m = await this.markRow(markId);
@@ -992,7 +1018,7 @@ export class Kolab {
    * nothing depends on the overtaking version's own cascade getting that far.
    */
   private async rebase(child: VersionRow, newParent: VersionRow,
-    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string } = {}): Promise<GateResult> {
+    opts: { author?: Pick<VersionRow, 'actor_id' | 'active_role'>; edgesFrom?: string; base?: string; ruling?: Ruling } = {}): Promise<GateResult> {
     const parentEls = await this.elements(newParent.id);
     const byId = new Map(parentEls.map((e) => [e.element_id, e]));
     const oldEls = new Map((await this.elements(child.id)).map((e) => [e.element_id, e]));
@@ -1044,14 +1070,18 @@ export class Kolab {
       if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
     }, child.node_id);
 
-    // The rebased child goes through the review gate like any other version.
+    // The rebased child goes through the review gate like any other version. A fold of an
+    // override resolution carries its ruling, to record if the fold commits.
     let verdict: GateResult;
+    if (opts.ruling) this.rulings.set(id, opts.ruling);
     try {
       verdict = await this.review(id);
     } catch (e) {
       // The reviewer fell over: the rebase never committed, and nothing will resubmit it.
       if (e instanceof ReviewerError) await this.reject(id, e.message);
       throw e;
+    } finally {
+      this.rulings.delete(id);
     }
     if (verdict.stale) {
       // Overtaken, it failed nothing. Whatever overtook it may still be behind the parent.
@@ -1075,19 +1105,31 @@ export class Kolab {
    * upstream change is the "check and fix" a clear would otherwise record.
    * The edge re-pins to the current target and anything the mark caused clears.
    * An element left untouched keeps its mark, so a fix has to be deliberate.
+   * The same goes for a transitive (upstream_dirty) mark: revising the element settles its mark
+   * (LNK6, CAS4), whatever caused it, as clearing it would. A link whose target is gone can't
+   * re-pin, so its mark stays open until it is re-linked.
    */
   private async clearAddressed(v: VersionRow) {
     if (v.active_role === 'system') return; // Kolab's own rebases address nothing
+    // What this version revised: elements whose text or place in the tree differs from the node's
+    // previous version. Not every element with a delta: a variant carries its overrides forward
+    // into each version, and an override it didn't touch addresses nothing (W2.5).
+    const before = await this.db.query<{ id: string }>(
+      `select id from version where node_id = $1 and seq < $2 and state = 'committed' order by seq desc limit 1`, [v.node_id, v.seq]);
+    const was = new Map((before.rows[0] ? await this.elements(before.rows[0].id) : []).map((e) => [e.element_id, e]));
+    const revised = (await this.elements(v.id))
+      .filter((e) => was.get(e.element_id)?.fingerprint !== e.fingerprint || was.get(e.element_id)?.parent_element_id !== e.parent_element_id)
+      .map((e) => e.element_id);
+    if (!revised.length) return;
     const marks = await this.db.query<MarkRow & { target_node: string }>(
       `select i.*, tv.node_id as target_node
          from invalidation i
          join edge e on e.id = i.edge_id
          join version tv on tv.id = e.target_version_id
          join version me on me.id = $1
-         join delta d on d.version_id = me.id and d.element_id = i.element_id and d.kind = 'override'
-        where i.version_id = me.id and i.state = 'open'
+        where i.version_id = me.id and i.state = 'open' and i.element_id = any($2)
           and i.reason in ('changed', 'fuzzy_reanchor')
-          and i.created_at < me.created_at`, [v.id]);
+          and i.created_at < me.created_at`, [v.id, revised]);
     for (const m of marks.rows) {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
       const latest = (await this.latestCommitted(m.target_node))!;
@@ -1100,9 +1142,9 @@ export class Kolab {
     const answered = await this.db.query<{ id: string }>(
       `select i.id from invalidation i
          join version me on me.id = $1
-         join delta d on d.version_id = me.id and d.element_id = i.element_id and d.kind = 'override'
-        where i.version_id = me.id and i.state = 'open' and i.reason = 'query_answered'
-          and i.created_at < me.created_at`, [v.id]);
+        where i.version_id = me.id and i.state = 'open' and i.element_id = any($2)
+          and i.reason in ('query_answered', 'upstream_dirty')
+          and i.created_at < me.created_at`, [v.id, revised]);
     for (const m of answered.rows) await this.closeMark(m.id, `addressed by version ${v.seq} of ${v.node_id}`);
   }
 
@@ -1163,30 +1205,18 @@ export class Kolab {
     }, materialize(parentEls, next), next), v.node_id);
 
     // The resolution is itself a new version: it must clear the gate before the mark closes, the
-    // query is answered, or precedent stands. The precedent is recorded before the review all the
-    // same, so the resolution's own cascade follows it: a variant of this variant that rebases onto
-    // the resolution with the same (base, parent, child) triple resolves itself (OVR9). If the
-    // resolution doesn't commit, the precedent is withdrawn.
-    const precedent = pe ? await this.asSystem(async (tx) => (await tx.query<{ id: string }>(
-      `insert into precedent(id, base_fingerprint, parent_fingerprint, child_fingerprint, resolution, amended_text, ruled_by)
-       values ($1,$2,$3,$4,$5,$6,$7) on conflict do nothing returning id`,
-      [ulid(), d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!),
-        resolution, amendedText ?? null, s.actor_id])).rows[0]?.id) : undefined;
-    const withdraw = async () => {
-      if (precedent) await this.asSystem((tx) => tx.query(`delete from precedent where id = $1`, [precedent]));
-    };
+    // query is answered, or precedent is set. commitStep records all three as it commits, before
+    // the cascade (see `rulings`).
+    this.rulings.set(id, {
+      markId, actor: s.actor_id, resolution, amendedText: amendedText ?? null,
+      triple: pe ? [d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!)] : undefined,
+    });
     let verdict: GateResult;
     try {
       verdict = await this.review(id);
-    } catch (e) {
-      if ((await this.version(id)).state !== 'committed') await withdraw();
-      throw e;
+    } finally {
+      this.rulings.delete(id);
     }
-    if (!verdict.ok) {
-      await withdraw();
-      return { version: id, verdict };
-    }
-    await this.closeMark(markId, s.actor_id, resolution);
     return { version: id, verdict };
   }
 
@@ -1211,30 +1241,48 @@ export class Kolab {
   }
 
   /**
+   * A resolution's ruling, inside the transaction that commits it (`rulings`): the precedent for
+   * its triple, unless one already stands (the first ruling stands), and its mark closed, with
+   * its question answered by the ruling and the actor who made it.
+   */
+  private async recordRuling(tx: Q, signal: Signal, r: Ruling) {
+    if (r.triple) {
+      await tx.query(
+        `insert into precedent(id, base_fingerprint, parent_fingerprint, child_fingerprint, resolution, amended_text, ruled_by)
+         values ($1,$2,$3,$4,$5,$6,$7) on conflict do nothing`,
+        [ulid(), ...r.triple, r.resolution, r.amendedText, r.actor]);
+    }
+    await this.closeMarkIn(tx, signal, r.markId, r.actor, { answer: r.resolution, by: r.actor });
+  }
+
+  /**
    * Clears a mark, and the marks it alone caused, and with `answer` answers the mark's
    * question, all in one transaction that signals every layer whose inbox lost work.
    */
   private async closeMark(markId: string, by: string, answer?: string) {
-    await this.asSystem(async (tx, signal) => {
-      const closed = await tx.query<{ version_id: string }>(
-        `update invalidation set state = 'cleared', cleared_by = $2 where id = $1 returning version_id`, [markId, by]);
-      if (!closed.rows[0]) throw new Error(`no mark ${markId}`);
-      await this.signalLayerOf(tx, signal, closed.rows[0].version_id);
-      if (answer !== undefined) {
-        await tx.query(`update query set state = 'answered', answer = $2 where invalidation_id = $1`, [markId, answer]);
-      }
-      const caused = await tx.query<{ mark_id: string }>(
-        `delete from invalidation_cause where cause_id = $1 returning mark_id`, [markId]);
-      for (const { mark_id } of caused.rows) {
-        const cascaded = await tx.query<{ version_id: string }>(
-          `update invalidation set state = 'cleared', cleared_by = $2
-            where id = $1 and state = 'open'
-              and not exists (select 1 from invalidation_cause c where c.mark_id = $1)
-           returning version_id`,
-          [mark_id, `cause ${markId} cleared`]);
-        for (const r of cascaded.rows) await this.signalLayerOf(tx, signal, r.version_id);
-      }
-    });
+    await this.asSystem((tx, signal) => this.closeMarkIn(tx, signal, markId, by, answer === undefined ? undefined : { answer, by }));
+  }
+
+  private async closeMarkIn(tx: Q, signal: Signal, markId: string, by: string, answer?: { answer: string; by: string }) {
+    const closed = await tx.query<{ version_id: string }>(
+      `update invalidation set state = 'cleared', cleared_by = $2 where id = $1 returning version_id`, [markId, by]);
+    if (!closed.rows[0]) throw new Error(`no mark ${markId}`);
+    await this.signalLayerOf(tx, signal, closed.rows[0].version_id);
+    if (answer !== undefined) {
+      await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where invalidation_id = $1 and state = 'open'`,
+        [markId, answer.answer, answer.by]);
+    }
+    const caused = await tx.query<{ mark_id: string }>(
+      `delete from invalidation_cause where cause_id = $1 returning mark_id`, [markId]);
+    for (const { mark_id } of caused.rows) {
+      const cascaded = await tx.query<{ version_id: string }>(
+        `update invalidation set state = 'cleared', cleared_by = $2
+          where id = $1 and state = 'open'
+            and not exists (select 1 from invalidation_cause c where c.mark_id = $1)
+         returning version_id`,
+        [mark_id, `cause ${markId} cleared`]);
+      for (const r of cascaded.rows) await this.signalLayerOf(tx, signal, r.version_id);
+    }
   }
 
   // ---- queries (the lightweight tier) ---------------------------------------
@@ -1515,10 +1563,11 @@ export class Kolab {
       const settled = await tx.query<{ id: string }>(
         `update invalidation set state = 'cleared', cleared_by = $2
           where version_id = $1 and state = 'open' and delta_id is not null returning id`, [p.id, `superseded by ${v.id}`]);
-      // Its question goes with it: nothing could answer it once the mark is cleared.
+      // Its question goes with it: nothing could answer it once the mark is cleared. Kolab answers
+      // it, since nobody ruled; a resolution closed its own mark and question as it committed.
       if (settled.rows.length) {
-        await tx.query(`update query set state = 'answered', answer = $2 where invalidation_id = any($1) and state = 'open'`,
-          [settled.rows.map((r) => r.id), `resolved: ${v.node_id}@${v.seq} no longer holds this override dirty or orphaned`]);
+        await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where invalidation_id = any($1) and state = 'open'`,
+          [settled.rows.map((r) => r.id), `resolved: ${v.node_id}@${v.seq} no longer holds this override dirty or orphaned`, SYSTEM_ACTOR]);
         await signal({ inbox: 'layer', layer: v.layer });
       }
     });
