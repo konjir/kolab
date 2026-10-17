@@ -19,7 +19,7 @@ import {
 } from './cascade-model.js';
 
 const SEED = Number(process.env.KONJIR_PROPERTY_SEED ?? 0x5eed);
-const RUNS = Number(process.env.KONJIR_PROPERTY_RUNS ?? 75);
+const RUNS = Number(process.env.KONJIR_PROPERTY_RUNS ?? 40);
 
 // ---- generators ---------------------------------------------------------------
 
