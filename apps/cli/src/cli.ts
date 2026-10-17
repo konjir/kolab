@@ -22,8 +22,18 @@ import { randomBytes } from 'node:crypto';
 import type { Reviewer } from '@konjir/types';
 
 // The server, with the Bedrock SDK and the database, is imported only by the
-// commands that need it, so the client verbs start without loading it.
-const server = () => import('@konjir/server');
+// commands that need it, so the client verbs start without loading it. The published
+// konjir (the npm package and the single-file binaries) is the client alone: it leaves
+// @konjir/server out, so serve is only for a Kolab checkout.
+const server = () => import('@konjir/server').catch((e: unknown) => {
+  if (/@konjir\/server/.test(String((e as Error)?.message ?? e))) {
+    throw new Error('this konjir is the client only, so it has no serve. Run `bin/konjir serve` from a Kolab checkout (github.com/konjir/kolab), or point KONJIR_URL at a running Kolab.');
+  }
+  throw e;
+});
+
+// The published builds (scripts/package.mjs) define this as the package's version.
+declare const KONJIR_VERSION: string | undefined;
 
 /** The tool name for a verb: `read_node` and `konjir_read_node` both mean konjir_read_node. */
 const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_${verb}`);
@@ -74,7 +84,7 @@ export async function call(client: Client, verb: string, args: Record<string, un
   return r.structuredContent ?? text;
 }
 
-const usage = (defaultReviewModel: string) => `konjir — Kolab from a shell. Same verbs as the MCP server.
+const usage = (defaultReviewModel: string | undefined) => `konjir — Kolab from a shell. Same verbs as the MCP server.
 
   konjir instructions          the operating rules and precedent (read this first)
   konjir tools                 every verb, one line each
@@ -88,9 +98,10 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks). konjir watch --once waits for the next change, prints it and exits.
 Addresses: kj:<node>[@<version>][#<element>][~q({"exact":"words"})]
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
-Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
+Version:   konjir --version
+${defaultReviewModel === undefined ? `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.` : `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--review structural|bedrock] [--public-host kolab.example.com]
         KONJIR_REVIEW=bedrock uses KONJIR_REVIEW_MODEL (default ${defaultReviewModel}) with the
-        server's own AWS credentials (AWS_REGION, AWS_PROFILE or the default AWS chain).`;
+        server's own AWS credentials (AWS_REGION, AWS_PROFILE or the default AWS chain).`}`;
 
 function parseKv(argv: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -117,8 +128,13 @@ export async function main(argv: string[]) {
   const token = flag(argv, 'token') ?? process.env.KONJIR_TOKEN;
   const [cmd, ...rest] = argv;
 
+  if (cmd === '--version') {
+    console.log(typeof KONJIR_VERSION === 'string' ? KONJIR_VERSION : 'development (run from source)'); return;
+  }
+
   if (!cmd || ((cmd === 'help' || cmd === '--help') && !rest[0])) {
-    console.log(usage((await server()).DEFAULT_REVIEW_MODEL)); return;
+    // Without the server (the published client), help leaves out serve.
+    console.log(usage(await server().then((s) => s.DEFAULT_REVIEW_MODEL, () => undefined))); return;
   }
 
   if (cmd === 'serve') {

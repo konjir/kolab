@@ -78,5 +78,31 @@
       ],
       "cache": true
     }
+  },
+  "release": {
+    "projects": [
+      "konjir"
+    ],
+    "releaseTag": {
+      "pattern": "konjir@{version}"
+    },
+    "version": {
+      "currentVersionResolver": "git-tag",
+      "fallbackCurrentVersionResolver": "disk",
+      "conventionalCommits": false
+    },
+    "changelog": {
+      "workspaceChangelog": false,
+      "projectChangelogs": false
+    },
+    "git": {
+      "commit": false,
+      "tag": false
+    }
+  },
+  "pluginsConfig": {
+    "@nx/js": {
+      "analyzeSourceFiles": false
+    }
   }
 }

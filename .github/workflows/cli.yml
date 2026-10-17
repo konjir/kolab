@@ -1,0 +1,111 @@
+name: CLI
+
+# Builds the published konjir on every pull request into main and every push to main (W2.6,
+# binding element API6), and checks it reaches a Kolab. Nothing is published: the npm package and
+# the binaries are uploaded as this run's artifacts. release-cli.yml publishes.
+#
+# One job, "Build konjir CLI", on arm64 with production's Node version, as ci.yml's jobs run:
+# - apps/cli/scripts/package.mjs bundles the client into one file for npm and compiles it with
+#   bun build --compile for linux-x64, linux-arm64, darwin-arm64, darwin-x64 and windows-x64.
+#   Bun cross-compiles, so one runner builds them all. Bun's version is apps/cli/.bun-version.
+# - It starts a Kolab from the checkout (bin/konjir serve, on PGlite, with a throwaway admin
+#   token) and runs apps/cli/scripts/smoke.sh against it twice: with the linux-arm64 binary, and
+#   with the npm tarball through npm exec, outside the workspace, as npx runs it.
+#
+# Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
+# dependencies installed without install scripts.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: cli-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  build:
+    name: Build konjir CLI
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: apps/cli/.bun-version
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Bundle for npm and compile the binaries
+        run: npx nx run-many -t bundle compile -p konjir --output-style=static
+
+      - name: Pack the npm package
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack ./apps/cli/dist-npm --pack-destination "$RUNNER_TEMP/pack"
+          ls -l apps/cli/dist-bin "$RUNNER_TEMP/pack"
+
+      - name: Choose a throwaway admin token for the test Kolab
+        run: |
+          token=$(openssl rand -hex 18)
+          echo "::add-mask::$token"
+          echo "KONJIR_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "KONJIR_URL=http://127.0.0.1:7420/mcp" >> "$GITHUB_ENV"
+
+      - name: Start a Kolab from the checkout; konjir reaches it as a binary and through npx
+        run: |
+          bin/konjir serve --port 7420 --data "$RUNNER_TEMP/kolab" --quiet > "$RUNNER_TEMP/kolab.log" 2>&1 &
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:7420/healthz >/dev/null && break; sleep 1; done
+          apps/cli/scripts/smoke.sh smoke-binary apps/cli/dist-bin/konjir-linux-arm64
+          # Outside the workspace, so nothing resolves from its node_modules.
+          smoke="$PWD/apps/cli/scripts/smoke.sh"
+          tarball=$(ls "$RUNNER_TEMP"/pack/konjir-*.tgz)
+          mkdir -p "$RUNNER_TEMP/npx" && cd "$RUNNER_TEMP/npx"
+          "$smoke" smoke-npx npm exec --yes --package="$tarball" -- konjir
+
+      - name: Show Kolab's log
+        if: failure()
+        run: cat "$RUNNER_TEMP/kolab.log" || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: konjir-binaries
+          path: apps/cli/dist-bin/
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: konjir-npm
+          path: ${{ runner.temp }}/pack/
+          if-no-files-found: error
+          retention-days: 14

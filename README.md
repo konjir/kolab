@@ -31,13 +31,15 @@ npm run rebase-storm      # one parent commit rebasing many variants (W2.7); res
 
 CI (`.github/workflows/ci.yml`) runs three checks on every pull request into main and every push to main. Test on PGlite and Test on Postgres run the equivalents of `npm test` (with typecheck and build) and `npm run test:postgres`. Each runs only the Nx projects affected since the base: main for a pull request, the last passing commit for main. Both run as production does: on arm64, with the Node version that `deploy/terraform/modules/kolab/main.tf` installs (`node_version`). Check Terraform runs `terraform fmt -check -recursive`, then `terraform init -backend=false` and `terraform validate`, on `deploy/terraform`, with no AWS credentials. It runs on every change, so main can require it.
 
+A second workflow, `.github/workflows/cli.yml`, runs "Build konjir CLI" on the same events. It builds the published CLI (the npm package and the binaries), starts a Kolab from the checkout, checks that both reach it, and uploads them as the run's artifacts. It publishes nothing and main doesn't require it. `.github/workflows/release-cli.yml` publishes; see [Releasing the CLI](#releasing-the-cli).
+
 A test file tears down in one order: its servers and clients, then its Kolabs, then its databases. `jest.setup.js` runs `closeOpened` from `@konjir/engine/testing` after each file, which does that. So a test registers each server, client or child process it starts with `closeAtEnd`, and opens Kolabs with `openKolab` or `setup`, rather than closing them in an `afterAll` of its own: Jest runs `jest.setup.js`'s `afterAll` before the file's own.
 
 The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.
 
 | Project | Folder | What it holds |
 | --- | --- | --- |
-| `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. |
+| `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. Published to npm as `konjir`, and as single-file binaries, both the client alone (see [Installing the konjir CLI](#installing-the-konjir-cli)). |
 | `@konjir/channel-bridge` | `apps/channel-bridge` | The Konjir channel: a Claude Code plugin whose stdio server forwards Kolab inbox changes into the session |
 | `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. Also the Bedrock reviewer, until W1.7 removes it. |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
@@ -96,6 +98,25 @@ An actor is a person, or an agent owned by a person. Each agent is an actor of i
 - **Anything with a shell** (Codex, opencode, a person): `export KONJIR_URL=… KONJIR_TOKEN=<token>`, then `bin/konjir instructions`.
 
 That one connection is the only static setup a harness needs. The rules come down the protocol, as server instructions and the `konjir_operating_instructions` prompt (`konjir instructions` in a shell). The served text includes answered questions and override precedent, so settled questions aren't re-asked.
+
+### Installing the konjir CLI
+
+Outside a checkout, `konjir` is the client alone: every verb, `instructions`, `watch` and `--version`, but no `serve`, which runs Kolab and needs a checkout. It needs only a Kolab's URL and a token.
+
+```
+npx konjir --help                       # Node 22 or later; the package has no dependencies
+npm install -g konjir                   # or keep it installed
+
+# or a single-file binary, which needs no Node, from the GitHub release:
+#   konjir-linux-x64, konjir-linux-arm64, konjir-darwin-arm64, konjir-darwin-x64, konjir-windows-x64.exe
+curl -fLo konjir https://github.com/konjir/kolab/releases/download/konjir%40<version>/konjir-darwin-arm64
+chmod +x konjir                         # each release also carries SHA256SUMS
+xattr -d com.apple.quarantine konjir    # macOS: the binaries aren't signed
+
+KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<token> konjir whoami
+```
+
+`apps/cli/scripts/package.mjs` builds both from `apps/cli/src` with [Bun](https://bun.sh), at the version in `apps/cli/.bun-version`. `npx nx run konjir:bundle` writes the npm package to `apps/cli/dist-npm`: the CLI and the MCP client SDK bundled into one `konjir.mjs`, with a `package.json` that declares nothing else. `npx nx run konjir:compile` writes the binaries to `apps/cli/dist-bin` with `bun build --compile` (`node apps/cli/scripts/package.mjs binaries darwin-arm64` builds one). Both leave out `@konjir/server`, so `konjir serve` from them says to use a checkout. Neither target is part of `build`, so the release Kolab runs, which `install.sh` builds with tsc, doesn't need Bun.
 
 ### Pushing the inbox into a Claude Code session
 
@@ -164,6 +185,16 @@ Day to day:
 The admin token is generated by Terraform, so it is also in the state file. That is why the state bucket is private, encrypted and TLS-only.
 
 **Testing only.** This is one instance with no failover. Tokens are bearer tokens with no expiry or single sign-on: hand them out privately, and revoke them with `admin_end_session`. Before real use, replace them with OAuth.
+
+## Releasing the CLI
+
+`nx release` versions and publishes `konjir` (D23), configured in `nx.json`'s `release`: the `konjir` project only, tagged `konjir@<version>`. The current version is the newest such tag, or `apps/cli/package.json`'s before the first release. The commits here aren't conventional commits, so the version is given, not inferred, and nx release writes no changelog. Its publish step runs `npm publish` on `apps/cli/dist-npm`, after building it. `nx.json` keeps Nx's source-file analysis off (`pluginsConfig`), as it was before `@nx/js` was installed for nx release, because that analysis needs TypeScript's JavaScript API, which TypeScript 7 doesn't have.
+
+```
+npx nx release 0.6.0 --first-release --dry-run --yes   # preview: the version, then npm publish --dry-run
+```
+
+Publishing runs only in GitHub Actions, by hand: **Actions › Release CLI › Run workflow** on main, with a version (`0.6.0`, or `patch`, `minor`, `major`) and dry run on or off. It needs the repository secret `NPM_TOKEN`, an npm token that may publish `konjir`. The run sets the version in the runner only and commits nothing. It builds the package and the binaries, checks both against a Kolab it starts from the checkout, and publishes to npm with provenance. It then creates the GitHub release `konjir@<version>` on that commit, with the binaries, the npm tarball, `SHA256SUMS` and notes generated from the merged pull requests. That tag is where the next release reads the version from.
 
 ## Who pays for which model calls
 
