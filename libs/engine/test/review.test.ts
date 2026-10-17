@@ -2,7 +2,7 @@
 // drafted -> in_review -> committed, review requests in reviewers' inboxes, konjir_review's verdicts,
 // the solo-project fallback, and rebases that commit after structural checks only.
 import { expect, test } from '@jest/globals';
-import { RoleError, structuralReviewer } from '@konjir/engine';
+import { RoleError, structuralChecks } from '@konjir/engine';
 import { TEST_KOLAB, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { KolabEvent } from '@konjir/types';
 
@@ -338,8 +338,8 @@ test('an override resolution folded at approval still sets precedent and settles
 test('a person\'s version that fails Kolab\'s checks stays drafted with the reason, rather than rejected (VER2, D33)', async () => {
   let contradiction = false;
   const { kolab, product } = await setup(async (ctx) => (contradiction
-    ? { ok: false, note: 'R1 contradicts R2.', findings: [{ kind: 'contradiction', elements: ['R1', 'R2'], explanation: 'Both can\'t hold.' }] }
-    : (await import('@konjir/engine')).structuralReviewer(ctx)));
+    ? { ok: false, note: 'R1 contradicts R2.' }
+    : (await import('@konjir/engine')).structuralChecks(ctx)));
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
   const bad = await kolab.draft(product, spec, { elements: els({ R1: 'Same.', R2: 'Same.' }) });
   const r = await kolab.review(bad);
@@ -347,7 +347,7 @@ test('a person\'s version that fails Kolab\'s checks stays drafted with the reas
   expect(r.note).toMatch(/R2 repeats R1 word for word/);
   expect(await kolab.version(bad)).toMatchObject({ state: 'drafted' });
   expect((await kolab.db.query<{ review_note: string }>(`select review_note from version where id = $1`, [bad])).rows[0].review_note).toBe(r.note);
-  // A contradiction the reviewer finds at submission returns it the same way; resubmitted once the reviewer is satisfied, it commits.
+  // A version a test's checks veto at submission returns the same way; resubmitted once they pass, it commits.
   const v = await kolab.draft(product, spec, { elements: els({ R1: 'One.', R2: 'Two.' }) });
   contradiction = true;
   expect(await kolab.review(v)).toMatchObject({ ok: false });
@@ -388,19 +388,19 @@ test('approving a version that was abandoned, or rejected as stale, says why; ab
   expect(await rejection(kolab.abandon(product, v2))).toMatch(/GateError: checkout@2 is committed; only a draft or a version in review can be abandoned/);
 });
 
-test('a layer leak the configured reviewer finds at submission becomes a mark and question when the version commits after review (VER9)', async () => {
-  const { kolab, product } = await setup(({ elements }) => ({
-    ok: true, findings: elements.filter((e) => /Postgres/.test(e.text)).map((e) => ({ kind: 'layer_leak' as const, elements: [e.element_id], explanation: 'Postgres is implementation.' })),
-  }));
-  await people(kolab, 'dave', { layers: ['functional'] });
-  const dave = await kolab.openSession('dave', 'product');
+test('Kolab\'s own checks are structural and report no findings: a layer leak is the reviewer\'s to report (REV5, VER5, VER7)', async () => {
+  const { kolab, product, dave } = await twoProductOwners();
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Orders are stored in Postgres.' }) });
-  expect((await kolab.review(v1)).in_review).toBe(true);
+  const r = await kolab.review(v1);
+  expect(r).toMatchObject({ in_review: true, reviewers: ['dave'] });
+  expect(r.findings).toBeUndefined();
+  expect(r.note).toMatch(/Kolab checks structure only: contradictions and layer leaks are for its reviewers\. Waiting for one approval from dave\./);
+  // Nothing about a version's findings is kept on the version: only reviewers report them, on their requests.
+  expect((await kolab.db.query(`select 1 from information_schema.columns where table_name = 'version' and column_name = 'findings'`)).rows).toStrictEqual([]);
+  // A reviewer who approves without reporting the leak commits it unmarked; Kolab doesn't judge it.
+  expect((await kolab.recordReview(dave, v1, { verdict: 'approve' })).ok).toBe(true);
   expect(await marksOn(kolab, spec)).toStrictEqual([]);
-  expect((await kolab.recordReview(dave, v1, { verdict: 'approve' })).ok).toBe(true);   // the reviewer reports nothing itself
-  expect((await marksOn(kolab, spec)).map((m) => [m.reason, m.element_id])).toStrictEqual([['role_boundary', 'R1']]);
-  expect((await kolab.openQueries()).map((q) => q.question)).toStrictEqual([expect.stringMatching(/Postgres is implementation\./)]);
 });
 
 test('a ruling applied to the mirror commits after structural checks only, with no review request, and its note records it (D47)', async () => {
@@ -460,7 +460,7 @@ test('a ruling overtaken by Kolab\'s rebase while its checks run is folded, and 
     const hook = during;
     during = undefined;
     await hook?.();
-    return structuralReviewer(ctx);
+    return structuralChecks(ctx);
   });
   await people(kolab, 'mirror-product', { layers: ['functional'] });
   const mirror = await kolab.openSession('mirror-product', 'product');   // a reviewer of alice's versions

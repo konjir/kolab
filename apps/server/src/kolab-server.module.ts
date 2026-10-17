@@ -7,7 +7,7 @@ import { KonjirAuth } from './auth.js';
 import { HealthController } from './health.controller.js';
 import { Inboxes } from './inboxes.js';
 import { ListenStreams } from './listen-streams.js';
-import { OperatingInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
+import { OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
 import { KOLAB, MCP_ROUTE, SERVER_INFO, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 
 export interface KolabServerModuleOptions extends ServerOptions {
@@ -55,6 +55,7 @@ export class KolabServerModule {
         Inboxes,
         ListenStreams,
         OperatingInstructions,
+        ReviewerInstructions,
       ],
     };
   }

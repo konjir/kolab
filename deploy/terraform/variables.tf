@@ -5,7 +5,7 @@ variable "aws_profile" {
 }
 
 variable "region" {
-  description = "Region for Kolab (and the Bedrock review model)."
+  description = "Region for Kolab."
   type        = string
   default     = "us-east-1"
 }
@@ -50,22 +50,6 @@ variable "final_snapshot_on_destroy" {
   description = "Snapshot the data volume and the database when they are destroyed. Set false for a teardown that leaves nothing behind."
   type        = bool
   default     = true
-}
-
-variable "review_mode" {
-  description = "structural (no model calls) or bedrock (semantic review on review_model)."
-  type        = string
-  default     = "structural"
-  validation {
-    condition     = contains(["structural", "bedrock"], var.review_mode)
-    error_message = "review_mode must be structural or bedrock."
-  }
-}
-
-variable "review_model" {
-  description = "Bedrock model for the review gate."
-  type        = string
-  default     = "anthropic.claude-haiku-5-5"
 }
 
 variable "letsencrypt_email" {

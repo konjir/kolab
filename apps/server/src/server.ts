@@ -2,22 +2,21 @@ import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
-import type { Reviewer } from '@konjir/types';
 import { KolabServerModule } from './kolab-server.module.js';
 
-export { INSTRUCTIONS } from './instructions.js';
+export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
 export { answersUri, inboxUri, uriOf } from './uris.js';
 
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
 
 export async function startServer(opts: {
-  port?: number; host?: string; dataDir?: string; adminToken: string; kolab?: Kolab; reviewer?: Reviewer;
+  port?: number; host?: string; dataDir?: string; adminToken: string; kolab?: Kolab;
   /** Postgres to store in. Without it, PGlite in `dataDir`, or in memory. */
   databaseUrl?: string;
   /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). Accepted alongside localhost. */
   publicHost?: string;
 }): Promise<KonjirServer> {
-  const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, reviewer: opts.reviewer });
+  const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl });
   const app = await NestFactory.create(
     KolabServerModule.register({ kolab, adminToken: opts.adminToken, publicHost: opts.publicHost }),
     { logger: ['error', 'warn'] },

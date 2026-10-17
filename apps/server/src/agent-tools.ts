@@ -250,7 +250,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_review',
-    description: 'Record your verdict on a version in review that you did not write, on your own layer: approve, or request_changes with a note and findings. Review requests for you are in your inbox (konjir_list_reviews). Read the version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or one that makes what it links to impossible) only with request_changes. A layer_leak (implementation in a spec, or a binding that changes behavior) can come with approve: the version commits and a question goes to the layer that owns the answer. Send compound requirements back to be split.',
+    description: 'Record your verdict on a version in review that you did not write, on your own layer: approve, or request_changes with a note and findings. Review requests for you are in your inbox (konjir_list_reviews). Read the version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or one that makes what it links to impossible) only with request_changes. A layer_leak (implementation in a spec, or a binding that changes behavior) can come with approve: the version commits and a question goes to the layer that owns the answer. Send compound requirements back to be split. The konjir_reviewer_instructions prompt has the full checklist.',
     schema: review,
   })
   review(a: z.infer<typeof review>, context?: McpToolContext) {
@@ -304,7 +304,6 @@ export class AgentTools {
       stale_after_commit: r.ok ? await kolab.describeMarks({ node: n.id, kolab: await kolab.sessionKolab(session) }) : [],
       next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}. Others can now link to it; check konjir_list_stale.`
         : r.in_review ? `In review: ${r.reviewers?.length ? `${r.reviewers.join(', ')} each have a review request in their inbox, and ` : ''}one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
-        : r.retryable ? `Not reviewed yet; the draft is intact. Resubmit with konjir_submit_for_review node=${node} version=${submitted ?? v.seq} shortly.`
         : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
         : `Not committed: the checks found what the review names. The draft stays yours, drafted: draft a new version that fixes it (and konjir_abandon node=${node} version=${submitted ?? v.seq}), or resubmit it if the finding was wrong.`,
     };

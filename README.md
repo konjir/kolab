@@ -9,19 +9,19 @@
 
 <p align="center"><strong>Name it true.</strong><br>Where intent is spoken once, and agents answer.</p>
 
-> Konjir's requirements, design and decisions live in the Konjir artifacts on claude.ai, starting with the [Decisions Log](https://claude.ai/code/artifact/ef4df29b-5618-43d5-bc42-d36a24c3962c). [`CLAUDE.md`](CLAUDE.md) lists all of them and gives the rules. This README describes the code as it is today. Where it disagrees with the artifacts, the artifacts are the intent. For example, the Bedrock reviewer described below has been decided out (D4) but not yet removed.
+> Konjir's requirements, design and decisions live in the Konjir artifacts on claude.ai, starting with the [Decisions Log](https://claude.ai/code/artifact/ef4df29b-5618-43d5-bc42-d36a24c3962c). [`CLAUDE.md`](CLAUDE.md) lists all of them and gives the rules. This README describes the code as it is today. Where it disagrees with the artifacts, the artifacts are the intent.
 
 Prototype of Konjir's engine and its delivery rails:
 
 - **Kolab:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
-- **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients. It's a NestJS app; each verb is an `@McpTool` method, and the inboxes and the operating-instructions prompt are `@McpResource` and `@McpPrompt` methods.
+- **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients. It's a NestJS app; each verb is an `@McpTool` method, the inboxes are `@McpResource` methods, and the operating instructions and the reviewer's instructions are `@McpPrompt` methods.
 - **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of Kolab, so there is one backend.
 
 TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve` a `--database-url` (or `KONJIR_DATABASE_URL`) for a Postgres server. Without one, Kolab runs on embedded Postgres ([PGlite](https://pglite.dev), Postgres in WASM), so local development needs no server.
 
 ```
 npm install
-npm test                  # builds every project, then 286 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 278 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -41,7 +41,7 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | --- | --- | --- |
 | `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. Published to npm as `konjir`, and as single-file binaries, both the client alone (see [Installing the konjir CLI](#installing-the-konjir-cli)). |
 | `@konjir/channel-bridge` | `apps/channel-bridge` | The Konjir channel: a Claude Code plugin whose stdio server forwards Kolab inbox changes into the session |
-| `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. Also the Bedrock reviewer, until W1.7 removes it. |
+| `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. It makes no model calls and has no model SDK (REV5). |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
 | `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring, on [diff-match-patch](https://github.com/antfu/diff-match-patch-es) |
 | `@konjir/db` | `libs/db` | The schema, as versioned SQL migrations, and the connection |
@@ -139,7 +139,7 @@ Row-level security's session helpers sit in subqueries, so Postgres evaluates th
 
 Migration 0006 keeps what the database holds. If it has any actor or node, its data becomes the kolab `kolab`, owned by the organization `konjir`; each person becomes a user and a member of `konjir`, and each person and agent gets Write on both layers of `kolab`, which is what any actor could do before. Open sessions work in `kolab`. A fresh database gets none of this. An existing actor named `konjir`, person or agent, stops the migration, since the organization needs that id: rename the actor first.
 
-**Take a database snapshot before deploying any release with a new migration**, such as 0006, 0007 (the review flow) or 0008 (node names per kolab). Once one is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot, which loses whatever was written since: after 0007, for example, versions in review and their review requests.
+**Take a database snapshot before deploying any release with a new migration**, such as 0006, 0007 (the review flow), 0008 (node names per kolab) or 0009 (which drops `version.findings`, W1.7). Once one is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot, which loses whatever was written since: after 0007, for example, versions in review and their review requests.
 
 ### Addresses
 
@@ -157,7 +157,7 @@ An address names its kolab: `kj:<kolab>/<node>[@<version>][#<element>][~q(<selec
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.
 - **Anything with a shell** (Codex, opencode, a person): `export KONJIR_URL=… KONJIR_TOKEN=<token>`, then `bin/konjir instructions`.
 
-That one connection is the only static setup a harness needs. The rules come down the protocol, as server instructions and the `konjir_operating_instructions` prompt (`konjir instructions` in a shell). The served text includes the answered questions and override precedent of the session's own kolab, so settled questions aren't re-asked.
+That one connection is the only static setup a harness needs. The rules come down the protocol, as server instructions and the `konjir_operating_instructions` prompt (`konjir instructions` in a shell). How to review a version comes the same way, as the `konjir_reviewer_instructions` prompt (`konjir instructions reviewer`); see *Review*. The served text includes the answered questions and override precedent of the session's own kolab, so settled questions aren't re-asked.
 
 ### Installing the konjir CLI
 
@@ -230,16 +230,15 @@ The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terrafo
 | `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days |
 | `database` | Postgres 18 on RDS (`db.t4g.micro`, 20 GB, encrypted, 7 days of backups), reachable only from Kolab over verified TLS. Its URL is an SSM SecureString |
 | `secrets` | A generated admin token, stored as an SSM SecureString |
-| `iam` | The instance role: Session Manager access, read its releases, token and database URL, call Bedrock for the review gate |
+| `iam` | The instance role: Session Manager access, read its releases, token and database URL. No Bedrock or other model access (REV5) |
 | `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `kolab.konjir.com` |
 | `release` | Zips this repo, uploads it, and installs it on Kolab through Systems Manager. `terraform apply` is the deploy |
 
-Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart from the instance, so replacing the instance is safe. A change to the boot script replaces it automatically. The data volume still holds the PGlite database Kolab used before RDS. The rough cost is $30–35 a month at list price.
+Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart from the instance, so replacing the instance is safe. A change to the boot script replaces it automatically. The boot script still writes `KONJIR_REVIEW=structural` and `KONJIR_REVIEW_MODEL` into `/etc/konjir/env`, which Kolab ignores since W1.7: `modules/kolab` passes them as constants so that the script renders unchanged and W1.7 doesn't replace the instance. They go with the next boot-script change. The data volume still holds the PGlite database Kolab used before RDS. The rough cost is $30–35 a month at list price.
 
 Day to day:
 
 - **Ship code:** `terraform apply`. A code change alters the release hash, and Terraform reinstalls and waits for success.
-- **Turn on semantic review:** `terraform apply -var review_mode=bedrock`. Enable the model under *Model access* in the Bedrock console first.
 - **Inspect:** `deploy/konjir-ops.sh status`, `logs` or `bootstrap-log`. `shell` opens a session; it needs the Session Manager plugin.
 - **OS refresh:** `terraform apply -replace=module.kolab.aws_instance.kolab`. The AMI is pinned when the instance is created.
 - **Tear down:** `terraform destroy`. Final snapshots of the data volume and the database are kept by default. For a teardown that leaves nothing, run `terraform apply -var final_snapshot_on_destroy=false` first, then `terraform destroy -var final_snapshot_on_destroy=false`. The apply is needed because destroy reads the database's snapshot setting from state. Daily volume snapshots made before the teardown remain until you delete them. The state bucket stays until you remove it.
@@ -275,52 +274,21 @@ The published package declares the licence `ISC`, as the root `package.json` doe
 
 ## Who pays for which model calls
 
-Konjir splits model usage along one line: the server does a small, bounded check, and all the real work happens in collaborators' own harnesses.
+Kolab makes no model calls (REV5, VER7). It has no model SDK among its dependencies, holds no model credentials, and its instance role has no Bedrock access. All the work that takes judgment happens in collaborators' own harnesses.
 
 | Work | Runs where | Paid by |
 | --- | --- | --- |
 | Authoring specs, bindings, plans; implementing; answering questions | Each collaborator's harness (Claude Code, Codex, opencode, …) | That collaborator's own subscription or API account |
-| The review gate's semantic check | The Konjir server | The operator's AWS account, via Amazon Bedrock |
-| Cascade, addressing, rebase, roles | The Konjir server | No model at all |
+| Reviewing a version: contradictions, layer leaks, one testable intent per element | The reviewing agent's own harness, through `konjir_review` (see *Review*) | The reviewer's own subscription or API account |
+| Structural checks, cascade, addressing, rebase, roles | The Konjir server | No model at all |
 
 The server is built so it can't drift across that line:
 
 - **It never asks for, stores, or relays a collaborator's model credentials.** A collaborator's token identifies them to Konjir and nothing else.
-- **It never borrows a client's model.** It doesn't use MCP sampling or any other way to make a collaborator's harness run inference on the server's behalf. When the server needs judgment beyond its gate, it raises a question to a person, who answers from their own harness, by their own choice.
+- **It never borrows a client's model.** It doesn't use MCP sampling or any other way to make a collaborator's harness run inference on the server's behalf. When the server needs judgment beyond its structural checks, it asks for a review or raises a question, which an agent or a person answers from their own harness, by their own choice.
 - **Each collaborator's model use stays inside their own harness and account.** Konjir doesn't pool, share or proxy anyone's access. Whether a given plan permits a given use (for example, connecting an MCP server, or how much automated work a subscription may drive) is set by that provider's terms. Each collaborator should confirm their own plan covers how they use it.
 
-### Turning on semantic review
-
-```
-export AWS_REGION=us-east-1            # plus AWS credentials: role, profile, or env vars
-export KONJIR_REVIEW=bedrock
-export KONJIR_REVIEW_MODEL=anthropic.claude-haiku-5-5   # the default
-bin/konjir serve
-```
-
-Any Bedrock model with tool use works. Claude IDs (`anthropic.*`) go through Bedrock's Messages API; everything else goes through the Converse API with the same prompt and tool. List prices per million tokens as of October 2026:
-
-| Model | `KONJIR_REVIEW_MODEL` | Input | Output |
-| --- | --- | --- | --- |
-| Claude Haiku 5.5 (default) | `anthropic.claude-haiku-5-5` | $0.10 | $0.50 |
-| Kimi K2.5 | `moonshotai.kimi-k2.5` (in-region only) | $0.60 | $3.00 |
-| Kimi K3 | `global.moonshotai.kimi-k3` | $3.00 | $15.00 |
-
-Haiku 5.5's price rises to $0.50 / $2.50 above 100k input tokens per request. Review prompts stay well under that, since the gate rejects anything over 120k characters. Prices change, so check the Bedrock pricing page for your region before switching.
-
-The account needs access to the model in Amazon Bedrock (check *Model access* in the console). Each review is one forced tool call, `report_review`, with `max_tokens` 1500. The input is the version's elements plus the text of the requirements they link to.
-
-- **Free checks run first.** Structural failures (empty, duplicated, malformed) go back to the author without a model call.
-- **Repeats are cached.** A version whose content the gate has already seen, such as one resubmitted unchanged, is a cache hit.
-- **Usage is logged.** The server logs tokens per review and running totals to stderr.
-- **What the reviewer reports:**
-  - *Contradiction:* rejects the version and names the elements involved.
-  - *Layer leak:* commits, then raises a `role_boundary` mark and a question to the layer that owns the answer. Implementation detail in a spec goes back to its author; a binding that changes behavior goes to the spec it links to. Answering the question clears the mark. A version with reviewers goes into review instead, with the findings in its review note; they become marks and questions when it commits.
-  - It judges people's versions only. Kolab's own rebases get the structural checks alone (VER12).
-  - *Model unavailable* (outage, throttling, missing credentials): the draft is left intact and the agent is told to resubmit. Nothing commits unreviewed.
-- **Spec text is treated as data.** It is escaped and fenced in the prompt, so it can't pose as instructions to the reviewer.
-
-The semantic reviewer is tested against a scripted model and stubbed Bedrock clients for both APIs. It has not yet run against live Bedrock. Run one review with your chosen model on a real account before relying on it; Kimi in particular has only been checked for the request shape, not for how well it follows the review instructions.
+`apps/server/test/no-model.test.ts` fails if any package of the workspace declares a model SDK. Until W1.7 the server could call Amazon Bedrock as a semantic review gate (`KONJIR_REVIEW=bedrock`); that reviewer, its AWS SDK packages, its settings, its Terraform variables and its IAM permissions are gone. `konjir serve` ignores `KONJIR_REVIEW` and `--review`, and warns when they ask for anything but `structural`.
 
 ## Verbs
 
@@ -382,10 +350,10 @@ The rebased child commits after Kolab's structural checks alone, without review 
 
 ## Review
 
-A version moves from drafted, to in review, to committed (VER2, REV2). `konjir_submit_for_review` runs Kolab's checks: the structural ones, and the Bedrock reviewer if one is configured (until W1.7 removes it). A version that fails them stays drafted, with the reason in its review note and the result, for its author to fix or resubmit. One that passes goes into review: it is `in_review`, and each other actor holding Write on its layer gets a review request in its inbox, connected or not (VER16). Holding Write means the actor's access in the version's kolab includes Write on that layer, as `kj_access` computes it from grants, teams and organizations, an agent's cut down to its owner's (W1.3); sessions don't count, so a reader with a session isn't a reviewer, and a writer with no session, or one in the other role, is. A reviewer gives its verdict from a session in the layer's role. The request names its subject, a version, and says how to review it.
+A version moves from drafted, to in review, to committed (VER2, REV2). `konjir_submit_for_review` runs Kolab's checks, which are structural only: no empty element, no element repeating another word for word, no element nested under one that doesn't exist (REV1). Kolab runs no model and reports no findings itself (REV5); whether a version contradicts itself or leaks across layers is for its reviewers. A version that fails the checks stays drafted, with the reason in its review note and the result, for its author to fix or resubmit. One that passes goes into review: it is `in_review`, and each other actor holding Write on its layer gets a review request in its inbox, connected or not (VER16). Holding Write means the actor's access in the version's kolab includes Write on that layer, as `kj_access` computes it from grants, teams and organizations, an agent's cut down to its owner's (W1.3); sessions don't count, so a reader with a session isn't a reviewer, and a writer with no session, or one in the other role, is. A reviewer gives its verdict from a session in the layer's role. The request names its subject, a version, and says how to review it. The `konjir_reviewer_instructions` prompt (`konjir instructions reviewer` in a shell) gives a reviewing agent the full checklist: the layer rules, one testable intent per element, what a `contradiction` and a `layer_leak` are and what each does, and how to approve or request changes. It holds the rules alone, no kolab's content, so every session and the admin token get the same text.
 
 - **Who reviews (D19, D25, D33):** any actor other than the author with Write on the layer. Separation of duty is per agent, so another agent of the author's person counts, and so does the person. Only the version's own layer reviews it.
-- **`konjir_review verdict=approve`:** one approval commits the version, through the same per-node commit step as any other commit, and the other requests are withdrawn. A `layer_leak` finding can come with an approval: the version commits and the finding becomes a `role_boundary` mark and a question, as the Bedrock reviewer's do. A `contradiction` can't: it stops the commit (VER9), so it comes only with a request for changes.
+- **`konjir_review verdict=approve`:** one approval commits the version, through the same per-node commit step as any other commit, and the other requests are withdrawn. A `layer_leak` finding can come with an approval: the version commits and the finding becomes a `role_boundary` mark and a question to the layer that owns the answer: implementation in a spec goes back to its author, and a binding that changes behavior goes to the spec it links to. Answering the question clears the mark. A `contradiction` can't: it stops the commit (VER9), so it comes only with a request for changes.
 - **`konjir_review verdict=request_changes`:** needs a note, and may carry findings. The version returns to drafted, and every request for it is withdrawn. Its author resubmits it unchanged, or drafts a new version and abandons this one.
 - **`konjir_abandon`:** the author rejects their own draft or version in review, under the node's lock, so it can't land on a version an approval has just committed; it says so instead. A person's version is rejected only this way, or as stale, or when Kolab folds it into a fresh rebase (VER2, D33, D38). Kolab's own rebases are rejected when they fail their checks.
 - **Plan versions (VER3, PLN2):** a `wbs` or `work_package` version commits after structural checks, without review, whoever else holds Write on the technical layer.
@@ -393,7 +361,7 @@ A version moves from drafted, to in review, to committed (VER2, REV2). `konjir_s
 - **No reviewer (VER11):** when no one else holds Write on the layer, Kolab's checks alone commit the version, and its review note says it committed unreviewed. A solo project works as it did before review existed.
 - **Kolab's own rebases (VER12):** commit after structural checks only, with no review request.
 - **A ruling applied to the mirror (D47):** `konjir_admin_apply_ruling ruling=D46 actor=mirror-product node=kolab/kolab-binding elements=…` (or `deltas=…`, and `parent=` for a variant in the node's kolab) writes a version as that actor (who must hold Write on the node's layer in its kolab), in the role of that layer, and commits it after structural checks only, with no review request: the ruling is already the approval. Its review note records the ruling and that it came through the admin token. The admin token works in no kolab, so `node` is `<kolab>/<node>`, or a name alone only when no other kolab has a node of that name (otherwise it is refused, naming the kolabs that do), and `committed` is the full address. It goes through the same per-node commit step as any commit, so it is rejected as stale if the node moved on, and it makes anything waiting in review on the node stale. Only the admin token reaches it; an agent session is refused, so no agent can use it to skip review.
-- **While a version waits in review**, the W1.17 rules hold. A commit by anyone else to the node rejects it as stale at once, and its requests leave the inboxes. A rebase of Kolab's own doesn't: at approval, the approved version is folded onto the rebase, and the fold commits on structural checks, since its edit was reviewed. In the same transaction, under the node's lock, the version it folds is settled as `folded into` the fold, and its approval is copied onto the fold, so the author's answers show the fold committed with it; if the author abandoned the version meanwhile, the fold doesn't commit. A fold carries the version's override resolution and its checks' layer leaks too. A draft overtaken by Kolab's rebases before it was submitted is folded at submission, and the fold goes into review itself.
+- **While a version waits in review**, the W1.17 rules hold. A commit by anyone else to the node rejects it as stale at once, and its requests leave the inboxes. A rebase of Kolab's own doesn't: at approval, the approved version is folded onto the rebase, and the fold commits on structural checks, since its edit was reviewed. In the same transaction, under the node's lock, the version it folds is settled as `folded into` the fold, and its approval is copied onto the fold, so the author's answers show the fold committed with it; if the author abandoned the version meanwhile, the fold doesn't commit. A fold carries the version's override resolution too. A draft overtaken by Kolab's rebases before it was submitted is folded at submission, and the fold goes into review itself.
 - **Inboxes:** a review request in the reviewer's layer inbox signals that inbox, and each verdict signals the author's answers, with the same events as questions and marks. The Konjir channel turns a new request, or a verdict on the session's own submission, into a message.
 
 ## What the prototype found
@@ -409,14 +377,14 @@ A version moves from drafted, to in review, to committed (VER2, REV2). `konjir_s
 
 Pointing at the changed requirement isn't enough. The edge must also say *which part of the dependent* relies on it, or the dirt spreads to the whole dependent version and everything downstream. One whole-version hop anywhere in a lineage collapses back to lockstep.
 
-**Concurrency needs an explicit rule.** Each version records its base: the node's live version when it was drafted, which it was built on. It commits only while that is still the node's live version. Each node's commit step checks this and sets the version committed in one transaction that holds a lock on the node's row, and every write of a new version takes its number under the same lock. So two commits to one node can't both build on one version, and version numbers never collide. A draft can be overtaken while it's open, or while the reviewer runs:
+**Concurrency needs an explicit rule.** Each version records its base: the node's live version when it was drafted, which it was built on. It commits only while that is still the node's live version. Each node's commit step checks this and sets the version committed in one transaction that holds a lock on the node's row, and every write of a new version takes its number under the same lock. So two commits to one node can't both build on one version, and version numbers never collide. A draft can be overtaken while it's open, while Kolab's checks run, or while it waits in review:
 
 - **Overtaken only by Kolab's own rebases:** the draft is folded into a fresh rebase, keeping its author and declared edges.
 - **Overtaken only by Kolab's own rebases:** the fold is built on the newest of the versions just judged, so a commit that lands while it is being made overtakes the fold in turn.
 - **Overtaken by another person's commit:** the draft is rejected as stale, to be redrafted. `commit` throws a `GateError`, and `konjir_submit_for_review` returns `stale: true` and says to re-read and redraft. The caller never gets a raw database error for losing a race.
 - **A rebase of Kolab's own that was overtaken** is dropped, and the variant's live version is caught up onto the parent's latest version on the spot.
 
-A parent's commit rebases each variant's live version as it is when its turn comes, never the version it listed. A rebase that fails for the variant's own reasons (its review rejects it or can't run, or the reviewer throws) marks the variant `rebase_failed`, with a question, and the parent's commit carries on to the rest (D44), so an inbox tells a failed rebase from a rejected review. A variant holds at most one such mark: a later failure re-points it at the newer parent. The mark and its question settle once the variant's live version sits on the parent's latest version, whether through a rebase that passes or the variant's own commit with `parent` set to that version. Migration 0004 renames every `review_failed` mark of earlier releases to `rebase_failed`, since all of them came from failed rebases. On each variant it keeps open only the mark naming the newest parent, which is also the mark the engine re-points, and moves it to the live version. It settles the mark if the variant already sits on its parent's latest version, and asks the question where none was written. Any other failure, such as a lost connection, or a failure in the cascade of a version that did commit, stops the cascade: the caller gets a `CascadeError` saying which version committed and what didn't finish, never a success over variants left behind. What it hadn't reached catches up on the parent's or the variant's next commit. A draft left open across the upgrade to migration 0003 has no recorded base, so it is rejected as stale on review if its node has any committed version, and must be redrafted. `libs/engine/test/concurrency.test.ts` drives each race that `npm run rebase-storm -- --races` reproduces, on PGlite and Postgres.
+A parent's commit rebases each variant's live version as it is when its turn comes, never the version it listed. A rebase that fails for the variant's own reasons (its checks refuse it, or throw) marks the variant `rebase_failed`, with a question, and the parent's commit carries on to the rest (D44), so an inbox tells a failed rebase from a rejected review. A variant holds at most one such mark: a later failure re-points it at the newer parent. The mark and its question settle once the variant's live version sits on the parent's latest version, whether through a rebase that passes or the variant's own commit with `parent` set to that version. Migration 0004 renames every `review_failed` mark of earlier releases to `rebase_failed`, since all of them came from failed rebases. On each variant it keeps open only the mark naming the newest parent, which is also the mark the engine re-points, and moves it to the live version. It settles the mark if the variant already sits on its parent's latest version, and asks the question where none was written. Any other failure, such as a lost connection, or a failure in the cascade of a version that did commit, stops the cascade: the caller gets a `CascadeError` saying which version committed and what didn't finish, never a success over variants left behind. What it hadn't reached catches up on the parent's or the variant's next commit. A draft left open across the upgrade to migration 0003 has no recorded base, so it is rejected as stale on review if its node has any committed version, and must be redrafted. `libs/engine/test/concurrency.test.ts` drives each race that `npm run rebase-storm -- --races` reproduces, on PGlite and Postgres.
 
 **Property tests check the cascade and rebases (W2.5).** `libs/engine/test/properties.test.ts` uses [fast-check](https://fast-check.dev) to generate a spec family and a sequence of edits to it. The family has:
 
@@ -425,7 +393,7 @@ A parent's commit rebases each variant's live version as it is when its turn com
 - a binding linked into all three, including a cycle with the nested variant
 - a WBS linked into the binding, and a work package linked into the WBS
 
-The edits are parent commits that change, delete and restore elements, variant overrides, edits of marked elements, clears and override resolutions. The review gate rejects some of them.
+The edits are parent commits that change, delete and restore elements, variant overrides, edits of marked elements, clears and override resolutions. A stand-in for review, the test's own submission checks, rejects some of them.
 
 After each step the test compares Kolab with a reference model (`libs/engine/test/cascade-model.ts`), written from the spec rather than the engine. It checks:
 
@@ -467,7 +435,7 @@ Their feedback drove these changes:
 
 ## Deliberate simplifications
 
-- **Semantic review is opt-in** (`KONJIR_REVIEW=bedrock`). Without it Kolab's own checks are structural only, and they say so. Review by agents (see *Review*) is the semantic review that stays; W1.7 removes the Bedrock reviewer. Until then, a version the Bedrock reviewer passes with layer leaks, and that goes into review, keeps those findings, and they become marks and questions when it commits.
+- **Semantic review is only as good as the reviewers.** Kolab's own checks are structural, and they say so; contradictions and layer leaks are caught only if a reviewing agent reports them. A version with no other writer on its layer commits on the structural checks alone, unreviewed (VER11).
 - **Review waits aren't durable yet** (W1.8). A review request and its verdict are rows, so a restart keeps them, but nothing retries a commit or cascade an approval started if the process stops part way, and a version whose only reviewers lose Write waits until its author resubmits it (which commits it unreviewed) or abandons it.
 - **The reviewers are those of the moment** the version is submitted or resubmitted; one who gains Write later can still review it, and its request is added on resubmission.
 - **Review requests are readable by every session in their kolab**, like versions and questions there: their notes and findings included. Product review of bindings (VER13), editorial commits (VER14) and reviews of work packages (VER17, PLN16) aren't built.

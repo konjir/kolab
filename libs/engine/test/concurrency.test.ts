@@ -1,22 +1,22 @@
 // The commit races W2.7 found (libs/engine/scripts/REBASE-STORMS.md), closed by W1.17's commit
 // step, serialized per node (CAS7, DAT3). Each injects one concurrent write at an exact point,
-// through a reviewer hook or a wrapper on db.query, so it runs the same way on PGlite and on
+// through a checks hook or a wrapper on db.query, so it runs the same way on PGlite and on
 // Postgres. `npm run rebase-storm -- --races` prints the same races as RACE or SAFE.
 import { expect, test } from '@jest/globals';
-import { GateError, Kolab, structuralReviewer } from '@konjir/engine';
+import { GateError, Kolab, structuralChecks } from '@konjir/engine';
 import { approved, commitReviewed, els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
-import type { ReviewContext, Reviewer } from '@konjir/types';
+import type { CheckContext, Checks } from '@konjir/types';
 
-type Hook = (ctx: ReviewContext) => Promise<void>;
+type Hook = (ctx: CheckContext) => Promise<void>;
 
 /**
- * A Kolab whose gates run `hook` first, set and cleared by the test: the reviewer of people's
+ * A Kolab whose gates run `hook` first, set and cleared by the test: the checks of people's
  * versions, and the structural checks of Kolab's own rebases (W1.6, VER12).
  */
-async function hooked(opts: { reviewer?: Reviewer; checks?: Reviewer } = {}) {
+async function hooked(opts: { submissionChecks?: Checks; checks?: Checks } = {}) {
   let hook: Hook | undefined;
-  const { reviewer = structuralReviewer, checks = structuralReviewer } = opts;
-  const ctx = await setup(async (c) => { await hook?.(c); return reviewer(c); }, async (c) => { await hook?.(c); return checks(c); });
+  const { submissionChecks = structuralChecks, checks = structuralChecks } = opts;
+  const ctx = await setup(async (c) => { await hook?.(c); return submissionChecks(c); }, async (c) => { await hook?.(c); return checks(c); });
   return { ...ctx, setHook: (h: Hook | undefined) => { hook = h; } };
 }
 
@@ -272,8 +272,8 @@ test('a human commit between the storm\'s version number and its insert waits it
 
 test('a rebase that throws marks its variant, and the storm carries on to the rest', async () => {
   const { kolab, product } = await hooked({ checks: async (ctx) => {
-    if (ctx.version.node_id === 'V1') throw new Error('the reviewer fell over');
-    return structuralReviewer(ctx);
+    if (ctx.version.node_id === 'V1') throw new Error('the checks fell over');
+    return structuralChecks(ctx);
   } });
   const { ids, next } = await family(kolab, product, 3);
   await kolab.commit(product, 'P', { elements: next });
@@ -282,8 +282,8 @@ test('a rebase that throws marks its variant, and the storm carries on to the re
   const marks = (await marksOn(kolab, 'V1')).filter((m) => m.reason !== 'override_stale');
   expect(marks.map((m) => [m.version_id, m.reason])).toStrictEqual([[(await kolab.latestCommitted('V1'))!.id, 'rebase_failed']]);
   const [q] = (await kolab.openQueries()).filter((x) => x.question.startsWith('Rebasing'));
-  expect(q.question).toMatch(/^Rebasing onto the new parent failed: the reviewer failed on \S+: the reviewer fell over\./);
-  // The rebase the reviewer fell over on is rejected, not left drafted for anyone to resubmit.
+  expect(q.question).toMatch(/^Rebasing onto the new parent failed: Kolab's checks failed on \S+: the checks fell over\./);
+  // The rebase the checks fell over on is rejected, not left drafted for anyone to resubmit.
   expect((await history(kolab, 'V1')).map((v) => v.state)).toStrictEqual(['committed', 'rejected']);
 });
 
@@ -358,7 +358,7 @@ test('a storm\'s rebase dropped as overtaken catches up the version that overtoo
 
 test('a variant whose rebases keep failing holds one rebase_failed mark and one question, re-pointed at the newest parent', async () => {
   const { kolab, product } = await hooked({ checks: async (ctx) =>
-    (ctx.version.node_id === 'V0' ? { ok: false, note: 'contradicts itself' } : structuralReviewer(ctx)) });
+    (ctx.version.node_id === 'V0' ? { ok: false, note: 'contradicts itself' } : structuralChecks(ctx)) });
   const { next } = await family(kolab, product, 1);
   await kolab.commit(product, 'P', { elements: next });
   const p3 = await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });

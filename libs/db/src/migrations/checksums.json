@@ -7,5 +7,6 @@
   "0006_accounts_kolabs.sql": "670b89bb72eff98879941fadc9b1ecbe1be940a39337a0ea524a19bfa48821a3",
   "0007_review_flow.sql": "3ed6f9e1951dc8537183f341148076eed284f33107e0659d6d7090b3a1c1e751",
   "0008_node_names.sql": "21a715a9ef692bf28ef94f1ae2aebf6931d71e47e9fbc2f35d0ac7b2e5e63ab3",
+  "0009_drop_submission_findings.sql": "3cb728c26af418bf4b608557126385a23b3e74425cb54cbec338ddb24ed5b1e7",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

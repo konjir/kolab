@@ -17,8 +17,6 @@ variable "database_url_param_name" { type = string }
 variable "database_ca_path" { type = string }
 variable "domain_name" { type = string }
 variable "zone_id" { type = string }
-variable "review_mode" { type = string }
-variable "review_model" { type = string }
 variable "letsencrypt_email" { type = string }
 
 variable "node_version" {
@@ -56,11 +54,15 @@ resource "aws_instance" "kolab" {
     database_param = var.database_url_param_name
     database_ca    = var.database_ca_path
     data_volume_id = var.data_volume_id
-    review_mode    = var.review_mode
-    review_model   = var.review_model
-    caddy_email    = var.letsencrypt_email == "" ? "" : "email ${var.letsencrypt_email}"
-    node_version   = var.node_version
-    caddy_version  = var.caddy_version
+    # Retired with the Bedrock reviewer (W1.7, REV5): Kolab makes no model calls and ignores
+    # KONJIR_REVIEW and KONJIR_REVIEW_MODEL. The boot script still writes them, with the values
+    # the instance was created with, only so that it renders unchanged: a changed boot script
+    # replaces the instance. Remove them, and these two lines, with the next change that does.
+    review_mode   = "structural"
+    review_model  = "anthropic.claude-haiku-5-5"
+    caddy_email   = var.letsencrypt_email == "" ? "" : "email ${var.letsencrypt_email}"
+    node_version  = var.node_version
+    caddy_version = var.caddy_version
   })
 
   metadata_options {

@@ -1,12 +1,11 @@
-# The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL,
-# and call Bedrock for the review gate. Nothing else.
+# The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL.
+# Nothing else: Kolab makes no model calls (REV5), so it has no Bedrock access.
 
 variable "name" { type = string }
 variable "artifact_bucket_arn" { type = string }
 variable "admin_token_param_arn" { type = string }
 variable "database_url_param_arn" { type = string }
 
-data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 data "aws_iam_policy_document" "assume" {
@@ -44,32 +43,6 @@ data "aws_iam_policy_document" "kolab" {
     sid       = "ReadAdminTokenAndDatabaseUrl"
     actions   = ["ssm:GetParameter"]
     resources = [var.admin_token_param_arn, var.database_url_param_arn]
-  }
-  # Claude models on Bedrock (Messages API, served by bedrock-mantle).
-  statement {
-    sid       = "ReviewGateClaude"
-    actions   = ["bedrock-mantle:CreateInference", "bedrock-mantle:GetModel", "bedrock-mantle:ListModels"]
-    resources = ["arn:${data.aws_partition.current.partition}:bedrock-mantle:*:${data.aws_caller_identity.current.account_id}:project/*"]
-  }
-  # Other Bedrock models (e.g. Kimi) through the Converse API.
-  statement {
-    sid     = "ReviewGateOtherModels"
-    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-    resources = [
-      "arn:${data.aws_partition.current.partition}:bedrock:*::foundation-model/*",
-      "arn:${data.aws_partition.current.partition}:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
-    ]
-  }
-  # Third-party models subscribe through Marketplace on first use, only when Bedrock asks.
-  statement {
-    sid       = "MarketplaceViaBedrock"
-    actions   = ["aws-marketplace:Subscribe", "aws-marketplace:ViewSubscriptions"]
-    resources = ["*"]
-    condition {
-      test     = "StringEquals"
-      variable = "aws:CalledViaLast"
-      values   = ["bedrock-mantle.amazonaws.com", "bedrock.amazonaws.com"]
-    }
   }
 }
 

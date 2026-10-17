@@ -26,8 +26,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import type { Reviewer } from '@konjir/types';
-import { GateError, Kolab, structuralReviewer } from '../src/index.js';
+import type { Checks } from '@konjir/types';
+import { GateError, Kolab, structuralChecks } from '../src/index.js';
 import { people } from '../src/testing.js';
 
 type Shape = { E: number; W: number; D: number; B: number; K: number; F: number };
@@ -289,20 +289,20 @@ async function rebaseFailed(kolab: Kolab) {
 // The commit races, reproduced deterministically (--races)
 // ---------------------------------------------------------------------------
 //
-// Each race injects one concurrent write at an exact point, through a reviewer hook or a
+// Each race injects one concurrent write at an exact point, through a checks hook or a
 // wrapper on db.query, into a small family: P with three elements, and variants that each
 // override E2. Each prints what happened and a verdict against what W1.17 (one serialized
 // commit step per node) guarantees: no committed edit is lost, and no caller gets a raw
 // database error. Reproductions after the PR #16 review; libs/engine/test/concurrency.test.ts
 // runs the same races as tests, on PGlite and Postgres.
 
-type Hook = (ctx: Parameters<Reviewer>[0]) => Promise<void>;
+type Hook = (ctx: Parameters<Checks>[0]) => Promise<void>;
 
 async function raceKolab(backend: Backend) {
   let hook: Hook | undefined;
-  const reviewer: Reviewer = async (ctx) => { await hook?.(ctx); return structuralReviewer(ctx); };
+  const checks: Checks = async (ctx) => { await hook?.(ctx); return structuralChecks(ctx); };
   // The hook runs before people's reviews and before the structural checks of Kolab's own rebases (W1.6).
-  const kolab = await Kolab.open({ reviewer, checks: reviewer, ...(backend.url ? { databaseUrl: await backend.url() } : {}) });
+  const kolab = await Kolab.open({ submissionChecks: checks, checks, ...(backend.url ? { databaseUrl: await backend.url() } : {}) });
   return { kolab, setHook: (h: Hook | undefined) => { hook = h; } };
 }
 

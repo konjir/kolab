@@ -17,8 +17,6 @@
     "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.34.4",
-    "@aws-sdk/client-bedrock-runtime": "^3.1149.0",
     "@konjir/address": "*",
     "@konjir/engine": "*",
     "@konjir/types": "*",

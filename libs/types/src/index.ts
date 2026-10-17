@@ -137,7 +137,7 @@ export type ReviewVerdict = { ok: boolean; note?: string; findings?: Finding[] }
  * when it committed on structural checks alone, because no one else holds Write on its layer.
  */
 export type GateResult = ReviewVerdict & {
-  version: string; retryable?: boolean; stale?: boolean;
+  version: string; stale?: boolean;
   in_review?: boolean; reviewers?: string[]; unreviewed?: boolean;
 };
 
@@ -154,15 +154,20 @@ export interface SubmissionView {
   verdicts: { reviewer: string; state: ReviewRequestState; note: string | null; findings: Finding[] }[];
   next: string;
 }
-export interface ReviewContext {
+/** What Kolab's checks see of a version: its elements, and its node. */
+export interface CheckContext {
   version: VersionRow;
   elements: ElementRow[];
   /** `name` is how addresses name the node, in `kolab_id`; `id` is Kolab's own key for it. */
   node: { id: string; name: string; kind: Kind; layer: Layer; title: string; kolab_id: string };
-  /** For each link out of this version: which element relies on what, and that target's text. */
-  upstream: { element: string | null; target: string; text: string | null }[];
 }
-export type Reviewer = (ctx: ReviewContext) => ReviewVerdict | Promise<ReviewVerdict>;
+/** What Kolab's checks conclude: pass, or fail with the reason. They report no findings; reviewers do (REV5). */
+export type CheckResult = { ok: boolean; note?: string };
+/**
+ * Kolab's own checks on a version (VER5, REV1): structural only (structuralChecks), and no model
+ * call (REV5, VER7). Tests substitute their own to veto a version or to act at an exact point.
+ */
+export type Checks = (ctx: CheckContext) => CheckResult | Promise<CheckResult>;
 
 export type Resolution =
   | { status: 'ok'; content: string; fingerprint: string }

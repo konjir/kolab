@@ -72,8 +72,6 @@ module "kolab" {
   database_ca_path        = module.database.ca_path
   domain_name             = var.domain_name
   zone_id                 = data.aws_route53_zone.this.zone_id
-  review_mode             = var.review_mode
-  review_model            = var.review_model
   letsencrypt_email       = var.letsencrypt_email
 }
 

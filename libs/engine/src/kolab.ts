@@ -9,8 +9,8 @@ import {
   ACCESS_LEVELS, FINDING_KINDS, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
   type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type ReviewContext, type ReviewVerdict,
-  type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Reviewer, type Role, type SubmissionView, type VersionRow,
+  type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState,
 } from '@konjir/types';
 
@@ -41,9 +41,6 @@ interface Ruling {
   /** The (base, parent, child) fingerprints the ruling becomes precedent for; none for an orphan. */
   triple?: [string | null, string, string];
 }
-
-/** Thrown by a reviewer that could not run (model outage, throttling). The draft stays drafted and can be resubmitted. */
-export class ReviewUnavailableError extends Error { name = 'ReviewUnavailableError'; }
 
 export class RoleError extends Error { name = 'RoleError'; }
 /**
@@ -88,8 +85,8 @@ export const REQUIRED_APPROVALS = 1;
 
 /** The role that writes a layer. */
 const ROLE_OF_LAYER = Object.fromEntries(ROLES.map((r) => [LAYER_OF_ROLE[r], r])) as Record<Layer, Role>;
-/** Thrown by review when the reviewer itself fails with anything but ReviewUnavailableError. The draft stays drafted. */
-export class ReviewerError extends Error { name = 'ReviewerError'; }
+/** Thrown by review when Kolab's checks themselves fail (throw), rather than refuse the version. The draft stays drafted. */
+export class ChecksError extends Error { name = 'ChecksError'; }
 /**
  * A version committed, but the cascade it runs (marks, rebases of its variants, its own
  * catch-up) stopped part way, on an error this names. The commit stands; whatever the cascade
@@ -166,7 +163,7 @@ function isNotice(x: unknown): x is Notice {
 // ---------------------------------------------------------------------------
 
 export class Kolab {
-  private constructor(readonly db: Db, private reviewer: Reviewer, private checks: Reviewer) {}
+  private constructor(readonly db: Db, private submissionChecks: Checks, private checks: Checks) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
   /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
@@ -181,11 +178,13 @@ export class Kolab {
    * Postgres at `databaseUrl`; otherwise PGlite, in memory by default or persisted to `dataDir`
    * across restarts. The database is first brought to the newest migration (DAT2).
    *
-   * `reviewer` judges people's versions on submission (structural checks by default; until W1.7,
-   * optionally the Bedrock reviewer). `checks` are the structural checks that alone judge Kolab's
-   * own rebases (VER12); tests wrap them to inject a write at an exact point.
+   * Kolab's checks are structural (structuralChecks), and it makes no model call (REV5, VER7):
+   * semantic review is done by reviewing agents, through recordReview (konjir_review). Tests may
+   * substitute their own: `submissionChecks` for a person's version as it is submitted, to veto
+   * one, and `checks` for everything else (Kolab's own rebases, folds, plans and rulings, VER12),
+   * to inject a write at an exact point.
    */
-  static async open(opts: { reviewer?: Reviewer; checks?: Reviewer; dataDir?: string; databaseUrl?: string } = {}): Promise<Kolab> {
+  static async open(opts: { submissionChecks?: Checks; checks?: Checks; dataDir?: string; databaseUrl?: string } = {}): Promise<Kolab> {
     const db = openDb(opts);
     try {
       await migrate(db);
@@ -193,7 +192,7 @@ export class Kolab {
       await db.close().catch(() => undefined);
       throw e;
     }
-    return new Kolab(db, opts.reviewer ?? structuralReviewer, opts.checks ?? structuralReviewer);
+    return new Kolab(db, opts.submissionChecks ?? structuralChecks, opts.checks ?? structuralChecks);
   }
 
   async close() {
@@ -1064,16 +1063,16 @@ export class Kolab {
    * Submits a draft: Kolab's checks, then review (REV2, REV4). Drafted -> in_review, or
    * drafted -> committed | rejected.
    *
-   * A version of a person's or an agent's runs the reviewer Kolab is configured with (structural
-   * checks, or until W1.7 the Bedrock reviewer). If it passes, it moves to in_review, with a review
+   * A version of a person's or an agent's gets Kolab's structural checks (REV1, REV5): Kolab runs
+   * no model. If it passes, it moves to in_review, with a review
    * request for each other actor holding Write on its layer (reviewersFor), and commits once one of
    * them approves (recordReview). With no such reviewer, the checks alone commit it, and its review
    * note says so (VER11). A rebase Kolab makes itself commits after structural checks only (VER12).
    *
    * Optimistic concurrency (CAS7): a draft commits only while its node's live
    * version is still its base, the version it was built on. Otherwise it was
-   * overtaken; see settleOvertaken. The check runs before the reviewer, to spare
-   * it a stale draft, again under the node's lock as the draft enters review, and again in the
+   * overtaken; see settleOvertaken. The check runs before Kolab's checks, to spare
+   * them a stale draft, again under the node's lock as the draft enters review, and again in the
    * commit step, under the node's lock, so nothing can commit between the check and the commit
    * (W1.17). The result names the version that actually committed, or that waits in review.
    */
@@ -1096,15 +1095,12 @@ export class Kolab {
     const plan = PLAN_KINDS.includes((await this.node(v.node_id)).kind);
     // Kolab's own rebases, folds of approved versions and plan versions get structural checks only
     // (VER12, VER3, PLN2).
-    const gate = human && !approvedBy && !plan && !ruling ? this.reviewer : this.checks;
-    let verdict: ReviewVerdict;
+    const gate = human && !approvedBy && !plan && !ruling ? this.submissionChecks : this.checks;
+    let verdict: CheckResult;
     try {
-      verdict = await gate(await this.reviewContext(v));
+      verdict = await gate(await this.checkContext(v));
     } catch (e) {
-      if (e instanceof ReviewUnavailableError) {
-        return { ok: false, note: `Review could not run: ${e.message}. The draft is unchanged; resubmit it later.`, version: versionId, retryable: true };
-      }
-      throw new ReviewerError(`the reviewer failed on ${versionId}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+      throw new ChecksError(`Kolab's checks failed on ${versionId}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
     if (!verdict.ok) {
       // A person's version goes back to its author, still drafted, with the reason (VER2, D33);
@@ -1125,9 +1121,8 @@ export class Kolab {
     } else if (human) {
       const reviewers = await this.reviewersFor(v);
       if (reviewers.length) {
-        const leaks = verdict.findings?.length ? ` The configured reviewer also reported: ${verdict.findings.map((f) => `${f.kind} in ${f.elements.join(', ')}: ${f.explanation}`).join(' ')}` : '';
-        const inReview = `${note ?? 'Kolab\'s checks passed.'}${leaks} Waiting for one approval from ${reviewers.join(', ')}.`;
-        const late = await this.enterReview(v, reviewers, inReview, verdict.findings ?? []);
+        const inReview = `${note ?? 'Kolab\'s checks passed.'} Waiting for one approval from ${reviewers.join(', ')}.`;
+        const late = await this.enterReview(v, reviewers, inReview);
         if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
         if (late) return this.settleOvertaken(v, late);
         return { ok: false, note: inReview, version: versionId, in_review: true, reviewers };
@@ -1135,12 +1130,12 @@ export class Kolab {
       unreviewed = true;
       note = `${note ?? ''} ${NO_REVIEWER(v.layer)}`.trim();
     }
-    // The node may have moved on while the reviewer ran, which with a semantic gate takes seconds.
+    // The node may have moved on while the checks ran.
     const late = await this.commitStep(v, note, approvedBy ? { record: (tx, signal, overtaken) => this.foldRecord(tx, signal, v, overtaken) } : {});
     if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
     if (late && late !== 'waiting') return this.settleOvertaken(v, late, approvedBy, ruling);
-    await this.afterCommit(v, verdict.findings ?? []);
-    return { ...verdict, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}) };
+    await this.afterCommit(v, []);
+    return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}) };
   }
 
   /**
@@ -1164,7 +1159,7 @@ export class Kolab {
       }, v.node_id);
       return { ok: false, note: `Still in review: waiting for one approval from ${reviewers.join(', ')}.`, version: v.id, in_review: true, reviewers };
     }
-    const verdict = await this.checks(await this.reviewContext(v));
+    const verdict = await this.checks(await this.checkContext(v));
     if (!verdict.ok) return { ...verdict, version: v.id, in_review: true };
     const note = `${verdict.note ?? ''} Everyone who could review it has gone: ${NO_REVIEWER(v.layer)}`.trim();
     const late = await this.commitStep(v, note, { from: 'in_review' });
@@ -1222,16 +1217,14 @@ export class Kolab {
    * so a draft that something overtook never enters review: that returns the overtakers instead.
    * Each request lands in its reviewer's inbox, and the author's answers show the submission.
    */
-  private enterReview(v: VersionRow, reviewers: string[], note: string, findings: Finding[]): Promise<Overtaker[] | { refused: string } | undefined> {
+  private enterReview(v: VersionRow, reviewers: string[], note: string): Promise<Overtaker[] | { refused: string } | undefined> {
     return this.asSystem(async (tx, signal) => {
       const newer = await overtakenBy(tx, v);
       if (newer) return newer;
       const refused = await this.authorRefusal(tx, signal, v);
       if (refused) return { refused };
-      // A layer leak the checks found waits with the version, to be raised when it commits (VER9).
-      const leaks = findings.filter((f) => f.kind === 'layer_leak');
-      const r = await tx.query(`update version set state = 'in_review', review_note = $2, findings = $3 where id = $1 and state = 'drafted' returning id`,
-        [v.id, note, leaks.length ? JSON.stringify(leaks) : null]);
+      const r = await tx.query(`update version set state = 'in_review', review_note = $2 where id = $1 and state = 'drafted' returning id`,
+        [v.id, note]);
       if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
       for (const reviewer of reviewers) {
         await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
@@ -1355,13 +1348,12 @@ export class Kolab {
   }
 
   /**
-   * What a committed version's review found, once each: `given`, the layer leaks Kolab's checks
-   * kept on it at submission, and its approvers' findings (VER9).
+   * What a committed version's review found, once each: `given`, and its approvers' findings (VER9).
+   * Kolab's own checks report none (REV5).
    */
   private async findingsOf(versionId: string, given: Finding[]): Promise<Finding[]> {
     const stored = (await this.db.query<{ findings: Finding[] | null }>(
-      `select findings from version where id = $1
-       union all select findings from review_request where version_id = $1 and state = 'approved'`, [versionId])).rows;
+      `select findings from review_request where version_id = $1 and state = 'approved'`, [versionId])).rows;
     const all = [...given, ...stored.flatMap((r) => r.findings ?? [])];
     const seen = new Set<string>();
     return all.filter((f) => { const k = JSON.stringify([f.kind, f.elements, f.explanation]); return !seen.has(k) && !!seen.add(k); });
@@ -1456,21 +1448,8 @@ export class Kolab {
     return folded;
   }
 
-  private async reviewContext(v: VersionRow): Promise<ReviewContext> {
-    const edges = await this.db.query<EdgeRow & { tnode: string; tkolab: string; tseq: number }>(
-      `select e.*, tn.name as tnode, tn.kolab_id as tkolab, t.seq as tseq
-         from edge e join version t on t.id = e.target_version_id join node tn on tn.id = t.node_id
-        where e.source_version_id = $1 order by e.id`, [v.id]);
-    const upstream = [];
-    for (const e of edges.rows) {
-      const r = await this.resolveIn(e.target_version_id, e.target_element_id, e.target_selector);
-      upstream.push({
-        element: e.source_element_id,
-        target: formatAddress({ kolab: e.tkolab, node: e.tnode, version: e.tseq, element: e.target_element_id ?? undefined, selector: e.target_selector ?? undefined }, { from: v.kolab_id }),
-        text: r.status === 'orphan' || !e.target_element_id ? null : r.content,
-      });
-    }
-    return { version: v, elements: await this.elements(v.id), node: await this.node(v.node_id), upstream };
+  private async checkContext(v: VersionRow): Promise<CheckContext> {
+    return { version: v, elements: await this.elements(v.id), node: await this.node(v.node_id) };
   }
 
   /**
@@ -1793,8 +1772,8 @@ export class Kolab {
   // ---- overrides: the three-way rule ---------------------------------------
 
   /**
-   * A rebase that fails for a reason of the variant's own (its review rejected or couldn't run,
-   * the reviewer failed, a gate refused it) marks the variant, and the cascade carries on, so one
+   * A rebase that fails for a reason of the variant's own (its checks refused it or failed, a gate
+   * refused it) marks the variant, and the cascade carries on, so one
    * variant's failure never leaves the ones after it behind (W1.17). Anything else, such as a
    * lost connection or a failure in the cascade of a rebase that did commit, propagates: the
    * parent's caller gets a CascadeError rather than a success with variants silently left behind.
@@ -1803,7 +1782,7 @@ export class Kolab {
     try {
       await this.rebase(child, newParent);
     } catch (e) {
-      if (!(e instanceof GateError || e instanceof ReviewerError)) throw e;
+      if (!(e instanceof GateError || e instanceof ChecksError)) throw e;
       await this.rebaseFailed(child.node_id, newParent.id, `Rebasing onto the new parent failed: ${e.message}. Commit a new version to rebase it, or wait for the parent's next commit.`);
     }
   }
@@ -1894,9 +1873,9 @@ export class Kolab {
       }, els, kept);
       if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
       if (opts.author) {
-        // A fold carries what waits on the person's version: the resolution it makes and the leaks
-        // its checks found, and remembers the version it folds, the first of a chain of folds.
-        await tx.query(`update version f set folded_from = $2, resolves = c.resolves, findings = c.findings
+        // A fold carries what waits on the person's version, the resolution it makes, and
+        // remembers the version it folds, the first of a chain of folds.
+        await tx.query(`update version f set folded_from = $2, resolves = c.resolves
                           from version c where f.id = $1 and c.id = $3`, [id, child.folded_from ?? child.id, child.id]);
       }
     }, child.node_id);
@@ -1907,8 +1886,8 @@ export class Kolab {
     try {
       verdict = await this.judge(id, opts.approvedBy, opts.ruling);
     } catch (e) {
-      // The reviewer fell over: the rebase never committed, and nothing will resubmit it.
-      if (e instanceof ReviewerError) await this.reject(id, e.message);
+      // The checks fell over: the rebase never committed, and nothing will resubmit it.
+      if (e instanceof ChecksError) await this.reject(id, e.message);
       throw e;
     }
     if (verdict.stale) {
@@ -1919,7 +1898,6 @@ export class Kolab {
     if (verdict.in_review) return verdict;   // a fold, waiting for its reviewers
     if (!verdict.ok) {
       // The node stays on whatever it last committed; the mark goes there.
-      if (verdict.retryable) await this.reject(verdict.version, verdict.note ?? null);
       await this.rebaseFailed(child.node_id, newParent.id, `Rebasing onto the new parent failed review: ${verdict.note ?? ''}`);
       return verdict;
     }
@@ -2335,7 +2313,7 @@ export class Kolab {
     return rows.map((r) => ({
       request: r.id, subject: `kj:${r.node_id}@${r.seq}`, subject_kind: 'version' as const, author: r.author, reviewer: r.reviewer,
       requested_at: new Date(r.created_at).toISOString(),
-      next: `Read it with konjir_read_node node=${r.node_id} version=${r.seq}. Check each element states one testable intent, that no two contradict each other or what they link to, and that none belongs to the other layer. Then konjir_review node=${r.node_id} version=${r.seq} verdict=approve, or verdict=request_changes with a note and findings (contradiction or layer_leak, naming the elements).`,
+      next: `Read it with konjir_read_node node=${r.node_id} version=${r.seq}. Check each element states one testable intent, that no two contradict each other or what they link to, and that none belongs to the other layer. Then konjir_review node=${r.node_id} version=${r.seq} verdict=approve, or verdict=request_changes with a note and findings (contradiction or layer_leak, naming the elements). The konjir_reviewer_instructions prompt says how.`,
     }));
   }
 
@@ -2488,11 +2466,11 @@ export class Kolab {
 // ---------------------------------------------------------------------------
 
 /**
- * The default review gate: structural checks only. A deployment plugs in a
- * semantic reviewer (an LLM pass that looks for contradictions and layer
- * leaks); until then the note says plainly what was and wasn't checked.
+ * Kolab's own checks: structural only (VER5, REV1). Kolab makes no model call (REV5); whether
+ * elements contradict each other or leak across layers is for its reviewers (konjir_review), and
+ * the note says plainly what was and wasn't checked.
  */
-export const structuralReviewer: Reviewer = ({ elements }) => {
+export const structuralChecks: Checks = ({ elements }) => {
   const problems: string[] = [];
   const ids = new Set(elements.map((e) => e.element_id));
   const seen = new Map<string, string>();
@@ -2506,7 +2484,7 @@ export const structuralReviewer: Reviewer = ({ elements }) => {
   if (!elements.length) problems.push('the version has no elements');
   return problems.length
     ? { ok: false, note: `Structural review failed: ${problems.join('; ')}.` }
-    : { ok: true, note: 'Structural review passed (non-empty, no duplicates, well-formed tree). No semantic reviewer is configured, so contradictions and layer leaks were not checked.' };
+    : { ok: true, note: 'Structural review passed (non-empty, no duplicates, well-formed tree). Kolab checks structure only: contradictions and layer leaks are for its reviewers.' };
 };
 
 /** What a commit with no reviewer says (VER11). */
