@@ -138,10 +138,18 @@ alter table account add constraint account_id_check
 -- The implicit kolab of existing data
 -- ---------------------------------------------------------------------------
 
+-- A person already named konjir would take the organization's id: stop rather than give
+-- Konjir's kolab a different owner than this says.
+do $$
+begin
+  if exists (select 1 from account where id = 'konjir') then
+    raise exception 'migration 0006: an actor named konjir exists, so the organization konjir that owns the existing data can''t be made; rename that actor first';
+  end if;
+end
+$$;
 insert into account(id, kind, name)
   select 'konjir', 'organization', 'Konjir'
-   where exists (select 1 from actor) or exists (select 1 from node)
-  on conflict (id) do nothing;
+   where exists (select 1 from actor) or exists (select 1 from node);
 insert into kolab(id, owner_id, title)
   select 'kolab', 'konjir', 'Kolab'
    where exists (select 1 from actor) or exists (select 1 from node);
@@ -202,10 +210,98 @@ alter table position           alter column kolab_id set not null;
 alter table ruling             alter column kolab_id set not null;
 alter table precedent          alter column kolab_id set not null;
 
+-- No row references a row of another kolab, for any role, by insert or by update (TEN12): each
+-- reference is a foreign key on the pair (the referenced id, this row's kolab). A link or a
+-- variant across kolabs needs W1.4's kolab segment, and will relax the edge and parent keys
+-- then. These keys also hold a row to its parent's kolab if either is ever updated.
+alter table node         add constraint node_id_kolab_key         unique (id, kolab_id);
+alter table version      add constraint version_id_kolab_key      unique (id, kolab_id);
+alter table delta        add constraint delta_id_kolab_key        unique (id, kolab_id);
+alter table edge         add constraint edge_id_kolab_key         unique (id, kolab_id);
+alter table invalidation add constraint invalidation_id_kolab_key unique (id, kolab_id);
+alter table case_file    add constraint case_file_id_kolab_key    unique (id, kolab_id);
+
+alter table version
+  add constraint version_node_kolab_fkey   foreign key (node_id, kolab_id) references node(id, kolab_id),
+  add constraint version_parent_kolab_fkey foreign key (parent_version_id, kolab_id) references version(id, kolab_id),
+  add constraint version_base_kolab_fkey   foreign key (base_version_id, kolab_id) references version(id, kolab_id);
+alter table element
+  add constraint element_version_kolab_fkey foreign key (version_id, kolab_id) references version(id, kolab_id);
+alter table delta
+  add constraint delta_version_kolab_fkey foreign key (version_id, kolab_id) references version(id, kolab_id),
+  add constraint delta_base_kolab_fkey    foreign key (base_version_id, kolab_id) references version(id, kolab_id);
+alter table edge
+  add constraint edge_source_kolab_fkey foreign key (source_version_id, kolab_id) references version(id, kolab_id),
+  add constraint edge_target_kolab_fkey foreign key (target_version_id, kolab_id) references version(id, kolab_id);
+alter table invalidation
+  add constraint invalidation_version_kolab_fkey   foreign key (version_id, kolab_id) references version(id, kolab_id),
+  add constraint invalidation_triggered_kolab_fkey foreign key (triggered_by, kolab_id) references version(id, kolab_id),
+  add constraint invalidation_edge_kolab_fkey      foreign key (edge_id, kolab_id) references edge(id, kolab_id),
+  add constraint invalidation_delta_kolab_fkey     foreign key (delta_id, kolab_id) references delta(id, kolab_id);
+alter table invalidation_cause
+  add constraint invalidation_cause_mark_kolab_fkey  foreign key (mark_id, kolab_id) references invalidation(id, kolab_id),
+  add constraint invalidation_cause_cause_kolab_fkey foreign key (cause_id, kolab_id) references invalidation(id, kolab_id);
+alter table query
+  add constraint query_version_kolab_fkey      foreign key (version_id, kolab_id) references version(id, kolab_id),
+  add constraint query_from_version_kolab_fkey foreign key (from_version_id, kolab_id) references version(id, kolab_id),
+  add constraint query_invalidation_kolab_fkey foreign key (invalidation_id, kolab_id) references invalidation(id, kolab_id);
+alter table case_file
+  add constraint case_file_version_kolab_fkey foreign key (version_id, kolab_id) references version(id, kolab_id);
+alter table position
+  add constraint position_case_file_kolab_fkey foreign key (case_file_id, kolab_id) references case_file(id, kolab_id);
+alter table ruling
+  add constraint ruling_case_file_kolab_fkey foreign key (case_file_id, kolab_id) references case_file(id, kolab_id),
+  add constraint ruling_version_kolab_fkey   foreign key (version_id, kolab_id) references version(id, kolab_id);
+
+-- Precedent is per kolab (TEN13): a ruling on an override in one kolab never settles another's.
+-- The 0001 key on the fingerprint triple alone is replaced by one that leads with the kolab.
+do $$
+declare c text;
+begin
+  select conname into c from pg_constraint where conrelid = 'precedent'::regclass and contype = 'u';
+  execute format('alter table precedent drop constraint %I', c);
+end
+$$;
+alter table precedent add constraint precedent_kolab_triple_key
+  unique (kolab_id, base_fingerprint, parent_fingerprint, child_fingerprint);
+
+-- What the read policies filter on.
+create index version_kolab      on version(kolab_id);
+create index element_kolab      on element(kolab_id);
+create index delta_kolab        on delta(kolab_id);
+create index edge_kolab         on edge(kolab_id);
+create index invalidation_kolab on invalidation(kolab_id);
+create index query_kolab        on query(kolab_id);
+
+-- A row's kolab never changes once written, for any role.
+create function kj_kolab_fixed() returns trigger
+language plpgsql as $$
+begin
+  if new.kolab_id is distinct from old.kolab_id then
+    raise exception '%: a row''s kolab never changes once written', tg_table_name using errcode = 'check_violation';
+  end if;
+  return new;
+end
+$$;
+create trigger kolab_fixed before update of kolab_id on session            for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on node               for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on version            for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on element            for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on delta              for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on edge               for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on invalidation       for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on invalidation_cause for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on query              for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on case_file          for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on position           for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on ruling             for each row execute function kj_kolab_fixed();
+create trigger kolab_fixed before update of kolab_id on precedent          for each row execute function kj_kolab_fixed();
+
 -- A row's kolab is its parent's, set on insert whatever the writer gave, so no row can claim a
--- kolab its parent isn't in. A node's kolab is the session's (Kolab sets it), and a precedent's
--- the version it was ruled on. An edge belongs to its source, and a ruling to its case file or,
--- given directly, the version it rules on.
+-- kolab its parent isn't in. An edge belongs to its source, and a ruling to its case file or,
+-- given directly, the version it rules on. A node and a precedent have no parent row: Kolab sets
+-- a node's kolab to its session's, and a precedent's to the kolab of the version whose override
+-- it settled (the engine alone guarantees that one).
 create function kj_kolab_of_parent() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -250,7 +346,8 @@ language sql immutable as $$
 $$;
 
 -- A person's access to a kolab: the highest level any source gives, and every layer any of
--- them may write.
+-- them may write. A base permission counts only for members of the organization that owns the
+-- kolab, so on a person's own kolab it gives nothing; Kolab also refuses to set one there.
 create function kj_person_access(p_user text, p_kolab text,
   out rank int, out functional boolean, out technical boolean)
 language sql stable security definer set search_path = public as $$
@@ -272,7 +369,11 @@ language sql stable security definer set search_path = public as $$
     union all
     select kj_level_rank(g.level), g.functional, g.technical
       from kolab_grant g
-     where g.kolab_id = p_kolab and (g.user_id = p_user or g.team_id in (select id from teams))
+     where g.kolab_id = p_kolab
+       and (g.user_id = p_user
+            -- A team's grant counts only on its own organization's kolabs, even if the kolab
+            -- has since moved to another owner.
+            or g.team_id in (select t.id from teams join team t on t.id = teams.id join k on t.org_id = k.owner_id))
   )
   select coalesce(max(src.rank), 0), coalesce(bool_or(src.functional), false), coalesce(bool_or(src.technical), false) from src
 $$;
@@ -335,7 +436,17 @@ language sql stable security definer set search_path = public as $$
      and case l.layer when 'functional' then a.functional else a.technical end
 $$;
 
-grant execute on function kj_session_kolab() to kj_agent;
+-- Only Kolab computes access. kj_agent reaches it only through its session's helpers, which
+-- tell it nothing of other actors or kolabs.
+revoke execute on function kj_access(text, text), kj_person_access(text, text) from public;
+-- kj_system, Kolab's trusted role, re-checks a draft's author as it commits.
+grant execute on function kj_access(text, text) to kj_system;
+revoke execute on function kj_session_kolab(), kj_session_layer(), kj_session_actor(), kj_session_role() from public;
+grant execute on function kj_session_kolab(), kj_session_layer(), kj_session_actor(), kj_session_role() to kj_agent;
+
+-- kj_agent reads no sessions (each id is a bearer token) and no actors; the security definer
+-- helpers above read them for it.
+revoke select on session, actor from kj_agent;
 
 -- ---------------------------------------------------------------------------
 -- Row-level security: an agent reads and writes only its session's kolab (TEN12, DAT10)
@@ -355,27 +466,65 @@ drop policy read_all on delta;
 drop policy read_all on edge;
 drop policy read_all on query;
 
-create policy kolab_read on node               for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on version            for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on element            for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on delta              for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on edge               for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on invalidation       for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on invalidation_cause for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on query              for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on case_file          for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on position           for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on ruling             for select to kj_agent using (kolab_id = kj_session_kolab());
-create policy kolab_read on precedent          for select to kj_agent using (kolab_id = kj_session_kolab());
+create policy kolab_read on node               for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on version            for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on element            for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on delta              for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on edge               for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on invalidation       for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on invalidation_cause for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on query              for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on case_file          for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on position           for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on ruling             for select to kj_agent using (kolab_id = (select kj_session_kolab()));
+create policy kolab_read on precedent          for select to kj_agent using (kolab_id = (select kj_session_kolab()));
 
 -- An agent's inserts must land in its session's kolab too. Each agent_layer policy already
 -- looks its node or version up, which the reads above now limit to the session's kolab; this
 -- says so outright. Restrictive, so it holds on top of agent_layer rather than instead of it.
-create policy kolab_write on version as restrictive for insert to kj_agent with check (kolab_id = kj_session_kolab());
-create policy kolab_write on element as restrictive for insert to kj_agent with check (kolab_id = kj_session_kolab());
-create policy kolab_write on delta   as restrictive for insert to kj_agent with check (kolab_id = kj_session_kolab());
-create policy kolab_write on edge    as restrictive for insert to kj_agent with check (kolab_id = kj_session_kolab());
-create policy kolab_write on query   as restrictive for insert to kj_agent with check (kolab_id = kj_session_kolab());
+create policy kolab_write on version as restrictive for insert to kj_agent with check (kolab_id = (select kj_session_kolab()));
+create policy kolab_write on element as restrictive for insert to kj_agent with check (kolab_id = (select kj_session_kolab()));
+create policy kolab_write on delta   as restrictive for insert to kj_agent with check (kolab_id = (select kj_session_kolab()));
+create policy kolab_write on edge    as restrictive for insert to kj_agent with check (kolab_id = (select kj_session_kolab()));
+create policy kolab_write on query   as restrictive for insert to kj_agent with check (kolab_id = (select kj_session_kolab()));
+
+-- 0001–0003's agent_layer policies, unchanged in meaning, with each session helper wrapped in
+-- a subquery so Postgres evaluates it once per statement, not once per row. Version's own
+-- policy can't read version in a subquery any more, now that version's read policy has one
+-- (Postgres refuses the recursion), so whether a draft's base is a committed version of its node
+-- is asked of a function. version_base_kolab_fkey keeps the base in the draft's kolab.
+create function kj_committed_version_of(p_version text, p_node text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from version b where b.id = p_version and b.node_id = p_node and b.state = 'committed')
+$$;
+revoke execute on function kj_committed_version_of(text, text) from public;
+grant execute on function kj_committed_version_of(text, text) to kj_agent;
+drop policy agent_layer on version;
+create policy agent_layer on version for insert to kj_agent
+  with check (state = 'drafted'
+              and layer = (select kj_session_layer())
+              and layer = (select n.layer from node n where n.id = node_id)
+              and actor_id = (select kj_session_actor())
+              and active_role = (select kj_session_role())
+              and (base_version_id is null or kj_committed_version_of(base_version_id, node_id)));
+drop policy agent_layer on element;
+create policy agent_layer on element for insert to kj_agent
+  with check (exists (select 1 from version v where v.id = version_id
+                       and v.state = 'drafted' and v.layer = (select kj_session_layer())
+                       and v.actor_id = (select kj_session_actor())));
+drop policy agent_layer on delta;
+create policy agent_layer on delta for insert to kj_agent
+  with check (exists (select 1 from version v where v.id = version_id
+                       and v.state = 'drafted' and v.layer = (select kj_session_layer())
+                       and v.actor_id = (select kj_session_actor())));
+drop policy agent_layer on edge;
+create policy agent_layer on edge for insert to kj_agent
+  with check (exists (select 1 from version v where v.id = source_version_id and v.layer = (select kj_session_layer())));
+drop policy agent_layer on query;
+create policy agent_layer on query for insert to kj_agent
+  with check (exists (select 1 from version v where v.id = version_id and v.layer = (select kj_session_layer()))
+              and raised_by = (select kj_session_actor())
+              and answered_by is null);
 
 create policy system_all on node               for all to kj_system using (true) with check (true);
 create policy system_all on invalidation       for all to kj_system using (true) with check (true);

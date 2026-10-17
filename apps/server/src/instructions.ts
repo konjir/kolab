@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { McpPrompt } from '@onivoro/server-mcp';
+import { McpPrompt, type McpHandlerContext } from '@onivoro/server-mcp';
 import { Kolab } from '@konjir/engine';
+import { sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
 
 export const INSTRUCTIONS = `Konjir holds the canonical specs, bindings and work for this project. Your session token fixes your actor and role (product writes the functional layer; engineer writes the technical layer).
@@ -27,10 +28,14 @@ export class OperatingInstructions {
     title: 'Konjir operating instructions',
     description: 'The rules for working through Konjir, plus recent precedent so settled questions are not re-litigated.',
   })
-  async operatingInstructions() {
-    const prec = (await this.kolab.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
-      `select resolution, amended_text, ruled_by from precedent order by id desc limit 20`)).rows;
-    const answered = await this.kolab.listQueries({ state: 'answered' });
+  async operatingInstructions(context?: McpHandlerContext) {
+    // Precedent and answers come only from the kolab the session works in (TEN13). The admin
+    // token works in no kolab, so it gets the rules alone.
+    const session = sessionOf(context?.authInfo);
+    const kolab = session ? await this.kolab.sessionKolab(session) : undefined;
+    const prec = kolab ? (await this.kolab.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
+      `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
+    const answered = kolab ? await this.kolab.listQueries({ state: 'answered', kolab }) : [];
     const text = [
       INSTRUCTIONS,
       '',
