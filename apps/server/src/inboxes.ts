@@ -48,12 +48,16 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     this.health.unref();
   }
 
-  /** Logs when this process stops hearing other processes' changes, and when it hears them again. */
+  /**
+   * Logs when this process stops hearing other processes' changes, and when it hears them
+   * again. The listener re-establishes the connection itself, and the Kolab resyncs then
+   * (Kolab.listen), so this only reports it.
+   */
   async checkListener() {
     const now = (await this.kolab.listenerConnected().catch(() => false)) !== false;
     if (now === this.heard) return;
     this.heard = now;
-    if (now) this.logger.warn('push across processes restored: the LISTEN connection is back. Changes made meanwhile weren\'t signalled here.');
+    if (now) this.logger.warn('push across processes restored: the LISTEN connection is back, and every inbox was signalled again for what changed meanwhile');
     else this.logger.error('push across processes is down: the LISTEN connection is lost, so this process\'s subscribers miss changes made through other processes until it reconnects');
   }
 

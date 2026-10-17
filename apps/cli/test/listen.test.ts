@@ -121,6 +121,41 @@ test('ending a session closes its listen streams promptly; other sessions, of th
   await server.close();
 });
 
+test('a listen stream opened with a session that has ended is refused in-band, as session_ended', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  await spec(pm.client);
+
+  // The session ends, with no event, between the request's auth check and the stream opening.
+  const kolab = server.kolab;
+  const sessionOpen = kolab.sessionOpen.bind(kolab);
+  kolab.sessionOpen = async (id) => {
+    const open = await sessionOpen(id);
+    kolab.sessionOpen = sessionOpen;
+    await kolab.db.query(`update session set ended_at = now() where id = $1`, [id]);
+    return open;
+  };
+  const res = await fetch(server.url, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${pm.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2026-07-28', 'mcp-method': 'subscriptions/listen',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 'raw:2', method: 'subscriptions/listen',
+      params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'raw', version: '0' }, 'io.modelcontextprotocol/clientCapabilities': {} }, notifications: { resourceSubscriptions: [INBOX] } },
+    }),
+  });
+  expect(res.status).toBe(200);
+  const text = await res.text();
+  const body = JSON.parse(text.startsWith('{') ? text : text.replace(/^event: message\ndata: /, '').trim()) as { id: string; error?: { code: number; data?: { reason?: string } } };
+  expect(body).toMatchObject({ id: 'raw:2', error: { code: -32003, data: { reason: 'session_ended' } } });
+
+  // The SDK client sees the same refusal.
+  await expect(pm.client.listen({ resourceSubscriptions: [INBOX] })).rejects.toThrow();
+  await server.close();
+});
+
 test('a session ended without an event hears nothing more: the next update closes its stream instead', async () => {
   const { server, admin } = await boot();
   const pm = await agent(server, admin, 'pm', 'product');

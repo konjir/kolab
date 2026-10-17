@@ -1,4 +1,4 @@
-import { Inject, Module, RequestMethod, type DynamicModule, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
+import { Module, type DynamicModule } from '@nestjs/common';
 import { McpHttpModule } from '@onivoro/server-mcp';
 import type { Kolab } from '@konjir/engine';
 import { AdminTools } from './admin-tools.js';
@@ -22,14 +22,7 @@ export interface KolabServerModuleOptions extends ServerOptions {
  * plus GET /healthz.
  */
 @Module({})
-export class KolabServerModule implements NestModule {
-  constructor(@Inject(ListenStreams) private readonly streams: ListenStreams) {}
-
-  /** Each listen stream an agent opens is tracked, so ending its session closes it (D41). */
-  configure(consumer: MiddlewareConsumer) {
-    consumer.apply(this.streams.track.bind(this.streams)).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
-  }
-
+export class KolabServerModule {
   static register(options: KolabServerModuleOptions): DynamicModule {
     const { kolab, publicHost, ...serverOptions } = options;
     return {
@@ -38,6 +31,7 @@ export class KolabServerModule implements NestModule {
         McpHttpModule.registerAndServeHttp({
           metadata: { ...SERVER_INFO, instructions: SERVER_INSTRUCTIONS },
           route: MCP_ROUTE,
+          // Its acceptListenStream gates each listen stream as it opens (D41).
           authStrategy: KonjirAuth,
           requireBearerAuth: true,
           // Agents don't see the admin verbs; the admin token sees everything.
