@@ -130,10 +130,25 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
   expect(await rejection(call(pm.c, 'ask', { address: 'kj:billing-spec#B1', question: 'Why monthly?' }))).toMatch(/no node billing-spec in kolab orders/);
   expect(await rejection(call(pm.c, 'draft', { node: 'billing-spec', elements: [{ id: 'B1', text: 'Weekly.' }] }))).toMatch(/no node billing-spec in kolab orders/);
 
+  // The served instructions carry answered questions only from the agent's own kolab (TEN13).
+  const { query } = await call(bot.c, 'ask', { address: 'kj:billing-spec#B1', question: 'Why monthly, not weekly?' }) as { query: string };
+  await call(bot.c, 'answer_query', { query, answer: 'Our customers pay monthly.' });
+  const instructions = async (c: typeof pm.c) => {
+    const r = await c.getPrompt({ name: 'konjir_operating_instructions' });
+    return (r.messages[0].content as { text: string }).text;
+  };
+  expect(await instructions(bot.c)).toMatch(/Answered questions and notes \(1\):.*Why monthly, not weekly\?/);
+  expect(await instructions(pm.c)).toMatch(/Answered questions and notes \(0\): none yet/);
+  expect(await instructions(pm.c)).not.toMatch(/monthly/);
+  // Submitting needs Write: a Read session can't commit another's draft.
+  await call(pm.c, 'draft', { node: 'orders-spec', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });
+
   // Her agent's grant drops to Read: its session narrows. When it goes, the session ends and its token is refused.
   expect(await call(admin, 'admin_grant', { kolab: 'orders', to: 'ann-pm', level: 'read' })).toMatchObject({ ended_sessions: 0 });
   expect(await call(pm.c, 'whoami')).toMatchObject({ kolab: 'orders', access: { level: 'read', layers: [] } });
   expect(await rejection(call(pm.c, 'draft', { node: 'orders-spec', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] })))
+    .toMatch(/AccessError: ann-pm may not write the functional layer of kolab orders: it holds Read/);
+  expect(await rejection(call(pm.c, 'submit_for_review', { node: 'orders-spec', version: 1 })))
     .toMatch(/AccessError: ann-pm may not write the functional layer of kolab orders: it holds Read/);
   expect(await call(admin, 'admin_revoke', { kolab: 'orders', to: 'ann-pm' })).toStrictEqual({ kolab: 'orders', revoked: 'ann-pm', ended_sessions: 1 });
   expect(await rejection(call(pm.c, 'whoami'))).toMatch(/token/i);

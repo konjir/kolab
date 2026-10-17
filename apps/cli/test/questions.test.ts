@@ -105,14 +105,29 @@ test('a database from the previous release is migrated on open', async () => {
       ${newlyRls.map((t) => `drop policy system_all on ${t}; alter table ${t} disable row level security;`).join('\n')}
       ${keyed.filter((t) => t !== 'precedent').map((t) => `drop trigger kolab_of_parent on ${t};`).join('\n')}
       drop function kj_kolab_of_parent();
+      drop function kj_committed_version_of(text, text) cascade;   -- version's agent_layer, put back as 0003 had it
+      create policy agent_layer on version for insert to kj_agent
+        with check (state = 'drafted' and layer = kj_session_layer()
+                    and layer = (select n.layer from node n where n.id = node_id)
+                    and actor_id = kj_session_actor() and active_role = kj_session_role()
+                    and (base_version_id is null
+                         or exists (select 1 from version b where b.id = version.base_version_id
+                                     and b.node_id = version.node_id and b.state = 'committed')));
+      drop policy agent_layer on edge;
+      create policy agent_layer on edge for insert to kj_agent
+        with check (exists (select 1 from version v where v.id = source_version_id and v.layer = kj_session_layer()));
       create or replace function kj_session_layer() returns text
       language sql stable security definer as $$
         select case s.active_role when 'product' then 'functional' when 'engineer' then 'technical' end
         from session s
         where s.id = current_setting('kj.session', true) and s.ended_at is null
       $$;
+      grant execute on function kj_session_layer(), kj_session_actor(), kj_session_role() to public;
+      grant select on session, actor to kj_agent;
       drop function kj_session_kolab(), kj_access(text, text), kj_person_access(text, text), kj_level_rank(text);
-      ${['session', 'node', ...keyed].map((t) => `alter table ${t} drop column kolab_id;`).join('\n')}
+      ${['session', 'node', ...keyed].map((t) => `alter table ${t} drop column kolab_id cascade;`).join('\n')}
+      drop function kj_kolab_fixed();
+      alter table precedent add unique (base_fingerprint, parent_fingerprint, child_fingerprint);
       alter table actor drop constraint actor_person_is_user, drop column account_kind, drop constraint actor_owner_is_account;
       alter table actor add column owner_kind text generated always as (case when owner_id is not null then 'person' end) stored,
                         add constraint actor_owner_is_person foreign key (owner_id, owner_kind) references actor(id, kind);
