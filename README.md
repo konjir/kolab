@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 266 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 269 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -139,7 +139,7 @@ Row-level security's session helpers sit in subqueries, so Postgres evaluates th
 
 Migration 0006 keeps what the database holds. If it has any actor or node, its data becomes the kolab `kolab`, owned by the organization `konjir`; each person becomes a user and a member of `konjir`, and each person and agent gets Write on both layers of `kolab`, which is what any actor could do before. Open sessions work in `kolab`. A fresh database gets none of this. An existing actor named `konjir`, person or agent, stops the migration, since the organization needs that id: rename the actor first.
 
-**Take a database snapshot before deploying 0006.** Once it is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot.
+**Take a database snapshot before deploying any release with a new migration**, such as 0006 or 0007 (the review flow). Once one is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot, which loses whatever was written since: after 0007, for example, versions in review and their review requests.
 
 - **Claude Code:** `claude mcp add --transport http konjir http://127.0.0.1:7420/mcp --header "Authorization: Bearer <token>"`
 - **Any MCP client:** an HTTP server entry with an `Authorization: Bearer <token>` header.

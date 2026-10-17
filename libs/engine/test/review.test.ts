@@ -2,7 +2,7 @@
 // drafted -> in_review -> committed, review requests in reviewers' inboxes, konjir_review's verdicts,
 // the solo-project fallback, and rebases that commit after structural checks only.
 import { expect, test } from '@jest/globals';
-import { RoleError } from '@konjir/engine';
+import { RoleError, structuralReviewer } from '@konjir/engine';
 import { TEST_KOLAB, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { KolabEvent } from '@konjir/types';
 
@@ -258,8 +258,8 @@ test('an agent can read review requests but never write one, nor move a version 
     await tx.query(`select set_config('kj.session', $1, true)`, [session]);
     return tx.query(sql, params);
   });
-  // Requests are readable like versions and questions (0001's read_all): every agent sees all of
-  // them, its own and others', until W1.3 scopes reads to the kolab.
+  // Requests are readable like versions and questions: every agent sees all of them in its
+  // session's kolab, its own and others' (kolab_read; another kolab's are pinned in tenancy.test.ts).
   expect((await asAgent(dave, `select reviewer_id from review_request order by reviewer_id`)).rows).toStrictEqual([{ reviewer_id: 'dave' }, { reviewer_id: 'erin' }]);
   expect((await asAgent(product, `select count(*)::int as n from review_request`)).rows).toStrictEqual([{ n: 2 }]);
   expect(await rejection(asAgent(dave, `update review_request set state = 'approved'`))).toMatch(/permission denied/);
@@ -424,6 +424,13 @@ test('a ruling applied to the mirror commits after structural checks only, with 
   // It still passes the structural checks, and names a ruling and a real actor.
   const bad = await kolab.applyRuling(spec, { deltas: [{ kind: 'add', element: 'R3', text: 'One spec per kolab.' }] }, { id: 'D47', actor: 'mirror-product' });
   expect(bad.ok).toBe(false);
+  // A ruling has no author to return to: one that fails its checks is rejected, not left for anyone to submit.
+  expect(await kolab.version(bad.version)).toMatchObject({ state: 'rejected' });
+  // The actor it is written as must hold Write on the layer there; otherwise nothing is written at all.
+  const before = (await kolab.db.query(`select id from version`)).rows.length;
+  expect(await rejection(kolab.applyRuling(spec, { deltas: [{ kind: 'add', element: 'R4', text: 'Carol rules.' }] }, { id: 'D47', actor: 'carol' })))
+    .toMatch(/AccessError: carol may not write the functional layer of kolab test: it holds Read; apply the ruling as an actor that does/);
+  expect((await kolab.db.query(`select id from version`)).rows.length).toBe(before);
   expect(await rejection(kolab.applyRuling(spec, { deltas: [] }, { id: 'because', actor: 'mirror-product' }))).toMatch(/GateError: a ruling is named by its Decisions Log ID/);
   expect(await rejection(kolab.applyRuling(spec, { deltas: [] }, { id: 'D47', actor: 'nobody' }))).toMatch(/ActorError: no actor nobody/);
 });
@@ -445,4 +452,33 @@ test('reviewers are whoever holds Write on the layer in the version\'s kolab, wh
   const frank = await kolab.openSession('frank', 'product');
   expect(await kolab.recordReview(frank, v1, { verdict: 'approve' })).toMatchObject({ ok: false, note: expect.stringMatching(/its author alice no longer holds Write on the functional layer/) });
   expect(await kolab.version(v1)).toMatchObject({ state: 'rejected' });
+});
+
+test('a ruling overtaken by Kolab\'s rebase while its checks run is folded, and the fold still commits on structural checks, without review (D47)', async () => {
+  let during: (() => Promise<void>) | undefined;
+  const { kolab, product } = await setup(undefined, async (ctx) => {
+    const hook = during;
+    during = undefined;
+    await hook?.();
+    return structuralReviewer(ctx);
+  });
+  await people(kolab, 'mirror-product', { layers: ['functional'] });
+  const mirror = await kolab.openSession('mirror-product', 'product');   // a reviewer of alice's versions
+  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const p1 = await commitReviewed(kolab, product, mirror, P, { elements: els({ E1: 'one' }) });
+  const V0 = await kolab.createNode(product, 'functional_spec', 'V0', 'V0');
+  await commitReviewed(kolab, product, mirror, V0, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
+  // While the ruling's checks run, the parent commits, and Kolab's rebase of V0 overtakes it.
+  during = async () => { await commitReviewed(kolab, product, mirror, P, { elements: els({ E1: 'one, revised' }) }); };
+
+  const r = await kolab.applyRuling(V0, { deltas: [{ kind: 'add', element: 'R', text: 'Ruled.' }] }, { id: 'D47', actor: 'mirror-product' });
+  expect(r).toMatchObject({ ok: true });
+  expect(r.in_review).toBeUndefined();
+  expect(await kolab.version(r.version)).toMatchObject({ state: 'committed', actor_id: 'mirror-product' });
+  expect(r.note).toMatch(/^Applied as ruling D47 through the admin token/);
+  expect(await textOf(kolab, V0)).toStrictEqual({ E1: 'one, revised', X: 'x', R: 'Ruled.' });
+  expect((await kolab.db.query(`select 1 from review_request where version_id = $1`, [r.version])).rows).toStrictEqual([]);
+  expect((await kolab.db.query<{ seq: number; active_role: string; state: string }>(
+    `select seq, active_role, state from version where node_id = $1 order by seq`, [V0])).rows.map((v) => [v.seq, v.active_role, v.state]))
+    .toStrictEqual([[1, 'product', 'committed'], [2, 'product', 'rejected'], [3, 'system', 'committed'], [4, 'product', 'committed']]);
 });

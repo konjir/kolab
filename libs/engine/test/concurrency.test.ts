@@ -398,23 +398,57 @@ async function reviewers() {
   return { ...ctx, S, dave: await kolab.openSession('dave', 'product'), erin: await kolab.openSession('erin', 'product') };
 }
 
-test('an approval and the author abandoning the version race: exactly one wins, and the version ends as the winner left it', async () => {
-  for (let i = 0; i < 5; i++) {
-    const { kolab, product, dave, S } = await reviewers();
-    const v = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
-    await kolab.review(v);
-    const [approve, abandon] = await Promise.allSettled([kolab.recordReview(dave, v, { verdict: 'approve' }), kolab.abandon(product, v)]);
-    const state = (await kolab.version(v)).state;
-    if (approve.status === 'fulfilled') {
-      expect([approve.value.ok, state, abandon.status]).toStrictEqual([true, 'committed', 'rejected']);
-      expect(String((abandon as PromiseRejectedResult).reason)).toMatch(/GateError: S@2 is committed; only a draft or a version in review can be abandoned/);
-    } else {
-      expect([abandon.status, state]).toStrictEqual(['fulfilled', 'rejected']);
-      expect(String(approve.reason)).toMatch(/GateError: S@2 was rejected \(abandoned by alice\)/);
+/**
+ * Starts `other` (not awaited) the first time a query matching `when` runs, then lets that query
+ * go on: `other` runs while the operation that made the query holds the node's lock.
+ */
+function injectAt(kolab: Kolab, when: (sql: string, params?: unknown[]) => boolean, other: () => Promise<unknown>) {
+  const proto = Object.getPrototypeOf(kolab.db);
+  const query = proto.query;
+  let started: Promise<PromiseSettledResult<unknown>> | undefined;
+  proto.query = async function (sql: string, params?: unknown[]) {
+    if (!started && when(sql, params)) {
+      started = other().then((value) => ({ status: 'fulfilled', value }) as const, (reason) => ({ status: 'rejected', reason }) as const);
     }
-    expect(await kolab.reviewRequests()).toStrictEqual([]);
-  }
-}, 120_000);
+    return query.call(this, sql, params);
+  };
+  return { other: () => started!, restore: () => { proto.query = query; } };
+}
+
+/** The approval's read of the version under the node's lock, as it records its verdict. */
+const approvalRead = (id: string) => (sql: string, params?: unknown[]) => sql.startsWith('select state, review_note from version where id = $1') && params?.[0] === id;
+/** abandon's read of the version under the node's lock, before it rejects it. */
+const abandonRead = (id: string) => (sql: string, params?: unknown[]) => sql.startsWith('select state from version where id = $1') && params?.[0] === id;
+
+test('an author abandoning a version while an approval holds the node\'s lock loses: the approval commits, and abandon is told so', async () => {
+  const { kolab, product, dave, S } = await reviewers();
+  const v = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
+  await kolab.review(v);
+  const hook = injectAt(kolab, approvalRead(v), () => kolab.abandon(product, v));
+  let approval;
+  try { approval = await kolab.recordReview(dave, v, { verdict: 'approve' }); } finally { hook.restore(); }
+  const abandon = await hook.other();
+  expect(approval.ok).toBe(true);
+  expect(abandon.status).toBe('rejected');
+  expect(String((abandon as PromiseRejectedResult).reason)).toMatch(/GateError: S@2 is committed; only a draft or a version in review can be abandoned/);
+  expect((await kolab.version(v)).state).toBe('committed');
+});
+
+test('an approval arriving while the author abandons the version under the node\'s lock loses: nothing commits, and the reviewer is told why', async () => {
+  const { kolab, product, dave, S } = await reviewers();
+  const v = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
+  await kolab.review(v);
+  const hook = injectAt(kolab, abandonRead(v), () => kolab.recordReview(dave, v, { verdict: 'approve' }));
+  let state;
+  try { state = await kolab.abandon(product, v); } finally { hook.restore(); }
+  const approval = await hook.other();
+  expect(state).toBe('rejected');
+  expect(approval.status).toBe('rejected');
+  expect(String((approval as PromiseRejectedResult).reason)).toMatch(/GateError: S@2 was rejected \(abandoned by alice\); there is nothing to review/);
+  expect((await kolab.version(v)).state).toBe('rejected');
+  expect(await textOf(kolab, 'S')).toStrictEqual({ s1: 'v1' });
+  expect(await kolab.reviewRequests()).toStrictEqual([]);
+});
 
 test('an author who abandons an approved version while Kolab folds it keeps the edit out: the fold never commits', async () => {
   const { kolab, product, setHook } = await hooked();
@@ -450,17 +484,24 @@ test('two reviewers approving at once commit the version once; the second is tol
   expect((await history(kolab, 'S')).map((x) => [x.seq, x.state])).toStrictEqual([[1, 'committed'], [2, 'committed']]);
 });
 
-test('an approval racing another commit to the node: one commits, the other is rejected as stale, and nothing merges', async () => {
-  for (let i = 0; i < 5; i++) {
+test('an approval arriving while another approval to the node commits, in either order: the first commits, the second is stale, and nothing merges', async () => {
+  for (const first of ['alice', 'dave'] as const) {
     const { kolab, product, dave, S } = await reviewers();
     const mine = await kolab.draft(product, S, { elements: els({ s1: 'alice edit' }) });
     const theirs = await kolab.draft(dave, S, { elements: els({ s1: 'dave edit' }) });
     await kolab.review(mine); await kolab.review(theirs);
-    const rs = await Promise.allSettled([kolab.recordReview(dave, mine, { verdict: 'approve' }), kolab.recordReview(product, theirs, { verdict: 'approve' })]);
-    const states = [(await kolab.version(mine)).state, (await kolab.version(theirs)).state].sort();
-    expect(states).toStrictEqual(['committed', 'rejected']);
-    expect(rs.filter((r) => r.status === 'fulfilled' && r.value.ok).length).toBe(1);
-    expect(['alice edit', 'dave edit']).toContain((await textOf(kolab, S)).s1);
+    // Alice's version is approved by dave, dave's by alice; the second approval arrives while the first holds the lock.
+    const [winner, loser] = first === 'alice' ? [mine, theirs] : [theirs, mine];
+    const approve = (id: string) => kolab.recordReview(id === mine ? dave : product, id, { verdict: 'approve' });
+    const hook = injectAt(kolab, approvalRead(winner), () => approve(loser));
+    let won;
+    try { won = await approve(winner); } finally { hook.restore(); }
+    const lost = await hook.other();
+    expect(won.ok).toBe(true);
+    expect((await kolab.version(winner)).state).toBe('committed');
+    expect((await kolab.version(loser)).state).toBe('rejected');
+    expect(lost.status === 'rejected' ? String(lost.reason) : (lost.value as { note: string }).note).toMatch(/stale draft/);
+    expect((await textOf(kolab, S)).s1).toBe(first === 'alice' ? 'alice edit' : 'dave edit');
     expect(await kolab.reviewRequests()).toStrictEqual([]);
   }
-}, 120_000);
+});
