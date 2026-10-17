@@ -1,7 +1,7 @@
 // Regressions for the bugs W2.5's property tests (properties.test.ts) found, each the
 // counterexample fast-check shrank to, written out by hand, and for the review of PR #28.
 import { expect, test } from '@jest/globals';
-import { els, marksOn, setup, textOf } from '@konjir/engine/testing';
+import { els, marksOn, people, setup, textOf } from '@konjir/engine/testing';
 
 test('a mark spreads downstream through a link that carries a mark of its own (LNK5)', async () => {
   const { kolab, product, engineer } = await setup();
@@ -138,7 +138,7 @@ test('of two resolutions of one mark, only the one that commits sets precedent a
     await hook?.();
     return { ok: true };
   });
-  await kolab.addActor('dana');
+  await people(kolab, 'dana');
   const dana = await kolab.openSession('dana', 'product');
 
   // Alice amends; while her draft is in review, Dana adopts the parent's text and commits first.
