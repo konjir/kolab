@@ -6,7 +6,8 @@
 #
 # - Only what git tracks ships, from `git archive` of HEAD: no untracked or ignored file can be in
 #   it, such as .env, a .claude/ worktree, a nested .konjir data directory or a *.tfvars file.
-# - A tracked change not yet committed is refused, so every deploy is exactly a commit.
+# - A tracked change not yet committed is refused, so every deploy is exactly a commit; only
+#   Terraform's provider lock may differ, which `terraform init` rewrites and which never ships changed.
 # - A tracked file that must never ship (.env, .claude/, .playwright-mcp/, .konjir/, *.tfvars,
 #   Terraform state) is refused, should one ever be committed.
 # - The release id is the commit's tree id, so it changes only when tracked content does: two
@@ -20,7 +21,11 @@ cd "$src" 2>/dev/null || fail "no directory $src"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$src is not a git checkout: a release is a commit"
 top=$(git rev-parse --show-toplevel)
 [ "$(pwd -P)" = "$(cd "$top" && pwd -P)" ] || fail "$src is not the top of its checkout ($top)"
-dirty=$(git status --porcelain --untracked-files=no)
+# Terraform's provider lock is left out: `terraform init` may rewrite it (it adds a provider the
+# state still names, such as hashicorp/archive from releases before pack.sh), the zip is
+# `git archive HEAD` whatever the working tree holds, and Kolab never reads it, so a release
+# still equals a commit.
+dirty=$(git status --porcelain --untracked-files=no -- . ':(exclude)deploy/terraform/.terraform.lock.hcl')
 [ -z "$dirty" ] || fail "tracked changes aren't committed, and a release is exactly a commit: commit or stash them first:
 $dirty"
 forbidden=$(git ls-tree -r --name-only HEAD | grep -E '(^|/)(\.env(\.[^/]*)?|\.claude|\.playwright-mcp|\.konjir|\.konjir-demo)(/|$)|\.tfvars(\.json)?$|(^|/)terraform\.tfstate(\.backup)?$' || true)

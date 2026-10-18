@@ -66,3 +66,15 @@ test('a tracked file that must never ship is refused: .env, .claude, .playwright
   mkdirSync(join(dir, 'plain'));
   expect(pack(join(dir, 'plain'), join(dir, 'p.zip')).stderr).toMatch(/not a git checkout/);
 });
+
+test('terraform init rewriting the provider lock is not a dirty checkout: the zip still holds the committed lock', () => {
+  const r = repo('lock', { 'a.ts': 'x', 'deploy/terraform/.terraform.lock.hcl': 'provider "registry.terraform.io/hashicorp/external" {}\n' });
+  writeFileSync(join(r, 'deploy/terraform/.terraform.lock.hcl'), 'provider "registry.terraform.io/hashicorp/archive" {}\nprovider "registry.terraform.io/hashicorp/external" {}\n');
+  const out = join(dir, 'lock.zip');
+  const p = pack(r, out);
+  expect([p.status, p.stderr]).toStrictEqual([0, '']);
+  expect(execFileSync('unzip', ['-p', out, 'deploy/terraform/.terraform.lock.hcl'], { encoding: 'utf8' })).not.toContain('hashicorp/archive');
+  // Any other tracked change is still refused.
+  writeFileSync(join(r, 'a.ts'), 'changed');
+  expect(pack(r, out).stderr).toMatch(/tracked changes aren't committed/);
+});
