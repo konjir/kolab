@@ -88,6 +88,26 @@ test('if the rebase onto the parent commit that landed during the job fails too,
   expect((await k.openQueries()).filter((q) => q.question.startsWith('Rebasing onto the new parent failed'))).toHaveLength(1);
 });
 
+test('a parent commit that lands while a stalled run\'s lease has lapsed, unclaimed by anyone else, still reaches the variant when that run fails', async () => {
+  const h = hooked();
+  const { k, commit } = await family({ checks: h.checks });
+  const p2 = (await commit('P', parentRev(2))).version;
+  h.set(async (ctx) => {
+    if (ctx.version.node_id !== 'V' || ctx.version.active_role !== 'system') return undefined;
+    if (ctx.version.parent_version_id === p2) {
+      // The worker stalls past its lease, and no one takes the job; P@3 commits meanwhile.
+      await k.db.query(`update outbox set claimed_until = clock_timestamp() - interval '1 second' where kind = 'rebase'`);
+      await commit('P', parentRev(3));
+      expect(await rebaseJobs(k)).toMatchObject([{ again: true }]);
+    }
+    return { ok: false, note: 'refused' };
+  });
+  await k.drainOutbox();
+  // The stalled run's failure didn't delete the job: it ran again, onto P@3, and failed there too.
+  expect(await where(k)).toStrictEqual({ on: 1, failed: [3] });
+  expect(await rebaseJobs(k)).toStrictEqual([]);
+});
+
 // ---- a job that dies -------------------------------------------------------------------------------
 
 test('a rebase job that dies marks its variant rebase_failed, says so in status, and the parent\'s next commit revives it', async () => {
