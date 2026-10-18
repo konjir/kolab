@@ -124,16 +124,39 @@ export async function kolabNodes(kolab: Kolab, session: string): Promise<NodeRow
 }
 
 /**
- * The nodes of another kolab the session holds Read on, as a reader outside it sees them (D49):
- * each with its latest committed version, and no drafts or versions in review, which stay private.
- * The caller has checked the session may read that kolab; row-level security bounds it too.
+ * Another kolab's nodes that have a committed version, each at its latest, as a reader outside it
+ * sees them (D49): a node with only drafts, versions in review or rejected versions is left out, as
+ * a version that doesn't exist is. One read-only transaction as kj_agent, which checks Read for that
+ * kolab alone first (kj_session_readable_kolabs): undefined if the session can't read it now,
+ * whether or not it exists.
  */
-export async function readableNodes(kolab: Kolab, session: string, inKolab: string): Promise<NodeRowView[]> {
-  return kolab.readAs(session, async (q) => (await q.query<NodeRowView>(
-    `select n.name, n.kind, n.layer, n.title,
-            (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
-            0 as drafts, 0 as in_review
-       from node n where n.kolab_id = $1 order by n.kind, n.name`, [inKolab])).rows);
+export async function readableNodes(kolab: Kolab, session: string, inKolab: string): Promise<NodeRowView[] | undefined> {
+  return kolab.readAs(session, async (q) => {
+    const may = (await q.query<{ ok: boolean }>(`select $1 = any ((select kj_session_readable_kolabs())::text[]) as ok`, [inKolab])).rows[0]?.ok;
+    if (!may) return undefined;
+    return (await q.query<NodeRowView>(
+      `select n.name, n.kind, n.layer, n.title, l.latest, 0 as drafts, 0 as in_review
+         from node n cross join lateral (select max(v.seq) as latest from version v where v.node_id = n.id and v.state = 'committed') l
+        where n.kolab_id = $1 and l.latest is not null order by n.kind, n.name`, [inKolab])).rows;
+  });
+}
+
+/** How many case files are open on `layer` in the session's kolab: none for a session that holds only Read (D49). */
+export async function openCaseCount(kolab: Kolab, session: string, layer: Layer): Promise<number> {
+  const here = await kolab.sessionKolab(session);
+  return kolab.readAs(session, async (q) => (await q.query<{ n: number }>(
+    `select count(*)::int as n from case_file c join version v on v.id = c.version_id
+      where c.kolab_id = $1 and c.state = 'open' and v.layer = $2`, [here, layer])).rows[0].n);
+}
+
+/**
+ * Which of `actors` answer for `person` (D51): the person, and their agents. Kolab's own lookup,
+ * since kj_agent reads no actors; it says only which ids are the person's, of those it is given.
+ */
+export async function ownSide(kolab: Kolab, person: string, actors: string[]): Promise<Set<string>> {
+  if (!actors.length) return new Set();
+  return new Set((await kolab.db.query<{ id: string }>(
+    `select id from actor where id = any($1::text[]) and (id = $2 or (kind = 'agent' and owner_id = $2))`, [actors, person])).rows.map((r) => r.id));
 }
 
 export interface ReviewRequestRow { node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }

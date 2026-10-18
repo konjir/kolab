@@ -56,7 +56,7 @@ export function CaseBox({ c, me, act, go }: { c: WebCase; me: WebMe; act: Act; g
               <span>Seeks to {sideWord(p.seeks)}</span>
               {p.verdict && <Pill tone={p.verdict === 'sustained' ? 'clean' : 'boundary'}>{p.verdict}</Pill>}
             </div>
-            <span className="why-not">{p.actor}{p.kind === 'agent' && p.owner ? `, an agent of ${p.owner}` : ''}{p.taken_at ? ` · ${ago(p.taken_at)}` : ''}</span>
+            <span className="why-not">{p.actor}{p.taken_at ? ` · ${ago(p.taken_at)}` : ''}</span>
             <p>{p.claim}</p>
             {p.evidence.length > 0 && (
               <ul className="evidence" aria-label="Evidence">

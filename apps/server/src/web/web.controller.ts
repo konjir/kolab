@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Delete, Get, HttpCode, Inject, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
+  BadRequestException, Body, Controller, Delete, Get, HttpCode, Inject, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type {
@@ -16,6 +16,13 @@ async function run<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const seqOf = new ParseIntPipe({ errorHttpStatusCode: 400 });
+
+/** A query parameter given once, as text: a repeated one (an array to Express) is refused, never passed on. */
+function one(name: string, v: unknown): string | undefined {
+  if (v === undefined || v === '') return undefined;
+  if (typeof v !== 'string') throw new BadRequestException({ error: 'bad_request', message: `give ${name} once` });
+  return v;
+}
 
 /** Signing in and out of the web interface, and switching kolab or role (see auth.ts). */
 @Controller('api/session')
@@ -85,8 +92,9 @@ export class WebController {
   @Get('activity') activity(@WebSession() s: string) { return run(() => this.web.activity(s)); }
 
   @Get('nodes/:name')
-  node(@WebSession() s: string, @Param('name') name: string, @Query('version') version?: string) {
-    const seq = version === undefined || version === '' ? undefined : Number(version);
+  node(@WebSession() s: string, @Param('name') name: string, @Query('version') v?: unknown) {
+    const version = one('version', v);
+    const seq = version === undefined ? undefined : Number(version);
     if (seq !== undefined && !Number.isInteger(seq)) return run(async () => { throw httpError(new Error(`no version ${version}`)); });
     return run(() => this.web.node(s, name, seq));
   }
@@ -96,8 +104,9 @@ export class WebController {
   foreignKolab(@WebSession() s: string, @Param('kolab') kolab: string) { return run(() => this.web.foreignKolab(s, kolab)); }
 
   @Get('kolabs/:kolab/nodes/:name')
-  foreignNode(@WebSession() s: string, @Param('kolab') kolab: string, @Param('name') name: string, @Query('version') version?: string) {
-    const seq = version === undefined || version === '' ? undefined : Number(version);
+  foreignNode(@WebSession() s: string, @Param('kolab') kolab: string, @Param('name') name: string, @Query('version') v?: unknown) {
+    const version = one('version', v);
+    const seq = version === undefined ? undefined : Number(version);
     if (seq !== undefined && !Number.isInteger(seq)) return run(async () => { throw httpError(new Error(`no version ${version}`)); });
     return run(() => this.web.foreignNode(s, kolab, name, seq));
   }
@@ -134,8 +143,8 @@ export class WebController {
   // ---- case files and rulings: one route per verb (CASE1–CASE7, D49, D51) ----
 
   @Get('cases')
-  cases(@WebSession() s: string, @Query('state') state?: string, @Query('mine') mine?: string, @Query('node') node?: string) {
-    return run(() => this.web.cases(s, { state: state || undefined, mine: mine === 'true', node: node || undefined }));
+  cases(@WebSession() s: string, @Query('state') state?: unknown, @Query('mine') mine?: unknown, @Query('node') node?: unknown) {
+    return run(() => this.web.cases(s, { state: one('state', state), mine: one('mine', mine) === 'true', node: one('node', node) }));
   }
 
   @Get('cases/:id')
@@ -151,7 +160,7 @@ export class WebController {
   ruleCase(@WebSession() s: string, @Param('id') id: string, @Body() body: WebRuleCase) { return run(() => this.web.ruleCase(s, id, body)); }
 
   @Get('rulings')
-  async rulings(@WebSession() s: string, @Query('node') node?: string) { return { rulings: await run(() => this.web.rulings(s, node || undefined)) }; }
+  async rulings(@WebSession() s: string, @Query('node') node?: unknown) { return { rulings: await run(() => this.web.rulings(s, one('node', node))) }; }
 
   @Post('rulings')
   ruleDirect(@WebSession() s: string, @Body() body: WebRuleDirect) { return run(() => this.web.ruleDirect(s, body)); }

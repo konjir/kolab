@@ -17,7 +17,7 @@ const at = new Date().toISOString();
 
 const position = (p: Partial<WebCase['positions'][number]>): WebCase['positions'][number] => ({
   position: 'p1', actor: 'eli', claim: 'Timing can’t be equalized without a queue.', evidence: ['kj:password-reset-pg@2#B10', 'load test run 812'],
-  seeks: 'change_intent', verdict: null, taken_at: at, kind: 'person', owner: null, ...p,
+  seeks: 'change_intent', verdict: null, taken_at: at, ...p,
 });
 const caseFile = (over: Partial<WebCase> = {}): WebCase => ({
   case: 'c1', on: 'kj:password-reset@3#PR3', node: 'password-reset', seq: 3, element: 'PR3', layer: 'functional',

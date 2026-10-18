@@ -1639,6 +1639,12 @@ export class Kolab {
    * are left out (D52); with `archived`, they are listed too, and every kolab says whether it is
    * archived.
    */
+  /** One kolab, by its name, unless it is archived (D52). Kolab's own read: the caller checks who may see it. */
+  async kolabRow(id: string): Promise<KolabRow | undefined> {
+    return (await this.db.query<KolabRow>(
+      `select id, owner_id as owner, title, visibility, base_permission from kolab where id = $1 and not kj_kolab_archived(id)`, [id])).rows[0];
+  }
+
   async listKolabs(opts: { owner?: string; archived?: boolean } = {}): Promise<KolabRow[]> {
     const rows = (await this.db.query<KolabRow & { archived: boolean }>(
       `select id, owner_id as owner, title, visibility, base_permission, kj_kolab_archived(id) as archived from kolab
@@ -3982,11 +3988,16 @@ export class Kolab {
           and ($5::text is null or q.kind = $5) and ($6::text is null or q.kolab_id = $6)
         order by q.id`,
       [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null, filter.kolab ?? null])).rows;
-    return rows.map((r) => ({
+    // A reader outside a query's kolab (D49) sees only the questions and notes people raised: never
+    // one a mark raised (a boundary, a ruling that changes the intent, D51), since that kolab's marks
+    // and rulings stay private, and never which element of its asked. Row-level security holds
+    // kj_agent to the first too (0015).
+    const outside = (r: { kolab_id: string }) => filter.from !== undefined && r.kolab_id !== filter.from;
+    return rows.filter((r) => !(outside(r) && r.mark)).map((r) => ({
       id: r.id, kind: r.kind,
       address: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }, { from: filter.from ?? r.kolab_id }),
       question: r.question, state: r.state, answer: r.answer, answered_by: r.answered_by, raised_by: r.raised_by,
-      from: r.from_node ? formatAddress({ kolab: r.from_kolab!, node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }, { from: filter.from ?? r.kolab_id }) : null,
+      from: r.from_node && !outside(r) ? formatAddress({ kolab: r.from_kolab!, node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }, { from: filter.from ?? r.kolab_id }) : null,
       mark: r.mark,
     }));
   }

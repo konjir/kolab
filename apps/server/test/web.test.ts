@@ -354,7 +354,8 @@ test('case files and rulings in the page: open, take the other side, rule, prece
   expect(opened.status).toBe(201);
   const c = opened.body;
   expect(c).toMatchObject({ on: 'kj:orders@1#R1', node: 'orders', seq: 1, element: 'R1', layer: 'functional', state: 'open', opened_by: 'bob' });
-  expect(c.positions.map((p) => [p.actor, p.seeks, p.kind])).toStrictEqual([['bob', 'change_intent', 'person']]);
+  expect(c.positions.map((p) => [p.actor, p.seeks])).toStrictEqual([['bob', 'change_intent']]);
+  expect(Object.keys(c.positions[0]).sort()).toStrictEqual(['actor', 'claim', 'evidence', 'position', 'seeks', 'taken_at', 'verdict']);   // no kind or owner: the page needs only `you`
   expect(c.you).toStrictEqual({ party: true, can_argue: false, can_rule: false });
   // Evidence that doesn't resolve, a quote, or no evidence at all are refused.
   expect((await bob.call('cases', { node: 'orders', element: 'R1', question: 'q', claim: 'c', evidence: ['kj:orders#R99'], seeks: 'keep_intent' })).status).toBe(400);
@@ -459,6 +460,9 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   await kolab.raiseQuery(erin, 'kj:secret#S1', 'Who reads it?');
   await kolab.draft(erin, 'secret', { elements: els({ S1: 'A draft only erin sees.' }) });
   await kolab.rule(erin, { address: 'kj:secret#S1', text: 'A ruling private to other.', effect: 'change_intent' });
+  // A node with only a draft reads exactly as one that isn't there.
+  await kolab.createNode(erin, 'functional_spec', 'Acquire Foo Inc', 'acquisition-plan');
+  await kolab.draft(erin, 'acquisition-plan', { elements: els({ A1: 'Buy Foo.' }) });
   const base = await serve(kolab);
   const alice = await signIn(base, product);
   const bob = await signIn(base, engineer);
@@ -488,7 +492,7 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   // Bob holds nothing in other: the kolab and its node are refused exactly as ones that aren't there.
   const refusals = await Promise.all([
     bob.call('kolabs/other/nodes/secret'), bob.call('kolabs/nowhere/nodes/secret'), alice.call('kolabs/other/nodes/missing'),
-    bob.call('kolabs/other/nodes'), bob.call('kolabs/nowhere/nodes'),
+    bob.call('kolabs/other/nodes'), bob.call('kolabs/nowhere/nodes'), alice.call('kolabs/other/nodes/acquisition-plan'),
   ]);
   expect(refusals.map((r) => [r.status, r.body])).toStrictEqual([
     [404, { error: 'not_found', message: 'no node secret in kolab other' }],
@@ -496,7 +500,23 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
     [404, { error: 'not_found', message: 'no node missing in kolab other' }],
     [404, { error: 'not_found', message: 'no kolab other you can read' }],
     [404, { error: 'not_found', message: 'no kolab nowhere you can read' }],
+    [404, { error: 'not_found', message: 'no node acquisition-plan in kolab other' }],
   ]);
+  expect(JSON.stringify(list.body)).not.toMatch(/Acquire Foo|acquisition-plan/);
+  // Version numbers are the node's own, committed or not: a reader outside sees v1 and v2 here, and would see a gap where drafts were.
+  // Malformed requests are refused as such, never a 500.
+  for (const [path, body] of [
+    ['cases?node=a&node=b', undefined], ['rulings?node=a&node=b', undefined], ['kolabs/test/nodes/orders?version=1&version=2', undefined],
+    ['cases', { node: 'orders', element: 'R1~q(})', question: 'q', claim: 'c', evidence: ['x'], seeks: 'keep_intent' }],
+    ['cases', { node: 'orders', element: 'R1', question: 1, claim: 'c', evidence: ['x'], seeks: 'keep_intent' }],
+    ['rulings', { node: 'orders', element: 'R1', text: 'x', effect: 'keep_intent', replaces: 1 }],
+    ['rulings', { node: 'orders', element: 'R1#x', text: 'x', effect: 'keep_intent' }],
+    ['rulings', { node: 'orders', text: 7, effect: 'keep_intent' }],
+    ['cases/whatever/rule', { text: 'x', verdicts: { p: 'sustained' }, replaces: ['a'] }],
+    ['cases/whatever/positions', { claim: 5, evidence: ['x'] }],
+  ] as const) {
+    expect([path, (await alice.call(path, body)).status]).toStrictEqual([path, 400]);
+  }
   // In the session's own kolab, the full form is the node's own page.
   expect((await alice.call<WebNodeView>('kolabs/test/nodes/orders')).body).toMatchObject({ kolab: 'test', foreign: false });
   // Nothing is written there from here.
