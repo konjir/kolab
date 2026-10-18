@@ -453,3 +453,18 @@ test('sign-in limits are per address, an IPv6 /64 as one, with no per-client buc
   for (let i = 0; i < 40; i++) expect(await from('198.51.100.9', '/oauth/authorize?client_id=kjcl_nobody0000000000000000')).toBe(400);
   expect(await from('198.51.100.9')).toBe(302);
 });
+
+test('a request with no address to count by is refused, and sign-in has no total for many addresses to use up', async () => {
+  const { Limit, clientAddress } = await import('../src/oauth/oauth.controller.js');
+  const req = (remoteAddress: string | undefined, xff?: string) => ({ socket: { remoteAddress }, headers: xff ? { 'x-forwarded-for': xff } : {} }) as never;
+  expect(clientAddress(req(undefined), {})).toBeUndefined();
+  expect(clientAddress(req('127.0.0.1'), { publicHost: 'k.example' })).toBe('ip:127.0.0.1');
+  expect(clientAddress(req('127.0.0.1', '203.0.113.1, 198.51.100.4'), { publicHost: 'k.example' })).toBe('ip:198.51.100.4');
+  expect(clientAddress(req('203.0.113.9', '198.51.100.4'), { publicHost: 'k.example' })).toBe('ip:203.0.113.9');   // not through the proxy: XFF ignored
+  const limit = new Limit(30, Infinity, 60_000);
+  expect(limit.take(undefined)).toBe(false);
+  // 200 addresses, each at its own limit, and the 201st still gets in.
+  for (let a = 0; a < 200; a++) for (let i = 0; i < 30; i++) expect(limit.take(`ip:10.0.${a >> 8}.${a & 255}`)).toBe(true);
+  expect(limit.take('ip:10.9.9.9')).toBe(true);
+  expect(limit.take('ip:10.0.0.0')).toBe(false);
+});
