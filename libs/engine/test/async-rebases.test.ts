@@ -214,3 +214,17 @@ test('a write that fails throws its own error, even when the drain after it fail
   }
   expect((await writer.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
 }, 60_000);
+
+// ---- archived kolabs (D52) -------------------------------------------------------------------------
+
+test('a queued rebase in a kolab archived before the worker reaches it waits, unclaimed, and runs once the kolab is unarchived', async () => {
+  const { k, commit } = await family();
+  expect((await commit('P', parentRev(2))).rebases).toBe(1);
+  await k.archive({ kolab: 'test' });
+  expect(await k.drainOutbox()).toBe(0);
+  expect(await rebaseJobs(k)).toMatchObject([{ state: 'pending', attempts: 0 }]);
+  expect(await where(k)).toStrictEqual({ on: 1, failed: [] });
+  await k.unarchive({ kolab: 'test' });
+  expect(await k.drainOutbox()).toBe(1);
+  expect(await where(k)).toStrictEqual({ on: 2, failed: [] });
+});
