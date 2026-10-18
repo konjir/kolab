@@ -9,7 +9,7 @@ import type {
   WebSwitch, WebVerdict,
 } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
-import { WEB_CALLBACK, WEB_CLIENT, cookieOf, originOf, sameSecret } from '../oauth/oauth.controller.js';
+import { WEB_CALLBACK, WEB_CLIENT, bindingCookieAttrs, cookieOf, originOf, sameSecret } from '../oauth/oauth.controller.js';
 import {
   WebPeople, WebSession, WebSessionGuard, WebWho, checkOrigin, clearSessionCookie, refreshCookieName, setSessionCookie, tokenOf,
 } from './auth.js';
@@ -29,8 +29,12 @@ function one(name: string, v: unknown): string | undefined {
   return v;
 }
 
-/** The cookie that carries the web interface's own PKCE verifier and state while it signs in: only to its callback. */
-const pkceCookie = (options: WebOptions) => (options.publicHost ? '__Secure-konjir_web_oauth' : 'konjir_web_oauth');
+/**
+ * The cookie that carries the web interface's own PKCE verifier and state while it signs in.
+ * Behind the TLS proxy it is `__Host-` (Secure, Path=/, no Domain), so no other host under the
+ * same domain can toss one in to sign a person in as someone else; on loopback, only to its callback.
+ */
+const pkceCookie = (options: WebOptions) => (options.publicHost ? '__Host-konjir_web_oauth' : 'konjir_web_oauth');
 const pkcePath = WEB_CALLBACK.slice(0, WEB_CALLBACK.lastIndexOf('/'));
 
 /** Signing in and out of the web interface, and switching kolab or role (see auth.ts). */
@@ -63,8 +67,7 @@ export class WebSessionController {
     const base = originOf(req, this.options)!;
     const verifier = randomBytes(32).toString('base64url');
     const state = randomBytes(24).toString('base64url');
-    const secure = this.options.publicHost ? '; Secure' : '';
-    res.setHeader('set-cookie', `${pkceCookie(this.options)}=${state}.${verifier}; Path=${pkcePath}; HttpOnly; SameSite=Lax; Max-Age=900${secure}`);
+    res.setHeader('set-cookie', `${pkceCookie(this.options)}=${state}.${verifier}; ${bindingCookieAttrs(this.options, pkcePath)}; HttpOnly; SameSite=Lax; Max-Age=900`);
     const u = new URL('/oauth/authorize', base);
     u.search = new URLSearchParams({
       response_type: 'code', client_id: WEB_CLIENT, redirect_uri: `${base}${WEB_CALLBACK}`, state,
@@ -79,8 +82,7 @@ export class WebSessionController {
     checkOrigin(req, this.options);
     const base = originOf(req, this.options)!;
     const back = (error?: string) => {
-      const secure = this.options.publicHost ? '; Secure' : '';
-      res.append('set-cookie', `${pkceCookie(this.options)}=; Path=${pkcePath}; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+      res.append('set-cookie', `${pkceCookie(this.options)}=; ${bindingCookieAttrs(this.options, pkcePath)}; HttpOnly; SameSite=Lax; Max-Age=0`);
       res.redirect(303, error ? `/?signin_error=${encodeURIComponent(error)}` : '/');
     };
     const [state, verifier] = (cookieOf(req, pkceCookie(this.options)) ?? '').split('.');

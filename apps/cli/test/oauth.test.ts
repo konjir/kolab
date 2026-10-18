@@ -10,7 +10,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { StubIdentity, startServer } from '@konjir/server';
 import { call } from '../src/cli.js';
-import { closeAtEnd, people, testStore, openKolab } from '@konjir/engine/testing';
+import { closeAtEnd, commitReviewed, els, people, testStore, openKolab } from '@konjir/engine/testing';
 
 const CALLBACK = 'http://127.0.0.1:9/callback';
 
@@ -71,7 +71,7 @@ async function connectWithOAuth(url: string, harness: Harness, form: Record<stri
   return c;
 }
 
-test('an MCP client signs a person in with OAuth, as their agent; its token refreshes by itself; revoking it closes its listen stream', async () => {
+test('an MCP client signs a person in with OAuth, as their agent; its token refreshes by itself; its listen stream closes when the token expires, and when the grant is revoked', async () => {
   const kolab = await openKolab(await testStore());
   await people(kolab, 'lee');   // someone else, in a kolab Rae can't reach
   const idp = new StubIdentity().next({ subject: '9001', login: 'Rae', name: 'Rae' });
@@ -92,22 +92,44 @@ test('an MCP client signs a person in with OAuth, as their agent; its token refr
   expect(harness.saved!.access_token).not.toBe(first.access_token);
   expect(harness.saved!.refresh_token).not.toBe(first.refresh_token);
 
-  // Its listen stream lives as long as its session, not its access token…
-  const sub = await agent.listen({ resourceSubscriptions: ['konjir://inbox/raes/functional'] });
-  let closed = false;
-  void sub.closed.then(() => { closed = true; }, () => { closed = true; });
+  // A spec Rae and her agent review together, so a question on it changes the functional inbox.
+  const rae = await kolab.openSession('rae', 'product', { kolab: 'raes' });
+  await commitReviewed(kolab, rae, harness.saved!.access_token, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
+  const engineer = await kolab.switchSession(rae, { kolab: 'raes', role: 'engineer' });
+
+  // Its listen stream lives as long as its access token: once that expires, the stream closes
+  // before anything more is signalled to it (D41, D55), and the client listens again, refreshed.
+  const listen = async () => {
+    const box = { closed: false, updates: 0 };
+    const sub = await agent.listen({ resourceSubscriptions: ['konjir://inbox/raes/functional'] });
+    void sub.closed.then(() => { box.closed = true; }, () => { box.closed = true; });
+    return box;
+  };
+  const until = async (what: () => boolean) => {
+    const end = Date.now() + 5000;
+    while (!what() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+    return what();
+  };
+  let updates = 0;
+  agent.setNotificationHandler('notifications/resources/updated', () => { updates++; });
+  const stream = await listen();
+  await kolab.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
+  expect(await until(() => updates === 1)).toBe(true);
   await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'rae-claude' and ended_at is null`);
-  await new Promise((r) => setTimeout(r, 200));
-  expect(closed).toBe(false);
+  await kolab.raiseQuery(engineer, 'kj:orders#R1', 'And when?');
+  expect(await until(() => stream.closed)).toBe(true);
+  expect(updates).toBe(1);   // nothing reached the expired token
+  // Listening again refreshes the token, by itself.
+  const before = harness.saved!.access_token;
+  const second = await listen();
+  expect(harness.saved!.access_token).not.toBe(before);
   // …and revoking the grant ends the session, which closes the stream (D41).
   const revoked = await fetch(new URL('/oauth/revoke', server.url), {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ token: harness.saved!.refresh_token!, client_id: harness.info!.client_id }).toString(),
   });
   expect(revoked.status).toBe(200);
-  const end = Date.now() + 5000;
-  while (!closed && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
-  expect(closed).toBe(true);
+  expect(await until(() => second.closed)).toBe(true);
   // The revoked token is refused; the client would have to authorize again.
   const fresh = new Client({ name: 'stale', version: '0' });
   await expect(fresh.connect(new StreamableHTTPClientTransport(new URL(server.url), {

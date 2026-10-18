@@ -160,14 +160,17 @@ test('a person signs up with the identity provider, consents, and their client g
   for (const secret of [code, t.body.access_token, t.body.refresh_token, r.body.access_token, r.body.refresh_token, c.csrf]) expect(dump).not.toContain(secret);
 });
 
-test('PKCE is required, S256 only, and the verifier must match', async () => {
+test('PKCE is required, S256 only, and the verifier must match; a refused request is a page, never a redirect', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
   const client = (await register(base)).body.client_id;
   for (const p of [{ challenge: null }, { method: 'plain' }, { challenge: 'short' }]) {
-    const { left } = await new Browser(base).go(authorizeUrl(base, client, p));
-    expect([left?.searchParams.get('error'), left?.searchParams.get('state')]).toStrictEqual(['invalid_request', 'client-state']);
+    const { res, left } = await new Browser(base).go(authorizeUrl(base, client, p));
+    expect([res.status, left, (await res.text()).includes('PKCE is required')]).toStrictEqual([400, undefined, true]);
   }
+  const bad = authorizeUrl(base, client);
+  bad.searchParams.set('response_type', 'token');
+  expect([(await new Browser(base).go(bad)).res.status, (await new Browser(base).go(bad)).left]).toStrictEqual([400, undefined]);
   await kolab.grant('test', 'alice', 'write');
   const verifier = randomBytes(32).toString('base64url');
   const c = await toConsent(base, idp, client, { subject: '502', login: 'yan' }, { verifier });
@@ -187,12 +190,12 @@ test('PKCE is required, S256 only, and the verifier must match', async () => {
 test('redirect URIs: registered ones only, exactly, so nothing is sent to an address the client did not register', async () => {
   const { kolab } = await setup();
   const { base } = await serve(kolab);
-  for (const bad of [['http://evil.example/cb'], ['javascript:alert(1)'], [], ['https://a.example/cb#frag']]) {
+  for (const bad of [['http://evil.example/cb'], ['javascript:alert(1)'], [], ['https://a.example/cb#frag'], ['com.example.app:/cb'], ['http://u@localhost/cb']]) {
     expect(await register(base, bad)).toMatchObject({ status: 400, body: { error: 'invalid_redirect_uri' } });
   }
   expect((await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ redirect_uris: [CB], token_endpoint_auth_method: 'client_secret_basic' }) })).status).toBe(400);
   const client = (await register(base, ['https://app.example/cb', 'http://localhost:5000/cb'])).body.client_id;
-  for (const redirect of ['https://app.example/cb/../evil', 'https://app.example/cb2', 'https://evil.example/cb', 'http://127.0.0.1:5000/cb']) {
+  for (const redirect of ['https://app.example/cb/../evil', 'https://app.example/cb2', 'https://evil.example/cb', 'http://127.0.0.1:5000/cb', 'http://localhost:5000/cb#x', 'http://u:p@localhost:5000/cb']) {
     const { res, left } = await new Browser(base).go(authorizeUrl(base, client, { redirect }));
     expect([redirect, res.status, left]).toStrictEqual([redirect, 400, undefined]);   // a page, never a redirect
   }
@@ -201,10 +204,11 @@ test('redirect URIs: registered ones only, exactly, so nothing is sent to an add
   // A loopback redirect may change its port (RFC 8252 §7.3): it goes on to sign in.
   const loop = await new Browser(base).go(authorizeUrl(base, client, { redirect: 'http://localhost:61234/cb' }));
   expect(loop.left?.toString() ?? loop.at.pathname).toMatch(/oauth\/callback\/stub|access_denied/);
-  // A resource other than this Kolab's MCP endpoint is refused.
+  // A resource other than this Kolab's MCP endpoint is refused, on a page.
   const u = authorizeUrl(base, client, { redirect: 'https://app.example/cb' });
   u.searchParams.set('resource', 'https://other.example/mcp');
-  expect((await new Browser(base).go(u)).left?.searchParams.get('error')).toBe('invalid_target');
+  const target = await new Browser(base).go(u);
+  expect([target.res.status, target.left, (await target.res.text()).includes('issues tokens for')]).toStrictEqual([400, undefined, true]);
 });
 
 test('state and CSRF: the provider\'s answer counts only in the browser that asked, with its state; consent only from Kolab\'s page, with its token', async () => {
@@ -363,4 +367,53 @@ test('GitHub: Kolab asks for no scope, sends PKCE and its state, reads who signe
   // A refusal says so without the response's body.
   const refusing = new GitHubIdentity({ clientId: 'x', clientSecret: 'y', fetch: async () => Response.json({ error: 'bad_verification_code' }) });
   await expect(refusing.identify({ code: 'no', redirectUri: 'r', codeVerifier: 'v' })).rejects.toThrow(/didn't accept the sign-in \(bad_verification_code\)/);
+});
+
+test('limits are per address and per client, counted only once the client checks out; revocation needs the token\'s own client', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  // Ten registrations an hour from one address.
+  const regs = [];
+  for (let i = 0; i < 11; i++) regs.push((await register(base)).status);
+  expect(regs).toStrictEqual([...Array(10).fill(201), 429]);
+  // Requests naming no client, or an unknown one, use up nothing.
+  for (let i = 0; i < 40; i++) expect((await new Browser(base).fetch('/oauth/authorize?client_id=kjcl_nobody0000000000000000')).status).toBe(400);
+  const client = (await kolab.registerClient({ redirectUris: [CB] })).id;
+  const statuses = [];
+  for (let i = 0; i < 31; i++) { idp.as = { subject: '900', login: 'lim' }; statuses.push((await new Browser(base).fetch(authorizeUrl(base, client))).status); }
+  expect(statuses.slice(0, 30).every((st) => st === 302)).toBe(true);
+  expect(statuses[30]).toBe(429);
+
+  // Revocation: without the token's own client, refused; with another client, nothing happens.
+  const other = (await kolab.registerClient({ redirectUris: [CB] })).id;
+  const { actor } = await kolab.signInWith({ provider: 'stub', subject: '901', login: 'rev' });
+  await kolab.grant('test', actor, 'read');
+  const verifier = randomBytes(32).toString('base64url');
+  const { binding, state } = await kolab.beginAuthorization({ provider: 'stub', clientId: client, redirectUri: CB, codeChallenge: s256(verifier) });
+  const { csrf } = await kolab.identifyAuthorization(binding, state, actor);
+  const { code } = await kolab.consent(binding, csrf, { as: { kind: 'self' }, kolab: 'test', role: 'product' });
+  const t = await kolab.exchangeCode({ code, clientId: client, redirectUri: CB, codeVerifier: verifier });
+  const revoke = (form: Record<string, string>) => fetch(`${base}/oauth/revoke`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form).toString() });
+  expect((await revoke({ token: t.refreshToken })).status).toBe(401);
+  expect((await revoke({ token: t.refreshToken, client_id: 'konjir-web' })).status).toBe(401);
+  expect((await revoke({ token: t.refreshToken, client_id: other })).status).toBe(200);
+  expect(await kolab.sessionOpen(t.accessToken)).toBe(true);
+  expect((await revoke({ token: t.refreshToken, client_id: client })).status).toBe(200);
+  expect(await kolab.sessionOpen(t.accessToken)).toBe(false);
+});
+
+test('behind the TLS proxy the sign-in cookies are __Host-: Secure, Path=/, no Domain', async () => {
+  const { request } = await import('node:http');
+  const { createServer } = await import('node:http');
+  const kolab = await openKolab();
+  const port = await new Promise<number>((resolve) => { const t = createServer().listen(0, '127.0.0.1', () => { const p = (t.address() as { port: number }).port; t.close(() => resolve(p)); }); });
+  const idp = new StubIdentity();
+  closeAtEnd(await startServer({ adminToken: 'admin-token', kolab, port, webRoot: null, publicHost: 'kolab.example.com', identity: idp }));
+  const client = (await kolab.registerClient({ redirectUris: [CB] })).id;
+  const get = (path: string) => new Promise<string[]>((resolve, reject) => {
+    request({ host: '127.0.0.1', port, path, headers: { host: 'kolab.example.com' } }, (x) => { x.resume(); resolve(x.headers['set-cookie'] ?? []); }).on('error', reject).end();
+  });
+  const u = new URL(authorizeUrl('https://kolab.example.com', client));
+  expect((await get(u.pathname + u.search))[0]).toMatch(/^__Host-konjir_oauth=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
+  expect((await get('/api/session/oauth/start'))[0]).toMatch(/^__Host-konjir_web_oauth=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=900$/);
 });

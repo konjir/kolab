@@ -46,6 +46,14 @@ test('a login that is taken, in any case, by a live or archived account or actor
   expect(await kolab.signInWith(github('6', 'kolab'))).toStrictEqual({ actor: 'gh_kolab', created: true });
   expect(await kolab.signInWith(github('7', 'konjir-site'))).toStrictEqual({ actor: 'gh_konjir-site', created: true });
   expect([...signUpNames('Konjir')].slice(0, 2)).toStrictEqual(['gh_konjir', 'gh_konjir_2']);
+  // Words an admin or Kolab itself would be taken for.
+  for (const [i, w] of ['admin', 'Root', 'system', 'support'].entries()) {
+    expect(await kolab.signInWith(github(`70${i}`, w))).toStrictEqual({ actor: `gh_${w.toLowerCase()}`, created: true });
+  }
+  // A login that reads as an existing person's agent, <person>-<label>, can't pass for one (D30).
+  expect(await kolab.signInWith(github('8', 'Alice-Claude'))).toStrictEqual({ actor: 'gh_alice-claude', created: true });
+  expect(await kolab.signInWith(github('9', 'acme-bot'))).toStrictEqual({ actor: 'acme-bot', created: true });   // acme is an organization, not a person
+  expect(await kolab.signInWith(github('10', 'nobody-here'))).toStrictEqual({ actor: 'nobody-here', created: true });
   expect(await kolab.actor('alice')).toMatchObject({ kind: 'person' });   // untouched
 });
 
@@ -64,9 +72,10 @@ test('an archived person does not sign in; an admin links an existing person to 
   expect(await rejection(kolab.signInWith(github('42', 'icedlee337')))).toMatch(/lee is archived, so it can't sign in/);
 });
 
-test('redirect URIs: https, http only on loopback (any port there), or an app scheme; never javascript:, data:, a fragment or credentials', () => {
-  for (const ok of ['https://app.example.com/cb', 'http://127.0.0.1:33418/callback', 'http://localhost/cb', 'http://[::1]:8080/cb', 'com.example.app:/oauth']) expect([ok, validRedirectUri(ok)]).toStrictEqual([ok, true]);
-  for (const bad of ['http://evil.example/cb', 'javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'https://a.example/cb#x', 'https://u:p@a.example/cb', 'myapp:/cb', 'not a url']) {
+test('redirect URIs: https, or http only on loopback (any port there); never an app scheme, javascript:, data:, a fragment or credentials', () => {
+  for (const ok of ['https://app.example.com/cb', 'http://127.0.0.1:33418/callback', 'http://localhost/cb', 'http://[::1]:8080/cb']) expect([ok, validRedirectUri(ok)]).toStrictEqual([ok, true]);
+  for (const bad of ['http://evil.example/cb', 'javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'https://a.example/cb#x', 'https://a.example/cb#', 'https://u:p@a.example/cb',
+    'http://u@127.0.0.1/cb', 'http://@127.0.0.1/cb', 'myapp:/cb', 'com.example.app:/oauth', 'not a url']) {
     expect([bad, validRedirectUri(bad)]).toStrictEqual([bad, false]);
   }
   expect(redirectUriMatches(['http://localhost:5000/cb'], 'http://localhost:61234/cb')).toBe(true);   // RFC 8252 §7.3
@@ -74,6 +83,9 @@ test('redirect URIs: https, http only on loopback (any port there), or an app sc
   expect(redirectUriMatches(['http://localhost:5000/cb'], 'http://127.0.0.1:5000/cb')).toBe(false);
   expect(redirectUriMatches(['https://a.example/cb'], 'https://a.example/cb/')).toBe(false);
   expect(redirectUriMatches(['https://a.example/cb'], 'https://a.example:444/cb')).toBe(false);
+  // Only the loopback port may vary: never a fragment or credentials (OAuth 2.1 §2.3).
+  expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://127.0.0.1:9/cb#x')).toBe(false);
+  expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://u:p@127.0.0.1:9/cb')).toBe(false);
 });
 
 test('an access token is a session token that expires; refreshing rotates both tokens and keeps the session, its id, kolab and role', async () => {
@@ -202,6 +214,25 @@ test('consent: a new kolab of your own, a new agent capped by its owner (D30), t
   await kolab.addActor('alice-bot', { owner: 'alice' });
   expect(await rejection(authorized(kolab, zoe, { as: { kind: 'agent', agent: 'alice-bot' }, kolab: 'test', role: 'engineer' }))).toMatch(/no agent alice-bot of yours/);
   expect(await rejection(authorized(kolab, zoe, { as: { kind: 'agent', agent: 'zoe-claude' }, kolab: 'test', role: 'engineer' }, { selfOnly: true }))).toMatch(/for people/);
+  // A kolab she reads only because it is public gives her agents nothing (D56), and stores no grant.
+  await kolab.addOrganization('pubs');
+  await kolab.createKolab('open-door', { owner: 'pubs', visibility: 'public' });
+  expect(await rejection(authorized(kolab, zoe, { as: { kind: 'agent', agent: 'zoe-claude' }, kolab: 'open-door', role: 'product' }))).toMatch(/only because it is public/);
+  expect((await kolab.db.query(`select 1 from kolab_grant where kolab_id = 'open-door'`)).rows).toStrictEqual([]);
+  // As herself, she may read it.
+  expect((await kolab.sessionInfo(await (await authorized(kolab, zoe, { as: { kind: 'self' }, kolab: 'open-door', role: 'product' })).tokens().then((t) => t.accessToken))).access.level).toBe('read');
+  // Through a team of an organization she belongs to, her agent's grant is stored, and follows her access down (D30).
+  await kolab.addOrganization('acme');
+  await kolab.createKolab('acme-app', { owner: 'acme' });
+  await kolab.addMember('acme', zoe);
+  await kolab.addTeam('acme', 'devs');
+  await kolab.addTeamMember('acme/devs', zoe);
+  await kolab.grant('acme-app', 'acme/devs', 'write', { layers: ['functional'] });
+  const viaTeam = await (await authorized(kolab, zoe, { as: { kind: 'agent', agent: 'zoe-claude' }, kolab: 'acme-app', role: 'product' })).tokens();
+  expect((await kolab.sessionInfo(viaTeam.accessToken)).access).toStrictEqual({ level: 'write', layers: ['functional'] });
+  await kolab.grant('acme-app', 'acme/devs', 'read');
+  expect(await rejection(kolab.draft(viaTeam.accessToken, 'x', { elements: [] }))).toMatch(/./);
+  expect((await kolab.access('zoe-claude', 'acme-app'))).toStrictEqual({ level: 'read', layers: [] });
   // A kolab she can't reach.
   await kolab.addOrganization('other');
   await kolab.createKolab('secret', { owner: 'other' });
@@ -233,4 +264,39 @@ test('revoking a refresh or access token ends its grant\'s session and tells its
   expect(r.role).toBe('engineer');
   expect(await kolab.sessionOpen(moved)).toBe(false);
   expect(await kolab.sessionOpen(r.accessToken)).toBe(true);
+});
+
+test('one consent form makes one thing: submissions at once are refused but one; a failed one can be corrected', async () => {
+  const kolab = await openKolab();
+  const { actor } = await kolab.signInWith(github('20', 'quinn'));
+  const client = (await kolab.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256('v'.repeat(43)) });
+  const { csrf } = await kolab.identifyAuthorization(binding, state, actor);
+  // A mistake first: the claim is released, so the page can be corrected.
+  expect(await rejection(kolab.consent(binding, csrf, { as: { kind: 'self' }, kolab: { name: 'Bad Name', title: 'x' }, role: 'product' }))).toMatch(/valid kolab name/);
+  const tries = await Promise.allSettled(['a', 'b', 'c'].map((l) =>
+    kolab.consent(binding, csrf, { as: { kind: 'new-agent', label: l }, kolab: { name: `quinn-${l}`, title: l }, role: 'product' })));
+  expect(tries.filter((t) => t.status === 'fulfilled').length).toBe(1);
+  expect((await kolab.listKolabs({ owner: actor })).length).toBe(1);
+  expect((await kolab.listActors({ owner: actor })).length).toBe(1);
+});
+
+test('the cap on a person\'s agents holds for calls at once; unused registered clients are pruned', async () => {
+  const kolab = await openKolab();
+  const { actor } = await kolab.signInWith(github('21', 'rho'));
+  kolab.oauth.agentsPerPerson = 2;
+  const made = await Promise.allSettled(['a', 'b', 'c'].map((l) => kolab.addOwnAgent(actor, l)));
+  expect(made.filter((m) => m.status === 'fulfilled').length).toBe(2);
+  expect((await kolab.listActors({ owner: actor })).length).toBe(2);
+
+  const unused = await kolab.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] });
+  const used = await kolab.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] });
+  const fresh = await kolab.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] });
+  await kolab.oauthClient(used.id, { use: true });
+  await kolab.db.query(`update oauth_client set created_at = now() - interval '2 days' where id = any($1)`, [[unused.id, used.id]]);
+  expect(await kolab.pruneClients()).toBe(1);
+  expect(await kolab.oauthClient(unused.id)).toBeUndefined();
+  await kolab.db.query(`update oauth_client set last_used_at = now() - interval '31 days' where id = $1`, [used.id]);
+  expect(await kolab.pruneClients()).toBe(1);
+  expect([await kolab.oauthClient(used.id), (await kolab.oauthClient(fresh.id))?.id]).toStrictEqual([undefined, fresh.id]);
 });
