@@ -234,6 +234,8 @@ class ClaimLost extends Error { name = 'ClaimLost'; }
  */
 class Deferred extends Error { name = 'Deferred'; }
 
+/** How long a resync heard over the channel waits for others to fold into it. */
+const RESYNC_DEBOUNCE_MS = 250;
 /** How long a process's claim on an outbox job lasts unless renewed, by default. */
 const OUTBOX_LEASE_MS = 30_000;
 /** How often an idle worker looks for due jobs, by default, besides when it is told of one. */
@@ -332,6 +334,7 @@ export class Kolab {
     }
     this.closed = true;
     clearTimeout(this.worker?.timer);
+    clearTimeout(this.resyncPending);
     for (const c of this.claims.values()) c.stop();
     this.claims.clear();
     const listening = this.listening;
@@ -442,8 +445,26 @@ export class Kolab {
     if (!n) return this.dropped('isn\'t a Kolab event');
     if (n.from === this.origin) return; // told our own listeners when it committed
     if ('work' in n) return this.wake();
-    if ('resync' in n) void this.resync().catch((e) => console.error(`kolab: could not resync after a long event: ${maskTokens(e)}`));
+    if ('resync' in n) this.resyncSoon();
     else this.dispatch(n.event);
+  }
+
+  /** A resync heard over the channel and not yet run: a burst of them costs one. */
+  private resyncPending?: ReturnType<typeof setTimeout>;
+
+  /**
+   * Resync once, RESYNC_DEBOUNCE_MS after the first of a burst of resync notices: during a rolling
+   * deploy, every inbox event from a release before D50 is heard as one, and each costs every
+   * subscriber a re-read.
+   */
+  private resyncSoon() {
+    if (this.resyncPending || this.closed) return;
+    this.resyncPending = setTimeout(() => {
+      this.resyncPending = undefined;
+      if (this.closed) return;
+      void this.resync().catch((e) => console.error(`kolab: could not resync after a resync notice: ${maskTokens(e)}`));
+    }, RESYNC_DEBOUNCE_MS);
+    this.resyncPending.unref();
   }
 
   private dropped(why: string) {
@@ -456,7 +477,9 @@ export class Kolab {
    * a change too big to name, or after missing changes while the listener reconnected. That is,
    * in each kolab with an open session, every layer's inbox and the answers of each actor with an
    * open session there, since only an open session can subscribe to them, and only to its own
-   * kolab's (an ended one's streams are closed before the next signal). One query, before
+   * kolab's (an ended one's streams are closed before the next signal). The admin token, which may
+   * listen to any kolab's, isn't covered: a kolab with no open session gets no resync, so an admin
+   * stream on it hears what changed meanwhile only at that kolab's next change. One query, before
    * anything is signalled, so a failure signals nothing and the whole resync can be retried.
    * Each subscriber re-reads; an inbox that didn't change reads the same.
    */

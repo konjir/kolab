@@ -413,3 +413,72 @@ test('a session may listen to and read only its own kolab\'s inboxes and its own
   await own.close(); await any.close();
   await server.close();
 });
+
+/** A POST to the MCP endpoint, by hand, with the headers the test gives. */
+async function post(url: string, headers: Record<string, string>, body: unknown) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  const json = (() => { try { return JSON.parse(text.startsWith('{') ? text : text.replace(/^event: message\ndata: /, '').trim()); } catch { return text; } })();
+  return { status: res.status, body: json as { id?: unknown; error?: { code: number; message?: string; data?: { reason?: string } } } };
+}
+const LISTEN_HEADERS = { 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'subscriptions/listen' };
+const listenBody = (id: unknown, uris: string[]) => ({
+  jsonrpc: '2.0', id, method: 'subscriptions/listen',
+  params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'raw', version: '0' }, 'io.modelcontextprotocol/clientCapabilities': {} }, notifications: { resourceSubscriptions: uris } },
+});
+
+test('the listen scope answers nothing the transport would refuse first: a blocked origin, or a request with no valid id', async () => {
+  const { server, admin } = await boot();
+  const otherPm = await inOther(admin, server, 'other-pm', 'product');
+  const auth = { authorization: `Bearer ${otherPm.token}` };
+  // A foreign origin gets the transport's 403, whatever it asks for: no lookup, no in-band answer.
+  const blocked = await post(server.url, { ...auth, ...LISTEN_HEADERS, origin: 'https://evil.example' }, listenBody('o:1', [INBOX]));
+  expect(blocked.status).toBe(403);
+  expect(JSON.stringify(blocked.body)).not.toMatch(/not_subscribable/);
+  // A listen whose id is no JSON-RPC id is the transport's to refuse, as an invalid request.
+  const badId = await post(server.url, { ...auth, ...LISTEN_HEADERS }, listenBody({ a: 1 }, [INBOX]));
+  expect(badId.status).toBe(400);
+  expect(JSON.stringify(badId.body)).not.toMatch(/not_subscribable/);
+  await server.close();
+});
+
+test('a session lookup that hangs refuses the listen stream in-band as gate_timeout', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const kolab = server.kolab;
+  const sessionScope = kolab.sessionScope.bind(kolab);
+  kolab.sessionScope = () => { kolab.sessionScope = sessionScope; return new Promise(() => undefined); };
+  const t0 = Date.now();
+  const refused = await pm.client.listen({ resourceSubscriptions: [INBOX] }).then(() => undefined, (e: unknown) => e);
+  expect(listenRefusal(refused)).toBe('gate_timeout');
+  expect(Date.now() - t0).toBeLessThan(15_000);
+  const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });   // a retry opens it
+  await sub.close();
+  await server.close();
+}, 30_000);
+
+// The listen scope covers subscriptions/listen alone, which is enough only because the transport
+// is stateless: a 2025-era resources/subscribe needs a session, and would bypass it. If someone
+// turns sessions on (McpHttpModule's `session`), this fails, and the scope must cover that too.
+test('the transport is stateless: a 2025-era resources/subscribe, for any kolab, is refused', async () => {
+  const { server, admin } = await boot();
+  const otherPm = await inOther(admin, server, 'other-pm', 'product');
+  for (const uri of [INBOX, 'konjir://inbox/other/functional']) {
+    const r = await post(server.url, { authorization: `Bearer ${otherPm.token}`, 'mcp-protocol-version': '2025-06-18' },
+      { jsonrpc: '2.0', id: 'legacy:1', method: 'resources/subscribe', params: { uri } });
+    expect(r.body).toMatchObject({ error: { code: -32601 } });
+  }
+  await server.close();
+});
+
+test('a malformed kolab in an inbox or answers URI reads as no inbox, like any other wrong one', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  await expect(pm.client.readResource({ uri: 'konjir://inbox/%E0/functional' })).rejects.toThrow(/no inbox/);
+  await expect(pm.client.readResource({ uri: 'konjir://answers/%E0/pm' })).rejects.toThrow(/your own answers/);
+  await server.close();
+});

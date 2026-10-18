@@ -24,7 +24,11 @@ export interface KolabServerModuleOptions extends ServerOptions {
  */
 @Module({})
 export class KolabServerModule implements NestModule {
-  /** A listen stream may subscribe only to its own session's kolab's resources (D50). */
+  /**
+   * A listen stream may subscribe only to its own session's kolab's resources (D50). ListenScope
+   * sees subscriptions/listen alone, which suffices only while the transport is stateless (no
+   * `session` below): a 2025-era resources/subscribe would bypass it. listen.test.ts pins that.
+   */
   configure(consumer: MiddlewareConsumer) {
     consumer.apply(ListenScope).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
   }

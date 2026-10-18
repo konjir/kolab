@@ -82,7 +82,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (!session) throw new RoleError('reading an inbox needs an agent session token');
     const me = await this.kolab.sessionInfo(session);
     // Only the session's own kolab (TEN12). Another kolab's inbox reads as if it didn't exist.
-    if (!LAYERS.includes(layer) || decodeURIComponent(String(vars.kolab)) !== me.kolab) throw new Error(`no inbox ${uri.href}`);
+    if (!LAYERS.includes(layer) || decoded(vars.kolab) !== me.kolab) throw new Error(`no inbox ${uri.href}`);
     const kolab = me.kolab;
     const body = {
       kolab,
@@ -107,10 +107,19 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     const session = sessionOf(context?.authInfo);
     if (!session) throw new RoleError('reading answers needs an agent session token');
     const me = await this.kolab.sessionInfo(session);
-    if (decodeURIComponent(String(vars.actor)) !== me.actor || decodeURIComponent(String(vars.kolab)) !== me.kolab) {
+    if (decoded(vars.actor) !== me.actor || decoded(vars.kolab) !== me.kolab) {
       throw new RoleError('you can only read your own answers, in your session\'s kolab');
     }
     const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }) };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
+  }
+}
+
+/** A URI template variable, decoded; undefined if it doesn't decode, so a malformed one reads as any other wrong one. */
+function decoded(v: string | string[] | undefined): string | undefined {
+  try {
+    return decodeURIComponent(String(v));
+  } catch {
+    return undefined;
   }
 }
