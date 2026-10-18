@@ -1,5 +1,7 @@
 # The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL,
-# and the GitHub OAuth app's client id and secret once they are set (D55).
+# and the GitHub OAuth app's client id and the secret Lee puts by hand, by name (D55). Both
+# SecureStrings use the AWS-managed SSM key, whose key policy lets the account's principals decrypt
+# through SSM, so no KMS statement is needed (the admin token reads the same way).
 # Nothing else: Kolab makes no model calls (REV5), so it has no Bedrock access.
 
 variable "name" { type = string }

@@ -1550,7 +1550,6 @@ export class Kolab {
    * agents they made themselves.
    */
   readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 600, refreshGraceS: 10, agentsPerPerson: 10 };
-  private readonly ownAgentTimes = new Map<string, number[]>();
 
   /**
    * The person an identity provider says signed in (D55). An identity is the provider's own stable
@@ -1579,8 +1578,10 @@ export class Kolab {
     // so no one passes for someone's agent, or takes a name that person's agent would have (D30).
     const base = login.toLowerCase();
     const prefixes = [...base.matchAll(/-/g)].map((m) => base.slice(0, m.index));
+    // An agent's owner is a person or an organization (D30).
     const people = prefixes.length ? new Set((await this.db.query<{ id: string }>(
-      `select lower(id) as id from actor where kind = 'person' and lower(id) = any($1)`, [prefixes])).rows.map((r) => r.id)) : new Set<string>();
+      `select lower(id) as id from actor where kind = 'person' and lower(id) = any($1)
+       union select lower(id) from account where kind = 'organization' and lower(id) = any($1)`, [prefixes])).rows.map((r) => r.id)) : new Set<string>();
     const agentLike = (name: string) => [...name.matchAll(/-/g)].some((m) => people.has(name.slice(0, m.index)));
     for (const candidate of signUpNames(login, agentLike)) {
       try {
@@ -1933,22 +1934,30 @@ export class Kolab {
     if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent name: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
     const id = `${person}-${label}`;
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't own a new agent`);
-    // The rate is taken before the insert, so calls at once in this process can't all pass it.
-    const now = Date.now();
-    const recent = (this.ownAgentTimes.get(person) ?? []).filter((t) => now - t < 10 * 60_000);
-    if (recent.length >= 3) throw new ActorError(`you made ${recent.length} agents in the last 10 minutes; wait a while before making another`);
-    this.ownAgentTimes.set(person, [...recent, now]);
+    // A person or organization already called that (who signed up first, D55) keeps the name; the
+    // agent takes another label. Kolab shows every actor's kind and owner, so that person never
+    // reads as this one's agent.
+    const holder = (await this.db.query<{ kind: string }>(
+      `select coalesce(a.kind, o.kind) as kind from (select $1::text as id) n
+         left join actor a on lower(a.id) = lower(n.id) left join account o on lower(o.id) = lower(n.id)
+        where a.id is not null or o.id is not null`, [id])).rows[0];
+    if (holder && holder.kind !== 'agent') {
+      throw new NameTakenError(`${id} is ${holder.kind === 'organization' ? 'an organization' : 'a person'} here, not an agent of yours: choose another label`, undefined, 'ActorError');
+    }
     try {
       await this.requireFreeName(id, 'ActorError');
-      // The count and the insert run under the access lock, so calls at once can't pass the cap.
+      // The cap, the rate (3 in 10 minutes) and the insert run under the access lock, counted in
+      // the database, so calls at once, in this process or any other, can't pass either.
       await this.db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-        const owned = (await tx.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1`, [person])).rows[0].n;
-        if (owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${owned} agents, the most a person may make here (${this.oauth.agentsPerPerson})`);
+        const c = (await tx.query<{ owned: number; recent: number }>(
+          `select count(*)::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
+             from actor where owner_id = $1`, [person])).rows[0];
+        if (c.owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${c.owned} agents, the most a person may make here (${this.oauth.agentsPerPerson})`);
+        if (c.recent >= 3) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
         await tx.query(`insert into actor(id, name, kind, owner_id) values ($1, $1, 'agent', $2)`, [id, person]);
       });
     } catch (e) {
-      this.ownAgentTimes.set(person, (this.ownAgentTimes.get(person) ?? []).filter((t) => t !== now));
       if (/actor_pkey|actor_id_lower/.test(String(e))) throw new NameTakenError(`actor ${id} already exists`, undefined, 'ActorError');
       throw e;
     }
@@ -1966,10 +1975,10 @@ export class Kolab {
    */
   private async grantOwnAgent(person: string, agent: string, kolab: string) {
     if ((await accessIn(this.db, agent, kolab)).level) return;
-    const mine = await accessIn(this.db, person, kolab);
-    if (!mine.level) throw new AccessError(`no kolab ${kolab} you can reach`);
-    if (!(await this.reachable(person)).includes(kolab) && !(await this.db.query(
-      `select 1 from kolab k join org_member m on m.org_id = k.owner_id and m.user_id = $1 where k.id = $2`, [person, kolab])).rows.length) {
+    if (!(await accessIn(this.db, person, kolab)).level) throw new AccessError(`no kolab ${kolab} you can reach`);
+    // What the person lends an agent: their access without what public visibility alone gives (kj_agent_cap, D56).
+    const mine = await ownerAccess(this.db, person, kolab);
+    if (!mine.level) {
       throw new AccessError(`you read kolab ${kolab} only because it is public, which gives your agents nothing there (D56): work there as yourself, or ask its owners for a grant`);
     }
     const writes = ACCESS_LEVELS.indexOf(mine.level) >= ACCESS_LEVELS.indexOf('write');
@@ -2153,11 +2162,10 @@ export class Kolab {
 
   /**
    * How many kolabs a person may own (`max`), and how many they may make in a window (`burst` per
-   * `windowMs`, counted in this process) when they make one themselves (createOwnKolab, D54).
+   * `windowMs`, counted in the database) when they make one themselves (createOwnKolab, D54).
    * The admin's createKolab has no such limits.
    */
   readonly ownKolabs = { max: 10, burst: 3, windowMs: 10 * 60_000 };
-  private readonly ownKolabTimes = new Map<string, number[]>();
 
   /**
    * A person makes a private kolab of their own (D54; TEN2, TEN3), from a session that holds at
@@ -2191,23 +2199,23 @@ export class Kolab {
     if (isReservedKolabName(name)) throw new TenancyError(`the kolab name ${name} is reserved for Konjir's own kolabs; choose another`);
     const title = titleGiven.trim();
     if (!title || title.length > 100) throw new TenancyError('a kolab\'s title is 1 to 100 characters');
-    const now = Date.now();
-    const recent = (this.ownKolabTimes.get(s.actor_id) ?? []).filter((t) => now - t < this.ownKolabs.windowMs);
-    if (recent.length >= this.ownKolabs.burst) {
-      throw new TenancyError(`you made ${recent.length} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
-    }
-    // Taken before the insert, so calls at once in this process can't all pass the rate; given back if it fails.
-    this.ownKolabTimes.set(s.actor_id, [...recent, now]);
     try {
+      // The cap, the rate and the insert run under the access lock, counted in the database, so
+      // calls at once, in this process or any other, can't pass either.
       await this.db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-        const owned = (await tx.query<{ n: number }>(`select count(*)::int as n from kolab where owner_id = $1`, [s.actor_id])).rows[0].n;
+        const c = (await tx.query<{ owned: number; recent: number }>(
+          `select count(*)::int as owned, count(*) filter (where created_at > now() - $2 * interval '1 millisecond')::int as recent
+             from kolab where owner_id = $1`, [s.actor_id, this.ownKolabs.windowMs])).rows[0];
+        if (c.recent >= this.ownKolabs.burst) {
+          throw new TenancyError(`you made ${c.recent} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
+        }
+        const owned = c.owned;
         if (owned >= this.ownKolabs.max) throw new TenancyError(`you own ${owned} kolabs, the most a person may own here (${this.ownKolabs.max})`);
         if ((await tx.query(`select 1 from kolab where id = $1`, [name])).rows.length) throw new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
         await tx.query(`insert into kolab(id, owner_id, title, visibility) values ($1, $2, $3, 'private')`, [name, s.actor_id, title]);
       });
     } catch (e) {
-      this.ownKolabTimes.set(s.actor_id, (this.ownKolabTimes.get(s.actor_id) ?? []).filter((t) => t !== now));
       if (String(e).includes('kolab_pkey')) throw new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
       throw e;
     }
@@ -5536,15 +5544,13 @@ function toAccess(r: { rank: number; functional: boolean; technical: boolean } |
 }
 
 /**
- * What an agent's owner holds in a kolab: a user's own access; an organization holds all of
- * its own kolabs and nothing of anyone else's (as kj_access computes it).
+ * The most an agent of `owner` may hold in a kolab, as kj_access caps it (kj_agent_cap, 0018): a
+ * user's own access there, without what public visibility alone gives (D56); an organization holds
+ * all of its own kolabs and nothing of anyone else's.
  */
 async function ownerAccess(q: Q, owner: string, kolab: string): Promise<Access> {
-  const r = (await q.query<{ kind: string; owns: boolean }>(
-    `select a.kind, exists (select 1 from kolab k where k.id = $2 and k.owner_id = a.id) as owns from account a where a.id = $1`,
-    [owner, kolab])).rows[0];
-  if (r?.kind === 'user') return accessIn(q, owner, kolab);
-  return r?.owns ? { level: 'admin', layers: [...LAYERS] } : { level: null, layers: [] };
+  return toAccess((await q.query<{ rank: number; functional: boolean; technical: boolean }>(
+    `select rank, functional, technical from kj_agent_cap($1, $2)`, [owner, kolab])).rows[0]);
 }
 
 /**

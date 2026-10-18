@@ -83,14 +83,7 @@ variable "db_allocated_gib" {
 }
 
 variable "github_oauth_client_id" {
-  description = "Client id of the GitHub OAuth app people sign in with (D55). Its callback URL is https://<domain_name>/oauth/callback/github. Empty: no GitHub sign-in."
+  description = "Client id of the GitHub OAuth app people sign in with (D55); it is public. Its callback URL is https://<domain_name>/oauth/callback/github. Its secret is never Terraform's: put it with aws ssm put-parameter (README). Empty: no GitHub sign-in."
   type        = string
-  default     = ""
-}
-
-variable "github_oauth_client_secret" {
-  description = "Client secret of that GitHub OAuth app, stored as an SSM SecureString (and in Terraform state, as the admin token is). Set it with the client id, e.g. TF_VAR_github_oauth_client_secret, never in a committed file."
-  type        = string
-  default     = ""
-  sensitive   = true
+  default     = "Ov23licO2Gy9ngM4tgPE"
 }

@@ -417,3 +417,39 @@ test('behind the TLS proxy the sign-in cookies are __Host-: Secure, Path=/, no D
   expect((await get(u.pathname + u.search))[0]).toMatch(/^__Host-konjir_oauth=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
   expect((await get('/api/session/oauth/start'))[0]).toMatch(/^__Host-konjir_web_oauth=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=900$/);
 });
+
+test('sign-in limits are per address, an IPv6 /64 as one, with no per-client bucket: the web client can\'t be locked out by a few addresses', async () => {
+  const { addressKey } = await import('../src/oauth/oauth.controller.js');
+  expect(addressKey('203.0.113.7')).toBe('203.0.113.7');
+  expect(addressKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+  expect(addressKey('2001:db8:1:2:aaaa::1')).toBe('2001:db8:1:2::/64');
+  expect(addressKey('2001:0db8:0001:0002:ffff:1:2:3')).toBe('2001:db8:1:2::/64');
+  expect(addressKey('[2001:db8::5]')).toBe('2001:db8:0:0::/64');
+  expect(addressKey('fe80::1%en0')).toBe('fe80:0:0:0::/64');
+
+  const { request, createServer } = await import('node:http');
+  const kolab = await openKolab();
+  const port = await new Promise<number>((resolve) => { const t = createServer().listen(0, '127.0.0.1', () => { const p = (t.address() as { port: number }).port; t.close(() => resolve(p)); }); });
+  const idp = new StubIdentity();
+  idp.as = { subject: '950', login: 'many' };
+  closeAtEnd(await startServer({ adminToken: 'admin-token', kolab, port, webRoot: null, publicHost: 'kolab.example.com', identity: idp }));
+  const web = new URL('https://kolab.example.com/oauth/authorize');
+  web.search = new URLSearchParams({ response_type: 'code', client_id: 'konjir-web', redirect_uri: 'https://kolab.example.com/api/session/oauth/callback', state: 's', code_challenge: s256('v'.repeat(43)), code_challenge_method: 'S256' }).toString();
+  const from = (ip: string, path = web.pathname + web.search) => new Promise<number>((resolve, reject) => {
+    request({ host: '127.0.0.1', port, path, headers: { host: 'kolab.example.com', 'x-forwarded-for': ip } }, (x) => { x.resume(); resolve(x.statusCode!); }).on('error', reject).end();
+  });
+  // Two addresses spend their own budgets; a third still signs in.
+  for (const ip of ['198.51.100.1', '198.51.100.2']) {
+    const got = [];
+    for (let i = 0; i < 31; i++) got.push(await from(ip));
+    expect([ip, got.slice(0, 30).every((st) => st === 302), got[30]]).toStrictEqual([ip, true, 429]);
+  }
+  expect(await from('198.51.100.3')).toBe(302);
+  // One /64 is one address, however many it holds.
+  for (let i = 0; i < 30; i++) expect(await from(`2001:db8:7:7::${(i + 1).toString(16)}`)).toBe(302);
+  expect(await from('2001:db8:7:7:ffff::1')).toBe(429);
+  expect(await from('2001:db8:7:8::1')).toBe(302);
+  // A refused request (an unknown client) spends nothing.
+  for (let i = 0; i < 40; i++) expect(await from('198.51.100.9', '/oauth/authorize?client_id=kjcl_nobody0000000000000000')).toBe(400);
+  expect(await from('198.51.100.9')).toBe(302);
+});
