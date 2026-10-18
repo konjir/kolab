@@ -3,6 +3,10 @@
 // requirement and submits it for review; another person approves it in the page; an engineer
 // sees what went stale and says it still holds; every page stays live as the others act; and
 // the product owner makes a kolab of her own, switches role, and comes back through the picker.
+// W3.2: an engineer disputes a requirement in a case file, a product person takes the other side,
+// and the product owner, who isn't a party, rules; the ruling is precedent beside the requirement,
+// marks it until a version amends it, and she amends it. She reads her other kolab's committed work
+// in place, and an address she can't read is refused as one that isn't there.
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { TOKENS } from '../playwright.config.js';
@@ -93,6 +97,68 @@ test('a product owner does what the prototype simulates, against the real server
   await lee.getByRole('button', { name: 'Activity' }).click();
   await expect(lee.getByText(/approved kj:password-reset@4/)).toBeVisible();
   await shot(lee, '5-activity');
+
+  // Eli, the engineer, finds PR3 can't be met as written and opens a case file on it (CASE5).
+  await eng.getByRole('button', { name: 'Password reset', exact: true }).click();
+  const engPr3 = eng.locator('li.el', { has: eng.getByRole('button', { name: 'PR3', exact: true }) });
+  await engPr3.getByRole('button', { name: 'Dispute' }).click();
+  await engPr3.getByLabel('The question in dispute').fill('Must the response time be indistinguishable too?');
+  await engPr3.getByLabel('Your claim').fill('The same body isn\'t enough: a faster 202 for unknown emails still reveals whether an account exists.');
+  await engPr3.getByRole('button', { name: 'Open case file' }).click();
+  await expect(engPr3.locator('.casebox')).toContainText('one person and their agents are one side');
+
+  // Pat sees it beside PR3, live, and takes the other side.
+  const pmPr3 = pm.locator('li.el', { has: pm.getByRole('button', { name: 'PR3', exact: true }) });
+  await expect(pmPr3.locator('.casebox')).toBeVisible({ timeout: 15_000 });
+  await pmPr3.getByRole('button', { name: 'Take the other side' }).click();
+  await pmPr3.getByLabel('Your position: the other side').fill('PR3 is about what the page shows; timing belongs in its own requirement.');
+  await pmPr3.getByLabel('Evidence, one per line').fill('kj:password-reset#PR3');
+  await pmPr3.locator('.casebox form button[type=submit]').click();
+  await expect(pmPr3.locator('.position')).toHaveCount(2);
+
+  // Lee, who holds no side, rules from the Cases page: she sustains Eli's position, so the intent changes.
+  await lee.getByRole('button', { name: /^Cases/ }).click();
+  const theCase = lee.locator('.casebox').first();
+  await theCase.getByLabel(/Sustain eli’s: change the intent/).check({ timeout: 15_000 });
+  await theCase.getByLabel('The ruling, as agents will be served it').fill('The response time must be indistinguishable too: pad both to the same duration.');
+  await shot(lee, '6-case');
+  await theCase.locator('button[type=submit]').click();
+  await expect(lee.getByRole('heading', { name: 'Settled case files' })).toBeVisible();
+  await expect(lee.locator('.rulingbox').first()).toContainText('pad both to the same duration');
+
+  // Beside PR3: the ruling as precedent, and a mark no one clears by hand. Lee amends PR3; Pat approves; the mark settles.
+  await lee.getByRole('button', { name: 'Password reset', exact: true }).click();
+  const leePr3 = lee.locator('li.el', { has: lee.getByRole('button', { name: 'PR3', exact: true }) });
+  await expect(leePr3.locator('.rulingbox')).toBeVisible();
+  await expect(leePr3.locator('.markbox')).toContainText('can’t be cleared by hand');
+  await shot(lee, '7-ruled');
+  await leePr3.getByRole('button', { name: 'Revise PR3' }).click();
+  await lee.getByLabel('Edit PR3').fill('The request page shows the same response, in the same time, whether or not the email belongs to an account.');
+  await lee.getByRole('button', { name: 'Keep in draft' }).click();
+  await lee.getByRole('button', { name: 'Submit for review' }).click();
+  await expect(pm.getByRole('region', { name: 'In review' })).toBeVisible({ timeout: 15_000 });
+  await pm.getByRole('button', { name: 'Approve' }).click();
+  await expect(leePr3.locator('.markbox')).toHaveCount(0, { timeout: 15_000 });
+  await expect(leePr3.locator('.rulingbox')).toBeVisible();
+
+  // Lee reads her other kolab, Checkout, in place: its committed spec, not her draft of it, and nothing to change from here.
+  await lee.getByRole('button', { name: 'All kolabs' }).click();
+  await lee.locator('article.kcard', { hasText: 'Checkout' }).getByRole('button', { name: 'Read here' }).click();
+  await lee.getByRole('button', { name: 'kj:checkout/checkout@2' }).click();
+  await expect(lee.getByRole('heading', { name: 'Checkout', level: 2 })).toBeVisible();
+  await expect(lee.getByText(/Read in place from kolab/)).toBeVisible();
+  await expect(lee.getByText('Pressing Pay more than once, or retrying after a timeout, charges the card once.')).toBeVisible();
+  await expect(lee.getByText(/If the email provider is down/)).toBeVisible();
+  await expect(lee.getByText(/within five minutes/)).toHaveCount(0);
+  await expect(lee.locator('li.el').getByRole('button', { name: 'Edit' })).toHaveCount(0);
+  await shot(lee, '8-read-in-place');
+  // An address goes there too, at a version; one she can't read is refused as one that isn't there.
+  await lee.getByLabel('Go to an address').fill('kj:checkout/checkout@1#R3');
+  await lee.getByLabel('Go to an address').press('Enter');
+  await expect(lee.getByText('A payment is never taken twice.')).toBeVisible();
+  await lee.getByLabel('Go to an address').fill('kj:nowhere/secret');
+  await lee.getByLabel('Go to an address').press('Enter');
+  await expect(lee.getByRole('alert')).toHaveText('no node secret in kolab nowhere');
 
   // Lee makes a kolab of her own: the session moves into it, empty.
   await lee.getByRole('button', { name: 'All kolabs' }).click();

@@ -8,7 +8,7 @@ export interface Act { run(what: () => Promise<unknown>, done: string): Promise<
 
 const REASON: Record<string, string> = {
   changed: 'stale', fuzzy_reanchor: 'stale', orphaned: 'orphaned', override_stale: 'stale', override_orphaned: 'orphaned',
-  upstream_dirty: 'stale', rebase_failed: 'boundary', review_failed: 'boundary', role_boundary: 'boundary', query_answered: 'answered',
+  upstream_dirty: 'stale', rebase_failed: 'boundary', review_failed: 'boundary', role_boundary: 'boundary', query_answered: 'answered', ruled: 'ruled',
 };
 export const markWord = (m: WebMark) => REASON[m.reason] ?? m.reason;
 
@@ -57,6 +57,11 @@ export function MarkBox({ mark: m, me, act, onRevise }: { mark: WebMark; me: Web
               <span className="why-not">Your ruling becomes precedent for the same change.</span>
             </>
           )
+        ) : m.reason === 'ruled' ? (
+          <>
+            {onRevise && <button type="button" className="btn" onClick={onRevise}>Revise {m.element ?? m.node}</button>}
+            <span className="why-not">A ruling changed the intent. Amend {m.element ?? 'it'} to say what the ruling says and commit it: that version settles this. It can’t be cleared by hand.</span>
+          </>
         ) : m.reason === 'rebase_failed' || m.reason === 'role_boundary' ? (
           <span className="why-not">{m.next || 'Answer its question to settle it.'}</span>
         ) : (
@@ -74,9 +79,9 @@ export function MarkBox({ mark: m, me, act, onRevise }: { mark: WebMark; me: Web
 }
 
 /** A question or a note beside what it is about (Q5), with the answer, or the form to give it. */
-export function QueryBox({ query: q, me, act }: { query: WebQuery; me: WebMe; act: Act }) {
+export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me: WebMe; act: Act; readOnly?: boolean }) {
   const [answer, setAnswer] = useState('');
-  const owner = q.layer === me.layer && me.access.layers.includes(q.layer);
+  const owner = !readOnly && q.layer === me.layer && me.access.layers.includes(q.layer);
   const settledByMark = q.mark !== null && q.mark_reason !== 'role_boundary';
   return (
     <div className="qbox" data-query={q.id}>
@@ -89,7 +94,9 @@ export function QueryBox({ query: q, me, act }: { query: WebQuery; me: WebMe; ac
       {q.state === 'answered' ? (
         <div className="a"><span className="why-not">{q.answered_by} answered</span><br />{q.answer}</div>
       ) : settledByMark ? (
-        <span className="why-not">It settles with its mark.</span>
+        <span className="why-not">{q.mark_reason === 'ruled' ? 'It settles when a version amends the element.' : 'It settles with its mark.'}</span>
+      ) : readOnly ? (
+        <span className="why-not">Open, in its own kolab.</span>
       ) : owner ? (
         <form className="ask-form" onSubmit={async (e) => { e.preventDefault(); if (await act.run(() => answerQuery(q.id, answer), 'Answered')) setAnswer(''); }}>
           <label className="why-not" htmlFor={`ans-${q.id}`}>{q.kind === 'note' ? 'Reply. A reply to a note marks nothing.' : 'Answer. If it settles intent, amend the spec too, so everyone who depends on it hears.'}</label>

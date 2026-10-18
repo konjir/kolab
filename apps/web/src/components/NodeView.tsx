@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
+import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 
 const KIND_WORD: Record<string, string> = {
   functional_spec: 'Functional spec', prototype: 'Prototype', technical_binding: 'Technical binding',
@@ -20,6 +21,8 @@ export interface NodeViewProps {
   /** Opens a version of this node (undefined for the latest). */
   read(version?: number): void;
   focus?: string;
+  /** Another kolab's node, read in place (D49): read only, its committed work alone. */
+  kolab?: string;
 }
 
 /**
@@ -27,21 +30,25 @@ export interface NodeViewProps {
  * marks, questions and notes beside it; its versions; edits kept as a draft until submitted for
  * review; and the review of a version in review, for whoever is asked to give it.
  */
-export function NodeView({ me, name, version, tick, act, go, read, focus }: NodeViewProps) {
+export function NodeView({ me, name, version, tick, act, go, read, focus, kolab }: NodeViewProps) {
   const [view, setView] = useState<WebNodeView>();
   const [error, setError] = useState<string>();
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [editing, setEditing] = useState<string>();
   const [asking, setAsking] = useState<string | null>();
   const [notice, setNotice] = useState<WebOutcome & { node: string }>();
+  /** The element a case file is being opened on, or a ruling given on (null: the whole node). */
+  const [casing, setCasing] = useState<string>();
+  const [ruling, setRuling] = useState<string | null>();
 
   useEffect(() => {
     let live = true;
-    api<WebNodeView>(`nodes/${encodeURIComponent(name)}${version ? `?version=${version}` : ''}`)
+    const path = kolab ? `kolabs/${encodeURIComponent(kolab)}/nodes/${encodeURIComponent(name)}` : `nodes/${encodeURIComponent(name)}`;
+    api<WebNodeView>(`${path}${version ? `?version=${version}` : ''}`)
       .then((v) => { if (live) { setView(v); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
-  }, [name, version, tick]);
-  useEffect(() => { setDraft(EMPTY); setEditing(undefined); setAsking(undefined); setNotice(undefined); }, [name]);
+  }, [kolab, name, version, tick]);
+  useEffect(() => { setDraft(EMPTY); setEditing(undefined); setAsking(undefined); setNotice(undefined); setCasing(undefined); setRuling(undefined); }, [name, kolab]);
   useEffect(() => {
     if (!focus || !view) return;
     document.getElementById(`el-${focus}`)?.scrollIntoView({ block: 'center' });
@@ -55,7 +62,13 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
   const isLatest = !!reading && reading.seq === latest;
   const inReview = view.in_review[0];
   const mineInReview = view.in_review.find((r) => r.author === me.actor);
-  const writable = view.can_write && (isLatest || latest === null) && !mineInReview;
+  const foreign = view.foreign;
+  const writable = !foreign && view.can_write && (isLatest || latest === null) && !mineInReview;
+  // Case files and rulings are for those who belong to the kolab's work (D49); a ruling, for a
+  // person with Write on the layer, from its role (D51): Kolab decides, the page only offers.
+  const committed = reading?.state === 'committed';
+  const belongs = !foreign && me.access.layers.length > 0;
+  const canRule = !foreign && view.can_write && me.kind === 'person' && committed;
   const whyNot = !view.can_write
     ? (view.node.layer === 'functional' ? 'Engineers can’t change intent. Ask the spec instead.' : 'Product can’t change implementation. Ask the binding instead.')
     : mineInReview ? `Version ${mineInReview.seq} is in review. Edits wait until it is decided.` : '';
@@ -127,7 +140,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
         <div className="doc-head">
           <span className="kind">{KIND_WORD[view.node.kind] ?? view.node.kind}</span>
           <h2 id="doc-title">{view.node.title}</h2>
-          <Addr>{addr(name, reading?.seq)}</Addr>
+          <Addr>{foreign ? `kj:${view.kolab}/${name}${reading ? `@${reading.seq}` : ''}` : addr(name, reading?.seq)}</Addr>
           <div className="doc-meta">
             {reading
               ? <>Version {reading.seq}{reading.state === 'committed' ? `, committed by ${reading.author}` : reading.state === 'in_review' ? `, in review, by ${reading.author}` : `, your draft`} {ago(reading.at)}{reading.note ? ` · ${reading.note}` : ''}</>
@@ -145,7 +158,15 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
             )}
           </div>
         </div>
-        {view.queries.length > 0 && <div className="flags" style={{ marginTop: 12 }}>{view.queries.map((q) => <QueryBox key={q.id} query={q} me={me} act={act} />)}</div>}
+        {foreign && (
+          <div className="foreign" role="note" style={{ marginTop: 12 }}>
+            <span>Read in place from kolab <b>{view.kolab}</b>: its committed versions, with their questions, and nothing it keeps to its own work. Nothing can be changed or asked from here.</span>
+            <button type="button" className="btn quiet" onClick={() => go(`read/${view.kolab}`)}>All of {view.kolab}</button>
+          </div>
+        )}
+        {(view.queries.length > 0 || view.rulings.length > 0) && <div className="flags" style={{ marginTop: 12 }}>
+          {view.rulings.map((r) => <RulingBox key={r.ruling} ruling={r} me={me} go={go} />)}
+          {view.queries.map((q) => <QueryBox key={q.id} query={q} me={me} act={act} readOnly={foreign} />)}</div>}
       </section>
 
       <ol className="els" aria-label="Elements">
@@ -158,14 +179,20 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
             editing={editing === e.id} asking={asking === e.id}
             onEdit={() => { setEditing(e.id); setAsking(undefined); }} onCancel={() => { setEditing(undefined); setAsking(undefined); }}
             onSave={(t) => save(e.id, t)} onRemove={() => remove(e.id)} unlinked={draft.unlinked}
+            foreign={foreign} belongs={belongs && committed} canRule={canRule}
+            casing={casing === e.id} onCase={() => { setCasing(casing === e.id ? undefined : e.id); setRuling(undefined); setAsking(undefined); }}
+            ruling={ruling === e.id} onRule={() => { setRuling(ruling === e.id ? undefined : e.id); setCasing(undefined); setAsking(undefined); }}
+            onFormDone={() => { setCasing(undefined); setRuling(undefined); }}
             onUnlink={(edge) => setDraft((d) => ({ ...d, unlinked: d.unlinked.includes(edge) ? d.unlinked.filter((x) => x !== edge) : [...d.unlinked, edge] }))} onAsk={() => { setAsking(e.id); setEditing(undefined); }} />
         )) : (
           <li className="empty">{view.node.layer === 'functional' ? 'No requirements yet.' : 'No elements yet.'} {writable ? 'Add the first one below.' : ''}</li>
         )}
       </ol>
       {writable && <div className="edit-row"><button type="button" className="btn" onClick={add}>Add {view.node.layer === 'functional' ? 'a requirement' : 'an element'}</button>
-        <button type="button" className="btn quiet" onClick={() => setAsking(asking === null ? undefined : null)}>Ask about {addr(name)}</button></div>}
-      {!writable && whyNot && isLatest && <p className="why-not">{whyNot}</p>}
+        <button type="button" className="btn quiet" onClick={() => setAsking(asking === null ? undefined : null)}>Ask about {addr(name)}</button>
+        {canRule && <button type="button" className="btn quiet" onClick={() => setRuling(ruling === null ? undefined : null)}>Rule on {addr(name)}</button>}</div>}
+      {!writable && whyNot && isLatest && !foreign && <p className="why-not">{whyNot}</p>}
+      {ruling === null && reading && <DirectRuleForm name={name} seq={reading.seq} act={act} onDone={() => setRuling(undefined)} />}
       {asking === null && <AskForm name={name} seq={reading?.seq} element={undefined} layer={view.node.layer} act={act} onDone={() => setAsking(undefined)} />}
 
       {view.drafts.map((d) => (
@@ -194,7 +221,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
 }
 
 const asElement = (name: string) => (a: { id: string; text: string }): WebElement =>
-  ({ id: a.id, parent: null, text: a.text, address: addr(name, null, a.id), queries: [], relies_on: [], relied_on_by: [], marks: [] });
+  ({ id: a.id, parent: null, text: a.text, address: addr(name, null, a.id), queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [] });
 
 interface RowProps {
   name: string; element: WebElement; me: WebMe; act: Act; go(route: string): void;
@@ -203,6 +230,11 @@ interface RowProps {
   onEdit(): void; onCancel(): void; onSave(text: string): void; onRemove(): void; onAsk(): void;
   /** Links dropped in the draft (konjir_draft's unlink), and toggling one. */
   unlinked: string[]; onUnlink(edge: string): void;
+  /** Read in place from another kolab: nothing to do but read. */
+  foreign: boolean;
+  /** The person may open a case file here (D49), or rule directly (D51); and whether either form is open. */
+  belongs: boolean; canRule: boolean; casing: boolean; ruling: boolean;
+  onCase(): void; onRule(): void; onFormDone(): void;
 }
 
 function ElementRow(p: RowProps) {
@@ -254,16 +286,22 @@ function ElementRow(p: RowProps) {
       </div>
       {!p.editing && (
         <div className="acts">
-          {status}{open.length > 0 && <Pill tone="question">asks</Pill>}
+          {status}{open.length > 0 && <Pill tone="question">asks</Pill>}{e.cases.length > 0 && <Pill tone="boundary">disputed</Pill>}
           {p.writable && !p.removed && <button type="button" className="btn quiet" onClick={p.onEdit}>Edit</button>}
-          {p.seq !== null && <button type="button" className="btn quiet" onClick={p.onAsk}>Ask</button>}
+          {p.seq !== null && !p.foreign && <button type="button" className="btn quiet" onClick={p.onAsk}>Ask</button>}
+          {p.seq !== null && p.belongs && !p.drafted && <button type="button" className="btn quiet" onClick={p.onCase} title="Open a case file: a disagreement about this element that you couldn’t settle">Dispute</button>}
+          {p.seq !== null && p.canRule && !p.drafted && <button type="button" className="btn quiet" onClick={p.onRule} title="Rule on this element directly, with no case file behind it">Rule</button>}
         </div>
       )}
-      {(e.marks.length > 0 || e.queries.length > 0 || p.asking) && (
+      {(e.marks.length > 0 || e.queries.length > 0 || e.cases.length > 0 || e.rulings.length > 0 || p.asking || p.casing || p.ruling) && (
         <div className="flags">
           {e.marks.map((m) => <MarkBox key={m.id} mark={m} me={p.me} act={p.act} onRevise={p.writable ? p.onEdit : undefined} />)}
-          {e.queries.map((q) => <QueryBox key={q.id} query={q} me={p.me} act={p.act} />)}
+          {e.cases.map((c) => <CaseBox key={c.case} c={c} me={p.me} act={p.act} go={p.go} />)}
+          {e.rulings.map((r) => <RulingBox key={r.ruling} ruling={r} me={p.me} go={p.go} showOn={r.seq !== p.seq} />)}
+          {e.queries.map((q) => <QueryBox key={q.id} query={q} me={p.me} act={p.act} readOnly={p.foreign} />)}
           {p.asking && <AskForm name={p.name} seq={p.seq ?? undefined} element={e.id} layer={undefined} act={p.act} onDone={p.onCancel} />}
+          {p.casing && p.seq !== null && <OpenCaseForm name={p.name} seq={p.seq} element={e.id} act={p.act} onDone={p.onFormDone} />}
+          {p.ruling && p.seq !== null && <DirectRuleForm name={p.name} seq={p.seq} element={e.id} act={p.act} onDone={p.onFormDone} />}
         </div>
       )}
     </li>

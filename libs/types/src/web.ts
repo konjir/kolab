@@ -4,8 +4,8 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  Access, ActorKind, FindingKind, Kind, Layer, MarkReason, OverrideResolution, QueryKind, ReviewVerdictKind, Role,
-  Visibility, VersionState,
+  Access, ActorKind, CaseFileView, FindingKind, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
+  ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
 } from './index.js';
 
 /** Who is signed in: the session's actor and role, its kolab and its access there. */
@@ -42,6 +42,8 @@ export interface WebOverview {
     reviews: number;
     /** Open questions and notes in the kolab, whoever owns them. */
     open: number;
+    /** Open case files on the session's layer (none for a session that holds only Read there, D49). */
+    cases: number;
   };
 }
 
@@ -94,6 +96,32 @@ export interface WebElement {
   relied_on_by: WebLink[];
   /** Open marks on this element in the node's live version. */
   marks: WebMark[];
+  /** Rulings on this element, from any version, newest first: precedent (CASE4). None for a reader outside the kolab's work (D49). */
+  rulings: WebRuling[];
+  /** Case files still open on this element, from any version. None for a reader outside the kolab's work (D49). */
+  cases: WebCase[];
+}
+
+/** A ruling (CASE2–CASE6), with what it rules on taken apart: `on` is its address in its kolab's short form. */
+export interface WebRuling extends RulingView { node: string; seq: number; element: string | null }
+
+/** A case file (CASE1), with its subject taken apart, and what the signed-in person may do with it. */
+export interface WebCase extends CaseFileView {
+  node: string; seq: number; element: string | null;
+  positions: (CaseFileView['positions'][number] & { kind: ActorKind | null; owner: string | null })[];
+  ruling: WebRuling | null;
+  /**
+   * Which actions the page offers the signed-in person. Kolab decides each one when it is taken
+   * (D49, D51); these only spare a person a button that would be refused.
+   */
+  you: {
+    /** The person, or one of their agents, holds a position on it: one side, so never its judge. */
+    party: boolean;
+    /** It holds one side, and the person may take the other. */
+    can_argue: boolean;
+    /** It holds both sides, and the person may rule: Write on its layer, from that role, and not a party. */
+    can_rule: boolean;
+  };
 }
 
 export interface WebReview {
@@ -121,7 +149,30 @@ export interface WebNodeView {
   drafts: WebVersion[];
   /** Whether the session may write this node: its layer is the session's, and its access covers it. */
   can_write: boolean;
+  /** Rulings on the node as a whole, newest first. */
+  rulings: WebRuling[];
+  /** The kolab the node is in. */
+  kolab: string;
+  /**
+   * Read in place from another kolab than the session's (D49): committed versions only, with their
+   * elements and questions, and nothing else of that kolab's (no links, marks, reviews, drafts, case
+   * files or rulings). Nothing can be written or asked from here.
+   */
+  foreign: boolean;
 }
+
+/** Another kolab's nodes, as the session reads them in place (D49): committed work only. */
+export interface WebForeignKolab {
+  kolab: { id: string; title: string; owner: string; visibility: Visibility; access: Access };
+  nodes: WebNodeSummary[];
+}
+
+export interface WebCasesView {
+  cases: WebCase[];
+  /** Whether the session belongs to its kolab's work (Write on a layer of it): only then does it see case files (D49). */
+  belongs: boolean;
+}
+export interface WebRulingsView { rulings: WebRuling[] }
 
 export interface WebQueriesView { queries: WebQuery[] }
 export interface WebMarksView { marks: WebMark[] }
@@ -178,6 +229,20 @@ export interface WebVerdict {
 export interface WebResolve { resolution: OverrideResolution; text?: string }
 export interface WebAsk { node: string; element?: string; seq?: number; kind: QueryKind; text: string }
 export interface WebAnswer { answer: string }
+/** konjir_open_case: a case file on one element of a committed version, with the opener's position. */
+export interface WebOpenCase {
+  node: string; seq?: number; element: string;
+  question: string; claim: string;
+  /** kj: addresses, each of which must resolve, and anything else as text. */
+  evidence: string[];
+  seeks: RulingEffect;
+}
+/** konjir_add_position: the other side of an open case file. */
+export interface WebPosition { claim: string; evidence: string[] }
+/** konjir_rule on a case file: sustains exactly one of its two positions (D51). */
+export interface WebRuleCase { text: string; verdicts: Record<string, PositionVerdict>; replaces?: string }
+/** konjir_rule directly, on an element or a whole node, with no case file behind it (CASE3, D16). */
+export interface WebRuleDirect { node: string; seq?: number; element?: string; text: string; effect: RulingEffect; replaces?: string }
 /** Switch the signed-in person's session to another kolab, or the other role: the old session ends, and a new one opens (ENF4). */
 export interface WebSwitch { kolab: string; role: Role }
 /** A kolab of the signed-in person's own (TEN2, TEN3): its name is unique across Konjir (TEN4). The session switches into it. */

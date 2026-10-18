@@ -13,6 +13,17 @@ export interface VersionHistoryRow {
   seq: number; state: VersionState; actor: string; role: string; at: string; note: string | null; base_seq: number | null;
 }
 
+/**
+ * The committed versions of a node of another kolab, oldest first, as a reader outside it sees
+ * them (D49): its drafts, versions in review and rejected versions are left out, as row-level
+ * security leaves them out too. The caller has checked the session may read that kolab.
+ */
+export async function committedVersions(kolab: Kolab, session: string, nodeId: string): Promise<VersionHistoryRow[]> {
+  return kolab.readAs(session, async (q) => (await q.query<VersionHistoryRow & { at: Date | string }>(
+    `select v.seq, v.state, v.actor_id as actor, v.active_role as role, v.created_at as at, null::text as note, null::int as base_seq
+       from version v where v.node_id = $1 and v.state = 'committed' order by v.seq`, [nodeId])).rows.map((r) => ({ ...r, at: iso(r.at) })));
+}
+
 /** Every version of a node, oldest first, with who wrote it and when. */
 export async function versionHistory(kolab: Kolab, session: string, nodeId: string): Promise<VersionHistoryRow[]> {
   const here = await kolab.sessionKolab(session);
@@ -112,6 +123,19 @@ export async function kolabNodes(kolab: Kolab, session: string): Promise<NodeRow
        from node n where n.kolab_id = $1 order by n.kind, n.name`, [here])).rows);
 }
 
+/**
+ * The nodes of another kolab the session holds Read on, as a reader outside it sees them (D49):
+ * each with its latest committed version, and no drafts or versions in review, which stay private.
+ * The caller has checked the session may read that kolab; row-level security bounds it too.
+ */
+export async function readableNodes(kolab: Kolab, session: string, inKolab: string): Promise<NodeRowView[]> {
+  return kolab.readAs(session, async (q) => (await q.query<NodeRowView>(
+    `select n.name, n.kind, n.layer, n.title,
+            (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
+            0 as drafts, 0 as in_review
+       from node n where n.kolab_id = $1 order by n.kind, n.name`, [inKolab])).rows);
+}
+
 export interface ReviewRequestRow { node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }
 
 /** The open review requests in the session's kolab, on versions still in review, oldest first. */
@@ -155,9 +179,17 @@ export interface QueryDetailRow {
   mark: string | null; mark_reason: MarkReason | null;
 }
 
-/** Questions and notes in the session's kolab, newest first, on one node if `nodeId` is given. */
-export async function queryDetails(kolab: Kolab, session: string, nodeId?: string): Promise<QueryDetailRow[]> {
-  const here = await kolab.sessionKolab(session);
+/**
+ * Questions and notes in the session's kolab, newest first, on one node if `nodeId` is given. With
+ * `inKolab`, another kolab's, which a reader outside it sees only on its committed versions (D49).
+ * Questions a mark raised (a boundary, a ruling that changes the intent) are left out there, and
+ * no question names a mark or an asking element: that kolab's marks and rulings stay private. The
+ * caller has checked the session may read it.
+ */
+export async function queryDetails(kolab: Kolab, session: string, nodeId?: string, inKolab?: string): Promise<QueryDetailRow[]> {
+  const own = await kolab.sessionKolab(session);
+  const here = inKolab ?? own;
+  const outside = here !== own;
   return kolab.readAs(session, async (q) => (await q.query<QueryDetailRow & { at: Date | string }>(
     `select q.id, q.kind, q.state, n.name as node, v.seq, v.layer, q.element_id as element, q.selector, q.question,
             q.raised_by, q.created_at as at, q.answer, q.answered_by,
@@ -167,15 +199,20 @@ export async function queryDetails(kolab: Kolab, session: string, nodeId?: strin
        join version v on v.id = q.version_id join node n on n.id = v.node_id
        left join version fv on fv.id = q.from_version_id left join node fn on fn.id = fv.node_id
        left join invalidation i on i.id = q.invalidation_id
-      where q.kolab_id = $1 and ($2::text is null or v.node_id = $2)
-      order by q.created_at desc, q.id desc`, [here, nodeId ?? null])).rows.map((r) => ({ ...r, at: iso(r.at) })));
+      where q.kolab_id = $1 and ($2::text is null or v.node_id = $2) and (not $3 or (v.state = 'committed' and q.invalidation_id is null))
+      order by q.created_at desc, q.id desc`, [here, nodeId ?? null, outside])).rows.map((r) => ({
+    ...r, at: iso(r.at), ...(outside ? { mark: null, mark_reason: null, from_node: null, from_seq: null, from_element: null } : {}),
+  })));
 }
 
 export type ActivityRow =
   | { at: string; actor: string; kind: 'version'; node: string; seq: number; state: VersionState; note: string | null }
   | { at: string; actor: string; kind: 'verdict'; node: string; seq: number; state: 'approved' | 'changes_requested' }
   | { at: string; actor: string | null; kind: 'query'; node: string; seq: number; element: string | null; query_kind: QueryKind }
-  | { at: string; actor: null; kind: 'mark'; node: string; seq: number; element: string | null; reason: MarkReason };
+  | { at: string; actor: null; kind: 'mark'; node: string; seq: number; element: string | null; reason: MarkReason }
+  | { at: string; actor: string | null; kind: 'case'; node: string; seq: number; element: string | null; case: string }
+  | { at: string; actor: string; kind: 'position'; node: string; seq: number; element: string | null; case: string }
+  | { at: string; actor: string; kind: 'ruling'; node: string; seq: number; element: string | null; effect: string | null };
 
 /**
  * What happened in the session's kolab, newest first, from what Kolab records: versions as they
@@ -203,6 +240,19 @@ export async function activity(kolab: Kolab, session: string, limit = 80): Promi
        select i.created_at, null, 'mark', n.name, v.seq, i.state, null, i.element_id, i.reason
          from invalidation i join version v on v.id = i.version_id join node n on n.id = v.node_id
         where i.kolab_id = $1
+       union all
+       select c.opened_at, c.opened_by, 'case', n.name, v.seq, c.state, null, c.element_id, c.id
+         from case_file c join version v on v.id = c.version_id join node n on n.id = v.node_id
+        where c.kolab_id = $1 and c.opened_at is not null
+       union all
+       select p.created_at, p.actor_id, 'position', n.name, v.seq, null, null, c.element_id, c.id
+         from position p join case_file c on c.id = p.case_file_id join version v on v.id = c.version_id join node n on n.id = v.node_id
+        where p.kolab_id = $1 and p.created_at is not null and p.actor_id is distinct from c.opened_by
+       union all
+       select r.ruled_at, r.actor_id, 'ruling', n.name, v.seq, null, null, coalesce(r.element_id, c.element_id), r.effect
+         from ruling r left join case_file c on c.id = r.case_file_id
+         join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
+        where r.kolab_id = $1 and r.ruled_at is not null
      ) a order by at desc, kind, node, seq desc limit $2`, [here, limit])).rows);
   return rows.map((r): ActivityRow => {
     const at = iso(r.at), node = r.node as string, seq = r.seq as number;
@@ -210,6 +260,9 @@ export async function activity(kolab: Kolab, session: string, limit = 80): Promi
       case 'version': return { at, actor: r.actor as string, kind: 'version', node, seq, state: r.state as VersionState, note: r.note as string | null };
       case 'verdict': return { at, actor: r.actor as string, kind: 'verdict', node, seq, state: r.state as 'approved' | 'changes_requested' };
       case 'query': return { at, actor: r.actor as string | null, kind: 'query', node, seq, element: r.element as string | null, query_kind: r.extra as QueryKind };
+      case 'case': return { at, actor: r.actor as string | null, kind: 'case', node, seq, element: r.element as string | null, case: r.extra as string };
+      case 'position': return { at, actor: r.actor as string, kind: 'position', node, seq, element: r.element as string | null, case: r.extra as string };
+      case 'ruling': return { at, actor: r.actor as string, kind: 'ruling', node, seq, element: r.element as string | null, effect: r.extra as string | null };
       default: return { at, actor: null, kind: 'mark', node, seq, element: r.element as string | null, reason: r.extra as MarkReason };
     }
   });

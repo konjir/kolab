@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { afterAll, expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
 import { closeAtEnd, els, people, setup } from '@konjir/engine/testing';
-import type { WebEvent, WebMark, WebNodeView, WebOutcome, WebOverview, WebQuery } from '@konjir/types';
+import type {
+  WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebMark, WebNodeView, WebOutcome, WebOverview, WebQuery, WebRuling,
+} from '@konjir/types';
 import { startServer } from '../src/server.js';
 
 const roots: string[] = [];
@@ -163,7 +165,7 @@ test('a spec reads with its questions and notes beside each element, and a chang
   expect(r1.relied_on_by.map((l) => [l.source.node, l.source.element])).toStrictEqual([['orders-pg', 'b1']]);
 
   const overview = (await alice.call<WebOverview>('overview')).body;
-  expect(overview.counts).toStrictEqual({ stale: 0, waiting: 1, reviews: 0, open: 1 });
+  expect(overview.counts).toStrictEqual({ stale: 0, waiting: 1, reviews: 0, open: 1, cases: 0 });
   expect(overview.nodes.map((n) => [n.name, n.layer, n.latest])).toStrictEqual([['orders', 'functional', 1], ['orders-pg', 'technical', 1]]);
 
   // Alice answers, and edits R1 through the page: alone on the functional layer, it commits unreviewed.
@@ -296,6 +298,9 @@ test('the event stream signals changes, commits and the end of the session', asy
   for (const r of more) await r.body?.cancel();
   await kolab.raiseQuery(engineer, 'kj:orders#R2', 'Partial refunds?');
   expect(await next()).toStrictEqual({ type: 'changed', what: 'layer', layer: 'functional' });
+  // A case file opened on a spec element signals its layer, so every page of the kolab re-reads it.
+  await kolab.openCase(engineer, 'kj:orders#R2', { question: 'Partial refunds?', claim: 'Partial refunds are needed.', evidence: ['kj:orders#R2'], seeks: 'change_intent' });
+  expect(await next()).toStrictEqual({ type: 'changed', what: 'layer', layer: 'functional' });
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b2', text: 'Refunds go through the payments queue, retried.' }] });
   expect(await nextBut((e) => e.type === 'changed' && e.what === 'layer')).toStrictEqual({ type: 'changed', what: 'versions' });
   await kolab.endSession(product);
@@ -329,4 +334,173 @@ test('the server serves the built pages at the root, with their security headers
   const unbuilt = await serve(other, { webRoot: null });
   const none = await fetch(`${unbuilt}/`, { headers: { accept: 'text/html' } });
   expect([none.status, await none.text()]).toStrictEqual([503, expect.stringContaining('npx nx run @konjir/web:build')]);
+});
+
+test('case files and rulings in the page: open, take the other side, rule, precedent beside the element, and who may not', async () => {
+  const { kolab, product, engineer } = await specAndBinding();
+  await people(kolab, 'dana', { layers: ['functional'] });
+  await people(kolab, 'alice-pm', { owner: 'alice', layers: ['functional'] });
+  const base = await serve(kolab);
+  const alice = await signIn(base, product);
+  const bob = await signIn(base, engineer);
+  const carol = await signIn(base, await kolab.openSession('carol', 'product'));
+  const dana = await signIn(base, await kolab.openSession('dana', 'product'));
+
+  // Bob, an engineer, finds R1 can't be met as written: he opens a case file on it (CASE5).
+  const opened = await bob.call<WebCase>('cases', {
+    node: 'orders', seq: 1, element: 'R1', question: 'May office staff cancel a shipped order?',
+    claim: 'Shipped orders can\'t be recalled from the carrier.', evidence: ['kj:orders-pg#b1', 'carrier API: no recall endpoint'], seeks: 'change_intent',
+  });
+  expect(opened.status).toBe(201);
+  const c = opened.body;
+  expect(c).toMatchObject({ on: 'kj:orders@1#R1', node: 'orders', seq: 1, element: 'R1', layer: 'functional', state: 'open', opened_by: 'bob' });
+  expect(c.positions.map((p) => [p.actor, p.seeks, p.kind])).toStrictEqual([['bob', 'change_intent', 'person']]);
+  expect(c.you).toStrictEqual({ party: true, can_argue: false, can_rule: false });
+  // Evidence that doesn't resolve, a quote, or no evidence at all are refused.
+  expect((await bob.call('cases', { node: 'orders', element: 'R1', question: 'q', claim: 'c', evidence: ['kj:orders#R99'], seeks: 'keep_intent' })).status).toBe(400);
+  expect((await bob.call('cases', { node: 'orders', element: 'R1', question: 'q', claim: 'c', evidence: 'kj:orders#R1', seeks: 'keep_intent' })).status).toBe(400);
+  expect((await bob.call('cases', { node: 'orders', element: 'R1', question: 'q', claim: 'c', evidence: ['x'], seeks: 'maybe' })).status).toBe(400);
+
+  // Alice sees it beside R1, and may take the other side; Bob, who holds a side, may not take both.
+  const r1 = (await alice.call<WebNodeView>('nodes/orders')).body.elements.find((e) => e.id === 'R1')!;
+  expect(r1.cases.map((x) => [x.case, x.you])).toStrictEqual([[c.case, { party: false, can_argue: true, can_rule: false }]]);
+  expect((await bob.call(`cases/${c.case}/positions`, { claim: 'and also', evidence: ['kj:orders#R1'] })).status).toBe(409);
+
+  // D49: a reader who holds only Read in the kolab sees no case files and can't open or argue one.
+  expect((await carol.call<WebCasesView>('cases')).body).toStrictEqual({ cases: [], belongs: false });
+  expect((await carol.call(`cases/${c.case}`)).status).toBe(404);
+  expect((await carol.call('cases', { node: 'orders', element: 'R1', question: 'q', claim: 'c', evidence: ['kj:orders#R1'], seeks: 'keep_intent' })).status).toBe(403);
+  expect((await carol.call(`cases/${c.case}/positions`, { claim: 'c', evidence: ['kj:orders#R1'] })).status).toBe(403);
+  expect((await carol.call<WebNodeView>('nodes/orders')).body.elements[0]).toMatchObject({ id: 'R1', cases: [], rulings: [] });
+  // An agent's session is refused at the door, whatever the route.
+  const agent = await kolab.openSession('alice-pm', 'product');
+  const asAgent = await fetch(`${base}/api/cases/${c.case}/rule`, {
+    method: 'POST', headers: { origin: base, cookie: `konjir_session=${agent}`, 'content-type': 'application/json' }, body: JSON.stringify({ text: 'x', verdicts: {} }),
+  });
+  expect(asAgent.status).toBe(403);
+  // A case file holding one side isn't ruled on yet.
+  expect((await dana.call(`cases/${c.case}/rule`, { text: 'x', verdicts: { [c.positions[0].position]: 'sustained' } })).status).toBe(409);
+
+  // Alice takes the other side: it seeks the opposite, keeping the intent.
+  const argued = await alice.call<WebCase>(`cases/${c.case}/positions`, { claim: 'Staff cancel before shipping; after, it is a return.', evidence: ['kj:orders#R2'] });
+  expect(argued.status).toBe(201);
+  expect(argued.body.positions.map((p) => [p.actor, p.seeks])).toStrictEqual([['bob', 'change_intent'], ['alice', 'keep_intent']]);
+  const [bobs, alices] = argued.body.positions.map((p) => p.position);
+
+  // Who rules (D51): a person with Write on the functional layer who isn't a party. Alice is one.
+  expect((await alice.call(`cases/${c.case}/rule`, { text: 'x', verdicts: { [bobs]: 'overruled', [alices]: 'sustained' } })).status).toBe(403);
+  expect((await bob.call(`cases/${c.case}/rule`, { text: 'x', verdicts: { [bobs]: 'sustained', [alices]: 'overruled' } })).status).toBe(403);
+  expect((await carol.call(`cases/${c.case}/rule`, { text: 'x', verdicts: { [bobs]: 'sustained', [alices]: 'overruled' } })).status).toBe(404);
+  const forDana = (await dana.call<WebCase>(`cases/${c.case}`)).body;
+  expect(forDana.you).toStrictEqual({ party: false, can_argue: false, can_rule: true });
+  // Exactly one position is sustained.
+  expect((await dana.call(`cases/${c.case}/rule`, { text: 'x', verdicts: { [bobs]: 'sustained', [alices]: 'sustained' } })).status).toBe(409);
+  expect((await dana.call(`cases/${c.case}/rule`, { text: 'x', verdicts: { [bobs]: 'maybe' } })).status).toBe(400);
+  const ruled = await dana.call<WebRuling>(`cases/${c.case}/rule`, {
+    text: 'Office staff cancel an order until it ships; a shipped order is returned instead.', verdicts: { [bobs]: 'sustained', [alices]: 'overruled' },
+  });
+  expect(ruled.status).toBe(201);
+  expect(ruled.body).toMatchObject({ case: c.case, on: 'kj:orders@1#R1', element: 'R1', effect: 'change_intent', ruled_by: 'dana' });
+  expect((await dana.call(`cases/${c.case}/rule`, { text: 'again', verdicts: { [bobs]: 'sustained', [alices]: 'overruled' } })).status).toBe(409);
+
+  // The ruling is precedent beside R1, and, changing the intent, marks R1 with a question that no one clears by hand.
+  const after = (await alice.call<WebNodeView>('nodes/orders')).body.elements.find((e) => e.id === 'R1')!;
+  expect(after.rulings.map((r) => [r.ruling, r.text])).toStrictEqual([[ruled.body.ruling, ruled.body.text]]);
+  expect(after.cases).toStrictEqual([]);
+  const mark = after.marks.find((m) => m.reason === 'ruled')!;
+  expect(mark).toBeDefined();
+  expect(after.queries.some((q) => q.mark === mark.id && q.mark_reason === 'ruled')).toBe(true);
+  expect((await alice.call(`marks/${mark.id}/clear`, {})).status).toBe(409);
+  const listed = (await bob.call<WebCasesView>('cases?state=all')).body;
+  expect(listed.cases.map((x) => [x.state, x.positions.map((p) => p.verdict)])).toStrictEqual([['ruled', ['sustained', 'overruled']]]);
+  expect((await bob.call<WebCasesView>('cases?state=open')).body.cases).toStrictEqual([]);
+  expect((await bob.call<WebCasesView>('cases?mine=true')).body.cases.map((x) => x.case)).toStrictEqual([c.case]);
+  expect((await bob.call('cases?state=whatever')).status).toBe(400);
+  expect((await carol.call<{ rulings: WebRuling[] }>('rulings')).body.rulings).toStrictEqual([]);
+  expect((await alice.call<WebActivityView>('activity')).body.items.map((i) => i.text)).toEqual(expect.arrayContaining([
+    'opened a case file on kj:orders@1#R1', 'took the other side of the case file on kj:orders@1#R1', 'ruled on kj:orders@1#R1: the intent changes',
+  ]));
+
+  // A later version amending R1 settles the mark and its question (D51).
+  const sent = await alice.call<WebOutcome>('nodes/orders/submit', { base: 1, changes: [{ kind: 'override', element: 'R1', text: ruled.body.text }] });
+  expect(sent.body.in_review).toBe(true);
+  expect((await dana.call<WebOutcome>(`nodes/orders/versions/${sent.body.seq}/review`, { verdict: 'approve' })).body.committed).toBe(true);
+  const settled = (await alice.call<WebNodeView>('nodes/orders')).body.elements.find((e) => e.id === 'R1')!;
+  expect(settled.marks.filter((m) => m.reason === 'ruled')).toStrictEqual([]);
+  expect(settled.rulings).toHaveLength(1);   // precedent stays, from any version
+
+  // A direct ruling (CASE3): on an element of the person's own layer, from its role; it supersedes an open case file there.
+  const second = (await alice.call<WebCase>('cases', { node: 'orders-pg', element: 'b2', question: 'Queue or inline?', claim: 'Inline is simpler.', evidence: ['kj:orders-pg#b2'], seeks: 'change_intent' })).body;
+  expect((await alice.call('rulings', { node: 'orders-pg', element: 'b2', text: 'x', effect: 'keep_intent' })).status).toBe(403);   // product doesn't rule the technical layer
+  expect((await carol.call('rulings', { node: 'orders', element: 'R2', text: 'x', effect: 'keep_intent' })).status).toBe(403);
+  expect((await bob.call('rulings', { node: 'orders-pg', element: 'b2', text: 'x' })).status).toBe(400);   // say what it does
+  const direct = await bob.call<WebRuling>('rulings', { node: 'orders-pg', element: 'b2', text: 'Refunds stay on the queue.', effect: 'keep_intent', replaces: 'nothing' });
+  expect(direct.status).toBe(201);
+  expect(direct.body).toMatchObject({ case: null, on: 'kj:orders-pg@1#b2', effect: 'keep_intent', replaces: 'nothing', ruled_by: 'bob' });
+  expect((await bob.call<WebCase>(`cases/${second.case}`)).body).toMatchObject({ state: 'superseded', superseded_by: direct.body.ruling, ruling: { ruling: direct.body.ruling } });
+  const b2 = (await bob.call<WebNodeView>('nodes/orders-pg')).body.elements.find((e) => e.id === 'b2')!;
+  expect([b2.rulings.map((r) => r.ruling), b2.marks]).toStrictEqual([[direct.body.ruling], []]);   // keeping the intent marks nothing
+  // On the node as a whole, too.
+  const whole = await bob.call<WebRuling>('rulings', { node: 'orders-pg', text: 'Every binding element names its table.', effect: 'keep_intent' });
+  expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.rulings.map((r) => r.ruling)).toStrictEqual([whole.body.ruling]);
+  expect((await bob.call<{ rulings: WebRuling[] }>('rulings')).body.rulings.map((r) => r.ruling)).toStrictEqual([whole.body.ruling, direct.body.ruling, ruled.body.ruling]);
+  expect((await bob.call<WebOverview>('overview')).body.counts.cases).toBe(0);
+});
+
+test('another kolab\'s committed work reads in place, read only, and nothing else of it; a kolab one can\'t read is refused as if it weren\'t there', async () => {
+  const { kolab, product, engineer } = await specAndBinding();
+  await kolab.addActor('erin');
+  await kolab.createKolab('other', { owner: 'erin', title: 'Other' });
+  await kolab.grant('other', 'alice', 'read');
+  const erin = await kolab.openSession('erin', 'product', { kolab: 'other' });
+  await kolab.createNode(erin, 'functional_spec', 'Secret', 'secret');
+  await kolab.commit(erin, 'secret', { elements: els({ S1: 'Only those who read other know.' }) });
+  await kolab.commit(erin, 'secret', { elements: els({ S1: 'Readers of other know this.' }) });
+  await kolab.raiseQuery(erin, 'kj:secret#S1', 'Who reads it?');
+  await kolab.draft(erin, 'secret', { elements: els({ S1: 'A draft only erin sees.' }) });
+  await kolab.rule(erin, { address: 'kj:secret#S1', text: 'A ruling private to other.', effect: 'change_intent' });
+  const base = await serve(kolab);
+  const alice = await signIn(base, product);
+  const bob = await signIn(base, engineer);
+
+  const list = await alice.call<WebForeignKolab>('kolabs/other/nodes');
+  expect(list.body).toStrictEqual({
+    kolab: { id: 'other', title: 'Other', owner: 'erin', visibility: 'private', access: { level: 'read', layers: [] } },
+    nodes: [{ name: 'secret', kind: 'functional_spec', layer: 'functional', title: 'Secret', latest: 2, drafts: 0, in_review: 0 }],
+  });
+  const read = (await alice.call<WebNodeView>('kolabs/other/nodes/secret')).body;
+  expect(read).toMatchObject({ kolab: 'other', foreign: true, can_write: false, in_review: [], drafts: [], rulings: [] });
+  expect(read.versions.map((v) => [v.seq, v.state])).toStrictEqual([[1, 'committed'], [2, 'committed']]);
+  expect(read.elements.map((e) => [e.id, e.text, e.address, e.marks, e.rulings, e.cases, e.relies_on])).toStrictEqual([
+    ['S1', 'Readers of other know this.', 'kj:other/secret@2#S1', [], [], [], []],
+  ]);
+  // Its questions, in the full form, but none a mark raised, such as the ruling's (D49: marks and rulings stay private).
+  expect(read.elements[0].queries.map((q) => [q.question, q.address, q.mark])).toStrictEqual([['Who reads it?', 'kj:other/secret@2#S1', null]]);
+  expect(read.compared_with).toStrictEqual({ seq: 1, elements: [{ id: 'S1', text: 'Only those who read other know.' }] });
+  expect((await alice.call<WebNodeView>('kolabs/other/nodes/secret?version=1')).body.elements[0].text).toBe('Only those who read other know.');
+  // The draft reads exactly as a version that doesn't exist.
+  const draft = await alice.call<{ message: string }>('kolabs/other/nodes/secret?version=3');
+  const none = await alice.call<{ message: string }>('kolabs/other/nodes/secret?version=9');
+  expect([draft.status, none.status]).toStrictEqual([404, 404]);
+  expect(draft.body.message.replace('3', 'N')).toBe(none.body.message.replace('9', 'N'));
+  expect(JSON.stringify([list.body, read])).not.toMatch(/draft only erin|private to other/);
+
+  // Bob holds nothing in other: the kolab and its node are refused exactly as ones that aren't there.
+  const refusals = await Promise.all([
+    bob.call('kolabs/other/nodes/secret'), bob.call('kolabs/nowhere/nodes/secret'), alice.call('kolabs/other/nodes/missing'),
+    bob.call('kolabs/other/nodes'), bob.call('kolabs/nowhere/nodes'),
+  ]);
+  expect(refusals.map((r) => [r.status, r.body])).toStrictEqual([
+    [404, { error: 'not_found', message: 'no node secret in kolab other' }],
+    [404, { error: 'not_found', message: 'no node secret in kolab nowhere' }],
+    [404, { error: 'not_found', message: 'no node missing in kolab other' }],
+    [404, { error: 'not_found', message: 'no kolab other you can read' }],
+    [404, { error: 'not_found', message: 'no kolab nowhere you can read' }],
+  ]);
+  // In the session's own kolab, the full form is the node's own page.
+  expect((await alice.call<WebNodeView>('kolabs/test/nodes/orders')).body).toMatchObject({ kolab: 'test', foreign: false });
+  // Nothing is written there from here.
+  expect((await alice.call('queries', { node: 'other/secret', element: 'S1', kind: 'question', text: 'Why?' })).status).toBe(400);
+  expect((await alice.call('cases', { node: 'other/secret', element: 'S1', question: 'q', claim: 'c', evidence: ['kj:orders#R1'], seeks: 'keep_intent' })).status).toBe(400);
+  expect((await alice.call('nodes/other%2Fsecret/submit', { base: 2, changes: [{ kind: 'override', element: 'S1', text: 'mine' }] })).status).toBe(403);
 });

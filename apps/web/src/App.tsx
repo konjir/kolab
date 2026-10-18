@@ -4,24 +4,34 @@ import { ApiError, api, createKolab, signIn, signOut, switchTo } from './api.js'
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
-import { ActivityView, KolabsView, LineageView, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
+import { ActivityView, ForeignKolabView, KolabsView, LineageView, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
+import { CasesView } from './components/Cases.js';
+import { parseKj, routeOf } from './util.js';
 import type { Act } from './components/Marks.js';
 
 /**
- * Where the page is: `#/node/<name>[@<version>][#<element>]`, `#/questions`, `#/reviews`,
- * `#/lineage`, `#/activity` or `#/kolabs`. The hash keeps every place linkable without the server
- * knowing any route but `/`.
+ * Where the page is: `#/node/<name>[@<version>][#<element>]`, `#/questions`, `#/cases`,
+ * `#/reviews`, `#/lineage`, `#/activity` or `#/kolabs`; another kolab read in place (D49) is
+ * `#/read/<kolab>` and `#/read/<kolab>/<name>[@<version>][#<element>]`. The hash keeps every place
+ * linkable without the server knowing any route but `/`.
  */
 export type Route =
-  | { view: 'node'; name: string; version?: number; focus?: string }
-  | { view: 'questions' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'home' | 'start' };
+  | { view: 'node'; name: string; version?: number; focus?: string; kolab?: string }
+  | { view: 'read'; kolab: string }
+  | { view: 'questions' | 'cases' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'home' | 'start' };
 
 export function parseRoute(hash: string): Route {
   let h: string;
   try { h = decodeURIComponent(hash.replace(/^#\/?/, '')); } catch { return { view: 'home' }; }
   const node = /^node\/([^@#]+)(?:@(\d+))?(?:#(.+))?$/.exec(h);
   if (node) return { view: 'node', name: node[1], version: node[2] ? Number(node[2]) : undefined, focus: node[3] ? `${node[1]}#${node[3]}` : undefined };
-  if (['questions', 'reviews', 'lineage', 'activity', 'kolabs'].includes(h)) return { view: h as 'questions' };
+  const foreign = /^read\/([a-z0-9][a-z0-9-]*)\/([^@#/]+)(?:@(\d+))?(?:#(.+))?$/.exec(h);
+  if (foreign) {
+    return { view: 'node', kolab: foreign[1], name: foreign[2], version: foreign[3] ? Number(foreign[3]) : undefined, focus: foreign[4] ? `${foreign[2]}#${foreign[4]}` : undefined };
+  }
+  const kolab = /^read\/([a-z0-9][a-z0-9-]*)$/.exec(h);
+  if (kolab) return { view: 'read', kolab: kolab[1] };
+  if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs'].includes(h)) return { view: h as 'questions' };
   return { view: 'home' };
 }
 
@@ -105,6 +115,10 @@ export function App() {
   const home = specs.find((n) => n.kind === 'functional_spec') ?? specs[0];
   const r: Route = route.view === 'home' ? (home ? { view: 'node', name: home.name } : { view: 'start' }) : route;
   const counts = overview?.counts;
+  const belongs = me.access.layers.length > 0;
+  // A full address in the session's own kolab is its own node's page; another kolab's is read in place.
+  const nodeRoute = r.view === 'node' && r.kolab === me.kolab ? { ...r, kolab: undefined } : r;
+  const reading = (nodeRoute.view === 'node' && nodeRoute.kolab !== undefined) || nodeRoute.view === 'read';
   return (
     <>
       <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
@@ -115,35 +129,62 @@ export function App() {
           <button type="button" className="place" aria-current={r.view === 'kolabs' ? 'page' : undefined} onClick={() => go('kolabs')}>All kolabs</button>
           <div className="rail-label">Documents</div>
           {specs.map((n) => (
-            <button key={n.name} type="button" className="place" aria-current={r.view === 'node' && r.name === n.name ? 'page' : undefined} onClick={() => go(`node/${n.name}`)}>
+            <button key={n.name} type="button" className="place" aria-current={nodeRoute.view === 'node' && !nodeRoute.kolab && nodeRoute.name === n.name ? 'page' : undefined} onClick={() => go(`node/${n.name}`)}>
               {n.title}{n.in_review > 0 && <span className="count question" title={`${n.in_review} in review`}>{n.in_review}</span>}
             </button>
           ))}
           <div className="rail-label">Kolab</div>
-          {(['lineage', 'questions', 'reviews', 'activity'] as const).map((v) => (
+          {(['lineage', 'questions', ...(belongs ? ['cases' as const] : []), 'reviews', 'activity'] as const).map((v) => (
             <button key={v} type="button" className="place" aria-current={r.view === v ? 'page' : undefined} onClick={() => go(v)}>
               {v[0].toUpperCase() + v.slice(1)}
               {v === 'questions' && counts?.waiting ? <span className="count question" title={`${counts.waiting} waiting on you`}>{counts.waiting}</span> : null}
               {v === 'reviews' && counts?.reviews ? <span className="count question" title={`${counts.reviews} waiting for your review`}>{counts.reviews}</span> : null}
+              {v === 'cases' && counts?.cases ? <span className="count stale" title={`${counts.cases} open on your layer`}>{counts.cases}</span> : null}
             </button>
           ))}
+          <GoTo here={me.kolab} go={go} />
           <div className="rail-foot"><span>{me.name} · {me.role} · {me.kolab}</span></div>
         </nav>
         <main>
-          {overview && r.view !== 'kolabs' && <Summary overview={overview} />}
-          {r.view === 'node' && <NodeView key={r.name} me={me} name={r.name} version={r.version} focus={r.focus} tick={tick} act={act} go={go}
-            read={(v) => go(`node/${r.name}${v ? `@${v}` : ''}`)} />}
+          {overview && r.view !== 'kolabs' && !reading && <Summary overview={overview} />}
+          {nodeRoute.view === 'node' && <NodeView key={`${nodeRoute.kolab ?? ''}/${nodeRoute.name}`} me={me} name={nodeRoute.name} version={nodeRoute.version} focus={nodeRoute.focus}
+            kolab={nodeRoute.kolab} tick={tick} act={act} go={go}
+            read={(v) => go(`${nodeRoute.kolab ? `read/${nodeRoute.kolab}` : 'node'}/${nodeRoute.name}${v ? `@${v}` : ''}`)} />}
+          {nodeRoute.view === 'read' && (nodeRoute.kolab === me.kolab ? <p className="empty">This is the kolab you work in: its documents are in the rail.</p>
+            : <ForeignKolabView kolab={nodeRoute.kolab} tick={tick} go={go} onOpen={(k) => move(k, me.role)} />)}
           {r.view === 'questions' && <QuestionsView me={me} tick={tick} act={act} go={go} />}
+          {r.view === 'cases' && <CasesView me={me} tick={tick} act={act} go={go} />}
           {r.view === 'reviews' && <ReviewsView tick={tick} go={go} />}
           {r.view === 'lineage' && <LineageView tick={tick} go={go} />}
           {r.view === 'activity' && <ActivityView tick={tick} />}
           {r.view === 'start' && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
-          {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)}
+          {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onRead={(k) => go(`read/${k}`)}
             onCreateKolab={(name, title) => act.run(async () => { moved(await createKolab(name, title), `Created ${name}. Its spec is empty: start it.`); }, '')} />}
         </main>
       </div>
       {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
     </>
+  );
+}
+
+/**
+ * Goes to a `kj:` address: in the session's kolab, the node's page; in another kolab, read in place,
+ * where Kolab answers only if the session may read it (D49), and a refusal says nothing of what is there.
+ */
+function GoTo({ here, go }: { here: string; go(r: string): void }) {
+  const [text, setText] = useState('');
+  const [bad, setBad] = useState(false);
+  return (
+    <form className="goto" role="search" onSubmit={(e) => {
+      e.preventDefault();
+      const a = parseKj(text);
+      setBad(!a);
+      if (a) { go(routeOf(a, here)); setText(''); }
+    }}>
+      <label htmlFor="goto">Go to an address</label>
+      <input id="goto" value={text} spellCheck={false} autoComplete="off" placeholder="kj:kolab/node#R1" aria-invalid={bad}
+        onChange={(e) => { setText(e.target.value); setBad(false); }} />
+    </form>
   );
 }
 

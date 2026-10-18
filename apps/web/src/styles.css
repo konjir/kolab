@@ -283,3 +283,32 @@ svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-eve
 .markbox textarea, .draftbar textarea { width: 100%; min-height: 64px; background: var(--surface-sunken); border: 1px solid var(--line-strong); border-radius: var(--r-hair); padding: 8px 10px; }
 .kolab-btn { cursor: default; }
 .who b { color: var(--ink); font-weight: 600; }
+
+/* ---- case files and rulings (W3.2): a dispute in the boundary tone, precedent in the clean one ---- */
+.casebox { border: 1px solid var(--boundary); border-radius: var(--r-md); padding: 12px 14px; display: grid; gap: 10px; background: var(--surface-raised); }
+.casebox.settled { border-color: var(--line-strong); }
+.casebox .head, .rulingbox .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.casebox blockquote, .rulingbox blockquote { margin: 0; font-size: 15px; max-width: 70ch; }
+.positions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; }
+.position { border: 1px solid var(--line); border-radius: var(--r-hair); padding: 10px 12px; display: grid; gap: 6px; align-content: start; background: var(--surface); }
+.position.sustained { border-color: var(--clean); }
+.position.overruled { opacity: .7; }
+.position .side { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: var(--ink-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.position p { margin: 0; font-size: 14px; }
+.evidence { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.evidence li code { color: var(--ink-muted); }
+.rulingbox { border: 1px solid var(--clean); border-radius: var(--r-md); padding: 12px 14px; display: grid; gap: 6px; background: var(--surface-raised); }
+.rulingbox .by { font-size: 13px; color: var(--ink-muted); }
+.case-form { display: grid; gap: 10px; }
+.case-form textarea, .case-form input[type="text"] { width: 100%; background: var(--surface-sunken); border: 1px solid var(--line-strong); border-radius: var(--r-hair); padding: 8px 10px; line-height: 1.5; }
+.case-form textarea { min-height: 64px; resize: vertical; }
+.case-form fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+.case-form legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 4px; }
+.case-form .choice { display: flex; gap: 8px; align-items: baseline; font-size: 14px; }
+.foreign { border: 1px dashed var(--line-strong); border-radius: var(--r-md); padding: 10px 14px; font-size: 14px; color: var(--ink-muted); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.goto { display: grid; gap: 4px; margin: 14px 10px 0; }
+.goto label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); font-weight: 600; }
+.goto input { background: var(--surface-sunken); border: 1px solid var(--line-strong); border-radius: var(--r-hair); padding: 5px 8px; font-family: var(--font-mono); font-size: 12px; width: 100%; }
+@media (max-width: 860px) { .goto { display: none; } }
+@media (prefers-reduced-motion: no-preference) { .casebox, .rulingbox { animation: rise .45s ease-out; } }
+.case-form input[type="radio"] { accent-color: var(--accent); }

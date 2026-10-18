@@ -1,11 +1,14 @@
 import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
-  AccessError, ActorError, ChecksError, GateError, Kolab, RoleError, TenancyError, activity, kolabNodes, liveLinks, markDetails, maskTokens,
-  openReviewRequests, queryDetails, submissionsOf, versionHistory, type LinkRow, type MarkDetailRow, type QueryDetailRow, type VersionHistoryRow,
+  AccessError, ActorError, ChecksError, GateError, Kolab, RoleError, TenancyError, activity, committedVersions, kolabNodes, liveLinks, markDetails,
+  maskTokens, openReviewRequests, queryDetails, readableNodes, submissionsOf, versionHistory,
+  type LinkRow, type MarkDetailRow, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
-import { formatAddress, isKolabName, isNodeName } from '@konjir/address';
+import { formatAddress, isKolabName, isNodeName, parseAddress } from '@konjir/address';
 import {
-  FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, type WebCreateKolab, type WebSwitch,
+  CASE_FILE_STATES, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
+  type WebCreateKolab, type WebSwitch, type Actor, type CaseFileState, type CaseFileView, type RulingView,
+  type WebCase, type WebCasesView, type WebForeignKolab, type WebOpenCase, type WebPosition, type WebRuleCase, type WebRuleDirect, type WebRuling,
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
@@ -44,7 +47,9 @@ export class WebService {
     for (const x of (await k.listKolabs()).filter((x) => reach.has(x.id))) {
       kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current: x.id === me.kolab, access: await k.access(me.actor, x.id) });
     }
-    const [queries, marks, requests] = await Promise.all([queryDetails(k, s), markDetails(k, s), openReviewRequests(k, s)]);
+    const [queries, marks, requests, cases] = await Promise.all([
+      queryDetails(k, s), markDetails(k, s), openReviewRequests(k, s), k.casesFor(s, { layer: me.layer, state: 'open', limit: 500 }),
+    ]);
     const open = queries.filter((q) => q.state === 'open');
     return {
       me,
@@ -56,6 +61,7 @@ export class WebService {
         waiting: open.filter((q) => q.layer === me.layer).length,
         reviews: requests.filter((r) => r.reviewer === me.actor && r.layer === me.layer).length,
         open: open.length,
+        cases: cases.length,
       },
     };
   }
@@ -83,9 +89,17 @@ export class WebService {
     const toLink = (l: LinkRow) => link(l);
     let elements: WebElement[] = [];
     let compared: WebNodeView['compared_with'] = null;
+    let nodeRulings: WebRuling[] = [];
     if (row) {
       const read = await k.readNode(s, n.name, row.seq);
+      // Precedent and open case files beside the element they concern, from any version (CASE4):
+      // read as kj_agent, so a session that holds only Read gets none (D49).
+      const rulings = read.rulings.map(ruling);
+      const cases = await this.decorate(me, read.cases);
+      nodeRulings = rulings.filter((r) => r.element === null);
       elements = read.elements.map((e) => ({
+        rulings: rulings.filter((r) => r.element === e.element_id),
+        cases: cases.filter((c) => c.element === e.element_id),
         id: e.element_id, parent: e.parent_element_id, text: e.text,
         address: formatAddress({ node: n.name, version: row.seq, element: e.element_id }),
         queries: queries.filter((q) => q.element === e.element_id).map(query),
@@ -115,7 +129,185 @@ export class WebService {
       in_review: inReview,
       drafts: shown.filter((v) => v.state === 'drafted').map((v) => version(v, me.actor)),
       can_write: me.layer === n.layer && me.access.layers.includes(n.layer),
+      rulings: nodeRulings,
+      kolab: me.kolab,
+      foreign: false,
     };
+  }
+
+  /**
+   * A node of another kolab, read in place (D49): only with Read there, as kj_access computes it,
+   * and only its committed versions, with their elements and questions. A kolab the session can't
+   * read, a node that isn't there and a version that isn't committed are refused alike, saying
+   * nothing of which it was. In the session's own kolab, it is the node as `node` reads it.
+   */
+  async foreignNode(s: string, kolab: string, name: string, seq?: number): Promise<WebNodeView> {
+    const k = this.kolab;
+    if (!isKolabName(kolab) || !isNodeName(name)) throw notThere(kolab, name);
+    const me = await this.me(s);
+    if (kolab === me.kolab) return this.node(s, name, seq);
+    // Kolab checks Read first (the same refusal as a node that isn't there), then reads as kj_agent.
+    const n = await k.locateNode({ session: s }, { kolab, node: name });
+    const versions = await committedVersions(k, s, n.id);
+    const latest = versions.at(-1)?.seq ?? null;
+    const readSeq = seq ?? latest;
+    const row = readSeq === null ? undefined : versions.find((v) => v.seq === readSeq);
+    if (readSeq !== null && !row) throw new NotFoundException({ error: 'not_found', message: `${kolab}/${name} has no version ${readSeq} you can read` });
+    const ref = `${kolab}/${n.name}`;
+    const queries = (await queryDetails(k, s, n.id, kolab)).map((q) => foreignQuery(query(q), kolab));
+    let elements: WebElement[] = [];
+    let compared: WebNodeView['compared_with'] = null;
+    if (row) {
+      elements = (await k.readNode(s, ref, row.seq)).elements.map((e) => ({
+        id: e.element_id, parent: e.parent_element_id, text: e.text,
+        address: formatAddress({ kolab, node: n.name, version: row.seq, element: e.element_id }),
+        queries: queries.filter((q) => q.element === e.element_id),
+        relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [],
+      }));
+      const before = [...versions].reverse().find((v) => v.seq < row.seq)?.seq;
+      if (before !== undefined) compared = { seq: before, elements: (await k.readNode(s, ref, before)).elements.map((e) => ({ id: e.element_id, text: e.text })) };
+    }
+    return {
+      node: { name: n.name, kind: n.kind, layer: n.layer, title: n.title, latest, drafts: 0, in_review: 0 },
+      reading: row ? version(row, me.actor) : null,
+      versions: versions.map((v) => version(v, me.actor)),
+      elements,
+      queries: queries.filter((q) => q.element === null),
+      compared_with: compared,
+      in_review: [], drafts: [], can_write: false, rulings: [],
+      kolab, foreign: true,
+    };
+  }
+
+  /**
+   * Another kolab's nodes, read in place (D49): only with Read there. A kolab that isn't there and
+   * one the session can't read are refused alike. Its access comes from Kolab's own check
+   * (kj_access), as the picker's does; the nodes are read as kj_agent, under row-level security.
+   */
+  async foreignKolab(s: string, kolab: string): Promise<WebForeignKolab> {
+    const me = await this.me(s);
+    const refuse = () => new NotFoundException({ error: 'not_found', message: `no kolab ${kolab} you can read` });
+    if (!isKolabName(kolab)) throw refuse();
+    const access = await this.kolab.access(me.actor, kolab);
+    if (!access.level) throw refuse();
+    const x = (await this.kolab.listKolabs()).find((y) => y.id === kolab);
+    if (!x) throw refuse();
+    const nodes = kolab === me.kolab ? await this.nodes(s) : (await readableNodes(this.kolab, s, kolab)).map((r) => ({
+      name: r.name, kind: r.kind, layer: r.layer, title: r.title, latest: r.latest === null ? null : Number(r.latest), drafts: 0, in_review: 0,
+    }));
+    return { kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access }, nodes };
+  }
+
+  // ---- case files and rulings (CASE1–CASE7, D49, D51) -------------------------
+
+  /**
+   * konjir_list_cases: the kolab's case files, most recently changed first, on every layer, in one
+   * state or all, or with `mine` those the person opened or argued. A session that holds only Read
+   * there gets none: row-level security gives it no case files (D49).
+   */
+  async cases(s: string, opts: { state?: string; mine?: boolean; node?: string } = {}): Promise<WebCasesView> {
+    const me = await this.me(s);
+    if (opts.state !== undefined && opts.state !== 'all' && !CASE_FILE_STATES.includes(opts.state as CaseFileState)) {
+      throw bad(`the state is one of ${CASE_FILE_STATES.join(', ')}, or all`);
+    }
+    const state = opts.state === undefined || opts.state === 'all' ? undefined : opts.state as CaseFileState;
+    const node = opts.node === undefined ? undefined : (await this.kolab.nodeIn(s, opts.node, 'listing case files')).id;
+    const rows = await this.kolab.casesFor(s, { state, node, actor: opts.mine ? me.actor : undefined, limit: 200 });
+    return { cases: await this.decorate(me, rows), belongs: me.access.layers.length > 0 };
+  }
+
+  /** konjir_read_case: one case file of the session's kolab, with its positions and ruling. */
+  async readCase(s: string, id: string): Promise<WebCase> {
+    const me = await this.me(s);
+    const [c] = await this.kolab.casesFor(s, { id });
+    if (!c) throw new NotFoundException({ error: 'not_found', message: `no case file ${id} in kolab ${me.kolab}` });
+    return (await this.decorate(me, [c]))[0];
+  }
+
+  /** konjir_open_case: on one element of a committed version of the session's kolab, with the opener's position. */
+  async openCase(s: string, b: WebOpenCase): Promise<WebCase> {
+    if (typeof b?.node !== 'string' || !isNodeName(b.node)) throw bad('name the node it is about');
+    if (typeof b.element !== 'string' || !b.element) throw bad('a case file is about one element: name it');
+    if (b.seq !== undefined && !Number.isInteger(b.seq)) throw bad('the version is a number');
+    if (!RULING_EFFECTS.includes(b.seeks)) throw bad('say which side your position takes: keep the intent, or change it');
+    const evidence = evidenceOf(b.evidence);
+    const address = formatAddress({ node: b.node, version: b.seq, element: b.element });
+    const id = await this.kolab.openCase(s, address, { question: b.question, claim: b.claim, evidence, seeks: b.seeks });
+    return this.readCase(s, id);
+  }
+
+  /** konjir_add_position: the other side of an open case file. */
+  async addPosition(s: string, id: string, b: WebPosition): Promise<WebCase> {
+    await this.kolab.addPosition(s, id, { claim: b?.claim, evidence: evidenceOf(b?.evidence) });
+    return this.readCase(s, id);
+  }
+
+  /** konjir_rule on a case file: sustains exactly one of its two positions (D51); Kolab checks who may. */
+  async ruleCase(s: string, id: string, b: WebRuleCase): Promise<WebRuling> {
+    const verdicts = b?.verdicts;
+    if (!verdicts || typeof verdicts !== 'object' || Array.isArray(verdicts)
+      || Object.values(verdicts).some((v) => !POSITION_VERDICTS.includes(v))) {
+      throw bad('give each position a verdict, sustained or overruled');
+    }
+    const ruling = await this.kolab.rule(s, { case: id, text: b.text, verdicts, replaces: b.replaces?.trim() || undefined });
+    return this.ruling(s, ruling, { cases: [id] });
+  }
+
+  /** konjir_rule directly, on an element or a whole node of the session's kolab, with no case file behind it (CASE3, D16). */
+  async ruleDirect(s: string, b: WebRuleDirect): Promise<WebRuling> {
+    if (typeof b?.node !== 'string' || !isNodeName(b.node)) throw bad('name the node it rules on');
+    if (b.seq !== undefined && !Number.isInteger(b.seq)) throw bad('the version is a number');
+    if (!RULING_EFFECTS.includes(b.effect)) throw bad('say what the ruling does: change the intent, or keep it');
+    const address = formatAddress({ node: b.node, version: b.seq, element: b.element || undefined });
+    const ruling = await this.kolab.rule(s, { address, text: b.text, effect: b.effect, replaces: b.replaces?.trim() || undefined });
+    return this.ruling(s, ruling, { ids: [ruling] });
+  }
+
+  /** konjir_list_rulings: the kolab's rulings, newest first, on one node if named: precedent (CASE4). */
+  async rulings(s: string, node?: string): Promise<WebRuling[]> {
+    const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
+    return (await this.kolab.rulingsFor(s, { node: id, limit: 200 })).map(ruling);
+  }
+
+  private async ruling(s: string, id: string, filter: { cases?: string[]; ids?: string[] }): Promise<WebRuling> {
+    const r = (await this.kolab.rulingsFor(s, filter)).find((x) => x.ruling === id);
+    if (!r) throw new NotFoundException({ error: 'not_found', message: `no ruling ${id}` });
+    return ruling(r);
+  }
+
+  /**
+   * A case file as the page shows it, with which actions to offer the person (WebCase.you). Kolab
+   * decides each when it is taken; this only spares a button that would be refused. Who answers for
+   * a position's actor (an agent's owner) is Kolab's own lookup, since kj_agent reads no actors.
+   */
+  private async decorate(me: WebMe, rows: CaseFileView[]): Promise<WebCase[]> {
+    const actors = new Map<string, Actor | null>();
+    const actorOf = async (id: string) => {
+      if (!actors.has(id)) actors.set(id, await this.kolab.actor(id).catch(() => null));
+      return actors.get(id)!;
+    };
+    const out: WebCase[] = [];
+    for (const c of rows) {
+      const positions = [];
+      for (const p of c.positions) {
+        const a = await actorOf(p.actor);
+        positions.push({ ...p, kind: a?.kind ?? null, owner: a?.owner ?? null });
+      }
+      const principal = (p: { actor: string; kind: string | null; owner: string | null }) => (p.kind === 'agent' && p.owner ? p.owner : p.actor);
+      const party = positions.some((p) => p.actor === me.actor || principal(p) === me.actor);
+      const open = c.state === 'open';
+      const belongs = me.access.layers.length > 0;
+      const { node, seq, element } = subject(c.on);
+      out.push({
+        ...c, node, seq, element, positions, ruling: c.ruling ? ruling(c.ruling) : null,
+        you: {
+          party,
+          can_argue: open && belongs && positions.length === 1 && !party && !!positions[0].seeks,
+          can_rule: open && positions.length === 2 && !party && me.kind === 'person' && me.layer === c.layer && me.access.layers.includes(c.layer),
+        },
+      });
+    }
+    return out;
   }
 
   async queries(s: string): Promise<WebQuery[]> {
@@ -160,6 +352,9 @@ export class WebService {
           };
           case 'verdict': return { at: r.at, actor: r.actor, text: `${r.state === 'approved' ? 'approved' : 'requested changes on'} ${at(r.node, r.seq)}` };
           case 'query': return { at: r.at, actor: r.actor ?? 'kolab', text: `${r.query_kind === 'note' ? 'left a note on' : 'asked about'} ${at(r.node, r.seq, r.element)}` };
+          case 'case': return { at: r.at, actor: r.actor ?? 'kolab', text: `opened a case file on ${at(r.node, r.seq, r.element)}` };
+          case 'position': return { at: r.at, actor: r.actor, text: `took the other side of the case file on ${at(r.node, r.seq, r.element)}` };
+          case 'ruling': return { at: r.at, actor: r.actor, text: `ruled on ${at(r.node, r.seq, r.element)}: ${r.effect === 'change_intent' ? 'the intent changes' : r.effect === 'keep_intent' ? 'the intent stands' : 'precedent'}` };
           default: return { at: r.at, actor: 'kolab', text: `marked ${at(r.node, r.seq, r.element)} ${r.reason.replace(/_/g, ' ')}` };
         }
       }),
@@ -332,6 +527,13 @@ export class WebService {
 }
 
 const bad = (message: string) => new BadRequestException({ error: 'bad_request', message });
+/** The same refusal for a kolab the session can't read and a node that isn't there (TEN12, D49). */
+const notThere = (kolab: string, name: string) => new NotFoundException({ error: 'not_found', message: `no node ${name} in kolab ${kolab}` });
+/** A position's evidence, as a list of strings: Kolab checks each kj: address resolves. */
+function evidenceOf(e: unknown): string[] {
+  if (!Array.isArray(e) || e.some((x) => typeof x !== 'string')) throw bad('evidence is a list: kj: addresses, and anything else as text');
+  return e.map((x: string) => x.trim()).filter(Boolean);
+}
 const stale = (node: string, base: number | null, now: number | null) => new ConflictException({
   error: 'stale', message: `${node} moved on: your edits were made on ${base === null ? 'no version' : `version ${base}`}, and it is at version ${now ?? 'none'} now. They are still here; read the new version, then apply them again`,
 });
@@ -349,7 +551,9 @@ export function httpError(e: unknown): HttpException {
   if (e instanceof GateError || e instanceof ChecksError) return new ConflictException({ error: 'conflict', message });
   if (e instanceof ActorError || e instanceof TenancyError) return new BadRequestException({ error: 'bad_request', message });
   // Kolab's own "not there" refusals: no node, no version, no query, no mark.
-  if (/^(no (node|version|query|mark|actor) |[^ ]+ has no (committed )?version|cannot ask about )/.test(message)) return new NotFoundException({ error: 'not_found', message });
+  if (/^(no (node|version|query|mark|actor|case file|ruling) |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
+  // A malformed address, or evidence that doesn't resolve: the request is wrong, not Kolab.
+  if (/^(not a Konjir address|a selector needs an element|evidence \S+ does not resolve)/.test(message)) return new BadRequestException({ error: 'bad_request', message });
   logger.error(`the web API failed: ${message}`);
   return new HttpException({ error: 'error', message: 'Kolab could not do that. It has been logged; try again, or tell whoever runs Kolab.' }, 500);
 }
@@ -362,6 +566,20 @@ const link = (l: LinkRow): WebLink => ({
   source: { node: l.source_node, seq: l.source_seq, element: l.source_element, layer: l.source_layer as Layer },
   target: { node: l.target_node, seq: l.target_seq, element: l.target_element, quote: l.target_selector?.exact ?? null, latest: l.target_latest },
   mark: l.mark_id ? { id: l.mark_id, reason: l.mark_reason! } : null,
+});
+
+/** What an address names, taken apart: a ruling's or case file's subject. */
+function subject(on: string) {
+  const a = parseAddress(on);
+  return { node: a.node, seq: a.version ?? 0, element: a.element ?? null };
+}
+
+const ruling = (r: RulingView): WebRuling => ({ ...r, ...subject(r.on) });
+
+/** A question on another kolab's node, as its reader sees it: its address in the full form, and no mark (D49). */
+const foreignQuery = (q: WebQuery, kolab: string): WebQuery => ({
+  ...q, address: formatAddress({ kolab, node: q.node, version: q.seq, element: q.element ?? undefined }),
+  from: null, mark: null, mark_reason: null,
 });
 
 const query = (q: QueryDetailRow): WebQuery => ({
