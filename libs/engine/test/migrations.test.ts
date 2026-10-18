@@ -11,7 +11,10 @@ import {
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
 import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
-import { ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, QUERY_KINDS, REVIEW_REQUEST_STATES, VERSION_STATES, VISIBILITIES } from '@konjir/types';
+import {
+  ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS,
+  REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
+} from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
 
@@ -88,7 +91,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS and OUTBOX_STATES", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS and RULING_EFFECTS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -108,6 +111,10 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, A
     expect(await check('review_request_state_check')).toStrictEqual([...REVIEW_REQUEST_STATES].sort());
     expect(await check('outbox_kind_check')).toStrictEqual([...OUTBOX_KINDS].sort());
     expect(await check('outbox_state_check')).toStrictEqual([...OUTBOX_STATES].sort());
+    expect(await check('case_file_state_check')).toStrictEqual([...CASE_FILE_STATES].sort());
+    expect(await check('position_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
+    expect(await check('ruling_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
+    expect(await check('ruling_effect_check')).toStrictEqual([...RULING_EFFECTS].sort());
   });
 });
 
@@ -560,6 +567,48 @@ test('a database at 0010 reaches 0011: each session is stored by the hash of its
     expect(ended).toStrictEqual([sessionKey(pm)]);
     expect(await kolab.sessionOpen(pm)).toBe(false);
   } finally { await kolab.close(); }
+});
+
+test('a database reaches the rulings migration: rows made before it keep their unknown dates, and every new ruling is dated, says what it does and is a person\'s', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'rulings_and_case_files');
+  expect(at).toBeGreaterThan(MIGRATIONS.findIndex((x) => x.name === 'durable_waits'));
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // No verb wrote these tables before, so what is there was written by hand, with no dates.
+    await db.exec(`
+      insert into account(id, kind, name) values ('konjir', 'organization', 'Konjir'), ('lee', 'user', 'Lee');
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into actor(id, name, kind, owner_id) values ('lee-pm', 'Lee PM', 'agent', 'lee');
+      insert into kolab(id, owner_id, title) values ('kolab', 'konjir', 'Kolab');
+      insert into node(id, name, kind, layer, title, kolab_id) values ('kolab', 'kolab', 'functional_spec', 'functional', 'Kolab', 'kolab');
+      insert into version(id, node_id, seq, layer, state, actor_id, active_role) values ('s1', 'kolab', 1, 'functional', 'committed', 'lee', 'product');
+      insert into case_file(id, version_id, element_id, state) values ('c1', 's1', 'CASE4', 'ruled');
+      insert into position(id, case_file_id, actor_id, claim, evidence) values ('p1', 'c1', 'lee-pm', 'Dates matter.', '{"by": "hand"}');
+      insert into ruling(id, case_file_id, actor_id, verdict, text) values ('r1', 'c1', 'lee-pm', 'sustained', 'Record the date.');
+      insert into ruling(id, version_id, element_id, actor_id, text) values ('d16', 's1', 'CASE3', 'lee', 'A ruling can stand without a case file.');`);
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [versions[at]] });
+    // Nothing is guessed: their dates and effects stay unknown, and the agent's old ruling stays.
+    expect((await db.query(`select id, ruled_at, effect from ruling order by id`)).rows).toStrictEqual([
+      { id: 'd16', ruled_at: null, effect: null }, { id: 'r1', ruled_at: null, effect: null },
+    ]);
+    expect((await db.query(`select id, opened_at, opened_by from case_file`)).rows).toStrictEqual([{ id: 'c1', opened_at: null, opened_by: null }]);
+    // Every new one is dated by the database, says what it does (CASE6), and is a person's (CASE2).
+    await db.query(`insert into ruling(id, version_id, actor_id, text, effect) values ('d50', 's1', 'lee', 'Complete it all.', 'change_intent')`);
+    expect((await db.query<{ ruled_at: Date | string }>(`select ruled_at from ruling where id = 'd50'`)).rows[0].ruled_at).not.toBeNull();
+    expect(await rejection(db.query(`insert into ruling(id, version_id, actor_id, text) values ('x1', 's1', 'lee', 'No effect.')`))).toMatch(/ruling_has_effect/);
+    expect(await rejection(db.query(`insert into ruling(id, version_id, actor_id, text, effect) values ('x2', 's1', 'lee-pm', 'An agent.', 'keep_intent')`)))
+      .toMatch(/lee-pm is not a person/);
+    expect(await rejection(db.query(`insert into ruling(id, version_id, actor_id, text, effect) values ('x3', 's1', 'lee', 'Bad.', 'perhaps')`)))
+      .toMatch(/ruling_effect_check/);
+    // A case file is ruled on once, and a new one says who opened it on what question.
+    expect(await rejection(db.query(`insert into ruling(id, case_file_id, actor_id, text, effect) values ('x4', 'c1', 'lee', 'Again.', 'keep_intent')`)))
+      .toMatch(/one_ruling_per_case_file/);
+    expect(await rejection(db.query(`insert into case_file(id, version_id, element_id) values ('c2', 's1', 'CASE1')`))).toMatch(/case_file_opened/);
+    expect(await rejection(db.query(`update ruling set text = 'Rewritten.' where id = 'd16'`))).toMatch(/a ruling never changes once given/);
+    expect((await migrate(db)).applied).toStrictEqual(versions.slice(at + 1));
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 });
 
 // ---- the runner, with migrations of the test's own ---------------------------------

@@ -73,7 +73,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://inbox/{kolab}/{layer}',
     isTemplate: true,
     title: 'A layer\'s work queue in your kolab',
-    description: 'Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, and the review requests waiting for you on it. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.',
+    description: 'Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, the review requests waiting for you on it, and the open case files about its elements, waiting for a position or a ruling. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.',
     mimeType: 'application/json',
   })
   async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -91,6 +91,8 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       marks: await this.kolab.describeMarks({ layer, kolab }),
       // Each review request waits in its own reviewer's inbox (REV2).
       reviews: await this.kolab.reviewRequests({ layer, reviewer: me.actor, kolab }),
+      // Case files about the layer's elements, waiting for their other position or a ruling (CASE1, CASE2).
+      cases: await this.kolab.listCases({ kolab, layer, state: 'open' }),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
@@ -100,7 +102,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://answers/{kolab}/{actor}',
     isTemplate: true,
     title: 'Answers to what you raised in your kolab',
-    description: 'Your questions and notes in your session\'s kolab with their replies, and the versions you submitted there for review with their verdicts. Updated whenever one of them is answered or reviewed. Only your own answers, in your own kolab, can be read or subscribed to.',
+    description: 'Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, and the case files you opened or hold a position on there, with their rulings. Updated whenever one of them is answered, reviewed, argued or ruled on. Only your own answers, in your own kolab, can be read or subscribed to.',
     mimeType: 'application/json',
   })
   async answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -110,7 +112,9 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (decoded(vars.actor) !== me.actor || decoded(vars.kolab) !== me.kolab) {
       throw new RoleError('you can only read your own answers, in your session\'s kolab');
     }
-    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }) };
+    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
+      cases: await this.kolab.listCases({ kolab: me.kolab, actor: me.actor, limit: 20 }),
+    };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
 }
