@@ -3991,7 +3991,7 @@ export class Kolab {
     // A reader outside a query's kolab (D49) sees only the questions and notes people raised: never
     // one a mark raised (a boundary, a ruling that changes the intent, D51), since that kolab's marks
     // and rulings stay private, and never which element of its asked. Row-level security holds
-    // kj_agent to the first too (0015).
+    // kj_agent to the first too (0016).
     const outside = (r: { kolab_id: string }) => filter.from !== undefined && r.kolab_id !== filter.from;
     return rows.filter((r) => !(outside(r) && r.mark)).map((r) => ({
       id: r.id, kind: r.kind,

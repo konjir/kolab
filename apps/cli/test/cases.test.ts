@@ -116,7 +116,7 @@ test('a reader outside a kolab gets none of the questions its marks raised, over
   expect(outside.elements[0].questions!.map((q) => q.question)).toStrictEqual(['Who reads it?']);
   expect(JSON.stringify(outside)).not.toMatch(/private to other/);
 
-  // Row-level security holds kj_agent to the same, whatever the query (0015).
+  // Row-level security holds kj_agent to the same, whatever the query (0016).
   const rows = await server.kolab.readAs(alice.token, async (q) => (await q.query<{ question: string; invalidation_id: string | null }>(
     `select question, invalidation_id from query where kolab_id = 'other' order by question`)).rows);
   expect(rows).toStrictEqual([{ question: 'Who reads it?', invalidation_id: null }]);
