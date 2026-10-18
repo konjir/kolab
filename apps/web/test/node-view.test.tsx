@@ -106,6 +106,7 @@ test('edits are kept as a draft in the page until submitted for review', async (
   replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pm-agent'], note: null, cascade_queued: false, abandoned: false };
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Submit for review' })); });
   expect(calls.find((c) => c.url.endsWith('/submit'))!.body).toStrictEqual({
+    base: 3,
     changes: [{ kind: 'override', element: 'PR8', text: 'At most 3 reset requests per email address per hour.' }, { kind: 'add', element: 'PR9', text: 'A reset is logged.' }],
   });
   await waitFor(() => expect(screen.getByText(/pm-agent has been asked to review it/)).toBeTruthy());

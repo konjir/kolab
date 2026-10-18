@@ -18,13 +18,19 @@ export async function api<T>(path: string, body?: unknown, method?: string): Pro
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : undefined;
+  // A proxy's error page (Kolab restarting) isn't JSON: say what status came back instead.
+  let data: unknown;
+  try { data = text ? JSON.parse(text) : undefined; } catch { data = undefined; }
   if (!res.ok) {
     const e = data as Partial<WebError> | undefined;
-    throw new ApiError(res.status, typeof e?.message === 'string' ? e.message : `Kolab answered ${res.status}`);
+    throw new ApiError(res.status, typeof e?.message === 'string' ? e.message : `Kolab answered ${res.status}${res.status >= 500 ? ': it may be restarting. Try again in a moment' : ''}`);
   }
   return data as T;
 }
 
 export const signIn = (token: string) => api<WebMe>('session', { token });
+/** Ends the session: its token is revoked, so signing in again takes a new one. */
 export const signOut = () => api<void>('session', undefined, 'DELETE');
+/** Ends this session and opens one in another kolab or role; Kolab keeps the new token in the cookie. */
+export const switchTo = (kolab: string, role: string) => api<WebMe>('session/switch', { kolab, role });
+export const createKolab = (name: string, title: string) => api<WebMe>('session/kolab', { name, title });

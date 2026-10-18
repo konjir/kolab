@@ -16,14 +16,14 @@ export function defaultWebRoot(): string | null {
 }
 
 /** Kolab's own routes, which the page never shadows. */
-const OWN = /^\/(api|mcp|healthz)(\/|$)/;
+const OWN = /^\/(api|mcp|healthz)(\/|$)/i;
 
 /**
- * The page's security headers. Scripts, styles and connections are Kolab's own; the fonts come
- * from Google Fonts, as the design system loads them.
+ * The page's security headers: everything is Kolab's own, the fonts included (bundled with the
+ * page), so no third party sees who opens it.
  */
 const CSP = [
-  "default-src 'self'", "script-src 'self'", "style-src 'self' https://fonts.googleapis.com", 'font-src https://fonts.gstatic.com',
+  "default-src 'self'", "script-src 'self'", "style-src 'self'", "font-src 'self'",
   "img-src 'self' data:", "connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
 ].join('; ');
 
@@ -50,6 +50,7 @@ export function webApp(root: string | null) {
     },
   }) : undefined;
   return (req: Request, res: Response, next: NextFunction) => {
+    if (/^\/api(\/|$)/i.test(req.path)) res.setHeader('x-content-type-options', 'nosniff');
     if ((req.method !== 'GET' && req.method !== 'HEAD') || OWN.test(req.path)) return next();
     const root = req.path === '/' || req.path === '/index.html';
     const page = () => {

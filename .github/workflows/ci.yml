@@ -73,8 +73,8 @@ jobs:
 
       - uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
 
-      - name: Typecheck, build and test
-        run: npx nx affected -t typecheck build test --output-style=static
+      - name: Typecheck, build, test and lint
+        run: npx nx affected -t typecheck build test lint --output-style=static
 
   postgres:
     name: Test on Postgres

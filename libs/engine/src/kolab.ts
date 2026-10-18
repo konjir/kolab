@@ -1130,10 +1130,14 @@ export class Kolab {
 
   /**
    * Runs read-only queries as a session reads (views.ts, for the web interface): as kj_agent in
-   * that session, so row-level security bounds them as it bounds read_node.
+   * that session, so row-level security bounds them as it bounds read_node, in a transaction made
+   * read-only before `fn` runs, so a view can't write even where row-level security would let it.
    */
   readAs<T>(sessionId: string, fn: (q: Pick<Db, 'query'>) => Promise<T>): Promise<T> {
-    return this.read({ session: sessionId }, fn);
+    return this.asAgent(sessionId, async (tx) => {
+      await tx.exec('set local transaction_read_only = on');
+      return fn(tx);
+    });
   }
 
   /** The node called `name` in `kolab`, if there is one. */
@@ -3744,7 +3748,7 @@ export const structuralChecks: Checks = ({ elements }) => {
 const NO_REVIEWER = (layer: Layer) =>
   `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`;
 
-const NEXT_STEP: Record<string, string> = {
+export const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',
   fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target, then, in a draft of yours, konjir_link your element to the current words with their current context (that replaces this link, and the mark settles when the draft commits), or remove the link with konjir_unlink; or konjir_clear_mark if it still holds.',
   orphaned: 'The target no longer exists. In a draft of yours, konjir_link your element to the same target element\'s current words (that replaces this link), or remove the link: konjir_unlink link=<this mark\'s link>, or konjir_draft\'s unlink. The mark settles when that version commits. Removing your element settles it too.',
