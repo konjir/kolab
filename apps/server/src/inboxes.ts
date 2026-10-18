@@ -92,7 +92,8 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       // Each review request waits in its own reviewer's inbox (REV2).
       reviews: await this.kolab.reviewRequests({ layer, reviewer: me.actor, kolab }),
       // Case files about the layer's elements, waiting for their other position or a ruling (CASE1, CASE2).
-      cases: await this.kolab.listCases({ kolab, layer, state: 'open' }),
+      // Read as the session, so one that holds only Read sees none (D49).
+      cases: await this.kolab.casesFor(session, { layer, state: 'open' }),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
@@ -113,7 +114,8 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       throw new RoleError('you can only read your own answers, in your session\'s kolab');
     }
     const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
-      cases: await this.kolab.listCases({ kolab: me.kolab, actor: me.actor, limit: 20 }),
+      // Most recently changed first, so a case file just argued or ruled on is always among them.
+      cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20 }),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }

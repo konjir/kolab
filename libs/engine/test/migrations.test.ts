@@ -115,6 +115,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, A
     expect(await check('position_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
     expect(await check('ruling_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
     expect(await check('ruling_effect_check')).toStrictEqual([...RULING_EFFECTS].sort());
+    expect(await check('position_seeks_check')).toStrictEqual([...RULING_EFFECTS].sort());
   });
 });
 

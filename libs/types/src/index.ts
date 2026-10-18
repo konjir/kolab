@@ -79,13 +79,16 @@ export type OutboxState = typeof OUTBOX_STATES[number];
 /** The two kinds of finding a reviewer reports (VER8). */
 export const FINDING_KINDS = ['contradiction', 'layer_leak'] as const;
 export type FindingKind = typeof FINDING_KINDS[number];
-/** A case file is open until a person rules on it (CASE2). */
-export const CASE_FILE_STATES = ['open', 'ruled'] as const;
+/** A case file is open until a person rules on it (CASE2), or a direct ruling on its element supersedes it (CASE3). */
+export const CASE_FILE_STATES = ['open', 'ruled', 'superseded'] as const;
 export type CaseFileState = typeof CASE_FILE_STATES[number];
 /** What a ruling on a case file says of each position (CASE2). */
 export const POSITION_VERDICTS = ['sustained', 'overruled'] as const;
 export type PositionVerdict = typeof POSITION_VERDICTS[number];
-/** A ruling changes the intent, or keeps it and asks for another way (CASE6). */
+/**
+ * A ruling changes the intent, or keeps it and asks for another way (CASE6). A position seeks one
+ * of the two: the two positions of a case file take opposite sides.
+ */
 export const RULING_EFFECTS = ['change_intent', 'keep_intent'] as const;
 export type RulingEffect = typeof RULING_EFFECTS[number];
 export const OVERRIDE_RESOLUTIONS = ['reaffirm', 'adopt_parent', 'amend'] as const;
@@ -93,7 +96,7 @@ export type OverrideResolution = typeof OVERRIDE_RESOLUTIONS[number];
 /** Why a mark (an invalidation) was raised. */
 export const MARK_REASONS = [
   'changed', 'fuzzy_reanchor', 'orphaned', 'override_stale', 'override_orphaned',
-  'upstream_dirty', 'review_failed', 'rebase_failed', 'role_boundary', 'query_answered',
+  'upstream_dirty', 'review_failed', 'rebase_failed', 'role_boundary', 'query_answered', 'ruled',
 ] as const;
 export type MarkReason = typeof MARK_REASONS[number];
 
@@ -236,6 +239,8 @@ export interface PositionView {
   position: string; actor: string; claim: string;
   /** kj: addresses, and anything else that backs the claim: a commit, a file and line, a test run. */
   evidence: string[];
+  /** The side it takes: keep the intent as written, or change it. Null for a position written before 0013. */
+  seeks: RulingEffect | null;
   verdict: PositionVerdict | null; taken_at: string | null;
 }
 /**
@@ -250,5 +255,8 @@ export interface RulingView {
 export interface CaseFileView {
   case: string; on: string; layer: Layer; question: string | null; state: CaseFileState;
   opened_by: string | null; opened_at: string | null;
-  positions: PositionView[]; ruling: RulingView | null; next: string;
+  positions: PositionView[]; ruling: RulingView | null;
+  /** For a superseded case file: the direct ruling on its element that settled it. */
+  superseded_by: string | null;
+  next: string;
 }

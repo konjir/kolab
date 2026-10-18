@@ -94,15 +94,16 @@ const openCase = z.object({
   address: address.describe('The element in dispute, e.g. kj:checkout#R1, on a committed version in your kolab'),
   question: z.string().describe('What the two sides disagree on, in one sentence'),
   claim: z.string().describe('Your position'),
+  seeks: z.enum(RULING_EFFECTS).describe('The side your position takes: keep_intent (the element stands as written) or change_intent (it must change). The other side takes the opposite.'),
   evidence,
 });
-const addPosition = z.object({ case: z.string().describe('The case file\'s id'), claim: z.string().describe('Your position: the other side'), evidence });
+const addPosition = z.object({ case: z.string().describe('The case file\'s id'), claim: z.string().describe('Your position: the other side, which seeks the opposite of the opener\'s'), evidence });
 const rule = z.object({
   case: z.string().optional().describe('The case file to rule on. Omit it, and give address, to rule directly.'),
   address: address.optional().describe('For a ruling with no case file behind it: the element or node it rules on, e.g. kj:checkout#R1'),
   text: z.string().describe('The ruling, as agents will be served it as precedent'),
-  effect: z.enum(RULING_EFFECTS).describe('change_intent: the intent changes, so the element is to be amended. keep_intent: the intent stands; find another way to meet it as written.'),
-  verdicts: z.record(z.string(), z.enum(POSITION_VERDICTS)).optional().describe('With case: each position\'s verdict, by position id: {"<position>":"sustained","<position>":"overruled"}'),
+  effect: z.enum(RULING_EFFECTS).optional().describe('Required for a direct ruling. change_intent: the intent changes, and the element is marked until it is amended. keep_intent: the intent stands; find another way to meet it as written. On a case file it is the side of the position you sustain, and may be left out.'),
+  verdicts: z.record(z.string(), z.enum(POSITION_VERDICTS)).optional().describe('With case: each position\'s verdict, by position id, sustaining exactly one: {"<position>":"sustained","<position>":"overruled"}'),
   replaces: z.string().optional().describe('What this ruling overrules, in words, if anything'),
 });
 const listCases = z.object({
@@ -436,19 +437,19 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_open_case',
-    description: 'Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can\'t be met as written. Give the question in dispute and your position: a claim and its evidence. It waits in the inbox of the element\'s layer for the other side\'s position (konjir_add_position) and then a person\'s ruling (konjir_rule), and blocks nothing meanwhile. Ask first (konjir_ask): most questions need an answer, not a ruling. Never patch the behavior instead.',
+    description: 'Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can\'t be met as written. Give the question in dispute and your position: a claim, its evidence, and the side it takes (seeks keep_intent or change_intent). Only those with Write on a layer of the kolab may. It waits in the inbox of the element\'s layer for the other side\'s position (konjir_add_position) and then a person\'s ruling (konjir_rule), and blocks nothing meanwhile. Ask first (konjir_ask): most questions need an answer, not a ruling. Never patch the behavior instead.',
     schema: openCase,
   })
   openCase(a: z.infer<typeof openCase>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
-      const id = await this.kolab.openCase(s, a.address, { question: a.question, claim: a.claim, evidence: a.evidence });
+      const id = await this.kolab.openCase(s, a.address, { question: a.question, claim: a.claim, evidence: a.evidence, seeks: a.seeks });
       return (await this.kolab.casesFor(s, { id }))[0];
     });
   }
 
   @McpTool({
     name: 'konjir_add_position',
-    description: 'Take the other side of an open case file: your claim and its evidence. A case file holds two positions, one per actor; once it has both, a person rules on it.',
+    description: 'Take the other side of an open case file: your claim and its evidence, seeking the opposite of the opener. A case file holds two positions, one per side; the opener\'s own person and their agents can\'t take the other side, and you need Write on a layer of the kolab. Once it has both, a person rules on it.',
     schema: addPosition,
   })
   addPosition(a: z.infer<typeof addPosition>, context?: McpToolContext) {
@@ -460,7 +461,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_rule',
-    description: 'Rule, as a person (never an agent), from a session in the role that writes the element\'s layer, holding Write on it. With case: rule on that case file, giving each of its two positions a verdict, sustained or overruled; you may not rule on one you hold a position on. With address and no case: rule directly, with no case file behind it. Say whether the ruling changes the intent or keeps it and asks for another way. A ruling records its author and date, never changes, and is served to every agent in the kolab as precedent; a later ruling says what it replaces.',
+    description: 'Rule, as a person (never an agent), from a session in the role that writes the element\'s layer, holding Write on it. With case: rule on that case file, sustaining exactly one of its two positions and overruling the other; the ruling\'s effect is the side the sustained one seeks. You may not rule on one you or your agent holds a position on. With address and no case: rule directly, with no case file behind it. A direct ruling says whether it changes the intent or keeps it and asks for another way, and supersedes any case file still open on its element. A ruling that changes the intent marks the element, with a question to its layer, until a version amends it. A ruling records its author and date, never changes, and is served to every agent in the kolab as precedent; a later ruling says what it replaces.',
     schema: rule,
   })
   rule(a: z.infer<typeof rule>, context?: McpToolContext) {
@@ -470,7 +471,7 @@ export class AgentTools {
       return {
         ...ruling,
         next: ruling.effect === 'change_intent'
-          ? `The intent changes: amend ${ruling.on} so it says what the ruling says, and commit it; the cascade then reaches everything that depends on it.`
+          ? `The intent changes: ${ruling.on} is marked, with a question to its layer, until a version amends it to say what the ruling says; the cascade then reaches everything that depends on it.`
           : `The intent stands: whoever couldn't meet ${ruling.on} as written finds another way.`,
       };
     });

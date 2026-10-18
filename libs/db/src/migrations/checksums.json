@@ -11,6 +11,6 @@
   "0010_durable_waits.sql": "8672fa8e25c4015ad832ba43e173a020c2eec7a009e3a3714ed44b3f0c82ba17",
   "0011_hashed_session_tokens.sql": "8c1d901ce3aeeb074ea80a2a61086d1a4de5f6a05528315ecfd013637f3d896c",
   "0012_unlink_and_edge_index.sql": "9f8885749c4bc702d887d1b34fecda932caf3ec6ff3e0de51e87e9368bd97e7f",
-  "0012_rulings_and_case_files.sql": "01502758c299ede63b66089801bedd29e1b4eb75e63395245067f197c01fe4da",
+  "0013_rulings_and_case_files.sql": "1c3794ad112059760ae71de0ffdc5400ce2b1ca5fdf544058fe8f312a04fc8a2",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }
