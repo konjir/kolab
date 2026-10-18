@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 314 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 329 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -143,7 +143,7 @@ Row-level security's session helpers sit in subqueries, so Postgres evaluates th
 
 Migration 0006 keeps what the database holds. If it has any actor or node, its data becomes the kolab `kolab`, owned by the organization `konjir`; each person becomes a user and a member of `konjir`, and each person and agent gets Write on both layers of `kolab`, which is what any actor could do before. Open sessions work in `kolab`. A fresh database gets none of this. An existing actor named `konjir`, person or agent, stops the migration, since the organization needs that id: rename the actor first.
 
-**Take a database snapshot before deploying any release with a new migration**, such as 0006, 0007 (the review flow), 0008 (node names per kolab), 0009 (which drops `version.findings`, W1.7) or 0010 (the outbox). Once one is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot, which loses whatever was written since: after 0007, for example, versions in review and their review requests, and after 0010 the outbox's jobs, the work commits and approvals still owed.
+**Take a database snapshot before deploying any release with a new migration**, such as 0006, 0007 (the review flow), 0008 (node names per kolab), 0009 (which drops `version.findings`, W1.7), 0010 (the outbox), 0011 (hashed session tokens) or 0012 (link removals and the cascade's indexes). Once one is applied, an earlier release refuses the database ("recorded at a migration this release doesn't have"), so going back means restoring from that snapshot, which loses whatever was written since: after 0007, for example, versions in review and their review requests, after 0010 the outbox's jobs, the work commits and approvals still owed, and after 0012 the links drafts remove.
 
 ### Addresses
 
@@ -307,9 +307,10 @@ The server is built so it can't drift across that line:
 | `create_node`, `draft`, `submit_for_review` | Author. `draft` takes deltas or full elements, plus `links`. `submit_for_review` runs Kolab's checks and puts the version in review (see *Review*) |
 | `review`, `list_reviews`, `abandon` | Review. `review` approves a version in review, or requests changes, with findings; `list_reviews` shows the requests waiting for you and your own submissions; `abandon` drops your draft or version in review |
 | `link` | Declare that one of your elements relies on an address |
+| `unlink` | Remove links in a draft of yours (see *Removing links*); `draft` takes `unlink` too |
 | `clear_mark`, `resolve_override` | Settle a mark |
 | `ask`, `annotate`, `answer_query` | The question tier. Questions and notes route to the layer that owns the answer; see below |
-| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session`, `admin_apply_ruling`, `admin_outbox` | Admin token only: an agent session doesn't see them, and the CLI says plainly that only the admin token may call one. `admin_add_actor owner=<account>` adds an agent of that person or organization; `admin_open_session kolab=<name>` opens the session in that kolab, and is the only verb that shows its token. `admin_end_session` names the session by exactly one of `token=`, `session=<key>` or `actor=`. `admin_apply_ruling` applies one of Lee's rulings to a node (D47; see *Review*). `admin_outbox [state=dead] [kolab=<name>] [retry=<id>]` lists the outbox's jobs, or one kolab's, and retries a dead one (see *Durable waits*) |
+| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session`, `admin_apply_ruling`, `admin_outbox` | Admin token only: an agent session doesn't see them, and the CLI says plainly that only the admin token may call one. `admin_add_actor owner=<account>` adds an agent of that person or organization; `admin_open_session kolab=<name>` opens the session in that kolab, and is the only verb that shows its token. `admin_end_session` names the session by exactly one of `token=`, `session=<key>` or `actor=`. `admin_apply_ruling` applies one of Lee's rulings to a node (D47; see *Review*), and with `unlink` drops links of its live version. `admin_outbox [state=dead] [kolab=<name>] [retry=<id>]` lists the outbox's jobs, or one kolab's, and retries a dead one (see *Durable waits*) |
 | `admin_add_organization`, `admin_add_member`, `admin_remove_member`, `admin_add_team`, `admin_add_team_member`, `admin_remove_team_member`, `admin_add_kolab`, `admin_list_kolabs`, `admin_grant`, `admin_revoke`, `admin_access` | Admin token only: accounts, kolabs, teams and grants (see *Accounts, kolabs and access*) |
 
 In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it. `konjir watch` streams your inbox (see below).
@@ -329,6 +330,19 @@ Both can target an element or a quoted span (`kj:orders#R13~q({"exact":"50 meter
 
 Claude Code doesn't yet turn these notifications into a turn for the model. Until it does, an agent waiting on answers can run `konjir watch --once` as a background command, which exits with the change as soon as the inbox has one. `konjir watch` without `--once` prints the inbox, then one JSON line per change, for a harness that tails output.
 
+## Removing links
+
+A link's owner removes it in a draft of its node (D48: the owner of an orphaned link "re-points or removes it"; D50). `konjir_unlink node=<node> version=<draft> links=[…]` removes links in a draft the session wrote, and `konjir_draft`'s `unlink` does it in the draft it writes. Each link is named by its id (`edge` in `konjir_lineage`, `link` in `konjir_list_stale`) or by its source element and target address, whose version is ignored; without `kind`, links of every kind between the two go.
+
+- **Part of the version.** A draft records each link it drops (`link_removal`, migration 0012). Nothing changes until the version commits: its reviewers see the removals in `konjir_read_node` (`removes_links`), and a draft sent back, abandoned or rejected changes nothing. Removing links is refused once the version is in review.
+- **At the commit**, the links it was built on carry forward without the removed ones (CAS3). Each removed link's open mark settles, `its link was removed by <node>@<version>`, with the marks it alone caused (LNK5), so removing an orphaned link settles its mark (LNK6). A transitive mark on the dependent that reached it through the removed link stays until its cause clears or its owner clears it.
+- **A link the draft declared itself** goes at once. Linking a removed link again in the same draft takes the removal back.
+- **Re-pointing.** Linking an element to the current words of a target element, where a link of the same kind from that element to that target element carries an open mark (its quote changed or went), replaces the marked link. On a committed version the link moves to the new address and its mark settles at once, `its link was re-pointed by <actor> on <node>@<version>`; in a draft, the draft drops the marked link, and the mark settles when it commits.
+- **Removing the element** drops its links, as before, and now settles their marks and every other open mark on it, `its element was removed by <node>@<version>`: no mark moves onto an element its version doesn't have.
+- **Folds and the outbox.** A draft overtaken by Kolab's rebases is folded with its removals (CAS7). The removal runs in the commit's `after_commit` job, so a cascade stopped part way and run again removes the link and settles its mark once.
+- **Rulings (D47).** `konjir_admin_apply_ruling … unlink=[…]` drops links of the node's live version, with targets in the node's kolab, and commits as rulings do.
+- **Row-level security.** As `kj_agent`, a session records removals, and deletes links, only on a draft of its own, in its layer and kolab.
+
 ## How each decision is implemented
 
 **1. Addressing.** An address is `kj:[<kolab>/]<node>[@<version>][#<element>][~q(<selector>)]` (see *Addresses*). Every edge stores the fingerprint of the content it addressed when it was created. On an upstream commit, Kolab re-resolves each address against the new version:
@@ -339,6 +353,8 @@ Claude Code doesn't yet turn these notifications into a turn for the model. Unti
 - **Gone:** `orphaned` mark.
 
 An element address covers that element's subtree, so addressing a section means addressing its requirements too.
+
+Where the prefix and the suffix both still stand verbatim with a short gap between them (at most twice the quote's length plus 16 characters, with no sentence's end in it), the gap is the quoted words, edited, so "7 days" become "14 days" is a `fuzzy_reanchor` mark, a change, however far the edit, not an orphan (ADR8). The exact words with their context are still exact (D42).
 
 A span's context is its prefix and suffix. It agrees when more than half of the words on one side still sit next to the quote, and either at least two of them do, or both sides agree. One word or punctuation alone is too little. `link` accepts only a target that resolves exactly, and quotes of at most 1,000 characters. When it refuses one, it suggests the current words with several words of context either side.
 
@@ -420,7 +436,7 @@ A parent's commit rebases each variant's live version as it is when its turn com
 - a binding linked into all three, including a cycle with the nested variant
 - a WBS linked into the binding, and a work package linked into the WBS
 
-The edits are parent commits that change, delete and restore elements, variant overrides, edits of marked elements, clears and override resolutions. A stand-in for review, the test's own submission checks, rejects some of them.
+The edits are parent commits that change, delete and restore elements, variant overrides, edits of marked elements, clears, override resolutions, links removed in a draft (with or without an edit of their element) and links linked again. A stand-in for review, the test's own submission checks, rejects some of them.
 
 After each step the test compares Kolab with a reference model (`libs/engine/test/cascade-model.ts`), written from the spec rather than the engine. It checks:
 
@@ -428,19 +444,19 @@ After each step the test compares Kolab with a reference model (`libs/engine/tes
 - every override's state: clean, retired, dirty or orphaned
 - exactly which marks are open, each on its node's live version, and that a mark carried forward keeps its id rather than being raised again
 - one open question per dirty or orphaned override and no other, and a resolved question answered with the ruling by whoever made it
-- every link: either pinned to its target's live version with a matching fingerprint, or carrying an open mark
+- every link: either pinned to its target's live version with a matching fingerprint, or carrying an open mark, and a removed link gone from the live version
 
 The seed is fixed, so CI runs the same sequences every time: 25 on PGlite and 60 on Postgres, which runs them about twice as fast. Three environment variables change that: `KONJIR_PROPERTY_SEED` changes the seed and `KONJIR_PROPERTY_RUNS` the number of runs, to replay a failure or search harder; `KONJIR_PROPERTY_SHRINK=0` stops at the first failure instead of shrinking it.
 
 The model makes three readings of the spec on purpose:
 
 - **A link that already carries an open mark isn't re-checked by later commits.** CAS1's "each live link" is read as each link not already marked. Its owner settles the mark (LNK6), even if the target goes back to the pinned text, or is deleted after it changed.
-- **A link whose target is gone can't re-pin.** Revising its element doesn't settle the mark (CAS4 says "clears that mark and re-pins its link"), and clearing it is refused: the owner re-links instead.
+- **A link whose target is gone can't re-pin.** Revising its element doesn't settle the mark (CAS4 says "clears that mark and re-pins its link"), and clearing it is refused: its owner re-points or removes it (D48; see *Removing links*).
 - **When two rulings share a (base, parent, child) triple, the first stands.**
 
 The tests found six bugs, now fixed, each with a regression in `libs/engine/test/property-regressions.test.ts`:
 
-- **A mark didn't spread through a link that carried a mark of its own.** Such a link stays pinned to an older version. Clearing the link's mark then left its element clean while what it relied on was dirty. The walk now follows live links into any version of the node it reaches. (A follow-up, once the migrations in flight have landed, adds an index on `edge(target_version_id)` for it.)
+- **A mark didn't spread through a link that carried a mark of its own.** Such a link stays pinned to an older version. Clearing the link's mark then left its element clean while what it relied on was dirty. The walk now follows live links into any version of the node it reaches. Migration 0012 indexes `edge(target_version_id)` for it, with `edge(source_version_id)` and the open-mark lookups: measured on Postgres over 38,400 links, a step of the walk went from 11.7 ms to 0.4 ms, and the links a commit re-checks from 6.7 to 0.9 ms.
 - **A self-settled override left its question open.** When a dirty or orphaned override came out clean on its own (its parent went back to the text it was written against, converged on it, or the variant overrode it again), its mark cleared but its question stayed open, where nothing could answer it. Kolab now answers it as `kolab`.
 - **An override moving between orphaned and dirty kept its first wording.** It kept the mark and question it was first raised with. Both are now reworded.
 - **A resolution's precedent was recorded after its own cascade.** So a variant of the resolved variant, rebased by that cascade with the same (base, parent, child) triple, was asked again. The ruling is now recorded in the transaction that commits the resolution, before its cascade: the precedent, and the mark closed with its question answered by the ruling and its author. Nothing is visible while the resolution is in review, however long that takes: the ruling waits on the resolution's version (`version.resolves`, W1.6), and a fold of the resolution carries it. Of two resolutions of one mark, only the one that commits records anything.

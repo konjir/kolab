@@ -34,6 +34,10 @@
 //   precedent for (base, parent, child), which later rebases follow, including the rebases the
 //   resolution's own commit causes. A rejected resolution changes nothing.
 // - VER (the review gate): a draft the reviewer rejects changes nothing.
+// - LNK6, D48, CAS3 (D50): a link's owner removes it in a draft of its node, so the version that
+//   commits doesn't carry it forward: its open mark settles, and what that mark alone caused
+//   clears, as a cleared mark's would, but nothing re-pins. A removal rejected with its version
+//   changes nothing. A link removed can be linked again, pinned to its target as it is then.
 //
 // Readings of the spec this model makes deliberately, where it could be read another way:
 // - A link that already carries an open mark isn't re-checked by later commits (CAS1's "each live
@@ -205,6 +209,16 @@ export class Model {
     }
   }
 
+  /** A link's owner removed it (LNK6, D48): its mark settles, and what that mark alone caused clears; nothing re-pins. */
+  private removeEdge(e: Edge) {
+    this.edges = this.edges.filter((x) => x !== e);
+    if (!e.mark) return;
+    for (const [k, causes] of this.up) {
+      causes.delete(e.key);
+      if (!causes.size) this.up.delete(k);
+    }
+  }
+
   /** A person committed `key`, which read `before`: each element whose text changed settles its marks (CAS4, LNK6). */
   private revised(key: NodeKey, before: El[]) {
     const was = new Map(before.map((e) => [e.id, fp(e.text)]));
@@ -318,6 +332,41 @@ export class Model {
     if (fp(this.plain[key].get(el)!) !== fp(text)) this.plain[key].set(el, text);
     this.revised(key, before);
     this.inbound(key);
+    return true;
+  }
+
+  /**
+   * The link's owner commits its source node with the link removed, and with its source element
+   * rewritten to `text` if given (a binding's veto rejects the whole version, removal and all).
+   */
+  unlink(key: string, text?: string): 'ok' | 'rejected' {
+    const e = this.edges.find((x) => x.key === key)!;
+    if (text !== undefined && vetoed(text) && e.src !== 'W' && e.src !== 'X') return 'rejected';
+    if (e.src === 'V2') {
+      const before = this.mat('V2');
+      this.removeEdge(e);
+      if (text !== undefined) {
+        const pe = this.mat('V1').find((x) => x.id === e.srcEl)!;
+        this.V.V2.delete(e.srcEl);
+        this.V.V2.set(e.srcEl, { kind: 'override', text, baseFp: fp(pe.text), state: 'clean', parent: pe.parent });
+      }
+      this.variantCommitted('V2', before);
+      return 'ok';
+    }
+    const node = e.src as 'B' | 'W' | 'X';
+    const before = this.mat(node);
+    this.removeEdge(e);
+    if (text !== undefined && fp(this.plain[node].get(e.srcEl)!) !== fp(text)) this.plain[node].set(e.srcEl, text);
+    this.revised(node, before);
+    this.inbound(node);
+    return 'ok';
+  }
+
+  /** The owner links a removed link again, from its node's live version. Refused when the target is gone. */
+  relink(l: Link): boolean {
+    const c = this.content(l.tgt, l.tgtEl);
+    if (c === undefined) return false;
+    this.edges.push({ ...l, key: linkKey(l), pinned: fp(c) });
     return true;
   }
 

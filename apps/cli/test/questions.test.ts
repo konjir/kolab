@@ -97,13 +97,17 @@ test('a database from the previous release is migrated on open', async () => {
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
     // without case files (0005), before accounts and kolabs (0006), before the review flow (0007),
-    // before node names per kolab (0008), before the outbox (0010) and before hashed session
-    // tokens (0011), newest first (0009 only dropped what 0007 added, so its undoing is in
+    // before node names per kolab (0008), before the outbox (0010), before hashed session
+    // tokens (0011) and before link removals and the cascade's indexes (0012), newest first (0009 only dropped what 0007 added, so its undoing is in
     // 0007's). The people and the spec stay, and alice's session is stored by its token again,
     // as 0.5 stored it, so 0011 hashing it in place is what keeps it working.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop table link_removal;
+      drop function kj_link_removal_kolab();
+      drop policy agent_draft on edge; drop policy kolab_delete on edge; revoke delete on edge from kj_agent;
+      drop index edge_target_version, edge_source_version, invalidation_open_edge, invalidation_open_version, invalidation_cause_cause;
       alter table session drop constraint session_id_is_key;
       update session set id = '${product}' where id = '${sessionKey(product)}';
       drop table outbox;

@@ -4,6 +4,7 @@ import * as z from 'zod/v4';
 import { GateError, Kolab, SESSION_KEY, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES } from '@konjir/types';
+import { linkRef, toLinkRef } from './link-refs.js';
 import { fail, ok } from './results.js';
 import { KOLAB } from './tokens.js';
 
@@ -51,6 +52,7 @@ const applyRuling = z.object({
   elements: z.array(z.object({ id: z.string().optional(), text: z.string(), parent: z.string().optional() })).optional(),
   deltas: z.array(z.object({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional() })).optional(),
   parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
+  unlink: z.array(linkRef).optional().describe('Links of the node\'s live version that the ruling drops, so they aren\'t carried forward, and their open marks settle: [{"source_element":"b1","target":"kj:kolab#R1"}] or [{"link":"<id>"}]; targets in the node\'s kolab'),
 });
 const outbox = z.object({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
@@ -135,7 +137,7 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_apply_ruling',
-    description: 'Admin: apply a ruling of Lee\'s to a node (D47): a new version, written as the actor given, that commits after structural checks only, with no review request, since the ruling is already the approval. Its review note records the ruling. It goes through the same per-node commit step as any other commit, so it is rejected as stale if the node moved on meanwhile. Agent sessions can\'t reach it.',
+    description: 'Admin: apply a ruling of Lee\'s to a node (D47): a new version, written as the actor given, that commits after structural checks only, with no review request, since the ruling is already the approval. With unlink, it also drops links of the node\'s live version. Its review note records the ruling. It goes through the same per-node commit step as any other commit, so it is rejected as stale if the node moved on meanwhile. Agent sessions can\'t reach it.',
     schema: applyRuling,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
@@ -152,7 +154,7 @@ export class AdminTools {
         if (!v || v.state !== 'committed') throw new GateError(`${a.parent} is not a committed version`);
         parent = v.id;
       }
-      const r = await this.kolab.applyRuling(node.id, { elements: a.elements, deltas: a.deltas, parent }, { id: a.ruling, actor: a.actor });
+      const r = await this.kolab.applyRuling(node.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) }, { id: a.ruling, actor: a.actor });
       const v = await this.kolab.version(r.version);
       const at = formatAddress({ kolab: node.kolab_id, node: node.name, version: v.seq });
       return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? at : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null });

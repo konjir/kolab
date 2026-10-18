@@ -146,6 +146,12 @@ export function fingerprint(text: string): string {
 //      the context agrees around it (1a). Otherwise a search near where the
 //      context points is tried, then one over the whole element without the
 //      context, so a misleading prefix can't orphan a quote that is present.
+//   4a. Where both the recorded prefix and suffix still stand verbatim, one
+//      right after the other but for a short gap, the gap is the quoted words,
+//      edited (ADR8): a change, however far the edit takes them from the quote
+//      ("7 days" to "14 days"), not an orphan. The gap may be at most
+//      BRACKET_SLACK characters longer than twice the quote, and holds no
+//      sentence's end.
 //   5. A quote shorter than SHORT_QUOTE characters is only a near match where
 //      its recorded context still agrees, by the same rule. Otherwise one
 //      edit would re-anchor it to any similar word ("cart" to "card"). With
@@ -209,6 +215,9 @@ const DIFF_TIMEOUT = 0.25;
 const SENTENCE_END = /(?:[.!?;](?=\s|$)|[。！？])\s?/gu;
 const TERMINATOR = /^[.!?;。！？]$/u;
 
+/** How much longer than twice the quote the gap between an intact prefix and suffix may be (4a). */
+const BRACKET_SLACK = 16;
+
 /** The shortest equality at either end of the quote's diff that anchors that end. */
 const MIN_ANCHOR = 3;
 
@@ -257,9 +266,36 @@ export function resolveSpan(haystack: string, sel: QuoteSelector): SpanResolutio
     const loose = nearMatch(text, exact, Math.floor(text.length / 2), 'whole');
     if (loose && (!found || loose.similarity > found.similarity)) found = loose;
   }
-  if (!found || found.similarity < FUZZY_THRESHOLD) return { status: 'orphan' };
-  if ([...exact].length < SHORT_QUOTE && !(hasContext && agrees(found.start, found.end))) return { status: 'orphan' };
-  return fuzzy(found.start, found.end, found.similarity);
+  const passes = found && found.similarity >= FUZZY_THRESHOLD
+    && ([...exact].length >= SHORT_QUOTE || (hasContext && agrees(found.start, found.end)));
+  if (passes) return fuzzy(found!.start, found!.end, found!.similarity);
+  // 4a: the context still brackets the quoted words, which were edited past a near match.
+  const gap = bracketed(text, exact, prefix, suffix);
+  if (gap) return fuzzy(gap.start, gap.end, bounded(exact, text.slice(gap.start, gap.end)));
+  return { status: 'orphan' };
+}
+
+/**
+ * The words between an intact prefix and suffix (4a): where `prefix` stands verbatim, ending on a
+ * word boundary, and `suffix` follows it within a short gap, starting on one. The nearest such
+ * pair wins; none when either side is missing or says nothing.
+ */
+function bracketed(text: string, exact: string, prefix: string, suffix: string): { start: number; end: number } | undefined {
+  if (!meaningful(prefix) || !meaningful(suffix)) return undefined;
+  const limit = 2 * exact.length + BRACKET_SLACK;
+  for (let p = text.indexOf(prefix); p >= 0; p = text.indexOf(prefix, p + 1)) {
+    const from = p + prefix.length;
+    if (!boundary(text, p) || !boundary(text, from)) continue;
+    const q = text.indexOf(suffix, from);
+    if (q < 0 || q - from > limit + 2 || !boundary(text, q) || !boundary(text, q + suffix.length)) continue;
+    const raw = text.slice(from, q);
+    const start = from + (raw.length - raw.trimStart().length);
+    const end = q - (raw.length - raw.trimEnd().length);
+    if (end <= start || end - start > limit) continue;
+    if (new RegExp(SENTENCE_END.source, 'u').test(text.slice(start, end))) continue;
+    return { start, end };
+  }
+  return undefined;
 }
 
 /** 1 - (edit distance / longer length), with the distance from diff-match-patch's diff. */

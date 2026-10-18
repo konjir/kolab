@@ -352,3 +352,16 @@ test('similarity is one minus the edit distance over the longer length', () => {
   expect(similarity('kitten', 'sitting')).toBeCloseTo(1 - 3 / 7);
   expect(similarity('', '')).toBe(1);
 });
+
+test('quoted words edited in place, with their prefix and suffix intact, are a change, however short the quote (ADR8, demo finding)', () => {
+  const sel = { exact: '7 days', prefix: 'Carts expire after', suffix: 'of inactivity.' };
+  expect(at('Carts expire after 14 days of inactivity.', sel)).toMatchObject({ status: 'fuzzy', located: '14 days' });
+  expect(at('Carts expire after 30 days of inactivity.', sel)).toMatchObject({ status: 'fuzzy', located: '30 days' });
+  // D42 stands: the words verbatim with their context are exact.
+  expect(at('Carts expire after 7 days of inactivity.', sel)).toMatchObject({ status: 'exact', located: '7 days' });
+  // Context that no longer brackets anything short leaves an orphan.
+  expect(at('Carts expire after a long while, and then some more time passes, of inactivity.', sel)).toStrictEqual({ status: 'orphan' });
+  expect(at('Sessions last one week.', sel)).toStrictEqual({ status: 'orphan' });
+  // Only one side of the context bounds nothing.
+  expect(at('Carts expire after 14 days.', { exact: '7 days', prefix: 'Carts expire after' })).toStrictEqual({ status: 'orphan' });
+});

@@ -4,6 +4,7 @@ import * as z from 'zod/v4';
 import { Kolab } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import { DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, QUERY_KINDS, QUERY_STATES, REVIEW_VERDICTS, type EdgeKind, type GateResult } from '@konjir/types';
+import { linkRef, toLinkRef } from './link-refs.js';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
 import { answersUri, inboxUri } from './uris.js';
@@ -53,6 +54,12 @@ const draft = z.object({
     target: address.describe('What it relies on (committed)'),
     kind: z.enum(EDGE_KINDS).optional().describe('Defaults to dependency'),
   })).optional().describe('Links to declare from this draft\'s elements, in the same call: [{"source_element":"b1","target":"kj:spec#R1"}]. Links on earlier versions carry forward automatically.'),
+  unlink: z.array(linkRef).optional().describe('Links of the version this draft is built on that it drops, so its commit doesn\'t carry them forward: [{"source_element":"b1","target":"kj:spec#R1"}] or [{"link":"<id>"}]. Removing a link settles its open mark when the version commits; it is reviewed with the rest of the draft.'),
+});
+const unlink = z.object({
+  node,
+  version: z.number().int().describe('Your draft of the node: the removal is part of it, reviewed with it'),
+  links: z.array(linkRef).min(1).describe('The links to remove: [{"link":"<id>"}], or [{"source_element":"b1","target":"kj:spec#R1"}]'),
 });
 const submit = z.object({ node, version: z.number().int() });
 const review = z.object({
@@ -135,7 +142,7 @@ export class AgentTools {
       const kolab = this.kolab;
       // As kj_agent: row-level security bounds the read as well as Kolab (0008). Only who wrote
       // the version comes from Kolab's login, since kj_agent reads no actors.
-      const { node: n, version: row, from: here, elements: els, queries } = await kolab.readNode(s, node, version);
+      const { node: n, version: row, from: here, elements: els, queries, removes } = await kolab.readNode(s, node, version);
       const threads = new Map<string | null, ReturnType<typeof thread>[]>();
       for (const q of queries) {
         const el = parseAddress(q.address).element ?? null;
@@ -144,6 +151,7 @@ export class AgentTools {
       const at = (element?: string) => formatAddress({ kolab: n.kolab_id, node: n.name, version: row.seq, element }, { from: here });
       return {
         node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
+        ...(removes.length ? { removes_links: removes } : {}),
         ...(threads.get(null) ? { questions: threads.get(null) } : {}),
         elements: els.map((e) => ({
           address: at(e.element_id), id: e.element_id, parent: e.parent_element_id, text: e.text,
@@ -223,7 +231,7 @@ export class AgentTools {
       if (!a.elements === !a.deltas) throw new Error('send exactly one of elements or deltas');
       const n = await kolab.nodeIn(s, a.node, 'drafting');
       const parent = a.parent ? (await kolab.versionIn(s, a.parent, { what: 'a variant (a fork)' })).id : undefined;
-      const id = await kolab.draft(s, n.id, { elements: a.elements, deltas: a.deltas, parent });
+      const id = await kolab.draft(s, n.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) });
       const v = await kolab.version(id);
       const linked: string[] = [];
       for (const l of a.links ?? []) {
@@ -231,7 +239,8 @@ export class AgentTools {
         await linkOne(kolab, s, { kind: l.kind ?? 'dependency', source: `kj:${n.name}@${v.seq}#${el}`, target: l.target });
         linked.push(`${el} -> ${l.target}`);
       }
-      return { node: n.name, version: v.seq, versionId: id, state: v.state, linked, next: `konjir_submit_for_review node=${n.name} version=${v.seq}` };
+      const unlinked = a.unlink?.length ? { unlinked: await kolab.removedLinks({ session: s }, v) } : {};
+      return { node: n.name, version: v.seq, versionId: id, state: v.state, linked, ...unlinked, next: `konjir_submit_for_review node=${n.name} version=${v.seq}` };
     });
   }
 
@@ -317,6 +326,20 @@ export class AgentTools {
   })
   link(a: z.infer<typeof link>, context?: McpToolContext) {
     return asAgent(context, async (s) => ({ edge: await linkOne(this.kolab, s, a) }));
+  }
+
+  @McpTool({
+    name: 'konjir_unlink',
+    description: 'Remove links in a draft of yours, so its commit doesn\'t carry them forward: a link you no longer rely on, or an orphaned one whose target is gone (re-point it by linking the replacement, then remove the old one). Name each by its id (konjir_lineage, konjir_list_stale) or by its source element and target. The removal is part of the draft: it is reviewed with it, and the links and their open marks settle only when it commits. A link the draft declared itself goes at once. Linking the same link again in the draft takes the removal back.',
+    schema: unlink,
+  })
+  unlink(a: z.infer<typeof unlink>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const v = await this.kolab.versionIn(s, { ...parseNodeRef(a.node), version: a.version }, { allowDraft: true, what: 'removing links' });
+      const removed = await this.kolab.unlink(s, v.id, a.links.map(toLinkRef));
+      const name = (await this.kolab.node(v.node_id)).name;
+      return { node: name, version: a.version, unlinked: removed, next: `konjir_submit_for_review node=${name} version=${a.version}` };
+    });
   }
 
   @McpTool({
