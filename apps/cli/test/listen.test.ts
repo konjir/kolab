@@ -138,6 +138,45 @@ test('ending a session closes its listen streams promptly; other sessions, of th
   await server.close();
 });
 
+test('archiving closes the listen streams of every session it ends: a person\'s and their agents\', then a whole kolab\'s (D52)', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'lee-pm', 'product', 'lee');
+  const eng = await agent(server, admin, 'eng', 'engineer');
+  await spec(pm.client);
+  const pmStream = await pm.client.listen({ resourceSubscriptions: [INBOX] });
+  const leeStream = await lee!.listen({ resourceSubscriptions: [INBOX] });
+  const engStream = await eng.client.listen({ resourceSubscriptions: [INBOX] });
+
+  // Lee, a person: her session and her agent's end, and their streams close; the engineer's stays.
+  expect(await call(admin, 'admin_archive', { actor: 'lee' })).toStrictEqual({ archived: { actor: 'lee' }, with_kolabs: [], with_agents: ['lee-pm'], ended_sessions: 2 });
+  expect(await settled(pmStream.closed, 2000)).toBe('graceful');
+  expect(await settled(leeStream.closed, 2000)).toBe('graceful');
+  expect(await settled(engStream.closed, 100)).toBe('open');
+  await expect(connect(server.url, pm.token)).rejects.toThrow(/401|invalid_token|Unauthorized/i);
+  await expect(call(admin, 'admin_open_session', { actor: 'lee-pm', role: 'product' })).rejects.toThrow(/lee-pm's owner lee is archived/);
+  expect(await call(admin, 'admin_list_actors', {})).toMatchObject({ actors: [{ id: 'eng' }] });
+  expect((await call(admin, 'admin_list_actors', { archived: true }) as { actors: { id: string; archived: boolean }[] }).actors
+    .map((a) => [a.id, a.archived])).toStrictEqual([['eng', false], ['lee', true], ['lee-pm', true]]);
+
+  // The kolab: everyone left in it is ended, and it leaves the listing but for archived=true.
+  expect(await call(admin, 'admin_archive', { kolab: 'test' })).toMatchObject({ archived: { kolab: 'test' }, ended_sessions: 1 });
+  expect(await settled(engStream.closed, 2000)).toBe('graceful');
+  expect(await call(admin, 'admin_list_kolabs', {})).toStrictEqual({ kolabs: [] });
+  expect(await call(admin, 'admin_list_kolabs', { archived: true })).toMatchObject({ kolabs: [{ id: 'test', archived: true }] });
+  await expect(call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' })).rejects.toThrow(/the kolab name test is archived, not free/);
+  await expect(call(admin, 'admin_archive', { kolab: 'test', actor: 'eng' })).rejects.toThrow(/name exactly one of kolab, organization or actor/);
+  await expect(call(admin, 'admin_archive', {})).rejects.toThrow(/name exactly one of kolab, organization or actor/);
+
+  // Unarchived, it works as before with new sessions.
+  expect(await call(admin, 'admin_unarchive', { kolab: 'test' })).toStrictEqual({ unarchived: { kolab: 'test' }, with_kolabs: [], with_agents: [] });
+  const { token, kolab } = await call(admin, 'admin_open_session', { actor: 'eng', role: 'engineer' }) as { token: string; kolab: string };
+  expect(kolab).toBe('test');
+  const again = await connect(server.url, token);
+  closeAtEnd(again);
+  expect(await call(again, 'whoami')).toMatchObject({ actor: 'eng', kolab: 'test' });
+  await expect(call(again, 'admin_archive', { kolab: 'test' })).rejects.toThrow(/konjir_admin_archive is an admin verb/);
+});
+
 /** Ends the next session whose token is checked, right after that check: between a request's auth and its listen gate. */
 function endAfterAuth(server: KonjirServer) {
   const kolab = server.kolab;

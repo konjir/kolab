@@ -11,7 +11,7 @@ export type Role = typeof ROLES[number];
 export const ACTOR_KINDS = ['person', 'agent'] as const;
 export type ActorKind = typeof ACTOR_KINDS[number];
 /** `owner` is the account that owns an agent: a user (a person, by the same id) or an organization. */
-export interface Actor { id: string; name: string; kind: ActorKind; owner: string | null }
+export interface Actor { id: string; name: string; kind: ActorKind; owner: string | null; archived?: boolean }
 /** An account owns kolabs and agents (TEN2). A person is a user, by the same id. */
 export const ACCOUNT_KINDS = ['user', 'organization'] as const;
 export type AccountKind = typeof ACCOUNT_KINDS[number];
@@ -29,7 +29,16 @@ export type Visibility = typeof VISIBILITIES[number];
  * agent's is its own grant, cut down to its owner's (D30).
  */
 export interface Access { level: AccessLevel | null; layers: Layer[] }
-export interface KolabRow { id: string; owner: string; title: string; visibility: Visibility; base_permission: AccessLevel | null }
+/** `archived` is given only by a listing that includes archived kolabs (D52). */
+export interface KolabRow { id: string; owner: string; title: string; visibility: Visibility; base_permission: AccessLevel | null; archived?: boolean }
+/**
+ * What an admin can archive (D52): a kolab, an organization or an actor (a person or an agent).
+ * An archived one is hidden from listings and can't be used; its data is kept and its name stays
+ * reserved. Archiving an account archives its kolabs and its agents with it.
+ */
+export const ARCHIVABLE = ['kolab', 'organization', 'actor'] as const;
+export type Archivable = typeof ARCHIVABLE[number];
+export type ArchiveTarget = { [K in Archivable]: { [P in K]: string } }[Archivable];
 /**
  * Who wrote a version: the actor, the account that owns it when it's an agent, and the role it
  * was acting in. Kolab's own rebases are written by the actor `kolab`, of kind `system`.

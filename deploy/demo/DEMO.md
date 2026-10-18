@@ -6,7 +6,7 @@ All the work goes through the `konjir` CLI, one agent session token per agent, e
 
 | File | What it is |
 | --- | --- |
-| `m1-walkthrough.mjs` | The walkthrough, plain Node 22+ with no dependencies. It needs a Kolab URL and its admin token. `cleanup <state file>` undoes a run. |
+| `m1-walkthrough.mjs` | The walkthrough, plain Node 22+ with no dependencies. It needs a Kolab URL and its admin token. `cleanup <state file>` ends a run's sessions and archives what it created. |
 | `run-local.sh` | Starts a throwaway Kolab from this checkout, runs the walkthrough with a restart and the cleanup, then stops Kolab and removes it. |
 
 ## Running it
@@ -47,7 +47,7 @@ No token is printed. The agents' tokens go to the state file (`~/.konjir-demo/<r
 
 ### Cleanup, and what stays
 
-`cleanup` removes only what its run created: it ends the run's sessions, revokes its grants and removes its memberships. **Kolabs, organizations and actors can't be deleted yet:** Kolab has no verb that removes or renames an account, a team or a kolab, and a kolab's history is never deleted. So after cleanup, each run leaves two kolabs (`acme-demo-<run>`, `globex-demo-<run>`), two organizations and seven actors, with no grants or memberships, which only the admin token can reach. On the test server that is permanent until such a verb exists, so run it there when it is worth it, not as a smoke test.
+`cleanup` touches only what its run created: it ends the run's sessions, then archives its two kolabs (`acme-demo-<run>`, `globex-demo-<run>`), its two organizations and its seven actors with `admin_archive`, each by name (D52). **Nothing is deleted.** An archived kolab, organization or actor is left out of `admin_list_kolabs` and `admin_list_actors`, and can't be used: no session opens in it or as it, and nothing in an archived kolab can change. Its data is kept for audit, and its name stays reserved, so a later run can't take it; the walkthrough's preflight lists archived kolabs too (`archived=true`), so it stops before writing anything if a name is taken either way. `admin_unarchive` restores one, with its grants and memberships. So on the test server a run leaves archived rows behind for good: run it there when it is worth it, not as a smoke test. Against a Kolab from before archiving, the archive steps are refused and only the sessions end.
 
 ## What each step shows
 
@@ -82,7 +82,7 @@ The IDs are the requirements of *Kolab — Functional Spec* that each step demon
 - **Tenancy (TEN12).** Another company on the same Kolab learns nothing, not even whether a kolab exists.
 - **The setup is one token (DEL2).** Every agent here is a shell with `KONJIR_URL` and `KONJIR_TOKEN`. Claude Code would add the same URL and token as an MCP server.
 
-What an outside team will notice is missing today: tenancy is managed only through the admin token, since a kolab's own Admins can't grant access yet. Tokens are bearer tokens with no expiry or OAuth. Nothing imports another tool's spec files (FIL2), and there is no plan or work-package flow (PLN). Kolabs and accounts can't be removed.
+What an outside team will notice is missing today: tenancy is managed only through the admin token, since a kolab's own Admins can't grant access yet. Tokens are bearer tokens with no expiry or OAuth. Nothing imports another tool's spec files (FIL2), and there is no plan or work-package flow (PLN). Kolabs and accounts are archived, never removed (D52), and can't be renamed or transferred yet (TEN5).
 
 ## Rough edges it steers around
 

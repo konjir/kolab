@@ -12,5 +12,6 @@
   "0011_hashed_session_tokens.sql": "8c1d901ce3aeeb074ea80a2a61086d1a4de5f6a05528315ecfd013637f3d896c",
   "0012_unlink_and_edge_index.sql": "9f8885749c4bc702d887d1b34fecda932caf3ec6ff3e0de51e87e9368bd97e7f",
   "0013_rulings_and_case_files.sql": "1c3794ad112059760ae71de0ffdc5400ce2b1ca5fdf544058fe8f312a04fc8a2",
+  "0014_archive_accounts.sql": "66e641c060610a3facaadf1e27eecdafa610b8e1371297ea463c9c8cf95cfb5c",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

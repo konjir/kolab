@@ -612,6 +612,32 @@ test('a database reaches the rulings migration: rows made before it keep their u
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 });
 
+test('a database reaches the archiving migration: nothing is archived, open sessions keep working, and an archive then ends them', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'archive_accounts');
+  const lee = 'kjs_lee-token-before-archiving';
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`
+      insert into account(id, kind, name) values ('konjir', 'organization', 'Konjir'), ('lee', 'user', 'Lee');
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into kolab(id, owner_id, title) values ('kolab', 'konjir', 'Kolab');
+      insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ('kolab', 'lee', 'write', true, true);
+      insert into session(id, actor_id, active_role, kolab_id) values ('${sessionKey(lee)}', 'lee', 'product', 'kolab');`);
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
+    expect((await db.query(`select 1 from kolab where archived_at is not null union all select 1 from account where archived_at is not null`)).rows).toStrictEqual([]);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    expect(await kolab.sessionInfo(lee)).toMatchObject({ actor: 'lee', kolab: 'kolab', access: { level: 'write' } });
+    expect((await kolab.listKolabs()).map((k) => k.id)).toStrictEqual(['kolab']);
+    expect(await kolab.archive({ organization: 'konjir' })).toMatchObject({ kolabs: ['kolab'], ended: 1 });
+    expect(await kolab.sessionOpen(lee)).toBe(false);
+  } finally { await kolab.close(); }
+});
+
 // ---- the runner, with migrations of the test's own ---------------------------------
 
 const m = (version: number, sql: string): Migration => ({ version, name: `m${version}`, sql });

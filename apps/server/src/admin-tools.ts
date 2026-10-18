@@ -3,7 +3,7 @@ import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { GateError, Kolab, SESSION_KEY, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
-import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES } from '@konjir/types';
+import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
 import { fail, ok } from './results.js';
 import { KOLAB } from './tokens.js';
@@ -13,7 +13,10 @@ const addActor = z.object({
   name: z.string().optional(),
   owner: z.string().optional().describe('For an agent: the account that owns it, a person or an organization. Omit to register a person, who is also a user account.'),
 });
-const listActors = z.object({ owner: z.string().optional().describe("Only this account's agents") });
+const listActors = z.object({
+  owner: z.string().optional().describe("Only this account's agents"),
+  archived: z.boolean().optional().describe('Also list archived actors, and agents of an archived account, each with archived: true or false'),
+});
 const openSession = z.object({
   actor: z.string(), role: z.enum(ROLES),
   kolab: z.string().optional().describe('The kolab the session works in. Defaults to the one kolab the actor can reach.'),
@@ -36,7 +39,15 @@ const addKolab = z.object({
   visibility: z.enum(VISIBILITIES).optional().describe('Defaults to private'),
   base: z.enum(ACCESS_LEVELS).optional().describe('An organization\'s kolab: what every member of the organization holds'),
 });
-const listKolabs = z.object({ owner: z.string().optional() });
+const listKolabs = z.object({
+  owner: z.string().optional(),
+  archived: z.boolean().optional().describe('Also list archived kolabs, and those of an archived account, each with archived: true or false'),
+});
+const archiveTarget = z.object({
+  kolab: z.string().optional().describe('A kolab, by its name'),
+  organization: z.string().optional().describe('An organization: its kolabs and its agents go with it'),
+  actor: z.string().optional().describe("A person or an agent: a person's kolabs and agents go with them"),
+});
 const grant = z.object({
   kolab: z.string(),
   to: z.string().describe('A person, an agent, or a team as <org>/<team>'),
@@ -60,6 +71,14 @@ const outbox = z.object({
   retry: z.string().optional().describe('The id of a dead job, or one waiting out its backoff, to run again now'),
 });
 
+/** What archive and unarchive name: exactly one of a kolab, an organization or an actor. */
+function oneTarget(a: { kolab?: string; organization?: string; actor?: string }): ArchiveTarget {
+  const given = (['kolab', 'organization', 'actor'] as const).filter((k) => a[k] !== undefined);
+  if (given.length !== 1) throw new Error('name exactly one of kolab, organization or actor');
+  const k = given[0];
+  return { [k]: a[k]! } as ArchiveTarget;
+}
+
 /** Verbs for the admin token only: the scope guard refuses them to agent sessions. */
 @Injectable()
 export class AdminTools {
@@ -80,8 +99,8 @@ export class AdminTools {
 
   @McpTool({ name: 'konjir_admin_list_actors', description: "Admin: list actors, each with its kind and owner; owner=<account> lists that account's agents.", schema: listActors })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async listActors({ owner }: z.infer<typeof listActors>) {
-    try { return ok({ actors: await this.kolab.listActors({ owner }) }); } catch (e) { return fail(e); }
+  async listActors({ owner, archived }: z.infer<typeof listActors>) {
+    try { return ok({ actors: await this.kolab.listActors({ owner, archived }) }); } catch (e) { return fail(e); }
   }
 
   @McpTool({
@@ -212,10 +231,36 @@ export class TenancyTools {
     } catch (e) { return fail(e); }
   }
 
-  @McpTool({ name: 'konjir_admin_list_kolabs', description: "Admin: list kolabs, or with owner=<account> that account's.", schema: listKolabs })
+  @McpTool({ name: 'konjir_admin_list_kolabs', description: "Admin: list kolabs, or with owner=<account> that account's. Archived kolabs are left out unless archived=true.", schema: listKolabs })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async listKolabs({ owner }: z.infer<typeof listKolabs>) {
-    try { return ok({ kolabs: await this.kolab.listKolabs({ owner }) }); } catch (e) { return fail(e); }
+  async listKolabs({ owner, archived }: z.infer<typeof listKolabs>) {
+    try { return ok({ kolabs: await this.kolab.listKolabs({ owner, archived }) }); } catch (e) { return fail(e); }
+  }
+
+  @McpTool({
+    name: 'konjir_admin_archive',
+    description: "Admin: archive a kolab, an organization or an actor, named by exactly one of kolab, organization or actor (D52). It disappears from listings and can't be used: its sessions end and their streams close, no session opens, and nothing in an archived kolab can change. Its data is kept, and its name stays reserved. An organization's or a person's kolabs and agents are archived with it. Nothing is deleted; admin_unarchive restores it.",
+    schema: archiveTarget,
+  })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async archive(a: z.infer<typeof archiveTarget>) {
+    try {
+      const { archived, kolabs, agents, ended } = await this.kolab.archive(oneTarget(a));
+      return ok({ archived, with_kolabs: kolabs, with_agents: agents, ended_sessions: ended });
+    } catch (e) { return fail(e); }
+  }
+
+  @McpTool({
+    name: 'konjir_admin_unarchive',
+    description: "Admin: unarchive a kolab, an organization or an actor, named by exactly one of kolab, organization or actor (D52). It is restored as it was, with its grants and memberships, and so is what was archived with it; sessions that ended stay ended. A kolab or agent archived with its owner comes back by unarchiving the owner.",
+    schema: archiveTarget,
+  })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async unarchive(a: z.infer<typeof archiveTarget>) {
+    try {
+      const { unarchived, kolabs, agents } = await this.kolab.unarchive(oneTarget(a));
+      return ok({ unarchived, with_kolabs: kolabs, with_agents: agents });
+    } catch (e) { return fail(e); }
   }
 
   @McpTool({

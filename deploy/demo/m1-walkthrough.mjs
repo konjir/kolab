@@ -8,7 +8,7 @@
 // It creates everything it uses under fresh names (organizations acme-<run> and globex-<run>, kolabs
 // acme-demo-<run> and globex-demo-<run>, and their people and agents), so it never touches another
 // kolab, the mirror kolab `kolab` included. It prints no token: the agents' tokens go to a state file
-// readable only by you, which `cleanup` reads to end the sessions.
+// readable only by you, which `cleanup` reads to end the sessions and archive what the run created.
 //
 // Settings (environment):
 //   KONJIR_URL            the Kolab's MCP endpoint (default http://127.0.0.1:7420/mcp)
@@ -109,7 +109,7 @@ function fail(msg) {
 }
 const rel = (p) => (p.startsWith(process.cwd() + '/') ? p.slice(process.cwd().length + 1) : p);
 
-// ---- state: what this run created, so cleanup removes that and nothing else -----------------------
+// ---- state: what this run created, so cleanup archives that and nothing else ----------------------
 
 let state, statePath;
 function save() {
@@ -127,30 +127,27 @@ function cleanup(path) {
   const url = process.env.KONJIR_URL ?? s.url;
   if (url !== s.url) fail(`the state file is for ${s.url}, not ${url}`);
   console.log(bold(`Cleaning up demo run ${s.run} on ${s.url}`));
-  console.log('  Only what this run created: its sessions, its grants and its memberships.');
-  let ended = 0, revoked = 0, removed = 0;
+  console.log('  Only what this run created: its sessions end, and its kolabs, organizations and actors are archived (D52).');
+  let ended = 0, archived = 0;
   for (const x of s.sessions ?? []) {
+    if (!x.token) continue;
     const r = run(admin, 'admin_end_session', { token: x.token });
     console.log(`  ${dim('$')} konjir admin_end_session token=<${x.actor}'s token>  ${r.ok ? green('ended') : dim(`(${r.error.split('\n')[0]})`)}`);
     if (r.ok) ended++;
   }
-  // Agents' grants first: an agent's grant may not outlive what its owner holds anyway.
-  for (const g of [...(s.grants ?? [])].reverse()) {
-    const r = run(admin, 'admin_revoke', { kolab: g.kolab, to: g.to });
-    console.log(`  ${dim('$')} konjir admin_revoke kolab=${g.kolab} to=${g.to}  ${r.ok ? green('revoked') : dim(`(${r.error.split('\n')[0]})`)}`);
-    if (r.ok) revoked++;
+  // Each one by name, so each is archived in its own right and stays archived whatever happens to
+  // its owner: the kolabs, then the organizations, then the agents and the people.
+  const targets = [...s.kolabs.map((kolab) => ({ kolab })), ...s.orgs.map((organization) => ({ organization })), ...[...s.actors].reverse().map((actor) => ({ actor }))];
+  for (const t of targets) {
+    const [kind, name] = Object.entries(t)[0];
+    const r = run(admin, 'admin_archive', t);
+    console.log(`  ${dim('$')} konjir admin_archive ${kind}=${name}  ${r.ok ? green('archived') : dim(`(${r.error.split('\n')[0]})`)}`);
+    if (r.ok) archived++;
   }
-  for (const m of s.members ?? []) {
-    const r = run(admin, 'admin_remove_member', { org: m.org, user: m.user });
-    console.log(`  ${dim('$')} konjir admin_remove_member org=${m.org} user=${m.user}  ${r.ok ? green('removed') : dim(`(${r.error.split('\n')[0]})`)}`);
-    if (r.ok) removed++;
-  }
-  console.log(`\n  Ended ${ended} session(s), revoked ${revoked} grant(s), removed ${removed} membership(s).`);
-  console.log(`  Left in place, because Kolab has no verb to remove them yet (accounts, teams and kolabs can't be`);
-  console.log(`  removed or renamed, and nothing is ever deleted from a kolab's history):`);
-  console.log(`    organizations ${s.orgs.join(', ')}; kolabs ${s.kolabs.join(', ')};`);
-  console.log(`    actors ${s.actors.join(', ')}.`);
-  console.log(`  With no grants or memberships left, only an admin token can reach them.`);
+  console.log(`\n  Ended ${ended} session(s) and archived ${archived} of ${targets.length}.`);
+  console.log(`  Nothing is deleted: an archived kolab, organization or actor is hidden from listings and can't be`);
+  console.log(`  used, its data is kept, and its name stays reserved. admin_list_kolabs archived=true lists them;`);
+  console.log(`  admin_unarchive restores one, with its grants and memberships.`);
   s.cleaned = new Date().toISOString();
   s.sessions = (s.sessions ?? []).map(({ actor }) => ({ actor, token: null }));
   writeFileSync(path, JSON.stringify(s, null, 2), { mode: 0o600 });
@@ -197,7 +194,7 @@ function main() {
   console.log(`  state:   ${statePath} (mode 600: it holds the agents' tokens, which are never printed)`);
 
   // ---- 0. preflight
-  const before = run(admin, 'admin_list_kolabs', {});
+  const before = run(admin, 'admin_list_kolabs', { archived: true });   // an archived kolab's name is taken too
   if (!before.ok) fail(`the admin token doesn't work at ${URL_}:\n${before.error}`);
   const taken = before.value.kolabs.map((x) => x.id ?? x.name);
   for (const n of [KOLAB, GKOLAB]) if (taken.includes(n)) fail(`kolab ${n} already exists; pick another KONJIR_DEMO_RUN`);
