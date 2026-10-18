@@ -119,7 +119,14 @@ jobs:
       # Docker, for arm64. (The global teardown removes the containers themselves.)
       - name: Show the images the tests ran on
         if: always()
-        run: docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' $(docker image ls -q --filter reference='postgres:*' --filter reference='testcontainers/*')
+        # A change that affects no Nx project (deploy/ or docs only) runs no tests, so pulls no image.
+        run: |
+          images="$(docker image ls -q --filter reference='postgres:*' --filter reference='testcontainers/*')"
+          if [ -n "$images" ]; then
+            docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' $images
+          else
+            echo "No Postgres image was pulled: no affected project ran its tests."
+          fi
 
   terraform:
     name: Check Terraform
