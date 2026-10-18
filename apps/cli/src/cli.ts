@@ -21,7 +21,8 @@
  */
 import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from '@modelcontextprotocol/client';
 import { randomBytes } from 'node:crypto';
-import { ROLES } from '@konjir/types';
+// The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
+const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, login, logout } from './login.js';
 
 export { StoredLogin, credentialsPath, login, logout } from './login.js';
@@ -259,7 +260,7 @@ export async function main(argv: string[]) {
   if (cmd === 'login') {
     const kolab = flag(rest, 'kolab');
     const role = flag(rest, 'role');
-    if (role !== undefined && !ROLES.includes(role as never)) throw new Error(`--role is one of ${ROLES.join(', ')}`);
+    if (role !== undefined && !ROLES.includes(role)) throw new Error(`--role is one of ${ROLES.join(', ')}`);
     if (kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
     const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`].filter(Boolean).join(' ');
     let me;
