@@ -1,5 +1,8 @@
-# Ships the Konjir code: zip the source tree, upload it, and run the installer on Kolab
-# through Systems Manager. Any change to the code changes the zip's hash, which updates the
+# Ships the Konjir code: pack the tracked files of the checkout's commit, upload them, and run the
+# installer on Kolab through Systems Manager. deploy/release/pack.sh packs it with `git archive`,
+# so nothing untracked or ignored can ship (.env, .claude/, .konjir/, *.tfvars), it refuses a
+# checkout with uncommitted tracked changes, so a deploy is exactly a commit, and the release id
+# is the commit's tree id, which changes only when tracked content does. A new id updates the
 # association and re-runs the install. `terraform apply` is the deploy.
 
 variable "name" { type = string }
@@ -8,41 +11,15 @@ variable "artifact_bucket" { type = string }
 variable "instance_id" { type = string }
 variable "domain_name" { type = string }
 
-data "archive_file" "app" {
-  type        = "zip"
-  source_dir  = var.source_dir
-  output_path = "${path.root}/.build/konjir-release.zip"
-  excludes = [
-    "node_modules",
-    "**/node_modules",
-    ".nx",
-    "**/dist",
-    "**/dist-npm", # the published CLI's builds (apps/cli/scripts/package.mjs); Kolab doesn't run them
-    "**/dist-bin",
-    "**/.konjir-demo", # the web interface's demo Kolab writes its session tokens there (apps/web/scripts/demo-server.ts)
-    "**/test-results", # Playwright's
-    "**/playwright-report",
-    ".konjir",
-    ".git",
-    "deploy/terraform/.terraform",
-    "deploy/terraform/.build",
-    "deploy/terraform/terraform.tfstate",
-    "deploy/terraform/terraform.tfstate.backup",
-    "deploy/terraform/.terraform.lock.hcl",
-    # Defence in depth: variable files and a browser agent's captures never ship.
-    "*.tfvars",
-    "**/*.tfvars",
-    "*.tfvars.json",
-    "**/*.tfvars.json",
-    "**/.playwright-mcp",
-  ]
+data "external" "app" {
+  program = ["bash", "${path.module}/../../../release/pack.sh", var.source_dir, abspath("${path.root}/.build/konjir-release.zip")]
 }
 
 resource "aws_s3_object" "release" {
   bucket      = var.artifact_bucket
   key         = "releases/current.zip"
-  source      = data.archive_file.app.output_path
-  source_hash = data.archive_file.app.output_md5
+  source      = data.external.app.result.path
+  source_hash = data.external.app.result.release
 }
 
 resource "aws_ssm_association" "install" {
@@ -56,7 +33,7 @@ resource "aws_ssm_association" "install" {
 
   parameters = {
     # The release hash in the comment is what makes a code change re-run this association.
-    commands         = "cloud-init status --wait >/dev/null || true; /usr/local/bin/konjir-update  # release ${data.archive_file.app.output_md5}"
+    commands         = "cloud-init status --wait >/dev/null || true; /usr/local/bin/konjir-update  # release ${data.external.app.result.release}"
     executionTimeout = "1800"
   }
 
@@ -83,4 +60,4 @@ check "kolab_is_live" {
   }
 }
 
-output "release_md5" { value = data.archive_file.app.output_md5 }
+output "release" { value = data.external.app.result.release }

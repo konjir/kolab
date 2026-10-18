@@ -60,14 +60,15 @@ export class Limit {
   private readonly byKey = new Map<string, number[]>();
   private all: number[] = [];
   constructor(private readonly perKey: number, private readonly total: number, private readonly windowMs: number) {}
-  take(...keys: string[]): boolean {
+  take(...keys: (string | undefined)[]): boolean {
+    if (keys.some((k) => k === undefined)) return false;
     const now = Date.now();
     const live = (ts: number[] | undefined) => (ts ?? []).filter((t) => now - t < this.windowMs);
     this.all = live(this.all);
     if (this.all.length >= this.total) return false;
-    const each = keys.map((k) => live(this.byKey.get(k)));
+    const each = keys.map((k) => live(this.byKey.get(k!)));
     if (each.some((ts) => ts.length >= this.perKey)) return false;
-    keys.forEach((k, i) => this.byKey.set(k, [...each[i], now]));
+    keys.forEach((k, i) => this.byKey.set(k!, [...each[i], now]));
     this.all.push(now);
     if (this.byKey.size > 10_000) for (const [k, ts] of this.byKey) if (!live(ts).length) this.byKey.delete(k);
     return true;
@@ -79,11 +80,13 @@ export class Limit {
  * X-Forwarded-For, which the proxy writes with the address it saw and doesn't take from the
  * client; otherwise the socket's own address.
  */
-export function clientAddress(req: Request, options: { publicHost?: string }): string {
+export function clientAddress(req: Request, options: { publicHost?: string }): string | undefined {
   const socket = req.socket?.remoteAddress ?? '';
   const viaProxy = !!options.publicHost && /^(127\.|::1$|::ffff:127\.)/.test(socket);
   const forwarded = typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',').pop()?.trim() : undefined;
-  return `ip:${addressKey(viaProxy && forwarded ? forwarded : socket)}`;
+  const address = viaProxy && forwarded ? forwarded : socket;
+  // No address to count it by (a socket already gone): refused, never one bucket everyone shares.
+  return address ? `ip:${addressKey(address)}` : undefined;
 }
 
 /**
@@ -154,10 +157,10 @@ export class OAuthController {
   private readonly registrations = new Limit(10, 500, 60 * 60_000);
   /**
    * Authorizations of a known client at a registered redirect URI: 30 a minute from one address
-   * (an IPv6 /64), 3000 in all. No limit per client: a client id is public (the web interface's
-   * above all), so a limit on it would let a few addresses lock everyone out of it.
+   * (an IPv6 /64), and no total, nor any limit per client: a client id is public (the web
+   * interface's above all), and a shared bucket would let a few addresses lock everyone out.
    */
-  private readonly authorizations = new Limit(30, 3000, 60_000);
+  private readonly authorizations = new Limit(30, Infinity, 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,

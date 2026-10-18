@@ -30,6 +30,6 @@ output "admin_token_parameter" {
 }
 
 output "release" {
-  description = "Hash of the code currently shipped to Kolab."
-  value       = module.release.release_md5
+  description = "The release shipped to Kolab: the tree id of the commit deploy/release/pack.sh packed."
+  value       = module.release.release
 }
