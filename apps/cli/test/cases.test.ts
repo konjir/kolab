@@ -85,3 +85,42 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
   expect(direct).toMatchObject({ on: 'kj:checkout@1', case: null });
   expect((await call(pm, 'list_rulings', { node: 'checkout' }) as { rulings: RulingView[] }).rulings.map((r) => r.ruling)).toStrictEqual([direct.ruling, ruling.ruling]);
 }, 120_000);
+
+test('a reader outside a kolab gets none of the questions its marks raised, over MCP and as kj_agent in the database (D49, D51)', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  for (const id of ['erin', 'alice']) await call(admin, 'admin_add_actor', { id });
+  await call(admin, 'admin_add_kolab', { name: 'other', owner: 'erin' });
+  await call(admin, 'admin_add_kolab', { name: 'home', owner: 'alice' });
+  await call(admin, 'admin_grant', { kolab: 'other', to: 'alice', level: 'read' });
+  const open = async (actor: string, kolab: string) => {
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product', kolab }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return { client, token };
+  };
+  const erin = await open('erin', 'other');
+  await call(erin.client, 'create_node', { kind: 'functional_spec', title: 'Secret', id: 'secret' });
+  await call(erin.client, 'draft', { node: 'secret', elements: [{ id: 'S1', text: 'Readers of other know this.' }] });
+  await call(erin.client, 'submit_for_review', { node: 'secret', version: 1 });
+  await call(erin.client, 'ask', { address: 'kj:secret#S1', question: 'Who reads it?' });
+  await call(erin.client, 'rule', { address: 'kj:secret#S1', text: 'A ruling private to other.', effect: 'change_intent' });
+  // Erin, inside, sees the ruled mark's question beside S1.
+  const inside = await call(erin.client, 'read_node', { node: 'secret' }) as { elements: { questions?: { question: string }[] }[] };
+  expect(inside.elements[0].questions!.some((q) => q.question.includes('A ruling private to other'))).toBe(true);
+
+  // Alice, reading from her own kolab, sees the question a person asked, and nothing of the ruling or its mark.
+  const alice = await open('alice', 'home');
+  const outside = await call(alice.client, 'read_node', { node: 'other/secret' }) as { elements: { questions?: { question: string }[] }[] };
+  expect(outside.elements[0].questions!.map((q) => q.question)).toStrictEqual(['Who reads it?']);
+  expect(JSON.stringify(outside)).not.toMatch(/private to other/);
+
+  // Row-level security holds kj_agent to the same, whatever the query (0015).
+  const rows = await server.kolab.readAs(alice.token, async (q) => (await q.query<{ question: string; invalidation_id: string | null }>(
+    `select question, invalidation_id from query where kolab_id = 'other' order by question`)).rows);
+  expect(rows).toStrictEqual([{ question: 'Who reads it?', invalidation_id: null }]);
+  // …and so does the engine for its own callers: no mark id on what an outside reader gets.
+  const queries = (await server.kolab.readNode(alice.token, 'other/secret')).queries;
+  expect(queries.map((q) => [q.question, q.mark, q.from])).toStrictEqual([['Who reads it?', null, null]]);
+});

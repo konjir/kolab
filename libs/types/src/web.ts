@@ -108,7 +108,6 @@ export interface WebRuling extends RulingView { node: string; seq: number; eleme
 /** A case file (CASE1), with its subject taken apart, and what the signed-in person may do with it. */
 export interface WebCase extends CaseFileView {
   node: string; seq: number; element: string | null;
-  positions: (CaseFileView['positions'][number] & { kind: ActorKind | null; owner: string | null })[];
   ruling: WebRuling | null;
   /**
    * Which actions the page offers the signed-in person. Kolab decides each one when it is taken

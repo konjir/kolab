@@ -1,13 +1,13 @@
 import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   AccessError, ActorError, ChecksError, GateError, Kolab, RoleError, TenancyError, activity, committedVersions, kolabNodes, liveLinks, markDetails,
-  maskTokens, openReviewRequests, queryDetails, readableNodes, submissionsOf, versionHistory,
+  maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetails, readableNodes, submissionsOf, versionHistory,
   type LinkRow, type MarkDetailRow, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
 import { formatAddress, isKolabName, isNodeName, parseAddress } from '@konjir/address';
 import {
   CASE_FILE_STATES, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
-  type WebCreateKolab, type WebSwitch, type Actor, type CaseFileState, type CaseFileView, type RulingView,
+  type WebCreateKolab, type WebSwitch, type CaseFileState, type CaseFileView, type RulingView,
   type WebCase, type WebCasesView, type WebForeignKolab, type WebOpenCase, type WebPosition, type WebRuleCase, type WebRuleDirect, type WebRuling,
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
@@ -48,7 +48,7 @@ export class WebService {
       kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current: x.id === me.kolab, access: await k.access(me.actor, x.id) });
     }
     const [queries, marks, requests, cases] = await Promise.all([
-      queryDetails(k, s), markDetails(k, s), openReviewRequests(k, s), k.casesFor(s, { layer: me.layer, state: 'open', limit: 500 }),
+      queryDetails(k, s), markDetails(k, s), openReviewRequests(k, s), openCaseCount(k, s, me.layer),
     ]);
     const open = queries.filter((q) => q.state === 'open');
     return {
@@ -61,7 +61,7 @@ export class WebService {
         waiting: open.filter((q) => q.layer === me.layer).length,
         reviews: requests.filter((r) => r.reviewer === me.actor && r.layer === me.layer).length,
         open: open.length,
-        cases: cases.length,
+        cases,
       },
     };
   }
@@ -149,6 +149,8 @@ export class WebService {
     // Kolab checks Read first (the same refusal as a node that isn't there), then reads as kj_agent.
     const n = await k.locateNode({ session: s }, { kolab, node: name });
     const versions = await committedVersions(k, s, n.id);
+    // A node with nothing committed reads exactly as one that isn't there (D49).
+    if (!versions.length) throw notThere(kolab, name);
     const latest = versions.at(-1)?.seq ?? null;
     const readSeq = seq ?? latest;
     const row = readSeq === null ? undefined : versions.find((v) => v.seq === readSeq);
@@ -188,14 +190,22 @@ export class WebService {
     const me = await this.me(s);
     const refuse = () => new NotFoundException({ error: 'not_found', message: `no kolab ${kolab} you can read` });
     if (!isKolabName(kolab)) throw refuse();
+    if (kolab === me.kolab) {
+      const x = (await this.kolab.kolabRow(kolab))!;
+      return { kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access: me.access }, nodes: (await this.nodes(s)).filter((n) => n.latest !== null) };
+    }
+    // The kolab's own row first (Kolab's login, by id), then Read for that kolab alone, checked in the
+    // same read-only transaction as the read of its nodes (kj_agent): if Read is gone by then, nothing.
+    const x = await this.kolab.kolabRow(kolab);
+    if (!x) throw refuse();
+    const nodes = await readableNodes(this.kolab, s, kolab);
+    if (!nodes) throw refuse();
     const access = await this.kolab.access(me.actor, kolab);
     if (!access.level) throw refuse();
-    const x = (await this.kolab.listKolabs()).find((y) => y.id === kolab);
-    if (!x) throw refuse();
-    const nodes = kolab === me.kolab ? await this.nodes(s) : (await readableNodes(this.kolab, s, kolab)).map((r) => ({
-      name: r.name, kind: r.kind, layer: r.layer, title: r.title, latest: r.latest === null ? null : Number(r.latest), drafts: 0, in_review: 0,
-    }));
-    return { kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access }, nodes };
+    return {
+      kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access },
+      nodes: nodes.map((r) => ({ name: r.name, kind: r.kind, layer: r.layer, title: r.title, latest: Number(r.latest), drafts: 0, in_review: 0 })),
+    };
   }
 
   // ---- case files and rulings (CASE1–CASE7, D49, D51) -------------------------
@@ -207,6 +217,7 @@ export class WebService {
    */
   async cases(s: string, opts: { state?: string; mine?: boolean; node?: string } = {}): Promise<WebCasesView> {
     const me = await this.me(s);
+    if (opts.node !== undefined && !isNodeName(opts.node)) throw bad('name a node of this kolab');
     if (opts.state !== undefined && opts.state !== 'all' && !CASE_FILE_STATES.includes(opts.state as CaseFileState)) {
       throw bad(`the state is one of ${CASE_FILE_STATES.join(', ')}, or all`);
     }
@@ -227,7 +238,8 @@ export class WebService {
   /** konjir_open_case: on one element of a committed version of the session's kolab, with the opener's position. */
   async openCase(s: string, b: WebOpenCase): Promise<WebCase> {
     if (typeof b?.node !== 'string' || !isNodeName(b.node)) throw bad('name the node it is about');
-    if (typeof b.element !== 'string' || !b.element) throw bad('a case file is about one element: name it');
+    if (!isElementId(b.element)) throw bad('a case file is about one element: name it, without "/", "@", "#", "~" or spaces');
+    if (typeof b.question !== 'string' || typeof b.claim !== 'string') throw bad('give the question in dispute and your claim, as text');
     if (b.seq !== undefined && !Number.isInteger(b.seq)) throw bad('the version is a number');
     if (!RULING_EFFECTS.includes(b.seeks)) throw bad('say which side your position takes: keep the intent, or change it');
     const evidence = evidenceOf(b.evidence);
@@ -238,6 +250,7 @@ export class WebService {
 
   /** konjir_add_position: the other side of an open case file. */
   async addPosition(s: string, id: string, b: WebPosition): Promise<WebCase> {
+    if (typeof b?.claim !== 'string') throw bad('give your claim, as text');
     await this.kolab.addPosition(s, id, { claim: b?.claim, evidence: evidenceOf(b?.evidence) });
     return this.readCase(s, id);
   }
@@ -249,7 +262,8 @@ export class WebService {
       || Object.values(verdicts).some((v) => !POSITION_VERDICTS.includes(v))) {
       throw bad('give each position a verdict, sustained or overruled');
     }
-    const ruling = await this.kolab.rule(s, { case: id, text: b.text, verdicts, replaces: b.replaces?.trim() || undefined });
+    const replaces = replacesOf(b);
+    const ruling = await this.kolab.rule(s, { case: id, text: textOf(b.text), verdicts, replaces });
     return this.ruling(s, ruling, { cases: [id] });
   }
 
@@ -258,13 +272,16 @@ export class WebService {
     if (typeof b?.node !== 'string' || !isNodeName(b.node)) throw bad('name the node it rules on');
     if (b.seq !== undefined && !Number.isInteger(b.seq)) throw bad('the version is a number');
     if (!RULING_EFFECTS.includes(b.effect)) throw bad('say what the ruling does: change the intent, or keep it');
+    if (b.element !== undefined && b.element !== '' && !isElementId(b.element)) throw bad('name the element without "/", "@", "#", "~" or spaces, or leave it out to rule on the node');
+    const replaces = replacesOf(b);
     const address = formatAddress({ node: b.node, version: b.seq, element: b.element || undefined });
-    const ruling = await this.kolab.rule(s, { address, text: b.text, effect: b.effect, replaces: b.replaces?.trim() || undefined });
+    const ruling = await this.kolab.rule(s, { address, text: textOf(b.text), effect: b.effect, replaces });
     return this.ruling(s, ruling, { ids: [ruling] });
   }
 
   /** konjir_list_rulings: the kolab's rulings, newest first, on one node if named: precedent (CASE4). */
   async rulings(s: string, node?: string): Promise<WebRuling[]> {
+    if (node !== undefined && !isNodeName(node)) throw bad('name a node of this kolab');
     const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
     return (await this.kolab.rulingsFor(s, { node: id, limit: 200 })).map(ruling);
   }
@@ -281,33 +298,21 @@ export class WebService {
    * a position's actor (an agent's owner) is Kolab's own lookup, since kj_agent reads no actors.
    */
   private async decorate(me: WebMe, rows: CaseFileView[]): Promise<WebCase[]> {
-    const actors = new Map<string, Actor | null>();
-    const actorOf = async (id: string) => {
-      if (!actors.has(id)) actors.set(id, await this.kolab.actor(id).catch(() => null));
-      return actors.get(id)!;
-    };
-    const out: WebCase[] = [];
-    for (const c of rows) {
-      const positions = [];
-      for (const p of c.positions) {
-        const a = await actorOf(p.actor);
-        positions.push({ ...p, kind: a?.kind ?? null, owner: a?.owner ?? null });
-      }
-      const principal = (p: { actor: string; kind: string | null; owner: string | null }) => (p.kind === 'agent' && p.owner ? p.owner : p.actor);
-      const party = positions.some((p) => p.actor === me.actor || principal(p) === me.actor);
+    // One lookup for every position's actor: which are the person's own side (them, or their agents).
+    const mine = await ownSide(this.kolab, me.actor, [...new Set(rows.flatMap((c) => c.positions.map((p) => p.actor)))]);
+    const belongs = me.access.layers.length > 0;
+    return rows.map((c) => {
+      const party = c.positions.some((p) => mine.has(p.actor));
       const open = c.state === 'open';
-      const belongs = me.access.layers.length > 0;
-      const { node, seq, element } = subject(c.on);
-      out.push({
-        ...c, node, seq, element, positions, ruling: c.ruling ? ruling(c.ruling) : null,
+      return {
+        ...c, ...subject(c.on), ruling: c.ruling ? ruling(c.ruling) : null,
         you: {
           party,
-          can_argue: open && belongs && positions.length === 1 && !party && !!positions[0].seeks,
-          can_rule: open && positions.length === 2 && !party && me.kind === 'person' && me.layer === c.layer && me.access.layers.includes(c.layer),
+          can_argue: open && belongs && c.positions.length === 1 && !party && !!c.positions[0].seeks,
+          can_rule: open && c.positions.length === 2 && !party && me.kind === 'person' && me.layer === c.layer && me.access.layers.includes(c.layer),
         },
-      });
-    }
-    return out;
+      };
+    });
   }
 
   async queries(s: string): Promise<WebQuery[]> {
@@ -529,6 +534,19 @@ export class WebService {
 const bad = (message: string) => new BadRequestException({ error: 'bad_request', message });
 /** The same refusal for a kolab the session can't read and a node that isn't there (TEN12, D49). */
 const notThere = (kolab: string, name: string) => new NotFoundException({ error: 'not_found', message: `no node ${name} in kolab ${kolab}` });
+/** An element's id as an address carries it: no "/", "@", "#", "~" or whitespace, which the grammar uses. */
+const isElementId = (e: unknown): e is string => typeof e === 'string' && /^[^/@#~\s]+$/.test(e);
+/** A ruling's text: Kolab checks it isn't empty. */
+function textOf(t: unknown): string {
+  if (typeof t !== 'string') throw bad('write the ruling, as text');
+  return t;
+}
+/** What a ruling replaces, if anything, as text. */
+function replacesOf(b: { replaces?: unknown }): string | undefined {
+  if (b.replaces === undefined || b.replaces === null) return undefined;
+  if (typeof b.replaces !== 'string') throw bad('say what it replaces, as text');
+  return b.replaces.trim() || undefined;
+}
 /** A position's evidence, as a list of strings: Kolab checks each kj: address resolves. */
 function evidenceOf(e: unknown): string[] {
   if (!Array.isArray(e) || e.some((x) => typeof x !== 'string')) throw bad('evidence is a list: kj: addresses, and anything else as text');
@@ -552,7 +570,8 @@ export function httpError(e: unknown): HttpException {
   if (e instanceof ActorError || e instanceof TenancyError) return new BadRequestException({ error: 'bad_request', message });
   // Kolab's own "not there" refusals: no node, no version, no query, no mark.
   if (/^(no (node|version|query|mark|actor|case file|ruling) |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
-  // A malformed address, or evidence that doesn't resolve: the request is wrong, not Kolab.
+  // A malformed address (a quote selector that isn't JSON included), or evidence that doesn't resolve: the request is wrong, not Kolab.
+  if (e instanceof SyntaxError) return new BadRequestException({ error: 'bad_request', message: `not a Konjir address: ${message}` });
   if (/^(not a Konjir address|a selector needs an element|evidence \S+ does not resolve)/.test(message)) return new BadRequestException({ error: 'bad_request', message });
   logger.error(`the web API failed: ${message}`);
   return new HttpException({ error: 'error', message: 'Kolab could not do that. It has been logged; try again, or tell whoever runs Kolab.' }, 500);
