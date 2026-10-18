@@ -1128,6 +1128,14 @@ export class Kolab {
     return 'session' in where ? this.asAgent(where.session, (tx) => fn(tx)) : fn(this.db);
   }
 
+  /**
+   * Runs read-only queries as a session reads (views.ts, for the web interface): as kj_agent in
+   * that session, so row-level security bounds them as it bounds read_node.
+   */
+  readAs<T>(sessionId: string, fn: (q: Pick<Db, 'query'>) => Promise<T>): Promise<T> {
+    return this.read({ session: sessionId }, fn);
+  }
+
   /** The node called `name` in `kolab`, if there is one. */
   private async findNode(q: Q, kolab: string, name: string): Promise<NodeRow | undefined> {
     return (await q.query<NodeRow>(`select * from node where kolab_id = $1 and name = $2`, [kolab, name])).rows[0];

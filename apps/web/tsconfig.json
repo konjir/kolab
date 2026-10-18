@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": [],
+    "customConditions": ["@konjir/source"],
+    "allowImportingTsExtensions": false
+  },
+  "include": ["src", "test", "e2e", "vite.config.ts", "playwright.config.ts"]
+}

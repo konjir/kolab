@@ -1,0 +1,68 @@
+{
+  "name": "@konjir/web",
+  "version": "0.5.0",
+  "private": true,
+  "description": "The Kolab web interface: a React and Vite single-page app served by Kolab, kept live with server-sent events",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "node scripts/check-boundaries.mjs",
+    "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest",
+    "dev": "vite",
+    "demo": "TSX_TSCONFIG_PATH=../../tsconfig.json tsx --conditions=@konjir/source scripts/demo-server.ts",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@konjir/types": "*",
+    "@playwright/test": "^1.64.1",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jest-environment-jsdom": "^30.5.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "vite": "^8.3.4"
+  },
+  "nx": {
+    "tags": [
+      "scope:web"
+    ],
+    "targets": {
+      "build": {
+        "inputs": [
+          "production",
+          "^production",
+          {
+            "externalDependencies": [
+              "vite",
+              "@vitejs/plugin-react",
+              "react",
+              "react-dom"
+            ]
+          }
+        ]
+      },
+      "e2e": {
+        "dependsOn": [
+          "build"
+        ],
+        "cache": false
+      },
+      "demo": {
+        "dependsOn": [
+          "build"
+        ],
+        "cache": false
+      },
+      "dev": {
+        "cache": false
+      }
+    }
+  }
+}

@@ -19,6 +19,9 @@ data "archive_file" "app" {
     "**/dist",
     "**/dist-npm", # the published CLI's builds (apps/cli/scripts/package.mjs); Kolab doesn't run them
     "**/dist-bin",
+    "**/.konjir-demo", # the web interface's demo Kolab writes its session tokens there (apps/web/scripts/demo-server.ts)
+    "**/test-results", # Playwright's
+    "**/playwright-report",
     ".konjir",
     ".git",
     "deploy/terraform/.terraform",

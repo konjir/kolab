@@ -24,6 +24,7 @@
     "@swc/core": "^1.16.18",
     "@swc/jest": "^0.2.39",
     "@testcontainers/postgresql": "^12.2.1",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "fast-check": "^4.10.2",

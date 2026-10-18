@@ -13,3 +13,15 @@ export const SERVER_INFO = { name: 'konjir', version: '0.6.0' };
 
 /** The MCP endpoint's route, as McpHttpModule is registered with it. */
 export const MCP_ROUTE = 'mcp';
+
+export const WEB_OPTIONS = Symbol('WEB_OPTIONS');
+
+/** The web interface's settings (W3.1). */
+export interface WebOptions {
+  /** The admin token, which works in no kolab, so it never signs in to the web interface. */
+  adminToken: string;
+  /** The public hostname behind the TLS proxy: its pages' origin, and the cookie is Secure. */
+  publicHost?: string;
+  /** How often an event stream checks its kolab's versions for commits, in ms (3 s by default). */
+  versionsPollMs?: number;
+}
