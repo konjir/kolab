@@ -3,13 +3,14 @@
 // agent works there through the CLI, whose 15-minute token refreshes by itself; the person invites
 // a teammate with a link, who joins; and `konjir logout` revokes the agent's grant. The identity
 // provider is a stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
 import { StoredLogin, call, connect, credentialsPath, login, logout, main } from '../src/cli.js';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
+import { FileLock } from '../src/login.js';
 
 /** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on the CLI's loopback callback. */
 async function browse(start: URL, form: Record<string, string>): Promise<string> {
@@ -120,9 +121,13 @@ async function signedIn(label = 'cli') {
 }
 
 test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
-  // The folder already exists, more open than it should be: konjir closes it.
-  mkdirSync(join(process.env.KONJIR_CREDENTIALS!, '..'), { recursive: true, mode: 0o755 });
+  // konjir's own default folder already exists, more open than it should be: konjir closes it.
+  delete process.env.KONJIR_CREDENTIALS;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'konjir-xdg-'));
+  mkdirSync(join(process.env.XDG_CONFIG_HOME, 'konjir'), { mode: 0o755 });
+  chmodSync(join(process.env.XDG_CONFIG_HOME, 'konjir'), 0o755);
   const { kolab, server } = await signedIn();
+  expect(credentialsPath()).toBe(join(process.env.XDG_CONFIG_HOME, 'konjir', 'credentials.json'));
   expect(statSync(join(credentialsPath(), '..')).mode & 0o777).toBe(0o700);
   const a = await connect(server.url, new StoredLogin(server.url));
   const b = await connect(server.url, new StoredLogin(server.url));
@@ -185,4 +190,85 @@ test('a sign-in that was revoked elsewhere says to run konjir login; the answer 
   await kolab.db.query(`update oauth_grant set revoked_at = now()`);
   await kolab.endSession({ actor: 'bo-cli' });
   expect(await rejection(main(['whoami']))).toMatch(/your sign-in to .* has ended or was revoked: run konjir login/);
+});
+
+const URL_ = 'http://127.0.0.1:9/mcp';
+const tokens = (n: number) => ({ access_token: `kjs_a${n}`, refresh_token: `kjr_r${n}`, token_type: 'Bearer', expires_in: 900 });
+
+test('a folder named through KONJIR_CREDENTIALS is never changed: konjir warns when others may write in it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'konjir-shared-'));
+  chmodSync(dir, 0o777);
+  process.env.KONJIR_CREDENTIALS = join(dir, 'c.json');
+  const warn = console.error as unknown as jest.Mock;
+  await new StoredLogin(URL_).saveTokens(tokens(1));
+  expect(statSync(dir).mode & 0o777).toBe(0o777);
+  expect(warn.mock.calls.flat().join('\n')).toContain(`warning: others may write in ${dir}`);
+  expect(statSync(join(dir, 'c.json')).mode & 0o777).toBe(0o600);
+});
+
+test('a lock that is a dangling symbolic link, or a stale one konjir can\'t remove, ends in a clear error by the deadline, never a spin', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'konjir-lock-'));
+  const path = join(dir, 'c.json');
+  symlinkSync(join(dir, 'nowhere'), `${path}.lock`);
+  const started = Date.now();
+  expect(await rejection(new StoredLogin(URL_, { path, lockWaitMs: 300 }).forget())).toMatch(/c\.json\.lock is a symbolic link, so konjir won't use it as its lock: remove it/);
+  expect(Date.now() - started).toBeLessThan(5000);
+
+  // A stale lock in a folder konjir may not change: it waits until the deadline, sleeping, then says so.
+  const ro = mkdtempSync(join(tmpdir(), 'konjir-ro-'));
+  const roPath = join(ro, 'c.json');
+  writeFileSync(`${roPath}.lock`, 'someone-else');
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(`${roPath}.lock`, old, old);
+  chmodSync(ro, 0o500);
+  try {
+    const t0 = Date.now();
+    const why = await rejection(new StoredLogin(URL_, { path: roPath, lockWaitMs: 400 }).forget());
+    expect(why).toMatch(/konjir couldn't take .*c\.json\.lock: its stale lock can't be removed \(EACCES\)\. If no konjir is running, remove that file|konjir couldn't take .*c\.json\.lock \(EACCES\)/);
+    expect(Date.now() - t0).toBeLessThan(5000);
+  } finally {
+    chmodSync(ro, 0o700);
+  }
+});
+
+test('a lock broken while its holder stalled: the break is atomic, the holder notices, and keeps the tokens another konjir saved', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'konjir-break-'));
+  const lockPath = join(dir, 'x.lock');
+  const a = new FileLock(lockPath, 2000);
+  const b = new FileLock(lockPath, 2000);
+  await a.acquire('owner-a');
+  expect(a.holds('owner-a')).toBe(true);
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(lockPath, old, old);
+  await b.acquire('owner-b');
+  expect(readFileSync(lockPath, 'utf8')).toBe('owner-b');
+  expect(a.holds('owner-a')).toBe(false);
+  a.release('owner-a');
+  expect(readFileSync(lockPath, 'utf8')).toBe('owner-b');   // A's release leaves B's lock alone
+  b.release('owner-b');
+
+  // Two konjir refreshing: X stalls past the stale mark, Y breaks the lock, refreshes and saves.
+  const path = join(dir, 'c.json');
+  await new StoredLogin(URL_, { path }).saveTokens(tokens(1));
+  const x = new StoredLogin(URL_, { path });
+  const y = new StoredLogin(URL_, { path });
+  expect((await x.tokens({}))?.refresh_token).toBe('kjr_r1');
+  utimesSync(`${path}.lock`, old, old);
+  expect((await y.tokens({}))?.refresh_token).toBe('kjr_r1');
+  await y.saveTokens(tokens(2));
+  // X wakes, with tokens from its own refresh: it doesn't save over Y's, which are the live ones.
+  await x.saveTokens(tokens(3));
+  expect(JSON.parse(readFileSync(path, 'utf8'))[URL_].tokens.refresh_token).toBe('kjr_r2');
+  expect(() => statSync(`${path}.lock`)).toThrow();
+});
+
+test('an abandoned konjir login keeps the sign-in it would have replaced, working', async () => {
+  const { kolab, server } = await signedIn();
+  const before = JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token;
+  expect(await rejection(login(server.url, { log: () => undefined, open: () => undefined, timeoutMs: 300 }))).toMatch(/took too long/);
+  expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token).toBe(before);
+  out = [];
+  await main(['whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where revoked_at is null`)).rows).toStrictEqual([{ n: 1 }]);
 });
