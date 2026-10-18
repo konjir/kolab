@@ -98,12 +98,21 @@ test('a database from the previous release is migrated on open', async () => {
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
     // without case files (0005), before accounts and kolabs (0006), before the review flow (0007),
     // before node names per kolab (0008), before the outbox (0010), before hashed session
-    // tokens (0011), before link removals and the cascade's indexes (0012) and before rulings' dates and the case-file verbs' columns (0013), newest first (0009 only dropped what 0007 added, so its undoing is in
-    // 0007's). The people and the spec stay, and alice's session is stored by its token again,
-    // as 0.5 stored it, so 0011 hashing it in place is what keeps it working.
+    // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
+    // and the case-file verbs' columns (0013) and before archiving (0014), newest first (0009 only
+    // dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
+    // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
+    // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger session_openable on session;
+      drop function kj_session_openable();
+      ${['node', ...keyed, 'review_request', 'kolab_grant', 'link_removal'].map((t) => `drop trigger kolab_writable on ${t};`).join('\n')}
+      drop function kj_kolab_writable();
+      alter table actor drop constraint actor_archived_is_agent, drop column archived_at;
+      alter table kolab drop column archived_at;
+      alter table account drop column archived_at;
       drop trigger ruling_by_person on ruling;
       drop function kj_ruling_by_person();
       drop trigger position_on_open_case on position;
@@ -166,6 +175,7 @@ test('a database from the previous release is migrated on open', async () => {
       grant execute on function kj_session_layer(), kj_session_actor(), kj_session_role() to public;
       grant select on session, actor to kj_agent;
       drop function kj_session_kolab(), kj_access(text, text), kj_person_access(text, text), kj_level_rank(text);
+      drop function kj_kolab_archived(text), kj_actor_archived(text);
       ${['session', 'node', ...keyed].map((t) => `alter table ${t} drop column kolab_id cascade;`).join('\n')}
       drop function kj_kolab_fixed();
       alter table precedent add unique (base_fingerprint, parent_fingerprint, child_fingerprint);

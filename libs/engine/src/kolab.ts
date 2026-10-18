@@ -10,7 +10,7 @@ import {
   ACCESS_LEVELS, FINDING_KINDS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, RULING_EFFECTS, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
-  type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
+  type Access, type AccessLevel, type Actor, type ActorKind, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
@@ -807,7 +807,7 @@ export class Kolab {
     try {
       const r = await this.db.query<{ ms: number | string | null }>(
         `select extract(epoch from min(greatest(run_after, coalesce(claimed_until, run_after))) - clock_timestamp()) * 1000 as ms
-           from outbox where state = 'pending'`);
+           from outbox where state = 'pending' and not kj_kolab_archived(kolab_id)`);
       const next = r.rows[0]?.ms;
       if (next !== null && next !== undefined) ms = Math.min(ms, Math.max(20, Math.ceil(Number(next)) + 5));
     } catch { /* the next pass reads it again */ }
@@ -830,6 +830,7 @@ export class Kolab {
     return (await this.db.query<OutboxJob>(
       `update outbox o set claim = $${n + 1}, claimed_by = $${n + 2}, claimed_until = ${this.leaseUntil}, attempts = o.attempts + 1
         where o.id = (${which}) and o.state = 'pending' and o.run_after <= clock_timestamp()
+          and not kj_kolab_archived(o.kolab_id)   -- an archived kolab's jobs wait until it is unarchived (D52)
           and (o.claimed_until is null or o.claimed_until < clock_timestamp())
           and (o.claim is null or not (o.claim = any($${n + 3}::text[])))
        returning o.id, o.kind, o.version_id, o.claim, o.payload, o.attempts`, [...params, ulid(), this.origin, this.ownTokens()])).rows[0];
@@ -849,6 +850,7 @@ export class Kolab {
           where j.state = 'pending' and j.run_after <= clock_timestamp()
             and (j.claimed_until is null or j.claimed_until < clock_timestamp())
             and (j.claim is null or not (j.claim = any($3::text[])))
+            and not kj_kolab_archived(j.kolab_id)
             and (j.kind <> 'after_commit' or not exists (
                   select 1 from outbox e join version ev on ev.id = e.version_id
                    where e.kind = 'after_commit' and ev.node_id = jv.node_id and ev.seq < jv.seq))
@@ -928,12 +930,20 @@ export class Kolab {
     const { name = id, owner } = opts;
     if (!ACTOR_ID.test(id)) throw new ActorError(`"${id}" isn't a valid actor id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
     if (id === SYSTEM_ACTOR) throw new ActorError(`"${SYSTEM_ACTOR}" is reserved for Kolab's own work`);
-    if (await this.findActor(id)) throw new ActorError(`actor ${id} already exists`);
-    if (owner !== undefined && !(await this.findAccount(owner))) {
+    const existing = await this.findActor(id);
+    if (existing) {
+      if (await this.archivedActor(id)) throw new ActorError(reserved(`the actor ${id}`, `actor=${id}`));
+      throw new ActorError(`actor ${id} already exists`);
+    }
+    const ownerAccount = owner === undefined ? undefined : await this.findAccount(owner);
+    if (owner !== undefined && !ownerAccount) {
       if ((await this.findActor(owner))?.kind === 'agent') throw new ActorError(`${owner} is an agent; an agent's owner must be a person or an organization`);
       throw new ActorError(`no account ${owner} to own ${id}`);
     }
-    if (owner === undefined && await this.findAccount(id)) throw new ActorError(`account ${id} already exists`);
+    if (ownerAccount?.archived) throw new ActorError(`${owner} is archived, so it can't own a new agent; unarchive it first`);
+    const sameName = owner === undefined ? await this.findAccount(id) : undefined;
+    if (sameName?.archived) throw new ActorError(reserved(`the account ${id}`, `${sameName.kind === 'organization' ? 'organization' : 'actor'}=${id}`));
+    if (sameName) throw new ActorError(`account ${id} already exists`);
     try {
       await this.db.transaction(async (tx) => {
         if (owner === undefined) await tx.query(`insert into account(id, kind, name) values ($1, 'user', $2)`, [id, name]);
@@ -953,6 +963,11 @@ export class Kolab {
       `select id, name, kind, owner_id as owner from actor where id = $1`, [id])).rows[0];
   }
 
+  /** Whether an actor is archived: by itself, or, for an agent, through its owner (D52); as kj_actor_archived computes it. */
+  private async archivedActor(id: string): Promise<boolean> {
+    return (await this.db.query<{ archived: boolean }>(`select kj_actor_archived($1) as archived`, [id])).rows[0].archived;
+  }
+
   /** An actor, with the account that owns it when it's an agent. */
   async actor(id: string): Promise<Actor> {
     const a = await this.findActor(id);
@@ -960,11 +975,16 @@ export class Kolab {
     return a;
   }
 
-  /** Every actor, or with `owner` that account's agents. */
-  async listActors(opts: { owner?: string } = {}): Promise<Actor[]> {
-    return (await this.db.query<Actor>(
-      `select id, name, kind, owner_id as owner from actor
+  /**
+   * Every actor, or with `owner` that account's agents. Archived actors (D52), and agents of an
+   * archived account, are left out; with `archived`, they are listed too, and every actor says
+   * whether it is archived.
+   */
+  async listActors(opts: { owner?: string; archived?: boolean } = {}): Promise<Actor[]> {
+    const rows = (await this.db.query<Actor & { archived: boolean }>(
+      `select id, name, kind, owner_id as owner, kj_actor_archived(id) as archived from actor
         where $1::text is null or owner_id = $1 order by id`, [opts.owner ?? null])).rows;
+    return opts.archived ? rows : rows.filter((a) => !a.archived).map(({ archived: _, ...a }) => a);
   }
 
   /**
@@ -993,6 +1013,11 @@ export class Kolab {
   async openSession(actorId: string, role: Role, opts: { kolab?: string } = {}): Promise<string> {
     const actor = await this.findActor(actorId);
     if (!actor) throw new ActorError(`no actor ${actorId}; add it first`);
+    if (await this.archivedActor(actorId)) {
+      throw new ActorError(actor.kind === 'agent' && !(await this.db.query(`select 1 from actor where id = $1 and archived_at is not null`, [actorId])).rows.length
+        ? `${actorId}'s owner ${actor.owner} is archived, so ${actorId} opens no session; unarchive ${actor.owner} first`
+        : `${actorId} is archived, so it opens no session; unarchive it first`);
+    }
     let kolab = opts.kolab;
     if (kolab === undefined) {
       const reach = await this.reachable(actorId);
@@ -1003,7 +1028,7 @@ export class Kolab {
       }
       kolab = reach[0];
     }
-    await this.requireKolab(kolab);
+    await this.requireLiveKolab(kolab, 'opens no session');
     const id = `kjs_${randomBytes(24).toString('base64url')}`;
     try {
       await this.db.transaction(async (tx) => {
@@ -1020,6 +1045,8 @@ export class Kolab {
       if (String(e).includes('one_open_session_per_actor')) {
         throw new ActorError(`${actorId} already has an open session; end it before opening another`);
       }
+      // Archived since the checks above: the database refuses it too (session_openable).
+      if (/is archived/.test(String(e))) throw new TenancyError(String((e as Error).message ?? e));
       throw e;
     }
     return id;
@@ -1263,13 +1290,17 @@ export class Kolab {
   // ---- accounts, kolabs, teams and grants (TEN1–TEN11) -----------------------
 
   private async findAccount(id: string) {
-    return (await this.db.query<{ id: string; kind: 'user' | 'organization' }>(`select id, kind from account where id = $1`, [id])).rows[0];
+    return (await this.db.query<{ id: string; kind: 'user' | 'organization'; archived: boolean }>(
+      `select id, kind, archived_at is not null as archived from account where id = $1`, [id])).rows[0];
   }
 
   /** Registers an organization: an account that owns kolabs and agents, with members and teams. */
   async addOrganization(id: string, opts: { name?: string } = {}) {
     if (!ACTOR_ID.test(id) || id === SYSTEM_ACTOR) throw new TenancyError(`"${id}" isn't a valid account id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
-    if (await this.findAccount(id)) throw new TenancyError(`account ${id} already exists`);
+    const existing = await this.findAccount(id);
+    if (existing?.archived) throw new TenancyError(reserved(`the account ${id}`, `${existing.kind === 'organization' ? 'organization' : 'actor'}=${id}`));
+    if (existing) throw new TenancyError(`account ${id} already exists`);
+    if (await this.findActor(id) && await this.archivedActor(id)) throw new TenancyError(reserved(`the actor ${id}`, `actor=${id}`));
     try {
       await this.db.query(`insert into account(id, kind, name) values ($1, 'organization', $2)`, [id, opts.name ?? id]);
     } catch (e) {
@@ -1285,11 +1316,111 @@ export class Kolab {
     return a;
   }
 
-  private async requireKolab(name: string): Promise<KolabRow> {
-    const k = (await this.db.query<KolabRow>(
-      `select id, owner_id as owner, title, visibility, base_permission from kolab where id = $1`, [name])).rows[0];
+  /** An account that isn't archived, for something that would use it: `what` says what an archived one can't do. */
+  private async requireLiveAccount(id: string, kind: 'user' | 'organization' | undefined, what: string) {
+    const a = await this.requireAccount(id, kind);
+    if (a.archived) throw new TenancyError(`${a.kind === 'organization' ? 'organization ' : ''}${id} is archived, so it ${what}; unarchive it first`);
+    return a;
+  }
+
+  private async requireKolab(name: string): Promise<KolabRow & { archived: boolean }> {
+    const k = (await this.db.query<KolabRow & { archived: boolean }>(
+      `select id, owner_id as owner, title, visibility, base_permission, kj_kolab_archived(id) as archived from kolab where id = $1`, [name])).rows[0];
     if (!k) throw new TenancyError(`no kolab ${name}`);
     return k;
+  }
+
+  /**
+   * A kolab that isn't archived, for something that would use or change it: `what` says what an
+   * archived one doesn't do (D52). Says whether the kolab or its owner is the one archived.
+   */
+  private async requireLiveKolab(name: string, what: string): Promise<KolabRow & { archived: boolean }> {
+    const k = await this.requireKolab(name);
+    if (k.archived) {
+      const own = (await this.db.query(`select 1 from kolab where id = $1 and archived_at is not null`, [name])).rows.length > 0;
+      throw new TenancyError(own
+        ? `kolab ${name} is archived, so it ${what}; its data is kept, and an admin can unarchive it`
+        : `kolab ${name} is archived with its owner ${k.owner}, so it ${what}; unarchive ${k.owner} to restore it`);
+    }
+    return k;
+  }
+
+  // ---- archiving (D52) -------------------------------------------------------
+
+  /**
+   * Archives a kolab, an organization or an actor (D52). An archived one is left out of listings
+   * and can't be used, its data is kept for audit, and its name stays reserved: nothing is
+   * deleted. Archiving an account (an organization, or a person) archives its kolabs and its
+   * agents with it, and every grant and membership stops counting in those kolabs. In the same
+   * transaction, every open session that can no longer reach its kolab ends, and its streams are
+   * told (D41): the kolab's sessions, the actor's, and a person's or organization's agents'. The
+   * database refuses every write to an archived kolab's data, and every session for it or for an
+   * archived actor, whatever role writes (0014).
+   */
+  async archive(target: ArchiveTarget): Promise<{ archived: ArchiveTarget; kolabs: string[]; agents: string[]; ended: number }> {
+    return this.setArchived(target, true);
+  }
+
+  /**
+   * Unarchives what `archive` archived, restoring it as it was: its grants and memberships count
+   * again, and what it owns that wasn't archived on its own comes back with it. Sessions that
+   * ended stay ended; open new ones. A kolab or an agent archived with its owner comes back with
+   * the owner, so unarchiving it alone is refused, naming the owner.
+   */
+  async unarchive(target: ArchiveTarget): Promise<{ unarchived: ArchiveTarget; kolabs: string[]; agents: string[] }> {
+    const r = await this.setArchived(target, false);
+    // Outbox jobs of the kolabs it restores waited, unclaimed (claimJob): they are due again.
+    this.wake();
+    return { unarchived: r.archived, kolabs: r.kolabs, agents: r.agents };
+  }
+
+  private async setArchived(target: ArchiveTarget, archive: boolean): Promise<{ archived: ArchiveTarget; kolabs: string[]; agents: string[]; ended: number }> {
+    const verb = archive ? 'archived' : 'unarchived';
+    const already = (what: string) => new TenancyError(archive ? `${what} is already archived` : `${what} isn't archived`);
+    let update: (tx: Db) => Promise<unknown>;
+    let owner: string | undefined;   // for what unarchive restores: the account whose kolabs and agents come back too
+    if ('kolab' in target) {
+      const k = await this.requireKolab(target.kolab);
+      const own = (await this.db.query(`select 1 from kolab where id = $1 and archived_at is not null`, [k.id])).rows.length > 0;
+      if (own === archive) throw already(`kolab ${k.id}`);
+      if (!archive && (await this.findAccount(k.owner))?.archived) throw new TenancyError(`the owner of kolab ${k.id}, ${k.owner}, is archived too; unarchive ${k.owner}, then kolab ${k.id}`);
+      update = (tx) => tx.query(`update kolab set archived_at = ${archive ? 'now()' : 'null'} where id = $1`, [k.id]);
+    } else if ('organization' in target) {
+      const a = await this.requireAccount(target.organization, 'organization');
+      if (a.archived === archive) throw already(`organization ${a.id}`);
+      owner = a.id;
+      update = (tx) => tx.query(`update account set archived_at = ${archive ? 'now()' : 'null'} where id = $1`, [a.id]);
+    } else {
+      const a = await this.findActor(target.actor);
+      if (!a) {
+        if ((await this.findAccount(target.actor))?.kind === 'organization') throw new TenancyError(`${target.actor} is an organization: name it as organization=${target.actor}`);
+        throw new ActorError(`no actor ${target.actor}`);
+      }
+      if (a.kind === 'person') {
+        const acc = await this.requireAccount(a.id, 'user');
+        if (acc.archived === archive) throw already(`${a.id}`);
+        owner = a.id;
+        update = (tx) => tx.query(`update account set archived_at = ${archive ? 'now()' : 'null'} where id = $1`, [a.id]);
+      } else {
+        const own = (await this.db.query(`select 1 from actor where id = $1 and archived_at is not null`, [a.id])).rows.length > 0;
+        if (own === archive) throw already(`${a.id}`);
+        if (!archive && (await this.findAccount(a.owner!))?.archived) throw new TenancyError(`${a.id}'s owner ${a.owner} is archived too; unarchive ${a.owner}, then ${a.id}`);
+        update = (tx) => tx.query(`update actor set archived_at = ${archive ? 'now()' : 'null'} where id = $1`, [a.id]);
+      }
+    }
+    // What goes, or comes back, with an account: its kolabs and agents not archived on their own.
+    const kolabs = owner === undefined ? [] : (await this.db.query<{ id: string }>(
+      `select id from kolab where owner_id = $1 and archived_at is null order by id`, [owner])).rows.map((r) => r.id);
+    const agents = owner === undefined ? [] : (await this.db.query<{ id: string }>(
+      `select id from actor where owner_id = $1 and archived_at is null order by id`, [owner])).rows.map((r) => r.id);
+    const { ended } = await this.changeAccess(async (tx) => {
+      await update(tx);
+      if (!archive) await this.notifyWork(tx);   // every process's worker: the jobs it restores are due again
+    });
+    console.error(`kolab: ${Object.keys(target)[0]} ${Object.values(target)[0]} ${verb} by an admin`
+      + (kolabs.length ? `, with kolabs ${kolabs.join(', ')}` : '') + (agents.length ? `, with agents ${agents.join(', ')}` : '')
+      + (ended ? `; ${ended} session${ended === 1 ? '' : 's'} ended` : ''));
+    return { archived: target, kolabs, agents, ended };
   }
 
   /**
@@ -1369,10 +1500,12 @@ export class Kolab {
     if (!isKolabName(name)) throw new TenancyError(`"${name}" isn't a valid kolab name: use lowercase letters, digits and '-', starting with a letter or digit`);
     if (opts.visibility !== undefined && !VISIBILITIES.includes(opts.visibility)) throw new TenancyError(`visibility is one of ${VISIBILITIES.join(', ')}`);
     if (opts.base !== undefined && !ACCESS_LEVELS.includes(opts.base)) throw new TenancyError(`a base permission is one of ${ACCESS_LEVELS.join(', ')}`);
-    const owner = await this.requireAccount(opts.owner);
+    const owner = await this.requireLiveAccount(opts.owner, undefined, 'owns no new kolab');
     if (opts.base !== undefined && owner.kind !== 'organization') throw new TenancyError('only an organization\'s kolab has a base permission');
     const taken = () => new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
-    if ((await this.db.query(`select 1 from kolab where id = $1`, [name])).rows.length) throw taken();
+    const existing = (await this.db.query<{ archived: boolean }>(`select kj_kolab_archived(id) as archived from kolab where id = $1`, [name])).rows[0];
+    if (existing?.archived) throw new TenancyError(reserved(`the kolab name ${name}`, `kolab=${name}`, 'kolab names are unique across all of Konjir, and an archived kolab keeps its name'));
+    if (existing) throw taken();
     try {
       await this.db.query(`insert into kolab(id, owner_id, title, visibility, base_permission) values ($1, $2, $3, $4, $5)`,
         [name, opts.owner, opts.title ?? name, opts.visibility ?? 'private', opts.base ?? null]);
@@ -1382,18 +1515,23 @@ export class Kolab {
     }
   }
 
-  /** Every kolab, or with `owner` that account's. */
-  async listKolabs(opts: { owner?: string } = {}): Promise<KolabRow[]> {
-    return (await this.db.query<KolabRow>(
-      `select id, owner_id as owner, title, visibility, base_permission from kolab
+  /**
+   * Every kolab, or with `owner` that account's. Archived kolabs, and those of an archived account,
+   * are left out (D52); with `archived`, they are listed too, and every kolab says whether it is
+   * archived.
+   */
+  async listKolabs(opts: { owner?: string; archived?: boolean } = {}): Promise<KolabRow[]> {
+    const rows = (await this.db.query<KolabRow & { archived: boolean }>(
+      `select id, owner_id as owner, title, visibility, base_permission, kj_kolab_archived(id) as archived from kolab
         where $1::text is null or owner_id = $1 order by id`, [opts.owner ?? null])).rows;
+    return opts.archived ? rows : rows.filter((k) => !k.archived).map(({ archived: _, ...k }) => k);
   }
 
   /** Adds a user to an organization, or changes their role in it. Owners administer every kolab it owns. */
   async addMember(org: string, user: string, role: OrgRole = 'member') {
     if (!ORG_ROLES.includes(role)) throw new TenancyError(`a member's role is one of ${ORG_ROLES.join(', ')}`);
-    await this.requireAccount(org, 'organization');
-    await this.requireAccount(user, 'user');
+    await this.requireLiveAccount(org, 'organization', 'takes no members');
+    await this.requireLiveAccount(user, 'user', 'joins no organization');
     return this.changeAccess((tx) => tx.query(
       `insert into org_member(org_id, user_id, role) values ($1, $2, $3)
        on conflict (org_id, user_id) do update set role = excluded.role`, [org, user, role]));
@@ -1411,7 +1549,7 @@ export class Kolab {
   /** Creates a team in an organization, under `parent` (a team of the same organization) if given. Returns its id, `<org>/<name>`. */
   async addTeam(org: string, name: string, opts: { parent?: string } = {}): Promise<string> {
     if (!TEAM_NAME.test(name)) throw new TenancyError(`"${name}" isn't a valid team name: use lowercase letters, digits and '-', starting with a letter or digit`);
-    await this.requireAccount(org, 'organization');
+    await this.requireLiveAccount(org, 'organization', 'gets no new team');
     const id = `${org}/${name}`;
     const parent = opts.parent === undefined ? null : opts.parent.includes('/') ? opts.parent : `${org}/${opts.parent}`;
     if (parent && !(await this.db.query(`select 1 from team where id = $1 and org_id = $2`, [parent, org])).rows.length) {
@@ -1426,6 +1564,8 @@ export class Kolab {
   async addTeamMember(team: string, user: string) {
     const t = (await this.db.query<{ org_id: string }>(`select org_id from team where id = $1`, [team])).rows[0];
     if (!t) throw new TenancyError(`no team ${team}`);
+    await this.requireLiveAccount(t.org_id, 'organization', 'adds no team members');
+    await this.requireLiveAccount(user, 'user', 'joins no team');
     if (!(await this.db.query(`select 1 from org_member where org_id = $1 and user_id = $2`, [t.org_id, user])).rows.length) {
       throw new TenancyError(`${user} isn't a member of ${t.org_id}; add them to it first`);
     }
@@ -1448,7 +1588,7 @@ export class Kolab {
    */
   async grant(kolab: string, to: string, level: AccessLevel, opts: { layers?: Layer[] } = {}) {
     if (!ACCESS_LEVELS.includes(level)) throw new TenancyError(`a level is one of ${ACCESS_LEVELS.join(', ')}`);
-    const k = await this.requireKolab(kolab);
+    const k = await this.requireLiveKolab(kolab, 'grants no access');
     let layers: Layer[];
     if (level === 'write') {
       layers = [...new Set(opts.layers ?? LAYERS)];
@@ -1460,6 +1600,7 @@ export class Kolab {
       }
     }
     const grantee = await this.grantee(to, k);
+    if (grantee.column !== 'team_id' && await this.archivedActor(to)) throw new TenancyError(`${to} is archived, so it is granted nothing; unarchive it first`);
     return this.changeAccess(async (tx) => {
       if (grantee.column === 'agent_id') {
         // Against what its owner holds now, in this transaction.
@@ -1529,7 +1670,7 @@ export class Kolab {
    * can still reach it narrow by themselves: access is computed on each use. Returns how many
    * sessions ended.
    */
-  private async changeAccess(fn: (tx: Q) => Promise<unknown>): Promise<{ ended: number }> {
+  private async changeAccess(fn: (tx: Db) => Promise<unknown>): Promise<{ ended: number }> {
     return this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
       await fn(tx);
@@ -1622,6 +1763,8 @@ export class Kolab {
     if (!/^D\d+$/.test(ruling.id)) throw new GateError(`a ruling is named by its Decisions Log ID, such as D47, not "${ruling.id}"`);
     const node = await this.node(nodeId);
     await this.actor(ruling.actor);
+    await this.requireLiveKolab(node.kolab_id, 'takes no ruling');
+    if (await this.archivedActor(ruling.actor)) throw new ActorError(`${ruling.actor} is archived, so nothing is written as it; apply the ruling as another actor`);
     // The actor it is written as must be able to write that layer there: refused before anything is written.
     const access = await accessIn(this.db, ruling.actor, node.kolab_id);
     if (!access.layers.includes(node.layer)) {
@@ -4070,6 +4213,11 @@ async function ownerAccess(q: Q, owner: string, kolab: string): Promise<Access> 
     [owner, kolab])).rows[0];
   if (r?.kind === 'user') return accessIn(q, owner, kolab);
   return r?.owns ? { level: 'admin', layers: [...LAYERS] } : { level: null, layers: [] };
+}
+
+/** The refusal for a name an archived kolab, account or actor holds: it stays reserved (D52). */
+function reserved(what: string, unarchive: string, why = 'an archived name stays reserved'): string {
+  return `${what} is archived, not free: ${why}. Unarchive it (konjir_admin_unarchive ${unarchive}) or choose another name`;
 }
 
 /** "Write on the functional layer", "Read", "no access". */
