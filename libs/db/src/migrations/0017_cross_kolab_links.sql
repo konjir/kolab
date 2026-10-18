@@ -1,4 +1,4 @@
--- Migration 0016: links and forks across kolabs, and the access_lost mark (W2.16; LNK8, KON9,
+-- Migration 0017: links and forks across kolabs, and the access_lost mark (W2.16; LNK8, KON9,
 -- DAT10, DAT11, D3, D49, D50, D53).
 -- Never edit this file once released: change the schema in a new migration (README.md, "Changing the schema").
 --
