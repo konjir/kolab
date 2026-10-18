@@ -1,7 +1,7 @@
 // Addresses carry the kolab (W1.4; DAT11, ADR3, D8, TEN12): kj:<kolab>/<node> resolves from
 // anywhere its reader can read, kj:<node> inside its kolab, and a node's name is unique within its
-// kolab only. Links, variants and questions stay inside one kolab until the binding decides how
-// they cross (LNK8, KON).
+// kolab only. Questions stay inside one kolab; links and variants may cross where their reader
+// holds Read (LNK8, KON9; cross-kolab.test.ts).
 import { expect, test } from '@jest/globals';
 import { sessionKey, structuralChecks, type Kolab } from '@konjir/engine';
 import type { CheckContext, Resolution } from '@konjir/types';
@@ -114,24 +114,28 @@ test('the full form resolves wherever its reader holds Read, and elsewhere is no
   expect(await rejection(kolab.resolve('kj:docs/guide#G1', { session: pm }))).toBe('Error: no node guide in kolab docs');
 });
 
-test('a link, a variant or a question across kolabs is refused, by the address alone, until the binding decides them (LNK8)', async () => {
+test('a question across kolabs is refused by the address alone; a link or a variant across kolabs needs Read, or is no node at all (LNK8, KON9)', async () => {
   const { kolab, alice, theirs } = await twoCheckouts();
-  await kolab.grant('billing', 'alice', 'read');
-  const cross = /AccessError: billing\/checkout is in kolab billing, and this session works in kolab orders: (\w[\w ()]*) across kolabs isn't supported yet/;
-  expect(await rejection(kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking' }))).toMatch(cross);
-  expect(await rejection(kolab.versionIn(alice, 'kj:billing/checkout@1', { what: 'a variant (a fork)' }))).toMatch(/a variant \(a fork\) across kolabs isn't supported yet/);
-  expect(await rejection(kolab.raiseQuery(alice, 'kj:billing/checkout#R1', 'Why monthly?'))).toMatch(/asking across kolabs isn't supported yet/);
-  // The same whether or not there is anything there, and whether or not alice can read it.
-  expect(await rejection(kolab.versionIn(alice, 'kj:billing/nothing', { what: 'linking' }))).toMatch(/billing\/nothing is in kolab billing, and this session works in kolab orders/);
-  expect(await rejection(kolab.versionIn(alice, 'kj:shop/checkout', { what: 'linking' }))).toMatch(/shop\/checkout is in kolab shop/);
-  // The engine refuses a link between versions of two kolabs, and a variant of another kolab's version, too.
+  // Without Read on billing, its node is as if it weren't there, for a link target and a parent alike.
+  expect(await rejection(kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking', across: true }))).toBe('Error: no node checkout in kolab billing');
+  expect(await rejection(kolab.versionIn(alice, 'kj:billing/nothing', { what: 'linking', across: true }))).toBe('Error: no node nothing in kolab billing');
+  expect(await rejection(kolab.versionIn(alice, 'kj:shop/checkout', { what: 'a variant (a fork)', across: true }))).toBe('Error: no node checkout in kolab shop');
+  // The engine refuses a link to, or a variant of, a version of a kolab it can't read, as a version that isn't there.
   const spec = await kolab.createNode(alice, 'functional_spec', 'EU', 'eu');
   const draft = await kolab.draft(alice, spec, { elements: els({ E1: 'EU orders ship within two days.' }) });
   const target = (await kolab.latestCommitted(theirs))!.id;
   expect(await rejection(kolab.link(alice, { kind: 'dependency', source: draft, sourceElement: 'E1', target, targetElement: 'R1' })))
-    .toMatch(/AccessError: the link target is not in kolab orders/);
+    .toBe(`Error: no version ${target}`);
   expect(await rejection(kolab.draft(alice, spec, { parent: target, deltas: [{ kind: 'override', element: 'R1', text: 'x' }] })))
-    .toMatch(/AccessError: parent .* is not in kolab orders/);
+    .toBe(`Error: no version ${target}`);
+
+  // With Read, both resolve; a question still stays in its kolab, refused from the address alone.
+  await kolab.grant('billing', 'alice', 'read');
+  expect((await kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking', across: true })).id).toBe(target);
+  const cross = /AccessError: billing\/checkout is in kolab billing, and this session works in kolab orders: (\w[\w ()]*) across kolabs isn't supported yet/;
+  expect(await rejection(kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking' }))).toMatch(cross);
+  expect(await rejection(kolab.raiseQuery(alice, 'kj:billing/checkout#R1', 'Why monthly?'))).toMatch(/asking across kolabs isn't supported yet/);
+  expect(await rejection(kolab.raiseQuery(alice, 'kj:shop/checkout#R1', 'Why?'))).toMatch(/asking across kolabs isn't supported yet/);
 
   // Its own kolab's full form is fine everywhere a short one is.
   expect((await kolab.versionIn(alice, 'kj:orders/checkout', { what: 'linking' })).node_id).toBe('checkout');

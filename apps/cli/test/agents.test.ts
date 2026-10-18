@@ -278,10 +278,13 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
   });
   expect(await call(alice, 'read_node', { node: 'checkout' })).toMatchObject({ node: 'checkout', elements: [{ address: 'kj:checkout@1#R1' }] });
 
-  // Reading is all: a link, a variant or a question across kolabs waits on the binding (LNK8).
+  // A link and a fork may cross into a kolab alice reads (LNK8, KON9); a question, and drafting there, may not.
   await call(alice, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Orders ship within a day.' }, { id: 'R2', text: 'Invoices follow billing.' }] });
-  expect(await rejection(call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:billing/checkout#R1' })))
-    .toMatch(/billing\/checkout is in kolab billing, and this session works in kolab orders: linking across kolabs isn't supported yet/);
+  expect(await call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:billing/checkout#R1' })).toMatchObject({ edge: expect.any(String) });
+  expect(await rejection(call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:shop/checkout#R1' }))).toMatch(/no node checkout in kolab shop/);
+  await call(alice, 'create_node', { kind: 'functional_spec', title: 'Billing EU', id: 'billing-eu' });
+  expect(await call(alice, 'draft', { node: 'billing-eu', parent: 'kj:billing/checkout@2', deltas: [{ kind: 'override', element: 'R1', text: 'Invoices are sent weekly, in euros.' }] }))
+    .toMatchObject({ node: 'billing-eu', version: 1 });
   expect(await rejection(call(alice, 'ask', { address: 'kj:billing/checkout#R1', question: 'Why weekly?' }))).toMatch(/asking across kolabs isn't supported yet/);
   expect(await rejection(call(alice, 'draft', { node: 'billing/checkout', elements: [{ id: 'R1', text: 'x' }] }))).toMatch(/drafting across kolabs isn't supported yet/);
 });

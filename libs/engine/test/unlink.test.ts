@@ -129,7 +129,7 @@ test("a link the draft declared goes at once; linking a removed link again takes
   expect(await linksOf(kolab, 'b')).toStrictEqual(['b1 -> spec#R1', 'b2 -> spec#R2', 'b3 -> spec#R3']);
 });
 
-test('only the draft\'s author removes links, only in a draft, only links it has, and only in its own kolab', async () => {
+test('only the draft\'s author removes links, only in a draft, only links it has', async () => {
   const ctx = await setup();
   const { kolab, product, engineer } = ctx;
   await family(ctx);
@@ -141,7 +141,7 @@ test('only the draft\'s author removes links, only in a draft, only links it has
     .toMatch(/^Error: b@1 has no link from b3 to kj:spec#R1, and neither has this draft/);
   expect(await rejection(kolab.unlink(engineer, draft, [{ link: 'no-such-link' }]))).toMatch(/^Error: b has no link no-such-link/);
   expect(await rejection(kolab.unlink(engineer, draft, [{ sourceElement: 'b3', target: 'kj:other/spec#R3' }])))
-    .toMatch(/AccessError: the link target is not in kolab test/);
+    .toBe('Error: b@1 has no link from b3 to kj:other/spec#R3, and neither has this draft: konjir_lineage direction=upstream lists its links');   // a link into another kolab is removed as any other (LNK8), and this one isn't there
   await expect(kolab.unlink(product, draft, [{ sourceElement: 'b3', target: 'kj:spec#R3' }])).rejects.toBeInstanceOf(RoleError);
   expect(await rejection(kolab.unlink(erin, draft, [{ sourceElement: 'b3', target: 'kj:spec#R3' }])))
     .toMatch(/RoleError: b@2 is bob's draft: only its author changes it/);

@@ -50,11 +50,11 @@ const draft = z.object({
   node,
   elements: z.array(elementInput).optional(),
   deltas: z.array(deltaInput).optional(),
-  parent: address.optional().describe('For a new variant: the parent spec version to inherit from, e.g. kj:storefront@2.'),
+  parent: address.optional().describe('For a new variant: the parent spec version to inherit from, e.g. kj:storefront@2, or kj:<kolab>/<node>@2 to fork a committed version of another kolab you can read.'),
   links: z.array(z.object({
     source_element: z.string().optional().describe('Your element in this draft (same name as on konjir_link)'),
     element: z.string().optional().describe('Alias for source_element'),
-    target: address.describe('What it relies on (committed)'),
+    target: address.describe('What it relies on (committed): in your kolab, or kj:<kolab>/<node>… in another kolab you can read'),
     kind: z.enum(EDGE_KINDS).optional().describe('Defaults to dependency'),
   })).optional().describe('Links to declare from this draft\'s elements, in the same call: [{"source_element":"b1","target":"kj:spec#R1"}]. Links on earlier versions carry forward automatically.'),
   unlink: z.array(linkRef).optional().describe('Links of the version this draft is built on that it drops, so its commit doesn\'t carry them forward: [{"source_element":"b1","target":"kj:spec#R1"}] or [{"link":"<id>"}]. Removing a link settles its open mark when the version commits; it is reviewed with the rest of the draft.'),
@@ -82,7 +82,7 @@ const link = z.object({
   kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
   source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
   source_element: z.string().optional().describe('Alternative to putting #element in source.'),
-  target: address.describe('What it relies on; must be committed and resolve exactly. e.g. kj:checkout@3#R1, or a span: kj:checkout#R1~q({"exact":"30 seconds","prefix":"Checkout completes within","suffix":"of payment confirming"}). For a span, quote only the few words you rely on (at most 1,000 characters), and give several whole words either side as prefix and suffix, not one word: they must still surround the quote in the target.'),
+  target: address.describe('What it relies on; must be committed and resolve exactly. e.g. kj:checkout@3#R1, or kj:<kolab>/<node>… in another kolab you can read (the link rests on your Read there, and is marked access_lost if that goes), or a span: kj:checkout#R1~q({"exact":"30 seconds","prefix":"Checkout completes within","suffix":"of payment confirming"}). For a span, quote only the few words you rely on (at most 1,000 characters), and give several whole words either side as prefix and suffix, not one word: they must still surround the quote in the target.'),
 });
 const clearMark = z.object({ mark: z.string() });
 const resolveOverride = z.object({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });
@@ -272,7 +272,8 @@ export class AgentTools {
       }
       if (!a.elements === !a.deltas) throw new Error('send exactly one of elements or deltas');
       const n = await kolab.nodeIn(s, a.node, 'drafting');
-      const parent = a.parent ? (await kolab.versionIn(s, a.parent, { what: 'a variant (a fork)' })).id : undefined;
+      // A variant's parent may be another kolab's committed version, one this session reads: a fork (KON9).
+      const parent = a.parent ? (await kolab.versionIn(s, a.parent, { what: 'a variant (a fork)', across: true })).id : undefined;
       const id = await kolab.draft(s, n.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) });
       const v = await kolab.version(id);
       const linked: string[] = [];
@@ -387,7 +388,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_clear_mark',
-    description: 'Clear a dirty mark on your layer after checking that your work still holds against the new upstream. Re-pins the dependency and clears what it caused.',
+    description: 'Clear a dirty mark on your layer after checking that your work still holds against the new upstream. Re-pins the dependency and clears what it caused. A link into another kolab can be cleared only by someone who reads that kolab, who then holds the link; clearing an access_lost mark is how someone who reads it takes the link or fork over.',
     schema: clearMark,
   })
   clearMark({ mark }: z.infer<typeof clearMark>, context?: McpToolContext) {
@@ -531,10 +532,11 @@ async function linkOne(kolab: Kolab, session: string,
   if (src.element && a.source_element && src.element !== a.source_element) {
     throw new Error(`source names element ${src.element} but source_element is ${a.source_element}; give one`);
   }
-  // Both ends in the session's kolab: a link across kolabs (LNK8) waits on a binding decision.
+  // The source is in the session's kolab; the target may be another kolab's committed version, one
+  // this session reads now: the link rests on its actor's Read there (LNK8).
   return kolab.link(session, {
     kind: a.kind,
     source: (await kolab.versionIn(session, src, { allowDraft: true, what: 'linking' })).id, sourceElement: a.source_element ?? src.element,
-    target: (await kolab.versionIn(session, tgt, { what: 'linking' })).id, targetElement: tgt.element, selector: tgt.selector,
+    target: (await kolab.versionIn(session, tgt, { what: 'linking', across: true })).id, targetElement: tgt.element, selector: tgt.selector,
   });
 }

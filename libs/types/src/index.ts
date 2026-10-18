@@ -78,7 +78,8 @@ export type ReviewRequestState = typeof REVIEW_REQUEST_STATES[number];
 /**
  * The work a transactional outbox job owes (REV3, W1.8): a committed version's cascade, a version
  * overtaken while it waited, to fold or reject, and a variant to rebase onto its parent's latest
- * version (D43, P6).
+ * version (D43, P6), or a dependent in another kolab up to date with it: its links there
+ * checked, a fork rebased once its holder holds it again (LNK8, KON9).
  */
 export const OUTBOX_KINDS = ['after_commit', 'settle', 'rebase'] as const;
 export type OutboxKind = typeof OUTBOX_KINDS[number];
@@ -105,7 +106,7 @@ export type OverrideResolution = typeof OVERRIDE_RESOLUTIONS[number];
 /** Why a mark (an invalidation) was raised. */
 export const MARK_REASONS = [
   'changed', 'fuzzy_reanchor', 'orphaned', 'override_stale', 'override_orphaned',
-  'upstream_dirty', 'review_failed', 'rebase_failed', 'role_boundary', 'query_answered', 'ruled',
+  'upstream_dirty', 'review_failed', 'rebase_failed', 'role_boundary', 'query_answered', 'ruled', 'access_lost',
 ] as const;
 export type MarkReason = typeof MARK_REASONS[number];
 
@@ -145,6 +146,11 @@ export interface VersionRow {
   kolab_id: string;
   /** For a fold: the person's version Kolab rebased it from (CAS7). */
   folded_from?: string | null;
+  /**
+   * For a fork, whose parent is in another kolab (KON9): the actor whose Read on that kolab it
+   * rests on (LNK8). Null for every other version.
+   */
+  parent_held_by?: string | null;
 }
 
 export interface MarkRow {
