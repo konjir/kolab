@@ -4,6 +4,7 @@ import { expect, test } from '@jest/globals';
 import { createServer, type Socket } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
+import { sessionKey } from '@konjir/engine';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 import { KolabBridge } from '../src/bridge.js';
 import type { ChannelMessage } from '../src/messages.js';
@@ -110,7 +111,7 @@ test('a listen refused in-band as session_ended is the token refused, not Kolab 
   const token = await agentToken(server.url);
   // The session ends between the listen request's auth and its gate.
   const fetchStub = atListenGate(server, async (id, check) => {
-    await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [id]);
+    await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(id)]);
     return check(id);
   });
   const logs: string[] = [];

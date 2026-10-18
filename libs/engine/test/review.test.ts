@@ -2,7 +2,7 @@
 // drafted -> in_review -> committed, review requests in reviewers' inboxes, konjir_review's verdicts,
 // the solo-project fallback, and rebases that commit after structural checks only.
 import { expect, test } from '@jest/globals';
-import { RoleError, structuralChecks } from '@konjir/engine';
+import { RoleError, sessionKey, structuralChecks } from '@konjir/engine';
 import { TEST_KOLAB, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { KolabEvent } from '@konjir/types';
 
@@ -255,7 +255,7 @@ test('an agent can read review requests but never write one, nor move a version 
   await kolab.review(v1);
   const asAgent = (session: string, sql: string, params: unknown[] = []) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [session]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(session)]);
     return tx.query(sql, params);
   });
   // Requests are readable like versions and questions: every agent sees all of them in its
@@ -439,13 +439,12 @@ test('reviewers are whoever holds Write on the layer in the version\'s kolab, wh
   const { kolab, product } = await setup();
   await kolab.openSession('carol', 'product');                       // Read only: a session doesn't make her a reviewer
   await people(kolab, 'erin', { layers: ['functional', 'technical'] });
-  await kolab.openSession('erin', 'engineer');                        // Write on the spec's layer, in the other role
+  const erinEng = await kolab.openSession('erin', 'engineer');        // Write on the spec's layer, in the other role
   await people(kolab, 'frank', { layers: ['functional'] });           // Write, never connected
   const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   expect(await kolab.review(v1)).toMatchObject({ in_review: true, reviewers: ['erin', 'frank'] });
   // A reviewer may give a verdict only from a session in the layer's role.
-  const erinEng = (await kolab.db.query<{ id: string }>(`select id from session where actor_id = 'erin' and ended_at is null`)).rows[0].id;
   expect(await rejection(kolab.recordReview(erinEng, v1, { verdict: 'approve' }))).toMatch(/RoleError: a engineer session may not write the functional layer/);
   // An author who loses Write while the version waits: the approval rejects it rather than commit it.
   await kolab.grant(TEST_KOLAB, 'alice', 'read');

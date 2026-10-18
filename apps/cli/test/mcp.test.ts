@@ -1,5 +1,6 @@
 // End to end over real HTTP: two agents with different roles, one Kolab server.
 import { expect, test } from '@jest/globals';
+import { sessionKey } from '@konjir/engine';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
 import { closeAtEnd, persistentStore, rejection, testStore, type Store } from '@konjir/engine/testing';
@@ -30,7 +31,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   const eng = await agentFor(server.url, admin, 'eng-agent', 'engineer');
 
   expect(await call(eng.client, 'whoami')).toStrictEqual({
-    session: eng.token, actor: 'eng-agent', kind: 'person', owner: null, role: 'engineer', layer: 'technical',
+    session: sessionKey(eng.token), actor: 'eng-agent', kind: 'person', owner: null, role: 'engineer', layer: 'technical',
     kolab: 'test', access: { level: 'write', layers: ['technical'] },
     subscribe: ['konjir://inbox/technical', 'konjir://answers/eng-agent'],
   });
@@ -121,6 +122,36 @@ test('tokens: no token, a wrong token, and a revoked token are all refused; agen
   await expect(connect(server.url, pm.token)).rejects.toThrow();
   await admin.close();
   await server.close();
+});
+
+test('a token is shown once, when its session opens: whoami and the database hold only its hash, which the admin can end it by', async () => {
+  const { server, admin } = await boot();
+  await call(admin, 'admin_add_actor', { id: 'pm' });
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: 'pm', level: 'write', layers: ['functional'] });
+  const opened = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string; session: string };
+  expect(opened.session).toBe(sessionKey(opened.token));
+  const pm = await connect(server.url, opened.token);
+  const me = await call(pm, 'whoami');
+  expect(me).toMatchObject({ session: opened.session, actor: 'pm' });
+  expect(JSON.stringify(me)).not.toContain(opened.token);
+  const stored = (await server.kolab.db.query<{ id: string }>(`select id from session`)).rows.map((r) => r.id);
+  expect(stored).toStrictEqual([opened.session]);
+  // The key is no bearer token.
+  await expect(connect(server.url, opened.session)).rejects.toThrow();
+
+  expect(await rejection(call(admin, 'admin_end_session', {}))).toMatch(/exactly one of token, session or actor/);
+  expect(await rejection(call(admin, 'admin_end_session', { token: opened.token, actor: 'pm' }))).toMatch(/exactly one of token, session or actor/);
+  expect(await call(admin, 'admin_end_session', { session: opened.session })).toStrictEqual({ ended: opened.session });
+  await expect(connect(server.url, opened.token)).rejects.toThrow();
+  expect(await call(admin, 'admin_end_session', { session: opened.session })).toStrictEqual({ ended: null });
+
+  // By actor, for an admin who kept no token.
+  const again = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string; session: string };
+  expect(await call(admin, 'admin_end_session', { actor: 'pm' })).toStrictEqual({ ended: again.session });
+  await expect(connect(server.url, again.token)).rejects.toThrow();
+  await pm.close();
 });
 
 test('Kolab persists across restarts', async () => {

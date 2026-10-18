@@ -3,6 +3,7 @@
 // agent. And accounts, kolabs and grants over the admin verbs (W1.3; TEN4, TEN11, TEN12).
 import { expect, test } from '@jest/globals';
 import type { Client } from '@modelcontextprotocol/client';
+import { sessionKey } from '@konjir/engine';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
 import { closeAtEnd, rejection, testStore } from '@konjir/engine/testing';
@@ -37,7 +38,7 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   expect(await rejection(call(admin, 'admin_open_session', { actor: 'alice-pm', role: 'engineer' }))).toMatch(/alice-pm already has an open session/);
 
   expect(await call(one.client, 'whoami')).toStrictEqual({
-    session: one.token, actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
+    session: sessionKey(one.token), actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
     kolab: 'checkout', access: { level: 'write', layers: ['functional'] },
     subscribe: ['konjir://inbox/functional', 'konjir://answers/alice-pm'],
   });

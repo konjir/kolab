@@ -89,7 +89,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_whoami',
-    description: 'Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the inbox resources to subscribe to for pushed updates.',
+    description: 'Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the inbox resources to subscribe to for pushed updates. session is the session\'s key, the sha256 of its token: Kolab never shows the token again after it is issued.',
     annotations: { readOnlyHint: true },
   })
   whoami(_: unknown, context?: McpToolContext) {

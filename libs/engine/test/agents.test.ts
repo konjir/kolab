@@ -1,7 +1,7 @@
 // Agents are actors of their own (W1.14; D30, DAT10, ENF4, ENF5, ROL4): each is owned by an
 // account, holds its own sessions, and is the author of what it writes.
 import { expect, test } from '@jest/globals';
-import { ActorError } from '@konjir/engine';
+import { ActorError, sessionKey } from '@konjir/engine';
 import { TEST_KOLAB, commitReviewed, els, openKolab, people, rejection } from '@konjir/engine/testing';
 
 /** Alice, with Write on both layers of the test kolab, and three agents of hers with the same. */
@@ -22,7 +22,7 @@ test('two agents of one person hold sessions at the same time, and each version 
   const self = await kolab.openSession('alice', 'product');   // the owner keeps her own session too
 
   expect(await kolab.sessionInfo(pm)).toStrictEqual({
-    session: pm, actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
+    session: sessionKey(pm), actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
     kolab: TEST_KOLAB, access: { level: 'write', layers: ['functional', 'technical'] },
   });
   expect(await kolab.sessionInfo(pm2)).toMatchObject({ actor: 'alice-pm-2', kind: 'agent', owner: 'alice' });
@@ -133,7 +133,7 @@ test("row-level security: an agent's session writes only as its own actor and ro
   const v1 = await commitReviewed(kolab, pm, pm2, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   const asAgent = (sql: string, params: unknown[]) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [pm]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(pm)]);
     await tx.query(sql, params);
   });
   const draftBy = (id: string, actor: string, role: string) => asAgent(

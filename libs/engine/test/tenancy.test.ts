@@ -28,7 +28,7 @@ async function twoAccounts() {
 const asAgent = <T extends Record<string, unknown>>(kolab: Kolab, session: string, sql: string, params: unknown[] = []) =>
   kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [session]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(session)]);
     return (await tx.query<T>(sql, params)).rows;
   });
 
@@ -318,7 +318,7 @@ test("no row references another kolab's row, and no row's kolab changes, whoever
     [`update element set kolab_id = 'billing' where version_id = $2 and $1::text is not null`, /a row's kolab never changes/],
     [`update node set kolab_id = 'billing' where id = 'orders-spec' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
     [`update element set version_id = $1 where version_id = $2`, /element_version_kolab_fkey/],
-    [`update session set kolab_id = 'billing' where id = '${alice}' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
+    [`update session set kolab_id = 'billing' where id = '${sessionKey(alice)}' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
   ] as const;
   for (const [sql, pattern] of refused) expect(await rejection(kolab.db.query(sql, [billingV, ordersV]))).toMatch(pattern);
 });
@@ -413,7 +413,7 @@ test("kj_agent can't make a temporary table, and one shadowing session doesn't c
     await tx.exec(`create temp table session (id text, actor_id text, active_role text, kolab_id text, ended_at timestamptz) on commit drop`);
     await tx.query(`insert into pg_temp.session values ($1, 'alice', 'product', 'orders', null)`, [bob]);
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [bob]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(bob)]);
     const r = await tx.query<Record<string, string>>(
       `select kj_session_kolab() as kolab, kj_session_actor() as actor, kj_session_role() as role, kj_session_layer() as layer`);
     const nodes = await tx.query<{ id: string }>(`select id from node`);
