@@ -116,6 +116,9 @@ test('tokens: no token, a wrong token, and a revoked token are all refused; agen
   const pm = await agentFor(server.url, admin, 'pm', 'product');
   const tools = (await pm.client.listTools()).tools.map((t) => t.name);
   expect(!tools.some((t) => t.startsWith('konjir_admin'))).toBeTruthy();
+  // Calling one anyway is refused in plain words, not as an OAuth scope challenge.
+  await expect(call(pm.client, 'admin_list_kolabs')).rejects.toThrow(/^konjir_admin_list_kolabs is an admin verb: only the admin token may call it, and this token is an agent session's/);
+  await expect(call(pm.client, 'konjir_admin_apply_ruling', { ruling: 'D1', actor: 'pm', node: 'test/x', deltas: [] })).rejects.toThrow(/only the admin token may call it/);
   await pm.client.close();
 
   await call(admin, 'admin_end_session', { token: pm.token });
@@ -161,6 +164,13 @@ test('a token is shown once, when its session opens: whoami and the database hol
   expect(await call(admin, 'admin_end_session', { actor: 'pm' })).toStrictEqual({ ended: again.session });
   await expect(connect(server.url, again.token)).rejects.toThrow();
   await pm.close();
+});
+
+test('admin_outbox lists one kolab\'s jobs with kolab=, and refuses a kolab that isn\'t there', async () => {
+  const { server, admin } = await boot();
+  await agentFor(server.url, admin, 'pm', 'product');   // makes the kolab test
+  expect(await call(admin, 'admin_outbox', { kolab: 'test' })).toStrictEqual({ jobs: [] });
+  await expect(call(admin, 'admin_outbox', { kolab: 'nowhere' })).rejects.toThrow(/TenancyError: no kolab nowhere/);
 });
 
 test('Kolab persists across restarts', async () => {

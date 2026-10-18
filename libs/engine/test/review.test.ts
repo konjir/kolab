@@ -445,7 +445,7 @@ test('reviewers are whoever holds Write on the layer in the version\'s kolab, wh
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   expect(await kolab.review(v1)).toMatchObject({ in_review: true, reviewers: ['erin', 'frank'] });
   // A reviewer may give a verdict only from a session in the layer's role.
-  expect(await rejection(kolab.recordReview(erinEng, v1, { verdict: 'approve' }))).toMatch(/RoleError: a engineer session may not write the functional layer/);
+  expect(await rejection(kolab.recordReview(erinEng, v1, { verdict: 'approve' }))).toMatch(/RoleError: an engineer session may not write the functional layer/);
   // An author who loses Write while the version waits: the approval rejects it rather than commit it.
   await kolab.grant(TEST_KOLAB, 'alice', 'read');
   const frank = await kolab.openSession('frank', 'product');

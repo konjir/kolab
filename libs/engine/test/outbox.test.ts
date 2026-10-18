@@ -502,6 +502,11 @@ test('a job that keeps failing is dead after ten attempts: no worker runs it unt
   } finally { proto.query = query; }
   const [dead] = await k.outboxJobs({ state: 'dead' });
   expect(dead).toMatchObject({ kind: 'after_commit', state: 'dead', subject: 'kj:test/B@2', attempts: 10, last_error: expect.stringMatching(/Connection terminated unexpectedly/) });
+  // An admin can look at one kolab's jobs: this one's, none of another's, and a kolab that isn't there is refused.
+  await k.createKolab('elsewhere', { owner: 'alice' });
+  expect((await k.outboxJobs({ kolab: 'test' })).map((j) => j.id)).toStrictEqual([dead.id]);
+  expect(await k.outboxJobs({ kolab: 'elsewhere', state: 'dead' })).toStrictEqual([]);
+  expect(await rejection(k.outboxJobs({ kolab: 'nowhere' }))).toMatch(/TenancyError: no kolab nowhere/);
   await k.db.query(`update outbox set run_after = clock_timestamp()`);
   expect(await k.drainOutbox()).toBe(0);
   failing = false;
