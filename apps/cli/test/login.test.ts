@@ -272,3 +272,21 @@ test('an abandoned konjir login keeps the sign-in it would have replaced, workin
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where revoked_at is null`)).rows).toStrictEqual([{ n: 1 }]);
 });
+
+test('a hold leaked by an error that escaped the SDK, in a konjir that keeps running (a watch), ends by itself: the heartbeat stops and others take the lock', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'konjir-leak-')), 'c.json');
+  await new StoredLogin(URL_, { path }).saveTokens(tokens(1));
+  // The watch's sign-in starts a refresh, and the error that would end it never reaches anything konjir awaits.
+  const watching = new StoredLogin(URL_, { path, lockMaxHoldMs: 300 });
+  expect((await watching.tokens({}))?.refresh_token).toBe('kjr_r1');
+  expect(statSync(`${path}.lock`).isFile()).toBe(true);
+  // Well past the cap, the process still running, the lock is gone and another konjir writes at once.
+  await new Promise((r) => setTimeout(r, 700));
+  expect(() => statSync(`${path}.lock`)).toThrow();
+  const t0 = Date.now();
+  await new StoredLogin(URL_, { path, lockWaitMs: 200 }).saveTokens(tokens(2));
+  expect(Date.now() - t0).toBeLessThan(1000);
+  // The leaked refresh, if it ever finishes, keeps the newer tokens rather than writing over them.
+  await watching.saveTokens(tokens(3));
+  expect(JSON.parse(readFileSync(path, 'utf8'))[URL_].tokens.refresh_token).toBe('kjr_r2');
+});
