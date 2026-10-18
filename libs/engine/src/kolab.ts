@@ -126,20 +126,24 @@ const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 /** The scope a grant carries: Konjir's, with the kolab and role its session works in. */
 export const grantedScope = (kolab: string, role: Role) => `konjir kolab:${kolab} role:${role}`;
 
+/** Words no one signs up as, beside Kolab's own actor and anything starting `konjir` (D55). */
+const RESERVED_PERSON_NAMES = new Set(['kolab', 'admin', 'administrator', 'root', 'system', 'superuser', 'support', 'security', 'staff', 'owner', 'agent', 'anonymous', 'nobody', 'null', 'undefined']);
+
 /**
- * Names a person may not sign up as (D55): Kolab's own actor, and anything starting `konjir`, as
- * for kolab names (D15, D54).
+ * Names a person may not sign up as (D55): Kolab's own actor, the words an admin or Kolab itself
+ * would be taken for, and anything starting `konjir`, as for kolab names (D15, D54).
  */
-export const isReservedPersonName = (name: string) => name.toLowerCase() === SYSTEM_ACTOR || name.toLowerCase().startsWith('konjir');
+export const isReservedPersonName = (name: string) => RESERVED_PERSON_NAMES.has(name.toLowerCase()) || name.toLowerCase().startsWith('konjir');
 
 /**
  * The names a new person signing up as `login` tries, in order: the login, lowercased, then
  * `<login>_2` to `<login>_20`, then one with a random suffix. A GitHub login never holds '_', so
- * no variant is ever another GitHub user's own login. A reserved name tries `gh_<login>` instead.
+ * no variant is ever another GitHub user's own login. A reserved name tries `gh_<login>` instead,
+ * and so does one `agentLike` says reads as someone's agent, `<person>-<label>` (D30).
  */
-export function* signUpNames(login: string): Generator<string> {
+export function* signUpNames(login: string, agentLike: (name: string) => boolean = () => false): Generator<string> {
   const base = login.toLowerCase().replace(/[^a-z0-9.@-]/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 39) || 'person';
-  const root = isReservedPersonName(base) ? `gh_${base}` : base;
+  const root = isReservedPersonName(base) || agentLike(base) ? `gh_${base}` : base;
   if (!isReservedPersonName(root)) yield root;
   for (let i = 2; i <= 20; i++) yield `${root}_${i}`;
   yield `${root}_${randomBytes(4).toString('hex')}`;
@@ -148,26 +152,27 @@ export function* signUpNames(login: string): Generator<string> {
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
 /**
- * Whether Kolab may send codes to `uri` (OAuth 2.1 §2.3.1, RFC 8252): an https URL; http only on a
- * loopback address; or a private-use scheme of a native app, with a dot in it (com.example.app:/cb).
- * Never with a fragment or credentials, and never javascript:, data:, file: and the like.
+ * Whether Kolab may send codes to `uri` (OAuth 2.1 §2.3.1, RFC 8252): an https URL, or http on a
+ * loopback address. Never a fragment or credentials (written as `#`, `user@` or `user:pass@`, even
+ * empty), and no other scheme: no app's own scheme, and never javascript:, data:, file: and the like.
  */
 export function validRedirectUri(uri: string): boolean {
-  if (typeof uri !== 'string' || uri.length > 2000) return false;
+  if (typeof uri !== 'string' || uri.length > 2000 || uri.includes('#')) return false;
   let u: URL;
   try { u = new URL(uri); } catch { return false; }
-  if (u.hash || u.username || u.password) return false;
-  const scheme = u.protocol.slice(0, -1);
-  if (scheme === 'https') return !!u.hostname;
-  if (scheme === 'http') return LOOPBACK_HOSTS.has(u.hostname);
-  return /^[a-z][a-z0-9+-]*(\.[a-z0-9+-]+)+$/.test(scheme);
+  if (u.username || u.password || /^[a-z]+:\/\/[^/?]*@/i.test(uri)) return false;
+  if (u.protocol === 'https:') return !!u.hostname;
+  if (u.protocol === 'http:') return LOOPBACK_HOSTS.has(u.hostname);
+  return false;
 }
 
 /**
- * Whether a redirect URI given at authorization matches one a client registered: exactly, but for
- * the port of a loopback http URI, which a native client picks when it runs (RFC 8252 §7.3).
+ * Whether a redirect URI given at authorization matches one a client registered: a valid one
+ * (validRedirectUri: no fragment or credentials), exactly, but for the port of a loopback http
+ * URI, which a native client picks when it runs (RFC 8252 §7.3).
  */
 export function redirectUriMatches(registered: string[], given: string): boolean {
+  if (!validRedirectUri(given)) return false;
   if (registered.includes(given)) return true;
   let g: URL;
   try { g = new URL(given); } catch { return false; }
@@ -1570,7 +1575,14 @@ export class Kolab {
     };
     const known = await linked();
     if (known) return { actor: known, created: false };
-    for (const candidate of signUpNames(login)) {
+    // A login that reads as an existing person's agent, `<person>-<label>`, signs up as gh_<login>,
+    // so no one passes for someone's agent, or takes a name that person's agent would have (D30).
+    const base = login.toLowerCase();
+    const prefixes = [...base.matchAll(/-/g)].map((m) => base.slice(0, m.index));
+    const people = prefixes.length ? new Set((await this.db.query<{ id: string }>(
+      `select lower(id) as id from actor where kind = 'person' and lower(id) = any($1)`, [prefixes])).rows.map((r) => r.id)) : new Set<string>();
+    const agentLike = (name: string) => [...name.matchAll(/-/g)].some((m) => people.has(name.slice(0, m.index)));
+    for (const candidate of signUpNames(login, agentLike)) {
       try {
         await this.requireFreeName(candidate, 'ActorError');
         await this.db.transaction(async (tx) => {
@@ -1623,17 +1635,33 @@ export class Kolab {
   async registerClient(c: { name?: string; redirectUris: string[] }): Promise<OAuthClient> {
     const uris = [...new Set(c.redirectUris)];
     if (!uris.length || uris.length > 10) throw new OAuthGrantError('invalid_redirect_uri', 'register 1 to 10 redirect URIs');
-    for (const u of uris) if (!validRedirectUri(u)) throw new OAuthGrantError('invalid_redirect_uri', `${u.slice(0, 200)} isn't a redirect URI Kolab sends codes to: use https, http on a loopback address, or an app's own scheme (RFC 8252)`);
+    for (const u of uris) if (!validRedirectUri(u)) throw new OAuthGrantError('invalid_redirect_uri', `${u.slice(0, 200)} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials`);
     const name = (c.name ?? '').trim().slice(0, 200) || 'An MCP client';
     const id = `kjcl_${randomBytes(18).toString('base64url')}`;
+    await this.pruneClients();
     await this.db.query(`insert into oauth_client(id, name, redirect_uris) values ($1, $2, $3)`, [id, name, uris]);
     return { id, name, redirectUris: uris };
   }
 
-  /** A registered client, or undefined. */
-  async oauthClient(id: string): Promise<OAuthClient | undefined> {
-    const r = (await this.db.query<{ id: string; name: string; redirect_uris: string[] }>(
-      `select id, name, redirect_uris from oauth_client where id = $1`, [id])).rows[0];
+  /**
+   * Deletes registered clients no one uses: one never used a day after it registered, and one
+   * unused for 30 days with no grant still live. Returns how many.
+   */
+  async pruneClients(): Promise<number> {
+    return (await this.db.query(
+      `delete from oauth_client c
+        where (c.last_used_at is null and c.created_at < now() - interval '1 day'
+               or c.last_used_at < now() - interval '30 days')
+          and not exists (select 1 from oauth_grant g where g.client_id = c.id and g.revoked_at is null and g.expires_at > now())
+          and not exists (select 1 from oauth_code k where k.client_id = c.id and k.expires_at > now())
+       returning c.id`)).rows.length;
+  }
+
+  /** A registered client, or undefined. With `use`, it counts as used now (pruneClients). */
+  async oauthClient(id: string, opts: { use?: boolean } = {}): Promise<OAuthClient | undefined> {
+    const r = (await this.db.query<{ id: string; name: string; redirect_uris: string[] }>(opts.use
+      ? `update oauth_client set last_used_at = now() where id = $1 returning id, name, redirect_uris`
+      : `select id, name, redirect_uris from oauth_client where id = $1`, [id])).rows[0];
     return r && { id: r.id, name: r.name, redirectUris: r.redirect_uris };
   }
 
@@ -1672,10 +1700,16 @@ export class Kolab {
     return { csrf };
   }
 
-  /** The authorization a browser's binding names, while it lasts, for the consent page. */
-  async pendingAuthorization(binding: string): Promise<PendingAuthorization | undefined> {
+  /**
+   * The authorization a browser's binding names, while it lasts, for the consent page. With
+   * `state`, only if that is the state sent to the identity provider for it, so a forged callback
+   * is refused before its code reaches the provider (RFC 6749 §10.12).
+   */
+  async pendingAuthorization(binding: string, opts: { state?: string } = {}): Promise<PendingAuthorization | undefined> {
     const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string }>(
-      `select client_id, redirect_uri, client_state, scope, actor_id, provider from oauth_request where id = $1 and expires_at > now()`, [sessionKey(binding)])).rows[0];
+      `select client_id, redirect_uri, client_state, scope, actor_id, provider from oauth_request
+        where id = $1 and expires_at > now() and ($2::text is null or state_key = $2)`,
+      [sessionKey(binding), opts.state === undefined ? null : sessionKey(opts.state)])).rows[0];
     return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider };
   }
 
@@ -1702,10 +1736,24 @@ export class Kolab {
    * where to send it; the authorization is used up.
    */
   async consent(binding: string, csrf: string, choice: ConsentChoice, opts: { selfOnly?: boolean } = {}): Promise<{ code: string; redirectUri: string; clientState: string | null }> {
+    // Claimed first, before anything is made: a second submission of the form at once is refused.
     const req = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string | null }>(
-      `select client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id from oauth_request
-        where id = $1 and csrf_key = $2 and expires_at > now()`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+      `update oauth_request set claimed_at = now()
+        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null
+       returning client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
     if (!req?.actor_id) throw new OAuthGrantError('access_denied', 'this sign-in expired or was already used; start again');
+    try {
+      return await this.consentClaimed(binding, csrf, { ...req, actor_id: req.actor_id }, choice, opts);
+    } catch (e) {
+      // Released, so the person can correct the page and try again.
+      await this.db.query(`update oauth_request set claimed_at = null where id = $1 and csrf_key = $2`, [sessionKey(binding), sessionKey(csrf)]).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  private async consentClaimed(binding: string, csrf: string,
+    req: { client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string },
+    choice: ConsentChoice, opts: { selfOnly?: boolean }): Promise<{ code: string; redirectUri: string; clientState: string | null }> {
     const person = req.actor_id;
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
     if (!ROLES.includes(choice.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
@@ -1850,7 +1898,8 @@ export class Kolab {
   /**
    * Revokes the grant a refresh token or an access token belongs to (RFC 7009), ending its session
    * so its streams close (D41). A hand-issued token, or one that matches nothing, is left alone,
-   * and so is one issued to another client than `clientId`, when given. Returns whether a grant was revoked.
+   * and so is one issued to another client than `clientId` (RFC 7009 §2.1), which the public
+   * endpoint always gives. Returns whether a grant was revoked.
    */
   async revokeToken(token: string, opts: { clientId?: string } = {}): Promise<boolean> {
     const key = sessionKey(token);
@@ -1883,25 +1932,46 @@ export class Kolab {
     if (p.kind !== 'person') throw new AccessError(`${person} is an agent: only a person makes agents`);
     if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent name: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
     const id = `${person}-${label}`;
-    const owned = (await this.listActors({ owner: person, archived: true })).length;
-    if (owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${owned} agents, the most a person may make here (${this.oauth.agentsPerPerson})`);
+    if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't own a new agent`);
+    // The rate is taken before the insert, so calls at once in this process can't all pass it.
     const now = Date.now();
     const recent = (this.ownAgentTimes.get(person) ?? []).filter((t) => now - t < 10 * 60_000);
     if (recent.length >= 3) throw new ActorError(`you made ${recent.length} agents in the last 10 minutes; wait a while before making another`);
-    await this.addActor(id, { owner: person });
     this.ownAgentTimes.set(person, [...recent, now]);
+    try {
+      await this.requireFreeName(id, 'ActorError');
+      // The count and the insert run under the access lock, so calls at once can't pass the cap.
+      await this.db.transaction(async (tx) => {
+        await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+        const owned = (await tx.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1`, [person])).rows[0].n;
+        if (owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${owned} agents, the most a person may make here (${this.oauth.agentsPerPerson})`);
+        await tx.query(`insert into actor(id, name, kind, owner_id) values ($1, $1, 'agent', $2)`, [id, person]);
+      });
+    } catch (e) {
+      this.ownAgentTimes.set(person, (this.ownAgentTimes.get(person) ?? []).filter((t) => t !== now));
+      if (/actor_pkey|actor_id_lower/.test(String(e))) throw new NameTakenError(`actor ${id} already exists`, undefined, 'ActorError');
+      throw e;
+    }
     return id;
   }
 
   /**
-   * Gives a person's own agent access to a kolab where it has none (D30): what its owner holds
-   * there, at most Write, on the layers its owner writes. A grant an admin or the kolab's owners
-   * gave it stands as it is.
+   * Gives a person's own agent access to a kolab where it has none (D30, D56): what its owner
+   * holds there, at most Write, on the layers its owner writes, in any kolab the person reaches
+   * by owning it, a grant, a team or their organization, an organization's included. The grant
+   * stands, but never above its owner: an agent's access is its grant cut down, on every use, to
+   * what its owner holds then (D30), so it follows the person's access down, and ends with it. A
+   * kolab the person reads only because it is public gives their agents nothing, and no grant is
+   * stored there. A grant an admin or the kolab's owners gave the agent stands as it is.
    */
   private async grantOwnAgent(person: string, agent: string, kolab: string) {
     if ((await accessIn(this.db, agent, kolab)).level) return;
     const mine = await accessIn(this.db, person, kolab);
     if (!mine.level) throw new AccessError(`no kolab ${kolab} you can reach`);
+    if (!(await this.reachable(person)).includes(kolab) && !(await this.db.query(
+      `select 1 from kolab k join org_member m on m.org_id = k.owner_id and m.user_id = $1 where k.id = $2`, [person, kolab])).rows.length) {
+      throw new AccessError(`you read kolab ${kolab} only because it is public, which gives your agents nothing there (D56): work there as yourself, or ask its owners for a grant`);
+    }
     const writes = ACCESS_LEVELS.indexOf(mine.level) >= ACCESS_LEVELS.indexOf('write');
     if (writes && mine.layers.length) await this.grant(kolab, agent, 'write', { layers: mine.layers });
     else await this.grant(kolab, agent, writes ? 'read' : mine.level);
@@ -2126,6 +2196,8 @@ export class Kolab {
     if (recent.length >= this.ownKolabs.burst) {
       throw new TenancyError(`you made ${recent.length} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
     }
+    // Taken before the insert, so calls at once in this process can't all pass the rate; given back if it fails.
+    this.ownKolabTimes.set(s.actor_id, [...recent, now]);
     try {
       await this.db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
@@ -2135,10 +2207,10 @@ export class Kolab {
         await tx.query(`insert into kolab(id, owner_id, title, visibility) values ($1, $2, $3, 'private')`, [name, s.actor_id, title]);
       });
     } catch (e) {
+      this.ownKolabTimes.set(s.actor_id, (this.ownKolabTimes.get(s.actor_id) ?? []).filter((t) => t !== now));
       if (String(e).includes('kolab_pkey')) throw new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
       throw e;
     }
-    this.ownKolabTimes.set(s.actor_id, [...recent, now]);
   }
 
   /**

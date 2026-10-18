@@ -28,8 +28,13 @@ export function originOf(req: Request, options: { publicHost?: string }): string
   return undefined;
 }
 
-/** The binding cookie of an authorization in progress: sent back by the identity provider's redirect (Lax), only to /oauth. */
-const bindingCookie = (options: OAuthOptions) => (options.publicHost ? '__Secure-konjir_oauth' : 'konjir_oauth');
+/**
+ * The binding cookie of an authorization in progress, sent back by the identity provider's
+ * redirect (Lax). Behind the TLS proxy it is `__Host-` (Secure, Path=/, no Domain), so no other
+ * host under the same domain can toss one in its place; on loopback, scoped to /oauth.
+ */
+const bindingCookie = (options: OAuthOptions) => (options.publicHost ? '__Host-konjir_oauth' : 'konjir_oauth');
+export const bindingCookieAttrs = (options: { publicHost?: string }, path: string) => (options.publicHost ? 'Path=/; Secure' : `Path=${path}`);
 
 export function cookieOf(req: Request, name: string): string | undefined {
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -45,17 +50,39 @@ export function cookieOf(req: Request, name: string): string | undefined {
 const providerVerifier = (binding: string) => createHash('sha256').update(`konjir-idp:${binding}`).digest('base64url');
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 
-/** At most `max` calls in `windowMs`, per process: enough to stop a flood, not a tenant's work. */
-class Limit {
-  private times: number[] = [];
-  constructor(private readonly max: number, private readonly windowMs: number) {}
-  take(): boolean {
+/**
+ * At most `perKey` calls in `windowMs` for any one key (a client address, a client), and at most
+ * `total` in all, per process: one caller can't use up everyone's budget, and the total is a
+ * backstop. Keys idle for a window are forgotten.
+ */
+export class Limit {
+  private readonly byKey = new Map<string, number[]>();
+  private all: number[] = [];
+  constructor(private readonly perKey: number, private readonly total: number, private readonly windowMs: number) {}
+  take(...keys: string[]): boolean {
     const now = Date.now();
-    this.times = this.times.filter((t) => now - t < this.windowMs);
-    if (this.times.length >= this.max) return false;
-    this.times.push(now);
+    const live = (ts: number[] | undefined) => (ts ?? []).filter((t) => now - t < this.windowMs);
+    this.all = live(this.all);
+    if (this.all.length >= this.total) return false;
+    const each = keys.map((k) => live(this.byKey.get(k)));
+    if (each.some((ts) => ts.length >= this.perKey)) return false;
+    keys.forEach((k, i) => this.byKey.set(k, [...each[i], now]));
+    this.all.push(now);
+    if (this.byKey.size > 10_000) for (const [k, ts] of this.byKey) if (!live(ts).length) this.byKey.delete(k);
     return true;
   }
+}
+
+/**
+ * The address a request comes from. Behind the TLS proxy (Caddy, on loopback), the last entry of
+ * X-Forwarded-For, which the proxy writes with the address it saw and doesn't take from the
+ * client; otherwise the socket's own address.
+ */
+export function clientAddress(req: Request, options: { publicHost?: string }): string {
+  const socket = req.socket?.remoteAddress ?? '';
+  const viaProxy = !!options.publicHost && /^(127\.|::1$|::ffff:127\.)/.test(socket);
+  const forwarded = typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',').pop()?.trim() : undefined;
+  return `ip:${viaProxy && forwarded ? forwarded : socket}`;
 }
 
 /** The scope a client asks with may name a kolab and a role to preselect: `kolab:<name> role:<role>`. */
@@ -106,8 +133,11 @@ function cors(res: Response) {
 @Controller()
 export class OAuthController {
   private readonly logger = new Logger('OAuth');
-  private readonly registrations = new Limit(60, 60 * 60_000);
-  private readonly authorizations = new Limit(600, 60_000);
+  /** Registrations: 10 an hour from one address, 500 in all. */
+  private readonly registrations = new Limit(10, 500, 60 * 60_000);
+  /** Authorizations of a known client at a registered redirect URI: 30 a minute from one address, 60 for one client, 3000 in all. */
+  private readonly authorizations = new Limit(30, 3000, 60_000);
+  private readonly authorizationsPerClient = new Limit(60, 3000, 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -164,7 +194,7 @@ export class OAuthController {
   async register(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
     cors(res);
     if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
-    if (!this.registrations.take()) return oauthError(res, 429, 'temporarily_unavailable', 'too many clients registered just now; try again later');
+    if (!this.registrations.take(clientAddress(req, this.options))) return oauthError(res, 429, 'temporarily_unavailable', 'too many clients registered from here just now; try again later');
     const uris = body?.redirect_uris;
     if (!Array.isArray(uris) || !uris.every((u) => typeof u === 'string')) return oauthError(res, 400, 'invalid_redirect_uri', 'redirect_uris is a list of URIs');
     const grants = body.grant_types ?? ['authorization_code'];
@@ -189,10 +219,10 @@ export class OAuthController {
 
   // ---- authorization -----------------------------------------------------------
 
-  /** The client, and the redirect URIs it may receive codes at: the web interface's, or a registered client's. */
-  private async client(id: string, base: string): Promise<{ name: string; redirectUris: string[]; web: boolean } | undefined> {
+  /** The client, and the redirect URIs it may receive codes at: the web interface's, or a registered client's. `use` marks it used. */
+  private async client(id: string, base: string, use = false): Promise<{ name: string; redirectUris: string[]; web: boolean } | undefined> {
     if (id === WEB_CLIENT) return { name: 'Kolab\'s web page', redirectUris: [`${base}${WEB_CALLBACK}`], web: true };
-    const c = id.startsWith('kjcl_') ? await this.kolab.oauthClient(id) : undefined;
+    const c = id.startsWith('kjcl_') ? await this.kolab.oauthClient(id, { use }) : undefined;
     return c && { name: c.name, redirectUris: c.redirectUris, web: false };
   }
 
@@ -201,31 +231,36 @@ export class OAuthController {
     const base = originOf(req, this.options);
     if (!base) return sendError(res, 403, 'This Kolab doesn\'t serve that host.');
     if (!this.idp) return sendError(res, 404, 'Signing in with an identity provider isn\'t set up on this Kolab.');
-    if (!this.authorizations.take()) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
     const str = (k: string) => (typeof q[k] === 'string' ? q[k] as string : undefined);
     const clientId = str('client_id');
     const redirectUri = str('redirect_uri');
-    // Until the client and its redirect URI check out, nothing is redirected anywhere (RFC 6749 §4.1.2.1).
-    const client = clientId ? await this.client(clientId, base) : undefined;
+    // Nothing is redirected anywhere before the person has seen the consent page: not until the
+    // client and its redirect URI check out (RFC 6749 §4.1.2.1), and not for an error after that
+    // either, since anyone can register a client with any https redirect URI (RFC 9700 §4.11.2).
+    // Each error is a page that says what went wrong.
+    const client = clientId ? await this.client(clientId, base, true) : undefined;
     if (!client) return sendError(res, 400, 'The app asked to sign in as a client this Kolab doesn\'t know. Reconnect it to register again.');
     if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri)) return sendError(res, 400, 'The app asked for its answer at an address it didn\'t register, so Kolab won\'t send it there.');
+    // Counted only once the client checks out, per address and per client.
+    if (!this.authorizations.take(clientAddress(req, this.options)) || !this.authorizationsPerClient.take(`client:${clientId}`)) {
+      return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
+    }
     const state = str('state');
-    const back = (error: string, description: string) => res.redirect(303, withParams(redirectUri, { error, error_description: description, state, iss: base }));
-    if (str('response_type') !== 'code') return back('unsupported_response_type', 'the only response type is code');
+    const refuse = (description: string) => sendError(res, 400, `The app's sign-in request isn't one Kolab accepts: ${description}. Tell whoever makes the app.`);
+    if (str('response_type') !== 'code') return refuse('the only response type is code');
     const challenge = str('code_challenge');
     if (!challenge || str('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) {
-      return back('invalid_request', 'PKCE is required: send an S256 code_challenge');
+      return refuse('PKCE is required, with an S256 code_challenge');
     }
     const resource = str('resource');
     if (resource !== undefined && !client.web && resource.replace(/\/$/, '') !== `${base}/${MCP_ROUTE}`) {
-      return back('invalid_target', `this authorization server issues tokens for ${base}/${MCP_ROUTE} only`);
+      return refuse(`this authorization server issues tokens for ${base}/${MCP_ROUTE} only`);
     }
-    if ((state?.length ?? 0) > 1000 || (str('scope')?.length ?? 0) > 1000) return back('invalid_request', 'state and scope are at most 1000 characters');
+    if ((state?.length ?? 0) > 1000 || (str('scope')?.length ?? 0) > 1000) return refuse('state and scope are at most 1000 characters');
     const { binding, state: idpState } = await this.kolab.beginAuthorization({
       provider: this.idp.id, clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource,
     });
-    const secure = this.options.publicHost ? '; Secure' : '';
-    res.setHeader('set-cookie', `${bindingCookie(this.options)}=${binding}; Path=/oauth; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}${secure}`);
+    res.setHeader('set-cookie', `${bindingCookie(this.options)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
     res.setHeader('referrer-policy', 'no-referrer');
     res.redirect(302, this.idp.authorizationUrl({ redirectUri: `${base}/oauth/callback/${this.idp.id}`, state: idpState, codeChallenge: s256(providerVerifier(binding)) }));
   }
@@ -243,7 +278,8 @@ export class OAuthController {
       if (!r) return sendError(res, 400, 'This sign-in didn\'t start in this browser, or took too long.');
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: `the sign-in with ${this.idp.label} was cancelled`, state: r.clientState ?? undefined, iss: base }));
     }
-    const pending = await this.kolab.pendingAuthorization(binding);
+    // The binding and the state together, before the code goes anywhere (RFC 6749 §10.12).
+    const pending = await this.kolab.pendingAuthorization(binding, { state });
     if (!pending || pending.person) return sendError(res, 400, 'This sign-in didn\'t start in this browser, was already used, or took too long.');
     let who;
     try {
@@ -332,7 +368,7 @@ export class OAuthController {
     if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
     const str = (k: string) => (typeof body?.[k] === 'string' ? body[k] as string : undefined);
     const clientId = str('client_id');
-    if (!clientId || clientId === WEB_CLIENT || !(clientId.startsWith('kjcl_') && await this.kolab.oauthClient(clientId))) {
+    if (!clientId || clientId === WEB_CLIENT || !(clientId.startsWith('kjcl_') && await this.kolab.oauthClient(clientId, { use: true }))) {
       return oauthError(res, 401, 'invalid_client', 'unknown client: register it first');
     }
     try {
@@ -363,9 +399,14 @@ export class OAuthController {
     if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
     const token = typeof body?.token === 'string' ? body.token : undefined;
     if (!token) return oauthError(res, 400, 'invalid_request', 'send the token to revoke');
+    // RFC 7009 §2.1: only a token issued to the client asking. A public client names itself; the
+    // web interface's own sign-out revokes its token in the process, never here.
     const clientId = typeof body.client_id === 'string' ? body.client_id : undefined;
+    if (!clientId || clientId === WEB_CLIENT || !(clientId.startsWith('kjcl_') && await this.kolab.oauthClient(clientId))) {
+      return oauthError(res, 401, 'invalid_client', 'name the registered client the token was issued to');
+    }
     // RFC 7009 §2.2: the answer is the same whether or not the token was valid.
-    await this.kolab.revokeToken(token, { clientId: clientId === WEB_CLIENT ? undefined : clientId }).catch((e) => {
+    await this.kolab.revokeToken(token, { clientId }).catch((e) => {
       this.logger.warn(`could not revoke a token: ${maskTokens(e)}`);
     });
     json(res, 200, {});
@@ -373,8 +414,7 @@ export class OAuthController {
 }
 
 function clearBinding(res: Response, options: OAuthOptions) {
-  const secure = options.publicHost ? '; Secure' : '';
-  res.append('set-cookie', `${bindingCookie(options)}=; Path=/oauth; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+  res.append('set-cookie', `${bindingCookie(options)}=; ${bindingCookieAttrs(options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 /** A redirect URI as the consent page shows it: its origin, or for an app's own scheme, the URI. */

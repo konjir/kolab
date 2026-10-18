@@ -331,17 +331,17 @@ test('each change checks every listening session in one query, however many stre
   for (const l of listeners) for (let j = 0; j < 3; j++) await l.client.listen({ resourceSubscriptions: [INBOX] });
 
   const kolab = server.kolab;
-  const counts = { liveSessions: 0, liveSession: 0, sessionOpen: 0 };
-  const liveSessions = kolab.liveSessions.bind(kolab);
+  const counts = { openSessions: 0, liveSession: 0, sessionOpen: 0 };
+  const openSessions = kolab.openSessions.bind(kolab);
   const liveSession = kolab.liveSession.bind(kolab);
   const sessionOpen = kolab.sessionOpen.bind(kolab);
-  kolab.liveSessions = (ids) => { counts.liveSessions++; return liveSessions(ids); };
+  kolab.openSessions = (ids) => { counts.openSessions++; return openSessions(ids); };
   kolab.liveSession = (id) => { counts.liveSession++; return liveSession(id); };
   kolab.sessionOpen = (id) => { counts.sessionOpen++; return sessionOpen(id); };
 
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   await until('all 12 streams to hear it', () => listeners.every((l) => l.updates.length === 3));
-  expect(counts.liveSessions).toBe(1);
+  expect(counts.openSessions).toBe(1);
   expect(counts.liveSession).toBe(1); // the asker's own auth check, nothing per stream
   expect(counts.sessionOpen).toBe(0);
   await server.close();
@@ -355,8 +355,8 @@ test('a failed session check holds back that one change, and closes no stream', 
   const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });
 
   const kolab = server.kolab;
-  const liveSessions = kolab.liveSessions.bind(kolab);
-  kolab.liveSessions = async () => { kolab.liveSessions = liveSessions; throw new Error('connection terminated unexpectedly'); };
+  const openSessions = kolab.openSessions.bind(kolab);
+  kolab.openSessions = async () => { kolab.openSessions = openSessions; throw new Error('connection terminated unexpectedly'); };
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   await new Promise((r) => setTimeout(r, 200));
   expect(pm.updates).toStrictEqual([]);

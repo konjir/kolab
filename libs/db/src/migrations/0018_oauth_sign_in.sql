@@ -56,18 +56,24 @@ create trigger identity_of_person before insert or update of actor_id on identit
 
 -- A client registered dynamically (RFC 7591): a public client (no secret), with the redirect URIs
 -- it may receive codes at, matched exactly. The web interface is Kolab's own client and isn't here.
+-- `last_used_at` is when it last started an authorization or used the token endpoint: a client
+-- never used is deleted a day after it registered, and one unused for 30 days with no live grant
+-- is deleted then, so anyone registering clients can't fill the table.
 create table oauth_client (
   id            text primary key check (id ~ '^kjcl_[A-Za-z0-9_-]{22,64}$'),
   name          text not null check (length(name) between 1 and 200),
   redirect_uris text[] not null check (cardinality(redirect_uris) between 1 and 10),
-  created_at    timestamptz not null default now()
+  created_at    timestamptz not null default now(),
+  last_used_at  timestamptz
 );
 
 -- An authorization in progress, from GET /oauth/authorize until it is consented to and its code
 -- issued, or it expires. `id` is the key of the value in the browser's binding cookie, and
 -- `state_key` the key of the state sent to the identity provider, so the callback must come back
 -- to the browser that started it, with the state it was sent. Once the provider has said who the
--- person is, `actor_id` is set, and `csrf_key` is the key of the consent form's token.
+-- person is, `actor_id` is set, and `csrf_key` is the key of the consent form's token. A consent
+-- claims the request (`claimed_at`) before it makes anything, so two submissions of one form can't
+-- both make an agent or a kolab; one that fails releases it, so the page can be corrected.
 create table oauth_request (
   id             text primary key check (id ~ '^[A-Za-z0-9_-]{43}$'),
   state_key      text not null unique check (state_key ~ '^[A-Za-z0-9_-]{43}$'),
@@ -80,6 +86,7 @@ create table oauth_request (
   resource       text check (length(resource) <= 1000),
   actor_id       text references actor(id),
   csrf_key       text check (csrf_key ~ '^[A-Za-z0-9_-]{43}$'),
+  claimed_at     timestamptz,
   created_at     timestamptz not null default now(),
   expires_at     timestamptz not null
 );
