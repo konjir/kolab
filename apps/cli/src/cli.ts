@@ -71,7 +71,9 @@ export async function watch(client: Client, onUpdate: (uri: string, body: unknow
 /**
  * Why Kolab refused a listen stream in-band (JSON-RPC -32003, "Listen stream refused"), or
  * undefined for any other error. 'session_ended' means the token was revoked, as a 401 does;
- * any other reason ('gate_failed', 'gate_timeout', 'closed') is worth retrying.
+ * 'not_subscribable' that the stream asked for a resource outside its session's kolab, or
+ * another actor's answers (D50), so ask konjir_whoami for the resources again; any other reason
+ * ('gate_failed', 'gate_timeout', 'closed') is worth retrying.
  */
 export function listenRefusal(e: unknown): string | undefined {
   const err = e as { code?: unknown; data?: { reason?: unknown } } | undefined;
@@ -228,6 +230,7 @@ export async function main(argv: string[]) {
       }, (e: unknown) => {
         const reason = listenRefusal(e);
         if (reason === 'session_ended') reject(new Error(`the Kolab server at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`));
+        else if (reason === 'not_subscribable') reject(new Error('Kolab refused to subscribe you to those resources: a session can subscribe only to its own kolab\'s inboxes and its own answers there. Run konjir watch again, which asks konjir_whoami for them afresh'));
         else if (reason) reject(new Error(`Kolab couldn't open your subscription just now (${reason}); run konjir watch again`));
         else reject(e);
       });

@@ -40,7 +40,7 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   expect(await call(one.client, 'whoami')).toStrictEqual({
     session: sessionKey(one.token), actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product', layer: 'functional',
     kolab: 'checkout', access: { level: 'write', layers: ['functional'] },
-    subscribe: ['konjir://inbox/functional', 'konjir://answers/alice-pm'],
+    subscribe: ['konjir://inbox/checkout/functional', 'konjir://answers/checkout/alice-pm'],
   });
   expect(await call(two.client, 'whoami')).toMatchObject({ actor: 'alice-pm-2', kind: 'agent', owner: 'alice' });
 
@@ -188,9 +188,9 @@ test('over MCP, a review request waits in the reviewer\'s inbox, konjir_review s
     ok: false, committed: null, in_review: 'kj:checkout@1', reviewers: ['lee', 'lee-codex'], next: expect.stringMatching(/^In review: lee, lee-codex each have a review request/),
   });
 
-  const inbox = await read(codex, 'konjir://inbox/functional');
+  const inbox = await read(codex, 'konjir://inbox/test/functional');
   expect(inbox.reviews).toMatchObject([{ subject: 'kj:checkout@1', subject_kind: 'version', author: 'lee-claude', reviewer: 'lee-codex' }]);
-  expect((await read(claude, 'konjir://inbox/functional')).reviews).toStrictEqual([]);
+  expect((await read(claude, 'konjir://inbox/test/functional')).reviews).toStrictEqual([]);
   expect(await call(codex, 'list_reviews', {})).toMatchObject({ for_you: [{ subject: 'kj:checkout@1' }], yours: [] });
   expect(await rejection(call(claude, 'review', { node: 'checkout', version: 1, verdict: 'approve' }))).toMatch(/lee-claude wrote checkout@1/);
   expect(await rejection(call(codex, 'review', { node: 'checkout', version: 1, verdict: 'request_changes' }))).toMatch(/request_changes needs a note/);
@@ -198,7 +198,7 @@ test('over MCP, a review request waits in the reviewer\'s inbox, konjir_review s
   expect(await call(codex, 'review', {
     node: 'checkout', version: 1, verdict: 'request_changes', note: 'R1 is compound: split it.',
   })).toMatchObject({ verdict: 'request_changes', state: 'drafted' });
-  const answers = await read(claude, 'konjir://answers/lee-claude');
+  const answers = await read(claude, 'konjir://answers/test/lee-claude');
   expect(answers.submissions).toMatchObject([{ subject: 'kj:checkout@1', state: 'drafted', verdicts: [{ reviewer: 'lee', state: 'withdrawn' }, { reviewer: 'lee-codex', state: 'changes_requested', note: 'R1 is compound: split it.' }] }]);
 
   await call(claude, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }, { id: 'R2', text: 'Checkout emails a receipt.' }] });
@@ -207,8 +207,8 @@ test('over MCP, a review request waits in the reviewer\'s inbox, konjir_review s
   expect(await call(codex, 'review', { node: 'checkout', version: 2, verdict: 'approve', note: 'Each element is one testable intent.' })).toMatchObject({
     verdict: 'approve', ok: true, committed: 'kj:checkout@2', unreviewed: false,
   });
-  expect((await read(codex, 'konjir://inbox/functional')).reviews).toStrictEqual([]);
-  expect((await read(claude, 'konjir://answers/lee-claude')).submissions.map((s: { subject: string; state: string }) => [s.subject, s.state]))
+  expect((await read(codex, 'konjir://inbox/test/functional')).reviews).toStrictEqual([]);
+  expect((await read(claude, 'konjir://answers/test/lee-claude')).submissions.map((s: { subject: string; state: string }) => [s.subject, s.state]))
     .toStrictEqual([['kj:checkout@2', 'committed'], ['kj:checkout@1', 'rejected']]);
 });
 

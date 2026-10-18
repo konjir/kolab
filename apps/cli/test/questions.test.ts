@@ -32,7 +32,7 @@ test('a question asked from a binding element comes back to that element as a ma
   // Asked while the binding is still a draft, about a quoted span.
   const q = await kolab.raiseQuery(engineer, 'kj:orders#R8~q({"exact":"cancel an order"})',
     'From which statuses, and what happens to its invoices?', { from: 'kj:orders-pg@1#b1' });
-  expect(events).toStrictEqual([{ inbox: 'layer', layer: 'functional' }]);
+  expect(events).toStrictEqual([{ inbox: 'layer', kolab: 'test', layer: 'functional' }]);
   expect((await kolab.review(draft)).ok).toBe(true);
 
   const [listed] = await kolab.listQueries({ layer: 'functional', state: 'open' });
@@ -47,9 +47,9 @@ test('a question asked from a binding element comes back to that element as a ma
   expect(mark.note!).toMatch(/you asked "From which statuses.*answered: "Open or Assigned only/);
   expect((await kolab.describeMarks({ layer: 'technical' })).map((m) => [m.dirty, m.because.slice(0, 15)])).toStrictEqual([['kj:orders-pg@1#b1', 'kj:orders#R8: y']]);
   expect(new Set(events.map((e) => JSON.stringify(e)))).toStrictEqual(new Set([
-    JSON.stringify({ inbox: 'layer', layer: 'technical' }),   // the new mark
-    JSON.stringify({ inbox: 'layer', layer: 'functional' }),  // the queue shrank
-    JSON.stringify({ inbox: 'actor', actor: 'bob' }),         // the asker's answers
+    JSON.stringify({ inbox: 'layer', kolab: 'test', layer: 'technical' }),   // the new mark
+    JSON.stringify({ inbox: 'layer', kolab: 'test', layer: 'functional' }),  // the queue shrank
+    JSON.stringify({ inbox: 'actor', kolab: 'test', actor: 'bob' }),         // the asker's answers
   ]));
   expect((await kolab.listQueries({ raisedBy: 'bob' })).map((x) => [x.state, x.answered_by])).toStrictEqual([['answered', 'alice']]);
 
@@ -224,7 +224,7 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   const pm = await agent('pm', 'product');
   const eng = await agent('eng', 'engineer');
 
-  expect((await call(eng, 'whoami') as { subscribe: string[] }).subscribe).toStrictEqual(['konjir://inbox/technical', 'konjir://answers/eng']);
+  expect((await call(eng, 'whoami') as { subscribe: string[] }).subscribe).toStrictEqual(['konjir://inbox/test/technical', 'konjir://answers/test/eng']);
 
   // Each side watches its own inboxes.
   const pushed: { who: string; uri: string; body: { queries?: { kind: string; answer?: string | null }[]; marks?: unknown[] } }[] = [];
@@ -246,7 +246,7 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   const { query } = await call(eng, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?', from: 'kj:orders-pg@1#b1' }) as { query: string };
   await call(eng, 'annotate', { address: 'kj:orders#R8', note: 'Assuming office staff means the Office role.' });
   await arrived(2);
-  expect(pushed.every((p) => p.who === 'pm' && p.uri === 'konjir://inbox/functional')).toBeTruthy();
+  expect(pushed.every((p) => p.who === 'pm' && p.uri === 'konjir://inbox/test/functional')).toBeTruthy();
   expect(pushed.at(-1)!.body.queries!.map((q) => q.kind)).toStrictEqual(['question', 'note']);
 
   // The spec moves on to v2; the question still shows beside R8.
@@ -264,10 +264,10 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   await call(pm, 'answer_query', { query, answer: 'Any status before Completed.' });
   await arrived(3);
   const engHeard = new Set(pushed.filter((p) => p.who === 'eng').map((p) => p.uri));
-  expect(engHeard).toStrictEqual(new Set(['konjir://inbox/technical', 'konjir://answers/eng']));
-  const answers = pushed.find((p) => p.uri === 'konjir://answers/eng')!.body.queries!;
+  expect(engHeard).toStrictEqual(new Set(['konjir://inbox/test/technical', 'konjir://answers/test/eng']));
+  const answers = pushed.find((p) => p.uri === 'konjir://answers/test/eng')!.body.queries!;
   expect(answers.find((q) => q.kind === 'question')!.answer).toBe('Any status before Completed.');
 
   // Nobody reads someone else's answers.
-  expect(await rejection(pm.readResource({ uri: 'konjir://answers/eng' }))).toMatch(/your own answers/);
+  expect(await rejection(pm.readResource({ uri: 'konjir://answers/test/eng' }))).toMatch(/your own answers/);
 });

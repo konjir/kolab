@@ -28,7 +28,7 @@ test('a submitted version waits in review, with a request in each reviewer\'s in
   const r = await kolab.review(v1);
   expect(r).toMatchObject({ ok: false, in_review: true, reviewers: ['dave'], version: v1 });
   expect(await stateOf(kolab, v1)).toBe('in_review');
-  expect(events).toStrictEqual([{ inbox: 'layer', layer: 'functional' }, { inbox: 'actor', actor: 'alice' }]);
+  expect(events).toStrictEqual([{ inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'actor', kolab: 'test', actor: 'alice' }]);
   const [request] = await kolab.reviewRequests({ reviewer: 'dave' });
   expect(request).toMatchObject({ subject: 'kj:checkout@1', subject_kind: 'version', author: 'alice', reviewer: 'dave' });
   expect(request.next).toMatch(/konjir_review node=checkout version=1 verdict=approve/);
@@ -50,7 +50,7 @@ test('a submitted version waits in review, with a request in each reviewer\'s in
   expect(approved).toMatchObject({ ok: true, version: v1, note: 'Approved by dave: One testable intent.' });
   expect(await stateOf(kolab, v1)).toBe('committed');
   expect((await kolab.latestCommitted(spec))!.id).toBe(v1);
-  expect(events).toEqual(expect.arrayContaining([{ inbox: 'layer', layer: 'functional' }, { inbox: 'actor', actor: 'alice' }]));
+  expect(events).toEqual(expect.arrayContaining([{ inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'actor', kolab: 'test', actor: 'alice' }]));
   expect(await kolab.reviewRequests()).toStrictEqual([]);
   expect((await kolab.submissions('alice'))[0]).toMatchObject({
     state: 'committed', verdicts: [{ reviewer: 'dave', state: 'approved', note: 'One testable intent.', findings: [] }],

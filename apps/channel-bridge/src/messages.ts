@@ -23,8 +23,9 @@ export interface ReviewView { request: string; subject: string; author: string; 
 /** A version this session submitted, with its verdicts, as Kolab's answers resource serves it. */
 export interface SubmissionView { subject: string; state: string; note: string | null; next?: string }
 
-export type InboxBody = { layer: string; queries: QueryView[]; marks: MarkView[]; reviews?: ReviewView[] };
-export type AnswersBody = { actor: string; queries: QueryView[]; submissions?: SubmissionView[] };
+/** Each body names its kolab since D50; a Kolab from before that leaves it out. */
+export type InboxBody = { kolab?: string; layer: string; queries: QueryView[]; marks: MarkView[]; reviews?: ReviewView[] };
+export type AnswersBody = { kolab?: string; actor: string; queries: QueryView[]; submissions?: SubmissionView[] };
 
 /** The params of a notifications/claude/channel notification. Meta keys must be identifiers. */
 export interface ChannelMessage { content: string; meta: Record<string, string> }
@@ -64,6 +65,9 @@ const answerLine = (q: QueryView) => `${q.kind} ${q.id} on ${q.address}, ${quote
 const reviewLine = (r: ReviewView) => `review ${r.subject}, by ${r.author}.${r.next ? ` Next: ${clip(r.next)}` : ''}`;
 const verdictLine = (v: SubmissionView) => `${v.subject} is ${v.state.replace('_', ' ')}${v.note ? `: ${quote(v.note)}` : ''}`;
 const reviewsOf = (b: InboxBody) => b.reviews ?? [];
+/** Where an inbox is, in a message: its layer, and its kolab when Kolab names it. */
+const inboxName = (b: InboxBody) => `${b.layer} inbox${b.kolab ? ` in ${b.kolab}` : ''}`;
+const kolabMeta = (b: { kolab?: string }): Record<string, string> => (typeof b.kolab === 'string' ? { kolab: b.kolab } : {});
 const openCounts = (b: InboxBody) =>
   `${plural(b.queries.length, 'open question or note', 'open questions and notes')}, ${plural(b.marks.length, 'open mark')}`
   + (reviewsOf(b).length ? `, ${plural(reviewsOf(b).length, 'review request')} for you` : '');
@@ -102,13 +106,13 @@ function inboxMessage(uri: string, before: InboxBody, after: InboxBody): Channel
   const newR = reviewsOf(after).filter((r) => !seenR.has(r.request));
   if (!newQ.length && !newM.length && !newR.length) return null;
 
-  const lines = [`Your ${after.layer} inbox changed: ${openCounts(after)}.`];
+  const lines = [`Your ${inboxName(after)} changed: ${openCounts(after)}.`];
   if (newR.length) lines.push(`New ${newR.length === 1 ? 'review request' : 'review requests'} for you:`, ...listed(newR, reviewLine));
   if (newQ.length) lines.push(`New ${newQ.length === 1 ? 'item' : 'items'} for your layer:`, ...listed(newQ, queryLine));
   if (newM.length) lines.push(`New ${newM.length === 1 ? 'mark' : 'marks'} on your work:`, ...listed(newM, markLine));
   lines.push(readHint(uri, newQ.length > 0, newM.length > 0, newR.length > 0));
   return finish(lines.join('\n'), {
-    uri, kind: 'inbox', layer: after.layer,
+    uri, kind: 'inbox', ...kolabMeta(after), layer: after.layer,
     open_queries: String(after.queries.length), open_marks: String(after.marks.length),
     ...(reviewsOf(after).length ? { review_requests: String(reviewsOf(after).length) } : {}),
   });
@@ -131,7 +135,7 @@ function answersMessage(uri: string, before: AnswersBody, after: AnswersBody): C
     lines.push(`Read ${uri}, or call konjir_list_reviews, for the verdicts and what to do next.`);
   }
   return finish(lines.join('\n'), {
-    uri, kind: 'answers', actor: after.actor, answered: String(answered.length), ...(decided.length ? { reviewed: String(decided.length) } : {}),
+    uri, kind: 'answers', ...kolabMeta(after), actor: after.actor, answered: String(answered.length), ...(decided.length ? { reviewed: String(decided.length) } : {}),
   });
 }
 
@@ -146,12 +150,12 @@ export function describeStartup(bodies: { uri: string; body: unknown }[]): Chann
   const answers = bodies.find((b) => isAnswers(b.body)) as { uri: string; body: AnswersBody } | undefined;
   if (!inbox || (!inbox.body.queries.length && !inbox.body.marks.length && !reviewsOf(inbox.body).length)) return null;
   const b = inbox.body;
-  const lines = [`Your ${b.layer} inbox already holds ${openCounts(b)}:`];
+  const lines = [`Your ${inboxName(b)} already holds ${openCounts(b)}:`];
   lines.push(...listed(reviewsOf(b), reviewLine), ...listed(b.queries, queryLine), ...listed(b.marks, markLine));
   lines.push(readHint(inbox.uri, b.queries.length > 0, b.marks.length > 0, reviewsOf(b).length > 0));
   if (answers) lines.push(`Answers to what you raised are at ${answers.uri}.`);
   return finish(lines.join('\n'), {
-    uri: inbox.uri, kind: 'inbox', initial: 'true', layer: b.layer,
+    uri: inbox.uri, kind: 'inbox', initial: 'true', ...kolabMeta(b), layer: b.layer,
     open_queries: String(b.queries.length), open_marks: String(b.marks.length),
     ...(reviewsOf(b).length ? { review_requests: String(reviewsOf(b).length) } : {}),
   });

@@ -244,7 +244,9 @@ export class KolabBridge {
 /**
  * Why Kolab refused a listen stream in-band (JSON-RPC -32003, "Listen stream refused"), or
  * undefined for any other error. 'session_ended' is the token revoked, as a 401 is; any other
- * reason ('gate_failed', 'gate_timeout', 'closed') is worth retrying. (The bridge stands alone,
+ * reason ('gate_failed', 'gate_timeout', 'closed') is worth retrying. So is 'not_subscribable'
+ * (D50): the stream asked for another kolab's resources, as one listed by a Kolab from before
+ * D50 during a rolling deploy might, and the retry asks konjir_whoami for them afresh. (The bridge stands alone,
  * so this repeats the CLI's listenRefusal rather than import it.)
  */
 export function listenRefusal(e: unknown): string | undefined {

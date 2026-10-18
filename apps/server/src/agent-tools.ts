@@ -89,13 +89,13 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_whoami',
-    description: 'Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the inbox resources to subscribe to for pushed updates. session is the session\'s key, the sha256 of its token: Kolab never shows the token again after it is issued.',
+    description: 'Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the resources to subscribe to for pushed updates: your layer\'s inbox and your answers, both in that kolab. A session can subscribe only to its own kolab\'s. session is the session\'s key, the sha256 of its token: Kolab never shows the token again after it is issued.',
     annotations: { readOnlyHint: true },
   })
   whoami(_: unknown, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
-      return { ...me, subscribe: [inboxUri(me.layer), answersUri(me.actor)] };
+      return { ...me, subscribe: [inboxUri(me.kolab, me.layer), answersUri(me.kolab, me.actor)] };
     });
   }
 

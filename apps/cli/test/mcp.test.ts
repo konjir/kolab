@@ -33,7 +33,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   expect(await call(eng.client, 'whoami')).toStrictEqual({
     session: sessionKey(eng.token), actor: 'eng-agent', kind: 'person', owner: null, role: 'engineer', layer: 'technical',
     kolab: 'test', access: { level: 'write', layers: ['technical'] },
-    subscribe: ['konjir://inbox/technical', 'konjir://answers/eng-agent'],
+    subscribe: ['konjir://inbox/test/technical', 'konjir://answers/test/eng-agent'],
   });
 
   // Product authors and commits the spec.

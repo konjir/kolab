@@ -41,7 +41,7 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   const failed = internals(kolab).inTransaction(async (tx, signal) => {
     await tx.query(`insert into account(id, kind, name) values ('zed', 'user', 'zed')`);
     await tx.query(`insert into actor(id, name, kind) values ('zed', 'zed', 'person')`);
-    await signal({ inbox: 'actor', actor: 'zed' });
+    await signal({ inbox: 'actor', kolab: 'test', actor: 'zed' });
     throw new Error('the change fails after signalling');
   });
   expect(await rejection(failed)).toMatch(/fails after signalling/);
@@ -50,13 +50,13 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   await internals(kolab).inTransaction(async (tx, signal) => {
     await tx.query(`insert into account(id, kind, name) values ('zed', 'user', 'zed')`);
     await tx.query(`insert into actor(id, name, kind) values ('zed', 'zed', 'person')`);
-    await signal({ inbox: 'actor', actor: 'zed' });
-    await signal({ inbox: 'actor', actor: 'zed' });   // a repeat in one transaction is one event
+    await signal({ inbox: 'actor', kolab: 'test', actor: 'zed' });
+    await signal({ inbox: 'actor', kolab: 'test', actor: 'zed' });   // a repeat in one transaction is one event
     expect(events).toStrictEqual([]);                 // nothing before the commit
   });
-  expect(events).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);
+  expect(events).toStrictEqual([{ inbox: 'actor', kolab: 'test', actor: 'zed' }]);
   await settle();                                     // and its own NOTIFY, when heard, adds nothing
-  expect(events).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);
+  expect(events).toStrictEqual([{ inbox: 'actor', kolab: 'test', actor: 'zed' }]);
 });
 
 test('clearing a mark signals every layer whose inbox it empties, the cascade\'s included', async () => {
@@ -77,7 +77,50 @@ test('clearing a mark signals every layer whose inbox it empties, the cascade\'s
   const events = heard(kolab);
   await kolab.clear(engineer, changed.id);
   expect(await marksOn(kolab, proto)).toStrictEqual([]);
-  expect(events).toStrictEqual([{ inbox: 'layer', layer: 'technical' }, { inbox: 'layer', layer: 'functional' }]);
+  expect(events).toStrictEqual([{ inbox: 'layer', kolab: 'test', layer: 'technical' }, { inbox: 'layer', kolab: 'test', layer: 'functional' }]);
+});
+
+/**
+ * Two kolabs: the test kolab, where alice writes the spec and bob the binding, and `other`,
+ * where dana and erin do the same, each knowing nothing of the first.
+ */
+async function twoKolabsIn(kolab: Kolab) {
+  await people(kolab, 'alice', { layers: ['functional'] }); await people(kolab, 'bob', { layers: ['technical'] });
+  await kolab.createKolab('other', { owner: 'test-org' });
+  for (const [id, layer] of [['dana', 'functional'], ['erin', 'technical']] as const) {
+    await kolab.addActor(id);
+    await kolab.grant('other', id, 'write', { layers: [layer] });
+  }
+  const sessions = {
+    product: await kolab.openSession('alice', 'product'), engineer: await kolab.openSession('bob', 'engineer'),
+    otherProduct: await kolab.openSession('dana', 'product', { kolab: 'other' }), otherEngineer: await kolab.openSession('erin', 'engineer', { kolab: 'other' }),
+  };
+  for (const [pm, name] of [[sessions.product, 'orders'], [sessions.otherProduct, 'billing']] as const) {
+    await kolab.createNode(pm, 'functional_spec', name, name);
+    await kolab.commit(pm, name, { elements: els({ R1: `${name} can be cancelled.` }) });
+  }
+  return sessions;
+}
+
+test('a change in one kolab signals that kolab\'s inboxes alone, by its name', async () => {
+  const kolab = await openKolab();
+  const s = await twoKolabsIn(kolab);
+  const events = heard(kolab);
+  const q = await kolab.raiseQuery(s.engineer, 'kj:orders#R1', 'By whom?');
+  await kolab.answerQuery(s.product, q, 'Office staff.');
+  expect(events).toStrictEqual([
+    { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'layer', kolab: 'test', layer: 'functional' },
+    { inbox: 'actor', kolab: 'test', actor: 'bob' },
+  ]);
+  events.length = 0;
+  const q2 = await kolab.raiseQuery(s.otherEngineer, 'kj:billing#R1', 'By whom?');
+  await kolab.answerQuery(s.otherProduct, q2, 'Finance.');
+  expect(events).toStrictEqual([
+    { inbox: 'layer', kolab: 'other', layer: 'functional' }, { inbox: 'layer', kolab: 'other', layer: 'functional' },
+    { inbox: 'actor', kolab: 'other', actor: 'erin' },
+  ]);
+  // Never a token, a session or a row's id: only names a subscriber of that kolab already knows.
+  expect(JSON.stringify(events)).not.toMatch(/kjs_|[0-9A-HJKMNP-TV-Z]{26}/);
 });
 
 test('a listener that can\'t LISTEN at boot rejects, and leaves nothing behind still reconnecting', async () => {
@@ -103,13 +146,17 @@ test('a listener that can\'t LISTEN at boot rejects, and leaves nothing behind s
 
 test('isKolabEvent accepts the events Kolab sends, and nothing else', () => {
   expect([
-    { inbox: 'layer', layer: 'functional' }, { inbox: 'actor', actor: 'alice-pm' },
+    { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'actor', kolab: 'test', actor: 'alice-pm' },
     { session: 'ended', id: sessionKey('kjs_anything') },
   ].every(isKolabEvent)).toBe(true);
   expect([
-    undefined, null, 'null', 3, [], {}, { inbox: 'layer', layer: '<script>' }, { inbox: 'actor', actor: 7 },
-    { inbox: 'actor', actor: '../x' }, { inbox: 'mailbox' }, { inbox: 'actor', actor: 'x', extra: 1 },
+    undefined, null, 'null', 3, [], {}, { inbox: 'layer', kolab: 'test', layer: '<script>' }, { inbox: 'actor', kolab: 'test', actor: 7 },
+    { inbox: 'actor', kolab: 'test', actor: '../x' }, { inbox: 'mailbox' }, { inbox: 'actor', kolab: 'test', actor: 'x', extra: 1 },
     { session: 'ended', id: 'kjs_a-raw-token' }, { session: 'open', id: sessionKey('kjs_x') },
+    // An inbox event names its kolab, by a kolab's name (D50).
+    { inbox: 'layer', layer: 'functional' }, { inbox: 'actor', actor: 'alice-pm' }, { inbox: 'layer', kolab: 'Not A Kolab', layer: 'functional' },
+    { inbox: 'actor', kolab: 7, actor: 'alice-pm' }, { inbox: 'layer', kolab: 'kjs_secret/../x', layer: 'functional' },
+    { session: 'ended', kolab: 'test', id: sessionKey('kjs_x') },
   ].some(isKolabEvent)).toBe(false);
 });
 
@@ -182,9 +229,9 @@ async function silenceableProxy(databaseUrl: string) {
     await until(() => onA.length >= 3);
     await settle();
     const expected = [
-      { inbox: 'layer', layer: 'functional' },   // the question
-      { inbox: 'layer', layer: 'functional' },   // its answer, shrinking the queue
-      { inbox: 'actor', actor: 'bob' },          // and growing the asker's answers
+      { inbox: 'layer', kolab: 'test', layer: 'functional' },   // the question
+      { inbox: 'layer', kolab: 'test', layer: 'functional' },   // its answer, shrinking the queue
+      { inbox: 'actor', kolab: 'test', actor: 'bob' },          // and growing the asker's answers
     ];
     expect(onA).toStrictEqual(expected);
     expect(onB).toStrictEqual(expected);         // b's own, once each
@@ -192,7 +239,7 @@ async function silenceableProxy(databaseUrl: string) {
     onA.length = 0; onB.length = 0;
     const failed = internals(b).inTransaction(async (tx, signal) => {
       await tx.query(`update query set answer = 'nobody' where id = $1`, [q]);
-      await signal({ inbox: 'actor', actor: 'bob' });
+      await signal({ inbox: 'actor', kolab: 'test', actor: 'bob' });
       throw new Error('rolled back');
     });
     expect(await rejection(failed)).toMatch(/rolled back/);
@@ -218,15 +265,67 @@ async function silenceableProxy(databaseUrl: string) {
     await a.endSession(ended);
     await until(() => onB.some((e) => 'session' in e));   // a told itself at once; b hears it over NOTIFY
     onA.length = 0; onB.length = 0;
-    const long = { inbox: 'actor', actor: 'x'.repeat(9000) } as const;
+    const long = { inbox: 'actor', kolab: 'test', actor: 'x'.repeat(9000) } as const;
     await internals(b).inTransaction((_tx, signal) => signal(long));
     expect(onB).toStrictEqual([long]);
     await until(() => onA.length >= 4);
     // Every inbox, and the answers of each actor with an open session: carol has none, so no one can be listening to hers.
     expect(onA).toStrictEqual([
-      { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
-      { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
+      { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'layer', kolab: 'test', layer: 'technical' },
+      { inbox: 'actor', kolab: 'test', actor: 'alice' }, { inbox: 'actor', kolab: 'test', actor: 'bob' },
     ]);
+  });
+
+  test('a change in one kolab, made through one Kolab, reaches the other as that kolab\'s alone', async () => {
+    const { a, b, onA } = await twoKolabs();
+    const s = await twoKolabsIn(b);
+    await settle();
+    onA.length = 0;
+    await b.raiseQuery(s.otherEngineer, 'kj:billing#R1', 'By whom?');
+    await until(() => onA.length > 0);
+    await settle();
+    expect(onA).toStrictEqual([{ inbox: 'layer', kolab: 'other', layer: 'functional' }]);
+    expect(a.droppedNotifications).toBe(0);
+  });
+
+  test('a resync re-reads each kolab with an open session, every inbox there and its sessions\' answers', async () => {
+    const { a, b, onA } = await twoKolabs();
+    await twoKolabsIn(b);
+    await settle();
+    onA.length = 0;
+    const long = { inbox: 'actor', kolab: 'other', actor: 'x'.repeat(9000) } as const;
+    await internals(b).inTransaction((_tx, signal) => signal(long));
+    await until(() => onA.length >= 8);
+    await settle();
+    expect(onA).toStrictEqual([
+      { inbox: 'layer', kolab: 'other', layer: 'functional' }, { inbox: 'layer', kolab: 'other', layer: 'technical' },
+      { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'layer', kolab: 'test', layer: 'technical' },
+      { inbox: 'actor', kolab: 'other', actor: 'dana' }, { inbox: 'actor', kolab: 'other', actor: 'erin' },
+      { inbox: 'actor', kolab: 'test', actor: 'alice' }, { inbox: 'actor', kolab: 'test', actor: 'bob' },
+    ]);
+  });
+
+  test('an older release\'s inbox event, which names no kolab, is heard as a resync during a rolling deploy', async () => {
+    const { a, b, url, onA, onB } = await twoKolabs();
+    await twoKolabsIn(b);
+    await settle();
+    onA.length = 0; onB.length = 0;
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try {
+      // What a release before D50 notifies when bob's answers change.
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"old-release","event":{"inbox":"actor","actor":"bob"}}']);
+      await until(() => onA.length >= 8 && onB.length >= 8);
+      await settle();
+      // Not bob's answers in some kolab, nor in every kolab: everything, as after a reconnect, which says nothing of where it changed.
+      for (const heardBy of [onA, onB]) {
+        expect(heardBy).toHaveLength(8);
+        expect(new Set(heardBy.map((e) => (e as { kolab: string }).kolab))).toStrictEqual(new Set(['test', 'other']));
+      }
+      expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([0, 0]);
+    } finally {
+      await admin.end();
+    }
   });
 
   test('a bad notification on the channel is dropped, and the Kolab goes on hearing real events', async () => {
@@ -239,15 +338,17 @@ async function silenceableProxy(databaseUrl: string) {
     try {
       await admin.query(`notify ${EVENT_CHANNEL}`);                                  // no payload
       for (const bad of ['null', '"str"', '7', '[]', '{}', '{"from":"x"}',
-        '{"from":"x","event":{"inbox":"layer","layer":"<script>"}}', '{"from":"x","event":{"inbox":"actor","actor":"x","session":"kjs_secret"}, "resync": false}']) {
+        '{"from":"x","kolab":"test","event":{"inbox":"layer","layer":"<script>"}}', '{"from":"x","kolab":"test","event":{"inbox":"actor","actor":"x","session":"kjs_secret"}, "resync": false}',
+        // A kolab that isn't a kolab's name, and a kolab inside the event rather than on the notice.
+        '{"from":"x","kolab":"No Such/../Kolab","event":{"inbox":"actor","actor":"x"}}', '{"from":"x","kolab":"test","event":{"inbox":"actor","kolab":"test","actor":"x"}}']) {
         await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, bad]);
       }
-      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"x","event":{"inbox":"actor","actor":"zed"}}']);
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"x","kolab":"test","event":{"inbox":"actor","actor":"zed"}}']);
       await until(() => onA.length > 0);
-      expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'zed' }]);   // only the valid one
-      expect(errors.filter((e) => e.includes('dropped a notification'))).toHaveLength(2 * 9);   // a and b each drop all nine
-      expect(errors.some((e) => e.includes('<script>') || e.includes('str'))).toBe(false);   // no payloads in the log
-      expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([9, 9]);
+      expect(onA).toStrictEqual([{ inbox: 'actor', kolab: 'test', actor: 'zed' }]);   // only the valid one
+      expect(errors.filter((e) => e.includes('dropped a notification'))).toHaveLength(2 * 11);   // a and b each drop all eleven
+      expect(errors.some((e) => e.includes('<script>') || e.includes('str') || e.includes('No Such'))).toBe(false);   // no payloads in the log
+      expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([11, 11]);
     } finally {
       console.error = original;
       await admin.end();
@@ -269,14 +370,14 @@ async function silenceableProxy(databaseUrl: string) {
       expect(before).toHaveLength(2);
 
       await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{bad-json-payload']);
-      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"x","event":{"inbox":"actor","actor":"after-bad"}}']);
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"x","kolab":"test","event":{"inbox":"actor","actor":"after-bad"}}']);
       await until(() => onA.length > 0);
-      expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'after-bad' }]);
+      expect(onA).toStrictEqual([{ inbox: 'actor', kolab: 'test', actor: 'after-bad' }]);
       // No reconnect: the same backends, still listening, and nothing was resynced.
       expect([await a.listenerConnected(), await b.listenerConnected()]).toStrictEqual([true, true]);
       expect(await listeners()).toStrictEqual(before);
       await settle();
-      expect(onA).toStrictEqual([{ inbox: 'actor', actor: 'after-bad' }]);
+      expect(onA).toStrictEqual([{ inbox: 'actor', kolab: 'test', actor: 'after-bad' }]);
       // Counted and logged, once by each Kolab, never with the payload.
       expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([1, 1]);
       expect(logged.filter((m) => m.includes('isn\'t JSON'))).toHaveLength(2);
@@ -319,8 +420,8 @@ async function silenceableProxy(databaseUrl: string) {
       await until(() => onA.length >= 4);
       await settle();
       expect(onA).toStrictEqual([
-        { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
-        { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
+        { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'layer', kolab: 'test', layer: 'technical' },
+        { inbox: 'actor', kolab: 'test', actor: 'alice' }, { inbox: 'actor', kolab: 'test', actor: 'bob' },
       ]);
       expect(states).toStrictEqual([{ state: 'lost' }, { state: 'restored' }]);
 
@@ -328,7 +429,7 @@ async function silenceableProxy(databaseUrl: string) {
       onA.length = 0;
       await b.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?');
       await until(() => onA.length > 0);
-      expect(onA).toStrictEqual([{ inbox: 'layer', layer: 'functional' }]);
+      expect(onA).toStrictEqual([{ inbox: 'layer', kolab: 'test', layer: 'functional' }]);
     } finally {
       Object.assign(console, originals);
       await admin.end();
@@ -357,7 +458,7 @@ async function silenceableProxy(databaseUrl: string) {
       await until(async () => {
         await internals(b).inTransaction(async (tx, signal) => {
           await tx.query(`update actor set name = $1 where id = 'alice'`, [`Alice ${++n}`]);
-          await signal({ inbox: 'actor', actor: `alice-${n}` });
+          await signal({ inbox: 'actor', kolab: 'test', actor: `alice-${n}` });
         });
         return onA.length > 0;
       }, 20_000);
@@ -368,7 +469,7 @@ async function silenceableProxy(databaseUrl: string) {
       const from = n;
       onA.length = 0;
       for (let i = 1; i <= 3; i++) {
-        await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', actor: `after-${from}-${i}` }));
+        await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', kolab: 'test', actor: `after-${from}-${i}` }));
       }
       await until(() => onA.length >= 3);
       expect(onA.map((e) => (e as { actor: string }).actor)).toStrictEqual([1, 2, 3].map((i) => `after-${from}-${i}`));
@@ -416,8 +517,8 @@ async function silenceableProxy(databaseUrl: string) {
       ]);
       expect(atFailure).toStrictEqual([]);   // the failed attempt signalled nothing
       expect(onA).toStrictEqual([
-        { inbox: 'layer', layer: 'functional' }, { inbox: 'layer', layer: 'technical' },
-        { inbox: 'actor', actor: 'alice' }, { inbox: 'actor', actor: 'bob' },
+        { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'layer', kolab: 'test', layer: 'technical' },
+        { inbox: 'actor', kolab: 'test', actor: 'alice' }, { inbox: 'actor', kolab: 'test', actor: 'bob' },
       ]);
     } finally {
       Object.assign(console, originals);
@@ -450,9 +551,10 @@ async function silenceableProxy(databaseUrl: string) {
       proxy.silence(false);
       await until(() => l!.connected(), 40_000);
       expect(listening).toStrictEqual([false, true]);
-      await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', actor: 'after-silence' }));
+      await internals(b).inTransaction((_tx, signal) => signal({ inbox: 'actor', kolab: 'test', actor: 'after-silence' }));
       await until(() => heard.length > 0);
-      expect(heard).toStrictEqual([{ from: (b as unknown as { origin: string }).origin, event: { inbox: 'actor', actor: 'after-silence' } }]);
+      // On the wire, the kolab rides on the notice beside an event a release before D50 reads.
+      expect(heard).toStrictEqual([{ from: (b as unknown as { origin: string }).origin, kolab: 'test', event: { inbox: 'actor', actor: 'after-silence' } }]);
     } finally {
       Object.assign(console, originals);
       await l!?.close();

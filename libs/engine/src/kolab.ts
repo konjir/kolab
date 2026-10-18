@@ -7,7 +7,7 @@ import {
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
-  ACCESS_LEVELS, FINDING_KINDS, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
+  ACCESS_LEVELS, FINDING_KINDS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
@@ -127,6 +127,21 @@ export const EVENT_CHANNEL = 'konjir_events';
 type Notice = { from: string; event: KolabEvent } | { from: string; resync: true } | { from: string; work: true };
 
 /**
+ * An inbox event as it goes over EVENT_CHANNEL (D50): its kolab rides on the notice, beside an
+ * `event` in the shape a release before D50 reads, which ignores a field it doesn't know on a
+ * notice (W1.8) but would drop an event with one. So during a rolling deploy an older process
+ * still hears a newer one's changes, and signals them as it always has.
+ */
+type WireNotice = { from: string; kolab?: string; event: Record<string, unknown> } | { from: string; resync: true } | { from: string; work: true };
+
+/** A Notice as it is written to EVENT_CHANNEL. */
+function wireOf(n: Notice): WireNotice {
+  if (!('event' in n) || !isInboxEvent(n.event)) return n;
+  const { kolab, ...event } = n.event;
+  return { from: n.from, kolab, event };
+}
+
+/**
  * What a Kolab's listener goes through after `listen` (API5): its connection is lost; it is back
  * and every subscriber has been told to re-read (`restored`); or it is back but telling them
  * failed, and is retried in `retryInMs` (`error` is fit to log).
@@ -155,8 +170,10 @@ const hasKeys = (x: Record<string, unknown>, ...keys: string[]) =>
  */
 export function isKolabEvent(x: unknown): x is KolabEvent {
   if (!isObject(x)) return false;
-  if (x.inbox === 'layer') return hasKeys(x, 'inbox', 'layer') && LAYERS.includes(x.layer as Layer);
-  if (x.inbox === 'actor') return hasKeys(x, 'inbox', 'actor') && typeof x.actor === 'string' && ACTOR_ID.test(x.actor);
+  // An inbox event names its kolab (D50): a kolab's name, never an id or a token.
+  if ('inbox' in x && !(typeof x.kolab === 'string' && isKolabName(x.kolab))) return false;
+  if (x.inbox === 'layer') return hasKeys(x, 'inbox', 'kolab', 'layer') && LAYERS.includes(x.layer as Layer);
+  if (x.inbox === 'actor') return hasKeys(x, 'inbox', 'kolab', 'actor') && typeof x.actor === 'string' && ACTOR_ID.test(x.actor);
   // A session's sessionKey: a sha256, base64url, never the token itself.
   if (x.session === 'ended') return hasKeys(x, 'session', 'id') && typeof x.id === 'string' && SESSION_KEY.test(x.id);
   return false;
@@ -167,10 +184,25 @@ export function isKolabEvent(x: unknown): x is KolabEvent {
  * (`from`, no `event`, and one flag set to true, such as `work` is to a release before W1.8),
  * which this release ignores, or anything else, which it drops. Fields a later release adds to a
  * notice it knows are ignored too; a notice carrying an `event` must carry a valid one.
+ *
+ * An inbox event's kolab is the notice's `kolab` (WireNotice). One without it comes from a
+ * release before D50, during a rolling deploy, and can't say which kolab changed: it is heard as
+ * a resync, which tells every subscriber to re-read, rather than as that layer's change in every
+ * kolab or in none.
  */
 function noticeOf(x: unknown): Notice | 'later' | undefined {
   if (!isObject(x) || typeof x.from !== 'string') return undefined;
-  if ('event' in x) return isKolabEvent(x.event) ? { from: x.from, event: x.event } : undefined;
+  if ('event' in x) {
+    const e = x.event;
+    if (isObject(e) && 'inbox' in e) {
+      if ('kolab' in e) return undefined;   // the kolab rides on the notice, never in the event
+      // A valid event but for its kolab, which a release before D50 doesn't send.
+      if (!('kolab' in x)) return isKolabEvent({ ...e, kolab: 'k' }) ? { from: x.from, resync: true } : undefined;
+      const event = { ...e, kolab: x.kolab };
+      return isKolabEvent(event) ? { from: x.from, event } : undefined;
+    }
+    return isKolabEvent(e) ? { from: x.from, event: e } : undefined;
+  }
   if (x.resync === true) return { from: x.from, resync: true };
   if (x.work === true) return { from: x.from, work: true };
   return Object.entries(x).some(([k, v]) => k !== 'from' && /^[a-z_]+$/.test(k) && v === true) ? 'later' : undefined;
@@ -421,16 +453,20 @@ export class Kolab {
 
   /**
    * Tells this Kolab's listeners that everything a subscriber could hold may have changed: for
-   * a change too big to name, or after missing changes while the listener reconnected. That is
-   * every layer's inbox, and the answers of each actor with an open session, since only an open
-   * session can subscribe to them (an ended one's streams are closed before the next signal).
-   * One query, before anything is signalled, so a failure signals nothing and the whole resync
-   * can be retried. Each subscriber re-reads; an inbox that didn't change reads the same.
+   * a change too big to name, or after missing changes while the listener reconnected. That is,
+   * in each kolab with an open session, every layer's inbox and the answers of each actor with an
+   * open session there, since only an open session can subscribe to them, and only to its own
+   * kolab's (an ended one's streams are closed before the next signal). One query, before
+   * anything is signalled, so a failure signals nothing and the whole resync can be retried.
+   * Each subscriber re-reads; an inbox that didn't change reads the same.
    */
   private async resync() {
-    const r = await this.db.query<{ actor: string }>(`select distinct actor_id as actor from session where ended_at is null order by actor_id`);
-    for (const layer of LAYERS) this.dispatch({ inbox: 'layer', layer });
-    for (const { actor } of r.rows) this.dispatch({ inbox: 'actor', actor });
+    const r = await this.db.query<{ kolab: string; actor: string }>(
+      `select distinct kolab_id as kolab, actor_id as actor from session where ended_at is null order by kolab_id, actor_id`);
+    for (const kolab of new Set(r.rows.map((x) => x.kolab))) {
+      for (const layer of LAYERS) this.dispatch({ inbox: 'layer', kolab, layer });
+    }
+    for (const { kolab, actor } of r.rows) this.dispatch({ inbox: 'actor', kolab, actor });
   }
 
   private dispatch(e: KolabEvent) {
@@ -463,7 +499,7 @@ export class Kolab {
         if (sent.has(key)) return; // Postgres folds a repeated notification in one transaction too
         sent.set(key, event);
         const notice: Notice = { from: this.origin, event };
-        await tx.notify(EVENT_CHANNEL, JSON.stringify(notice), () => JSON.stringify({ from: this.origin, resync: true } satisfies Notice));
+        await tx.notify(EVENT_CHANNEL, JSON.stringify(wireOf(notice)), () => JSON.stringify({ from: this.origin, resync: true } satisfies Notice));
       });
     });
     for (const e of events.values()) this.dispatch(e);
@@ -472,9 +508,9 @@ export class Kolab {
 
   /** Signals the inbox of a version's layer. */
   private async signalLayerOf(tx: Q, signal: Signal, versionId: string) {
-    const r = await tx.query<{ layer: Layer }>(`select layer from version where id = $1`, [versionId]);
+    const r = await tx.query<{ layer: Layer; kolab_id: string }>(`select layer, kolab_id from version where id = $1`, [versionId]);
     if (!r.rows[0]) throw new Error(`no version ${versionId}`);
-    await signal({ inbox: 'layer', layer: r.rows[0].layer });
+    await signal({ inbox: 'layer', kolab: r.rows[0].kolab_id, layer: r.rows[0].layer });
   }
 
   /** Agent writes run as kj_agent; row-level security re-checks the layer. `lock` as for inTransaction. */
@@ -971,6 +1007,18 @@ export class Kolab {
     const keys = new Map(tokens.map((t) => [sessionKey(t), t]));
     const r = await this.db.query<{ id: string }>(`select id from session where id = any($1) and ended_at is null`, [[...keys.keys()]]);
     return new Set(r.rows.map((x) => keys.get(x.id)!));
+  }
+
+  /**
+   * The kolab and actor of the open session whose token is `token`, or undefined if it isn't
+   * open: what a listen stream may subscribe to (D50). One query, with no access check: a
+   * session's kolab and actor never change, and one that has lost its access is ended, which
+   * closes its streams (D41).
+   */
+  async sessionScope(token: string): Promise<{ kolab: string; actor: string } | undefined> {
+    const r = await this.db.query<{ kolab: string; actor: string }>(
+      `select kolab_id as kolab, actor_id as actor from session where id = $1 and ended_at is null`, [sessionKey(token)]);
+    return r.rows[0];
   }
 
   /** Whether `token` is an open session's: it is still good. */
@@ -1619,8 +1667,8 @@ export class Kolab {
         for (const reviewer of reviewers.filter((x) => !open.has(x))) {
           await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
         }
-        await signal({ inbox: 'layer', layer: v.layer });
-        await signal({ inbox: 'actor', actor: v.actor_id });
+        await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+        await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
       }, v.node_id);
       return { ok: false, note: `Still in review: waiting for one approval from ${reviewers.join(', ')}.`, version: v.id, in_review: true, reviewers };
     }
@@ -1643,8 +1691,8 @@ export class Kolab {
    */
   private async foldRecord(tx: Q, signal: Signal, v: VersionRow, overtaken: boolean): Promise<boolean> {
     if (overtaken || !v.folded_from) return true;
-    const o = (await tx.query<{ state: VersionState; review_note: string | null; node_id: string; seq: number; layer: Layer; actor_id: string }>(
-      `select state, review_note, node_id, seq, layer, actor_id from version where id = $1`, [v.folded_from])).rows[0];
+    const o = (await tx.query<{ state: VersionState; review_note: string | null; node_id: string; seq: number; layer: Layer; actor_id: string; kolab_id: string }>(
+      `select state, review_note, node_id, seq, layer, actor_id, kolab_id from version where id = $1`, [v.folded_from])).rows[0];
     if (o.state !== 'in_review') {
       throw new OriginalSettled(v.id, `${await nameIn(tx, o.node_id)}@${o.seq} was ${o.review_note ?? o.state} while Kolab folded it onto its node's newer version; nothing committed`);
     }
@@ -1656,8 +1704,8 @@ export class Kolab {
     }
     await tx.query(`update version set state = 'rejected', review_note = $2 where id = $1`, [v.folded_from, `folded into ${v.id}`]);
     await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.folded_from]);
-    await signal({ inbox: 'layer', layer: o.layer });
-    await signal({ inbox: 'actor', actor: o.actor_id });
+    await signal({ inbox: 'layer', kolab: o.kolab_id, layer: o.layer });
+    await signal({ inbox: 'actor', kolab: o.kolab_id, actor: o.actor_id });
     return true;
   }
 
@@ -1694,8 +1742,8 @@ export class Kolab {
       for (const reviewer of reviewers) {
         await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
       }
-      await signal({ inbox: 'layer', layer: v.layer });
-      await signal({ inbox: 'actor', actor: v.actor_id });
+      await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+      await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
       return undefined;
     }, v.node_id);
   }
@@ -1750,8 +1798,8 @@ export class Kolab {
         await record(tx, 'changes_requested');
         await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.id]);
         await tx.query(`update version set state = 'drafted', review_note = $2 where id = $1`, [v.id, `Changes requested by ${s.actor_id}${said}`]);
-        await signal({ inbox: 'layer', layer: v.layer });
-        await signal({ inbox: 'actor', actor: v.actor_id });
+        await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+        await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
       }, v.node_id);
       return { ok: false, note: `Changes requested by ${s.actor_id}${said}`, version: v.id, findings };
     }
@@ -1764,8 +1812,8 @@ export class Kolab {
         await record(tx, 'approved');
         const approvals = await tx.query<{ n: number }>(
           `select count(*)::int as n from review_request where version_id = $1 and state = 'approved'`, [v.id]);
-        await signal({ inbox: 'layer', layer: v.layer });
-        await signal({ inbox: 'actor', actor: v.actor_id });
+        await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+        await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
         return approvals.rows[0].n >= REQUIRED_APPROVALS;
       },
     });
@@ -1908,7 +1956,7 @@ export class Kolab {
    */
   private async authorRefusal(tx: Q, signal: Signal, v: VersionRow): Promise<string | undefined> {
     if (v.active_role === 'system') return undefined;
-    const author = await accessIn(tx, v.actor_id, v.kolab_id!);
+    const author = await accessIn(tx, v.actor_id, v.kolab_id);
     if (author.layers.includes(v.layer)) return undefined;
     const refused = `rejected: its author ${v.actor_id} no longer holds Write on the ${v.layer} layer of kolab ${v.kolab_id} (${describeAccess(author)})`;
     await this.rejectIn(tx, signal, v.id, refused);
@@ -2058,13 +2106,13 @@ export class Kolab {
 
   /** reject, inside a transaction of the caller's. Returns whether anything changed. */
   private async rejectIn(tx: Q, signal: Signal, versionId: string, note: string | null): Promise<boolean> {
-    const r = await tx.query<{ layer: Layer; actor_id: string }>(
-      `update version set state = 'rejected', review_note = $2 where id = $1 and state in ('drafted', 'in_review') returning layer, actor_id`,
+    const r = await tx.query<{ layer: Layer; actor_id: string; kolab_id: string }>(
+      `update version set state = 'rejected', review_note = $2 where id = $1 and state in ('drafted', 'in_review') returning layer, actor_id, kolab_id`,
       [versionId, note]);
     const withdrawn = await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' returning id`, [versionId]);
     if (r.rows[0] && withdrawn.rows.length) {
-      await signal({ inbox: 'layer', layer: r.rows[0].layer });
-      await signal({ inbox: 'actor', actor: r.rows[0].actor_id });
+      await signal({ inbox: 'layer', kolab: r.rows[0].kolab_id, layer: r.rows[0].layer });
+      await signal({ inbox: 'actor', kolab: r.rows[0].kolab_id, actor: r.rows[0].actor_id });
     }
     return r.rows.length > 0;
   }
@@ -2555,7 +2603,7 @@ export class Kolab {
           await this.asSystem(async (tx, signal) => {
             await tx.query(`update invalidation set reason = $2, triggered_by = $3 where id = $1`, [open.id, reason, v.parent_version_id]);
             await tx.query(`update query set question = $2 where invalidation_id = $1 and state = 'open'`, [open.id, question]);
-            await signal({ inbox: 'layer', layer: v.layer });
+            await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
           });
         }
         continue;
@@ -2740,8 +2788,8 @@ export class Kolab {
       const r = await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1 and state = 'open' returning id`,
         [queryId, answer, s.actor_id]);
       if (!r.rows.length) throw new GateError(`query ${queryId} is already answered`);
-      await signal({ inbox: 'layer', layer: v.layer });
-      if (q.raised_by) await signal({ inbox: 'actor', actor: q.raised_by });
+      await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+      if (q.raised_by) await signal({ inbox: 'actor', kolab: v.kolab_id, actor: q.raised_by });
       // A boundary question is settled by the layer that owns the answer; its mark goes with it.
       const open = mark && (await tx.query(`select 1 from invalidation where id = $1 and state = 'open'`, [mark.id])).rows.length;
       if (open) await this.closeMarkIn(tx, signal, mark.id, `answered by ${s.actor_id}: ${answer}`);
@@ -3055,7 +3103,7 @@ export class Kolab {
       if (settled.rows.length) {
         await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where invalidation_id = any($1) and state = 'open'`,
           [settled.rows.map((r) => r.id), `resolved: ${at} no longer holds this override dirty or orphaned`, SYSTEM_ACTOR]);
-        await signal({ inbox: 'layer', layer: v.layer });
+        await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
       }
     });
   }
@@ -3354,7 +3402,7 @@ async function overtakenBy(q: Q, v: VersionRow): Promise<Overtaker[] | undefined
   return r.rows.length ? r.rows : undefined;
 }
 
-async function writeVersion(tx: Q, v: Omit<VersionRow, 'state'>, els: ElementRow[],
+async function writeVersion(tx: Q, v: Omit<VersionRow, 'state' | 'kolab_id'>, els: ElementRow[],
   deltas: Omit<DeltaRow, 'id' | 'version_id'>[]) {
   await tx.query(
     `insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role)

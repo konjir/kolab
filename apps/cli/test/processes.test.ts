@@ -98,7 +98,7 @@ async function until(cond: () => boolean, ms = 10_000) {
   const { query } = await call(engOnB, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?' }) as { query: string };
   await until(() => pushed.length >= 1);
   expect(pushed.map((p) => [p.who, p.uri, p.body.queries!.map((q) => q.question)]))
-    .toStrictEqual([['pm', 'konjir://inbox/functional', ['From which statuses?']]]);
+    .toStrictEqual([['pm', 'konjir://inbox/test/functional', ['From which statuses?']]]);
 
   // Product answers through B; the engineer, listening on A, hears it in its answers.
   pushed.length = 0;
@@ -106,9 +106,9 @@ async function until(cond: () => boolean, ms = 10_000) {
   await until(() => pushed.some((p) => p.who === 'eng'));
   await settle();
   expect(pushed.filter((p) => p.who === 'eng').map((p) => [p.uri, p.body.queries!.map((q) => q.answer)]))
-    .toStrictEqual([['konjir://answers/eng', ['Any status before Completed.']]]);
+    .toStrictEqual([['konjir://answers/test/eng', ['Any status before Completed.']]]);
   expect(pushed.filter((p) => p.who === 'pm').map((p) => [p.uri, p.body.queries]))
-    .toStrictEqual([['konjir://inbox/functional', []]]);
+    .toStrictEqual([['konjir://inbox/test/functional', []]]);
 
   // A change made through A itself is heard once: A tells its own listeners when it commits,
   // and skips its own NOTIFY when that comes back.
@@ -116,7 +116,7 @@ async function until(cond: () => boolean, ms = 10_000) {
   await call(engOnA, 'annotate', { address: 'kj:orders#R8', note: 'Assuming office staff means the Office role.' });
   await until(() => pushed.length >= 1);
   await settle();
-  expect(pushed.map((p) => [p.who, p.uri])).toStrictEqual([['pm', 'konjir://inbox/functional']]);
+  expect(pushed.map((p) => [p.who, p.uri])).toStrictEqual([['pm', 'konjir://inbox/test/functional']]);
 
   // Ending the engineer's session through B closes its stream on A at once, with no further
   // change to trigger A's own check: the session-ended event crossed processes. Product's stays open.
@@ -171,11 +171,68 @@ async function until(cond: () => boolean, ms = 10_000) {
     expect(pushed).toStrictEqual([]);
 
     // Once A's listener is back, product, listening on A, hears it and reads the question.
-    await until(() => pushed.some((p) => p.uri === 'konjir://inbox/functional'), 20_000);
+    await until(() => pushed.some((p) => p.uri === 'konjir://inbox/test/functional'), 20_000);
     expect(await a.kolab.listenerConnected()).toBe(true);
-    expect(pushed.find((p) => p.uri === 'konjir://inbox/functional')!.questions).toStrictEqual(['From which statuses?']);
+    expect(pushed.find((p) => p.uri === 'konjir://inbox/test/functional')!.questions).toStrictEqual(['From which statuses?']);
     expect(await settled(w.subscription.closed, 100)).toBe('open');
   } finally {
     Object.assign(console, originals);
   }
+}, 60_000);
+
+// Push is per kolab (D50): a change in one kolab, made through either process, wakes only that
+// kolab's subscribers, on both processes; another kolab's hear nothing of it.
+(onPostgres ? test : test.skip)('a change in one kolab wakes no subscriber in another, across processes', async () => {
+  const { databaseUrl } = await testStore();
+  const a = await startServer({ adminToken: 'admin', databaseUrl });
+  closeAtEnd(a);
+  const bUrl = await serveInChild(databaseUrl!, 'admin');
+  const adminB = await connect(bUrl, 'admin');
+  closeAtEnd(adminB);
+  await call(adminB, 'admin_add_organization', { id: 'test-org' });
+  const session = async (kolab: string, actor: string, role: 'product' | 'engineer') => {
+    await call(adminB, 'admin_add_actor', { id: actor });
+    await call(adminB, 'admin_grant', { kolab, to: actor, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });
+    return (await call(adminB, 'admin_open_session', { actor, role, kolab }) as { token: string }).token;
+  };
+  const client = async (url: string, token: string) => { const c = await connect(url, token); closeAtEnd(c); return c; };
+  const pushed: { who: string; uri: string }[] = [];
+  const clients: Record<string, { onA: Awaited<ReturnType<typeof connect>>; onB: Awaited<ReturnType<typeof connect>> }> = {};
+  for (const kolab of ['shop', 'bank']) {
+    await call(adminB, 'admin_add_kolab', { name: kolab, owner: 'test-org' });
+    for (const [who, role] of [[`${kolab}-pm`, 'product'], [`${kolab}-eng`, 'engineer']] as const) {
+      const token = await session(kolab, who, role);
+      clients[who] = { onA: await client(a.url, token), onB: await client(bUrl, token) };
+      // Every agent listens, product on A and the engineer on B, to its own inbox and answers.
+      const w = await watch(role === 'product' ? clients[who].onA : clients[who].onB, (uri) => { pushed.push({ who, uri }); });
+      closeAtEnd(w.subscription);
+    }
+    const pm = clients[`${kolab}-pm`].onB;
+    await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+    await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
+    await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
+  }
+  await settle();
+
+  // shop's engineer asks through B: shop's product, on A, hears it; nobody in bank, on either process, does.
+  pushed.length = 0;
+  const { query } = await call(clients['shop-eng'].onB, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?' }) as { query: string };
+  await until(() => pushed.length >= 1);
+  await settle();
+  expect(pushed).toStrictEqual([{ who: 'shop-pm', uri: 'konjir://inbox/shop/functional' }]);
+
+  // shop's product answers through A: shop's engineer, on B, hears it in its answers; still nobody in bank.
+  pushed.length = 0;
+  await call(clients['shop-pm'].onA, 'answer_query', { query, answer: 'Any status before Completed.' });
+  await until(() => pushed.some((p) => p.who === 'shop-eng'));
+  await settle();
+  expect(pushed.filter((p) => !p.who.startsWith('shop-'))).toStrictEqual([]);
+  expect(pushed).toEqual(expect.arrayContaining([{ who: 'shop-eng', uri: 'konjir://answers/shop/shop-eng' }]));
+
+  // And the same question in bank, through A, wakes bank's product alone.
+  pushed.length = 0;
+  await call(clients['bank-eng'].onA, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?' });
+  await until(() => pushed.length >= 1);
+  await settle();
+  expect(pushed).toStrictEqual([{ who: 'bank-pm', uri: 'konjir://inbox/bank/functional' }]);
 }, 60_000);
