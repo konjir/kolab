@@ -2185,7 +2185,7 @@ export class Kolab {
    * A version that waits in review (it has reviewers) throws a GateError; draft and review it apart.
    */
   async commit(sessionId: string, nodeId: string,
-    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
+    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] }): Promise<string> {
     const id = await this.draft(sessionId, nodeId, input);
     const result = await this.review(id);
     if (result.in_review) throw new GateError(`${await this.nameOf(nodeId)} waits in review by ${result.reviewers?.join(', ') ?? 'its reviewers'}; it commits once one approves it`);
@@ -2232,6 +2232,11 @@ export class Kolab {
     if (tgt.state !== 'committed') {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
+    // A link is pinned to what its target says now: its node's live version, never an older one.
+    const live = (await this.latestCommitted(tgt.node_id))!;
+    if (live.id !== tgt.id) {
+      throw new GateError(`link to ${await this.nameOf(tgt.node_id)}@${live.seq}, its live version: version ${tgt.seq} is no longer what it says`);
+    }
     if (e.selector && normalize(e.selector.exact).length > MAX_QUOTE) {
       throw new Error(`the quote is ${normalize(e.selector.exact).length} characters; quote at most ${MAX_QUOTE}: `
         + `the few words you rely on, with several words either side as prefix and suffix. `
@@ -2247,32 +2252,12 @@ export class Kolab {
       [e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
         e.selector ? JSON.stringify(e.selector) : null]);
     if (dup.rows[0]) return dup.rows[0].id;
-    // Re-pointing (D48): a link of the same kind from the same element to the same target element
-    // that carries an open mark (its quoted words changed or went) is replaced by this one. On a
-    // committed version the link itself moves to the new address, and its mark settles; in a draft,
-    // the draft drops it, and its mark settles when the draft commits.
-    const stale = (await this.db.query<EdgeRow & { mark: string }>(
-      `select e.*, i.id as mark from edge e join version t on t.id = e.target_version_id
-         join invalidation i on i.edge_id = e.id and i.state = 'open'
-        where e.source_version_id = any($1) and e.kind = $2 and e.source_element_id is not distinct from $3
-          and t.node_id = $4 and e.target_element_id is not distinct from $5`,
-      [[e.source, src.base_version_id].filter(Boolean), e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null])).rows;
-    if (src.state === 'committed' && stale.some((x) => x.source_version_id === e.source)) {
-      const old = stale.find((x) => x.source_version_id === e.source)!;
-      const at = `${await this.nameOf(src.node_id)}@${src.seq}`;
-      await this.asSystem(async (tx, signal) => {
-        await tx.query(`update edge set target_version_id = $2, target_selector = $3::jsonb, target_fingerprint = $4 where id = $1`,
-          [old.id, e.target, e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]);
-        await this.closeMarkIn(tx, signal, old.mark, `its link was re-pointed by ${s.actor_id} on ${at}`);
-      }, src.node_id);
-      return old.id;
-    }
+    const repoint = src.state === 'drafted' && src.actor_id === s.actor_id
+      ? await this.repointed(src, e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null, e.selector ?? null) : undefined;
     const id = ulid();
-    if (src.state === 'drafted' && stale.some((x) => x.source_version_id === src.base_version_id)) {
-      const ids = await this.linkIdentities(src.node_id, src.base_version_id, null, stale.map((x) => ({ link: x.id })));
-      await this.asAgent(sessionId, (tx) => applyRemovals(tx, src.id, ids), src.node_id);
-    }
     await this.asAgent(sessionId, async (tx) => {
+      // Re-pointing drops the marked link in the same transaction that adds its replacement.
+      if (repoint) await applyRemovals(tx, src.id, repoint);
       // Linking in a draft what the draft drops keeps the link after all: the later word wins.
       if (src.state === 'drafted') {
         await tx.query(
@@ -2286,8 +2271,41 @@ export class Kolab {
          values ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [id, e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
           e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]);
-    });
+    }, src.node_id);
     return id;
+  }
+
+  /**
+   * Re-pointing (D48), in a draft of the session's own: the link of the version the draft is built
+   * on that a new link replaces, which the draft then drops, so its mark settles when the draft
+   * commits, reviewed with it (VER1). Only a link whose quote changed or went (an open orphaned or
+   * fuzzy_reanchor mark) is replaced, from the same element, of the same kind, to the same target
+   * element, and quote for quote or whole for whole: a `changed` mark is settled by its owner, and
+   * a second, narrower link stands beside the first. Of two such quote links, the one whose prefix
+   * and suffix the new quote keeps is the one replaced; if that doesn't pick one, the owner names
+   * it with konjir_unlink.
+   */
+  private async repointed(src: VersionRow, kind: string, sourceElement: string | null, targetNode: string,
+    targetElement: string | null, selector: QuoteSelector | null): Promise<LinkIdentity[] | undefined> {
+    if (!src.base_version_id) return undefined;
+    let found = (await this.db.query<EdgeRow & { target_node_id: string }>(
+      `select e.*, t.node_id as target_node_id from edge e join version t on t.id = e.target_version_id
+        where e.source_version_id = $1 and e.kind = $2 and e.source_element_id is not distinct from $3
+          and t.node_id = $4 and e.target_element_id is not distinct from $5 and (e.target_selector is null) = $6
+          and exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open' and i.reason in ('orphaned', 'fuzzy_reanchor'))
+        order by e.id`, [src.base_version_id, kind, sourceElement, targetNode, targetElement, selector === null])).rows;
+    if (found.length > 1 && selector) {
+      const same = (a?: string, b?: string) => normalize(a ?? '') === normalize(b ?? '');
+      found = found.filter((x) => same(x.target_selector?.prefix, selector.prefix) && same(x.target_selector?.suffix, selector.suffix));
+      if (found.length !== 1) {
+        throw new GateError(`more than one marked link from ${sourceElement ?? 'the whole version'} quotes that element; `
+          + `name the one this replaces: konjir_unlink link=<id> in this draft, then link again`);
+      }
+    }
+    if (!found.length) return undefined;
+    const x = found[0];
+    return [{ kind: x.kind, source_element_id: x.source_element_id, target_node_id: x.target_node_id,
+      target_element_id: x.target_element_id, target_selector: x.target_selector, carried: true }];
   }
 
   /**
@@ -2537,9 +2555,27 @@ export class Kolab {
   private async propagateIn(tx: Q, signal: Signal,
     m: { id: string; version_id: string; element_id: string | null; edge_id: string; triggered_by: string }) {
     const markId = m.id;
-    const changed = (await tx.query<{ target_element_id: string | null }>(
-      `select target_element_id from edge where id = $1`, [m.edge_id])).rows[0]?.target_element_id ?? null;
-    const r = await tx.query<{ version_id: string; element_id: string | null }>(
+    const r = { rows: await this.walk(tx, m) };
+    for (const row of r.rows) {
+      const existing = await tx.query<{ id: string }>(
+        `select id from invalidation where version_id = $1 and element_id is not distinct from $2
+            and triggered_by = $3 and reason = 'upstream_dirty' and state = 'open'`,
+        [row.version_id, row.element_id, m.triggered_by]);
+      const target = existing.rows[0]?.id
+        ?? await this.markIn(tx, signal, { ...row, triggered_by: m.triggered_by, reason: 'upstream_dirty' });
+      await tx.query(`insert into invalidation_cause(mark_id, cause_id) values ($1, $2) on conflict do nothing`, [target, markId]);
+    }
+  }
+
+  /**
+   * Everything downstream of mark `m`'s (version, element), as propagateIn walks it: each live link
+   * into any version of a node it reaches, element by element, never re-entering the change itself
+   * (the element of `m.triggered_by` that `m.edge_id` addressed), and without the start.
+   */
+  private async walk(tx: Q, m: { version_id: string; element_id: string | null; edge_id: string | null; triggered_by: string }) {
+    const changed = m.edge_id ? (await tx.query<{ target_element_id: string | null }>(
+      `select target_element_id from edge where id = $1`, [m.edge_id])).rows[0]?.target_element_id ?? null : null;
+    return (await tx.query<{ version_id: string; element_id: string | null }>(
       `with recursive walk(version_id, element_id) as (
          select $1::text, $2::text
          union
@@ -2555,15 +2591,40 @@ export class Kolab {
        )
        select version_id, element_id from walk
         where not (version_id = $1 and element_id is not distinct from $2)`,
-      [m.version_id, m.element_id, m.triggered_by, changed]);
-    for (const row of r.rows) {
-      const existing = await tx.query<{ id: string }>(
-        `select id from invalidation where version_id = $1 and element_id is not distinct from $2
-            and triggered_by = $3 and reason = 'upstream_dirty' and state = 'open'`,
-        [row.version_id, row.element_id, m.triggered_by]);
-      const target = existing.rows[0]?.id
-        ?? await this.markIn(tx, signal, { ...row, triggered_by: m.triggered_by, reason: 'upstream_dirty' });
-      await tx.query(`insert into invalidation_cause(mark_id, cause_id) values ($1, $2) on conflict do nothing`, [target, markId]);
+      [m.version_id, m.element_id, m.triggered_by, changed])).rows;
+  }
+
+  /**
+   * After links of `v` were removed (LNK5): an upstream_dirty mark at or below their source
+   * elements keeps a cause only while the cause's walk still reaches it, and clears with its last.
+   */
+  private async settleUnreached(tx: Q, signal: Signal, v: VersionRow, sources: (string | null)[], by: string) {
+    const below = new Map<string, { version_id: string; element_id: string | null }>();
+    for (const el of new Set(sources)) {
+      for (const x of [{ version_id: v.id, element_id: el }, ...await this.walk(tx, { version_id: v.id, element_id: el, edge_id: null, triggered_by: '' })]) {
+        below.set(JSON.stringify([x.version_id, x.element_id]), x);
+      }
+    }
+    for (const at of below.values()) {
+      const marks = (await tx.query<{ id: string }>(
+        `select id from invalidation where version_id = $1 and element_id is not distinct from $2 and reason = 'upstream_dirty' and state = 'open'`,
+        [at.version_id, at.element_id])).rows;
+      for (const mark of marks) {
+        const causes = (await tx.query<{ id: string; version_id: string; element_id: string | null; edge_id: string | null; triggered_by: string }>(
+          `select c.id, c.version_id, c.element_id, c.edge_id, c.triggered_by from invalidation_cause k join invalidation c on c.id = k.cause_id
+            where k.mark_id = $1`, [mark.id])).rows;
+        let left = causes.length;
+        for (const c of causes) {
+          const reached = (await this.walk(tx, c)).some((x) => x.version_id === at.version_id && x.element_id === at.element_id);
+          if (reached) continue;
+          await tx.query(`delete from invalidation_cause where mark_id = $1 and cause_id = $2`, [mark.id, c.id]);
+          left--;
+        }
+        if (causes.length && !left) {
+          await tx.query(`update invalidation set state = 'cleared', cleared_by = $2 where id = $1`, [mark.id, by]);
+          await this.signalLayerOf(tx, signal, at.version_id);
+        }
+      }
     }
   }
 
@@ -3282,6 +3343,13 @@ export class Kolab {
             and element_id is not null and not (element_id = any($2))`, [p.id, [...live]]);
       for (const m of gone.rows) await this.closeMarkIn(tx, signal, m.id, `its element was removed by ${at}`);
       await copyEdges(tx, p.id, v.id, live, new Set(removed));
+      if (removed.length) {
+        const sources = (await tx.query<{ source_element_id: string | null }>(
+          `select source_element_id from edge where id = any($1)`, [removed])).rows.map((x) => x.source_element_id);
+        // Moved onto v first, so the walk finds them where they now sit.
+        await tx.query(`update invalidation set version_id = $2 where version_id = $1 and state = 'open' and delta_id is null`, [p.id, v.id]);
+        await this.settleUnreached(tx, signal, v, sources, `its link was removed by ${at}`);
+      }
       // Edge and transitive marks move to the new version.
       await tx.query(`update invalidation set version_id = $2 where version_id = $1 and state = 'open' and delta_id is null`, [p.id, v.id]);
       // An override mark follows its element if the new version's override is still not clean;
@@ -3337,8 +3405,8 @@ const NO_REVIEWER = (layer: Layer) =>
 
 const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',
-  fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target, then konjir_link your element to the current words with their current context (that re-points this link and settles the mark), or konjir_clear_mark if it still holds, or remove the link with konjir_unlink in a draft.',
-  orphaned: 'The target no longer exists. konjir_link your element to its replacement (the same element\'s current words re-point this link and settle the mark), or remove the link: konjir_unlink it (link=<this mark\'s link>) in a draft of yours, or pass it in konjir_draft\'s unlink, and the mark settles when that version commits. Removing your element settles it too.',
+  fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target, then, in a draft of yours, konjir_link your element to the current words with their current context (that replaces this link, and the mark settles when the draft commits), or remove the link with konjir_unlink; or konjir_clear_mark if it still holds.',
+  orphaned: 'The target no longer exists. In a draft of yours, konjir_link your element to the same target element\'s current words (that replaces this link), or remove the link: konjir_unlink link=<this mark\'s link>, or konjir_draft\'s unlink. The mark settles when that version commits. Removing your element settles it too.',
   upstream_dirty: 'Something this depends on is dirty. Wait for that mark to clear, or check it yourself and clear the upstream mark.',
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',

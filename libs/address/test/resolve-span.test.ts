@@ -362,6 +362,14 @@ test('quoted words edited in place, with their prefix and suffix intact, are a c
   // Context that no longer brackets anything short leaves an orphan.
   expect(at('Carts expire after a long while, and then some more time passes, of inactivity.', sel)).toStrictEqual({ status: 'orphan' });
   expect(at('Sessions last one week.', sel)).toStrictEqual({ status: 'orphan' });
+  // A rewrite between the context words is no near match (review of #35): the gap must stay close to the quote.
+  expect(at('Carts expire after 30 minutes, or of inactivity.', sel)).toStrictEqual({ status: 'orphan' });
+  expect(at('Carts expire after never of inactivity.', sel)).toStrictEqual({ status: 'orphan' });
+  // One word either side is too weak a context to bracket anything.
+  expect(at('Sessions end after login of the user.', { exact: '7 days', prefix: 'after', suffix: 'of' })).toStrictEqual({ status: 'orphan' });
+  // A long quote rewritten to unrelated words stays an orphan: 4a is for short quotes only.
+  const long = { exact: 'all invoices and their line items, kept in the primary database', prefix: 'Retention:', suffix: 'until audit' };
+  expect(at('Retention: nothing at all is ever written down anywhere by anyone ever until audit', long)).toStrictEqual({ status: 'orphan' });
   // Only one side of the context bounds nothing.
   expect(at('Carts expire after 14 days.', { exact: '7 days', prefix: 'Carts expire after' })).toStrictEqual({ status: 'orphan' });
 });
