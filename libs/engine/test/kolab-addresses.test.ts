@@ -3,7 +3,7 @@
 // kolab only. Links, variants and questions stay inside one kolab until the binding decides how
 // they cross (LNK8, KON).
 import { expect, test } from '@jest/globals';
-import { structuralChecks, type Kolab } from '@konjir/engine';
+import { sessionKey, structuralChecks, type Kolab } from '@konjir/engine';
 import type { CheckContext, Resolution } from '@konjir/types';
 import { els, openKolab, rejection } from '@konjir/engine/testing';
 
@@ -226,7 +226,7 @@ test('the admin token, which works in no kolab, names a node with its kolab, or 
 const asAgent = <T extends Record<string, unknown>>(kolab: Kolab, session: string, sql: string, params: unknown[] = []) =>
   kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [session]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(session)]);
     return (await tx.query<T>(sql, params)).rows;
   });
 

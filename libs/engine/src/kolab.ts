@@ -98,8 +98,10 @@ export class ChecksError extends Error { name = 'ChecksError'; }
 export class CascadeError extends Error { name = 'CascadeError'; }
 
 /**
- * How events and logs name a session: the sha256 of its id, base64url. The id is the bearer
- * token, so it never leaves the process; events cross processes (W2.2) and can reach logs.
+ * A session's key: the sha256 of its bearer token, base64url. It is the session's id in the
+ * database, which stores no token (P1, migration 0011), and how events, logs and whoami name the
+ * session. The token itself is shown once, when the session opens, and never leaves the process
+ * after that: events cross processes (W2.2) and can reach logs.
  */
 export const sessionKey = (id: string) => createHash('sha256').update(id).digest('base64url');
 
@@ -131,7 +133,7 @@ export type ListenerState =
   | { state: 'restored' }
   | { state: 'resync_failed'; retryInMs: number; error: string };
 
-/** A session token's pattern: a session id, which is its bearer token. */
+/** A session token's pattern: the bearer token a session opened with. */
 const SESSION_TOKEN = /kjs_[A-Za-z0-9_-]+/g;
 
 /** An error's message, fit to log: any session token in it is masked. */
@@ -476,7 +478,8 @@ export class Kolab {
   private asAgent<T>(sessionId: string, fn: (tx: Q, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
     return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_agent');
-      await tx.query(`select set_config('kj.session', $1, true)`, [sessionId]);
+      // The session's key, never its token, which never reaches the database (P1).
+      await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(sessionId)]);
       return fn(tx, signal);
     }, lock);
   }
@@ -894,9 +897,11 @@ export class Kolab {
   }
 
   /**
-   * Opens a session for an actor in one kolab, with one active role. The session id doubles as
-   * the agent's bearer token, so it is random, not a sortable ULID. Each actor holds at most one
-   * open session (ENF4), so a person's agents each hold their own.
+   * Opens a session for an actor in one kolab, with one active role, and returns its bearer
+   * token: random, not a sortable ULID. This is the only time the token is shown. The database
+   * stores only its sessionKey, as the session's id (P1), and every other method takes the token
+   * and hashes it. Each actor holds at most one open session (ENF4), so a person's agents each
+   * hold their own.
    *
    * The actor must be able to reach the kolab. Without `kolab`, it is the one kolab the actor
    * can reach. An agent's access is checked against its owner's as the session opens, and on
@@ -920,7 +925,7 @@ export class Kolab {
     try {
       await this.db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-        await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [id, actorId, role, kolab]);
+        await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [sessionKey(id), actorId, role, kolab]);
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
         if (!access.level) {
@@ -939,34 +944,43 @@ export class Kolab {
 
   /**
    * End a session, revoking its token, and tell listeners so its open streams close (D41).
+   * The session is named by its token, by its sessionKey (`{ key }`, as whoami and events give
+   * it), or by its actor (`{ actor }`, whose one open session it is), since the token is shown
+   * only once. Returns the ended session's sessionKey, or null if there was no such open session.
    * The event names the session by sessionKey, never by its token.
    */
-  async endSession(id: string) {
-    await this.inTransaction(async (tx, signal) => {
-      const r = await tx.query(`update session set ended_at = now() where id = $1 returning id`, [id]);
-      if (r.rows.length) await signal({ session: 'ended', id: sessionKey(id) });
+  async endSession(which: string | { key: string } | { actor: string }): Promise<string | null> {
+    return this.inTransaction(async (tx, signal) => {
+      const r = typeof which === 'object' && 'actor' in which
+        ? await tx.query<{ id: string }>(`update session set ended_at = now() where actor_id = $1 and ended_at is null returning id`, [which.actor])
+        : await tx.query<{ id: string }>(`update session set ended_at = now() where id = $1 and ended_at is null returning id`,
+          [typeof which === 'string' ? sessionKey(which) : which.key]);
+      const key = r.rows[0]?.id ?? null;
+      if (key) await signal({ session: 'ended', id: key });
+      return key;
     });
   }
 
-  /** Which of `ids` are open sessions, in one query. */
-  async openSessions(ids: string[]): Promise<Set<string>> {
-    if (!ids.length) return new Set();
-    const r = await this.db.query<{ id: string }>(`select id from session where id = any($1) and ended_at is null`, [ids]);
-    return new Set(r.rows.map((x) => x.id));
+  /** Which of the session `tokens` are open, in one query. */
+  async openSessions(tokens: string[]): Promise<Set<string>> {
+    if (!tokens.length) return new Set();
+    const keys = new Map(tokens.map((t) => [sessionKey(t), t]));
+    const r = await this.db.query<{ id: string }>(`select id from session where id = any($1) and ended_at is null`, [[...keys.keys()]]);
+    return new Set(r.rows.map((x) => keys.get(x.id)!));
   }
 
-  /** Whether `id` is an open session: its token is still good. */
-  async sessionOpen(id: string): Promise<boolean> {
-    const r = await this.db.query(`select 1 from session where id = $1 and ended_at is null`, [id]);
+  /** Whether `token` is an open session's: it is still good. */
+  async sessionOpen(token: string): Promise<boolean> {
+    const r = await this.db.query(`select 1 from session where id = $1 and ended_at is null`, [sessionKey(token)]);
     return r.rows.length > 0;
   }
 
-  private async session(id: string): Promise<Session> {
+  private async session(token: string): Promise<Session> {
     const r = await this.db.query<Omit<Session, 'access'>>(
       `select s.actor_id, s.active_role, s.kolab_id as kolab, a.kind, a.owner_id as owner
          from session s join actor a on a.id = s.actor_id
-        where s.id = $1 and s.ended_at is null`, [id]);
-    if (!r.rows[0]) throw new RoleError(`no open session ${id}`);
+        where s.id = $1 and s.ended_at is null`, [sessionKey(token)]);
+    if (!r.rows[0]) throw new RoleError('no open session for that token');
     const s = { ...r.rows[0], access: await accessIn(this.db, r.rows[0].actor_id, r.rows[0].kolab) };
     // Access is computed on each use, so a session narrows the moment its access (or, for an
     // agent, its owner's) does. One that can no longer reach its kolab at all is ended here, if
@@ -2759,7 +2773,7 @@ export class Kolab {
   async sessionInfo(sessionId: string) {
     const s = await this.session(sessionId);
     return {
-      session: sessionId, actor: s.actor_id, kind: s.kind, owner: s.owner,
+      session: sessionKey(sessionId), actor: s.actor_id, kind: s.kind, owner: s.owner,
       role: s.active_role, layer: LAYER_OF_ROLE[s.active_role], kolab: s.kolab, access: s.access,
     };
   }
@@ -3275,7 +3289,7 @@ async function endUnreachableIn(tx: Q, signal: Signal): Promise<number> {
     `update session s set ended_at = now()
       where s.ended_at is null and (select a.rank from kj_access(s.actor_id, s.kolab_id) a) = 0
      returning s.id`);
-  for (const { id } of r.rows) await signal({ session: 'ended', id: sessionKey(id) });
+  for (const { id } of r.rows) await signal({ session: 'ended', id });   // the id is the sessionKey
   return r.rows.length;
 }
 

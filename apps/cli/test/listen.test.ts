@@ -3,6 +3,7 @@ import { expect, test } from '@jest/globals';
 import type { Client } from '@modelcontextprotocol/client';
 import { startServer, type KonjirServer } from '@konjir/server';
 import { connect, call, listenRefusal } from '../src/cli.js';
+import { sessionKey } from '@konjir/engine';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'listen-test-admin';
@@ -144,7 +145,7 @@ function endAfterAuth(server: KonjirServer) {
   kolab.sessionOpen = async (id) => {
     const open = await sessionOpen(id);
     kolab.sessionOpen = sessionOpen;
-    await kolab.db.query(`update session set ended_at = now() where id = $1`, [id]);
+    await kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(id)]);
     return open;
   };
 }
@@ -224,7 +225,7 @@ test('a session ended without an event hears nothing more: the next update close
   const kept = await other.client.listen({ resourceSubscriptions: [INBOX] });
 
   // Ended straight in the database, as an expiry would: no event, so the stream stays open until it would be signalled.
-  await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [pm.token]);
+  await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(pm.token)]);
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   expect(await settled(sub.closed, 2000)).toBe('graceful');
   await until('the other session to hear the question', () => other.updates.length === 1);

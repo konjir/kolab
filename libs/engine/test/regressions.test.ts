@@ -1,6 +1,6 @@
 // Regressions for the six bugs found in the first adversarial review.
 import { expect, test } from '@jest/globals';
-import { GateError } from '@konjir/engine';
+import { GateError, sessionKey } from '@konjir/engine';
 import { approved, commitReviewed, els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
 
 test('a pending draft does not hide its node from the cascade; the draft catches up on commit', async () => {
@@ -88,7 +88,7 @@ test('row-level security: agents cannot self-commit, mislabel a layer, or link f
   const s1 = await kolab.commit(product, S, { elements: els({ R: 'r' }) });
   const asAgent = (session: string, sql: string, params: unknown[] = []) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [session]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(session)]);
     await tx.query(sql, params);
   });
   const ins = `insert into version(id, node_id, seq, layer, state, actor_id, active_role) values ($1, $2, 99, $3, $4, 'x', 'x')`;

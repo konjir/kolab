@@ -2,7 +2,7 @@
 // annotates the spec, the answer comes back to the element that waited on it,
 // and every inbox change is pushed to subscribed agents.
 import { expect, test } from '@jest/globals';
-import { Kolab, RoleError } from '@konjir/engine';
+import { Kolab, RoleError, sessionKey } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
@@ -97,11 +97,15 @@ test('a database from the previous release is migrated on open', async () => {
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
     // without case files (0005), before accounts and kolabs (0006), before the review flow (0007),
-    // before node names per kolab (0008) and before the outbox (0010), newest first (0009 only
-    // dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay.
+    // before node names per kolab (0008), before the outbox (0010) and before hashed session
+    // tokens (0011), newest first (0009 only dropped what 0007 added, so its undoing is in
+    // 0007's). The people and the spec stay, and alice's session is stored by its token again,
+    // as 0.5 stored it, so 0011 hashing it in place is what keeps it working.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      alter table session drop constraint session_id_is_key;
+      update session set id = '${product}' where id = '${sessionKey(product)}';
       drop table outbox;
       drop function kj_outbox_kolab();
       ${['node', 'version', 'element', 'query'].map((t) => `drop policy kolab_read on ${t}; create policy kolab_read on ${t} for select to kj_agent using (kolab_id = (select kj_session_kolab()));`).join('\n')}

@@ -3,7 +3,7 @@
 // through a checks hook or a wrapper on db.query, so it runs the same way on PGlite and on
 // Postgres. `npm run rebase-storm -- --races` prints the same races as RACE or SAFE.
 import { expect, test } from '@jest/globals';
-import { GateError, Kolab, structuralChecks } from '@konjir/engine';
+import { GateError, Kolab, sessionKey, structuralChecks } from '@konjir/engine';
 import { approved, commitReviewed, els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { CheckContext, Checks } from '@konjir/types';
 
@@ -390,7 +390,7 @@ test('an agent may only build a draft on a committed version of its own node', a
   await kolab.commit(product, B, { elements: els({ F: 'b' }) });
   const insert = (base: string) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
-    await tx.query(`select set_config('kj.session', $1, true)`, [product]);
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(product)]);
     await tx.query(`insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role)
                     values ('forged', $1, 99, $2, 'functional', 'drafted', 'alice', 'product')`, [B, base]);
   });

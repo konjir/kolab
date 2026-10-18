@@ -53,7 +53,7 @@ test('row-level security backstops Kolab: a direct write in the wrong layer is r
     const me = await kolab.sessionInfo(session);
     return kolab.db.transaction(async (tx) => {
       await tx.exec('set local role kj_agent');
-      await tx.query(`select set_config('kj.session', $1, true)`, [session]);
+      await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(session)]);
       await tx.query(
         `insert into version(id, node_id, seq, layer, state, actor_id, active_role)
          values ($1, $2, 1, 'functional', 'drafted', $3, $4)`, [`v-${session}`, spec, me.actor, me.role]);

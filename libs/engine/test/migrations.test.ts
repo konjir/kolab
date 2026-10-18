@@ -170,7 +170,7 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
   const kolab = await Kolab.open(store);
   try {
     expect(await kolab.sessionInfo('kjs_old')).toStrictEqual({
-      session: 'kjs_old', actor: 'lee', kind: 'person', owner: null, role: 'product', layer: 'functional',
+      session: sessionKey('kjs_old'), actor: 'lee', kind: 'person', owner: null, role: 'product', layer: 'functional',
       kolab: 'kolab', access: { level: 'write', layers: ['functional', 'technical'] },   // 0006
     });
     expect(await kolab.author('v1')).toStrictEqual({ actor: 'lee', kind: 'person', owner: null, role: 'product' });
@@ -504,6 +504,61 @@ test('a database at 0007 reaches 0008: each node keeps its id, which becomes its
     const s = await kolab.openSession('lee', 'engineer', { kolab: 'shop' });
     expect(await kolab.createNode(s, 'technical_binding', 'Binding', 'kolab-binding')).toMatch(/^~[0-9A-Z]{26}$/);
     expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.name)).toStrictEqual(['kolab', 'kolab-binding', 'kolab-plan']);
+  } finally { await kolab.close(); }
+});
+
+test('a database at 0010 reaches 0011: each session is stored by the hash of its token, and every token handed out keeps working', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'hashed_session_tokens');
+  const lee = 'kjs_lee-token-from-before-hashing', pm = 'kjs_pm-token-from-before-hashing', old = 'kjs_ended-before-hashing';
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // The test server before this release: Konjir's own kolab, Lee and her agent each with an open
+    // session, whose ids are their bearer tokens, and an ended session.
+    await db.exec(`
+      insert into account(id, kind, name) values ('konjir', 'organization', 'Konjir'), ('lee', 'user', 'Lee');
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into actor(id, name, kind, owner_id) values ('lee-pm', 'lee-pm', 'agent', 'lee');
+      insert into kolab(id, owner_id, title) values ('kolab', 'konjir', 'Kolab');
+      insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ('kolab', 'lee', 'write', true, true);
+      insert into kolab_grant(kolab_id, agent_id, level, functional, technical) values ('kolab', 'lee-pm', 'write', true, false);
+      insert into session(id, actor_id, active_role, kolab_id) values
+        ('${lee}', 'lee', 'engineer', 'kolab'), ('${pm}', 'lee-pm', 'product', 'kolab');
+      insert into session(id, actor_id, active_role, kolab_id, ended_at) values ('${old}', 'lee', 'product', 'kolab', now());`);
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: versions.slice(at) });
+    // Only the hashes are left, each the session's sessionKey: no token is stored.
+    expect((await db.query<{ id: string }>(`select id from session order by started_at, id`)).rows.map((r) => r.id).sort())
+      .toStrictEqual([sessionKey(lee), sessionKey(pm), sessionKey(old)].sort());
+    expect((await db.query(`select 1 from session where id like 'kjs_%'`)).rows).toStrictEqual([]);
+    // And none can be stored again.
+    expect(await rejection(db.query(`insert into session(id, actor_id, active_role, kolab_id) values ('kjs_plain', 'lee', 'product', 'kolab')`)))
+      .toMatch(/session_id_is_key/);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    // Both open tokens still work, the agent's included; whoami names each by its key, never its token.
+    expect(await kolab.sessionOpen(lee)).toBe(true);
+    expect(await kolab.sessionInfo(pm)).toMatchObject({ session: sessionKey(pm), actor: 'lee-pm', owner: 'lee', kolab: 'kolab' });
+    expect(JSON.stringify(await kolab.sessionInfo(pm))).not.toContain(pm);
+    expect(await kolab.sessionOpen(old)).toBe(false);
+    // The hash itself is no token.
+    expect(await kolab.sessionOpen(sessionKey(pm))).toBe(false);
+    expect(await kolab.sessionInfo(lee)).toMatchObject({ session: sessionKey(lee), actor: 'lee', role: 'engineer' });
+    // Lee's session ends by her actor, since an admin who didn't keep a token can't name it by one.
+    expect(await kolab.endSession({ actor: 'lee' })).toBe(sessionKey(lee));
+    expect(await kolab.sessionOpen(lee)).toBe(false);
+    // The agent writes with its old token, and Lee, in a new session, reviews it.
+    const reviewer = await kolab.openSession('lee', 'product');
+    const spec = await kolab.createNode(pm, 'functional_spec', 'Kolab', 'kolab');
+    await commitReviewed(kolab, pm, reviewer, spec, { elements: els({ TEN1: 'Konjir is one hosted service.' }) });
+    // Ending a migrated session by its token tells listeners by the same key.
+    const ended: string[] = [];
+    kolab.onEvent((e) => { if ('session' in e) ended.push(e.id); });
+    expect(await kolab.endSession(pm)).toBe(sessionKey(pm));
+    expect(ended).toStrictEqual([sessionKey(pm)]);
+    expect(await kolab.sessionOpen(pm)).toBe(false);
   } finally { await kolab.close(); }
 });
 

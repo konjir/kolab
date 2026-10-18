@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { GateError, Kolab } from '@konjir/engine';
+import { GateError, Kolab, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES } from '@konjir/types';
 import { fail, ok } from './results.js';
@@ -17,7 +17,11 @@ const openSession = z.object({
   actor: z.string(), role: z.enum(ROLES),
   kolab: z.string().optional().describe('The kolab the session works in. Defaults to the one kolab the actor can reach.'),
 });
-const endSession = z.object({ token: z.string() });
+const endSession = z.object({
+  token: z.string().optional().describe('The bearer token the session opened with'),
+  session: z.string().optional().describe("The session's key, as whoami gives it: the sha256 of its token, base64url"),
+  actor: z.string().optional().describe('The actor whose open session to end'),
+});
 const addOrganization = z.object({ id: z.string(), name: z.string().optional() });
 const addMember = z.object({ org: z.string(), user: z.string(), role: z.enum(ORG_ROLES).optional().describe('owner administers every kolab the organization owns. Defaults to member.') });
 const removeMember = z.object({ org: z.string(), user: z.string() });
@@ -86,14 +90,23 @@ export class AdminTools {
   async openSession({ actor, role, kolab }: z.infer<typeof openSession>) {
     try {
       const token = await this.kolab.openSession(actor, role, { kolab });
-      return ok({ token, actor, role, kolab: await this.kolab.sessionKolab(token) });
+      // The only time the token is shown: Kolab stores only its hash (P1).
+      return ok({ token, session: sessionKey(token), actor, role, kolab: await this.kolab.sessionKolab(token) });
     } catch (e) { return fail(e); }
   }
 
-  @McpTool({ name: 'konjir_admin_end_session', description: 'Admin: end a session, revoking its token.', schema: endSession })
+  @McpTool({
+    name: 'konjir_admin_end_session',
+    description: "Admin: end a session, revoking its token. Name it by exactly one of its token, its key (whoami's session) or its actor. Returns the ended session's key, or null if no such session was open.",
+    schema: endSession,
+  })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async endSession({ token }: z.infer<typeof endSession>) {
-    try { await this.kolab.endSession(token); return ok({ ended: token }); } catch (e) { return fail(e); }
+  async endSession({ token, session, actor }: z.infer<typeof endSession>) {
+    try {
+      if ([token, session, actor].filter((x) => x !== undefined).length !== 1) throw new Error('name the session by exactly one of token, session or actor');
+      const ended = await this.kolab.endSession(token ?? (session !== undefined ? { key: session } : { actor: actor! }));
+      return ok({ ended });
+    } catch (e) { return fail(e); }
   }
 
   @McpTool({
