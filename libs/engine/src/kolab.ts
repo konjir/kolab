@@ -3048,26 +3048,9 @@ export class Kolab {
     if (!live?.parent_version_id) return;
     const p = await this.version(live.parent_version_id);
     if (p.node_id === nodeId) return;
-    // A fork rebases onto its parent's newer work only while its holder vouches for it (LNK8):
-    // Read on the parent's kolab, and Write on the fork's layer in its own. Otherwise it is marked
-    // access_lost, under a shared hold on the access lock and then its lock, so a change of access
-    // can't land between the check and the mark; a holder who vouches again settles that mark first.
-    if (p.kolab_id !== live.kolab_id) {
-      const lost = await this.asSystem(async (tx, signal) => {
-        const now = (await tx.query<VersionRow>(`select * from version where id = $1`, [live.id])).rows[0];
-        const why = await this.unvouched(now.parent_held_by, p.kolab_id!, now.kolab_id!, now.layer, tx);
-        if (!why) {
-          const open = await tx.query<{ id: string }>(
-            `select i.id from invalidation i join version x on x.id = i.version_id
-              where x.node_id = $1 and i.reason = 'access_lost' and i.edge_id is null and i.state = 'open'`, [nodeId]);
-          for (const m of open.rows) await this.closeMarkIn(tx, signal, m.id, `${now.parent_held_by} holds it again`);
-          return false;
-        }
-        await this.forkAccessLostIn(tx, signal, now, why);
-        return true;
-      }, nodeId, { access: true });
-      if (lost) return;
-    }
+    // A fork's holder is checked whether or not it is behind, so its access_lost mark is raised
+    // or settled as soon as it applies; mayRebase checks again before any rebase.
+    if (p.kolab_id !== live.kolab_id && await this.forkLost(live, p.kolab_id!)) return;
     const latestParent = (await this.latestCommitted(p.node_id))!;
     if (latestParent.id === p.id) return this.settleRebaseFailed(live);
     if (!(await this.mayRebase(live, latestParent))) return;
@@ -3077,12 +3060,35 @@ export class Kolab {
   /**
    * Whether a variant may be rebased onto its parent's latest version now: the one place a check
    * that belongs to the variant's relation with its parent goes, before anything is written, for
-   * every path that rebases (a rebase job, a variant's own catch-up, a dropped rebase's). Every
-   * variant's parent is in its own kolab today (forks across kolabs wait on KON), so nothing is
-   * refused; a fork's holder and access checks (D53) belong here.
+   * every path that rebases (a rebase job, a variant's own catch-up, a dropped rebase's) and for
+   * a dead rebase job's mark. A fork, whose parent is in another kolab, is rebased only while its
+   * holder vouches for it (LNK8, D53); otherwise it is marked access_lost instead (forkLost).
    */
-  private async mayRebase(_live: VersionRow, _parent: VersionRow): Promise<boolean> {
-    return true;
+  private async mayRebase(live: VersionRow, parent: VersionRow): Promise<boolean> {
+    if (parent.kolab_id === live.kolab_id) return true;
+    return !(await this.forkLost(live, parent.kolab_id!));
+  }
+
+  /**
+   * Whether a fork's holder no longer vouches for it (LNK8, D53): Read on the parent's kolab, and
+   * Write on the fork's layer in its own. If so it is marked access_lost, once; if not, an open
+   * access_lost mark settles. Under a shared hold on the access lock, then the fork's lock, so a
+   * change of access can't land between the check and the mark.
+   */
+  private async forkLost(live: VersionRow, parentKolab: string): Promise<boolean> {
+    return this.asSystem(async (tx, signal) => {
+      const now = (await tx.query<VersionRow>(`select * from version where id = $1`, [live.id])).rows[0];
+      const why = await this.unvouched(now.parent_held_by, parentKolab, now.kolab_id!, now.layer, tx);
+      if (!why) {
+        const open = await tx.query<{ id: string }>(
+          `select i.id from invalidation i join version x on x.id = i.version_id
+            where x.node_id = $1 and i.reason = 'access_lost' and i.edge_id is null and i.state = 'open'`, [live.node_id]);
+        for (const m of open.rows) await this.closeMarkIn(tx, signal, m.id, `${now.parent_held_by} holds it again`);
+        return false;
+      }
+      await this.forkAccessLostIn(tx, signal, now, why);
+      return true;
+    }, live.node_id, { access: true });
   }
 
   /**
@@ -3239,6 +3245,10 @@ export class Kolab {
    * rebase job in the outbox (D43, P6), written here (W1.8), whose fork live versions this returns
    * so the caller can wake the worker once the transaction commits.
    *
+   * A dependent in an archived kolab (D52) is left as it is: nothing may be written there, and
+   * nothing reaches it either, since its jobs wait; once unarchived, its next rebase job or the
+   * cascade meets it and marks it then.
+   *
    * Only links and forks held by `holders` are looked at: the actors whose access the change could
    * alter, and the agents they own (holdersOf), found through edge_cross_kolab and version_forks.
    */
@@ -3246,10 +3256,12 @@ export class Kolab {
     if (!holders.length) return [];
     const crossing = await tx.query<EdgeRow & { source_layer: Layer }>(
       `select e.*, s.layer as source_layer from edge e join version s on s.id = e.source_version_id
-        where e.target_kolab_id <> e.kolab_id and e.held_by = any($1) and ${LIVE('s')}`, [holders]);
+        where e.target_kolab_id <> e.kolab_id and e.held_by = any($1) and ${LIVE('s')}
+          and not ${archivedKolabSql('e.kolab_id')}`, [holders]);
     const forks = await tx.query<VersionRow & { parent_kolab: string }>(
       `select v.*, p.kolab_id as parent_kolab from version v join version p on p.id = v.parent_version_id
-        where v.parent_held_by = any($1) and v.state = 'committed' and ${LIVE('v')}`, [holders]);
+        where v.parent_held_by = any($1) and v.state = 'committed' and ${LIVE('v')}
+          and not ${archivedKolabSql('v.kolab_id')}`, [holders]);
     const verdicts = new Map<string, string | undefined>();
     const why = async (holder: string, target: string, own: string, layer: Layer) => {
       const key = JSON.stringify([holder, target, own, layer]);

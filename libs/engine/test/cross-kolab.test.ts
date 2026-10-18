@@ -332,3 +332,17 @@ test('a fork\'s pending rebase never names the upstream version or its error (D5
     expect(JSON.stringify(seen)).not.toContain('billing');
   }
 });
+
+test('a change of access leaves a dependent in an archived kolab as it is, and the change still goes through (D52)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
+  const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.archive({ kolab: 'orders' });
+  // Revoking alice's Read would mark the link in orders; orders is archived, so it is left alone.
+  await kolab.revoke('billing', 'alice');
+  expect(await kolab.openMarks()).toStrictEqual([]);
+  // billing's own commits go on, and the job for orders waits for it.
+  await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
+  expect(await kolab.openMarks()).toStrictEqual([]);
+});
