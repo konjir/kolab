@@ -58,7 +58,7 @@ async function onServer(sql: string) {
  * A commit queues its variants' rebases, and Kolab's outbox worker runs them later (D43, P6).
  * So that a scenario can read the outcome of a commit and its rebases straight after the call,
  * each write that can commit (commit, review, submit, recordReview, resolveOverride,
- * applyRuling) here waits for the rebases it queued: it drains the outbox before it returns. A
+ * applyRuling), and each change of access, here waits for the rebases it queued: it drains the outbox before it returns. A
  * write that fails still drains, but throws its own error, never the drain's.
  * With `queued: true` it doesn't, for tests of the asynchrony itself, which drain the outbox
  * (drainOutbox) or start the worker as they need.
@@ -72,8 +72,12 @@ export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { qu
   return kolab;
 }
 
-/** The writes that can commit a version, and so queue rebases. */
-const COMMITTING = ['commit', 'review', 'submit', 'recordReview', 'resolveOverride', 'applyRuling'] as const;
+/**
+ * The writes that can commit a version, and so queue rebases; and the changes of access, which
+ * queue a fork's rebase when its holder holds it again (LNK8).
+ */
+const COMMITTING = ['commit', 'review', 'submit', 'recordReview', 'resolveOverride', 'applyRuling',
+  'grant', 'revoke', 'addMember', 'removeMember', 'addTeamMember', 'removeTeamMember'] as const;
 
 /** Makes each committing write of `kolab` drain the outbox before it returns or throws (openKolab). */
 export function drainAfterWrites(kolab: Kolab) {

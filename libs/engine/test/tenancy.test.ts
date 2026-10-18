@@ -301,26 +301,42 @@ test('precedent is per kolab: two kolabs with the same fingerprints never share 
     .toStrictEqual([{ kolab_id: 'one', resolution: 'amend' }, { kolab_id: 'two', resolution: 'reaffirm' }]);
 });
 
-test("no row references another kolab's row, and no row's kolab changes, whoever writes it", async () => {
+test("no row references another kolab's row, but a link's target, a fork's parent, an override's base and a mark's trigger, and those only to committed work; no row's kolab changes, whoever writes it", async () => {
   const { kolab, alice, bob } = await twoAccounts();
   const ordersV = (await kolab.latestCommitted('orders-spec'))!.id;
   const billingV = (await kolab.latestCommitted('billing-spec'))!.id;
-  // As kj_agent in bob's session: an edge from his kolab into alice's.
+  const ordersDraft = await kolab.draft(alice, 'orders-spec', { elements: els({ R1: 'Orders can be cancelled within a day.' }) });
+  // As kj_agent in bob's session, who can't read orders: an edge from his kolab into alice's.
   expect(await rejection(asAgent(kolab, bob,
-    `insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_fingerprint)
-     values ('x1', 'dependency', $1, 'B1', $2, 'f')`, [billingV, ordersV]))).toMatch(/edge_target_kolab_fkey|row-level security/);
+    `insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_fingerprint, held_by)
+     values ('x1', 'dependency', $1, 'B1', $2, 'f', 'bob')`, [billingV, ordersV]))).toMatch(/row-level security/);
+  // Nor a fork of alice's spec.
+  expect(await rejection(asAgent(kolab, bob,
+    `insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role, parent_held_by)
+     values ('x0', 'billing-spec', 9, $1, 'functional', 'drafted', 'bob', 'product', 'bob')`, [ordersV]))).toMatch(/row-level security/);
   // As Kolab's own login, with no row-level security at all.
   const refused = [
-    [`insert into edge(id, kind, source_version_id, target_version_id, target_fingerprint) values ('x2', 'dependency', $1, $2, 'f')`, /edge_target_kolab_fkey/],
-    [`insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role) values ('x3', 'billing-spec', 9, $2, 'functional', 'drafted', 'bob', 'product') returning $1::text`, /version_parent_kolab_fkey/],
+    [`insert into edge(id, kind, source_version_id, target_version_id, target_fingerprint) values ('x2', 'dependency', $1, $2, 'f')`, /a link into another kolab names the actor whose Read it rests on/],
+    [`insert into edge(id, kind, source_version_id, target_version_id, target_fingerprint, held_by) values ('x2', 'dependency', $1, '${ordersDraft}', 'f', 'bob') returning $2::text`, /a reference into another kolab must name a committed version/],
+    [`insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role) values ('x3', 'billing-spec', 9, $2, 'functional', 'drafted', 'bob', 'product') returning $1::text`, /a fork of another kolab's version names the actor/],
+    [`insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role, parent_held_by) values ('x3', 'billing-spec', 9, '${ordersDraft}', 'functional', 'drafted', 'bob', 'product', 'bob') returning $1::text, $2::text`, /must name a committed version/],
+    [`insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role, parent_held_by) values ('x3', 'billing-spec', 9, $1, 'functional', 'drafted', 'bob', 'product', 'bob') returning $2::text`, /a fork of another kolab's version names the actor .*and no other version does/],
     [`insert into query(id, version_id, question, from_version_id) values ('x4', $1, 'q', $2)`, /query_from_version_kolab_fkey/],
-    [`insert into invalidation(id, version_id, triggered_by, reason) values ('x5', $1, $2, 'changed')`, /invalidation_triggered_kolab_fkey/],
+    [`insert into invalidation(id, version_id, triggered_by, reason) values ('x5', $1, '${ordersDraft}', 'changed') returning $2::text`, /must name a committed version/],
     [`update element set kolab_id = 'billing' where version_id = $2 and $1::text is not null`, /a row's kolab never changes/],
     [`update node set kolab_id = 'billing' where id = 'orders-spec' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
     [`update element set version_id = $1 where version_id = $2`, /element_version_kolab_fkey/],
     [`update session set kolab_id = 'billing' where id = '${sessionKey(alice)}' and $1::text is not null and $2::text is not null`, /a row's kolab never changes/],
   ] as const;
   for (const [sql, pattern] of refused) expect(await rejection(kolab.db.query(sql, [billingV, ordersV]))).toMatch(pattern);
+  // A link's target stays in its kolab, and on its node: re-pinned to another node's version, it is refused.
+  await kolab.db.query(`insert into edge(id, kind, source_version_id, target_version_id, target_fingerprint, held_by) values ('x6', 'dependency', $1, $2, 'f', 'bob')`, [billingV, ordersV]);
+  expect((await kolab.db.query(`select target_kolab_id from edge where id = 'x6'`)).rows).toStrictEqual([{ target_kolab_id: 'orders' }]);
+  expect(await rejection(kolab.db.query(`update edge set target_version_id = $1 where id = 'x6'`, [billingV]))).toMatch(/edge_target_kolab_fkey|re-pinned only to another version of the node/);
+  expect(await rejection(kolab.db.query(`update edge set target_kolab_id = 'billing' where id = 'x6'`))).toMatch(/edge_target_kolab_fkey|re-pinned only/);
+  // A mark's causes stay in its kolab: a transitive mark never crosses one.
+  await kolab.db.query(`insert into invalidation(id, version_id, triggered_by, reason) values ('m1', $1, $1, 'changed'), ('m2', $2, $2, 'changed')`, [billingV, ordersV]);
+  expect(await rejection(kolab.db.query(`insert into invalidation_cause(mark_id, cause_id) values ('m1', 'm2')`))).toMatch(/invalidation_cause_cause_kolab_fkey/);
 });
 
 test("kj_agent reads no sessions or actors, and can't ask who holds what elsewhere", async () => {

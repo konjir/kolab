@@ -31,6 +31,10 @@ interface EdgeRow {
   id: string; kind: string; source_version_id: string; source_element_id: string | null;
   target_version_id: string; target_element_id: string | null;
   target_selector: QuoteSelector | null; target_fingerprint: string;
+  /** The edge's own kolab, its source's, and its target's, which may be another (LNK8). */
+  kolab_id: string; target_kolab_id: string;
+  /** Who declared the link, or last vouched for it: across kolabs, whose Read it rests on. */
+  held_by: string | null;
 }
 
 /**
@@ -552,9 +556,13 @@ export class Kolab {
    * never wait on each other. On PGlite, one connection, a transaction has the database to itself
    * anyway, and everything inside it must go through `tx`.
    */
-  private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
+  private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string, opts: { access?: boolean } = {}): Promise<T> {
     let events = new Map<string, KolabEvent>();
     const result = await this.db.transaction(async (tx) => {
+      // With `access`, a shared hold on the access lock first, then the node's lock: every
+      // transaction that takes both takes them in that order, and a change of access (which holds
+      // the access lock alone, exclusively) can't land between a check of access and what it allows.
+      if (opts.access) await tx.query(`select pg_advisory_xact_lock_shared($1)`, [ACCESS_LOCK]);
       if (lock) await tx.query(`select 1 from node where id = $1 for no key update`, [lock]);
       // Each attempt starts empty, so a transaction ever run again would notify again.
       const sent = events = new Map<string, KolabEvent>();
@@ -578,21 +586,21 @@ export class Kolab {
   }
 
   /** Agent writes run as kj_agent; row-level security re-checks the layer. `lock` as for inTransaction. */
-  private asAgent<T>(sessionId: string, fn: (tx: Q, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
+  private asAgent<T>(sessionId: string, fn: (tx: Q, signal: Signal) => Promise<T>, lock?: string, opts: { access?: boolean } = {}): Promise<T> {
     return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_agent');
       // The session's key, never its token, which never reaches the database (P1).
       await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(sessionId)]);
       return fn(tx, signal);
-    }, lock);
+    }, lock, opts);
   }
 
   /** Kolab's own work: rebases, review transitions, the cascade. `lock` as for inTransaction. */
-  private asSystem<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
+  private asSystem<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string, opts: { access?: boolean } = {}): Promise<T> {
     return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_system');
       return fn(tx, signal);
-    }, lock);
+    }, lock, opts);
   }
 
   // ---- the outbox: durable waits (REV3, W1.8) --------------------------------
@@ -1168,7 +1176,7 @@ export class Kolab {
     // agent, its owner's) does. One that can no longer reach its kolab at all is ended here, if
     // no change of access ended it already, and its streams are told (D41).
     if (!s.access.level) {
-      await this.endUnreachable();
+      await this.endUnreachable([s.actor_id]);
       throw new AccessError(`${s.actor_id} can no longer reach kolab ${s.kolab}; its session has ended`);
     }
     return s;
@@ -1351,24 +1359,32 @@ export class Kolab {
     const onto = r.onto ? (await this.db.query<{ name: string; kolab_id: string; seq: number }>(
       `select n.name, n.kolab_id, v.seq from version v join node n on n.id = v.node_id
         where v.id = $1 and n.kolab_id = (select kolab_id from node where id = $2)`, [r.onto, nodeId])).rows[0] : undefined;
+    // Nor what went wrong there: a fork's rebase from another kolab keeps its error to itself.
+    const elsewhere = !!r.onto && !onto;
     return {
       state: r.state, attempts: r.attempts, queued_at: new Date(r.created_at).toISOString(),
       ...(onto ? { after: formatAddress({ kolab: onto.kolab_id, node: onto.name, version: onto.seq }) } : {}),
-      ...(r.last_error ? { last_error: r.last_error } : {}),
+      ...(r.last_error && !elsewhere ? { last_error: r.last_error } : {}),
     };
   }
 
   /**
-   * The version an address names for a write in the session's kolab: a link's source or target,
-   * or a variant's parent. Another kolab's is refused (links across kolabs, LNK8, and forks wait
-   * on a binding decision). A draft only with `allowDraft`.
+   * The version an address names for a write: a link's source or target, or a variant's parent.
+   * In the session's kolab, unless `across`: a link's target and a variant's parent may be another
+   * kolab's committed version, where the session's actor holds Read (LNK8, KON9), found exactly as
+   * a read finds it, so an address it can't read is a node that isn't there. Without `across`,
+   * another kolab's is refused from the address alone. A draft only with `allowDraft`, and only in
+   * the session's own kolab.
    */
-  async versionIn(sessionId: string, address: Address | string, opts: { allowDraft?: boolean; what: string }): Promise<VersionRow> {
+  async versionIn(sessionId: string, address: Address | string, opts: { allowDraft?: boolean; across?: boolean; what: string }): Promise<VersionRow> {
     const a = typeof address === 'string' ? parseAddress(address) : address;
-    const node = await this.nodeIn(sessionId, a, opts.what);
-    const { version } = await this.locateVersion({ session: sessionId }, { node: node.name, version: a.version });
-    const at = formatAddress({ node: node.name, version: a.version });
-    if (!version) throw new Error(a.version === undefined ? `${node.name} has no committed version` : `${node.name} has no version ${a.version}`);
+    const where = { session: sessionId };
+    const node = opts.across ? await this.locateNode(where, a) : await this.nodeIn(sessionId, a, opts.what);
+    const { version } = await this.locateVersion(where, { kolab: node.kolab_id, node: node.name, version: a.version });
+    const from = await this.sessionKolab(sessionId);
+    const name = node.kolab_id === from ? node.name : `${node.kolab_id}/${node.name}`;
+    const at = formatAddress({ kolab: node.kolab_id, node: node.name, version: a.version }, { from });
+    if (!version) throw new Error(a.version === undefined ? `${name} has no committed version` : `${name} has no version ${a.version}`);
     if (!opts.allowDraft && version.state !== 'committed') throw new GateError(`${at} is ${version.state}, not committed`);
     return version;
   }
@@ -1657,7 +1673,7 @@ export class Kolab {
     if (!ORG_ROLES.includes(role)) throw new TenancyError(`a member's role is one of ${ORG_ROLES.join(', ')}`);
     await this.requireLiveAccount(org, 'organization', 'takes no members');
     await this.requireLiveAccount(user, 'user', 'joins no organization');
-    return this.changeAccess((tx) => tx.query(
+    return this.changeAccess({ users: [user] }, (tx) => tx.query(
       `insert into org_member(org_id, user_id, role) values ($1, $2, $3)
        on conflict (org_id, user_id) do update set role = excluded.role`, [org, user, role]));
   }
@@ -1665,7 +1681,7 @@ export class Kolab {
   /** Removes a user from an organization and its teams. Their sessions narrow, or end if nothing is left. */
   async removeMember(org: string, user: string) {
     await this.requireAccount(org, 'organization');
-    return this.changeAccess(async (tx) => {
+    return this.changeAccess({ users: [user] }, async (tx) => {
       await tx.query(`delete from team_member where user_id = $2 and team_id in (select id from team where org_id = $1)`, [org, user]);
       await tx.query(`delete from org_member where org_id = $1 and user_id = $2`, [org, user]);
     });
@@ -1694,13 +1710,13 @@ export class Kolab {
     if (!(await this.db.query(`select 1 from org_member where org_id = $1 and user_id = $2`, [t.org_id, user])).rows.length) {
       throw new TenancyError(`${user} isn't a member of ${t.org_id}; add them to it first`);
     }
-    return this.changeAccess((tx) => tx.query(`insert into team_member(team_id, user_id) values ($1, $2) on conflict do nothing`, [team, user]));
+    return this.changeAccess({ users: [user] }, (tx) => tx.query(`insert into team_member(team_id, user_id) values ($1, $2) on conflict do nothing`, [team, user]));
   }
 
   /** Removes a user from a team. Their sessions narrow, or end if nothing is left. */
   async removeTeamMember(team: string, user: string) {
     if (!(await this.db.query(`select 1 from team where id = $1`, [team])).rows.length) throw new TenancyError(`no team ${team}`);
-    return this.changeAccess((tx) => tx.query(`delete from team_member where team_id = $1 and user_id = $2`, [team, user]));
+    return this.changeAccess({ users: [user] }, (tx) => tx.query(`delete from team_member where team_id = $1 and user_id = $2`, [team, user]));
   }
 
   /**
@@ -1726,7 +1742,7 @@ export class Kolab {
     }
     const grantee = await this.grantee(to, k);
     if (grantee.column !== 'team_id' && await this.archivedActor(to)) throw new TenancyError(`${to} is archived, so it is granted nothing; unarchive it first`);
-    return this.changeAccess(async (tx) => {
+    return this.changeAccess(granted(grantee), async (tx) => {
       if (grantee.column === 'agent_id') {
         // Against what its owner holds now, in this transaction.
         const owner = await ownerAccess(tx, grantee.owner!, kolab);
@@ -1745,7 +1761,7 @@ export class Kolab {
   /** Removes a grantee's grant on a kolab. Sessions narrow, and any that can no longer reach it end. */
   async revoke(kolab: string, to: string) {
     const grantee = await this.grantee(to, await this.requireKolab(kolab));
-    return this.changeAccess((tx) => tx.query(`delete from kolab_grant where kolab_id = $1 and ${grantee.column} = $2`, [kolab, grantee.id]));
+    return this.changeAccess(granted(grantee), (tx) => tx.query(`delete from kolab_grant where kolab_id = $1 and ${grantee.column} = $2`, [kolab, grantee.id]));
   }
 
   /** Who a grant names: a team if it has a '/', else an actor: a person (by their user account) or an agent. */
@@ -1795,20 +1811,36 @@ export class Kolab {
    * can still reach it narrow by themselves: access is computed on each use. Returns how many
    * sessions ended.
    */
-  private async changeAccess(fn: (tx: Db) => Promise<unknown>): Promise<{ ended: number }> {
-    return this.inTransaction(async (tx, signal) => {
+  private async changeAccess(who: Affected, fn: (tx: Db) => Promise<unknown>): Promise<{ ended: number }> {
+    const r = await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      // Who the change can affect, found before it, while the team it may remove is still there.
+      const holders = await holdersOf(tx, who);
       await fn(tx);
-      return { ended: await endUnreachableIn(tx, signal) };
+      // Links and forks across kolabs that they hold are marked, or settle, as access changes (LNK8).
+      const catchUps = await this.reconcileAccessIn(tx, signal, holders);
+      if (catchUps.length) await this.notifyWork(tx);
+      return { ended: await endUnreachableIn(tx, signal), catchUps };
     });
+    if (r.catchUps.length) this.wake();
+    return { ended: r.ended };
   }
 
-  /** Ends every open session that can no longer reach its kolab, and tells listeners (D41). */
-  private async endUnreachable(): Promise<number> {
-    return this.inTransaction(async (tx, signal) => {
+  /**
+   * Ends every open session that can no longer reach its kolab, and tells listeners (D41); and
+   * marks the links and forks across kolabs held by `actors`, found with no access, after a change
+   * made outside Kolab's verbs (LNK8).
+   */
+  private async endUnreachable(actors: string[]): Promise<number> {
+    const r = await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      return endUnreachableIn(tx, signal);
+      const holders = await holdersOf(tx, { users: actors });
+      const catchUps = await this.reconcileAccessIn(tx, signal, holders);
+      if (catchUps.length) await this.notifyWork(tx);
+      return { ended: await endUnreachableIn(tx, signal), catchUps };
     });
+    if (r.catchUps.length) this.wake();
+    return r.ended;
   }
 
   // ---- nodes and versions --------------------------------------------------
@@ -1872,7 +1904,7 @@ export class Kolab {
     await this.requireNodeIn(sessionId, nodeId);   // another kolab's node reads as no node at all
     const node = await this.node(nodeId);
     const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
-    return this.writeDraft(nodeId, node.layer, s, input, (fn) => this.asAgent(sessionId, fn, nodeId));
+    return this.writeDraft(nodeId, node.layer, s, input, (fn, access) => this.asAgent(sessionId, fn, nodeId, { access }));
   }
 
   /**
@@ -1896,7 +1928,7 @@ export class Kolab {
       throw new AccessError(`${ruling.actor} may not write the ${node.layer} layer of kolab ${node.kolab_id}: it holds ${describeAccess(access)}; apply the ruling as an actor that does`);
     }
     const author = { actor_id: ruling.actor, active_role: ROLE_OF_LAYER[node.layer], kolab: node.kolab_id };
-    const id = await this.writeDraft(nodeId, node.layer, author, input, (fn) => this.asSystem(fn, nodeId));
+    const id = await this.writeDraft(nodeId, node.layer, author, input, (fn, access) => this.asSystem(fn, nodeId, { access }));
     return this.judge(id, undefined, ruling.id);
   }
 
@@ -1906,7 +1938,7 @@ export class Kolab {
    */
   private async writeDraft(nodeId: string, layer: Layer, s: { actor_id: string; active_role: string; kolab: string },
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
-    as: (fn: (tx: Q, signal: Signal) => Promise<void>) => Promise<void>): Promise<string> {
+    as: (fn: (tx: Q, signal: Signal) => Promise<void>, access: boolean) => Promise<void>): Promise<string> {
 
     // A variant's new version keeps its foreign parent and carries its
     // existing exceptions forward; a plain node's parent is its own last version.
@@ -1924,10 +1956,21 @@ export class Kolab {
       }
     }
     let parentEls: ElementRow[] = [];
+    let heldBy: string | null = null;
     if (parentId) {
       const p = await this.version(parentId);
-      // A variant of another kolab's spec is a fork, which waits on a binding decision (KON).
-      if (p.kolab_id !== s.kolab) throw new AccessError(`parent ${parentId} is not in kolab ${s.kolab}, the kolab this session works in`);
+      // A variant of another kolab's committed version is a fork (KON9), which rests on its
+      // holder's Read there (LNK8): the author's, if they hold it now; otherwise the holder of the
+      // node's version already on this parent, carried, since this drafts nothing of the other
+      // kolab's that the node doesn't hold already. Anything else reads as a version that isn't there.
+      if (p.kolab_id !== s.kolab) {
+        const carried = (await this.db.query<{ parent_held_by: string }>(
+          `select parent_held_by from version where node_id = $1 and state = 'committed' and parent_version_id = $2
+            order by seq desc limit 1`, [nodeId, parentId])).rows[0]?.parent_held_by;
+        if (p.state === 'committed' && (await this.holds(s.actor_id, p.kolab_id!))) heldBy = s.actor_id;
+        else if (carried) heldBy = carried;
+        else throw new Error(`no version ${parentId}`);
+      }
       if (p.state !== 'committed') throw new GateError(`parent ${parentId} has not cleared review`);
       await this.refuseCycle(nodeId, parentId);
       parentEls = await this.elements(parentId);
@@ -1954,13 +1997,15 @@ export class Kolab {
     const removals = input.unlink?.length ? await this.linkIdentities(nodeId, latest?.id ?? null, null, input.unlink) : [];
     const id = ulid();
     // Built on the live version read above: if the node moves on before this commits, review sees it.
+    // A fork is written under a shared hold on the access lock, so the Read it rests on can't be
+    // revoked between the check (row-level security's, as it inserts) and its commit (LNK8).
     await as(async (tx) => {
       await writeVersion(tx, {
         id, node_id: nodeId, seq: await nextSeq(tx, nodeId), parent_version_id: parentId, base_version_id: latest?.id ?? null,
-        layer, actor_id: s.actor_id, active_role: s.active_role,
+        layer, actor_id: s.actor_id, active_role: s.active_role, parent_held_by: heldBy,
       }, els, deltaRows);
       await applyRemovals(tx, id, removals);
-    });
+    }, heldBy !== null);
     return id;
   }
 
@@ -2507,7 +2552,10 @@ export class Kolab {
    * parent's latest version and does nothing more.
    */
   private async rebaseJob(versionId: string, node: string | undefined, claim: Claim) {
-    await this.catchUp(node ?? (await this.version(versionId)).node_id, claim);
+    const n = node ?? (await this.version(versionId)).node_id;
+    // A dependent in another kolab's job also checks its links into other kolabs (LNK8).
+    await this.checkLinksAcross(n, claim);
+    await this.catchUp(n, claim);
   }
 
   /**
@@ -2531,7 +2579,10 @@ export class Kolab {
     }
     const human = newer.some((r) => r.active_role !== 'system');
     const parent = v.parent_version_id ? await this.version(v.parent_version_id) : undefined;
-    if (human || !parent || parent.node_id === v.node_id) {
+    // A fork whose holder no longer reads its parent's kolab can't be folded onto that kolab's
+    // newer work, which it may no longer see (LNK8): it is redrafted on the fork as it stands.
+    const unreadable = parent && parent.kolab_id !== v.kolab_id && !!(await this.unvouched(v.parent_held_by, parent.kolab_id!, v.kolab_id!, v.layer));
+    if (human || !parent || parent.node_id === v.node_id || unreadable) {
       const note = 'stale draft: the node committed a newer version; redraft against it';
       await this.reject(v.id, note);
       return { ok: false, note, version: v.id, stale: true };
@@ -2579,11 +2630,16 @@ export class Kolab {
         `select e.target_version_id, e.target_element_id, tn.name as tnode, tn.kolab_id as tkolab, t.seq as tseq
            from edge e join version t on t.id = e.target_version_id join node tn on tn.id = t.node_id
           where e.source_version_id = $1 and e.source_element_id is not distinct from $2 and t.layer = 'functional'
-          order by e.id limit 1`, [v.id, element])).rows[0];
+          order by (e.target_kolab_id = e.kolab_id) desc, e.id limit 1`, [v.id, element])).rows[0];
       const spec = link ? formatAddress({ kolab: link.tkolab, node: link.tnode, version: link.tseq, element: link.target_element_id ?? undefined }, { from: node.kolab_id }) : 'the spec';
+      // A spec in another kolab can't be asked from here (questions stay in their kolab): the
+      // question goes to the binding's own layer instead, to take up with that kolab.
+      const ask = link && link.tkolab === node.kolab_id;
       await this.raiseOnce(v, mark,
-        `The review gate thinks binding ${here} changes behavior beyond ${spec}: ${f.explanation} If this behavior is intended, amend the spec and answer; if not, answer "no" and the binding must change.`,
-        { version_id: link?.target_version_id ?? v.id, element_id: link?.target_element_id ?? element });
+        ask || !link
+          ? `The review gate thinks binding ${here} changes behavior beyond ${spec}: ${f.explanation} If this behavior is intended, amend the spec and answer; if not, answer "no" and the binding must change.`
+          : `The review gate thinks binding ${here} changes behavior beyond ${spec}, which is in another kolab: ${f.explanation} If that kolab intends this behavior, answer once its spec says so; if not, answer "no" and the binding must change.`,
+        { version_id: ask ? link.target_version_id : v.id, element_id: ask ? link.target_element_id : element });
     }
   }
 
@@ -2684,9 +2740,11 @@ export class Kolab {
     const src = await this.version(e.source);
     const s = await this.requireLayer(sessionId, src.layer, src.kolab_id);
     const tgt = await this.version(e.target);
-    // A link into another kolab needs Read on it and a mark when that goes (LNK8, D3), which wait
-    // on a binding decision: until then, a link stays inside its kolab.
-    if (tgt.kolab_id !== s.kolab) throw new AccessError(`the link target is not in kolab ${s.kolab}, the kolab this session works in`);
+    // A link into another kolab needs Read on it now (LNK8, D3), and only its committed versions
+    // can be named (D49): anything else reads as a version that isn't there. The link rests on
+    // this actor's Read, and is marked access_lost if that goes.
+    const across = tgt.kolab_id !== s.kolab;
+    if (across && (tgt.state !== 'committed' || !(await this.holds(s.actor_id, tgt.kolab_id!)))) throw new Error(`no version ${e.target}`);
     if (tgt.state !== 'committed') {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
@@ -2709,11 +2767,21 @@ export class Kolab {
           and target_element_id is not distinct from $5 and target_selector is not distinct from $6::jsonb`,
       [e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
         e.selector ? JSON.stringify(e.selector) : null]);
-    if (dup.rows[0]) return dup.rows[0].id;
+    if (dup.rows[0]) {
+      // Declared again across kolabs by someone who reads the target: they hold it now.
+      if (across) await this.holdLink(dup.rows[0].id, s.actor_id);
+      return dup.rows[0].id;
+    }
     const repoint = src.state === 'drafted' && src.actor_id === s.actor_id
       ? await this.repointed(src, e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null, e.selector ?? null) : undefined;
     const id = ulid();
     await this.asAgent(sessionId, async (tx) => {
+      // Across kolabs, Read is checked again here, under the shared access lock this transaction
+      // took first, so no revoke can land between the check and the link's commit (LNK8); row-level
+      // security (edge_target) checks it once more as the edge is inserted.
+      if (across && !(await tx.query<{ ok: boolean }>(`select kj_session_reads_version($1) as ok`, [e.target])).rows[0].ok) {
+        throw new Error(`no version ${e.target}`);
+      }
       // Re-pointing drops the marked link in the same transaction that adds its replacement.
       if (repoint) await applyRemovals(tx, src.id, repoint);
       // Linking in a draft what the draft drops keeps the link after all: the later word wins.
@@ -2725,11 +2793,11 @@ export class Kolab {
       }
       await tx.query(
         `insert into edge(id, kind, source_version_id, source_element_id, target_version_id,
-                          target_element_id, target_selector, target_fingerprint)
-         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+                          target_element_id, target_selector, target_fingerprint, held_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [id, e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
-          e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]);
-    }, src.node_id);
+          e.selector ? JSON.stringify(e.selector) : null, r.fingerprint, s.actor_id]);
+    }, src.node_id, { access: across });
     return id;
   }
 
@@ -2811,8 +2879,9 @@ export class Kolab {
       } else {
         const a = parseAddress(ref.target);
         what = `link from ${ref.sourceElement ?? 'the whole version'} to ${ref.target}`;
-        if (a.kolab !== undefined && a.kolab !== node.kolab_id) throw new AccessError(`the link target is not in kolab ${node.kolab_id}, the node's kolab`);
-        const t = await this.findNode(this.db, node.kolab_id, a.node);
+        // A link into another kolab is removed as any other (LNK8): found among the node's own links,
+        // so a removal names nothing of that kolab that the link didn't already.
+        const t = await this.findNode(this.db, a.kolab ?? node.kolab_id, a.node);
         rows = t ? await this.matchingLinks(cols, [base, draft], {
           kind: ref.kind ?? null, source_element_id: ref.sourceElement ?? null, target_node_id: t.id,
           target_element_id: a.element ?? null, target_selector: a.selector ?? null,
@@ -2908,7 +2977,12 @@ export class Kolab {
       [v.node_id, v.seq]);
     // Only edges pinned to versions older than this one: a cascade run late (W1.8) never touches an
     // edge a newer version's commit, or its dependent's catch-up, has re-pinned already.
-    for (const e of inbound.rows) await this.checkEdge(e, v.id);
+    // A link from another kolab is that kolab's work: its own rebase job, below.
+    const elsewhere = new Set<string>();
+    for (const e of inbound.rows) {
+      if (e.kolab_id !== v.kolab_id) elsewhere.add(e.source_version_id);
+      else await this.checkEdge(e, v.id);
+    }
 
     // 2. Catch-up: if this version was drafted while its upstream moved on, its
     //    outbound edges may be pinned to targets that are no longer current.
@@ -2944,6 +3018,22 @@ export class Kolab {
     // 5. Catch-up for this version itself: drafted against a parent that has since moved on.
     claim.check();
     await this.catchUp(v.node_id, claim);
+
+    // 6. What this commit owes other kolabs' links into it (LNK8): a rebase job for each
+    //    dependent version there, which brings it up to date with this kolab (rebaseJob), as the
+    //    commit step's rebase jobs do for forks there. Each runs, fails, backs off and retries on
+    //    its own, so another kolab's trouble never holds this cascade up, and the committer hears
+    //    nothing of it (D49, D53).
+    if (elsewhere.size) {
+      claim.check();
+      const queued = await this.asSystem(async (tx) => {
+        let n = 0;
+        for (const id of elsewhere) n += await this.enqueueRebase(tx, id);
+        if (n) await this.notifyWork(tx);
+        return n;
+      });
+      if (queued) this.wake();
+    }
     return rebases;
   }
 
@@ -2958,6 +3048,26 @@ export class Kolab {
     if (!live?.parent_version_id) return;
     const p = await this.version(live.parent_version_id);
     if (p.node_id === nodeId) return;
+    // A fork rebases onto its parent's newer work only while its holder vouches for it (LNK8):
+    // Read on the parent's kolab, and Write on the fork's layer in its own. Otherwise it is marked
+    // access_lost, under a shared hold on the access lock and then its lock, so a change of access
+    // can't land between the check and the mark; a holder who vouches again settles that mark first.
+    if (p.kolab_id !== live.kolab_id) {
+      const lost = await this.asSystem(async (tx, signal) => {
+        const now = (await tx.query<VersionRow>(`select * from version where id = $1`, [live.id])).rows[0];
+        const why = await this.unvouched(now.parent_held_by, p.kolab_id!, now.kolab_id!, now.layer, tx);
+        if (!why) {
+          const open = await tx.query<{ id: string }>(
+            `select i.id from invalidation i join version x on x.id = i.version_id
+              where x.node_id = $1 and i.reason = 'access_lost' and i.edge_id is null and i.state = 'open'`, [nodeId]);
+          for (const m of open.rows) await this.closeMarkIn(tx, signal, m.id, `${now.parent_held_by} holds it again`);
+          return false;
+        }
+        await this.forkAccessLostIn(tx, signal, now, why);
+        return true;
+      }, nodeId, { access: true });
+      if (lost) return;
+    }
     const latestParent = (await this.latestCommitted(p.node_id))!;
     if (latestParent.id === p.id) return this.settleRebaseFailed(live);
     if (!(await this.mayRebase(live, latestParent))) return;
@@ -2996,24 +3106,208 @@ export class Kolab {
    * a stop finds the edge marked and its walk done, or neither (W1.8).
    */
   private async checkEdge(e: EdgeRow, against: string): Promise<void> {
-    const r = await this.resolveIn(against, e.target_element_id, e.target_selector);
     const source = (await this.db.query<{ node_id: string }>(`select node_id from version where id = $1`, [e.source_version_id])).rows[0].node_id;
+    // Checked, and marked, under the dependent's lock: two runs of one cascade that overlap (a
+    // lost claim, W1.8) mark the edge once.
+    await this.asSystem((tx, signal) => this.checkEdgeIn(tx, signal, e, against), source, { access: e.target_kolab_id !== e.kolab_id });
+  }
+
+  /**
+   * checkEdge, in `tx`. An edge with an open mark is left as it is: it is re-checked once that
+   * mark settles. A link into another kolab is checked only while its holder vouches for it
+   * (LNK8): otherwise it is marked access_lost, and nothing of the newer version reaches it. Every
+   * caller holds the access lock (shared, or exclusively for a change of access), taken before
+   * any node's lock, so a change of access can't land between the check and the mark.
+   */
+  private async checkEdgeIn(tx: Q, signal: Signal, e: EdgeRow, against: string): Promise<void> {
+    if ((await tx.query(`select 1 from invalidation where edge_id = $1 and state = 'open'`, [e.id])).rows.length) return;
+    if (e.target_kolab_id !== e.kolab_id) {
+      const why = await this.unvouchedLink(e, tx);
+      if (why) {
+        await this.linkAccessLostIn(tx, signal, e, why);
+        return;
+      }
+    }
+    const r = resolveInElements(await this.elements(against, tx), e.target_element_id, e.target_selector);
     if (r.status === 'ok' && r.fingerprint === e.target_fingerprint) {
       // Content-identical: a cheap pointer bump, not a regeneration.
-      await this.asSystem((tx) => tx.query(`update edge set target_version_id = $2 where id = $1`, [e.id, against]));
+      await tx.query(`update edge set target_version_id = $2 where id = $1`, [e.id, against]);
       return;
     }
     const reason = r.status === 'orphan' ? 'orphaned' : r.status === 'fuzzy' ? 'fuzzy_reanchor' : 'changed';
-    // Checked again, and marked, under the dependent's lock: two runs of one cascade that overlap
-    // (a lost claim, W1.8) mark the edge once.
-    await this.asSystem(async (tx, signal) => {
-      if ((await tx.query(`select 1 from invalidation where edge_id = $1 and state = 'open'`, [e.id])).rows.length) return;
-      const m = {
-        version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: against, reason,
-      };
-      const id = await this.markIn(tx, signal, m);
-      await this.propagateIn(tx, signal, { id, ...m });
-    }, source);
+    const m = {
+      version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: against, reason,
+    };
+    const id = await this.markIn(tx, signal, m);
+    await this.propagateIn(tx, signal, { id, ...m });
+  }
+
+  // ---- links and forks across kolabs (LNK8, KON9) ----------------------------
+
+  /** Whether `actor` holds at least Read on `kolab` now (kj_access). */
+  private async holds(actor: string | null | undefined, kolab: string, q: Q = this.db): Promise<boolean> {
+    return !!actor && !!(await accessIn(q, actor, kolab)).level;
+  }
+
+  /**
+   * Why `holder` no longer vouches for a link or fork from kolab `own` (its dependent's, on
+   * `layer`) into kolab `target`, or undefined if they do (LNK8, D53): a holder must still read
+   * the other kolab and still write the dependent's layer in its own, so someone who has left the
+   * dependent's kolab is no channel into it.
+   */
+  private async unvouched(holder: string | null | undefined, target: string, own: string, layer: Layer, q: Q = this.db): Promise<string | undefined> {
+    if (!holder) return 'it has no holder';
+    if (!(await accessIn(q, holder, target)).level) return `${holder}, whose access it rests on, can no longer read kolab ${target}`;
+    if (!(await accessIn(q, holder, own)).layers.includes(layer)) return `${holder}, whose access it rests on, can no longer write the ${layer} layer of kolab ${own}`;
+    return undefined;
+  }
+
+  /** unvouched, for a link: its holder, its target's kolab, and its source's kolab and layer. */
+  private async unvouchedLink(e: EdgeRow, q: Q = this.db): Promise<string | undefined> {
+    const layer = (await q.query<{ layer: Layer }>(`select layer from version where id = $1`, [e.source_version_id])).rows[0].layer;
+    return this.unvouched(e.held_by, e.target_kolab_id, e.kolab_id, layer, q);
+  }
+
+  /**
+   * A link into another kolab whose holder no longer vouches for it (LNK8): its dependent element
+   * is marked access_lost, once, on the version the link is pinned to, and the mark spreads in the
+   * dependent's own kolab as any direct mark does. In `tx`.
+   */
+  private async linkAccessLostIn(tx: Q, signal: Signal, e: EdgeRow, why: string) {
+    if ((await tx.query(`select 1 from invalidation where edge_id = $1 and reason = 'access_lost' and state = 'open'`, [e.id])).rows.length) return;
+    const m = {
+      version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: e.target_version_id,
+      reason: 'access_lost', note: why,
+    };
+    const id = await this.markIn(tx, signal, m);
+    await this.propagateIn(tx, signal, { id, ...m });
+  }
+
+  /**
+   * A fork whose holder no longer reads its parent's kolab (LNK8, KON9): its live version is
+   * marked access_lost, once, and Kolab stops rebasing it onto that kolab's commits. In `tx`.
+   */
+  private async forkAccessLostIn(tx: Q, signal: Signal, v: Pick<VersionRow, 'id' | 'node_id' | 'parent_version_id' | 'parent_held_by'>, why: string) {
+    const open = await tx.query(
+      `select 1 from invalidation i join version x on x.id = i.version_id
+        where x.node_id = $1 and i.reason = 'access_lost' and i.edge_id is null and i.state = 'open'`, [v.node_id]);
+    if (open.rows.length) return;
+    await this.markIn(tx, signal, {
+      version_id: v.id, element_id: null, triggered_by: v.parent_version_id!, reason: 'access_lost', note: why,
+    });
+  }
+
+  /**
+   * Someone who reads a link's target kolab holds it now (LNK8): they declared it again, cleared
+   * its mark, or revised the element that relies on it. An open access_lost mark settles, and the
+   * link is checked against its target's latest version, which it may not have followed. Under the
+   * access lock (shared) and then the dependent's lock, before any row is written. Returns
+   * whether a mark settled.
+   */
+  private async holdLink(edgeId: string, actor: string): Promise<boolean> {
+    const e0 = (await this.db.query<EdgeRow & { node_id: string }>(
+      `select e.*, s.node_id from edge e join version s on s.id = e.source_version_id where e.id = $1`, [edgeId])).rows[0];
+    return this.asSystem((tx, signal) => this.holdLinkIn(tx, signal, edgeId, actor), e0.node_id, { access: true });
+  }
+
+  private async holdLinkIn(tx: Q, signal: Signal, edgeId: string, actor: string): Promise<boolean> {
+    const e = (await tx.query<EdgeRow>(`update edge set held_by = $2 where id = $1 returning *`, [edgeId, actor])).rows[0];
+    // Only someone who vouches for it settles its mark (checked again here, under the lock).
+    if (await this.unvouchedLink(e, tx)) return false;
+    return this.restoreLinkIn(tx, signal, e, `held by ${actor}, who reads kolab ${e.target_kolab_id}`);
+  }
+
+  /** Settles a link's open access_lost mark, if it has one, and checks the link against its target's latest version. In `tx`. */
+  private async restoreLinkIn(tx: Q, signal: Signal, e: EdgeRow, by: string): Promise<boolean> {
+    const open = (await tx.query<{ id: string }>(
+      `select id from invalidation where edge_id = $1 and reason = 'access_lost' and state = 'open'`, [e.id])).rows;
+    if (!open.length) return false;
+    for (const m of open) await this.closeMarkIn(tx, signal, m.id, by);
+    const latest = (await tx.query<{ id: string }>(
+      `select l.id from version l join version t on t.node_id = l.node_id
+        where t.id = $1 and l.state = 'committed' order by l.seq desc limit 1`, [e.target_version_id])).rows[0].id;
+    if (latest !== e.target_version_id) await this.checkEdgeIn(tx, signal, e, latest);
+    return true;
+  }
+
+  /**
+   * Brings marks into line with who holds what, in `tx`, the transaction that changed access or
+   * found it changed (LNK8): every live link into another kolab whose holder no longer reads it,
+   * and every live fork whose holder no longer reads its parent's kolab, is marked access_lost;
+   * every such mark whose holder reads again settles. A link settles here and is checked against
+   * its target's latest version at once; a fork's catch-up onto its parent's latest version is a
+   * rebase job in the outbox (D43, P6), written here (W1.8), whose fork live versions this returns
+   * so the caller can wake the worker once the transaction commits.
+   *
+   * Only links and forks held by `holders` are looked at: the actors whose access the change could
+   * alter, and the agents they own (holdersOf), found through edge_cross_kolab and version_forks.
+   */
+  private async reconcileAccessIn(tx: Q, signal: Signal, holders: string[]): Promise<string[]> {
+    if (!holders.length) return [];
+    const crossing = await tx.query<EdgeRow & { source_layer: Layer }>(
+      `select e.*, s.layer as source_layer from edge e join version s on s.id = e.source_version_id
+        where e.target_kolab_id <> e.kolab_id and e.held_by = any($1) and ${LIVE('s')}`, [holders]);
+    const forks = await tx.query<VersionRow & { parent_kolab: string }>(
+      `select v.*, p.kolab_id as parent_kolab from version v join version p on p.id = v.parent_version_id
+        where v.parent_held_by = any($1) and v.state = 'committed' and ${LIVE('v')}`, [holders]);
+    const verdicts = new Map<string, string | undefined>();
+    const why = async (holder: string, target: string, own: string, layer: Layer) => {
+      const key = JSON.stringify([holder, target, own, layer]);
+      if (!verdicts.has(key)) verdicts.set(key, await this.unvouched(holder, target, own, layer, tx));
+      return verdicts.get(key);
+    };
+    for (const e of crossing.rows) {
+      const lost = await why(e.held_by!, e.target_kolab_id, e.kolab_id, e.source_layer);
+      if (!lost) await this.restoreLinkIn(tx, signal, e, `access restored: ${e.held_by} holds it again`);
+      else await this.linkAccessLostIn(tx, signal, e, lost);
+    }
+    const catchUp: string[] = [];
+    for (const v of forks.rows) {
+      const lost = await why(v.parent_held_by!, v.parent_kolab, v.kolab_id!, v.layer);
+      if (lost) {
+        await this.forkAccessLostIn(tx, signal, v, lost);
+        continue;
+      }
+      const open = (await tx.query<{ id: string }>(
+        `select i.id from invalidation i join version x on x.id = i.version_id
+          where x.node_id = $1 and i.reason = 'access_lost' and i.edge_id is null and i.state = 'open'`, [v.node_id])).rows;
+      if (!open.length) continue;
+      for (const m of open) await this.closeMarkIn(tx, signal, m.id, `access restored: ${v.parent_held_by} holds it again`);
+      if (await this.enqueueRebase(tx, v.id)) catchUp.push(v.id);
+    }
+    return catchUp;
+  }
+
+  /**
+   * Writes a rebase job (D43, P6), in `tx`, for `versionId`'s node, which depends on another kolab
+   * (LNK8, KON9): a link of its into that kolab to check, or a fork whose holder holds it again.
+   * Unclaimed, for the worker; none if one is queued already. Returns how many it wrote.
+   */
+  private async enqueueRebase(tx: Q, versionId: string): Promise<number> {
+    const r = await tx.query(
+      `insert into outbox(id, kind, version_id, payload)
+       select $1, 'rebase', v.id, jsonb_build_object('node', v.node_id) from version v where v.id = $2
+          and not exists (select 1 from outbox o join version ov on ov.id = o.version_id where o.kind = 'rebase' and ov.node_id = v.node_id)
+       on conflict (kind, version_id) do nothing returning id`, [outboxId(), versionId]);
+    return r.rows.length;
+  }
+
+  /**
+   * Links of `node`'s live version into other kolabs, checked against their targets' latest
+   * versions: what a commit in another kolab owes them, in its own job (rebaseJob). Idempotent.
+   */
+  private async checkLinksAcross(node: string, claim?: Claim) {
+    const outbound = await this.db.query<EdgeRow & { latest: string }>(
+      `select e.*, (select l.id from version l where l.node_id = t.node_id and l.state = 'committed'
+                     order by l.seq desc limit 1) as latest
+         from edge e join version t on t.id = e.target_version_id
+        where e.source_version_id = (select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1)
+          and e.target_kolab_id <> e.kolab_id
+          and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`, [node]);
+    for (const e of outbound.rows) {
+      claim?.check();
+      if (e.latest !== e.target_version_id) await this.checkEdge(e, e.latest);
+    }
   }
 
   /**
@@ -3030,11 +3324,14 @@ export class Kolab {
    * the edge's address resolves to it again, so its dependent gets an upstream_dirty mark too.
    * Edges into a version are found by edge_target_version (0012).
    *
-   * Archived kolabs (D52), a hook for links across kolabs (#39, LNK8): today every edge stays in its
-   * kolab, so a live kolab's cascade never reaches a holder in an archived one. Once edges cross
-   * kolabs, a holder whose kolab is archived (archivedKolabSql) must be skipped here, as access
-   * lost, rather than marked: its mark would be refused by kolab_writable and abort the live
-   * kolab's cascade part way.
+   * A mark spreads only within its own kolab: the walk follows links of that kolab alone. A link
+   * from another kolab relies on this one's committed text, and hears of a change when one
+   * commits; this kolab's marks, which say what is in doubt here, stay private (D49, LNK8).
+   *
+   * Archived kolabs (D52): since a mark spreads only within its own kolab, a live kolab's cascade
+   * never marks anything in an archived one here. A dependent in an archived kolab is skipped
+   * where Kolab would otherwise write to it from another kolab (reconcileAccessIn); its rebase
+   * jobs wait until it is unarchived.
    */
   private async propagateIn(tx: Q, signal: Signal,
     m: { id: string; version_id: string; element_id: string | null; edge_id: string; triggered_by: string }) {
@@ -3067,7 +3364,7 @@ export class Kolab {
            from walk w
            join version wv on wv.id = w.version_id
            join version t on t.node_id = wv.node_id
-           join edge e on e.target_version_id = t.id
+           join edge e on e.target_version_id = t.id and e.kolab_id = wv.kolab_id
            join version s on s.id = e.source_version_id
           where (w.element_id is null or e.target_element_id is null or e.target_element_id = w.element_id)
             and not (e.source_version_id = $3 and ($4::text is null or e.source_element_id is not distinct from $4::text))
@@ -3215,6 +3512,8 @@ export class Kolab {
         id, node_id: child.node_id, seq: await nextSeq(tx, child.node_id), parent_version_id: newParent.id,
         base_version_id: opts.base ?? child.id, layer: child.layer,
         actor_id: opts.author?.actor_id ?? SYSTEM_ACTOR, active_role: opts.author?.active_role ?? 'system',
+        // A fork's rebase rests on the Read its version did (catchUp checked it just now).
+        parent_held_by: newParent.kolab_id !== child.kolab_id ? child.parent_held_by ?? null : null,
       }, els, kept);
       if (opts.edgesFrom) {
         await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
@@ -3294,12 +3593,18 @@ export class Kolab {
           and i.created_at < me.created_at`, [v.id, revised]);
     for (const m of marks.rows) {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
+      // Across kolabs, only an author who reads the target's kolab can have addressed it, and they
+      // hold the link from then on (LNK8).
+      const across = e.target_kolab_id !== e.kolab_id;
+      if (across && !(await this.holds(v.actor_id, e.target_kolab_id))) continue;
       const latest = (await this.latestCommitted(m.target_node))!;
       const r = await this.resolveIn(latest.id, e.target_element_id, e.target_selector);
       if (r.status === 'orphan') continue;
       await this.asSystem((tx) => tx.query(
-        `update edge set target_version_id = $2, target_fingerprint = $3 where id = $1`, [e.id, latest.id, r.fingerprint]));
+        `update edge set target_version_id = $2, target_fingerprint = $3, held_by = $4 where id = $1`,
+        [e.id, latest.id, r.fingerprint, across ? v.actor_id : e.held_by]));
       await this.closeMark(m.id, addressedBy);
+      if (across) await this.holdLink(e.id, v.actor_id);
     }
     const answered = await this.db.query<{ id: string }>(
       `select i.id from invalidation i
@@ -3380,10 +3685,12 @@ export class Kolab {
       await writeVersion(tx, {
         id, node_id: v.node_id, seq: await nextSeq(tx, v.node_id), parent_version_id: v.parent_version_id,
         base_version_id: v.id, layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
+        // A fork's resolution stays on the parent its version is on, held as that version is.
+        parent_held_by: v.parent_held_by ?? null,
       }, materialize(parentEls, next), next);
       await tx.exec('set local role none; set local role kj_system');
       await tx.query(`update version set resolves = $2 where id = $1`, [id, JSON.stringify(ruling)]);
-    }, v.node_id);
+    }, v.node_id, { access: !!v.parent_held_by });
 
     // The resolution is itself a new version: it must clear the gate, and its review if it has
     // reviewers, before the mark closes, the query is answered, or precedent is set. The ruling waits
@@ -3395,23 +3702,59 @@ export class Kolab {
 
   // ---- clearing ------------------------------------------------------------
 
-  /** "I checked; my dependent still holds." Re-pins the edge and clears what it caused. */
+  /**
+   * "I checked; my dependent still holds." Re-pins the edge and clears what it caused. Across
+   * kolabs only someone who reads the target's kolab can check, and they hold the link from then
+   * on (LNK8). An access_lost mark is cleared by someone who reads what its holder no longer does:
+   * they hold the link or fork, the mark settles, and the link is checked, or the fork caught up,
+   * against the other kolab's latest version.
+   */
   async clear(sessionId: string, markId: string) {
     const m = await this.markRow(markId);
     const v = await this.version(m.version_id);
     const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
     if (m.delta_id) throw new Error('use resolveOverride for override marks');
     if (m.reason === 'ruled') throw new GateError('a ruling changed this element\'s intent: amend it and commit; that version settles the mark (D51)');
+    if (m.reason === 'access_lost') return this.takeOver(s.actor_id, m, v);
     if (m.edge_id) {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
+      if (e.target_kolab_id !== e.kolab_id && !(await this.holds(s.actor_id, e.target_kolab_id))) {
+        throw new AccessError(`${s.actor_id} can't read kolab ${e.target_kolab_id}, so can't check this link into it; someone who reads it clears it`);
+      }
       const tNode = (await this.version(e.target_version_id)).node_id;
       const latest = (await this.latestCommitted(tNode))!;
       const r = await this.resolveIn(latest.id, e.target_element_id, e.target_selector);
       if (r.status === 'orphan') throw new GateError('the target no longer exists; re-link instead of clearing');
       await this.asSystem((tx) => tx.query(
-        `update edge set target_version_id = $2, target_fingerprint = $3 where id = $1`, [e.id, latest.id, r.fingerprint]));
+        `update edge set target_version_id = $2, target_fingerprint = $3, held_by = $4 where id = $1`, [e.id, latest.id, r.fingerprint, s.actor_id]));
+      await this.closeMark(markId, s.actor_id);
+      // They hold the link now, so an access_lost mark its earlier holder left settles too.
+      if (e.target_kolab_id !== e.kolab_id) await this.holdLink(e.id, s.actor_id);
+      return;
     }
     await this.closeMark(markId, s.actor_id);
+  }
+
+  /** clear, for an access_lost mark: `actor`, who must read the other kolab, holds the link or fork now. */
+  private async takeOver(actor: string, m: MarkRow, v: VersionRow) {
+    if (m.state !== 'open') throw new GateError(`mark ${m.id} is already cleared`);
+    if (m.edge_id) {
+      const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
+      if (!(await this.holds(actor, e.target_kolab_id))) {
+        throw new AccessError(`${actor} can't read kolab ${e.target_kolab_id} either: only someone who reads it can hold this link`);
+      }
+      await this.holdLink(e.id, actor);
+      return;
+    }
+    const parent = await this.version(v.parent_version_id!);
+    if (!(await this.holds(actor, parent.kolab_id!))) {
+      throw new AccessError(`${actor} can't read kolab ${parent.kolab_id} either: only someone who reads it can hold this fork`);
+    }
+    await this.asSystem(async (tx, signal) => {
+      await tx.query(`update version set parent_held_by = $2 where id = $1`, [v.id, actor]);
+      await this.closeMarkIn(tx, signal, m.id, `held by ${actor}, who reads kolab ${parent.kolab_id}`);
+    }, v.node_id, { access: true });
+    await this.catchUp(v.node_id);
   }
 
   /**
@@ -3476,8 +3819,8 @@ export class Kolab {
     opts: { kind?: QueryKind; from?: Address | string } = {}): Promise<string> {
     const s = await this.session(sessionId);
     const a = typeof address === 'string' ? parseAddress(address) : address;
-    // Anyone with access may ask (Q1), about what is in the kolab they work in: a question
-    // across kolabs would cross with a link's rules (LNK8), which wait on a binding decision.
+    // Anyone with access may ask (Q1), about what is in the kolab they work in: questions stay in
+    // their kolab, whose layers answer them (TEN12); a link or a fork may cross (LNK8, KON9).
     await this.nodeIn(sessionId, a, 'asking');
     const r = await this.resolve(a, { session: sessionId });
     if (!r.versionId || r.status === 'orphan') throw new Error(`cannot ask about ${typeof address === 'string' ? address : JSON.stringify(address)}: it does not resolve`);
@@ -3905,14 +4248,15 @@ export class Kolab {
                   e.target_element_id, e.target_selector, tn.name as target_node, tn.kolab_id as target_kolab, tv.seq as target_seq
              from edge e join version sv on sv.id = e.source_version_id join version tv on tv.id = e.target_version_id
              join node sn on sn.id = sv.node_id join node tn on tn.id = tv.node_id`;
+    // Links are their own kolab's: downstream, only links from this version's kolab show (D49).
     const sql = direction === 'upstream'
-      ? `select ${cols} where e.source_version_id = $1`
-      : `select ${cols} where tv.node_id = (select node_id from version where id = $1) and ${LIVE('sv')}`;
-    const from = (await this.version(versionId)).kolab_id;
+      ? `select ${cols} where e.source_version_id = $1 and $2::text is not null`
+      : `select ${cols} where tv.node_id = (select node_id from version where id = $1) and e.kolab_id = $2 and ${LIVE('sv')}`;
+    const from = (await this.version(versionId)).kolab_id!;
     const rows = (await this.db.query<{
       id: string; kind: string; source_element_id: string | null; source_node: string; source_kolab: string; source_seq: number;
       target_element_id: string | null; target_selector: QuoteSelector | null; target_node: string; target_kolab: string; target_seq: number;
-    }>(sql, [versionId])).rows;
+    }>(sql, [versionId, from])).rows;
     return rows.map((r) => ({
       edge: r.id,
       kind: r.kind,
@@ -3955,6 +4299,9 @@ export class Kolab {
         layer: r.layer,
         because: r.reason === 'query_answered' ? r.note ?? 'your question was answered'
           : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
+          : r.reason === 'access_lost' ? (r.edge_id
+            ? `${trig({ element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} is in another kolab: ${r.note ?? 'its holder can no longer read it'}`
+            : `parent ${trig({}).slice('kj:'.length)} is in another kolab: ${r.note ?? 'its holder can no longer read it'}`)
           : r.note ? `review gate: ${r.note}`
           : r.edge_id
           ? `${trig({ element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} changed in version ${r.trig_seq}`
@@ -4171,6 +4518,12 @@ export class Kolab {
         await tx.query(`update invalidation set version_id = $2 where version_id = $1 and state = 'open' and delta_id is null`, [p.id, v.id]);
         await this.settleUnreached(tx, signal, v, sources, `its link was removed by ${at}`);
       }
+      // A fork's access_lost mark settles once the node is no longer a fork (LNK8).
+      if (!v.parent_held_by) {
+        const unforked = await tx.query<{ id: string }>(
+          `select id from invalidation where version_id = $1 and state = 'open' and reason = 'access_lost' and edge_id is null`, [p.id]);
+        for (const m of unforked.rows) await this.closeMarkIn(tx, signal, m.id, `settled: ${at} is no longer a fork`);
+      }
       // Edge and transitive marks move to the new version.
       await tx.query(`update invalidation set version_id = $2 where version_id = $1 and state = 'open' and delta_id is null`, [p.id, v.id]);
       // An override mark follows its element if the new version's override is still not clean;
@@ -4236,6 +4589,7 @@ export const NEXT_STEP: Record<string, string> = {
   role_boundary: 'The review gate thinks this crosses the layer boundary. A question went to the layer that owns the answer; the mark clears when it is answered. Meanwhile, work continues at risk.',
   query_answered: 'A question this element was waiting on has been answered. Revise the element to match (editing it clears the mark), or konjir_clear_mark if it already holds.',
   ruled: 'A ruling changed the intent of this element (D51). Amend it to say what the ruling says, and commit it: that version settles the mark and its question. It can\'t be cleared by hand.',
+  access_lost: 'This relies on another kolab that the actor it rests on can no longer read, so its changes no longer reach you. Someone here who reads that kolab can konjir_clear_mark to hold it (it is then checked against that kolab\'s latest version); otherwise remove the dependency in a new draft. The mark settles by itself if the access comes back.',
 };
 
 /**
@@ -4388,9 +4742,9 @@ async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<stri
       nid = ulid();
       await tx.query(
         `insert into edge(id, kind, source_version_id, source_element_id, target_version_id,
-                          target_element_id, target_selector, target_fingerprint)
-         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [nid, e.kind, to, e.source_element_id, e.target_version_id, e.target_element_id, selector, e.target_fingerprint]);
+                          target_element_id, target_selector, target_fingerprint, held_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [nid, e.kind, to, e.source_element_id, e.target_version_id, e.target_element_id, selector, e.target_fingerprint, e.held_by]);
     }
     await tx.query(`update invalidation set edge_id = $2 where edge_id = $1 and state = 'open'`, [e.id, nid]);
   }
@@ -4450,6 +4804,33 @@ interface MarkInput {
 /** An open session: its actor, role and kolab, and the actor's access there now. */
 interface Session {
   actor_id: string; active_role: Role; kolab: string; kind: ActorKind; owner: string | null; access: Access;
+}
+
+/** Whose access a change of access can alter: actors (people or agents), or the members of a team and of the teams under it. */
+type Affected = { users?: string[]; team?: string };
+
+/** Who a grant names, as Affected. */
+const granted = (g: { column: 'user_id' | 'team_id' | 'agent_id'; id: string }): Affected =>
+  g.column === 'team_id' ? { team: g.id } : { users: [g.id] };
+
+/**
+ * The actors a change of access can affect (LNK8 holders): those named, a team's members and
+ * those of every team under it, and every agent any of them owns, whose access is cut down to
+ * its owner's (D30). Organizations' own agents hold only their organization's kolabs, which no
+ * membership changes.
+ */
+async function holdersOf(q: Q, who: Affected): Promise<string[]> {
+  const r = await q.query<{ id: string }>(
+    `with recursive sub(id) as (
+       select id from team where id = $2
+       union select t.id from team t join sub on t.parent_id = sub.id
+     ), named(id) as (
+       select unnest($1::text[])
+       union select tm.user_id from team_member tm where tm.team_id in (select id from sub)
+     )
+     select id from named union select a.id from actor a where a.owner_id in (select id from named)`,
+    [who.users ?? [], who.team ?? null]);
+  return r.rows.map((x) => x.id);
 }
 
 /** Ends, in `tx`, every open session that can no longer reach its kolab. Returns how many. */
@@ -4579,9 +4960,9 @@ async function overtakenBy(q: Q, v: VersionRow): Promise<Overtaker[] | undefined
 async function writeVersion(tx: Q, v: Omit<VersionRow, 'state' | 'kolab_id'>, els: ElementRow[],
   deltas: Omit<DeltaRow, 'id' | 'version_id'>[]) {
   await tx.query(
-    `insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role)
-     values ($1,$2,$3,$4,$5,$6,'drafted',$7,$8)`,
-    [v.id, v.node_id, v.seq, v.parent_version_id, v.base_version_id, v.layer, v.actor_id, v.active_role]);
+    `insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role, parent_held_by)
+     values ($1,$2,$3,$4,$5,$6,'drafted',$7,$8,$9)`,
+    [v.id, v.node_id, v.seq, v.parent_version_id, v.base_version_id, v.layer, v.actor_id, v.active_role, v.parent_held_by ?? null]);
   for (const e of els) {
     await tx.query(
       `insert into element(version_id, element_id, parent_element_id, ord, text, fingerprint)
