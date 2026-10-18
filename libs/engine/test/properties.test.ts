@@ -55,6 +55,26 @@ const op = fc.oneof(
 );
 type Op = typeof op extends fc.Arbitrary<infer T> ? T : never;
 
+/**
+ * With rebases queued (D43, P6): the same operations, and the worker running the oldest queued
+ * rebase now and then. A variant's own override or resolution runs once its queue is empty
+ * (drain), since a person editing a variant reads it first; everything else lands while
+ * rebases wait.
+ */
+const queuedOp = fc.oneof(
+  { weight: 8, arbitrary: op },
+  { weight: 3, arbitrary: fc.record({ t: fc.constant('rebase' as const) }) },
+  // A person edits or resolves on a variant whose rebase may still be queued: built on what the
+  // variant shows now, and caught up by the commit's own catch-up.
+  { weight: 3, arbitrary: fc.record({ t: fc.constant('now' as const), o: fc.oneof(
+    fc.record({ t: fc.constant('override' as const), v: variant, el: fc.constantFrom('E1', 'E2', 'E3', 'X1'), i: text }),
+    fc.record({
+      t: fc.constant('resolve' as const), k: fc.nat(), how: fc.constantFrom<Resolution>('reaffirm', 'adopt_parent', 'amend'), i: text,
+    }),
+  ) }) },
+);
+type QueuedOp = typeof queuedOp extends fc.Arbitrary<infer T> ? T : never;
+
 // ---- Kolab, as the model sees it ---------------------------------------------
 
 type Ctx = Awaited<ReturnType<typeof setup>>;
@@ -101,6 +121,8 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
     m.V.V2.set(d.element, { kind: 'override', text: d.text, baseFp: fp(pe.text), state: 'clean', parent: pe.parent });
   }
 
+  m.placed('V1');
+  m.placed('V2');
   const versions: Partial<Record<NodeKey, string>> = { P: p, V1: v1, V2: v2 };
   for (const [key, kind] of [['B', 'technical_binding'], ['W', 'wbs'], ['X', 'work_package']] as const) {
     for (const el of PLAIN[key]) m.plain[key].set(el, t(el, 0));
@@ -180,10 +202,13 @@ async function check(kolab: Kolab, run: Run, m: Model, step: string, before: Map
     same(where, [k, Object.fromEntries(els.map((e) => [e.element_id, e.text]))], [k, m.textOf(k)]);
   }
 
-  // OVR3: each variant sits on its parent's live version. CAS5: its overrides are in the model's states.
+  // OVR3: each variant sits on its parent's live version, unless its rebase is queued (D43, P6),
+  // which readNode shows. CAS5: its overrides are in the model's states.
   for (const v of ['V1', 'V2'] as const) {
     const ver = await kolab.version(latest[v]);
-    same(where, [v, 'parent', ver.parent_version_id], [v, 'parent', latest[m.parentOf(v)]]);
+    const queued = m.queue.includes(v);
+    same(where, [v, 'rebase queued', !!(await kolab.pendingRebase(run.ids[v]))], [v, 'rebase queued', queued]);
+    if (!queued) same(where, [v, 'parent', ver.parent_version_id], [v, 'parent', latest[m.parentOf(v)]]);
     const deltas = (await kolab.db.query<{ element_id: string; kind: string; state: string; text: string }>(
       `select element_id, kind, state, text from delta where version_id = $1 order by element_id`, [latest[v]])).rows;
     const want = [...m.V[v]].map(([el, d]) => ({ element_id: el, kind: d.kind, state: d.state, text: d.text }))
@@ -242,10 +267,23 @@ async function check(kolab: Kolab, run: Run, m: Model, step: string, before: Map
 }
 
 /** Applies one operation to Kolab and the model. Returns a description of what it did, for messages. */
-async function apply(ctx: Ctx, run: Run, m: Model, o: Op, marks: Map<string, string>): Promise<string> {
+async function apply(ctx: Ctx, run: Run, m: Model, o: Op | QueuedOp, marks: Map<string, string>, now = false): Promise<string> {
   const { kolab, product, engineer } = ctx;
   const t = (el: string, i: number) => textFor(run.tag, el, i);
+  if (o.t === 'now') return `${await apply(ctx, run, m, o.o, marks, true)} (rebases queued: ${m.queue.join(', ') || 'none'})`;
+  if (m.deferred && !now && (o.t === 'override' || o.t === 'resolve') && m.queue.length) {
+    // Everything queued runs first, in Kolab and the model; the marks to pick from are read again.
+    await kolab.drainOutbox();
+    while (m.runRebase()) { /* level by level, oldest first */ }
+    return `rebase all; ${await apply(ctx, run, m, o, new Map((await observe(kolab, run)).map((x) => [x.key, x.id])))}`;
+  }
   switch (o.t) {
+    case 'rebase': {
+      const ran = await kolab.drainOutbox({ max: 1 });
+      const want = m.runRebase();
+      same('running the oldest queued rebase', ['ran', ran], ['ran', want ? 1 : 0]);
+      return want ? 'rebase the oldest queued variant' : 'rebase (nothing queued)';
+    }
     case 'parent': {
       const now = new Map(m.P.map((e) => [e.id, e.text]));
       for (const c of o.changes) {
@@ -378,6 +416,29 @@ test('generated edit sequences never leave a mark uncleared or a link pointing a
         done.push(await apply(ctx, run, m, o, marks));
         marks = await check(ctx.kolab, run, m, `${done.length} step(s):\n  ${done.join('\n  ')}\n`, marks);
       }
+    }),
+    { seed: SEED, numRuns: RUNS, endOnFailure: process.env.KONJIR_PROPERTY_SHRINK === '0' },
+  );
+}, 600_000);
+
+test('with rebases queued and run later, generated edit sequences agree with the model, and every variant ends on its parent (D43, P6)', async () => {
+  const ctx = await setup(reviewer, undefined, { queued: true });
+  await fc.assert(
+    fc.asyncProperty(start, fc.array(queuedOp, { minLength: 1, maxLength: 14 }), async (s, ops) => {
+      const { run, m } = await build(ctx, s);
+      m.deferred = true;
+      let marks = await check(ctx.kolab, run, m, 'setup', new Map());
+      const done: string[] = [];
+      for (const o of ops) {
+        done.push(await apply(ctx, run, m, o, marks));
+        marks = await check(ctx.kolab, run, m, `${done.length} step(s):\n  ${done.join('\n  ')}\n`, marks);
+      }
+      // Once the worker has run everything, nothing is queued and every variant sits on its parent.
+      await ctx.kolab.drainOutbox();
+      while (m.runRebase()) { /* level by level */ }
+      done.push('rebase all');
+      await check(ctx.kolab, run, m, `${done.length} step(s):\n  ${done.join('\n  ')}\n`, marks);
+      same('at the end', (await ctx.kolab.outboxJobs()).length, 0);
     }),
     { seed: SEED, numRuns: RUNS, endOnFailure: process.env.KONJIR_PROPERTY_SHRINK === '0' },
   );

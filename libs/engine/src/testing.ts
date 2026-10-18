@@ -52,12 +52,49 @@ async function onServer(sql: string) {
   try { await client.query(sql); } finally { await client.end(); }
 }
 
-/** Opens a Kolab for a test. `closeOpened` closes every one, after each test file. */
-export async function openKolab(options: Parameters<typeof Kolab.open>[0] = {}) {
-  const store = options.dataDir || options.databaseUrl ? {} : await testStore();
-  const kolab = await Kolab.open({ ...options, ...store });
+/**
+ * Opens a Kolab for a test. `closeOpened` closes every one, after each test file.
+ *
+ * A commit queues its variants' rebases, and Kolab's outbox worker runs them later (D43, P6).
+ * So that a scenario can read the outcome of a commit and its rebases straight after the call,
+ * each write that can commit (commit, review, submit, recordReview, resolveOverride,
+ * applyRuling) here waits for the rebases it queued: it drains the outbox before it returns. A
+ * write that fails still drains, but throws its own error, never the drain's.
+ * With `queued: true` it doesn't, for tests of the asynchrony itself, which drain the outbox
+ * (drainOutbox) or start the worker as they need.
+ */
+export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { queued?: boolean } = {}) {
+  const { queued, ...rest } = options;
+  const store = rest.dataDir || rest.databaseUrl ? {} : await testStore();
+  const kolab = await Kolab.open({ ...rest, ...store });
   opened.push(kolab);
+  if (!queued) drainAfterWrites(kolab);
   return kolab;
+}
+
+/** The writes that can commit a version, and so queue rebases. */
+const COMMITTING = ['commit', 'review', 'submit', 'recordReview', 'resolveOverride', 'applyRuling'] as const;
+
+/** Makes each committing write of `kolab` drain the outbox before it returns or throws (openKolab). */
+export function drainAfterWrites(kolab: Kolab) {
+  for (const name of COMMITTING) {
+    const write = (kolab[name] as (...a: unknown[]) => Promise<unknown>).bind(kolab);
+    Object.defineProperty(kolab, name, {
+      configurable: true,
+      value: async (...args: unknown[]) => {
+        let result: unknown;
+        try {
+          result = await write(...args);
+        } catch (e) {
+          // What a failed write committed still owes its rebases, but the write's own error is the one reported.
+          await kolab.drainOutbox().catch(() => undefined);
+          throw e;
+        }
+        await kolab.drainOutbox();
+        return result;
+      },
+    });
+  }
 }
 
 /**
@@ -119,8 +156,8 @@ export async function people(kolab: Kolab, ids: string | string[], opts: { owner
  * checks alone (VER11); a test that wants review adds another writer. Carol only reads, and
  * holds either role, one at a time.
  */
-export async function setup(submissionChecks?: Checks, checks?: Checks) {
-  const kolab = await openKolab({ submissionChecks, checks });
+export async function setup(submissionChecks?: Checks, checks?: Checks, opts: { queued?: boolean } = {}) {
+  const kolab = await openKolab({ submissionChecks, checks, ...opts });
   await people(kolab, 'alice', { layers: ['functional'] });
   await people(kolab, 'bob', { layers: ['technical'] });
   await people(kolab, 'carol', { level: 'read' });

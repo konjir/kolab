@@ -125,8 +125,16 @@ async function storm(backend: Backend, s: Shape) {
     global.gc?.();
     resetStats();
     const rss0 = process.memoryUsage().rss;
+    // Since P6 (D43) the commit returns once P is committed, with its variants' rebases queued, and
+    // the outbox worker runs them: here, this process drains the outbox at once, as a worker would.
+    // `commitMs` is what the parent's author waits; `ms` is the commit and every rebase.
     const t0 = performance.now();
-    const [, peak] = await peakRss(() => kolab.commit(product, P, { elements: next }));
+    let commitMs = 0;
+    const [, peak] = await peakRss(async () => {
+      await kolab.commit(product, P, { elements: next });
+      commitMs = performance.now() - t0;
+      await kolab.drainOutbox();
+    });
     const ms = performance.now() - t0;
     stats.on = false;
 
@@ -148,6 +156,7 @@ async function storm(backend: Backend, s: Shape) {
       rebased: rebased.length,
       committed: rebased.filter((r) => r.state === 'committed').length,
       perDepth: perDepth.join('/'),
+      commitMs: Math.round(commitMs),
       ms: Math.round(ms),
       msPerRebase: rebased.length ? +(ms / rebased.length).toFixed(1) : 0,
       statements: stats.statements,
@@ -239,7 +248,7 @@ async function probe(backend: Backend, s: Shape) {
     const t0 = performance.now();
     const writers = [loop(unrelated, during.unrelated), loop(variantEdit, during.variant)];
     let stormError: string | undefined;
-    await kolab.commit(product, P, { elements: next }).catch((e) => { stormError = String(e); });
+    await kolab.commit(product, P, { elements: next }).then(() => kolab.drainOutbox()).catch((e) => { stormError = String(e); });
     const ms = performance.now() - t0;
     running = false;
     await Promise.all(writers);
@@ -373,7 +382,7 @@ async function race1a(backend: Backend) {
       await kolab.commit(s, edited, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${edited}.` }] });
     });
     let error: unknown;
-    await kolab.commit(s, 'P', { elements: next }).catch((e) => { error = e; });
+    await kolab.commit(s, 'P', { elements: next }).then(() => kolab.drainOutbox()).catch((e) => { error = e; });
     setHook(undefined);
     console.log(`\n1a. Stale child list: a human commits to ${edited} while the storm rebases the other root`);
     console.log(`  parent commit: ${error ? String(error) : 'ok'}`);
@@ -399,6 +408,7 @@ async function race1b(backend: Backend) {
       if (fired || ctx.version.id !== draft) return;
       fired = true;
       await kolab.commit(s, 'P', { elements: next });
+      await kolab.drainOutbox();
     });
     const r = await kolab.review(draft);
     setHook(undefined);
@@ -435,7 +445,7 @@ async function race2a(backend: Backend) {
       return res;
     };
     let error: unknown;
-    await kolab.commit(s, 'P', { elements: next }).catch((e) => { error = e; });
+    await kolab.commit(s, 'P', { elements: next }).then(() => kolab.drainOutbox()).catch((e) => { error = e; });
     const humanResult = await human;
     proto.query = query;
     const left = await stranded(kolab, ids);
@@ -497,11 +507,39 @@ async function race2b(backend: Backend, n = 10) {
   verdict(!raw, `${raw} of ${n} runs gave one caller a raw database error`);
 }
 
+/**
+ * 3. Edits while the rebases wait in the queue (P6, D43). P's commit returns with its variants'
+ * rebases queued; before the worker runs them, a human commits to a root and to another root's
+ * child. Each rebase must build on the variant's live version when it runs, so no edit is lost,
+ * the edited root's child inherits the edit, and every variant ends on its parent's latest.
+ */
+async function race3(backend: Backend) {
+  const { kolab } = await raceKolab(backend);
+  try {
+    const { s, ids, next } = await raceFamily(kolab, 3, 1);
+    const r = await kolab.review(await kolab.draft(s, 'P', { elements: next }));
+    await kolab.commit(s, 'V1', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V1.' }] });
+    await kolab.commit(s, 'V0.0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.0.' }] });
+    const queued = (await kolab.outboxJobs()).filter((j) => j.kind === 'rebase').length;
+    await kolab.drainOutbox();
+    const left = await stranded(kolab, ids);
+    console.log('\n3. Edits while the rebases wait in the queue: P commits, then a human edits V1 and V0.0 before the worker runs');
+    console.log(`  parent commit: ok=${r.ok}, rebases queued ${r.rebases ?? 0}; ${queued} rebase jobs before the worker ran`);
+    console.log(await raceHistory(kolab, 'V1'));
+    console.log(`  other marks: ${await otherMarks(kolab)}; jobs left: ${(await kolab.outboxJobs()).length}`);
+    const v1 = await liveHas(kolab, 'V1', 'H'), v10 = await liveHas(kolab, 'V1.0', 'H'), v00 = await liveHas(kolab, 'V0.0', 'H');
+    verdict(v1 && v10, `V1 ${v1 ? 'keeps' : 'has lost'} H, and its child V1.0 ${v10 ? 'inherits' : 'has lost'} it`);
+    verdict(v00, `V0.0 ${v00 ? 'keeps' : 'has lost'} its own H`);
+    verdict(!left.length, left.length ? `${left.join(', ')} left on an old parent` : 'every variant is on its parent\'s latest');
+  } finally { await kolab.close(); }
+}
+
 async function races(backend: Backend) {
   await race1a(backend);
   await race1b(backend);
   await race2a(backend);
   await race2b(backend);
+  await race3(backend);
 }
 
 // ---------------------------------------------------------------------------
@@ -570,7 +608,9 @@ async function main() {
     if (opt('W') !== undefined) {
       const s = { E: opt('E') ?? 20, W: opt('W')!, D: opt('D') ?? 1, B: opt('B') ?? 1, K: opt('K') ?? 1, F: opt('F') ?? 0.2 };
       await warmUp(backend);
-      print([await medianStorm(backend, s)]);
+      const r = await medianStorm(backend, s);
+      console.log(JSON.stringify(r));
+      print([r]);
       return;
     }
     await warmUp(backend);

@@ -308,6 +308,7 @@ test('a database at 0003 reaches 0004: marks from failed rebases become rebase_f
     expect((await kolab.openQueries()).find((q) => q.id === 'q0004_m3')?.question).toMatch(/^Rebasing onto the new parent failed; the reason was not recorded\./);
     // P's next commit rebases the variants, and each rebase that passes settles its mark.
     await kolab.commit('kjs_lee', 'P', { elements: els({ E1: 'Five.' }) });
+    await kolab.drainOutbox();
     expect((await kolab.openMarks()).map((m) => m.reason)).toStrictEqual(['changed']);
     expect((await kolab.openQueries())).toStrictEqual([]);
   } finally { await kolab.close(); }

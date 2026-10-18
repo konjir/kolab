@@ -159,7 +159,7 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_outbox',
-    description: 'Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error; kolab=<name> for one kolab\'s. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again.',
+    description: 'Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error; kolab=<name> for one kolab\'s. A rebase job (D43) is a variant to rebase onto its parent\'s latest version, queued by the parent version named in after; it rebases whatever the variant has live when it runs. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again.',
     schema: outbox,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
@@ -192,7 +192,7 @@ export class AdminTools {
       const r = await this.kolab.applyRuling(node.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) }, { id: a.ruling, actor: a.actor });
       const v = await this.kolab.version(r.version);
       const at = formatAddress({ kolab: node.kolab_id, node: node.name, version: v.seq });
-      return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? at : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null });
+      return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? at : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null, ...(r.rebases ? { rebases_queued: r.rebases } : {}) });
     } catch (e) { return fail(e); }
   }
 }

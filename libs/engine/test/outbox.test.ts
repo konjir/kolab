@@ -6,7 +6,7 @@
 // and on Postgres.
 import { expect, test } from '@jest/globals';
 import { Kolab, structuralChecks } from '@konjir/engine';
-import { commitReviewed, els, marksOn, openKolab, people, persistentStore, rejection, textOf, type Store } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, openKolab, people, persistentStore, rejection, testStore, textOf, type Store } from '@konjir/engine/testing';
 import type { CheckContext, Checks } from '@konjir/types';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -122,9 +122,9 @@ test('an approval recorded before its process stops is folded and committed once
   await expectFoldedOnce(b, v2);
 });
 
-test('a commit whose cascade a stopped process cut short is finished once by the next: its variant rebased, its marks and layer leaks raised once', async () => {
+test('a variant\'s rebase a stopped process cut short is finished once by the next, and the commit\'s marks and layer leaks were raised once', async () => {
   const store = await persistentStore();
-  // The process stops in P@2's cascade, as Kolab's rebase of the variant V reaches its checks.
+  // The process stops as Kolab's rebase of the variant V, queued by P@2's commit, reaches its checks.
   const a = await stoppingAt(store, (ctx) => ctx.version.node_id === 'V' && ctx.version.active_role === 'system');
   const k = a.kolab;
   await people(k, ['alice', 'dave'], { layers: ['functional'] });
@@ -151,9 +151,12 @@ test('a commit whose cascade a stopped process cut short is finished once by the
   const leak = { kind: 'layer_leak' as const, elements: ['E1'], explanation: 'It names a table.' };
   void k.recordReview(dave, p2, { verdict: 'approve', findings: [leak] }).catch(() => undefined);
   await a.stopped;
-  // P@2 committed with Dave's verdict, and its cascade is owed: B was marked before the stop, V wasn't rebased.
+  // P@2 committed with Dave's verdict, and its cascade ran: B was marked before the stop. V's
+  // rebase is owed, as the job P@2's commit queued (D43, P6).
   expect((await k.version(p2)).state).toBe('committed');
-  expect(await jobs(k)).toMatchObject([{ kind: 'after_commit', version_id: p2 }]);
+  const v1 = (await k.latestCommitted('V'))!;
+  expect(await jobs(k)).toMatchObject([{ kind: 'rebase', version_id: v1.id }]);
+  expect(await k.pendingRebase('V')).toMatchObject({ state: 'pending', after: 'kj:test/P@2' });
   await die(k);
 
   const b = await restart(store);
@@ -188,12 +191,12 @@ test('a cascade that fails is freed with its error and retried by the worker unt
   await k.createNode(alice, 'functional_spec', 'V', 'V');
   await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
 
-  // The first read of P@2's catch-up of V fails, as a dropped connection would.
+  // The first read of P@2's cascade, its links in, fails, as a dropped connection would.
   const proto = Object.getPrototypeOf(k.db);
   const query = proto.query;
   let armed = true;
   proto.query = async function (sql: string, params?: unknown[]) {
-    if (armed && sql.includes('c.node_id <> $1')) {
+    if (armed && sql.includes('where t.node_id = $1 and t.seq < $2::int')) {
       armed = false;
       throw new Error('Connection terminated unexpectedly');
     }
@@ -205,7 +208,8 @@ test('a cascade that fails is freed with its error and retried by the worker unt
   const [job] = (await k.db.query<{ kind: string; attempts: number; claimed_by: string | null; last_error: string; due: boolean }>(
     `select kind, attempts, claimed_by, last_error, run_after > now() as due from outbox`)).rows;
   expect(job).toMatchObject({ kind: 'after_commit', attempts: 1, claimed_by: null, last_error: 'P@2 committed, but its cascade did not finish: Connection terminated unexpectedly', due: true });
-  expect((await k.latestCommitted('V'))!.seq).toBe(1);
+  // V's rebase was queued with the commit, so the failed cascade held it up in nothing (D43, P6).
+  expect((await k.latestCommitted('V'))!.seq).toBe(2);
 
   // The worker waits out the backoff (1 s), then finishes it.
   k.startWorker({ pollMs: 50 });
@@ -451,10 +455,12 @@ test('a node\'s later commit waits for a cascade that failed, rather than run ah
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
 
   const held = holding();
-  const a2 = await openKolab({ ...store, checks: held.checks, outboxLeaseMs: LEASE_MS });
-  const p2 = a2.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  // P@2's commit queues V's rebase (P6), and A's worker takes it.
+  const a2 = await openKolab({ ...store, checks: held.checks, outboxLeaseMs: LEASE_MS, queued: true });
+  const p2id = await a2.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  const ranA = a2.drainOutbox();
   await held.reached.opened;
-  const claimOf = async () => (await b.db.query<{ claim: string | null; claimed_by: string | null }>(`select claim, claimed_by from outbox where kind = 'after_commit'`)).rows;
+  const claimOf = async () => (await b.db.query<{ claim: string | null; claimed_by: string | null }>(`select claim, claimed_by from outbox where kind = 'rebase'`)).rows;
   const [{ claim: token1 }] = await claimOf();
   // A's renewals fail, as on a saturated pool, so its lease lapses; B's worker takes the job.
   const query = a2.db.query.bind(a2.db);
@@ -470,10 +476,10 @@ test('a node\'s later commit waits for a cascade that failed, rather than run ah
 
   // A's run goes on, finds its claim lost and stops; the job is B's still.
   held.g.open();
-  const p2id = await p2;
+  expect(await ranA).toBe(0);
   expect(await claimOf()).toMatchObject([{ claim: token2 }]);
   // Nor can A's stale token free or fail it.
-  await (a2 as unknown as { fail(j: object, e: unknown): Promise<void> }).fail({ token: token1, kind: 'after_commit', versionId: p2id }, new Error('late'));
+  await (a2 as unknown as { fail(j: object, e: unknown): Promise<void> }).fail({ token: token1, kind: 'rebase', versionId: p2id }, new Error('late'));
   expect(await claimOf()).toMatchObject([{ claim: token2 }]);
 
   two.g.open();
@@ -650,3 +656,116 @@ test('a settle job run again finds the fold it already made in review, and folds
   expect(await jobs(k)).toStrictEqual([]);
 });
 
+
+// ---- durable asynchronous rebasing (P6; D43, CAS7, CAS8) ----------------------------------------
+
+/** P@1 with variants V1 (and its own variant V1.0) and V2, each overriding E2. On `store`, rebases left queued. */
+async function variants(store: Store) {
+  const k = await openKolab({ ...store, outboxLeaseMs: LEASE_MS, closeWaitMs: 0, queued: true });
+  await people(k, 'alice', { layers: ['functional'] });
+  const alice = await k.openSession('alice', 'product');
+  await k.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
+  const variant = async (id: string, parent: string) => {
+    await k.createNode(alice, 'functional_spec', id, id);
+    return k.commit(alice, id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says two its way.` }] });
+  };
+  const v1 = await variant('V1', p1);
+  await variant('V1.0', v1);
+  await variant('V2', p1);
+  return { k, alice };
+}
+
+/** The node each of Kolab's own rebases was made for, in the order they were written. */
+const rebasedOrder = async (kolab: Kolab) =>
+  (await kolab.db.query<{ node_id: string }>(`select node_id from version where active_role = 'system' order by created_at, id`)).rows.map((r) => r.node_id);
+
+test('a parent\'s commit returns once it commits, with its variants\' rebases queued; the worker rebases them level by level, each on the variant\'s live version', async () => {
+  const { k, alice } = await variants(await persistentStore());
+  const r = await k.review(await k.draft(alice, 'P', { elements: els({ E1: 'Parent one, revised.', E2: 'Parent two.' }) }));
+  // Only P's own variants are queued: V1.0 waits for V1's rebase to queue it.
+  expect(r).toMatchObject({ ok: true, rebases: 2 });
+  expect((await jobs(k)).map((j) => j.kind)).toStrictEqual(['rebase', 'rebase']);
+  expect(await textOf(k, 'V1')).toStrictEqual({ E1: 'Parent one.', E2: 'V1 says two its way.' });
+  // The queue is visible: on the variant, to whoever reads it, and to an admin.
+  expect(await k.pendingRebase('V1')).toMatchObject({ state: 'pending', attempts: 0, after: 'kj:test/P@2' });
+  expect(await k.pendingRebase('V1.0')).toBeUndefined();
+  expect((await k.readNode(alice, 'V2')).rebase).toMatchObject({ state: 'pending' });
+  expect((await k.listNodes(undefined, 'test')).filter((n) => n.rebase_pending).map((n) => n.name)).toStrictEqual(['V1', 'V2']);
+  expect((await k.outboxJobs()).map((j) => [j.kind, j.subject, j.after])).toStrictEqual([
+    ['rebase', 'kj:test/V1@1', 'kj:test/P@2'], ['rebase', 'kj:test/V2@1', 'kj:test/P@2'],
+  ]);
+
+  // Alice edits V2 while its rebase waits: her commit's own catch-up rebases her version, and its queued job goes.
+  await k.commit(alice, 'V2', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] });
+  expect(await k.drainOutbox()).toBe(2);
+  expect(await jobs(k)).toStrictEqual([]);
+  // Level by level: P's variants first (V2's caught up in Alice's own commit), then V1's.
+  expect(await rebasedOrder(k)).toStrictEqual(['V2', 'V1', 'V1.0']);
+  expect(await textOf(k, 'V2')).toStrictEqual({ E1: 'Parent one, revised.', E2: 'V2 says two its way.', A: 'Alice adds A.' });
+  expect(await textOf(k, 'V1.0')).toStrictEqual({ E1: 'Parent one, revised.', E2: 'V1.0 says two its way.' });
+  expect(await k.pendingRebase('V1')).toBeUndefined();
+  for (const id of ['V1', 'V1.0', 'V2']) {
+    const live = (await k.latestCommitted(id))!;
+    const parent = (await k.version(live.parent_version_id!)).node_id;
+    expect(live.parent_version_id).toBe((await k.latestCommitted(parent))!.id);
+  }
+});
+
+test('two parent commits before the worker runs queue one rebase per variant, onto the parent\'s latest', async () => {
+  const { k, alice } = await variants(await testStore());
+  expect(await k.review(await k.draft(alice, 'P', { elements: els({ E1: 'Parent one, revised.', E2: 'Parent two.' }) }))).toMatchObject({ rebases: 2 });
+  // V1 and V2 each have a rebase queued for their live version already: nothing more is queued.
+  const r = await k.review(await k.draft(alice, 'P', { elements: els({ E1: 'Parent one, revised again.', E2: 'Parent two.' }) }));
+  expect(r.ok).toBe(true);
+  expect(r.rebases).toBeUndefined();
+  expect(await k.drainOutbox()).toBe(3);
+  expect(await rebasedOrder(k)).toStrictEqual(['V1', 'V2', 'V1.0']);
+  expect(await textOf(k, 'V1.0')).toStrictEqual({ E1: 'Parent one, revised again.', E2: 'V1.0 says two its way.' });
+});
+
+test('queued rebases survive a stop: the next process to open the database rebases every variant once', async () => {
+  const store = await persistentStore();
+  // The process stops as the worker's rebase of V2 reaches its checks, after V1's committed.
+  const stop = await stoppingAt(store, (ctx) => ctx.version.node_id === 'V2' && ctx.version.active_role === 'system');
+  const a = stop.kolab;
+  await people(a, 'alice', { layers: ['functional'] });
+  const alice = await a.openSession('alice', 'product');
+  await a.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
+  for (const id of ['V1', 'V2']) {
+    await a.createNode(alice, 'functional_spec', id, id);
+    await a.commit(alice, id, { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: `${id} says two its way.` }] });
+  }
+  const v2 = (await a.latestCommitted('V2'))!.id;
+  void a.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.', E2: 'Parent two.' }) }).catch(() => undefined);
+  await stop.stopped;
+  expect((await a.latestCommitted('P'))!.seq).toBe(2);
+  expect((await a.latestCommitted('V1'))!.seq).toBe(2);
+  expect(await jobs(a)).toMatchObject([{ kind: 'rebase', version_id: v2 }]);
+  await die(a);
+
+  const b = await restart(store);
+  b.startWorker({ pollMs: 50 });
+  for (let i = 0; i < 100 && (await jobs(b)).length; i++) await new Promise((r) => setTimeout(r, 50));
+  expect(await jobs(b)).toStrictEqual([]);
+  // V2 rebased once: the rebase the stopped process drafted stays drafted, never committed.
+  expect((await history(b, 'V2')).map((v) => [v.seq, v.active_role, v.state])).toStrictEqual([
+    [1, 'product', 'committed'], [2, 'system', 'drafted'], [3, 'system', 'committed'],
+  ]);
+  expect(await textOf(b, 'V2')).toStrictEqual({ E1: 'Parent one, revised.', E2: 'V2 says two its way.' });
+  expect((await history(b, 'V1')).filter((v) => v.state === 'committed')).toHaveLength(2);
+});
+
+test('a running worker takes a queued rebase as soon as the commit queues it', async () => {
+  const { k, alice } = await variants(await testStore());
+  k.startWorker({ pollMs: 60_000 });
+  const r = await k.review(await k.draft(alice, 'P', { elements: els({ E1: 'Parent one, revised.', E2: 'Parent two.' }) }));
+  // Two queued with the commit; the cascade's second listing may tell a job the worker took
+  // meanwhile to run again, which counts too.
+  expect(r.ok).toBe(true);
+  expect(r.rebases).toBeGreaterThanOrEqual(2);
+  for (let i = 0; i < 100 && ((await jobs(k)).length || (await rebasedOrder(k)).length < 3); i++) await new Promise((r) => setTimeout(r, 50));
+  expect(await jobs(k)).toStrictEqual([]);
+  expect(await rebasedOrder(k)).toStrictEqual(['V1', 'V2', 'V1.0']);
+});

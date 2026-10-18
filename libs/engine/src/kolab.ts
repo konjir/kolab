@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { resolve as resolvePath } from 'node:path';
-import { ulid } from 'ulid';
+import { monotonicFactory, ulid } from 'ulid';
 import {
   type Address, type QuoteSelector, fingerprint, formatAddress, isKolabName, isNodeName, MAX_QUOTE, normalize, parseAddress,
   parseNodeRef, resolveSpan,
@@ -246,7 +246,7 @@ function noticeOf(x: unknown): Notice | 'later' | undefined {
 /** A job in the outbox (REV3, W1.8): work a committed change still owes, until it is done. */
 interface OutboxJob {
   id: string; kind: OutboxKind; version_id: string; claim: string;
-  payload: { approvedBy?: string; ruling?: string } | null; attempts: number;
+  payload: { approvedBy?: string; ruling?: string; onto?: string; node?: string } | null; attempts: number;
 }
 
 /**
@@ -288,6 +288,16 @@ const openDataDirs = new Map<string, number>();
 export interface OutboxJobView {
   id: string; kind: OutboxKind; state: OutboxState; subject: string; attempts: number;
   claimed_by: string | null; run_after: string; last_error: string | null; created_at: string;
+  /** A rebase job's: the parent version whose commit queued it (the variant rebases onto its parent's latest when it runs). */
+  after?: string;
+}
+
+/** A variant's queued rebase, as readNode shows it (D43, P6). */
+export interface PendingRebase {
+  state: OutboxState; attempts: number; queued_at: string;
+  /** The parent version whose commit queued it; the rebase is onto the parent's latest when it runs. */
+  after?: string;
+  last_error?: string;
 }
 
 export class Kolab {
@@ -578,7 +588,7 @@ export class Kolab {
   }
 
   /** Kolab's own work: rebases, review transitions, the cascade. `lock` as for inTransaction. */
-  private asSystem<T>(fn: (tx: Q, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
+  private asSystem<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string): Promise<T> {
     return this.inTransaction(async (tx, signal) => {
       await tx.exec('set local role kj_system');
       return fn(tx, signal);
@@ -611,7 +621,7 @@ export class Kolab {
       `insert into outbox(id, kind, version_id, payload, attempts, claim, claimed_by, claimed_until)
        values ($1, $2, $3, $4, 1, $5, $6, ${this.leaseUntil})
        on conflict (kind, version_id) do nothing returning id`,
-      [ulid(), kind, versionId, payload && Object.keys(payload).length ? JSON.stringify(payload) : null, token, this.origin]);
+      [outboxId(), kind, versionId, payload && Object.keys(payload).length ? JSON.stringify(payload) : null, token, this.origin]);
     if (r.rows.length) this.written.set(`${kind}:${versionId}`, token);
   }
 
@@ -728,11 +738,36 @@ export class Kolab {
    * may have later cascades waiting on it; they run next, in commit order.
    */
   private async finish(job: { token: string; kind: OutboxKind; versionId: string }) {
-    const r = await this.db.query(`delete from outbox where claim = $1 returning id`, [job.token]);
+    const r = job.kind === 'rebase' ? await this.finishRebase(job) : await this.db.query(`delete from outbox where claim = $1 returning id`, [job.token]);
     if (!r.rows.length) console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} was done, but another process had taken it meanwhile; it does it again, once more`);
     if (job.kind !== 'after_commit') return;
     const node = (await this.db.query<{ node_id: string }>(`select node_id from version where id = $1`, [job.versionId])).rows[0]?.node_id;
     if (node) await this.drainNode(node);
+  }
+
+  /**
+   * A rebase job done, while a parent commit landed after the job had read its parent (enqueueRebases
+   * set `again`): freed to run once more, now, rather than deleted, so that commit is never lost,
+   * whether this run's rebase passed or failed (D43, D44). Under the job's row lock, which a
+   * parent's commit step takes too, so a commit either sees the job still held and sets `again`,
+   * or finds it gone and writes a new one. Otherwise it is deleted, in the same transaction.
+   * Returns the job's row, as finish's delete would, unless another process had taken it.
+   */
+  private async finishRebase(job: { token: string; kind: OutboxKind; versionId: string }) {
+    let rerun = false;
+    const r = await this.inTransaction(async (tx) => {
+      const row = (await tx.query<{ id: string; again: boolean }>(
+        `select id, coalesce((payload->>'again')::boolean, false) as again from outbox where claim = $1 for update`, [job.token])).rows[0];
+      if (!row) return { rows: [] };
+      if (!row.again) return tx.query(`delete from outbox where id = $1 returning id`, [row.id]);
+      await tx.query(`update outbox set claim = null, claimed_by = null, claimed_until = null, attempts = 0, run_after = clock_timestamp(),
+                        payload = payload - 'again' where id = $1`, [row.id]);
+      await this.notifyWork(tx);
+      rerun = true;
+      return { rows: [row] };
+    });
+    if (rerun) this.wake();
+    return r;
   }
 
   /**
@@ -764,6 +799,9 @@ export class Kolab {
     if (r?.state === 'dead') {
       console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} is dead after ${r.attempts} failed attempts: ${maskTokens(error)}. `
         + 'No worker runs it, or any later cascade of its node, until an admin retries it (konjir_admin_outbox retry=<id>).');
+      // A variant whose rebase job died is behind its parent: it says so, with a rebase_failed mark
+      // and question (D44), until the parent's next commit or the variant's own tries again.
+      if (job.kind === 'rebase') await this.rebaseDied(job.versionId, error).catch((e) => console.error(`kolab: could not mark the variant whose rebase job died: ${maskTokens(e)}`));
     } else if (r && !this.closed) {
       console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} failed (attempt ${r.attempts}); it will be tried again: ${maskTokens(error)}`);
     }
@@ -860,11 +898,12 @@ export class Kolab {
    * Runs every outbox job that is due and that no live process holds, oldest first, until none is
    * left: a job written by a process that stopped before finishing it, or one whose work failed
    * and has waited out its backoff. An after_commit job waits while any earlier version of its
-   * node still owes its cascade. Returns how many finished. The worker calls it; a test can too.
+   * node still owes its cascade. Returns how many finished. The worker calls it; a test can too,
+   * with `max` to run at most that many jobs.
    */
-  async drainOutbox(): Promise<number> {
+  async drainOutbox(opts: { max?: number } = {}): Promise<number> {
     let done = 0;
-    for (;;) {
+    for (let taken = 0; taken < (opts.max ?? Infinity); taken++) {
       const job = await this.claimJob(
         `select j.id from outbox j join version jv on jv.id = j.version_id
           where j.state = 'pending' and j.run_after <= clock_timestamp()
@@ -903,6 +942,7 @@ export class Kolab {
   private async perform(job: OutboxJob, claim: Claim): Promise<unknown> {
     if (job.kind === 'after_commit') return this.cascade(await this.version(job.version_id), claim);
     if (job.kind === 'settle') return this.settleJob(job.version_id, job.payload ?? {}, claim);
+    if (job.kind === 'rebase') return this.rebaseJob(job.version_id, job.payload?.node, claim);
     throw new Error(`no work for an outbox job of kind ${String(job.kind)}`);
   }
 
@@ -910,14 +950,18 @@ export class Kolab {
   async outboxJobs(opts: { state?: OutboxState; kolab?: string } = {}): Promise<OutboxJobView[]> {
     if (opts.kolab !== undefined) await this.requireKolab(opts.kolab);
     const rows = (await this.db.query<{ id: string; kind: OutboxKind; state: OutboxState; kolab_id: string; name: string; seq: number;
-      attempts: number; claimed_by: string | null; run_after: Date | string; last_error: string | null; created_at: Date | string }>(
-      `select o.id, o.kind, o.state, o.kolab_id, n.name, v.seq, o.attempts, o.claimed_by, o.run_after, o.last_error, o.created_at
+      attempts: number; claimed_by: string | null; run_after: Date | string; last_error: string | null; created_at: Date | string;
+      after_kolab: string | null; after_name: string | null; after_seq: number | null }>(
+      `select o.id, o.kind, o.state, o.kolab_id, n.name, v.seq, o.attempts, o.claimed_by, o.run_after, o.last_error, o.created_at,
+              an.kolab_id as after_kolab, an.name as after_name, av.seq as after_seq
          from outbox o join version v on v.id = o.version_id join node n on n.id = v.node_id
+         left join version av on av.id = o.payload->>'onto' left join node an on an.id = av.node_id
         where ($1::text is null or o.state = $1) and ($2::text is null or o.kolab_id = $2) order by o.id`, [opts.state ?? null, opts.kolab ?? null])).rows;
     return rows.map((r) => ({
       id: r.id, kind: r.kind, state: r.state, subject: formatAddress({ kolab: r.kolab_id, node: r.name, version: r.seq }),
       attempts: r.attempts, claimed_by: r.claimed_by, run_after: new Date(r.run_after).toISOString(), last_error: r.last_error,
       created_at: new Date(r.created_at).toISOString(),
+      ...(r.after_name ? { after: formatAddress({ kolab: r.after_kolab!, node: r.after_name, version: r.after_seq! }) } : {}),
     }));
   }
 
@@ -1282,7 +1326,33 @@ export class Kolab {
       cases: await this.listCases({ kolab: node.kolab_id, node: node.id, state: 'open' }, q),
     }));
     // The links it drops (0012), for its reviewers: private to its kolab, like its links (D49).
-    return { ...read, removes: await this.removedLinks(where, v) };
+    // Only a reader who belongs to the node's kolab's work learns of its pending rebase (D49).
+    return { ...read, removes: await this.removedLinks(where, v), ...(node.kolab_id === from ? { rebase: await this.pendingRebase(node.id) } : {}) };
+  }
+
+  /**
+   * The rebase a variant still owes (D43, P6), if one is queued: the parent version whose commit
+   * queued it, whether it is pending or dead (it failed too often and waits for an admin), its
+   * attempts and its last error. Undefined when the variant owes none.
+   */
+  async pendingRebase(nodeId: string): Promise<PendingRebase | undefined> {
+    // Only while the variant is behind its parent, and a pending job before a dead one: a job a
+    // newer version of the variant made moot says nothing.
+    const r = (await this.db.query<{ state: OutboxState; attempts: number; last_error: string | null; onto: string | null; created_at: Date | string }>(
+      `select o.state, o.attempts, o.last_error, o.payload->>'onto' as onto, o.created_at
+         from outbox o join version v on v.id = o.version_id
+        where o.kind = 'rebase' and v.node_id = $1 and ${BEHIND('$1')}
+        order by o.state = 'pending' desc, o.id desc limit 1`, [nodeId])).rows[0];
+    if (!r) return undefined;
+    // Never another kolab's address (D49, D53): a parent elsewhere goes unnamed.
+    const onto = r.onto ? (await this.db.query<{ name: string; kolab_id: string; seq: number }>(
+      `select n.name, n.kolab_id, v.seq from version v join node n on n.id = v.node_id
+        where v.id = $1 and n.kolab_id = (select kolab_id from node where id = $2)`, [r.onto, nodeId])).rows[0] : undefined;
+    return {
+      state: r.state, attempts: r.attempts, queued_at: new Date(r.created_at).toISOString(),
+      ...(onto ? { after: formatAddress({ kolab: onto.kolab_id, node: onto.name, version: onto.seq }) } : {}),
+      ...(r.last_error ? { last_error: r.last_error } : {}),
+    };
   }
 
   /**
@@ -1972,9 +2042,9 @@ export class Kolab {
       ...(this.settlesDurably(v) ? { settle: { ruling } } : {}),
     });
     if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
-    if (late && late !== 'waiting') return this.settle(v, late, approvedBy, ruling);
-    const queued = !(await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim))).ran;
-    return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}), ...(queued ? { cascade: 'queued' as const } : {}) };
+    if (!isCommitted(late)) return this.settle(v, late as Overtaker[], approvedBy, ruling);
+    const after = await this.afterCommitNow(v, late);
+    return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}), ...after };
   }
 
   /**
@@ -2003,9 +2073,9 @@ export class Kolab {
     const note = `${verdict.note ?? ''} Everyone who could review it has gone: ${NO_REVIEWER(v.layer)}`.trim();
     const late = await this.commitStep(v, note, { from: 'in_review' });
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
-    if (late && late !== 'waiting') return this.settle(v, late);
-    const queued = !(await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim))).ran;
-    return { ok: true, note, version: v.id, unreviewed: true, ...(queued ? { cascade: 'queued' as const } : {}) };
+    if (!isCommitted(late)) return this.settle(v, late as Overtaker[]);
+    const after = await this.afterCommitNow(v, late);
+    return { ok: true, note, version: v.id, unreviewed: true, ...after };
   }
 
   /**
@@ -2146,9 +2216,9 @@ export class Kolab {
     if (late === 'waiting') return { ok: false, note: `${note} More approvals are needed.`, version: v.id, in_review: true };
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
     // Overtaken while it waited: the approval stands, and its settle job folds or rejects it.
-    if (late) return this.settle(v, late, s.actor_id);
-    const queued = !(await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim))).ran;
-    return { ok: true, note, version: v.id, findings, ...(queued ? { cascade: 'queued' as const } : {}) };
+    if (!isCommitted(late)) return this.settle(v, late, s.actor_id);
+    const after = await this.afterCommitNow(v, late);
+    return { ok: true, note, version: v.id, findings, ...after };
   }
 
   /**
@@ -2234,7 +2304,7 @@ export class Kolab {
    * process, is waiting out a backoff, or is dead, this one waits for it (Deferred), and runs once
    * it is done.
    */
-  private async cascade(v: VersionRow, claim: Claim) {
+  private async cascade(v: VersionRow, claim: Claim): Promise<number> {
     for (;;) {
       const earlier = (await this.db.query<{ id: string }>(
         `select j.id from outbox j join version jv on jv.id = j.version_id
@@ -2243,7 +2313,19 @@ export class Kolab {
       const job = await this.claimJob(`select $1::text`, [earlier.id]);
       if (!job || (await this.runJob(job)) !== 'done') throw new Deferred(`${v.id} waits for an earlier cascade of its node`);
     }
-    await this.afterCommit(v, [], claim);
+    return this.afterCommit(v, [], claim);
+  }
+
+  /**
+   * Runs a version's after_commit job now, in the caller's call, once its commit step committed
+   * it: its cascade, unless it waits behind an earlier one of its node (`cascade: 'queued'`). Its
+   * variants' rebases are not part of it: they are queued (D43, P6), and `rebases` counts them,
+   * those its commit step wrote and any its cascade found besides.
+   */
+  private async afterCommitNow(v: VersionRow, committed: Committed): Promise<Pick<GateResult, 'cascade' | 'rebases'>> {
+    const r = await this.runClaimed('after_commit', v.id, (claim) => this.cascade(v, claim));
+    const rebases = committed.rebases + (r.ran ? r.result : 0);
+    return { ...(r.ran ? {} : { cascade: 'queued' as const }), ...(rebases ? { rebases } : {}) };
   }
 
   /**
@@ -2251,11 +2333,12 @@ export class Kolab {
    * questions. (A resolution of an override it carries recorded its ruling in the commit step.)
    * Idempotent, so that a job run again after a stop part way does each thing once.
    */
-  private async afterCommit(v: VersionRow, findings: Finding[], claim: Claim) {
+  private async afterCommit(v: VersionRow, findings: Finding[], claim: Claim): Promise<number> {
     try {
-      await this.onCommit(v.id, claim);
+      const rebases = await this.onCommit(v.id, claim);
       claim.check();
       await this.raiseLayerLeaks(v, await this.findingsOf(v.id, findings));
+      return rebases;
     } catch (e) {
       // A variant's cascade, further down, names itself; a lost claim stops the job, not the commit.
       if (e instanceof CascadeError || e instanceof ClaimLost) throw e;
@@ -2304,12 +2387,12 @@ export class Kolab {
    * on a version that was overtaken (`settle`: an approval, or a ruling) owes its fold or its
    * rejection as stale (settle).
    */
-  private commitStep(v: VersionRow, note: string | null, opts: {
+  private async commitStep(v: VersionRow, note: string | null, opts: {
     from?: 'drafted' | 'in_review'; record?: (tx: Q, signal: Signal, overtaken: boolean) => Promise<boolean>;
     settle?: { approvedBy?: string; ruling?: string };
-  } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | undefined> {
+  } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> {
     const from = opts.from ?? 'drafted';
-    return this.asSystem(async (tx, signal) => {
+    const late = await this.asSystem(async (tx, signal): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> => {
       const newer = await overtakenBy(tx, v);
       if (opts.record && !(await opts.record(tx, signal, !!newer))) return 'waiting' as const;
       if (newer) {
@@ -2326,8 +2409,91 @@ export class Kolab {
       const ruling = (await tx.query<{ resolves: Ruling | null }>(`select resolves from version where id = $1`, [v.id])).rows[0]?.resolves;
       if (ruling) await this.recordRuling(tx, signal, ruling);
       await this.enqueue(tx, 'after_commit', v.id);
-      return undefined;
+      // Its variants' rebases are owed from the moment it commits (D43, P6): one job each,
+      // unclaimed, for the worker, and the commit returns without waiting for them.
+      // A rebase job for an older version of this node is moot: this version's after_commit owes
+      // the node's catch-up (onCommit, step 5). One a worker is running now finishes as a no-op.
+      await tx.query(
+        `delete from outbox o using version ov where o.kind = 'rebase' and ov.id = o.version_id and ov.node_id = $1
+            and o.version_id <> $2 and not (o.claim is not null and o.claimed_until >= clock_timestamp())`, [v.node_id, v.id]);
+      const rebases = await this.enqueueRebases(tx, v);
+      if (rebases) await this.notifyWork(tx);
+      return { committed: true, rebases };
     }, v.node_id);
+    if (isCommitted(late) && late.rebases) this.wake();
+    return late;
+  }
+
+  /**
+   * Writes a rebase job (D43, P6) for each variant whose live version sits on an older version of
+   * `v`'s node, unclaimed, and returns how many it wrote or revived. The worker rebases whatever is
+   * live when the job runs, so the list taken here only says which variants owe a rebase, never
+   * what to rebase. A variant owes one job at a time:
+   * - one already waiting for a worker (pending and not claimed) covers it, and nothing is added;
+   * - one a worker is running now may have read the parent before `v` committed, so it is told to
+   *   run again once it is done (`payload.again`, see finish), rather than lose `v`;
+   * - a dead one stops nothing: the job for the variant's live version is revived, or a new one
+   *   written, so each parent commit tries again, as CAS7 says.
+   *
+   * Listing again after the commit (onCommit) also sets `again` on a job a worker holds: it may
+   * have been claimed between the commit step's list, which saw it waiting, and the commit, and so
+   * read the older parent. At worst the job runs once more for nothing.
+   *
+   * `skipFailedSince`: leave out a variant whose rebase onto `v`, or a later version of its node,
+   * has already failed and marked it rebase_failed (D44), so that listing again after the commit
+   * (onCommit) never retries a failure the commit's own job just recorded.
+   */
+  private async enqueueRebases(q: Q, v: VersionRow, skipFailedSince = false): Promise<number> {
+    // One statement: list and insert. Ids share a fresh ULID and add the variant's place in the
+    // list, so a batch sorts together, in order, after every job written before it.
+    const live = `(o.claim is not null and o.claimed_until >= clock_timestamp())`;
+    const r = await q.query(
+      `insert into outbox(id, kind, version_id, payload)
+       select $3::text || '.' || lpad((row_number() over (order by c.id))::text, 12, '0'), 'rebase', c.id,
+              jsonb_build_object('onto', $4::text, 'node', c.node_id)
+         from version c join version p on p.id = c.parent_version_id
+        where p.node_id = $1 and c.node_id <> $1 and p.seq < $2::int and c.state = 'committed'
+          and ${LIVE('c')}
+          and not exists (select 1 from outbox o join version ov on ov.id = o.version_id
+                           where o.kind = 'rebase' and o.state = 'pending' and ov.node_id = c.node_id and not ${live})
+          and not ($5::boolean and exists (
+                select 1 from invalidation i join version iv on iv.id = i.version_id join version t on t.id = i.triggered_by
+                 where iv.node_id = c.node_id and i.reason = 'rebase_failed' and i.state = 'open'
+                   and t.node_id = $1 and t.seq >= $2::int))
+       on conflict (kind, version_id) do update set
+              state = 'pending',
+              attempts = case when outbox.state = 'dead' then 0 else outbox.attempts end,
+              run_after = case when outbox.state = 'dead' then clock_timestamp() else outbox.run_after end,
+              payload = outbox.payload || jsonb_build_object('onto', $4::text)
+                        || case when ${live.replaceAll('o.', 'outbox.')} then '{"again": true}'::jsonb else '{}'::jsonb end
+        where outbox.state = 'dead' or ${live.replaceAll('o.', 'outbox.')}
+       returning id`,
+      [v.node_id, v.seq, outboxId(), v.id, skipFailedSince]);
+    return r.rows.length;
+  }
+
+  /** Marks the variant of a dead rebase job rebase_failed, against its parent's latest version (D44). */
+  private async rebaseDied(versionId: string, error: unknown) {
+    const nodeId = (await this.version(versionId)).node_id;
+    const live = await this.latestCommitted(nodeId);
+    if (!live?.parent_version_id) return;
+    const parentNode = (await this.version(live.parent_version_id)).node_id;
+    if (parentNode === nodeId) return;
+    const latest = (await this.latestCommitted(parentNode))!;
+    if (latest.id === live.parent_version_id) return;
+    await this.rebaseFailed(nodeId, latest.id, `Rebasing onto the new parent kept failing, and Kolab has stopped trying: ${maskTokens(error).slice(0, 300)}. Commit a new version to rebase it, or wait for the parent's next commit.`);
+  }
+
+  /**
+   * A rebase job's work (D43, P6): the variant it names is caught up with its parent node's latest
+   * version, built on the variant's live version now, whatever the job listed (catchUp). Its rebase
+   * commits after structural checks only (VER12), consults precedent (OVR9), marks the variant
+   * rebase_failed if it fails for the variant's own reasons (D44), and as it commits writes its own
+   * variants' jobs: the next level. Run again after a stop part way, it finds the variant on its
+   * parent's latest version and does nothing more.
+   */
+  private async rebaseJob(versionId: string, node: string | undefined, claim: Claim) {
+    await this.catchUp(node ?? (await this.version(versionId)).node_id, claim);
   }
 
   /**
@@ -2705,7 +2871,11 @@ export class Kolab {
 
   // ---- the cascade ---------------------------------------------------------
 
-  private async onCommit(versionId: string, claim: Claim) {
+  /**
+   * A committed version's cascade. Returns how many rebases of its variants it queued besides
+   * those its commit step wrote.
+   */
+  private async onCommit(versionId: string, claim: Claim): Promise<number> {
     claim.check();
     const v = await this.version(versionId);
     await this.withdrawStale(v);
@@ -2742,22 +2912,25 @@ export class Kolab {
 
     // 3. Transitive marks: each direct mark's walk ran in the transaction that raised it.
 
-    // 4. Children (variants) of an older version of this node rebase onto it.
-    const children = await this.db.query<VersionRow>(
-      `select c.* from version c join version p on p.id = c.parent_version_id
-        where p.node_id = $1 and c.node_id <> $1 and p.id <> $2 and c.state = 'committed'
-          and ${LIVE('c')}`,
-      [v.node_id, v.id]);
-    //    Each rebases the variant's live version as it is now, never the one listed, which
-    //    someone may have committed past since.
-    for (const c of children.rows) {
-      claim.check();   // a job whose claim was lost stops here, rather than rebase beside another run
-      await this.catchUp(c.node_id);
+    // 4. Children (variants) of an older version of this node rebase onto it, asynchronously
+    //    (D43, P6): the commit step queued a rebase job for each, and the worker runs them. They
+    //    are listed again now that the commit is visible to everyone, since a variant committing
+    //    at the same moment may have been invisible to the commit step's list while the commit
+    //    was invisible to its own catch-up. A variant listed already, or whose rebase onto this
+    //    version has already failed and marked it, gets no second job.
+    claim.check();
+    // One statement, as Kolab's own login, outside any transaction; other workers are told only
+    // when it queued something, which is rare.
+    const rebases = await this.enqueueRebases(this.db, v, true);
+    if (rebases) {
+      await this.inTransaction((tx) => this.notifyWork(tx));
+      this.wake();
     }
 
     // 5. Catch-up for this version itself: drafted against a parent that has since moved on.
     claim.check();
-    await this.catchUp(v.node_id);
+    await this.catchUp(v.node_id, claim);
+    return rebases;
   }
 
   /**
@@ -2765,14 +2938,27 @@ export class Kolab {
    * parent's latest. Every path that leaves a variant behind ends here: the parent's storm, the
    * variant's own commit, and a rebase dropped because something overtook it.
    */
-  private async catchUp(nodeId: string) {
+  private async catchUp(nodeId: string, claim?: Claim) {
+    claim?.check();   // a job whose claim was lost stops here, rather than rebase beside another run
     const live = await this.latestCommitted(nodeId);
     if (!live?.parent_version_id) return;
     const p = await this.version(live.parent_version_id);
     if (p.node_id === nodeId) return;
     const latestParent = (await this.latestCommitted(p.node_id))!;
-    if (latestParent.id !== p.id) await this.rebaseOrMark(live, latestParent);
-    else await this.settleRebaseFailed(live);
+    if (latestParent.id === p.id) return this.settleRebaseFailed(live);
+    if (!(await this.mayRebase(live, latestParent))) return;
+    await this.rebaseOrMark(live, latestParent);
+  }
+
+  /**
+   * Whether a variant may be rebased onto its parent's latest version now: the one place a check
+   * that belongs to the variant's relation with its parent goes, before anything is written, for
+   * every path that rebases (a rebase job, a variant's own catch-up, a dropped rebase's). Every
+   * variant's parent is in its own kolab today (forks across kolabs wait on KON), so nothing is
+   * refused; a fork's holder and access checks (D53) belong here.
+   */
+  private async mayRebase(_live: VersionRow, _parent: VersionRow): Promise<boolean> {
+    return true;
   }
 
   /**
@@ -3683,11 +3869,15 @@ export class Kolab {
 
   /** Nodes, of one kind if given, in one kolab if given, with the names addresses give them. */
   async listNodes(kind?: Kind, kolab?: string) {
-    return (await this.db.query<{ id: string; name: string; kolab: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }>(
+    return (await this.db.query<{ id: string; name: string; kolab: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number; rebase_pending: boolean; rebase_dead: boolean }>(
       `select n.id, n.name, n.kolab_id as kolab, n.kind, n.layer, n.title,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts,
-              (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review
+              (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review,
+              exists (select 1 from outbox o join version v on v.id = o.version_id
+                       where o.kind = 'rebase' and o.state = 'pending' and v.node_id = n.id and ${BEHIND('n.id')}) as rebase_pending,
+              exists (select 1 from outbox o join version v on v.id = o.version_id
+                       where o.kind = 'rebase' and o.state = 'dead' and v.node_id = n.id and ${BEHIND('n.id')}) as rebase_dead
          from node n where ($1::text is null or n.kind = $1) and ($2::text is null or n.kolab_id = $2)
         order by n.kind, n.name, n.kolab_id`, [kind ?? null, kolab ?? null])).rows;
   }
@@ -4034,6 +4224,16 @@ export const NEXT_STEP: Record<string, string> = {
  * pending draft does not supersede it: the cascade must keep reaching the
  * committed version until the draft actually commits (then catch-up runs).
  */
+/**
+ * A variant (the node `node`, in SQL) is behind: its live version sits on a version of another node
+ * that has committed a newer version since (D43, P6).
+ */
+function BEHIND(node: string) {
+  return `exists (select 1 from version lv join version pv on pv.id = lv.parent_version_id
+                   where lv.node_id = ${node} and lv.state = 'committed' and ${LIVE('lv')} and pv.node_id <> lv.node_id
+                     and exists (select 1 from version nv where nv.node_id = pv.node_id and nv.state = 'committed' and nv.seq > pv.seq))`;
+}
+
 function LIVE(alias: string) {
   return `not exists (select 1 from version later where later.node_id = ${alias}.node_id
             and later.seq > ${alias}.seq and later.state = 'committed')`;
@@ -4332,6 +4532,13 @@ const evidenceOf = (e: unknown): string[] => (Array.isArray(e) ? e.map((x) => (t
 
 /** Whether a commit step refused the version, because its author can no longer write its layer. */
 const isRefused = (x: unknown): x is { refused: string } => typeof x === 'object' && x !== null && 'refused' in x;
+
+/** A commit step that committed its version, with the rebase jobs it wrote for the version's variants (D43, P6). */
+type Committed = { committed: true; rebases: number };
+const isCommitted = (x: unknown): x is Committed => typeof x === 'object' && x !== null && 'committed' in x;
+
+/** Outbox ids: ULIDs that keep increasing within this process, so jobs written in one millisecond still run in the order written. */
+const outboxId = monotonicFactory();
 
 /** A version committed since another's base: it overtook that one. */
 type Overtaker = { id: string; active_role: string };

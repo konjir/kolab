@@ -76,11 +76,11 @@ export type ReviewVerdictKind = typeof REVIEW_VERDICTS[number];
 export const REVIEW_REQUEST_STATES = ['open', 'approved', 'changes_requested', 'withdrawn'] as const;
 export type ReviewRequestState = typeof REVIEW_REQUEST_STATES[number];
 /**
- * The work a transactional outbox job owes (REV3, W1.8): a committed version's cascade, and a
- * version overtaken while it waited, to fold or reject. Durable asynchronous rebasing (D43) adds
- * its kinds here.
+ * The work a transactional outbox job owes (REV3, W1.8): a committed version's cascade, a version
+ * overtaken while it waited, to fold or reject, and a variant to rebase onto its parent's latest
+ * version (D43, P6).
  */
-export const OUTBOX_KINDS = ['after_commit', 'settle'] as const;
+export const OUTBOX_KINDS = ['after_commit', 'settle', 'rebase'] as const;
 export type OutboxKind = typeof OUTBOX_KINDS[number];
 /** An outbox job is pending until done, or dead after too many failed attempts, until an admin retries it. */
 export const OUTBOX_STATES = ['pending', 'dead'] as const;
@@ -182,6 +182,11 @@ export type GateResult = ReviewVerdict & {
    * node that is still running elsewhere, backing off or dead (W1.8): it runs once that one is done.
    */
   cascade?: 'queued';
+  /**
+   * How many of its variants' rebases the commit queued (D43, P6): the commit returns once the
+   * version is committed, and Kolab's outbox worker rebases them, level by level. Absent if none.
+   */
+  rebases?: number;
 };
 
 /** A review request as a reviewer's inbox shows it. Its subject is a version; work packages come later (VER17). */
