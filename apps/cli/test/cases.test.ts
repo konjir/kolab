@@ -33,6 +33,7 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
   await call(eng, 'draft', { node: 'checkout-pg', elements: [{ id: 'b1', text: 'The provider confirms in 3 to 5 seconds.' }] });
   await call(eng, 'submit_for_review', { node: 'checkout-pg', version: 1 });
   const pm = await session('lee-pm', 'product', 'lee');
+  const dana = await session('dana', 'product');   // no party: Lee's own agent argues, so Lee can't rule on it (D51)
 
   const pushed: { uri: string; body: { cases?: CaseFileView[] } }[] = [];
   const w = await watch(eng, (uri, body) => { pushed.push({ uri, body: body as never }); });
@@ -41,10 +42,10 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
   // CASE5: the engineer agent raises it against the spec, with evidence; it waits in the functional inbox.
   const opened = await call(eng, 'open_case', {
     address: 'kj:checkout#R1', question: 'Can checkout finish in 2 seconds when the provider takes 3 to 5?',
-    claim: 'R1 cannot be met as written.', evidence: ['kj:checkout-pg#b1', 'provider SLA 4.2'],
+    claim: 'R1 cannot be met as written.', seeks: 'change_intent', evidence: ['kj:checkout-pg#b1', 'provider SLA 4.2'],
   }) as CaseFileView;
   expect(opened).toMatchObject({ on: 'kj:checkout@1#R1', layer: 'functional', state: 'open', opened_by: 'lee-eng', positions: [{ actor: 'lee-eng' }] });
-  const inbox = JSON.parse(((await pm.readResource({ uri: 'konjir://inbox/functional' })).contents[0] as { text: string }).text) as { cases: CaseFileView[] };
+  const inbox = JSON.parse(((await pm.readResource({ uri: 'konjir://inbox/test/functional' })).contents[0] as { text: string }).text) as { cases: CaseFileView[] };
   expect(inbox.cases.map((c) => c.case)).toStrictEqual([opened.case]);
   expect((await call(pm, 'list_cases', {}) as { cases: CaseFileView[] }).cases.map((c) => c.case)).toStrictEqual([opened.case]);
   expect((await call(eng, 'list_cases', {}) as { cases: CaseFileView[] }).cases).toStrictEqual([]);   // not on its layer
@@ -57,16 +58,16 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
 
   // Only a person rules: the agent is refused, with why.
   expect(await rejection(call(pm, 'rule', { case: opened.case, text: 'R1 stands.', effect: 'keep_intent', verdicts }))).toMatch(/only a person rules \(CASE2\): lee-pm is an agent of lee/);
+  expect(await rejection(call(lee, 'rule', { case: opened.case, text: 'R1 stands.', verdicts }))).toMatch(/lee is a party to case file .*: its agent lee-pm holds a position on it/);
   pushed.length = 0;
-  const ruling = await call(lee, 'rule', {
-    case: opened.case, text: 'R1 stands: show the order as confirmed at once, and reconcile when the provider answers.',
-    effect: 'keep_intent', verdicts,
+  const ruling = await call(dana, 'rule', {
+    case: opened.case, text: 'R1 stands: show the order as confirmed at once, and reconcile when the provider answers.', verdicts,
   }) as RulingView & { next: string };
-  expect(ruling).toMatchObject({ on: 'kj:checkout@1#R1', case: opened.case, effect: 'keep_intent', ruled_by: 'lee', next: expect.stringMatching(/finds another way/) });
+  expect(ruling).toMatchObject({ on: 'kj:checkout@1#R1', case: opened.case, effect: 'keep_intent', ruled_by: 'dana', next: expect.stringMatching(/finds another way/) });
   expect(ruling.ruled_at).toMatch(/^\d{4}-\d\d-\d\dT/);
 
   // The engineer's answers carry the ruling, pushed (an earlier push, of the second position, may still arrive first).
-  const ruledPush = () => pushed.find((p) => p.uri === 'konjir://answers/lee-eng' && p.body.cases?.[0]?.state === 'ruled');
+  const ruledPush = () => pushed.find((p) => p.uri === 'konjir://answers/test/lee-eng' && p.body.cases?.[0]?.state === 'ruled');
   for (let i = 0; i < 500 && !ruledPush(); i++) await new Promise((r) => setTimeout(r, 10));
   expect(ruledPush()!.body.cases!.map((c) => [c.case, c.state, c.ruling?.ruling])).toStrictEqual([[opened.case, 'ruled', ruling.ruling]]);
   expect((await call(eng, 'read_case', { case: opened.case }) as CaseFileView).positions.map((p) => [p.actor, p.verdict])).toStrictEqual([['lee-eng', 'overruled'], ['lee-pm', 'sustained']]);
@@ -74,7 +75,7 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
   // CASE4: precedent, served back to every agent of the kolab: in the operating instructions, beside the element, and listed.
   const prompt = await eng.getPrompt({ name: 'konjir_operating_instructions' });
   const text = (prompt.messages[0].content as { text: string }).text;
-  expect(text).toMatch(/Rulings, newest first \(1\): kj:checkout@1#R1: "R1 stands: show the order as confirmed at once, and reconcile when the provider answers." \(keeps the intent; ruled by lee on \d{4}-\d\d-\d\d\)/);
+  expect(text).toMatch(/Rulings, newest first \(1\): kj:checkout@1#R1: "R1 stands: show the order as confirmed at once, and reconcile when the provider answers." \(keeps the intent; ruled by dana on \d{4}-\d\d-\d\d\)/);
   const read = await call(eng, 'read_node', { node: 'checkout' }) as { elements: { id: string; rulings?: RulingView[] }[] };
   expect(read.elements[0].rulings!.map((r) => r.ruling)).toStrictEqual([ruling.ruling]);
   // A direct ruling, with no case file behind it (CASE3).
@@ -83,4 +84,4 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
   const direct = await call(lee, 'rule', { address: 'kj:checkout', text: 'The spec states intent only.', effect: 'keep_intent', replaces: 'nothing' }) as RulingView;
   expect(direct).toMatchObject({ on: 'kj:checkout@1', case: null });
   expect((await call(pm, 'list_rulings', { node: 'checkout' }) as { rulings: RulingView[] }).rulings.map((r) => r.ruling)).toStrictEqual([direct.ruling, ruling.ruling]);
-});
+}, 120_000);

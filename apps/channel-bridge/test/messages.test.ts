@@ -96,7 +96,7 @@ test('a case file new to the layer, or argued, starts a turn; a ruling on your o
     'Your functional inbox changed: 0 open questions and notes, 0 open marks, 1 open case file.',
     'A case file on your layer, new or argued:',
     '- case C1 on kj:orders@1#R8: "Can it be met?" (1 position). Next: Waiting for the other position: konjir_add_position case=C1.',
-    'Read konjir://inbox/functional, or call konjir_list_cases, before acting.',
+    `Read ${URI}, or call konjir_list_cases, before acting.`,
   ]);
   const argued = { ...open, positions: [{ actor: 'eng' }, { actor: 'pm' }], next: 'Waiting for a ruling.' };
   expect(describeChange(URI, { ...inbox([]), cases: [open] }, { ...inbox([]), cases: [argued] })!.content).toContain('(2 positions). Next: Waiting for a ruling.');

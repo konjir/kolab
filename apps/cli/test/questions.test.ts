@@ -106,14 +106,23 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.db.exec(`
       drop trigger ruling_by_person on ruling;
       drop function kj_ruling_by_person();
-      drop trigger case_fixed on ruling;
-      drop trigger case_fixed on position;
-      drop trigger case_fixed on case_file;
+      drop trigger position_on_open_case on position;
+      drop function kj_position_on_open_case();
+      ${['ruling', 'position', 'case_file'].map((t) => `drop trigger case_fixed on ${t}; drop trigger case_kept on ${t};`).join('\n')}
       drop function kj_case_fixed();
-      drop index case_file_kolab, position_case_file, ruling_kolab, one_position_per_actor, one_ruling_per_case_file;
-      alter table position drop column created_at;
-      alter table case_file drop column question, drop column opened_by, drop column opened_at;
-      alter table ruling drop column ruled_at, drop column effect;
+      ${['ruling', 'position', 'case_file'].map((t) => `drop policy kolab_read on ${t}; create policy kolab_read on ${t} for select to kj_agent using (kolab_id = (select kj_session_kolab()));`).join('\n')}
+      drop function kj_session_belongs();
+      drop index case_file_kolab, position_case_file, ruling_kolab, one_position_per_actor, one_position_per_side, one_ruling_per_case_file;
+      alter table position drop column created_at, drop column seeks;
+      alter table case_file drop column question, drop column opened_by, drop column opened_at, drop column superseded_by;
+      alter table ruling drop constraint ruling_id_kolab_key, drop column ruled_at, drop column effect;
+      alter table case_file drop constraint case_file_state_check;
+      alter table case_file add constraint case_file_state_check check (state in ('open','ruled'));
+      update invalidation set reason = 'changed' where reason = 'ruled';
+      alter table invalidation drop constraint invalidation_reason_check;
+      alter table invalidation add constraint invalidation_reason_check check (reason in
+        ('changed','fuzzy_reanchor','orphaned','override_stale','override_orphaned',
+         'upstream_dirty','review_failed','rebase_failed','role_boundary','query_answered'));
       drop table link_removal;
       drop function kj_link_removal_kolab();
       drop policy agent_draft on edge; drop policy kolab_delete on edge; revoke delete on edge from kj_agent;

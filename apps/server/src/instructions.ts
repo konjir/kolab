@@ -59,7 +59,9 @@ export class OperatingInstructions {
     // admin token works in no kolab, so it gets the rules alone.
     const session = sessionOf(context?.authInfo);
     const kolab = session ? await this.kolab.sessionKolab(session) : undefined;
-    const prec = kolab ? (await this.kolab.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
+    // A reader who holds only Read doesn't belong to the kolab's work, so gets no precedent (D49).
+    const belongs = session ? await this.kolab.sessionBelongs(session) : false;
+    const prec = kolab && belongs ? (await this.kolab.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
       `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
     const answered = kolab ? await this.kolab.listQueries({ state: 'answered', kolab }) : [];
     const rulings = session ? await this.kolab.rulingsFor(session, { limit: 20 }) : [];
