@@ -4,7 +4,7 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  Access, ActorKind, CaseFileView, FindingKind, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
+  Access, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
   ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
 } from './index.js';
 
@@ -249,6 +249,14 @@ export interface WebRuleDirect { node: string; seq?: number; element?: string; t
 export interface WebSwitch { kolab: string; role: Role }
 /** A kolab of the signed-in person's own (TEN2, TEN3): its name is unique across Konjir (TEN4). The session switches into it. */
 export interface WebCreateKolab { name: string; title: string }
+
+/** An invite to the session's kolab (W3.4): a level, and for Write its layers (both by default). Never Admin. */
+export interface WebCreateInvite { level: InviteLevel; layers?: Layer[] }
+/** A new invite: its secret, shown this once, from which the page makes the link `<origin>/#/invite/<token>`. */
+export interface WebInviteMade { token: string; invite: InviteView }
+export interface WebInvitesView { invites: InviteView[] }
+/** An invite's secret, from its link. */
+export interface WebInviteToken { token: string }
 
 /** An error the API returns: an HTTP status with this body. */
 export interface WebError { error: string; message: string }

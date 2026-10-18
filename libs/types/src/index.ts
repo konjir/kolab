@@ -21,6 +21,9 @@ export type OrgRole = typeof ORG_ROLES[number];
 /** The levels of access to a kolab, lowest first (TEN7). A Write grant names its layers (TEN8). */
 export const ACCESS_LEVELS = ['read', 'triage', 'write', 'maintain', 'admin'] as const;
 export type AccessLevel = typeof ACCESS_LEVELS[number];
+/** The levels an invite may grant (W3.4): every level but Admin, which a kolab's owners give. */
+export const INVITE_LEVELS = ['read', 'triage', 'write', 'maintain'] as const;
+export type InviteLevel = typeof INVITE_LEVELS[number];
 /** Who can read a kolab without a grant: everyone, nobody, or the owning organization's members (TEN6). */
 export const VISIBILITIES = ['public', 'private', 'internal'] as const;
 export type Visibility = typeof VISIBILITIES[number];
@@ -29,6 +32,21 @@ export type Visibility = typeof VISIBILITIES[number];
  * agent's is its own grant, cut down to its owner's (D30).
  */
 export interface Access { level: AccessLevel | null; layers: Layer[] }
+/**
+ * An invite to a kolab (W3.4), as its admins see it: the access it grants, who made it, and what
+ * became of it. Its link is shown once, when it is made, and never again.
+ */
+export interface InviteView {
+  id: string; kolab: string; level: InviteLevel; layers: Layer[];
+  invited_by: string; created_at: string; expires_at: string;
+  state: 'open' | 'accepted' | 'revoked' | 'expired';
+  accepted_by: string | null; accepted_at: string | null;
+}
+/** What an invite's link shows whoever holds it, before they accept: the kolab, the access, and who invites them. */
+export interface InvitePreview {
+  kolab: string; title: string; owner: string; level: InviteLevel; layers: Layer[];
+  invited_by: string; expires_at: string;
+}
 /** `archived` is given only by a listing that includes archived kolabs (D52). */
 export interface KolabRow { id: string; owner: string; title: string; visibility: Visibility; base_permission: AccessLevel | null; archived?: boolean }
 /**

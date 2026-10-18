@@ -12,7 +12,7 @@ import {
 import { Kolab, sessionKey } from '@konjir/engine';
 import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
 import { ARCHIVABLE,
-  ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS,
+  ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS,
   REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
 } from '@konjir/types';
 
@@ -117,6 +117,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, A
     expect(await check('ruling_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
     expect(await check('ruling_effect_check')).toStrictEqual([...RULING_EFFECTS].sort());
     expect(await check('position_seeks_check')).toStrictEqual([...RULING_EFFECTS].sort());
+    expect(await check('kolab_invite_level_check')).toStrictEqual([...INVITE_LEVELS].sort());
   });
 });
 

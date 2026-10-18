@@ -6,8 +6,8 @@ import {
 } from '@konjir/engine';
 import { formatAddress, isKolabName, isNodeName, parseAddress } from '@konjir/address';
 import {
-  CASE_FILE_STATES, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
-  type WebCreateKolab, type WebSwitch, type CaseFileState, type CaseFileView, type RulingView,
+  CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
+  type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type CaseFileState, type CaseFileView, type RulingView,
   type WebCase, type WebCasesView, type WebForeignKolab, type WebOpenCase, type WebPosition, type WebRuleCase, type WebRuleDirect, type WebRuling,
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
@@ -515,6 +515,34 @@ export class WebService {
     const me = await this.me(s);
     await this.kolab.createOwnKolab(s, b.name, { title: b.title });
     return this.switchTo(s, { kolab: b.name, role: me.role });
+  }
+
+  // ---- invites (W3.4): Kolab decides who may make, list, revoke and accept one ----
+
+  async invites(s: string): Promise<WebInvitesView> {
+    return { invites: await this.kolab.listInvites(s) };
+  }
+
+  /** A new invite to the session's kolab: its secret, shown this once, for the page to make a link of. */
+  async createInvite(s: string, b: WebCreateInvite): Promise<WebInviteMade> {
+    if (!INVITE_LEVELS.includes(b?.level)) throw bad(`an invite grants one of ${INVITE_LEVELS.join(', ')}`);
+    if (b.layers !== undefined && (!Array.isArray(b.layers) || b.layers.some((l) => !LAYERS.includes(l)))) throw bad(`an invite's layers are ${LAYERS.join(' and ')}`);
+    return this.kolab.createInvite(s, { level: b.level, layers: b.layers });
+  }
+
+  async revokeInvite(s: string, id: string): Promise<void> {
+    await this.kolab.revokeInvite(s, id);
+  }
+
+  /**
+   * The signed-in person accepts an invite: they are granted its access, and the session moves to
+   * its kolab in the same role. Returns the new session's token, for the cookie.
+   */
+  async acceptInvite(s: string, token: unknown): Promise<string> {
+    if (typeof token !== 'string' || !token.trim()) throw bad('give the invite');
+    const me = await this.me(s);
+    const { kolab } = await this.kolab.acceptInvite(token.trim(), me.actor);
+    return this.kolab.switchSession(s, { kolab, role: me.role });
   }
 
   /** Signing out ends the session: its token is revoked everywhere (D41), not only forgotten here. */
