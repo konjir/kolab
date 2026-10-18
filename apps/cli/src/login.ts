@@ -50,6 +50,14 @@ const LOCK_STALE_MS = 30_000;
 const LOCK_TOUCH_MS = 10_000;
 /** How long to wait for another konjir's lock before giving up, by default. */
 const LOCK_WAIT_MS = 40_000;
+/**
+ * The longest one hold may last: a refresh takes well under a second. Past it the heartbeat stops
+ * and the lock is let go, so a hold leaked by an error that escaped the SDK (in a long `konjir
+ * watch`, say) never keeps other konjir waiting.
+ */
+const LOCK_MAX_HOLD_MS = 30_000;
+// Staleness compares this machine's clock with the file's mtime: the credentials folder is assumed
+// local. On a network mount with clocks more than LOCK_STALE_MS apart, a live lock can read as stale.
 
 const codeOf = (e: unknown) => (e as { code?: string } | undefined)?.code;
 
@@ -64,7 +72,7 @@ process.once('exit', () => { for (const [path, h] of held) { try { if (readFileS
  * knows. Re-entrant for one owner. A lock path that is a symbolic link is refused, never followed.
  */
 export class FileLock {
-  constructor(readonly path: string, private readonly waitMs = LOCK_WAIT_MS) {}
+  constructor(readonly path: string, private readonly waitMs = LOCK_WAIT_MS, private readonly maxHoldMs = LOCK_MAX_HOLD_MS) {}
 
   /** The lock's owner as the file says, or undefined when there is none; throws on a symbolic link. */
   private ownerOnDisk(): string | undefined {
@@ -83,13 +91,24 @@ export class FileLock {
         mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
         const fd = openSync(this.path, 'wx', 0o600);
         try { writeSync(fd, owner); } finally { closeSync(fd); }
-        const touch = setInterval(() => { try { if (this.holds(owner)) { const t = new Date(); utimesSync(this.path, t, t); } } catch { /* checked when it matters */ } }, LOCK_TOUCH_MS);
+        const since = Date.now();
+        const touch = setInterval(() => {
+          if (Date.now() - since >= this.maxHoldMs) { this.release(owner); return; }   // held too long: let go
+          try { if (this.holds(owner)) { const t = new Date(); utimesSync(this.path, t, t); } } catch { /* checked when it matters */ }
+        }, Math.min(LOCK_TOUCH_MS, this.maxHoldMs));
         touch.unref();
         const before = held.get(this.path);
         if (before) clearInterval(before.touch);   // a lock of this process's that was broken, and taken anew
         held.set(this.path, { owner, touch });
         return;
       } catch (e) {
+        // On Windows a file pending delete answers EPERM, EACCES or EBUSY for a while: wait, as for EEXIST.
+        const pending = process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(codeOf(e) ?? '');
+        if (pending) {
+          if (Date.now() > end) throw new Error(`konjir couldn't take ${this.path} (${codeOf(e)}): if no konjir is running, remove that file`);
+          await sleep(15 + Math.random() * 35);
+          continue;
+        }
         if (codeOf(e) !== 'EEXIST') throw new Error(`konjir couldn't take ${this.path} (${codeOf(e) ?? e}); check that folder is yours to write in`);
       }
       // Someone holds it. Only ENOENT means it was released meanwhile: anything else waits, until the deadline.
@@ -120,14 +139,27 @@ export class FileLock {
       if (codeOf(e) === 'ENOENT') return true;
       return `its stale lock can't be removed (${codeOf(e) ?? e})`;
     }
-    try {
-      if (lstatSync(aside).mtimeMs !== staleMtime) {
-        // A fresh lock was moved: give it back, without ever replacing one made since.
-        try { linkSync(aside, this.path); } catch { /* the place was taken: its holder will see its lock is gone */ }
+    let moved;
+    try { moved = lstatSync(aside); } catch (e) { return `konjir moved its stale lock aside to ${aside} but can't read it (${codeOf(e) ?? e})`; }
+    if (moved.mtimeMs !== staleMtime) {
+      // A fresh lock was moved: give it back, without ever replacing one made since. A rare race
+      // remains: a third konjir may take the free place between the move and the link, and then it
+      // and the moved lock's holder both hold it until the holder next checks (it may already have
+      // read the tokens). Kolab's 10 s refresh grace usually limits that to "run konjir login".
+      try {
+        linkSync(aside, this.path);
+      } catch (e) {
+        if (codeOf(e) === 'EEXIST') { try { unlinkSync(aside); } catch { /* left aside */ } return true; }
+        // No hard links on this filesystem (FAT, some SMB or FUSE mounts): move it back if the place
+        // is still free; never delete it, since it is a live holder's lock.
+        try { lstatSync(this.path); } catch (f) {
+          if (codeOf(f) === 'ENOENT') { try { renameSync(aside, this.path); return true; } catch { /* below */ } }
+        }
+        return `konjir moved a live lock aside to ${aside} and couldn't put it back (${codeOf(e) ?? e})`;
       }
-    } finally {
-      try { unlinkSync(aside); } catch { /* best effort */ }
     }
+    // Left behind only by a crash between the move and this, or a failed unlink.
+    try { unlinkSync(aside); } catch { /* best effort */ }
     return true;
   }
 
@@ -163,7 +195,7 @@ class Store {
    * named through KONJIR_CREDENTIALS (or a path given) is the person's: never changed, only warned of
    * when others may write in it.
    */
-  constructor(readonly path: string, private readonly managed: boolean, lockWaitMs?: number) { this.lock = new FileLock(`${path}.lock`, lockWaitMs); }
+  constructor(readonly path: string, private readonly managed: boolean, lockWaitMs?: number, lockMaxHoldMs?: number) { this.lock = new FileLock(`${path}.lock`, lockWaitMs, lockMaxHoldMs); }
   private warned = false;
   private all(): Record<string, Saved> {
     if (!existsSync(this.path)) return {};
@@ -196,7 +228,7 @@ class Store {
           if (statSync(dir).mode & 0o022) console.error(`warning: others may write in ${dir}, which holds your konjir sign-in (${this.path}); konjir leaves the folder as it is`);
         } catch { /* made just now */ }
       }
-      // Written whole to a new file of a random name (O_EXCL: never through a link someone left there), then moved into place.
+      // Written whole to a new file of a random name (a `.tmp` left behind only if the write or rename throws) (O_EXCL: never through a link someone left there), then moved into place.
       const tmp = `${this.path}.${randomBytes(8).toString('hex')}.tmp`;
       writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600, flag: 'wx' });
       renameSync(tmp, this.path);
@@ -231,9 +263,9 @@ export class StoredLogin implements OAuthClientProvider {
    * `fresh`: a new sign-in, which ignores the tokens kept from before (they stay kept, and working,
    * until it saves its own). `lockWaitMs`: how long to wait for another konjir's lock.
    */
-  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; lockWaitMs?: number } = {}) {
+  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; lockWaitMs?: number; lockMaxHoldMs?: number } = {}) {
     // Only konjir's own default folder is kept at 0700; one named through KONJIR_CREDENTIALS is the person's.
-    this.store = new Store(opts.path ?? credentialsPath(), !opts.path && !process.env.KONJIR_CREDENTIALS, opts.lockWaitMs);
+    this.store = new Store(opts.path ?? credentialsPath(), !opts.path && !process.env.KONJIR_CREDENTIALS, opts.lockWaitMs, opts.lockMaxHoldMs);
   }
   get redirectUrl() { return this.opts.redirectUrl ?? REDIRECT; }
   get clientMetadata(): OAuthClientMetadata {

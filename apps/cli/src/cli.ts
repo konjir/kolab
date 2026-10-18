@@ -58,6 +58,8 @@ export async function connect(url: string, auth: string | OAuthClientProvider): 
   await client.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
     ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } } }
     : { authProvider: auth, ...(auth instanceof StoredLogin ? { fetch: auth.fetch } : {}) }));
+  // An error the SDK reports only here (a background stream's refresh) lets go of the refresh lock.
+  if (auth instanceof StoredLogin) client.onerror = () => auth.releaseLock();
   return client;
 }
 
@@ -315,6 +317,7 @@ export async function main(argv: string[]) {
         opened = Date.now();
         if (!once && first) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
         void w.subscription.closed.then((how) => {
+          stored?.releaseLock();
           // A stream lives as long as its access token (D55): with a sign-in, listen again, which refreshes it.
           if (!finished && how === 'remote' && stored) {
             retries = Date.now() - opened > 60_000 ? 0 : retries + 1;
