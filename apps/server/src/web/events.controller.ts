@@ -96,9 +96,8 @@ export class WebStreams implements OnModuleDestroy {
  *
  * It sends signals, never content; the page re-reads what it shows:
  * - `changed` `layer` when a layer's inbox changes (a question, a note, a mark, a review request),
- *   from this process or any other on the database (API5), as the MCP inboxes are signalled. An
- *   event that names a kolab other than the session's is dropped; one that names none (push
- *   signals don't name a kolab yet, D50) is sent, and the page re-reads its own kolab's.
+ *   from this process or any other on the database (API5), as the MCP inboxes are signalled, and
+ *   only for the session's own kolab: each event names its kolab (D50).
  * - `changed` `answers` when the session's own actor's answers change.
  * - `changed` `versions` when a version is written or changes state in the session's kolab (WebStreams).
  * - `ended` when the session ends (D41), and the stream closes. The session is checked before each
@@ -174,8 +173,8 @@ export class WebEventsController {
     const unsubscribe = this.kolab.onEvent((e: KolabEvent) => {
       if (isSessionEnded(e)) { if (e.id === key) stream.end('ended'); return; }
       if (!isInboxEvent(e)) return;
-      const named = (e as { kolab?: unknown }).kolab;
-      if (typeof named === 'string' && named !== me.kolab) return;
+      // Push signals name their kolab (D50): only the session's own reaches its page.
+      if (e.kolab !== me.kolab) return;
       if (e.inbox === 'layer') queue({ type: 'changed', what: 'layer', layer: e.layer });
       else if (e.actor === me.actor) queue({ type: 'changed', what: 'answers' });
     });

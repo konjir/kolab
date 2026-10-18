@@ -11,8 +11,8 @@ const KIND_WORD: Record<string, string> = {
 };
 
 /** Edits not yet submitted: kept in the page, per node, until submitted or discarded. */
-interface Draft { changes: Record<string, string>; added: { id: string; text: string }[]; removed: string[]; replaces?: number }
-const EMPTY: Draft = { changes: {}, added: [], removed: [] };
+interface Draft { changes: Record<string, string>; added: { id: string; text: string }[]; removed: string[]; unlinked: string[]; replaces?: number }
+const EMPTY: Draft = { changes: {}, added: [], removed: [], unlinked: [] };
 
 export interface NodeViewProps {
   me: WebMe; name: string; version?: number; tick: number; act: Act;
@@ -59,7 +59,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
   const whyNot = !view.can_write
     ? (view.node.layer === 'functional' ? 'Engineers can’t change intent. Ask the spec instead.' : 'Product can’t change implementation. Ask the binding instead.')
     : mineInReview ? `Version ${mineInReview.seq} is in review. Edits wait until it is decided.` : '';
-  const changes = Object.keys(draft.changes).length + draft.added.length + draft.removed.length;
+  const changes = Object.keys(draft.changes).length + draft.added.length + draft.removed.length + draft.unlinked.length;
   const compared = view.compared_with && (!isLatest || reading?.state !== 'committed')
     ? new Map(view.compared_with.elements.map((e) => [e.id, e.text])) : undefined;
 
@@ -94,6 +94,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
         ...draft.added.map((a) => ({ kind: 'add' as const, element: a.id, text: a.text })),
         ...draft.removed.map((element) => ({ kind: 'remove' as const, element })),
       ],
+      ...(draft.unlinked.length ? { unlink: draft.unlinked } : {}),
       replaces: draft.replaces,
     };
     let out: WebOutcome | undefined;
@@ -156,7 +157,8 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
             before={compared ? compared.get(e.id) ?? '' : undefined}
             editing={editing === e.id} asking={asking === e.id}
             onEdit={() => { setEditing(e.id); setAsking(undefined); }} onCancel={() => { setEditing(undefined); setAsking(undefined); }}
-            onSave={(t) => save(e.id, t)} onRemove={() => remove(e.id)} onAsk={() => { setAsking(e.id); setEditing(undefined); }} />
+            onSave={(t) => save(e.id, t)} onRemove={() => remove(e.id)} unlinked={draft.unlinked}
+            onUnlink={(edge) => setDraft((d) => ({ ...d, unlinked: d.unlinked.includes(edge) ? d.unlinked.filter((x) => x !== edge) : [...d.unlinked, edge] }))} onAsk={() => { setAsking(e.id); setEditing(undefined); }} />
         )) : (
           <li className="empty">{view.node.layer === 'functional' ? 'No requirements yet.' : 'No elements yet.'} {writable ? 'Add the first one below.' : ''}</li>
         )}
@@ -199,6 +201,8 @@ interface RowProps {
   seq: number | null; live: boolean; writable: boolean; focus: boolean;
   text: string; removed: boolean; drafted: boolean; before?: string; editing: boolean; asking: boolean;
   onEdit(): void; onCancel(): void; onSave(text: string): void; onRemove(): void; onAsk(): void;
+  /** Links dropped in the draft (konjir_draft's unlink), and toggling one. */
+  unlinked: string[]; onUnlink(edge: string): void;
 }
 
 function ElementRow(p: RowProps) {
@@ -238,7 +242,14 @@ function ElementRow(p: RowProps) {
         ) : (
           <p style={p.removed ? { textDecoration: 'line-through' } : undefined}>{p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.text}</p>
         )}
-        {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => chip(l, 'target'))}</div>}
+        {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => (
+          <span key={l.edge} style={p.unlinked.includes(l.edge) ? { textDecoration: 'line-through' } : undefined}>
+            {chip(l, 'target')}
+            {p.writable && <button type="button" className="btn quiet" style={{ ['--kb-h' as string]: '24px', fontSize: 12 }}
+              aria-label={`${p.unlinked.includes(l.edge) ? 'Keep' : 'Remove'} the link to ${addr(l.target.node, null, l.target.element)}`}
+              onClick={() => p.onUnlink(l.edge)}>{p.unlinked.includes(l.edge) ? 'keep' : 'unlink'}</button>}
+          </span>
+        ))}</div>}
         {e.relied_on_by.length > 0 && <div className="links">relied on by {e.relied_on_by.map((l) => chip(l, 'source'))}</div>}
       </div>
       {!p.editing && (
