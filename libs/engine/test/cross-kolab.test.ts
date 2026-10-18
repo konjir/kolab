@@ -346,3 +346,82 @@ test('a change of access leaves a dependent in an archived kolab as it is, and t
   await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
   expect(await kolab.openMarks()).toStrictEqual([]);
 });
+
+test('a fork\'s rebase queued when its holder holds it again keeps its error to its parent\'s kolab, and so does its rebase_failed mark (verification review)', async () => {
+  const kolab = await openKolab({ queued: true });
+  for (const a of ['alice', 'bob', 'dave']) await kolab.addActor(a);
+  await kolab.createKolab('orders', { owner: 'alice' });
+  await kolab.createKolab('billing', { owner: 'bob' });
+  await kolab.grant('billing', 'alice', 'read');
+  await kolab.grant('orders', 'dave', 'write', { layers: ['functional'] });
+  const alice = await kolab.openSession('alice', 'product', { kolab: 'orders' });
+  const bob = await kolab.openSession('bob', 'product', { kolab: 'billing' });
+  const dave = await kolab.openSession('dave', 'product', { kolab: 'orders' });
+  await kolab.createNode(bob, 'functional_spec', 'Checkout', 'checkout');
+  await kolab.commit(bob, 'checkout', { elements: els({ R1: 'Invoices are sent monthly.' }) });
+  await kolab.createNode(alice, 'functional_spec', 'EU', 'eu');
+  const parent = await kolab.versionIn(alice, 'kj:billing/checkout@1', { what: 'a variant (a fork)', across: true });
+  const v1 = await kolab.draft(alice, 'eu', { parent: parent.id, deltas: [{ kind: 'add', element: 'E1', text: 'VAT is shown.' }] });
+  await kolab.review(v1);
+  await kolab.recordReview(dave, v1, { verdict: 'approve' });
+  await kolab.revoke('billing', 'alice');
+  await kolab.commit(bob, 'checkout', { elements: els({ R1: 'Invoices are sent weekly.' }) });
+  await kolab.db.query(`delete from outbox`);
+  await kolab.grant('billing', 'alice', 'read');   // queues the fork's rebase, payload { node }
+  const k = kolab as unknown as { rebaseOrMark: (...a: unknown[]) => Promise<void> };
+  k.rebaseOrMark = async () => { throw new Error('upstream-private-detail-XYZ'); };
+  await kolab.drainOutbox();
+  const seen = (await kolab.readNode(dave, 'eu')).rebase;
+  expect(seen).toMatchObject({ state: 'pending', attempts: 1 });
+  expect(JSON.stringify(seen)).not.toMatch(/XYZ|billing/);
+  // Dead after its attempts: its rebase_failed mark and question say nothing of it either.
+  for (let i = 0; i < 12; i++) {
+    await kolab.db.query(`update outbox set run_after = now()`);
+    await kolab.drainOutbox();
+  }
+  expect((await kolab.outboxJobs()).map((j) => j.state)).toStrictEqual(['dead']);
+  const said = JSON.stringify({ marks: await kolab.describeMarks({ kolab: 'orders' }), queries: await kolab.listQueries({ kolab: 'orders' }) });
+  expect(said).toMatch(/rebase_failed/);
+  expect(said).not.toMatch(/XYZ/);
+});
+
+test('archiving a holder, or bringing back a dependent kolab, marks links and forks in the same transaction (verification review)', async () => {
+  const { kolab, alice, checkout } = await twoKolabs();
+  await kolab.addActor('dave');
+  await kolab.grant('orders', 'dave', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'dave', 'read');
+  const dave = await kolab.openSession('dave', 'product', { kolab: 'orders' });
+  await kolab.createNode(dave, 'functional_spec', 'O', 'o');
+  const o1 = await commitReviewed(kolab, dave, alice, 'o', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  await linkAcross(kolab, dave, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.archive({ actor: 'dave' });
+  expect(await marks(kolab, 'orders')).toStrictEqual([['access_lost', 'kj:o@1#O1']]);
+  await kolab.unarchive({ actor: 'dave' });
+  expect(await marks(kolab, 'orders')).toStrictEqual([]);
+  const dave2 = await kolab.openSession('dave', 'product', { kolab: 'orders' });
+
+  // alice's link from orders, revoked while orders was archived: marked as orders comes back.
+  await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
+  const a1 = await commitReviewed(kolab, alice, dave2, 'orders-spec', { elements: els({ A1: 'Orders ship fast.' }) });
+  await linkAcross(kolab, alice, a1, 'A1', 'kj:billing/checkout#R2');
+  await kolab.archive({ kolab: 'orders' });
+  await kolab.revoke('billing', 'alice');
+  await kolab.unarchive({ kolab: 'orders' });
+  expect(await marks(kolab, 'orders')).toStrictEqual([['access_lost', 'kj:orders-spec@1#A1']]);
+  expect(checkout).toBeTruthy();
+});
+
+test('a reader taking over a link must qualify, and a link whose holder lost access is marked then (verification review)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
+  const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  const edge = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  // Behind Kolab's back, alice's Read goes, with no mark; carol, who can't read billing, tries to hold it.
+  await kolab.db.query(`delete from kolab_grant where kolab_id = 'billing' and user_id = 'alice'`);
+  await kolab.addActor('carol');
+  const k = kolab as unknown as { holdLink: (edge: string, actor: string) => Promise<boolean> };
+  expect(await k.holdLink(edge, 'carol')).toBe(false);
+  expect((await kolab.db.query(`select held_by from edge where id = $1`, [edge])).rows).toStrictEqual([{ held_by: 'alice' }]);
+  expect(await marks(kolab, 'orders')).toStrictEqual([['access_lost', 'kj:orders-spec@1#O1']]);
+  expect([bob, checkout]).toHaveLength(2);
+});

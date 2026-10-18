@@ -1359,8 +1359,11 @@ export class Kolab {
     const onto = r.onto ? (await this.db.query<{ name: string; kolab_id: string; seq: number }>(
       `select n.name, n.kolab_id, v.seq from version v join node n on n.id = v.node_id
         where v.id = $1 and n.kolab_id = (select kolab_id from node where id = $2)`, [r.onto, nodeId])).rows[0] : undefined;
-    // Nor what went wrong there: a fork's rebase from another kolab keeps its error to itself.
-    const elsewhere = !!r.onto && !onto;
+    // Nor what went wrong there: a fork's rebase, whatever queued it, keeps its error to itself.
+    const parentKolab = (await this.db.query<{ kolab_id: string }>(
+      `select p.kolab_id from version l join version p on p.id = l.parent_version_id
+        where l.node_id = $1 and l.state = 'committed' order by l.seq desc limit 1`, [nodeId])).rows[0]?.kolab_id;
+    const elsewhere = (!!r.onto && !onto) || (parentKolab !== undefined && parentKolab !== (await this.node(nodeId)).kolab_id);
     return {
       state: r.state, attempts: r.attempts, queued_at: new Date(r.created_at).toISOString(),
       ...(onto ? { after: formatAddress({ kolab: onto.kolab_id, node: onto.name, version: onto.seq }) } : {}),
@@ -1548,13 +1551,19 @@ export class Kolab {
       const agents = owner === undefined ? [] : (await tx.query<{ id: string }>(
         `select id from actor where owner_id = $1 and archived_at is null order by id`, [owner])).rows.map((x) => x.id);
       await tx.query(`insert into archive_event(target_kind, target_id, archived, done_by) values ($1, $2, $3, $4)`, [kind, name, archive, by]);
-      if (!archive) await this.notifyWork(tx);   // every process's worker: the jobs it restores are due again
-      return { kolabs, agents, ended: await endUnreachableIn(tx, signal) };
+      // Links and forks across kolabs whose holders' access this changes, or whose own kolab or
+      // other kolab it archives or brings back, are marked or settled now (LNK8, D52, D53).
+      const holders = await archiveHoldersOf(tx, kind, name, kind === 'kolab' ? [name] : kolabs);
+      const catchUps = await this.reconcileAccessIn(tx, signal, holders);
+      if (!archive || catchUps.length) await this.notifyWork(tx);   // every process's worker: the jobs it restores are due again
+      return { kolabs, agents, ended: await endUnreachableIn(tx, signal), catchUps };
     });
+    if (r.catchUps.length) this.wake();
     console.error(`kolab: ${kind} ${name} ${archive ? 'archived' : 'unarchived'} by ${by}`
       + (r.kolabs.length ? `, with kolabs ${r.kolabs.join(', ')}` : '') + (r.agents.length ? `, with agents ${r.agents.join(', ')}` : '')
       + (r.ended ? `; ${r.ended} session${r.ended === 1 ? '' : 's'} ended` : ''));
-    return { archived: target, ...r };
+    const { catchUps: _c, ...out } = r;
+    return { archived: target, ...out };
   }
 
   /**
@@ -2540,7 +2549,9 @@ export class Kolab {
     if (latest.id === live.parent_version_id) return;
     // The same check as every rebase: a variant that may not be rebased is not marked against its parent either.
     if (!(await this.mayRebase(live, latest))) return;
-    await this.rebaseFailed(nodeId, latest.id, `Rebasing onto the new parent kept failing, and Kolab has stopped trying: ${maskTokens(error).slice(0, 300)}. Commit a new version to rebase it, or wait for the parent's next commit.`);
+    // A fork's error may tell of its parent's kolab, which not everyone here reads (D53).
+    const why = latest.kolab_id !== live.kolab_id ? 'the parent is in another kolab, so its error stays there' : maskTokens(error).slice(0, 300);
+    await this.rebaseFailed(nodeId, latest.id, `Rebasing onto the new parent kept failing, and Kolab has stopped trying: ${why}. Commit a new version to rebase it, or wait for the parent's next commit.`);
   }
 
   /**
@@ -3217,9 +3228,15 @@ export class Kolab {
   }
 
   private async holdLinkIn(tx: Q, signal: Signal, edgeId: string, actor: string): Promise<boolean> {
+    const was = (await tx.query<EdgeRow>(`select * from edge where id = $1`, [edgeId])).rows[0];
+    // Only someone who vouches for it holds it (checked again here, under the lock). One who no
+    // longer does changes nothing, but if the holder it has doesn't either, it is marked now.
+    if (await this.unvouchedLink({ ...was, held_by: actor }, tx)) {
+      const why = await this.unvouchedLink(was, tx);
+      if (why) await this.linkAccessLostIn(tx, signal, was, why);
+      return false;
+    }
     const e = (await tx.query<EdgeRow>(`update edge set held_by = $2 where id = $1 returning *`, [edgeId, actor])).rows[0];
-    // Only someone who vouches for it settles its mark (checked again here, under the lock).
-    if (await this.unvouchedLink(e, tx)) return false;
     return this.restoreLinkIn(tx, signal, e, `held by ${actor}, who reads kolab ${e.target_kolab_id}`);
   }
 
@@ -3246,8 +3263,7 @@ export class Kolab {
    * so the caller can wake the worker once the transaction commits.
    *
    * A dependent in an archived kolab (D52) is left as it is: nothing may be written there, and
-   * nothing reaches it either, since its jobs wait; once unarchived, its next rebase job or the
-   * cascade meets it and marks it then.
+   * nothing reaches it either, since its jobs wait. Unarchiving it reconciles it (setArchived).
    *
    * Only links and forks held by `holders` are looked at: the actors whose access the change could
    * alter, and the agents they own (holdersOf), found through edge_cross_kolab and version_forks.
@@ -3730,18 +3746,30 @@ export class Kolab {
     if (m.reason === 'access_lost') return this.takeOver(s.actor_id, m, v);
     if (m.edge_id) {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
-      if (e.target_kolab_id !== e.kolab_id && !(await this.holds(s.actor_id, e.target_kolab_id))) {
+      const across = e.target_kolab_id !== e.kolab_id;
+      if (across && !(await this.holds(s.actor_id, e.target_kolab_id))) {
         throw new AccessError(`${s.actor_id} can't read kolab ${e.target_kolab_id}, so can't check this link into it; someone who reads it clears it`);
       }
       const tNode = (await this.version(e.target_version_id)).node_id;
-      const latest = (await this.latestCommitted(tNode))!;
-      const r = await this.resolveIn(latest.id, e.target_element_id, e.target_selector);
-      if (r.status === 'orphan') throw new GateError('the target no longer exists; re-link instead of clearing');
-      await this.asSystem((tx) => tx.query(
-        `update edge set target_version_id = $2, target_fingerprint = $3, held_by = $4 where id = $1`, [e.id, latest.id, r.fingerprint, s.actor_id]));
-      await this.closeMark(markId, s.actor_id);
-      // They hold the link now, so an access_lost mark its earlier holder left settles too.
-      if (e.target_kolab_id !== e.kolab_id) await this.holdLink(e.id, s.actor_id);
+      const source = (await this.version(e.source_version_id)).node_id;
+      // The re-pin, the new holder and the clear are one transaction: across kolabs, under a shared
+      // hold on the access lock and then the dependent's lock, with the holder checked again in it,
+      // so a revoke can't land between the check and the link it allows (LNK8).
+      await this.asSystem(async (tx, signal) => {
+        if (across && await this.unvouchedLink({ ...e, held_by: s.actor_id }, tx)) {
+          throw new AccessError(`${s.actor_id} can't read kolab ${e.target_kolab_id}, so can't check this link into it; someone who reads it clears it`);
+        }
+        const latest = (await tx.query<{ id: string }>(
+          `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [tNode])).rows[0].id;
+        const r = resolveInElements(await this.elements(latest, tx), e.target_element_id, e.target_selector);
+        if (r.status === 'orphan') throw new GateError('the target no longer exists; re-link instead of clearing');
+        const now = (await tx.query<EdgeRow>(
+          `update edge set target_version_id = $2, target_fingerprint = $3, held_by = $4 where id = $1 returning *`,
+          [e.id, latest, r.fingerprint, s.actor_id])).rows[0];
+        await this.closeMarkIn(tx, signal, markId, s.actor_id);
+        // They hold the link now, so an access_lost mark its earlier holder left settles too.
+        if (across) await this.restoreLinkIn(tx, signal, now, `held by ${s.actor_id}, who reads kolab ${e.target_kolab_id}`);
+      }, source, { access: across });
       return;
     }
     await this.closeMark(markId, s.actor_id);
@@ -4843,6 +4871,23 @@ async function holdersOf(q: Q, who: Affected): Promise<string[]> {
      select id from named union select a.id from actor a where a.owner_id in (select id from named)`,
     [who.users ?? [], who.team ?? null]);
   return r.rows.map((x) => x.id);
+}
+
+/**
+ * The holders of links and forks across kolabs that archiving or unarchiving `kind` `name`
+ * affects (D52, LNK8): an actor and the agents it owns; an organization's members, its own agents
+ * and theirs; and anyone holding a link or fork whose own kolab, or other kolab, is one of `kolabs`.
+ */
+async function archiveHoldersOf(q: Q, kind: Archivable, name: string, kolabs: string[]): Promise<string[]> {
+  const users = kind === 'actor' ? [name]
+    : kind === 'organization' ? (await q.query<{ id: string }>(
+      `select user_id as id from org_member where org_id = $1 union select id from actor where owner_id = $1`, [name])).rows.map((r) => r.id)
+    : [];
+  const byKolab = kolabs.length ? (await q.query<{ id: string }>(
+    `select held_by as id from edge where target_kolab_id <> kolab_id and (kolab_id = any($1) or target_kolab_id = any($1))
+     union select v.parent_held_by from version v join version p on p.id = v.parent_version_id
+      where v.parent_held_by is not null and (v.kolab_id = any($1) or p.kolab_id = any($1))`, [kolabs])).rows.map((r) => r.id) : [];
+  return [...new Set([...(await holdersOf(q, { users })), ...byKolab])];
 }
 
 /** Ends, in `tx`, every open session that can no longer reach its kolab. Returns how many. */
