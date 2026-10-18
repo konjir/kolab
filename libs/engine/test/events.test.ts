@@ -305,7 +305,7 @@ async function silenceableProxy(databaseUrl: string) {
     ]);
   });
 
-  test('an older release\'s inbox event, which names no kolab, is heard as a resync during a rolling deploy', async () => {
+  test('an older release\'s inbox events, which name no kolab, are heard as one resync during a rolling deploy', async () => {
     const { a, b, url, onA, onB } = await twoKolabs();
     await twoKolabsIn(b);
     await settle();
@@ -313,8 +313,10 @@ async function silenceableProxy(databaseUrl: string) {
     const admin = new pg.Client({ connectionString: url });
     await admin.connect();
     try {
-      // What a release before D50 notifies when bob's answers change.
+      // What a release before D50 notifies when bob's answers change, and then the functional inbox:
+      // a burst like this costs one resync, not one each.
       await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"old-release","event":{"inbox":"actor","actor":"bob"}}']);
+      await admin.query(`select pg_notify($1, $2)`, [EVENT_CHANNEL, '{"from":"old-release","event":{"inbox":"layer","layer":"functional"}}']);
       await until(() => onA.length >= 8 && onB.length >= 8);
       await settle();
       // Not bob's answers in some kolab, nor in every kolab: everything, as after a reconnect, which says nothing of where it changed.
