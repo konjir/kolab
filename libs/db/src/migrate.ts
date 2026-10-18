@@ -169,6 +169,9 @@ export async function migrate(
 
   return db.transaction(async (tx) => {
     await tx.query(`select pg_advisory_xact_lock($1)`, [LOCK]);
+    // This transaction is the migration runner's: a migration may backfill an archived kolab's rows,
+    // which no other path may write (kj_migrating, 0014). Transaction-local, so it ends with it.
+    await tx.query(`select set_config('kj.migrating', 'on', true)`);
     const tables = await tx.query<{ migrations: string | null; node: string | null }>(
       `select to_regclass('public.kj_migration')::text as migrations, to_regclass('public.node')::text as node`);
     const { migrations: recorded, node } = tables.rows[0];

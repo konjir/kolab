@@ -108,8 +108,12 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.db.exec(`
       drop trigger session_openable on session;
       drop function kj_session_openable();
-      ${['node', ...keyed, 'review_request', 'kolab_grant', 'link_removal'].map((t) => `drop trigger kolab_writable on ${t};`).join('\n')}
-      drop function kj_kolab_writable();
+      ${['node', ...keyed, 'review_request', 'link_removal'].map((t) => `drop trigger kolab_writable_insert on ${t}; drop trigger kolab_writable_update on ${t}; drop trigger kolab_writable_delete on ${t};`).join('\n')}
+      drop trigger kolab_writable_insert on kolab_grant; drop trigger kolab_writable_update on kolab_grant;
+      drop function kj_kolab_writable(), kj_migrating();
+      drop table archive_event;
+      drop function kj_archive_event_fixed();
+      drop index account_id_lower, actor_id_lower;
       alter table actor drop constraint actor_archived_is_agent, drop column archived_at;
       alter table kolab drop column archived_at;
       alter table account drop column archived_at;

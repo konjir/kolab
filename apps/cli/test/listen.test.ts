@@ -163,7 +163,7 @@ test('archiving closes the listen streams of every session it ends: a person\'s 
   expect(await settled(engStream.closed, 2000)).toBe('graceful');
   expect(await call(admin, 'admin_list_kolabs', {})).toStrictEqual({ kolabs: [] });
   expect(await call(admin, 'admin_list_kolabs', { archived: true })).toMatchObject({ kolabs: [{ id: 'test', archived: true }] });
-  await expect(call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' })).rejects.toThrow(/the kolab name test is archived, not free/);
+  await expect(call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' })).rejects.toThrow(/the kolab name test is taken: kolab names are unique across all of Konjir. The archived kolab test holds it, and an archived name stays reserved: konjir_admin_unarchive kolab=test restores it/);
   await expect(call(admin, 'admin_archive', { kolab: 'test', actor: 'eng' })).rejects.toThrow(/name exactly one of kolab, organization or actor/);
   await expect(call(admin, 'admin_archive', {})).rejects.toThrow(/name exactly one of kolab, organization or actor/);
 

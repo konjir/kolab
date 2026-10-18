@@ -1,11 +1,27 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { GateError, Kolab, SESSION_KEY, sessionKey } from '@konjir/engine';
+import { GateError, Kolab, NameTakenError, SESSION_KEY, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
-import { fail, ok } from './results.js';
+import { fail as toolError, ok } from './results.js';
+
+/**
+ * A tool error for the admin token. A name an archived kolab, account or actor holds is refused
+ * everywhere in the words a live one is, so no one else learns it exists; the admin token, which
+ * can list archived ones anyway, is also told which archived one holds it and how to restore it (D52).
+ */
+function fail(e: unknown) {
+  if (e instanceof NameTakenError && e.archived) {
+    const { kind, id } = e.archived;
+    const told = new NameTakenError(`${e.message}. The archived ${kind} ${id} holds it, and an archived name stays reserved: `
+      + `konjir_admin_unarchive ${kind}=${id} restores it, or choose another name`);
+    told.name = e.name;
+    return toolError(told);
+  }
+  return toolError(e);
+}
 import { KOLAB } from './tokens.js';
 
 const addActor = z.object({
@@ -46,7 +62,7 @@ const listKolabs = z.object({
 const archiveTarget = z.object({
   kolab: z.string().optional().describe('A kolab, by its name'),
   organization: z.string().optional().describe('An organization: its kolabs and its agents go with it'),
-  actor: z.string().optional().describe("A person or an agent: a person's kolabs and agents go with them"),
+  actor: z.string().optional().describe("A person or an agent: a person's agents go with them; the kolabs a person owns stay live"),
 });
 const grant = z.object({
   kolab: z.string(),
@@ -239,13 +255,13 @@ export class TenancyTools {
 
   @McpTool({
     name: 'konjir_admin_archive',
-    description: "Admin: archive a kolab, an organization or an actor, named by exactly one of kolab, organization or actor (D52). It disappears from listings and can't be used: its sessions end and their streams close, no session opens, and nothing in an archived kolab can change. Its data is kept, and its name stays reserved. An organization's or a person's kolabs and agents are archived with it. Nothing is deleted; admin_unarchive restores it.",
+    description: "Admin: archive a kolab, an organization or an actor, named by exactly one of kolab, organization or actor (D52). It disappears from listings and can't be used: its sessions end and their streams close, no session opens, and nothing in an archived kolab can change. Its data is kept, and its name stays reserved. An organization's kolabs and agents, and a person's agents, are archived with it; a person's own kolabs stay live for their other members. Nothing is deleted; admin_unarchive restores it.",
     schema: archiveTarget,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async archive(a: z.infer<typeof archiveTarget>) {
     try {
-      const { archived, kolabs, agents, ended } = await this.kolab.archive(oneTarget(a));
+      const { archived, kolabs, agents, ended } = await this.kolab.archive(oneTarget(a), { by: 'admin' });
       return ok({ archived, with_kolabs: kolabs, with_agents: agents, ended_sessions: ended });
     } catch (e) { return fail(e); }
   }
@@ -258,7 +274,7 @@ export class TenancyTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async unarchive(a: z.infer<typeof archiveTarget>) {
     try {
-      const { unarchived, kolabs, agents } = await this.kolab.unarchive(oneTarget(a));
+      const { unarchived, kolabs, agents } = await this.kolab.unarchive(oneTarget(a), { by: 'admin' });
       return ok({ unarchived, with_kolabs: kolabs, with_agents: agents });
     } catch (e) { return fail(e); }
   }

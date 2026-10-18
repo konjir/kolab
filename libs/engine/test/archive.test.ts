@@ -4,7 +4,8 @@
 // database: kj_access gives nothing there, so row-level security does too, and no role at all may
 // write an archived kolab's data or open a session in it (0014).
 import { expect, test } from '@jest/globals';
-import { sessionKey, type Kolab } from '@konjir/engine';
+import { MIGRATIONS, migrate } from '@konjir/db';
+import { NameTakenError, sessionKey, type Kolab } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
 import { els, openKolab, rejection } from '@konjir/engine/testing';
 
@@ -98,7 +99,8 @@ test('an archived kolab ends its sessions, refuses new ones and every write, and
     `update element set text = 'Rewritten.' where version_id = '${v1.id}'`,
     `delete from element where version_id = '${v1.id}'`,
     `update version set state = 'rejected' where id = '${draft}'`,
-    `insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ('orders', 'bob', 'admin', true, true)`,
+    `insert into kolab_grant(kolab_id, agent_id, level, functional, technical) values ('orders', 'acme-bot', 'read', false, false)`,
+    `update kolab_grant set level = 'admin', functional = true, technical = true where kolab_id = 'orders' and user_id = 'bob'`,
     `insert into session(id, actor_id, active_role, kolab_id) values ('${sessionKey('kjs_sneak')}', 'ann', 'product', 'orders')`,
   ]) expect(await rejection(kolab.db.query(sql))).toMatch(/kolab orders is archived/);
   // Row-level security follows kj_access: a session there, however it came to be open, reads and writes nothing.
@@ -111,9 +113,14 @@ test('an archived kolab ends its sessions, refuses new ones and every write, and
   // And the engine ends it the moment it is used.
   expect(await rejection(kolab.sessionInfo('kjs_backdoor'))).toMatch(/AccessError: ann can no longer reach kolab orders; its session has ended/);
 
-  // Its name stays reserved.
-  expect(await rejection(kolab.createKolab('orders', { owner: 'bob' })))
-    .toMatch(/TenancyError: the kolab name orders is archived, not free: kolab names are unique across all of Konjir, and an archived kolab keeps its name. Unarchive it \(konjir_admin_unarchive kolab=orders\) or choose another name/);
+  // Its name stays reserved, refused in the words a live kolab's is, so the refusal says nothing
+  // of an archived one; only the error itself, for the admin token's verbs, names it.
+  const taken = await kolab.createKolab('orders', { owner: 'bob' }).catch((e) => e);
+  expect(String(taken)).toBe('TenancyError: the kolab name orders is taken: kolab names are unique across all of Konjir');
+  expect(taken).toBeInstanceOf(NameTakenError);
+  expect(taken.archived).toStrictEqual({ kind: 'kolab', id: 'orders' });
+  expect(await kolab.createKolab('notes', { owner: 'bob' }).catch((e) => [String(e), e.archived])).toStrictEqual([
+    'TenancyError: the kolab name notes is taken: kolab names are unique across all of Konjir', undefined]);
 
   // Archiving twice is refused, plainly.
   expect(await rejection(kolab.archive({ kolab: 'orders' }))).toMatch(/TenancyError: kolab orders is already archived/);
@@ -164,8 +171,10 @@ test("an archived organization takes its kolabs and agents with it, and its memb
   expect(await rejection(kolab.addMember('acme', 'bob', 'owner'))).toMatch(/organization acme is archived, so it takes no members/);
   expect(await rejection(kolab.addTeam('acme', 'eng'))).toMatch(/organization acme is archived, so it gets no new team/);
   expect(await rejection(kolab.addActor('acme-bot-2', { owner: 'acme' }))).toMatch(/acme is archived, so it can't own a new agent/);
-  expect(await rejection(kolab.addOrganization('acme'))).toMatch(/TenancyError: the account acme is archived, not free: an archived name stays reserved. Unarchive it \(konjir_admin_unarchive organization=acme\)/);
-  expect(await rejection(kolab.addActor('acme'))).toMatch(/ActorError: the account acme is archived, not free/);
+  expect(await rejection(kolab.addOrganization('acme'))).toBe('TenancyError: account acme already exists');
+  expect(await rejection(kolab.addActor('acme'))).toBe('ActorError: account acme already exists');
+  expect(await rejection(kolab.addActor('ACME', { owner: 'bob' }))).toBe('ActorError: the name ACME is taken: acme holds it, and names must differ in more than case');
+  expect((await kolab.addOrganization('Acme').catch((e) => e)).archived).toStrictEqual({ kind: 'organization', id: 'acme' });
   // A member can still be removed: that takes away only what counts for nothing now.
   await kolab.removeMember('acme', 'bob');
 
@@ -202,9 +211,14 @@ test("an archived person's sessions end, and their agents' too; their name stays
   expect(await kolab.author((await kolab.latestCommitted('orders-spec'))!.id)).toMatchObject({ actor: 'ann', kind: 'person' });
   // Hidden from listings, she and her agent; the name is refused for a new person, agent or organization.
   expect((await kolab.listActors()).map((a) => a.id)).toStrictEqual(['acme-bot', 'bob']);
-  expect(await rejection(kolab.addActor('ann'))).toMatch(/ActorError: the actor ann is archived, not free: an archived name stays reserved. Unarchive it \(konjir_admin_unarchive actor=ann\) or choose another name/);
-  expect(await rejection(kolab.addActor('ann-pm', { owner: 'bob' }))).toMatch(/ActorError: the actor ann-pm is archived, not free/);
-  expect(await rejection(kolab.addOrganization('ann'))).toMatch(/TenancyError: the account ann is archived, not free/);
+  expect(await rejection(kolab.addActor('ann'))).toBe('ActorError: actor ann already exists');
+  expect(await rejection(kolab.addActor('Ann'))).toBe('ActorError: the name Ann is taken: ann holds it, and names must differ in more than case');
+  expect(await rejection(kolab.addActor('ann-pm', { owner: 'bob' }))).toBe('ActorError: actor ann-pm already exists');
+  expect(await rejection(kolab.addOrganization('ANN-PM'))).toBe('TenancyError: the name ANN-PM is taken: ann-pm holds it, and names must differ in more than case');
+  expect((await kolab.addOrganization('ann').catch((e) => e)).archived).toStrictEqual({ kind: 'actor', id: 'ann' });
+  // A live name is refused alike, in any case, and an agent can't take an organization's.
+  expect(await rejection(kolab.addActor('BOB', { owner: 'acme' }))).toMatch(/the name BOB is taken: bob holds it/);
+  expect(await rejection(kolab.addActor('acme', { owner: 'bob' }))).toBe('ActorError: account acme already exists');
   // The database refuses her a session too.
   expect(await rejection(kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, 'ann-pm', 'product', 'orders')`, [sessionKey('kjs_x')])))
     .toMatch(/actor ann-pm is archived/);
@@ -241,4 +255,94 @@ test("an archived kolab's outbox jobs wait, unclaimed, and run once it is unarch
   await kolab.unarchive({ kolab: 'orders' });
   expect(await kolab.drainOutbox()).toBe(1);
   expect((await kolab.db.query(`select 1 from outbox`)).rows).toStrictEqual([]);
+});
+
+test("a person's own kolab stays live for the others who work in it; only an organization's go with it (D52)", async () => {
+  const { kolab, s } = await world();
+  await kolab.addActor('carol');
+  await kolab.grant('notes', 'carol', 'write');
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'notes' });
+  await kolab.endSession(s.bob);
+  const bob = await kolab.openSession('bob', 'product', { kolab: 'notes' });
+  expect(await kolab.archive({ actor: 'bob' })).toStrictEqual({ archived: { actor: 'bob' }, kolabs: [], agents: [], ended: 1 });
+  expect(await kolab.openSessions([carol, bob])).toStrictEqual(new Set([carol]));
+  expect(await kolab.access('bob', 'notes')).toStrictEqual(NONE);
+  expect((await kolab.sessionInfo(carol)).access).toMatchObject({ level: 'write' });
+  await kolab.createNode(carol, 'functional_spec', 'Notes', 'notes-spec');
+  expect((await kolab.listKolabs()).map((k) => k.id)).toStrictEqual(['notes', 'orders']);
+  // Bob owns no new kolab while archived.
+  expect(await rejection(kolab.createKolab('notes-2', { owner: 'bob' }))).toMatch(/bob is archived, so it owns no new kolab/);
+});
+
+test('archiving checks and changes under the access lock, and every archive and unarchive is logged, never rewritten', async () => {
+  const { kolab } = await world();
+  const both = await Promise.allSettled([kolab.archive({ organization: 'acme' }), kolab.archive({ organization: 'acme' })]);
+  expect(both.map((r) => r.status).sort()).toStrictEqual(['fulfilled', 'rejected']);
+  expect(String((both.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason)).toMatch(/organization acme is already archived/);
+  await kolab.unarchive({ organization: 'acme' }, { by: 'lee' });
+  await kolab.archive({ kolab: 'notes' });
+  expect((await kolab.db.query(`select target_kind, target_id, archived, done_by from archive_event order by id`)).rows).toStrictEqual([
+    { target_kind: 'organization', target_id: 'acme', archived: true, done_by: 'admin' },
+    { target_kind: 'organization', target_id: 'acme', archived: false, done_by: 'lee' },
+    { target_kind: 'kolab', target_id: 'notes', archived: true, done_by: 'admin' },
+  ]);
+  expect(await rejection(kolab.db.query(`update archive_event set done_by = 'someone'`))).toMatch(/only ever added to/);
+  expect(await rejection(kolab.db.query(`delete from archive_event`))).toMatch(/only ever added to/);
+});
+
+test('an ended session in an archived kolab, or of an archived actor, never reopens', async () => {
+  const { kolab, s } = await world();
+  await kolab.archive({ actor: 'ann-pm' });
+  expect(await rejection(kolab.db.query(`update session set ended_at = null where id = $1`, [sessionKey(s.pm)]))).toMatch(/actor ann-pm is archived/);
+  await kolab.archive({ kolab: 'orders' });
+  expect(await rejection(kolab.db.query(`update session set ended_at = null where id = $1`, [sessionKey(s.bob)]))).toMatch(/kolab orders is archived/);
+});
+
+test('every table of kolab data refuses writes to an archived kolab: each has the statement-level kolab_writable triggers', async () => {
+  const kolab = await openKolab();
+  const tables = (await kolab.db.query<{ t: string }>(
+    `select table_name as t from information_schema.columns
+      where table_schema = 'public' and column_name = 'kolab_id' and table_name not in ('session', 'outbox') order by 1`)).rows.map((r) => r.t);
+  const triggers = (await kolab.db.query<{ t: string; name: string; level: string }>(
+    `select event_object_table as t, trigger_name as name, action_orientation as level from information_schema.triggers
+      where trigger_name like 'kolab_writable%'`)).rows;
+  expect(tables.length).toBeGreaterThanOrEqual(15);
+  for (const t of tables) {
+    const mine = triggers.filter((x) => x.t === t);
+    const want = t === 'kolab_grant' ? ['kolab_writable_insert', 'kolab_writable_update'] : ['kolab_writable_delete', 'kolab_writable_insert', 'kolab_writable_update'];
+    expect([t, [...new Set(mine.map((x) => x.name))].sort()]).toStrictEqual([t, want]);
+    expect(mine.every((x) => x.level === 'STATEMENT')).toBe(true);
+  }
+});
+
+test("an outbox job running when its kolab is archived is released as it was, not counted as an attempt", async () => {
+  const { kolab } = await world();
+  const v1 = (await kolab.latestCommitted('orders-spec'))!;
+  await kolab.db.query(`insert into outbox(id, kind, version_id, attempts, claim, claimed_until)
+                        values ('01JOB0000000000000000000AB', 'after_commit', $1, 9, 'tok', now() + interval '1 minute')`, [v1.id]);
+  await kolab.archive({ kolab: 'orders' });
+  // The run's writes hit the archive, and its failure is handed back as a run's would be.
+  await (kolab as unknown as { fail(job: object, e: unknown): Promise<void> })
+    .fail({ token: 'tok', kind: 'after_commit', versionId: v1.id }, new Error('kolab orders is archived'));
+  expect((await kolab.db.query(`select state, attempts, claim, last_error from outbox`)).rows)
+    .toStrictEqual([{ state: 'pending', attempts: 8, claim: null, last_error: null }]);
+});
+
+test("a later migration may backfill an archived kolab's rows; nothing else may, not even with the runner's flag set", async () => {
+  const { kolab } = await world();
+  await kolab.archive({ kolab: 'orders' });
+  const backfill = { version: MIGRATIONS.length + 1, name: 'backfill', sql: `update node set title = 'Backfilled' where kolab_id = 'orders'` };
+  expect(await rejection(kolab.db.query(backfill.sql))).toMatch(/kolab orders is archived/);
+  expect(await migrate(kolab.db, { migrations: [...MIGRATIONS, backfill] })).toMatchObject({ applied: [backfill.version] });
+  expect((await kolab.node('orders-spec')).title).toBe('Backfilled');
+  // The flag counts only on Kolab's own login, in the runner's transaction: never as kj_agent or kj_system.
+  const as = (role: string) => kolab.db.transaction(async (tx) => {
+    await tx.query(`select set_config('kj.migrating', 'on', true)`);
+    if (role) await tx.exec(`set local role ${role}`);
+    return (await tx.query<{ m: boolean }>(`select kj_migrating() as m`)).rows[0].m;
+  });
+  expect(await as('')).toBe(true);
+  expect(await as('kj_system')).toBe(false);
+  expect(await as('kj_agent')).toBe(false);
+  expect((await kolab.db.query<{ m: boolean }>(`select kj_migrating() as m`)).rows[0].m).toBe(false);
 });
