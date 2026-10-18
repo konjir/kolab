@@ -17,7 +17,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -44,52 +44,127 @@ export function credentialsPath(env: Record<string, string | undefined> = proces
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** A lock held longer than this is taken for a crashed holder's, and broken. */
+/** A lock untouched for longer than this is taken for a crashed or frozen holder's, and broken. */
 const LOCK_STALE_MS = 30_000;
-/** How long to wait for another konjir's lock before giving up. */
+/** How often a holder touches its lock, so a long refresh never reads as stale. */
+const LOCK_TOUCH_MS = 10_000;
+/** How long to wait for another konjir's lock before giving up, by default. */
 const LOCK_WAIT_MS = 40_000;
 
-/** Locks this process holds, removed if it exits holding them. */
-const held = new Map<string, string>();
-process.once('exit', () => { for (const [path, owner] of held) { try { if (readFileSync(path, 'utf8') === owner) unlinkSync(path); } catch { /* gone */ } } });
+const codeOf = (e: unknown) => (e as { code?: string } | undefined)?.code;
+
+/** Locks this process holds, by path: the owner's id, and the timer that keeps it fresh. Removed if it exits holding them. */
+const held = new Map<string, { owner: string; touch: ReturnType<typeof setInterval> }>();
+process.once('exit', () => { for (const [path, h] of held) { try { if (readFileSync(path, 'utf8') === h.owner) unlinkSync(path); } catch { /* gone */ } } });
 
 /**
- * A lock file beside the credentials, `<file>.lock`, made with O_EXCL: it holds its owner's id, so
- * only that owner removes it. Re-entrant for one owner.
+ * A lock file beside the credentials, `<file>.lock`, made with O_EXCL. It holds its owner's id, a
+ * random nonce, and only that owner removes it. Holding it is checked against the file itself, not
+ * only this process's memory, so a holder whose lock was broken (it stalled past LOCK_STALE_MS)
+ * knows. Re-entrant for one owner. A lock path that is a symbolic link is refused, never followed.
  */
-class FileLock {
-  constructor(readonly path: string) {}
+export class FileLock {
+  constructor(readonly path: string, private readonly waitMs = LOCK_WAIT_MS) {}
+
+  /** The lock's owner as the file says, or undefined when there is none; throws on a symbolic link. */
+  private ownerOnDisk(): string | undefined {
+    let st;
+    try { st = lstatSync(this.path); } catch (e) { if (codeOf(e) === 'ENOENT') return undefined; throw e; }
+    if (st.isSymbolicLink()) throw new Error(`${this.path} is a symbolic link, so konjir won't use it as its lock: remove it`);
+    try { return readFileSync(this.path, 'utf8'); } catch (e) { if (codeOf(e) === 'ENOENT') return undefined; throw e; }
+  }
+
   async acquire(owner: string) {
-    if (held.get(this.path) === owner) return;
-    const end = Date.now() + LOCK_WAIT_MS;
+    if (this.holds(owner)) return;
+    const end = Date.now() + this.waitMs;
+    let why = 'another konjir holds it';
     for (;;) {
       try {
         mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
         const fd = openSync(this.path, 'wx', 0o600);
         try { writeSync(fd, owner); } finally { closeSync(fd); }
-        held.set(this.path, owner);
+        const touch = setInterval(() => { try { if (this.holds(owner)) { const t = new Date(); utimesSync(this.path, t, t); } } catch { /* checked when it matters */ } }, LOCK_TOUCH_MS);
+        touch.unref();
+        const before = held.get(this.path);
+        if (before) clearInterval(before.touch);   // a lock of this process's that was broken, and taken anew
+        held.set(this.path, { owner, touch });
         return;
       } catch (e) {
-        if ((e as { code?: string }).code !== 'EEXIST') throw e;
+        if (codeOf(e) !== 'EEXIST') throw new Error(`konjir couldn't take ${this.path} (${codeOf(e) ?? e}); check that folder is yours to write in`);
       }
-      try {
-        if (Date.now() - statSync(this.path).mtimeMs > LOCK_STALE_MS) { unlinkSync(this.path); continue; }
-      } catch { continue; }   // released meanwhile
-      if (Date.now() > end) throw new Error(`another konjir has held ${this.path} for too long; if none is running, remove that file`);
+      // Someone holds it. Only ENOENT means it was released meanwhile: anything else waits, until the deadline.
+      let st;
+      try { st = lstatSync(this.path); } catch (e) {
+        if (codeOf(e) === 'ENOENT') continue;
+        why = `konjir can't read it (${codeOf(e) ?? e})`;
+      }
+      if (st?.isSymbolicLink()) throw new Error(`${this.path} is a symbolic link, so konjir won't use it as its lock: remove it`);
+      if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        const broke = this.breakStale(st.mtimeMs);
+        if (broke === true) continue;
+        if (broke) why = broke;
+      }
+      if (Date.now() > end) throw new Error(`konjir couldn't take ${this.path}: ${why}. If no konjir is running, remove that file`);
       await sleep(15 + Math.random() * 35);
     }
   }
-  release(owner: string) {
-    if (held.get(this.path) !== owner) return;
-    held.delete(this.path);
-    try { if (readFileSync(this.path, 'utf8') === owner) unlinkSync(this.path); } catch { /* gone */ }
+
+  /**
+   * Breaks a stale lock atomically: moves it aside to a name of its own, then checks that what it
+   * moved is the lock that was stale. One that turns out fresh (taken anew meanwhile) is put back if
+   * the place is still free. Returns true when the path is free to try again, or why it couldn't be.
+   */
+  private breakStale(staleMtime: number): true | string | undefined {
+    const aside = `${this.path}.${randomBytes(8).toString('hex')}.stale`;
+    try { renameSync(this.path, aside); } catch (e) {
+      if (codeOf(e) === 'ENOENT') return true;
+      return `its stale lock can't be removed (${codeOf(e) ?? e})`;
+    }
+    try {
+      if (lstatSync(aside).mtimeMs !== staleMtime) {
+        // A fresh lock was moved: give it back, without ever replacing one made since.
+        try { linkSync(aside, this.path); } catch { /* the place was taken: its holder will see its lock is gone */ }
+      }
+    } finally {
+      try { unlinkSync(aside); } catch { /* best effort */ }
+    }
+    return true;
   }
-  holds(owner: string) { return held.get(this.path) === owner; }
+
+  release(owner: string) {
+    const h = held.get(this.path);
+    if (h?.owner !== owner) return;
+    clearInterval(h.touch);
+    held.delete(this.path);
+    try { if (this.ownerOnDisk() === owner) unlinkSync(this.path); } catch { /* gone */ }
+  }
+
+  /** Whether `owner` holds the lock now: in this process's memory and in the file. */
+  holds(owner: string) {
+    if (held.get(this.path)?.owner !== owner) return false;
+    try {
+      if (this.ownerOnDisk() === owner) return true;
+    } catch { /* not ours to trust */ }
+    // Broken by another konjir while this one stalled: no longer held.
+    const h = held.get(this.path)!;
+    clearInterval(h.touch);
+    held.delete(this.path);
+    return false;
+  }
+
+  /** Whether `owner` thought it held the lock (this process's memory), whatever the file says now. */
+  thinksHeld(owner: string) { return held.get(this.path)?.owner === owner; }
 }
 
 class Store {
   readonly lock: FileLock;
-  constructor(readonly path: string) { this.lock = new FileLock(`${path}.lock`); }
+  /**
+   * `managed`: the folder is konjir's own default one, `…/konjir`, which it keeps at 0700. A folder
+   * named through KONJIR_CREDENTIALS (or a path given) is the person's: never changed, only warned of
+   * when others may write in it.
+   */
+  constructor(readonly path: string, private readonly managed: boolean, lockWaitMs?: number) { this.lock = new FileLock(`${path}.lock`, lockWaitMs); }
+  private warned = false;
   private all(): Record<string, Saved> {
     if (!existsSync(this.path)) return {};
     let parsed: unknown;
@@ -112,8 +187,15 @@ class Store {
       if (next) all[url] = next; else delete all[url];
       const dir = dirname(this.path);
       mkdirSync(dir, { recursive: true, mode: 0o700 });
-      // A folder made before, more open, is closed to others too.
-      try { chmodSync(dir, 0o700); } catch { /* not ours to change; the file is 0600 */ }
+      if (this.managed) {
+        // konjir's own folder, made before more open: closed to others too.
+        try { chmodSync(dir, 0o700); } catch { /* the file is 0600 */ }
+      } else if (!this.warned) {
+        this.warned = true;
+        try {
+          if (statSync(dir).mode & 0o022) console.error(`warning: others may write in ${dir}, which holds your konjir sign-in (${this.path}); konjir leaves the folder as it is`);
+        } catch { /* made just now */ }
+      }
       // Written whole to a new file of a random name (O_EXCL: never through a link someone left there), then moved into place.
       const tmp = `${this.path}.${randomBytes(8).toString('hex')}.tmp`;
       writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600, flag: 'wx' });
@@ -142,9 +224,16 @@ export class StoredLogin implements OAuthClientProvider {
   private readonly owner = `p${process.pid}_${randomBytes(12).toString('hex')}`;
   /** The refresh token this instance last read to refresh with: the only one it may forget. */
   private refreshing?: string;
+  /** With `fresh` (a new `konjir login`), whether this instance has saved its own tokens yet: until it has, it sees none. */
+  private savedOwn = false;
   readonly expectedState = randomBytes(24).toString('base64url');
-  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void> } = {}) {
-    this.store = new Store(opts.path ?? credentialsPath());
+  /**
+   * `fresh`: a new sign-in, which ignores the tokens kept from before (they stay kept, and working,
+   * until it saves its own). `lockWaitMs`: how long to wait for another konjir's lock.
+   */
+  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; lockWaitMs?: number } = {}) {
+    // Only konjir's own default folder is kept at 0700; one named through KONJIR_CREDENTIALS is the person's.
+    this.store = new Store(opts.path ?? credentialsPath(), !opts.path && !process.env.KONJIR_CREDENTIALS, opts.lockWaitMs);
   }
   get redirectUrl() { return this.opts.redirectUrl ?? REDIRECT; }
   get clientMetadata(): OAuthClientMetadata {
@@ -162,6 +251,7 @@ export class StoredLogin implements OAuthClientProvider {
    * are saved, so no two konjir refresh with one refresh token.
    */
   async tokens(ctx?: unknown) {
+    if (this.opts.fresh && !this.savedOwn) return undefined;
     if (ctx === undefined) return this.store.get(this.url).tokens;
     if (!this.store.get(this.url).tokens?.refresh_token) return this.store.get(this.url).tokens;
     await this.store.lock.acquire(this.owner);
@@ -171,12 +261,37 @@ export class StoredLogin implements OAuthClientProvider {
     return t;
   }
   async saveTokens(tokens: StoredOAuthTokens) {
+    this.savedOwn = true;
+    const was = this.refreshing;
+    if (was !== undefined && !this.store.lock.holds(this.owner)) {
+      // The lock was broken while this refresh stalled. If another konjir has saved tokens since,
+      // they are the live ones: keep them, and use them. If not, save these under a lock of their own.
+      this.refreshing = undefined;
+      if (this.store.get(this.url).tokens?.refresh_token !== was) return;
+      await this.store.set(this.url, (s) => ({ ...s, tokens }));
+      return;
+    }
+    // The same refresh token, re-saved (the SDK stamping its issuer before it refreshes): still refreshing, still locked.
+    if (was !== undefined && tokens.refresh_token === was) {
+      await this.store.set(this.url, (s) => ({ ...s, tokens }), this.owner);
+      return;
+    }
     try {
       await this.store.set(this.url, (s) => ({ ...s, tokens }), this.owner);
     } finally {
       this.refreshing = undefined;
       this.store.lock.release(this.owner);
     }
+  }
+  /** Lets go of the refresh lock, if this instance still has it: for an error that escaped the SDK's flow. */
+  releaseLock() {
+    this.refreshing = undefined;
+    this.store.lock.release(this.owner);
+  }
+  /** Runs `fn` holding the lock (logout: read, revoke and forget at once, with no refresh between). */
+  async locked<T>(fn: (owner: string) => Promise<T>): Promise<T> {
+    await this.store.lock.acquire(this.owner);
+    try { return await fn(this.owner); } finally { this.store.lock.release(this.owner); }
   }
   async redirectToAuthorization(u: URL) {
     this.store.lock.release(this.owner);
@@ -225,8 +340,7 @@ export class StoredLogin implements OAuthClientProvider {
   /** Whether there is a sign-in to use. */
   get signedIn() { return !!this.store.get(this.url).tokens?.refresh_token; }
   saved() { return this.store.get(this.url); }
-  forgetTokens() { return this.store.set(this.url, (s) => ({ ...s, tokens: undefined })); }
-  forget() { return this.store.set(this.url, () => undefined); }
+  forget(owner?: string) { return this.store.set(this.url, () => undefined, owner); }
 }
 
 /** Opens a URL in the person's browser, best effort; the URL is printed either way. */
@@ -274,8 +388,10 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
   await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', () => resolve()));
   const port = (server.address() as { port: number }).port;
   try {
+    // A fresh sign-in, which ignores the one kept from before: that one stays, and working, until this succeeds.
+    const before = new StoredLogin(url, { path: opts.path }).saved();
     const provider = new StoredLogin(url, {
-      path: opts.path, redirectUrl: `http://127.0.0.1:${port}/callback`,
+      path: opts.path, redirectUrl: `http://127.0.0.1:${port}/callback`, fresh: true,
       onAuthorize: async (u) => {
         // What to preselect on Kolab's page: the kolab and role (Kolab reads them from the scope).
         if (opts.scope) u.searchParams.set('scope', opts.scope);
@@ -283,12 +399,6 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
         await (opts.open ?? openBrowser)(u);
       },
     });
-    // A fresh sign-in, whatever was kept before: the old one revoked first, so its grant doesn't linger.
-    const before = provider.saved();
-    if (before.tokens) {
-      await revoke(url, before).catch((e: Error) => log(`warning: the sign-in kept from before wasn't revoked: ${e.message}. It lapses within 30 days unused.`));
-      await provider.forgetTokens();
-    }
     const back = new Promise<URLSearchParams>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('the sign-in took too long; run konjir login again')), opts.timeoutMs ?? 5 * 60_000);
       server.on('request', (req, res) => {
@@ -317,12 +427,18 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
     const kept = new StoredLogin(url, { path: opts.path });
     const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
     await client.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: kept, fetch: kept.fetch }));
+    let me;
     try {
       const r = await client.callTool({ name: 'konjir_whoami', arguments: {} });
-      return r.structuredContent as { actor: string; kind: string; owner: string | null; kolab: string; role: string; layer: string };
+      me = r.structuredContent as { actor: string; kind: string; owner: string | null; kolab: string; role: string; layer: string };
     } finally {
       await client.close();
     }
+    // Replaced: the sign-in kept from before is revoked now, so its grant doesn't linger.
+    if (before.tokens?.refresh_token && before.tokens.refresh_token !== kept.saved().tokens?.refresh_token) {
+      await revoke(url, before).catch((e: Error) => log(`warning: the sign-in this one replaces wasn't revoked: ${e.message}. It lapses within 30 days unused.`));
+    }
+    return me;
   } finally {
     server.close();
   }
@@ -335,14 +451,17 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
  */
 export async function logout(url: string, opts: { path?: string; forget?: boolean } = {}): Promise<{ had: boolean; revoked: boolean }> {
   const provider = new StoredLogin(url, { path: opts.path });
-  const saved = provider.saved();
-  if (!saved.tokens) { await provider.forget(); return { had: false, revoked: false }; }
-  let revoked = false;
-  try {
-    revoked = (await revoke(url, saved)) === 'revoked';
-  } catch (e) {
-    if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${url} wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget to drop it anyway`);
-  }
-  await provider.forget();
-  return { had: true, revoked };
+  // Under the lock: no refresh rotates the tokens between reading them and revoking them.
+  return provider.locked(async (owner) => {
+    const saved = provider.saved();
+    if (!saved.tokens) { await provider.forget(owner); return { had: false, revoked: false }; }
+    let revoked = false;
+    try {
+      revoked = (await revoke(url, saved)) === 'revoked';
+    } catch (e) {
+      if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${url} wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget to drop it anyway`);
+    }
+    await provider.forget(owner);
+    return { had: true, revoked };
+  });
 }

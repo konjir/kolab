@@ -287,6 +287,8 @@ export async function main(argv: string[]) {
   try {
     client = await connect(url, token ?? stored!);
   } catch (e) {
+    // An error that escaped the SDK's sign-in flow mid-refresh must not leave other konjir waiting on the lock.
+    stored?.releaseLock();
     const msg = String((e as Error).message ?? e);
     const far = unreachable(e, url);
     if (far) throw far;
@@ -323,6 +325,7 @@ export async function main(argv: string[]) {
           finish();
         });
       }, (e: unknown) => {
+        stored?.releaseLock();
         const reason = listenRefusal(e);
         if (reason === 'session_ended') {
           reject(new Error(stored ? `your sign-in to ${url} has ended or was revoked: run konjir login`
@@ -337,6 +340,7 @@ export async function main(argv: string[]) {
     try {
       await done;
     } finally {
+      stored?.releaseLock();
       await client.close();
     }
     return;
@@ -376,6 +380,7 @@ export async function main(argv: string[]) {
     }
     console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
   } finally {
+    stored?.releaseLock();
     await client.close();
   }
 }
