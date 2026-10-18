@@ -34,13 +34,15 @@ export class WebSessionController {
     return me;
   }
 
-  /** Signs out: the session ends, so its token is revoked everywhere, and the cookie is cleared. */
+  /** Signs out: a person's session ends, so its token is revoked everywhere, and the cookie is cleared. */
   @Delete()
   @HttpCode(204)
   async signOut(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     checkOrigin(req, this.options);
     const token = tokenOf(req, this.options);
-    if (token) await run(() => this.web.signOut(token));
+    // Only a person's session ends here; the cookie is cleared whatever it held.
+    const person = token ? await this.people.check(token).then(() => true, () => false) : false;
+    if (person) await run(() => this.web.signOut(token!));
     clearSessionCookie(res, this.options);
   }
 

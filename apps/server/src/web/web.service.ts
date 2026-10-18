@@ -220,7 +220,12 @@ export class WebService {
     }
     const r = await k.submit(s, id);
     const out = await this.outcome(r);
-    if (!out.ok && !out.in_review && !out.stale && (await k.version(id)).state === 'drafted') {
+    // Overtaken between the draft and the submission: the same as before the draft, abandoned and refused.
+    if (out.stale) {
+      if ((await k.version(id)).state === 'drafted') await k.abandon(s, id);
+      throw stale(n.name, b.base, (await k.latestCommitted(n.id))?.seq ?? null);
+    }
+    if (!out.ok && !out.in_review && (await k.version(id)).state === 'drafted') {
       await k.abandon(s, id);
       out.abandoned = true;
     }
@@ -289,34 +294,26 @@ export class WebService {
 
   /**
    * Moves the person to another kolab or role (the prototype's kolab picker and "Working as"):
-   * the current session ends and a new one opens, in the same transaction's terms as an admin's
-   * admin_end_session and admin_open_session, for the person alone (ENF4: one open session per
-   * actor). The new token goes only into the cookie. Access is checked before anything ends, so
-   * a kolab the person can't reach leaves the session as it was.
+   * Kolab ends the session and opens one in the chosen kolab and role in one transaction, so a
+   * kolab the person can't reach, or any failure, leaves the session as it was (ENF4: one open
+   * session per actor). The new token goes only into the cookie.
    */
   async switchTo(s: string, b: WebSwitch): Promise<string> {
     if (!ROLES.includes(b?.role)) throw bad(`the role is one of ${ROLES.join(', ')}`);
     if (typeof b.kolab !== 'string' || !isKolabName(b.kolab)) throw bad('name the kolab');
-    const me = await this.me(s);
-    if (!(await this.kolab.access(me.actor, b.kolab)).level) throw new NotFoundException({ error: 'not_found', message: `you can't reach a kolab ${b.kolab}` });
-    await this.kolab.endSession(s);
-    return this.kolab.openSession(me.actor, b.role, { kolab: b.kolab });
+    return this.kolab.switchSession(s, { kolab: b.kolab, role: b.role });
   }
 
   /**
-   * A kolab of the person's own (TEN2, TEN3: a user can own kolabs directly), named uniquely
-   * across Konjir (TEN4) and private (TEN6's default), which the person then works in, in the
-   * same role. Returns the new session's token, for the cookie.
+   * A private kolab of the person's own (D54), with the limits Kolab enforces (createOwnKolab:
+   * Write where they work, the name grammar and reserved names, a title of at most 100
+   * characters, a cap per person and a rate), which the person then works in, in the same role.
+   * Returns the new session's token, for the cookie.
    */
   async createKolab(s: string, b: WebCreateKolab): Promise<string> {
-    if (typeof b?.name !== 'string' || !isKolabName(b.name) || b.name.length > 40) throw bad('a kolab\'s name is lowercase letters, digits and "-", starting with a letter or digit');
-    if (!b.title?.trim()) throw bad('give the kolab a name people read');
+    if (typeof b?.name !== 'string' || typeof b.title !== 'string') throw bad('give the kolab a short name and a name people read');
     const me = await this.me(s);
-    if (me.kind !== 'person') throw new ForbiddenException({ error: 'forbidden', message: 'only a person owns kolabs here' });
-    if ((await this.kolab.listKolabs()).some((x) => x.id === b.name)) {
-      throw new ConflictException({ error: 'conflict', message: `the kolab name ${b.name} is taken: names are unique across all of Konjir, so a kolab can always move to another owner. Choose another` });
-    }
-    await this.kolab.createKolab(b.name, { owner: me.actor, title: b.title.trim() });
+    await this.kolab.createOwnKolab(s, b.name, { title: b.title });
     return this.switchTo(s, { kolab: b.name, role: me.role });
   }
 
