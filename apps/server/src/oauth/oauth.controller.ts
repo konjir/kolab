@@ -356,7 +356,7 @@ export class OAuthController {
     // An invite the person opened is what they came for: offered first (W3.4). Someone new, with no
     // kolab and no invite, makes their first kolab here, named after them if that name is free to try.
     const pick = extra.pick ?? {
-      kolab: invite ? 'invite' : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? pre.kolab : undefined, role: pre.role,
+      kolab: invite ? undefined : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? `kolab:${pre.kolab}` : undefined, role: pre.role,
       newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
     };
     sendPage(res, status, 'Sign in', consentPage({
@@ -381,15 +381,20 @@ export class OAuthController {
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return sendError(res, 400, 'This sign-in expired or was already used. Start again.');
       clearBinding(res, this.options);
+      // Declining drops the invite too, so no later sign-in in this browser offers it (W3.4).
+      if (pending.inviteKey) clearInviteCookie(res, this.options);
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: 'the person declined', state: r.clientState ?? undefined, iss: base }));
     }
     const asField = str('as') || 'self';
     const role = str('role') as Role;
     const kolabField = str('kolab');
     const pick = { kolab: kolabField, role, as: asField, label: str('agent_label'), newName: str('new_kolab_name'), newTitle: str('new_kolab_title') };
+    // The kolab field is `kolab:<name>`, `@new` or `@invite`: a kolab may be called anything a name allows.
+    if (!kolabField) return this.consent(res, 400, binding, csrf, { error: 'Choose the kolab to work in.', pick });
     const choice: ConsentChoice = {
       as: asField === 'self' ? { kind: 'self' } : asField === 'new-agent' ? { kind: 'new-agent', label: pick.label } : { kind: 'agent', agent: asField.replace(/^agent:/, '') },
-      kolab: kolabField === 'new' ? { name: pick.newName, title: pick.newTitle || pick.newName } : kolabField === 'invite' ? { invite: true } : kolabField,
+      kolab: kolabField === '@new' ? { name: pick.newName, title: pick.newTitle || pick.newName } : kolabField === '@invite' ? { invite: true }
+        : kolabField.startsWith('kolab:') ? kolabField.slice('kolab:'.length) : '',
       role,
     };
     try {

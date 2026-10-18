@@ -79,7 +79,7 @@ test('an MCP client signs a person in with OAuth, as their agent; its token refr
   closeAtEnd(server);
 
   const harness = new Harness();
-  const agent = await connectWithOAuth(server.url, harness, { as: 'new-agent', agent_label: 'claude', kolab: 'new', new_kolab_name: 'raes', new_kolab_title: 'Rae\'s', role: 'product' });
+  const agent = await connectWithOAuth(server.url, harness, { as: 'new-agent', agent_label: 'claude', kolab: '@new', new_kolab_name: 'raes', new_kolab_title: 'Rae\'s', role: 'product' });
   expect(harness.info?.client_id).toMatch(/^kjcl_/);   // registered itself (RFC 7591)
   expect(harness.saved).toMatchObject({ token_type: 'Bearer', expires_in: 900, scope: 'konjir kolab:raes role:product' });
   expect(await call(agent, 'whoami')).toMatchObject({ actor: 'rae-claude', kind: 'agent', owner: 'rae', kolab: 'raes', role: 'product', layer: 'functional' });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { InvitePreview, WebMe, WebOverview, WebSignInMethods } from '@konjir/types';
-import { ApiError, acceptInvite, api, createKolab, openInvite, signIn, signOut, switchTo } from './api.js';
+import { ApiError, acceptInvite, api, createKolab, dropInvite, openInvite, signIn, signOut, switchTo } from './api.js';
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
@@ -188,7 +188,7 @@ export function App() {
           <div className="rail-foot"><span>{me.name} · {me.role} · {me.kolab}</span></div>
         </nav>
         <main>
-          {invite?.preview && <InviteCard invite={invite.preview} signedIn onDismiss={() => setInvite(undefined)}
+          {invite?.preview && <InviteCard invite={invite.preview} signedIn onDismiss={() => { setInvite(undefined); void dropInvite().catch(() => undefined); }}
             onJoin={() => act.run(async () => {
               const next = await acceptInvite(invite.token);
               setInvite(undefined);

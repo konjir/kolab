@@ -140,6 +140,7 @@ export class WebSessionController {
     if (person) await run(() => this.web.signOut(token!));
     if (refresh) await this.kolab.revokeToken(refresh, { clientId: WEB_CLIENT }).catch(() => undefined);
     clearSessionCookie(res, this.options);
+    clearInviteCookie(res, this.options);
   }
 
   /**
@@ -163,6 +164,14 @@ export class WebSessionController {
     }
     setInviteCookie(res, this.options, token, INVITE_COOKIE_S);
     return preview;
+  }
+
+  /** Not now: the invite a link opened is dropped from this browser, so no later sign-in offers it. */
+  @Delete('invite')
+  @HttpCode(204)
+  dropInvite(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    checkOrigin(req, this.options);
+    clearInviteCookie(res, this.options);
   }
 
   /** The signed-in person accepts an invite: granted its access, and moved to its kolab in the same role. */

@@ -69,7 +69,7 @@ test('from nothing: a new person signs up and makes their first kolab, invites a
 
   // Ann is new: the consent page offers her first kolab, named after her.
   const ann = new Browser(base);
-  const first = await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: 'new', new_kolab_name: 'ann', new_kolab_title: 'Ann\'s', role: 'product' }));
+  const first = await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: '@new', new_kolab_name: 'ann', new_kolab_title: 'Ann\'s', role: 'product' }));
   expect(first).toContain('Welcome: you are <code>ann</code> here');
   expect(first).toMatch(/name="new_kolab_name" value="ann"/);
   expect(await (await ann.api('me')).json()).toMatchObject({ actor: 'ann', kolab: 'ann', access: { level: 'admin' } });
@@ -88,8 +88,8 @@ test('from nothing: a new person signs up and makes their first kolab, invites a
   expect(await opened.json()).toMatchObject({ kolab: 'ann', title: 'Ann\'s', owner: 'ann', level: 'write', layers: ['technical'], invited_by: 'ann' });
   expect(eli.set.at(-1)).toMatch(/^konjir_invite=kji_[^;]+; Path=\/oauth; HttpOnly; SameSite=Lax; Max-Age=1800$/);
   // Signing in, the consent page offers to join, chosen already; he consents as an engineer.
-  const page = await webSignIn(eli, idp, { subject: '22', login: 'eli' }, () => ({ kolab: 'invite', role: 'engineer' }));
-  expect(page).toMatch(/value="invite" checked><span>Join <code>ann<\/code>/);
+  const page = await webSignIn(eli, idp, { subject: '22', login: 'eli' }, () => ({ kolab: '@invite', role: 'engineer' }));
+  expect(page).toMatch(/value="@invite" checked><span>Join <code>ann<\/code>/);
   expect(page).toContain('ann invites you, with Write on technical');
   expect(eli.cookies.has('konjir_invite')).toBe(false);   // used up, and cleared
   expect(await (await eli.api('me')).json()).toMatchObject({ actor: 'eli', kolab: 'ann', role: 'engineer', access: { level: 'write', layers: ['technical'] } });
@@ -107,9 +107,9 @@ test('a signed-in person joins with a link from the page; only Admin invites, an
   const kolab = await openKolab();
   const { base, idp } = await serve(kolab);
   const ann = new Browser(base);
-  await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: 'new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }));
+  await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }));
   const fay = new Browser(base);
-  await webSignIn(fay, idp, { subject: '23', login: 'fay' }, () => ({ kolab: 'new', new_kolab_name: 'fays', new_kolab_title: 'Fay\'s', role: 'engineer' }));
+  await webSignIn(fay, idp, { subject: '23', login: 'fay' }, () => ({ kolab: '@new', new_kolab_name: 'fays', new_kolab_title: 'Fay\'s', role: 'engineer' }));
 
   const { token } = await (await ann.api('invites', { level: 'write', layers: ['functional'] })).json() as { token: string };
   const joined = await fay.api('session/invite/accept', { token });
@@ -135,7 +135,7 @@ test('the invite rides only the web interface\'s sign-in; opening a link needs K
   const kolab = await openKolab();
   const { base, idp } = await serve(kolab);
   const ann = new Browser(base);
-  await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: 'new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }));
+  await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }));
   const { token } = await (await ann.api('invites', { level: 'read' })).json() as { token: string };
 
   // A browser holding the invite authorizes an MCP client: its consent page offers no invite.
@@ -147,9 +147,9 @@ test('the invite rides only the web interface\'s sign-in; opening a link needs K
   u.search = new URLSearchParams({ response_type: 'code', client_id: client, redirect_uri: 'http://127.0.0.1:9/cb', state: 's', code_challenge: 'c'.repeat(43), code_challenge_method: 'S256' }).toString();
   const html = await (await eli.go(u)).res.text();
   expect(html).toContain('name="csrf"');
-  expect(html).not.toContain('value="invite"');
+  expect(html).not.toContain('value="@invite"');
   // …and choosing it anyway is refused, saying so.
-  const forced = await eli.consent({ csrf: csrfOf(html), decision: 'allow', as: 'new-agent', agent_label: 'cli', kolab: 'invite', role: 'product' });
+  const forced = await eli.consent({ csrf: csrfOf(html), decision: 'allow', as: 'new-agent', agent_label: 'cli', kolab: '@invite', role: 'product' });
   expect(await forced.res.text()).toContain('this sign-in carries no invite');
   expect(await kolab.reachable('eli')).toStrictEqual([]);
 
@@ -162,6 +162,52 @@ test('the invite rides only the web interface\'s sign-in; opening a link needs K
   for (let i = 0; i < 30; i++) statuses.push((await new Browser(base).api('session/invite', { token: 'kji_nope' })).status);
   expect(statuses.slice(0, 29).every((s) => s === 404)).toBe(true);
   expect(statuses[29]).toBe(429);
+});
+
+test('the invite cookie goes with Decline, Not now and sign-out; Join is chosen already only for someone with no kolab; a kolab called invite or new can be chosen', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const ann = new Browser(base);
+  await webSignIn(ann, idp, { subject: '21', login: 'ann' }, () => ({ kolab: '@new', new_kolab_name: 'invite', new_kolab_title: 'Called invite', role: 'product' }));
+  expect(await (await ann.api('me')).json()).toMatchObject({ kolab: 'invite' });
+  const link = async () => (await (await ann.api('invites', { level: 'read' })).json() as { token: string }).token;
+
+  // Decline.
+  const eli = new Browser(base);
+  await eli.api('session/invite', { token: await link() });
+  expect(eli.cookies.has('konjir_invite')).toBe(true);
+  idp.next({ subject: '22', login: 'eli' });
+  const html = await (await eli.go('/api/session/oauth/start')).res.text();
+  await eli.consent({ csrf: csrfOf(html), decision: 'deny' });
+  expect(eli.cookies.has('konjir_invite')).toBe(false);
+  // Not now.
+  await eli.api('session/invite', { token: await link() });
+  expect((await eli.fetch('/api/session/invite', { method: 'DELETE', headers: { origin: base } })).status).toBe(204);
+  expect(eli.cookies.has('konjir_invite')).toBe(false);
+  // Sign-out.
+  await webSignIn(eli, idp, { subject: '22', login: 'eli' }, () => ({ kolab: '@new', new_kolab_name: 'new', new_kolab_title: 'Called new', role: 'product' }));
+  expect(await (await eli.api('me')).json()).toMatchObject({ kolab: 'new' });
+  await eli.api('session/invite', { token: await link() });
+  expect((await eli.fetch('/api/session', { method: 'DELETE', headers: { origin: base } })).status).toBe(204);
+  expect(eli.cookies.has('konjir_invite')).toBe(false);
+
+  // Eli has a kolab now: the invite is offered, not chosen, and the kolab called `new` is his to pick.
+  await eli.api('session/invite', { token: await link() });
+  idp.next({ subject: '22', login: 'eli' });
+  const page = await (await eli.go('/api/session/oauth/start')).res.text();
+  expect(page).toContain('value="@invite">');
+  expect(page).not.toMatch(/value="@invite" checked/);
+  expect(page).toContain('value="kolab:new">');
+  expect(page).not.toMatch(/name="kolab" value="[^"]*" checked/);   // nothing chosen for him
+  const none = await eli.consent({ csrf: csrfOf(page), decision: 'allow', role: 'engineer' });
+  expect(await none.res.text()).toContain('Choose the kolab to work in.');
+  await eli.consent({ csrf: csrfOf(page), decision: 'allow', kolab: 'kolab:new', role: 'engineer' });
+  expect(await (await eli.api('me')).json()).toMatchObject({ kolab: 'new', role: 'engineer' });
+  // Ann, in the kolab called `invite`, signs in again and chooses it by name.
+  idp.next({ subject: '21', login: 'ann' });
+  const again = await (await ann.go('/api/session/oauth/start')).res.text();
+  await ann.consent({ csrf: csrfOf(again), decision: 'allow', kolab: 'kolab:invite', role: 'engineer' });
+  expect(await (await ann.api('me')).json()).toMatchObject({ kolab: 'invite', role: 'engineer' });
 });
 
 test('behind the TLS proxy the invite cookie is __Host-: Secure, Path=/, no Domain', async () => {

@@ -37,4 +37,6 @@ export const createKolab = (name: string, title: string) => api<WebMe>('session/
 /** What an invite's link offers (W3.4); Kolab keeps it for the sign-in that follows. */
 export const openInvite = (token: string) => api<InvitePreview>('session/invite', { token });
 /** The signed-in person joins the invite's kolab: Kolab grants its access and moves the session there. */
+/** Not now: Kolab forgets the invite this browser opened. */
+export const dropInvite = () => api<void>('session/invite', undefined, 'DELETE');
 export const acceptInvite = (token: string) => api<WebMe>('session/invite/accept', { token });
