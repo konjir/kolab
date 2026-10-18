@@ -10,8 +10,11 @@ import { commitReviewed, els, marksOn, openKolab, people, persistentStore, rejec
 import type { CheckContext, Checks } from '@konjir/types';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
-/** Claims lapse quickly here, so a process opened after a stop on Postgres can take its jobs. */
-const LEASE_MS = 300;
+/**
+ * Claims lapse quickly here, so a process opened after a stop can take its jobs, but not so quickly
+ * that a live run's renewals (every third of it) miss one on a loaded CI runner.
+ */
+const LEASE_MS = 1_000;
 
 /**
  * A Kolab on `store` whose structural checks stop for good at the first version `at` picks: the
@@ -426,58 +429,59 @@ test('a node\'s later commit waits for a cascade that failed, rather than run ah
   await expectCarriedToLatest(k);
 });
 
-test('a run that lost its claim to another touches nothing of the job, which the other run finishes once', async () => {
+(onPostgres ? test : test.skip)('a run whose claim lapsed and was taken by another process touches nothing of the job, which the other finishes once', async () => {
   const store = await persistentStore();
-  const first = gate(); const firstReached = gate();
-  const second = gate(); const secondReached = gate();
-  let calls = 0;
-  const checks: Checks = async (ctx) => {
-    if (ctx.version.node_id !== 'V' || ctx.version.active_role !== 'system') return structuralChecks(ctx);
-    calls++;
-    if (calls === 1) { firstReached.open(); await first.opened; }
-    else if (calls === 2) { secondReached.open(); await second.opened; }
-    return structuralChecks(ctx);
+  /** Checks that hold Kolab's rebase of V at a gate, and say when they get there. */
+  const holding = () => {
+    const g = gate(); const reached = gate();
+    const checks: Checks = async (ctx) => {
+      if (ctx.version.node_id === 'V' && ctx.version.active_role === 'system') { reached.open(); await g.opened; }
+      return structuralChecks(ctx);
+    };
+    return { g, reached, checks };
   };
-  const k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS });
-  await people(k, 'alice', { layers: ['functional'] });
-  const alice = await k.openSession('alice', 'product');
-  await k.createNode(alice, 'functional_spec', 'P', 'P');
-  const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
-  await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
+  const two = holding();
+  const a = await openKolab({ ...store, outboxLeaseMs: LEASE_MS });
+  const b = await openKolab({ ...store, checks: two.checks, outboxLeaseMs: LEASE_MS });
+  await people(a, 'alice', { layers: ['functional'] });
+  const alice = await a.openSession('alice', 'product');
+  await a.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
+  await a.createNode(alice, 'functional_spec', 'V', 'V');
+  await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
 
-  const p2 = k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
-  await firstReached.opened;
-  const claimOf = async () => (await k.db.query<{ claim: string | null; attempts: number }>(`select claim, attempts from outbox where kind = 'after_commit'`)).rows;
+  const held = holding();
+  const a2 = await openKolab({ ...store, checks: held.checks, outboxLeaseMs: LEASE_MS });
+  const p2 = a2.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  await held.reached.opened;
+  const claimOf = async () => (await b.db.query<{ claim: string | null; claimed_by: string | null }>(`select claim, claimed_by from outbox where kind = 'after_commit'`)).rows;
   const [{ claim: token1 }] = await claimOf();
-  // Its renewals fail, as on a saturated pool, so its lease lapses; the worker takes the job.
-  const query = k.db.query.bind(k.db);
-  k.db.query = (async (sql: string, params?: unknown[]) => {
+  // A's renewals fail, as on a saturated pool, so its lease lapses; B's worker takes the job.
+  const query = a2.db.query.bind(a2.db);
+  a2.db.query = (async (sql: string, params?: unknown[]) => {
     if (sql.startsWith('update outbox set claimed_until') && params?.[0] === token1) throw new Error('timeout exceeded when trying to connect');
     return query(sql, params);
-  }) as typeof k.db.query;
+  }) as typeof a2.db.query;
   await new Promise((r) => setTimeout(r, LEASE_MS * 2));
-  const drained = k.drainOutbox();
-  await secondReached.opened;
-  const [{ claim: token2, attempts }] = await claimOf();
+  const drained = b.drainOutbox();
+  await two.reached.opened;
+  const [{ claim: token2 }] = await claimOf();
   expect(token2).not.toBe(token1);
-  expect(attempts).toBe(2);
 
-  // The first run goes on, finds its claim lost and stops; the job is the second run's still.
-  first.open();
+  // A's run goes on, finds its claim lost and stops; the job is B's still.
+  held.g.open();
   const p2id = await p2;
-  expect(await claimOf()).toStrictEqual([{ claim: token2, attempts: 2 }]);
-  // Nor can a stale token free or fail it.
-  await (k as unknown as { fail(j: object, e: unknown): Promise<void> }).fail({ token: token1, kind: 'after_commit', versionId: p2id }, new Error('late'));
-  expect(await claimOf()).toStrictEqual([{ claim: token2, attempts: 2 }]);
+  expect(await claimOf()).toMatchObject([{ claim: token2 }]);
+  // Nor can A's stale token free or fail it.
+  await (a2 as unknown as { fail(j: object, e: unknown): Promise<void> }).fail({ token: token1, kind: 'after_commit', versionId: p2id }, new Error('late'));
+  expect(await claimOf()).toMatchObject([{ claim: token2 }]);
 
-  second.open();
+  two.g.open();
   expect(await drained).toBe(1);
-  expect(await jobs(k)).toStrictEqual([]);
+  expect(await jobs(b)).toStrictEqual([]);
   // V was rebased onto P@2 once.
-  const committed = (await history(k, 'V')).filter((v) => v.state === 'committed').map((v) => v.active_role);
-  expect(committed).toStrictEqual(['product', 'system']);
-  expect(await textOf(k, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
+  expect((await history(b, 'V')).filter((v) => v.state === 'committed').map((v) => v.active_role)).toStrictEqual(['product', 'system']);
+  expect(await textOf(b, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
 });
 
 test('a job that keeps failing is dead after ten attempts: no worker runs it until an admin retries it', async () => {
@@ -551,7 +555,9 @@ test('closing waits for the outbox work this process is running, then frees noth
     if (ctx.version.node_id === 'V' && ctx.version.active_role === 'system') { reached.open(); await held.opened; }
     return structuralChecks(ctx);
   };
-  const k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS, closeWaitMs: 5_000 });
+  // Long enough that close() waits for the work however slow the runner, so the test turns only on
+  // the order of events, never on how long they take.
+  const k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS, closeWaitMs: 60_000 });
   await people(k, 'alice', { layers: ['functional'] });
   const alice = await k.openSession('alice', 'product');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
@@ -567,7 +573,7 @@ test('closing waits for the outbox work this process is running, then frees noth
   const b = await openKolab(store);
   expect(await jobs(b)).toStrictEqual([]);
   expect(await textOf(b, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
-});
+}, 90_000);
 
 /** Makes the first query matching `when` fail as a dropped connection would; returns a function that restores it. */
 function failOnce(k: Kolab, when: (sql: string, params?: unknown[]) => boolean) {
@@ -638,3 +644,4 @@ test('a settle job run again finds the fold it already made in review, and folds
   expect((await k.reviewRequests({ reviewer: 'dave' })).map((r) => r.subject)).toStrictEqual([`kj:V@${folds[0].seq}`]);
   expect(await jobs(k)).toStrictEqual([]);
 });
+

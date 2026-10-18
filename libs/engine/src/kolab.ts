@@ -534,8 +534,9 @@ export class Kolab {
     token ??= (await this.db.query<{ claim: string }>(
       `update outbox set claim = $3, claimed_by = $4, claimed_until = ${this.leaseUntil}, attempts = attempts + 1
         where kind = $1 and version_id = $2 and state = 'pending'
-          and (claimed_until is null or claimed_until < clock_timestamp()) returning claim`,
-      [kind, versionId, ulid(), this.origin])).rows[0]?.claim;
+          and (claimed_until is null or claimed_until < clock_timestamp())
+          and (claim is null or not (claim = any($5::text[]))) returning claim`,
+      [kind, versionId, ulid(), this.origin, this.ownTokens()])).rows[0]?.claim;
     if (!token) return { ran: false };
     const outcome = await this.runToken({ token, kind, versionId }, work);
     if (outcome.state === 'failed') throw outcome.error;
@@ -731,6 +732,12 @@ export class Kolab {
     w.timer.unref();
   }
 
+  /**
+   * The claims this process holds or has just written. Never taken over by this process itself,
+   * even if one's lease lapsed while the event loop was busy: its run is still going, here.
+   */
+  private ownTokens(): string[] { return [...this.claims.keys(), ...this.written.values()]; }
+
   /** Claims, as this process, the job `which` picks (SQL naming one outbox id), if no live process holds it and it is due. */
   private async claimJob(which: string, params: unknown[]): Promise<OutboxJob | undefined> {
     if (this.closed || this.stopping) return undefined;
@@ -739,7 +746,8 @@ export class Kolab {
       `update outbox o set claim = $${n + 1}, claimed_by = $${n + 2}, claimed_until = ${this.leaseUntil}, attempts = o.attempts + 1
         where o.id = (${which}) and o.state = 'pending' and o.run_after <= clock_timestamp()
           and (o.claimed_until is null or o.claimed_until < clock_timestamp())
-       returning o.id, o.kind, o.version_id, o.claim, o.payload, o.attempts`, [...params, ulid(), this.origin])).rows[0];
+          and (o.claim is null or not (o.claim = any($${n + 3}::text[])))
+       returning o.id, o.kind, o.version_id, o.claim, o.payload, o.attempts`, [...params, ulid(), this.origin, this.ownTokens()])).rows[0];
   }
 
   /**
@@ -755,6 +763,7 @@ export class Kolab {
         `select j.id from outbox j join version jv on jv.id = j.version_id
           where j.state = 'pending' and j.run_after <= clock_timestamp()
             and (j.claimed_until is null or j.claimed_until < clock_timestamp())
+            and (j.claim is null or not (j.claim = any($3::text[])))
             and (j.kind <> 'after_commit' or not exists (
                   select 1 from outbox e join version ev on ev.id = e.version_id
                    where e.kind = 'after_commit' and ev.node_id = jv.node_id and ev.seq < jv.seq))
