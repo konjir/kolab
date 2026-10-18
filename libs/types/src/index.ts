@@ -79,6 +79,15 @@ export type OutboxState = typeof OUTBOX_STATES[number];
 /** The two kinds of finding a reviewer reports (VER8). */
 export const FINDING_KINDS = ['contradiction', 'layer_leak'] as const;
 export type FindingKind = typeof FINDING_KINDS[number];
+/** A case file is open until a person rules on it (CASE2). */
+export const CASE_FILE_STATES = ['open', 'ruled'] as const;
+export type CaseFileState = typeof CASE_FILE_STATES[number];
+/** What a ruling on a case file says of each position (CASE2). */
+export const POSITION_VERDICTS = ['sustained', 'overruled'] as const;
+export type PositionVerdict = typeof POSITION_VERDICTS[number];
+/** A ruling changes the intent, or keeps it and asks for another way (CASE6). */
+export const RULING_EFFECTS = ['change_intent', 'keep_intent'] as const;
+export type RulingEffect = typeof RULING_EFFECTS[number];
 export const OVERRIDE_RESOLUTIONS = ['reaffirm', 'adopt_parent', 'amend'] as const;
 export type OverrideResolution = typeof OVERRIDE_RESOLUTIONS[number];
 /** Why a mark (an invalidation) was raised. */
@@ -220,4 +229,26 @@ export interface Query {
   id: string; kind: QueryKind; address: string; question: string; state: string;
   answer: string | null; answered_by: string | null; raised_by: string | null;
   from: string | null; mark: string | null;
+}
+
+/** One side of a case file: a claim and its evidence (CASE1), and, once ruled on, its verdict (CASE2). */
+export interface PositionView {
+  position: string; actor: string; claim: string;
+  /** kj: addresses, and anything else that backs the claim: a commit, a file and line, a test run. */
+  evidence: string[];
+  verdict: PositionVerdict | null; taken_at: string | null;
+}
+/**
+ * A ruling (CASE2–CASE6): on a case file, or given directly on an element (D16). `on` is the
+ * address it rules on, in the short form of its kolab. Served back to agents as precedent (CASE4).
+ */
+export interface RulingView {
+  ruling: string; on: string; case: string | null; text: string; effect: RulingEffect | null;
+  replaces: string | null; ruled_by: string; ruled_at: string | null;
+}
+/** A case file (CASE1): what is disputed, about which element, its positions, and its ruling once given. */
+export interface CaseFileView {
+  case: string; on: string; layer: Layer; question: string | null; state: CaseFileState;
+  opened_by: string | null; opened_at: string | null;
+  positions: PositionView[]; ruling: RulingView | null; next: string;
 }

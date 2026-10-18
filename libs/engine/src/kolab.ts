@@ -7,8 +7,9 @@ import {
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
-  ACCESS_LEVELS, FINDING_KINDS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
+  ACCESS_LEVELS, FINDING_KINDS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, RULING_EFFECTS, VISIBILITIES,
   type OutboxKind, type OutboxState,
+  type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
@@ -1206,8 +1207,8 @@ export class Kolab {
   }
 
   /**
-   * A node's version as a session reads it, with its elements and the questions on the node
-   * (DAT11): one of its own kolab's, or `<kolab>/<node>` in another it holds Read on, where only
+   * A node's version as a session reads it, with its elements, the questions on the node, and
+   * its rulings and open case files (DAT11, CASE4): one of its own kolab's, or `<kolab>/<node>` in another it holds Read on, where only
    * committed versions show. Every read runs as kj_agent, so row-level security bounds it too.
    * Addresses in the questions are written to be read in the session's kolab.
    */
@@ -1220,6 +1221,10 @@ export class Kolab {
       node, version: v, from,
       elements: await this.elements(v.id, q),
       queries: await this.listQueries({ node: node.id, from }, q),
+      // Precedent and open case files on the node: only its own kolab's ever show, since row-level
+      // security gives a session no other kolab's (TEN13).
+      rulings: await this.listRulings({ kolab: node.kolab_id, node: node.id }, q),
+      cases: await this.listCases({ kolab: node.kolab_id, node: node.id, state: 'open' }, q),
     }));
     // The links it drops (0012), for its reviewers: private to its kolab, like its links (D49).
     return { ...read, removes: await this.removedLinks(where, v) };
@@ -3060,6 +3065,243 @@ export class Kolab {
     });
   }
 
+  // ---- case files, positions and rulings (CASE1–CASE7, D16) ------------------
+
+  /**
+   * Opens a case file (CASE1, CASE5): a disagreement the session's actor couldn't settle, about an
+   * element of a committed version in its kolab, with the opener's position, its claim and evidence.
+   * Anyone with access may open one, as anyone may ask (Q1). It waits in the inbox of the layer
+   * the element is in, for the other position and then a person's ruling, and blocks nothing
+   * (CASE7). Returns the case file's id.
+   */
+  async openCase(sessionId: string, address: Address | string, input: { question: string; claim: string; evidence: string[] }): Promise<string> {
+    const s = await this.session(sessionId);
+    const a = typeof address === 'string' ? parseAddress(address) : address;
+    const question = requireText(input.question, 'the question in dispute');
+    const position = await this.positionInput(sessionId, input);
+    if (!a.element) throw new GateError('a case file is about one element: name it, as kj:<node>#<element>');
+    if (a.selector) throw new GateError('a case file is about a whole element; quote the words you mean in your claim instead');
+    const v = await this.versionIn(sessionId, a, { what: 'opening a case file' });
+    if ((await this.resolveIn(v.id, a.element, null)).status === 'orphan') {
+      throw new Error(`${formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: a.element })} doesn't exist`);
+    }
+    const id = ulid();
+    await this.asSystem(async (tx, signal) => {
+      await tx.query(`insert into case_file(id, version_id, element_id, question, opened_by) values ($1, $2, $3, $4, $5)`,
+        [id, v.id, a.element, question, s.actor_id]);
+      await tx.query(`insert into position(id, case_file_id, actor_id, claim, evidence) values ($1, $2, $3, $4, $5)`,
+        [ulid(), id, s.actor_id, position.claim, JSON.stringify(position.evidence)]);
+      await signal({ inbox: 'layer', layer: v.layer });
+      await signal({ inbox: 'actor', actor: s.actor_id });
+    });
+    return id;
+  }
+
+  /**
+   * Takes the other side of an open case file: one position per actor, two per case file (CASE1).
+   * Anyone with access to the case file's kolab may. Returns the position's id.
+   */
+  async addPosition(sessionId: string, caseId: string, input: { claim: string; evidence: string[] }): Promise<string> {
+    const s = await this.session(sessionId);
+    const position = await this.positionInput(sessionId, input);
+    const c = await this.caseIn(sessionId, caseId);
+    const id = ulid();
+    await this.asSystem(async (tx, signal) => {
+      // Under the case file's row lock, so two positions can't both be the second, and none lands after the ruling.
+      const locked = (await tx.query<{ state: string }>(`select state from case_file where id = $1 for update`, [c.id])).rows[0];
+      if (locked.state !== 'open') throw new GateError(`case file ${c.id} is already ruled on; its ruling is precedent (konjir_read_case case=${c.id})`);
+      const taken = (await tx.query<{ actor_id: string }>(`select actor_id from position where case_file_id = $1`, [c.id])).rows;
+      if (taken.some((p) => p.actor_id === s.actor_id)) throw new GateError(`${s.actor_id} already holds a position on case file ${c.id}`);
+      if (taken.length >= CASE_POSITIONS) throw new GateError(`case file ${c.id} already holds its two positions; it waits for a ruling`);
+      await tx.query(`insert into position(id, case_file_id, actor_id, claim, evidence) values ($1, $2, $3, $4, $5)`,
+        [id, c.id, s.actor_id, position.claim, JSON.stringify(position.evidence)]);
+      await signal({ inbox: 'layer', layer: c.layer });
+      for (const actor of new Set([c.opened_by, ...taken.map((p) => p.actor_id), s.actor_id])) {
+        if (actor) await signal({ inbox: 'actor', actor });
+      }
+    });
+    return id;
+  }
+
+  /**
+   * A person's ruling (CASE2–CASE6). With `case`, it rules on that case file: each of its two
+   * positions is sustained or overruled (`verdicts`, by position id), and the case file is ruled.
+   * With `address`, it is given directly, on an element of a committed version, with no case file
+   * behind it (CASE3, D16). Either way it records its author and date, says whether it changes the
+   * intent or keeps it and asks for another way (`effect`, CASE6), and is precedent in its kolab
+   * from then on (CASE4, TEN13). It never changes once given; a later ruling says what it
+   * overrules (`replaces`).
+   *
+   * Who rules: a person, never an agent (CASE2), from a session in the role that writes the
+   * layer the element is in, holding Write on that layer in the kolab: the owner of the answer,
+   * as for questions (Q1). Not one who holds a position on the case file. Returns the ruling's id.
+   */
+  async rule(sessionId: string, input: {
+    case?: string; address?: Address | string; text: string; effect: RulingEffect;
+    verdicts?: Record<string, PositionVerdict>; replaces?: string;
+  }): Promise<string> {
+    const text = requireText(input.text, 'the ruling');
+    if (!RULING_EFFECTS.includes(input.effect)) throw new GateError(`a ruling's effect is ${RULING_EFFECTS.join(' or ')} (CASE6)`);
+    const replaces = input.replaces === undefined ? null : requireText(input.replaces, 'what the ruling replaces');
+    if ((input.case === undefined) === (input.address === undefined)) throw new GateError('rule on a case file (case) or directly on an element (address), not both or neither');
+    const s = await this.session(sessionId);
+    const ruler = async (layer: Layer, kolab: string) => {
+      if (s.kind !== 'person') {
+        throw new AccessError(`only a person rules (CASE2): ${s.actor_id} is an agent${s.owner ? ` of ${s.owner}, who can rule from a session of their own` : ''}`);
+      }
+      await this.requireLayer(sessionId, layer, kolab);
+    };
+    const id = ulid();
+    if (input.case !== undefined) {
+      const c = await this.caseIn(sessionId, input.case);
+      await ruler(c.layer, c.kolab_id);
+      const verdicts = input.verdicts ?? {};
+      for (const [p, verdict] of Object.entries(verdicts)) {
+        if (!POSITION_VERDICTS.includes(verdict)) throw new GateError(`position ${p}'s verdict is ${POSITION_VERDICTS.join(' or ')}`);
+      }
+      await this.asSystem(async (tx, signal) => {
+        const locked = (await tx.query<{ state: string }>(`select state from case_file where id = $1 for update`, [c.id])).rows[0];
+        if (locked.state !== 'open') throw new GateError(`case file ${c.id} is already ruled on`);
+        const positions = (await tx.query<{ id: string; actor_id: string }>(
+          `select id, actor_id from position where case_file_id = $1 order by created_at, id`, [c.id])).rows;
+        if (positions.some((p) => p.actor_id === s.actor_id)) throw new AccessError(`${s.actor_id} holds a position on case file ${c.id}, so can't rule on it`);
+        if (positions.length < CASE_POSITIONS) {
+          throw new GateError(`case file ${c.id} holds ${positions.length} position; it is ruled on once it holds two. Rule directly on ${c.on} instead (address) if it can't wait`);
+        }
+        const ids = new Set(positions.map((p) => p.id));
+        const given = Object.keys(verdicts);
+        if (given.length !== ids.size || given.some((p) => !ids.has(p))) {
+          throw new GateError(`give each position of case file ${c.id} a verdict, sustained or overruled: verdicts={${positions.map((p) => `"${p.id}":…`).join(',')}}`);
+        }
+        await tx.query(`insert into ruling(id, case_file_id, actor_id, text, replaces, effect) values ($1, $2, $3, $4, $5, $6)`,
+          [id, c.id, s.actor_id, text, replaces, input.effect]);
+        for (const p of positions) await tx.query(`update position set verdict = $2 where id = $1`, [p.id, verdicts[p.id]]);
+        await tx.query(`update case_file set state = 'ruled' where id = $1`, [c.id]);
+        await signal({ inbox: 'layer', layer: c.layer });
+        for (const actor of new Set([c.opened_by, ...positions.map((p) => p.actor_id)])) {
+          if (actor) await signal({ inbox: 'actor', actor });
+        }
+      });
+      return id;
+    }
+    if (input.verdicts !== undefined) throw new GateError('verdicts are for the positions of a case file; a direct ruling has none');
+    const a = typeof input.address === 'string' ? parseAddress(input.address) : input.address!;
+    if (a.selector) throw new GateError('a ruling is on a node or a whole element; quote the words you mean in its text');
+    const v = await this.versionIn(sessionId, a, { what: 'ruling' });
+    if (a.element && (await this.resolveIn(v.id, a.element, null)).status === 'orphan') {
+      throw new Error(`${formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: a.element })} doesn't exist`);
+    }
+    await ruler(v.layer, v.kolab_id!);
+    await this.asSystem((tx) => tx.query(
+      `insert into ruling(id, version_id, element_id, actor_id, text, replaces, effect) values ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, v.id, a.element ?? null, s.actor_id, text, replaces, input.effect]));
+    return id;
+  }
+
+  /** A position's claim and evidence, checked: each kj: address in the evidence must resolve for the session. */
+  private async positionInput(sessionId: string, input: { claim: string; evidence: string[] }) {
+    const claim = requireText(input.claim, 'your position\'s claim');
+    if (!Array.isArray(input.evidence) || !input.evidence.length) {
+      throw new GateError('a position needs its evidence (CASE1): the requirement, code, commit or test run that backs the claim');
+    }
+    if (input.evidence.length > MAX_EVIDENCE) throw new GateError(`a position cites at most ${MAX_EVIDENCE} pieces of evidence`);
+    const evidence = input.evidence.map((e) => requireText(e, 'each piece of evidence'));
+    for (const e of evidence) {
+      if (!e.startsWith('kj:')) continue;
+      const r = await this.resolve(e, { session: sessionId });
+      if (r.status === 'orphan') throw new Error(`evidence ${e} does not resolve`);
+    }
+    return { claim, evidence };
+  }
+
+  /** A case file in the session's kolab, with its subject; another kolab's reads as none at all (TEN12). */
+  private async caseIn(sessionId: string, caseId: string) {
+    const kolab = await this.sessionKolab(sessionId);
+    const c = await this.read({ session: sessionId }, async (q) => (await q.query<{
+      id: string; kolab_id: string; layer: Layer; opened_by: string | null; node: string; seq: number; element_id: string | null;
+    }>(`select c.id, c.kolab_id, v.layer, c.opened_by, n.name as node, v.seq, c.element_id
+          from case_file c join version v on v.id = c.version_id join node n on n.id = v.node_id
+         where c.id = $1 and c.kolab_id = $2`, [caseId, kolab])).rows[0]);
+    if (!c) throw new Error(`no case file ${caseId} in kolab ${kolab}`);
+    return { ...c, on: formatAddress({ node: c.node, version: c.seq, element: c.element_id ?? undefined }) };
+  }
+
+  /**
+   * Case files in a kolab, newest first: with `layer`, those about that layer's elements; with
+   * `state`, only open or ruled ones; with `actor`, those it opened or holds a position on; with
+   * `node` (a node's id), those about it; with `id`, that one. Run on `q`: a session's reads run as
+   * kj_agent, so row-level security bounds them too.
+   */
+  async listCases(filter: { kolab: string; layer?: Layer; state?: CaseFileState; actor?: string; node?: string; id?: string; limit?: number },
+    q: Q = this.db): Promise<CaseFileView[]> {
+    const rows = (await q.query<{
+      id: string; node: string; seq: number; element_id: string | null; layer: Layer; question: string | null;
+      state: CaseFileState; opened_by: string | null; opened_at: Date | string | null;
+    }>(
+      `select c.id, n.name as node, v.seq, c.element_id, v.layer, c.question, c.state, c.opened_by, c.opened_at
+         from case_file c join version v on v.id = c.version_id join node n on n.id = v.node_id
+        where c.kolab_id = $1 and ($2::text is null or v.layer = $2) and ($3::text is null or c.state = $3)
+          and ($4::text is null or c.opened_by = $4 or exists (select 1 from position p where p.case_file_id = c.id and p.actor_id = $4))
+          and ($5::text is null or v.node_id = $5) and ($6::text is null or c.id = $6)
+        order by c.opened_at desc nulls last, c.id desc limit $7`,
+      [filter.kolab, filter.layer ?? null, filter.state ?? null, filter.actor ?? null, filter.node ?? null, filter.id ?? null, filter.limit ?? 50])).rows;
+    if (!rows.length) return [];
+    const ids = rows.map((r) => r.id);
+    const positions = (await q.query<{ id: string; case_file_id: string; actor_id: string; claim: string; evidence: unknown; verdict: PositionVerdict | null; created_at: Date | string | null }>(
+      `select id, case_file_id, actor_id, claim, evidence, verdict, created_at from position where case_file_id = any($1) order by created_at nulls first, id`, [ids])).rows;
+    const rulings = await this.listRulings({ kolab: filter.kolab, cases: ids }, q);
+    return rows.map((r) => {
+      const on = formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined });
+      const ps = positions.filter((p) => p.case_file_id === r.id).map((p) => ({
+        position: p.id, actor: p.actor_id, claim: p.claim, evidence: evidenceOf(p.evidence), verdict: p.verdict, taken_at: iso(p.created_at),
+      }));
+      const ruling = rulings.find((x) => x.case === r.id) ?? null;
+      return {
+        case: r.id, on, layer: r.layer, question: r.question, state: r.state, opened_by: r.opened_by, opened_at: iso(r.opened_at),
+        positions: ps, ruling,
+        next: r.state === 'ruled'
+          ? `Ruled${ruling ? ` by ${ruling.ruled_by}: it ${ruling.effect === 'change_intent' ? 'changes the intent, so expect the element to be amended' : ruling.effect === 'keep_intent' ? 'keeps the intent: find another way to meet it as written' : 'stands'}` : ''}. It is precedent in this kolab: don't argue it again.`
+          : ps.length < CASE_POSITIONS
+            ? `Waiting for the other position: konjir_add_position case=${r.id} claim=… evidence=[…], from whoever disagrees with ${ps[0]?.actor ?? 'the opener'}. Work continues meanwhile (CASE7).`
+            : `Waiting for a ruling from a person with Write on the ${r.layer} layer: konjir_rule case=${r.id} text=… effect=change_intent|keep_intent verdicts={${ps.map((p) => `"${p.position}":"sustained|overruled"`).join(',')}}. Work continues meanwhile (CASE7).`,
+      };
+    });
+  }
+
+  /**
+   * Rulings in a kolab, newest first: precedent (CASE4). With `node` (a node's id), those on it,
+   * directly or through a case file; with `cases`, those on these case files. Run on `q`, as listCases.
+   */
+  async listRulings(filter: { kolab: string; node?: string; cases?: string[]; limit?: number }, q: Q = this.db): Promise<RulingView[]> {
+    const rows = (await q.query<{
+      id: string; case_file_id: string | null; node: string; seq: number; element_id: string | null; text: string;
+      effect: RulingEffect | null; replaces: string | null; actor_id: string; ruled_at: Date | string | null;
+    }>(
+      `select r.id, r.case_file_id, n.name as node, v.seq, coalesce(r.element_id, c.element_id) as element_id, r.text,
+              r.effect, r.replaces, r.actor_id, r.ruled_at
+         from ruling r left join case_file c on c.id = r.case_file_id
+         join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
+        where r.kolab_id = $1 and ($2::text is null or v.node_id = $2) and ($3::text[] is null or r.case_file_id = any($3))
+        order by r.ruled_at desc nulls last, r.id desc limit $4`,
+      [filter.kolab, filter.node ?? null, filter.cases ?? null, filter.limit ?? 50])).rows;
+    return rows.map((r) => ({
+      ruling: r.id, on: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }), case: r.case_file_id,
+      text: r.text, effect: r.effect, replaces: r.replaces, ruled_by: r.actor_id, ruled_at: iso(r.ruled_at),
+    }));
+  }
+
+  /** A session's case files, read as kj_agent: listCases in its own kolab. */
+  async casesFor(sessionId: string, filter: Omit<Parameters<Kolab['listCases']>[0], 'kolab'>): Promise<CaseFileView[]> {
+    const kolab = await this.sessionKolab(sessionId);
+    return this.read({ session: sessionId }, (q) => this.listCases({ ...filter, kolab }, q));
+  }
+
+  /** A session's precedent, read as kj_agent: listRulings in its own kolab. */
+  async rulingsFor(sessionId: string, filter: Omit<Parameters<Kolab['listRulings']>[0], 'kolab'>): Promise<RulingView[]> {
+    const kolab = await this.sessionKolab(sessionId);
+    return this.read({ session: sessionId }, (q) => this.listRulings({ ...filter, kolab }, q));
+  }
+
   // ---- inspection ----------------------------------------------------------
 
   async sessionInfo(sessionId: string) {
@@ -3666,6 +3908,24 @@ function describeAccess(a: Access): string {
   if (a.level !== 'write') return level;
   return a.layers.length === 2 ? `${level} on both layers` : a.layers.length ? `${level} on the ${a.layers[0]} layer` : `${level} on no layer`;
 }
+
+/** How many positions a case file holds: two, one per side (CASE1). */
+const CASE_POSITIONS = 2;
+/** The most pieces of evidence one position cites. */
+const MAX_EVIDENCE = 20;
+
+/** Text someone must give, trimmed; refused when empty. */
+function requireText(text: unknown, what: string): string {
+  const t = typeof text === 'string' ? text.trim() : '';
+  if (!t) throw new GateError(`give ${what}`);
+  return t;
+}
+
+/** A timestamp as ISO 8601, or null for a row written before it was recorded. */
+const iso = (t: Date | string | null) => (t === null ? null : new Date(t).toISOString());
+
+/** A position's evidence, as stored: a list of strings (rows written by hand before 0012 may hold anything). */
+const evidenceOf = (e: unknown): string[] => (Array.isArray(e) ? e.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))) : [JSON.stringify(e)]);
 
 /** Whether a commit step refused the version, because its author can no longer write its layer. */
 const isRefused = (x: unknown): x is { refused: string } => typeof x === 'object' && x !== null && 'refused' in x;

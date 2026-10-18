@@ -87,3 +87,33 @@ test('a message names the kolab its inbox or answers are in, and a body from a K
   expect(old.content).toMatch(/^Your functional inbox changed:/);
   expect(old.meta).not.toHaveProperty('kolab');
 });
+
+test('a case file new to the layer, or argued, starts a turn; a ruling on your own case file does too (CASE1, CASE2)', () => {
+  const open = { case: 'C1', on: 'kj:orders@1#R8', question: 'Can it be met?', state: 'open', positions: [{ actor: 'eng' }], ruling: null, next: 'Waiting for the other position: konjir_add_position case=C1.' };
+  const m = describeChange(URI, inbox([]), { ...inbox([]), cases: [open] })!;
+  expect(m.meta).toMatchObject({ kind: 'inbox', open_cases: '1' });
+  expect(m.content.split('\n')).toStrictEqual([
+    'Your functional inbox changed: 0 open questions and notes, 0 open marks, 1 open case file.',
+    'A case file on your layer, new or argued:',
+    '- case C1 on kj:orders@1#R8: "Can it be met?" (1 position). Next: Waiting for the other position: konjir_add_position case=C1.',
+    'Read konjir://inbox/functional, or call konjir_list_cases, before acting.',
+  ]);
+  const argued = { ...open, positions: [{ actor: 'eng' }, { actor: 'pm' }], next: 'Waiting for a ruling.' };
+  expect(describeChange(URI, { ...inbox([]), cases: [open] }, { ...inbox([]), cases: [argued] })!.content).toContain('(2 positions). Next: Waiting for a ruling.');
+  // The case leaving the inbox, ruled, sends nothing there.
+  expect(describeChange(URI, { ...inbox([]), cases: [argued] }, { ...inbox([]), cases: [] })).toBeNull();
+
+  // The opener's answers: the other side's position, then the ruling.
+  const answers = 'konjir://answers/eng';
+  const a = describeChange(answers, { actor: 'eng', queries: [], cases: [open] }, { actor: 'eng', queries: [], cases: [argued] })!;
+  expect(a.content).toMatch(/^The other side took a position on a case file of yours; it waits for a ruling:/);
+  const ruled = { ...argued, state: 'ruled', ruling: { text: 'R8 stands.', effect: 'keep_intent', ruled_by: 'lee' } };
+  const r = describeChange(answers, { actor: 'eng', queries: [], cases: [argued] }, { actor: 'eng', queries: [], cases: [ruled] })!;
+  expect(r.meta).toMatchObject({ kind: 'answers', ruled: '1' });
+  expect(r.content.split('\n')).toStrictEqual([
+    'A case file of yours has been ruled on. A ruling is precedent: follow it, and don\'t argue it again.',
+    '- case C1 on kj:orders@1#R8: lee ruled "R8 stands." (the intent stands; find another way)',
+    'Read konjir://answers/eng, or call konjir_read_case, for the verdict on each position.',
+  ]);
+  expect(describeChange(answers, { actor: 'eng', queries: [], cases: [ruled] }, { actor: 'eng', queries: [], cases: [ruled] })).toBeNull();
+});

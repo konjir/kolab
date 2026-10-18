@@ -98,12 +98,22 @@ test('a database from the previous release is migrated on open', async () => {
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
     // without case files (0005), before accounts and kolabs (0006), before the review flow (0007),
     // before node names per kolab (0008), before the outbox (0010), before hashed session
-    // tokens (0011) and before link removals and the cascade's indexes (0012), newest first (0009 only dropped what 0007 added, so its undoing is in
+    // tokens (0011), before link removals and the cascade's indexes (0012) and before rulings' dates and the case-file verbs' columns (0013), newest first (0009 only dropped what 0007 added, so its undoing is in
     // 0007's). The people and the spec stay, and alice's session is stored by its token again,
     // as 0.5 stored it, so 0011 hashing it in place is what keeps it working.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger ruling_by_person on ruling;
+      drop function kj_ruling_by_person();
+      drop trigger case_fixed on ruling;
+      drop trigger case_fixed on position;
+      drop trigger case_fixed on case_file;
+      drop function kj_case_fixed();
+      drop index case_file_kolab, position_case_file, ruling_kolab, one_position_per_actor, one_ruling_per_case_file;
+      alter table position drop column created_at;
+      alter table case_file drop column question, drop column opened_by, drop column opened_at;
+      alter table ruling drop column ruled_at, drop column effect;
       drop table link_removal;
       drop function kj_link_removal_kolab();
       drop policy agent_draft on edge; drop policy kolab_delete on edge; revoke delete on edge from kj_agent;

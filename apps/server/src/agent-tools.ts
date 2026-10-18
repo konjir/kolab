@@ -3,7 +3,10 @@ import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { Kolab } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
-import { DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, QUERY_KINDS, QUERY_STATES, REVIEW_VERDICTS, type EdgeKind, type GateResult } from '@konjir/types';
+import {
+  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, REVIEW_VERDICTS,
+  RULING_EFFECTS, type EdgeKind, type GateResult,
+} from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
@@ -86,6 +89,30 @@ const resolveOverride = z.object({ mark: z.string(), resolution: z.enum(OVERRIDE
 const ask = z.object({ address, question: z.string(), from });
 const annotate = z.object({ address, note: z.string(), from: address.optional().describe('Your own element the note is about') });
 const answerQuery = z.object({ query: z.string(), answer: z.string() });
+const evidence = z.array(z.string()).min(1).describe('What backs the claim: kj: addresses (each must resolve), and anything else as text, such as a commit, a file and line, or a test run. At least one.');
+const openCase = z.object({
+  address: address.describe('The element in dispute, e.g. kj:checkout#R1, on a committed version in your kolab'),
+  question: z.string().describe('What the two sides disagree on, in one sentence'),
+  claim: z.string().describe('Your position'),
+  evidence,
+});
+const addPosition = z.object({ case: z.string().describe('The case file\'s id'), claim: z.string().describe('Your position: the other side'), evidence });
+const rule = z.object({
+  case: z.string().optional().describe('The case file to rule on. Omit it, and give address, to rule directly.'),
+  address: address.optional().describe('For a ruling with no case file behind it: the element or node it rules on, e.g. kj:checkout#R1'),
+  text: z.string().describe('The ruling, as agents will be served it as precedent'),
+  effect: z.enum(RULING_EFFECTS).describe('change_intent: the intent changes, so the element is to be amended. keep_intent: the intent stands; find another way to meet it as written.'),
+  verdicts: z.record(z.string(), z.enum(POSITION_VERDICTS)).optional().describe('With case: each position\'s verdict, by position id: {"<position>":"sustained","<position>":"overruled"}'),
+  replaces: z.string().optional().describe('What this ruling overrules, in words, if anything'),
+});
+const listCases = z.object({
+  state: z.enum(CASE_FILE_STATES).optional().describe('Default: open ones'),
+  mine: z.boolean().optional().describe('Case files you opened or hold a position on, open and ruled'),
+  all_layers: z.boolean().optional(),
+  node: node.optional().describe('Only those about this node of your kolab'),
+});
+const readCase = z.object({ case: z.string() });
+const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
 @Injectable()
@@ -133,7 +160,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: 'Read every element of a node version, with who wrote it, each with its address and the questions and notes raised on it (open and answered, from any version). Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read.',
+    description: 'Read every element of a node version, with who wrote it, each with its address, the questions and notes raised on it (open and answered, from any version), the rulings on it, which are precedent, and its open case files. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read.',
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
@@ -142,20 +169,31 @@ export class AgentTools {
       const kolab = this.kolab;
       // As kj_agent: row-level security bounds the read as well as Kolab (0008). Only who wrote
       // the version comes from Kolab's login, since kj_agent reads no actors.
-      const { node: n, version: row, from: here, elements: els, queries, removes } = await kolab.readNode(s, node, version);
+      const { node: n, version: row, from: here, elements: els, queries, removes, rulings, cases } = await kolab.readNode(s, node, version);
       const threads = new Map<string | null, ReturnType<typeof thread>[]>();
       for (const q of queries) {
         const el = parseAddress(q.address).element ?? null;
         (threads.get(el) ?? threads.set(el, []).get(el)!).push(thread(q));
       }
+      // Precedent and open case files beside the element they concern, from any version (CASE4).
+      const by = <T extends { on: string }>(xs: T[]) => {
+        const m = new Map<string | null, T[]>();
+        for (const x of xs) { const el = parseAddress(x.on).element ?? null; (m.get(el) ?? m.set(el, []).get(el)!).push(x); }
+        return m;
+      };
+      const ruled = by(rulings);
+      const open = by(cases.map(({ case: id, on, question, positions, next }) => ({ case: id, on, question, positions: positions.length, next })));
       const at = (element?: string) => formatAddress({ kolab: n.kolab_id, node: n.name, version: row.seq, element }, { from: here });
       return {
         node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
         ...(removes.length ? { removes_links: removes } : {}),
         ...(threads.get(null) ? { questions: threads.get(null) } : {}),
+        ...(ruled.get(null) ? { rulings: ruled.get(null) } : {}),
         elements: els.map((e) => ({
           address: at(e.element_id), id: e.element_id, parent: e.parent_element_id, text: e.text,
           ...(threads.get(e.element_id) ? { questions: threads.get(e.element_id) } : {}),
+          ...(ruled.get(e.element_id) ? { rulings: ruled.get(e.element_id) } : {}),
+          ...(open.get(e.element_id) ? { open_cases: open.get(e.element_id) } : {}),
         })),
       };
     });
@@ -392,6 +430,92 @@ export class AgentTools {
   })
   answerQuery({ query, answer }: z.infer<typeof answerQuery>, context?: McpToolContext) {
     return asAgent(context, async (s) => { await this.kolab.answerQuery(s, query, answer); return { answered: query }; });
+  }
+
+  // ---- case files and rulings (CASE1–CASE7) ----------------------------------
+
+  @McpTool({
+    name: 'konjir_open_case',
+    description: 'Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can\'t be met as written. Give the question in dispute and your position: a claim and its evidence. It waits in the inbox of the element\'s layer for the other side\'s position (konjir_add_position) and then a person\'s ruling (konjir_rule), and blocks nothing meanwhile. Ask first (konjir_ask): most questions need an answer, not a ruling. Never patch the behavior instead.',
+    schema: openCase,
+  })
+  openCase(a: z.infer<typeof openCase>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const id = await this.kolab.openCase(s, a.address, { question: a.question, claim: a.claim, evidence: a.evidence });
+      return (await this.kolab.casesFor(s, { id }))[0];
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_add_position',
+    description: 'Take the other side of an open case file: your claim and its evidence. A case file holds two positions, one per actor; once it has both, a person rules on it.',
+    schema: addPosition,
+  })
+  addPosition(a: z.infer<typeof addPosition>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const position = await this.kolab.addPosition(s, a.case, { claim: a.claim, evidence: a.evidence });
+      return { position, ...(await this.kolab.casesFor(s, { id: a.case }))[0] };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_rule',
+    description: 'Rule, as a person (never an agent), from a session in the role that writes the element\'s layer, holding Write on it. With case: rule on that case file, giving each of its two positions a verdict, sustained or overruled; you may not rule on one you hold a position on. With address and no case: rule directly, with no case file behind it. Say whether the ruling changes the intent or keeps it and asks for another way. A ruling records its author and date, never changes, and is served to every agent in the kolab as precedent; a later ruling says what it replaces.',
+    schema: rule,
+  })
+  rule(a: z.infer<typeof rule>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const id = await this.kolab.rule(s, a);
+      const [ruling] = (await this.kolab.rulingsFor(s, a.case ? { cases: [a.case] } : {})).filter((r) => r.ruling === id);
+      return {
+        ...ruling,
+        next: ruling.effect === 'change_intent'
+          ? `The intent changes: amend ${ruling.on} so it says what the ruling says, and commit it; the cascade then reaches everything that depends on it.`
+          : `The intent stands: whoever couldn't meet ${ruling.on} as written finds another way.`,
+      };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_list_cases',
+    description: 'List case files in your kolab, each with its positions, its ruling once given, and the next step. Default: open ones on your layer. mine=true: those you opened or hold a position on.',
+    schema: listCases,
+    annotations: { readOnlyHint: true },
+  })
+  listCases({ state, mine, all_layers, node }: z.infer<typeof listCases>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const me = await this.kolab.sessionInfo(s);
+      const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing case files')).id;
+      if (mine) return { cases: await this.kolab.casesFor(s, { actor: me.actor, state, node: id }) };
+      return { cases: await this.kolab.casesFor(s, { layer: all_layers ? undefined : me.layer, state: state ?? 'open', node: id }) };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_read_case',
+    description: 'Read one case file of your kolab: the element in dispute, the question, each position with its evidence and verdict, and its ruling once given.',
+    schema: readCase,
+    annotations: { readOnlyHint: true },
+  })
+  readCase({ case: id }: z.infer<typeof readCase>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const [c] = await this.kolab.casesFor(s, { id });
+      if (!c) throw new Error(`no case file ${id} in kolab ${await this.kolab.sessionKolab(s)}`);
+      return c;
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_list_rulings',
+    description: 'List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when.',
+    schema: listRulings,
+    annotations: { readOnlyHint: true },
+  })
+  listRulings({ node }: z.infer<typeof listRulings>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
+      return { rulings: await this.kolab.rulingsFor(s, { node: id }) };
+    });
   }
 }
 
