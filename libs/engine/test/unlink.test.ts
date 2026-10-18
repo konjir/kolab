@@ -8,7 +8,7 @@ import { Kolab, RoleError, sessionKey, structuralChecks } from '@konjir/engine';
 import {
   TEST_KOLAB, els, marksOn, openKolab, people, persistentStore, rejection, setup, type Store,
 } from '@konjir/engine/testing';
-import type { CheckContext, Checks } from '@konjir/types';
+import type { CheckContext, Checks, KolabEvent } from '@konjir/types';
 
 type Ctx = Awaited<ReturnType<typeof setup>>;
 
@@ -85,7 +85,12 @@ test('removing an orphaned link settles its mark and what it alone caused (LNK6,
   const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b3', text: 'One Vue page.' }] });
   expect(await kolab.unlink(engineer, draft, [{ link: listed.link! }])).toStrictEqual([{ kind: 'dependency', source: 'kj:b@3#b1', target: 'kj:spec#R1' }]);
   expect((await markRow(kolab, orphan.id)).state).toBe('open');   // not until it commits
+  const events: KolabEvent[] = [];
+  kolab.onEvent((x) => events.push(x));
   await kolab.review(draft);
+  // The settled marks signal their layer's inbox in their own kolab only.
+  expect(events).toContainEqual({ inbox: 'layer', kolab: TEST_KOLAB, layer: 'technical' });
+  expect(events.filter((x) => 'inbox' in x && x.inbox === 'layer' && x.kolab !== TEST_KOLAB)).toStrictEqual([]);
   expect(await markRow(kolab, orphan.id)).toStrictEqual({ state: 'cleared', cleared_by: 'its link was removed by b@3' });
   expect(await marksOn(kolab, 'b')).toStrictEqual([]);
   // w1 keeps only the mark b1's own revision raised: the one the orphan caused is gone.
@@ -310,19 +315,26 @@ test('demo finding: quoted words edited in place, context intact, are a change, 
   expect((await ctx.kolab.describeMarks({ node: 'b' }))[0].next).toMatch(/konjir_link your element to the current words/);
 });
 
-test('demo finding: re-linking to the new words re-points the link and settles its mark', async () => {
+test('a committed version is never changed: linking it to the new words adds a link, reviewed nowhere, and the marked one stays (VER1)', async () => {
   const ctx = await setup();
   const { kolab, engineer } = ctx;
   const { s2, mark } = await quoted(ctx);
   const live = (await kolab.latestCommitted('b'))!.id;
   const edge = await kolab.link(engineer, { kind: 'dependency', source: live, sourceElement: 'b1', target: s2, targetElement: 'R1',
     selector: { exact: '14 days', prefix: 'Carts expire after', suffix: 'of inactivity.' } });
-  expect(edge).toBe(mark.edge_id);
-  expect(await markRow(kolab, mark.id)).toStrictEqual({ state: 'cleared', cleared_by: 'its link was re-pointed by bob on b@1' });
-  expect(await kolab.lineage(live, 'upstream')).toMatchObject([{ target: 'kj:spec@2#R1~q({"exact":"14 days","prefix":"Carts expire after","suffix":"of inactivity."})' }]);
-  // It holds from then on: the next edit elsewhere in the spec re-pins it cleanly.
-  await kolab.commit(ctx.product, 'spec', { elements: els({ R1: 'Carts expire after 14 days of inactivity.', R2: 'Carts hold 60 items.' }) });
-  expect(await marksOn(kolab, 'b')).toStrictEqual([]);
+  expect(edge).not.toBe(mark.edge_id);
+  expect((await markRow(kolab, mark.id)).state).toBe('open');
+  expect((await kolab.db.query(`select target_version_id from edge where id = $1`, [mark.edge_id])).rows[0].target_version_id).not.toBe(s2);
+});
+
+test('a link targets its node\'s live version, never an older one where an orphaned quote still stands', async () => {
+  const ctx = await setup();
+  const { kolab, engineer } = ctx;
+  await quoted(ctx);
+  const s1 = (await kolab.db.query<{ id: string }>(`select id from version where node_id = 'spec' and seq = 1`)).rows[0].id;
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b2', text: 'A check caps carts at 50.' }] });
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s1, targetElement: 'R1',
+    selector: { exact: '7 days', prefix: 'Carts expire after', suffix: 'of inactivity.' } }))).toMatch(/GateError: link to spec@2, its live version/);
 });
 
 test('demo finding: re-linking in a draft drops the marked link when the draft commits', async () => {
@@ -354,4 +366,83 @@ test('demo finding: removing an element drops its links and settles their marks;
     `select i.id from invalidation i where i.state = 'open' and i.element_id is not null
         and not exists (select 1 from element e where e.version_id = i.version_id and e.element_id = i.element_id)`);
   expect(stray.rows).toStrictEqual([]);
+});
+
+test('re-pointing replaces only a marked quote link: a changed whole-element link stays, and so does its mark (review of #35)', async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  await family(ctx);
+  const s2 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 31 days.', R2: 'Carts hold 50 items.', R3: 'Checkout takes one page.' }) });
+  const [changed] = await marksOn(kolab, 'b');
+  expect(changed).toMatchObject({ reason: 'changed', element_id: 'b1' });
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b3', text: 'One Vue page.' }] });
+  await kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s2, targetElement: 'R1',
+    selector: { exact: '31 days', prefix: 'Carts expire after', suffix: '.' } });
+  expect(await kolab.removedLinks({ session: engineer }, await kolab.version(draft))).toStrictEqual([]);
+  await kolab.review(draft);
+  expect((await markRow(kolab, changed.id)).state).toBe('open');
+  expect(await linksOf(kolab, 'b')).toStrictEqual(['b1 -> spec#R1', 'b1 -> spec#R1', 'b2 -> spec#R2', 'b3 -> spec#R3']);
+});
+
+test('of two marked quote links, re-pointing replaces the one whose context the new quote keeps, or asks which', async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 7 days of inactivity, and hold 50 items at most.' }) });
+  await kolab.createNode(engineer, 'technical_binding', 'Binding', 'b');
+  const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A job expires carts; a check caps them.' }) });
+  const q1 = { exact: '7 days', prefix: 'Carts expire after', suffix: 'of inactivity, and' };
+  const q2 = { exact: '50 items', prefix: 'inactivity, and hold', suffix: 'at most.' };
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1', selector: q1 });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1', selector: q2 });
+  const s2 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 14 days of inactivity, and hold 80 items at most.' }) });
+  const marks = await marksOn(kolab, 'b');
+  expect(marks.map((m) => m.reason)).toStrictEqual(['fuzzy_reanchor', 'fuzzy_reanchor']);
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b1', text: 'A job expires carts after 14 days; a check caps them.' }] });
+  await kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s2, targetElement: 'R1', selector: { ...q1, exact: '14 days' } });
+  expect((await kolab.removedLinks({ session: engineer }, await kolab.version(draft))).map((r) => r.target))
+    .toStrictEqual(['kj:spec#R1~q({"exact":"7 days","prefix":"Carts expire after","suffix":"of inactivity, and"})']);
+  // A quote whose context matches neither can't say which it replaces.
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s2, targetElement: 'R1',
+    selector: { exact: '80 items', prefix: 'and hold', suffix: 'at most.' } }))).toMatch(/GateError: more than one marked link|name the one this replaces/);
+});
+
+test('re-pointing happens only in the author\'s own draft; another writer links from it as before', async () => {
+  const ctx = await setup();
+  const { kolab, engineer } = ctx;
+  const { s2, mark } = await quoted(ctx);
+  await people(kolab, 'erin', { layers: ['technical'] });
+  const erin = await kolab.openSession('erin', 'engineer');
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b2', text: 'A check caps carts at 50.' }] });
+  await kolab.link(erin, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s2, targetElement: 'R1',
+    selector: { exact: '14 days', prefix: 'Carts expire after', suffix: 'of inactivity.' } });
+  expect(await kolab.removedLinks({ session: engineer }, await kolab.version(draft))).toStrictEqual([]);
+  expect((await markRow(kolab, mark.id)).state).toBe('open');
+});
+
+test('removing a link settles the transitive marks that reached its element, and those below, only through it (LNK5)', async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  // brief#X <- spec#R1 <- b#b1 <- w#w1, and spec#R2 <- b#b2.
+  await kolab.createNode(product, 'functional_spec', 'Brief', 'brief');
+  const br1 = await kolab.commit(product, 'brief', { elements: els({ X: 'Carts are kept a while.' }) });
+  await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 30 days.', R2: 'Carts hold 50 items.' }) });
+  await kolab.link(product, { kind: 'dependency', source: s1, sourceElement: 'R1', target: br1, targetElement: 'X' });
+  await kolab.createNode(engineer, 'technical_binding', 'Binding', 'b');
+  const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A nightly job expires carts.', b2: 'A check caps carts.' }) });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b2', target: s1, targetElement: 'R2' });
+  await kolab.createNode(engineer, 'wbs', 'WBS', 'w');
+  const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
+  await kolab.link(engineer, { kind: 'derivation', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
+  await kolab.commit(product, 'brief', { elements: els({ X: 'Carts are kept a long while.' }) });
+  expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason])).toStrictEqual([['b1', 'upstream_dirty']]);
+  expect((await marksOn(kolab, 'w')).map((m) => [m.element_id, m.reason])).toStrictEqual([['w1', 'upstream_dirty']]);
+
+  await kolab.commit(engineer, 'b', { deltas: [{ kind: 'override', element: 'b2', text: 'A check caps carts at 50.' }], unlink: [{ sourceElement: 'b1', target: 'kj:spec#R1' }] });
+  expect(await marksOn(kolab, 'b')).toStrictEqual([]);
+  expect(await marksOn(kolab, 'w')).toStrictEqual([]);
+  // The spec's own mark is its owner's to settle.
+  expect((await marksOn(kolab, 'spec')).map((m) => [m.element_id, m.reason])).toStrictEqual([['R1', 'changed']]);
 });

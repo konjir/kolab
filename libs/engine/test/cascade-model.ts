@@ -36,7 +36,8 @@
 // - VER (the review gate): a draft the reviewer rejects changes nothing.
 // - LNK6, D48, CAS3 (D50): a link's owner removes it in a draft of its node, so the version that
 //   commits doesn't carry it forward: its open mark settles, and what that mark alone caused
-//   clears, as a cleared mark's would, but nothing re-pins. A removal rejected with its version
+//   clears, as a cleared mark's would, but nothing re-pins. An upstream_dirty mark that reached
+//   its element, or anything below it, only through the link clears too (LNK5). A removal rejected with its version
 //   changes nothing. A link removed can be linked again, pinned to its target as it is then.
 //
 // Readings of the spec this model makes deliberately, where it could be read another way:
@@ -209,14 +210,41 @@ export class Model {
     }
   }
 
-  /** A link's owner removed it (LNK6, D48): its mark settles, and what that mark alone caused clears; nothing re-pins. */
+  /**
+   * A link's owner removed it (LNK6, D48): its mark settles, and what that mark alone caused clears;
+   * nothing re-pins. And an upstream_dirty mark at or below its source element keeps a cause only
+   * while that cause's spread still reaches it without the link (LNK5).
+   */
   private removeEdge(e: Edge) {
     this.edges = this.edges.filter((x) => x !== e);
-    if (!e.mark) return;
+    const below = new Set([`${e.src}.${e.srcEl}`, ...this.reach(e.src, e.srcEl)]);
     for (const [k, causes] of this.up) {
-      causes.delete(e.key);
+      const at = k.split('#')[0];
+      for (const c of [...causes]) {
+        const cause = this.edges.find((x) => x.key === c && x.mark);
+        if (c === e.key || (below.has(at) && cause && !this.reach(cause.src, cause.srcEl, cause).has(at))) causes.delete(c);
+      }
       if (!causes.size) this.up.delete(k);
     }
+  }
+
+  /** The elements downstream of (node, el), as spread walks them: without the change `from` addressed, and without the start. */
+  private reach(node: NodeKey, el: string, from?: Edge): Set<string> {
+    const seen = new Set([`${node}.${el}`]);
+    const todo: [NodeKey, string][] = [[node, el]];
+    while (todo.length) {
+      const [n, x] = todo.shift()!;
+      for (const f of this.edges) {
+        if (f.tgt !== n || (f.tgtEl !== null && f.tgtEl !== x)) continue;
+        if (from && f.src === from.tgt && (from.tgtEl === null || f.srcEl === from.tgtEl)) continue;
+        const at = `${f.src}.${f.srcEl}`;
+        if (seen.has(at)) continue;
+        seen.add(at);
+        todo.push([f.src, f.srcEl]);
+      }
+    }
+    seen.delete(`${node}.${el}`);
+    return seen;
   }
 
   /** A person committed `key`, which read `before`: each element whose text changed settles its marks (CAS4, LNK6). */
