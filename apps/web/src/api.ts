@@ -1,4 +1,4 @@
-import type { WebError, WebMe } from '@konjir/types';
+import type { InvitePreview, WebError, WebMe } from '@konjir/types';
 
 /** A refusal from Kolab's API: its HTTP status and its message, which says what to do. */
 export class ApiError extends Error {
@@ -34,3 +34,7 @@ export const signOut = () => api<void>('session', undefined, 'DELETE');
 /** Ends this session and opens one in another kolab or role; Kolab keeps the new token in the cookie. */
 export const switchTo = (kolab: string, role: string) => api<WebMe>('session/switch', { kolab, role });
 export const createKolab = (name: string, title: string) => api<WebMe>('session/kolab', { name, title });
+/** What an invite's link offers (W3.4); Kolab keeps it for the sign-in that follows. */
+export const openInvite = (token: string) => api<InvitePreview>('session/invite', { token });
+/** The signed-in person joins the invite's kolab: Kolab grants its access and moves the session there. */
+export const acceptInvite = (token: string) => api<WebMe>('session/invite/accept', { token });

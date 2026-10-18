@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, maskTokens, redirectUriMatches, type ConsentChoice } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, type ConsentChoice } from '@konjir/engine';
+import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
 import { consentPage, sendError, sendPage, type ConsentView } from './pages.js';
@@ -35,6 +36,20 @@ export function originOf(req: Request, options: { publicHost?: string }): string
  */
 const bindingCookie = (options: OAuthOptions) => (options.publicHost ? '__Host-konjir_oauth' : 'konjir_oauth');
 export const bindingCookieAttrs = (options: { publicHost?: string }, path: string) => (options.publicHost ? 'Path=/; Secure' : `Path=${path}`);
+
+/**
+ * The invite a person opened, carried from the web page to Kolab's own sign-in (W3.4): set by
+ * POST /api/session/invite once Kolab has checked it, read only by /oauth/authorize for the web
+ * interface's own client, and cleared once the person consents. HttpOnly, SameSite=Lax (it must
+ * survive the identity provider's redirect), for as long as a sign-in may take; behind the TLS proxy
+ * `__Host-` (Secure, Path=/, no Domain), so no other host under the domain can plant one, and on
+ * loopback scoped to /oauth.
+ */
+export const inviteCookie = (options: { publicHost?: string }) => (options.publicHost ? '__Host-konjir_invite' : 'konjir_invite');
+export const setInviteCookie = (res: Response, options: { publicHost?: string }, token: string, maxAgeS: number) =>
+  res.append('set-cookie', `${inviteCookie(options)}=${token}; ${bindingCookieAttrs(options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${maxAgeS}`);
+export const clearInviteCookie = (res: Response, options: { publicHost?: string }) =>
+  res.append('set-cookie', `${inviteCookie(options)}=; ${bindingCookieAttrs(options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=0`);
 
 export function cookieOf(req: Request, name: string): string | undefined {
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -280,8 +295,10 @@ export class OAuthController {
       return refuse(`this authorization server issues tokens for ${base}/${MCP_ROUTE} only`);
     }
     if ((state?.length ?? 0) > 1000 || (str('scope')?.length ?? 0) > 1000) return refuse('state and scope are at most 1000 characters');
+    // Only the web interface's own sign-in carries an invite (W3.4), from the cookie its page set.
+    const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
     const { binding, state: idpState } = await this.kolab.beginAuthorization({
-      provider: this.idp.id, clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource,
+      provider: this.idp.id, clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
     });
     res.setHeader('set-cookie', `${bindingCookie(this.options)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
     res.setHeader('referrer-policy', 'no-referrer');
@@ -333,13 +350,18 @@ export class OAuthController {
     if (!pending?.person) return sendError(res, 400, 'This sign-in expired or was already used. Start again.');
     const client = await this.client(pending.clientId, '');
     const web = pending.clientId === WEB_CLIENT;
-    const { kolabs, agents } = await this.kolab.consentOptions(pending.person);
+    const { kolabs, agents, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
-    const pick = extra.pick ?? { kolab: pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? pre.kolab : undefined, role: pre.role };
+    // An invite the person opened is what they came for: offered first (W3.4). Someone new, with no
+    // kolab and no invite, makes their first kolab here, named after them if that name is free to try.
+    const pick = extra.pick ?? {
+      kolab: invite ? 'invite' : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? pre.kolab : undefined, role: pre.role,
+      newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
+    };
     sendPage(res, status, 'Sign in', consentPage({
       csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
-      kolabs, agents: web ? [] : agents, pick, error: extra.error,
+      kolabs, agents: web ? [] : agents, pick, error: extra.error, invite,
     }));
   }
 
@@ -367,12 +389,13 @@ export class OAuthController {
     const pick = { kolab: kolabField, role, as: asField, label: str('agent_label'), newName: str('new_kolab_name'), newTitle: str('new_kolab_title') };
     const choice: ConsentChoice = {
       as: asField === 'self' ? { kind: 'self' } : asField === 'new-agent' ? { kind: 'new-agent', label: pick.label } : { kind: 'agent', agent: asField.replace(/^agent:/, '') },
-      kolab: kolabField === 'new' ? { name: pick.newName, title: pick.newTitle || pick.newName } : kolabField,
+      kolab: kolabField === 'new' ? { name: pick.newName, title: pick.newTitle || pick.newName } : kolabField === 'invite' ? { invite: true } : kolabField,
       role,
     };
     try {
       const r = await this.kolab.consent(binding, csrf, choice, { selfOnly: pending.clientId === WEB_CLIENT });
       clearBinding(res, this.options);
+      if (pending.inviteKey) clearInviteCookie(res, this.options);
       res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
     } catch (e) {
       if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);

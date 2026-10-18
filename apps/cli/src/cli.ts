@@ -11,14 +11,20 @@
  *   konjir stale [all]
  *   konjir queries [all]
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
+ *   konjir login [--kolab K] [--role R]  -> sign in with the browser (OAuth, D55); later commands use it
+ *   konjir logout
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
- * Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN,
- * or --url / --token.
+ * Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token;
+ * or, with no token, the sign-in `konjir login` keeps for that URL (W3.4).
  */
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from '@modelcontextprotocol/client';
 import { randomBytes } from 'node:crypto';
+import { ROLES } from '@konjir/types';
+import { StoredLogin, credentialsPath, login, logout } from './login.js';
+
+export { StoredLogin, credentialsPath, login, logout } from './login.js';
 
 // The server, with NestJS and the database, is imported only by the
 // commands that need it, so the client verbs start without loading it. The published
@@ -41,12 +47,16 @@ declare const KONJIR_VERSION: string | undefined;
 /** The tool name for a verb: `read_node` and `konjir_read_node` both mean konjir_read_node. */
 const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_${verb}`);
 
-export async function connect(url: string, token: string): Promise<Client> {
+/**
+ * Connects to Kolab with a bearer token, or with a sign-in (an OAuth client provider, such as the one
+ * `konjir login` keeps), whose access token the MCP client refreshes by itself as it expires.
+ */
+export async function connect(url: string, auth: string | OAuthClientProvider): Promise<Client> {
   // 'auto' talks 2026-07-28 to a Kolab server that offers it (needed for subscriptions/listen) and 2025 to an older one.
   const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
-  await client.connect(new StreamableHTTPClientTransport(new URL(url), {
-    requestInit: { headers: { Authorization: `Bearer ${token}` } },
-  }));
+  await client.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
+    ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } } }
+    : { authProvider: auth }));
   return client;
 }
 
@@ -121,7 +131,11 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
            prints it and exits.
 Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; kj:<node> is a node in your kolab
-Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
+Sign in:   konjir login [--kolab <name>] [--role product|engineer] signs in with your browser (GitHub, through
+           Kolab): you choose who this CLI works as (an agent of yours, by default), the kolab and the role.
+           Every later command uses that sign-in, renewing it by itself. konjir logout revokes it.
+Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
+           token, the sign-in konjir login keeps for that URL.
 Version:   konjir --version
 ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--public-host kolab.example.com]
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
@@ -242,14 +256,38 @@ export async function main(argv: string[]) {
     return;
   }
 
-  if (!token) throw new Error('set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs)');
+  if (cmd === 'login') {
+    const kolab = flag(rest, 'kolab');
+    const role = flag(rest, 'role');
+    if (role !== undefined && !ROLES.includes(role as never)) throw new Error(`--role is one of ${ROLES.join(', ')}`);
+    if (kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
+    const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`].filter(Boolean).join(' ');
+    let me;
+    try {
+      me = await login(url, { scope });
+    } catch (e) {
+      throw unreachable(e, url) ?? e;
+    }
+    console.log(`Signed in to ${url} as ${me.actor}${me.kind === 'agent' ? ` (an agent of ${me.owner}'s)` : ''}, in kolab ${me.kolab} as ${me.role}.`);
+    console.log(`Kept in ${credentialsPath()}; every konjir command now uses it. Start with: konjir instructions`);
+    return;
+  }
+  if (cmd === 'logout') {
+    console.log(await logout(url) ? `Signed out of ${url}: the sign-in is revoked and forgotten.` : `No sign-in kept for ${url}.`);
+    return;
+  }
+
+  const stored = token ? undefined : new StoredLogin(url);
+  if (!token && !stored!.signedIn) throw new Error('set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser');
   let client: Client;
   try {
-    client = await connect(url, token);
+    client = await connect(url, token ?? stored!);
   } catch (e) {
     const msg = String((e as Error).message ?? e);
-    if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(msg + String((e as { cause?: unknown }).cause ?? ''))) {
-      throw new Error(`cannot reach Kolab at ${url}. Nothing is listening there: Kolab isn't running, or KONJIR_URL is wrong. Start it with \`konjir serve\`, or ask whoever runs it. Your work is safe; Kolab stores everything.`);
+    const far = unreachable(e, url);
+    if (far) throw far;
+    if (stored && /401|invalid Konjir token|Unauthorized|run konjir login/i.test(msg)) {
+      throw new Error(`your sign-in to ${url} has ended or was revoked: run konjir login`);
     }
     if (/401|invalid Konjir token|Unauthorized/i.test(msg)) {
       throw new Error(`the Kolab server at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`);
@@ -261,22 +299,28 @@ export async function main(argv: string[]) {
     let finished = false;
     const done = new Promise<void>((resolve, reject) => {
       const finish = () => { finished = true; resolve(); };
-      void watch(client, (uri, body) => {
+      const subscribe = (first: boolean) => void watch(client, (uri, body) => {
         console.log(JSON.stringify({ updated: uri, ...(body as object) }));
         if (once) finish();
       }).then(async (w) => {
-        if (!once) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
+        if (!once && first) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
         void w.subscription.closed.then((how) => {
+          // A stream lives as long as its access token (D55): with a sign-in, listen again, which refreshes it.
+          if (!finished && how === 'remote' && stored) { subscribe(false); return; }
           if (!finished && how === 'remote') console.error('Kolab closed the subscription; run konjir watch again');
           finish();
         });
       }, (e: unknown) => {
         const reason = listenRefusal(e);
-        if (reason === 'session_ended') reject(new Error(`the Kolab server at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`));
+        if (reason === 'session_ended') {
+          reject(new Error(stored ? `your sign-in to ${url} has ended or was revoked: run konjir login`
+            : `the Kolab server at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`));
+        }
         else if (reason === 'not_subscribable') reject(new Error('Kolab refused to subscribe you to those resources: a session can subscribe only to its own kolab\'s inboxes and its own answers there. Run konjir watch again, which asks konjir_whoami for them afresh'));
         else if (reason) reject(new Error(`Kolab couldn't open your subscription just now (${reason}); run konjir watch again`));
         else reject(e);
       });
+      subscribe(true);
     });
     try {
       await done;
@@ -322,6 +366,15 @@ export async function main(argv: string[]) {
   } finally {
     await client.close();
   }
+}
+
+/** The error for a Kolab that isn't there, or undefined for any other failure. */
+function unreachable(e: unknown, url: string): Error | undefined {
+  const msg = String((e as Error).message ?? e);
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(msg + String((e as { cause?: unknown }).cause ?? ''))) {
+    return new Error(`cannot reach Kolab at ${url}. Nothing is listening there: Kolab isn't running, or KONJIR_URL is wrong. Start it with \`konjir serve\`, or ask whoever runs it. Your work is safe; Kolab stores everything.`);
+  }
+  return undefined;
 }
 
 /** A database URL fit to print: the password is left out. */

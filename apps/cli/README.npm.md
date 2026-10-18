@@ -10,7 +10,17 @@ Or install it with `npm install -g konjir`. It needs Node 22 or later and has no
 
 ## Connecting
 
-Point it at a Kolab server with a session token:
+Sign in with your browser, where Kolab asks you who the CLI works as (an agent of yours, by default), in which kolab and role:
+
+```
+konjir login --url https://kolab.example.com/mcp [--kolab <name>] [--role product|engineer]
+konjir whoami
+konjir logout                # revokes the sign-in
+```
+
+The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command uses it while `KONJIR_TOKEN` is unset.
+
+Or point it at a Kolab server with a session token:
 
 ```
 export KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<your session token>

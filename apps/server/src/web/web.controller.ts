@@ -1,15 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, Inject, Logger, NotFoundException, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
+  BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, HttpException, Inject, Logger, NotFoundException, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Kolab, maskTokens } from '@konjir/engine';
 import type {
-  WebAnswer, WebAsk, WebCreateKolab, WebCreateNode, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect, WebSignIn, WebSignInMethods, WebSubmit,
-  WebSwitch, WebVerdict,
+  InvitePreview, WebAnswer, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
+  WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
 } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
-import { WEB_CALLBACK, WEB_CLIENT, bindingCookieAttrs, cookieOf, originOf, sameSecret } from '../oauth/oauth.controller.js';
+import {
+  Limit, WEB_CALLBACK, WEB_CLIENT, bindingCookieAttrs, clearInviteCookie, clientAddress, cookieOf, originOf, sameSecret, setInviteCookie,
+} from '../oauth/oauth.controller.js';
 import {
   WebPeople, WebSession, WebSessionGuard, WebWho, checkOrigin, clearSessionCookie, refreshCookieName, setSessionCookie, tokenOf,
 } from './auth.js';
@@ -37,10 +39,19 @@ function one(name: string, v: unknown): string | undefined {
 const pkceCookie = (options: WebOptions) => (options.publicHost ? '__Host-konjir_web_oauth' : 'konjir_web_oauth');
 const pkcePath = WEB_CALLBACK.slice(0, WEB_CALLBACK.lastIndexOf('/'));
 
+/** How long the invite a person opened waits for them to sign in (W3.4): longer than a sign-in may take. */
+const INVITE_COOKIE_S = 1800;
+
 /** Signing in and out of the web interface, and switching kolab or role (see auth.ts). */
 @Controller('api/session')
 export class WebSessionController {
   private readonly logger = new Logger('WebSignIn');
+  /**
+   * Opening an invite's link, signed in or not: 30 a minute from one address (an IPv6 /64), and no
+   * total, so a few addresses can't lock everyone out. An invite's secret is 256 bits, so this
+   * guards the database, not the secret.
+   */
+  private readonly invitesOpened = new Limit(30, Infinity, 60_000);
 
   constructor(
     @Inject(WEB_OPTIONS) private readonly options: WebOptions,
@@ -131,6 +142,40 @@ export class WebSessionController {
     clearSessionCookie(res, this.options);
   }
 
+  /**
+   * What an invite's link offers (W3.4), before signing in or after: its kolab, the access it grants
+   * and who made it, while it is still good. The invite is then kept in an HttpOnly cookie that only
+   * Kolab's own sign-in reads, so signing in with the identity provider can offer to join that kolab
+   * (the consent page); signing in finishes it. One that isn't good is refused, saying nothing of why.
+   */
+  @Post('invite')
+  @HttpCode(200)
+  async openInvite(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Body() body: WebInviteToken): Promise<InvitePreview> {
+    checkOrigin(req, this.options);
+    if (!this.invitesOpened.take(clientAddress(req, this.options))) {
+      throw new HttpException({ error: 'too_many_requests', message: 'too many invites opened from here just now; try again in a minute' }, 429);
+    }
+    const token = typeof body?.token === 'string' ? body.token.trim() : '';
+    const preview = await this.kolab.previewInvite(token);
+    if (!preview) {
+      clearInviteCookie(res, this.options);
+      throw new NotFoundException({ error: 'not_found', message: 'this invite is unknown, already used, revoked or expired, or whoever made it can no longer invite; ask for a new one' });
+    }
+    setInviteCookie(res, this.options, token, INVITE_COOKIE_S);
+    return preview;
+  }
+
+  /** The signed-in person accepts an invite: granted its access, and moved to its kolab in the same role. */
+  @Post('invite/accept')
+  @HttpCode(200)
+  @UseGuards(WebSessionGuard)
+  async acceptInvite(@WebSession() s: string, @Res({ passthrough: true }) res: Response, @Body() body: WebInviteToken): Promise<WebMe> {
+    const token = await run(() => this.web.acceptInvite(s, body?.token));
+    setSessionCookie(res, token, this.options);
+    clearInviteCookie(res, this.options);
+    return run(() => this.people.check(token));
+  }
+
   /** Switches kolab or role: the session ends, a new one opens, and only the cookie holds its token. */
   @Post('switch')
   @HttpCode(200)
@@ -165,6 +210,16 @@ export class WebController {
   @Get('reviews') reviews(@WebSession() s: string) { return run(() => this.web.reviews(s)); }
   @Get('lineage') lineage(@WebSession() s: string) { return run(() => this.web.lineage(s)); }
   @Get('activity') activity(@WebSession() s: string) { return run(() => this.web.activity(s)); }
+
+  // ---- invites (W3.4): for those with Admin in the session's kolab, as Kolab decides ----
+
+  @Get('invites') invites(@WebSession() s: string) { return run(() => this.web.invites(s)); }
+
+  @Post('invites')
+  createInvite(@WebSession() s: string, @Body() body: WebCreateInvite) { return run(() => this.web.createInvite(s, body)); }
+
+  @Post('invites/:id/revoke') @HttpCode(204)
+  async revokeInvite(@WebSession() s: string, @Param('id') id: string) { await run(() => this.web.revokeInvite(s, id)); }
 
   @Get('nodes/:name')
   node(@WebSession() s: string, @Param('name') name: string, @Query('version') v?: unknown) {
