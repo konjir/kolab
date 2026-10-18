@@ -28,3 +28,8 @@ dist/
 # The published CLI: its npm package and its binaries (apps/cli/scripts/package.mjs)
 dist-npm/
 dist-bin/
+# The web interface's demo Kolab: its session tokens (apps/web/scripts/demo-server.ts)
+.konjir-demo/
+# Playwright's reports
+test-results/
+playwright-report/

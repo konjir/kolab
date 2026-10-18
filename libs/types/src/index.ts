@@ -260,3 +260,5 @@ export interface CaseFileView {
   superseded_by: string | null;
   next: string;
 }
+/** The web interface's API (W3.1). */
+export type * from './web.js';

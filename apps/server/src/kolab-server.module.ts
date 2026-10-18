@@ -9,18 +9,25 @@ import { Inboxes } from './inboxes.js';
 import { ListenScope } from './listen-scope.js';
 import { ListenStreams } from './listen-streams.js';
 import { OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
-import { KOLAB, MCP_ROUTE, SERVER_INFO, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
+import { KOLAB, MCP_ROUTE, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
+import { WebSessionGuard } from './web/auth.js';
+import { WebController, WebSessionController } from './web/web.controller.js';
+import { WebEventsController, WebStreams } from './web/events.controller.js';
+import { WebService } from './web/web.service.js';
 
 export interface KolabServerModuleOptions extends ServerOptions {
   kolab: Kolab;
   /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). */
   publicHost?: string;
+  /** How often a web event stream checks its kolab's versions, in ms (3 s by default). */
+  webVersionsPollMs?: number;
 }
 
 /**
  * Konjir over MCP: one kolab, served by @onivoro/server-mcp as a stateless Streamable
  * HTTP endpoint at /mcp (MCP 2026-07-28, with the SDK's fallback for 2025-era clients),
- * plus GET /healthz.
+ * plus GET /healthz, and the web interface's API and server-sent events under /api (API8).
+ * startServer serves the web interface's pages themselves.
  */
 @Module({})
 export class KolabServerModule implements NestModule {
@@ -34,7 +41,7 @@ export class KolabServerModule implements NestModule {
   }
 
   static register(options: KolabServerModuleOptions): DynamicModule {
-    const { kolab, publicHost, ...serverOptions } = options;
+    const { kolab, publicHost, webVersionsPollMs, ...serverOptions } = options;
     return {
       module: KolabServerModule,
       imports: [
@@ -54,10 +61,14 @@ export class KolabServerModule implements NestModule {
             : { trustForwardedHosts: false }),
         }),
       ],
-      controllers: [HealthController],
+      controllers: [HealthController, WebSessionController, WebController, WebEventsController],
       providers: [
         { provide: KOLAB, useValue: kolab },
         { provide: SERVER_OPTIONS, useValue: serverOptions },
+        { provide: WEB_OPTIONS, useValue: { adminToken: serverOptions.adminToken, publicHost, versionsPollMs: webVersionsPollMs } },
+        WebService,
+        WebSessionGuard,
+        WebStreams,
         KonjirAuth,
         AgentTools,
         AdminTools,

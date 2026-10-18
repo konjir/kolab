@@ -16,12 +16,13 @@ Prototype of Konjir's engine and its delivery rails:
 - **Kolab:** versioned specs with stable element IDs, the invalidation cascade, child-spec overrides with the three-way rule, the review gate, and role enforcement. It implements the three decisions in *Konjir — Open Design Decisions*.
 - **An MCP server:** stateless Streamable HTTP, MCP spec 2026-07-28, with the SDK's fallback for 2025-era clients. It's a NestJS app; each verb is an `@McpTool` method, the inboxes are `@McpResource` methods, and the operating instructions and the reviewer's instructions are `@McpPrompt` methods.
 - **A `konjir` CLI:** the same verbs for a shell or any harness without MCP. It is an MCP client of Kolab, so there is one backend.
+- **A web interface:** a React and Vite single-page app that Kolab serves at its root, kept live with server-sent events, for a person who never opens a terminal (W3.1, API8). See *The web interface*.
 
 TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve` a `--database-url` (or `KONJIR_DATABASE_URL`) for a Postgres server. Without one, Kolab runs on embedded Postgres ([PGlite](https://pglite.dev), Postgres in WASM), so local development needs no server.
 
 ```
 npm install
-npm test                  # builds every project, then 342 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 357 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push, web and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -35,21 +36,24 @@ A second workflow, `.github/workflows/cli.yml`, runs "Build konjir CLI" on the s
 
 A test file tears down in one order: its servers and clients, then its Kolabs, then its databases. `jest.setup.js` runs `closeOpened` from `@konjir/engine/testing` after each file, which does that. So a test registers each server, client or child process it starts with `closeAtEnd`, and opens Kolabs with `openKolab` or `setup`, rather than closing them in an `afterAll` of its own: Jest runs `jest.setup.js`'s `afterAll` before the file's own.
 
+The web interface adds three targets of its own: `npx nx run @konjir/web:lint` (its module boundaries), `npx nx run @konjir/web:e2e` (Playwright, against a real Kolab; not in CI) and `npx nx run @konjir/web:demo` (a Kolab seeded with the prototype's example). See *The web interface*.
+
 The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one project's target with `npx nx run <project>:<target>`, for example `npx nx run @konjir/engine:test`.
 
 | Project | Folder | What it holds |
 | --- | --- | --- |
 | `konjir` | `apps/cli` | The CLI, an MCP client of Kolab. `konjir serve` also starts the server. Published to npm as `konjir`, and as single-file binaries, both the client alone (see [Installing the konjir CLI](#installing-the-konjir-cli)). |
 | `@konjir/channel-bridge` | `apps/channel-bridge` | The Konjir channel: a Claude Code plugin whose stdio server forwards Kolab inbox changes into the session |
-| `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), and `/healthz`. It makes no model calls and has no model SDK (REV5). |
+| `@konjir/server` | `apps/server` | The MCP server: a NestJS app serving `/mcp` through [`@onivoro/server-mcp`](https://www.npmjs.com/package/@onivoro/server-mcp), `/healthz`, and the web interface: its pages at `/`, its API and event stream under `/api`. It makes no model calls and has no model SDK (REV5). |
+| `@konjir/web` | `apps/web` | The web interface: React and Vite, built to `apps/web/dist`, which the server serves. It imports only `@konjir/types` (its `lint` target checks) |
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
 | `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring, on [diff-match-patch](https://github.com/antfu/diff-match-patch-es) |
 | `@konjir/db` | `libs/db` | The schema, as versioned SQL migrations, and the connection |
-| `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI and engine |
+| `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI, engine and web interface, including the web API's (`web.ts`) |
 
 Each package's `exports` give two entry points. The `@konjir/source` condition points at its TypeScript source, which development uses: `bin/konjir` runs it through `tsx`, Jest resolves it, and type-checking follows it. The default points at the compiled `dist/`, which production runs on plain `node`, and which other projects build against through its declarations. `tsx` is a development dependency only.
 
-Each release carries its own `deploy/release/install.sh` and `start.sh`; the instance's boot script only calls them, so changing either ships with a plain `terraform apply`. The release ships source, not `dist/`. `install.sh` builds it on the instance: a full `npm ci --ignore-scripts`, then every project's Nx `build` target (tsc), then `npm ci --omit=dev`, so the release keeps its `dist/` but no build tools. `start.sh` runs `node apps/cli/dist/main.js serve`.
+Each release carries its own `deploy/release/install.sh` and `start.sh`; the instance's boot script only calls them, so changing either ships with a plain `terraform apply`. The release ships source, not `dist/`. `install.sh` builds it on the instance: a full `npm ci --ignore-scripts`, then every project's Nx `build` target (tsc, and Vite for the web interface), then `npm ci --omit=dev`, so the release keeps its `dist/` but no build tools. Vite's native parts (Rolldown, Lightning CSS) are optional npm packages per platform, installed without install scripts, so the instance needs no new system package. `start.sh` runs `node apps/cli/dist/main.js serve`.
 
 ## Changing the schema
 
@@ -202,6 +206,55 @@ KONJIR_URL=http://127.0.0.1:7420/mcp KONJIR_TOKEN=<the agent's session token> \
 ```
 
 Choose **I am using this for local development** at the warning. Work already waiting arrives first, as one `← konjir: Your functional inbox already holds …` message. Each new question, note, mark, answer, review request or case file after that arrives as `← konjir: Your functional inbox changed: …`, and a verdict on a version the session submitted as `← konjir: A version you submitted has been reviewed: …`. Items leaving the inbox, such as the agent's own answers and clears, send nothing. The plugin loads in place from a marketplace added from a local path, so it keeps using this checkout's `node_modules`. On Team and Enterprise plans an admin must enable channels first.
+
+## The web interface
+
+Kolab serves a web interface at its root, `https://kolab.konjir.com/` on the test server (W3.1, API8). It is a React and Vite single-page app in `apps/web`, built to `apps/web/dist` by its Nx `build` target, and served by the same NestJS process as `/mcp`. A product owner can do there what the [Konjir Kolab prototype](https://claude.ai/artifact/99doLyY9QFgZZkENDb4GNa) simulates, against the real server:
+
+- **Read a spec** (or any node of the kolab) with its questions and notes beside each element, open and answered, from any version (Q5), the links each element relies on and is relied on by, and its versions. A version in review, or an older one, shows its changes word by word against the version before it.
+- **Answer** a question, or reply to a note, that the session's layer owns; **ask** a question or **leave a note** about an element or a node (Q1, Q3). Questions route to the layer that owns the answer.
+- **See what's stale:** each mark beside its element, with the text it was written against and the text now, and settle it as its owner: *Still holds* (`clear_mark`), revise the element, or for a variant's override, rule on it: keep ours, adopt the parent's, or amend (`resolve_override`, OVR8), which becomes precedent (LNK6, OVR9).
+- **Edit and submit:** edits stay in the page as a draft until *Submit for review*, which drafts the node's latest version with them and submits it. A draft that fails Kolab's structural checks is abandoned at once and the page keeps the edits to fix. A draft that came back with changes requested can be resubmitted or abandoned.
+- **Review:** a version waiting for the session's actor shows *Approve* and *Request changes* (with a note), the same verdicts as `konjir_review`.
+- **Lineage** (what depends on what, wire by wire, stale wires dashed), **Questions**, **Reviews** (waiting for you, and what you submitted) and **Activity**, and the kolabs the actor can reach. A person whose role writes the layer can create a node in the session's kolab.
+
+**Signing in.** OAuth isn't bound yet (RUN3, P2), so a person signs in with a Konjir session token, the same kind of token an agent's harness holds: one actor, one kolab, one role (ENF4, ENF5). An admin opens one (`konjir admin_open_session actor=lee role=product kolab=accounts`, or `deploy/konjir-ops.sh connect lee product`). The page posts it once to `POST /api/session`; Kolab checks that it is an open session (never the admin token, which works in no kolab) and keeps it in an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api` (and `Secure` behind the TLS proxy), so the page's script never holds it. Every call checks the session again, as `/mcp` does, so ending the session (`admin_end_session`) or losing access signs every page out. *Sign out* (`DELETE /api/session`) clears the cookie; the session stays open until an admin ends it. Working in another kolab, or in the other role, takes another session's token.
+
+**The API** (`apps/server/src/web`) is thin: each write is one of the agents' verbs, with the same engine call and the same rules, which Kolab enforces, not the API. Reads gather what a page shows, through `@konjir/engine`'s `views.ts`, which run as the session reads (`Kolab.readAs`: `kj_agent` under row-level security) and name the session's kolab too. Nothing reads or writes outside the session's kolab (TEN12): a node is named by its name in it, and another kolab's is refused as if it weren't there. Every `/api` request must name a host Kolab serves (loopback, or its public host), as `/mcp`'s DNS-rebinding guard requires, and a change must come from Kolab's own origin. Errors come back as `{ error, message }` with any token masked. The types are `@konjir/types`' `Web*`.
+
+| Route | Does |
+| --- | --- |
+| `POST /api/session`, `DELETE /api/session` | Sign in with a session token; sign out |
+| `GET /api/me`, `/api/overview` | The session; the kolab at a glance: its nodes, the kolabs the actor can reach, and what waits |
+| `GET /api/nodes/:name[?version=N]` | A node at a version: elements with their questions, links and marks; versions; what is in review; your drafts |
+| `GET /api/queries`, `/api/marks`, `/api/reviews`, `/api/lineage`, `/api/activity` | The kolab's questions and notes, open marks, reviews, live links and what happened |
+| `POST /api/nodes` | `konjir_create_node` |
+| `POST /api/nodes/:name/submit` | `konjir_draft` with the page's changes, then `konjir_submit_for_review` |
+| `POST /api/nodes/:name/versions/:seq/resubmit`, `…/abandon`, `…/review` | `konjir_submit_for_review`, `konjir_abandon`, `konjir_review` |
+| `POST /api/marks/:id/clear`, `…/resolve` | `konjir_clear_mark`, `konjir_resolve_override` |
+| `POST /api/queries`, `POST /api/queries/:id/answer` | `konjir_ask` or `konjir_annotate`; `konjir_answer_query` |
+| `GET /api/events` | Server-sent events (below) |
+
+The case-file and ruling verbs (CASE5–CASE7) will join it the same way, one route per verb.
+
+**Live.** Each page holds one `GET /api/events` stream. It carries signals, never content, and the page re-reads what it shows: `changed` with a layer when that layer's inbox changes (from any Kolab process on the database, API5), `changed` `answers` for the session's own answers, `changed` `versions` when a version is written or changes state in the kolab, and `ended` when the session ends (D41), after which the stream closes. Push signals name a layer, not a kolab, so a change in another kolab makes a page re-read its own; an event that names a kolab other than the session's (push signals per kolab, D50) is dropped. A commit signals no inbox, so the stream checks the kolab's versions every 3 seconds. The session is checked before each signal, and a comment every 20 seconds keeps the proxy from closing an idle stream.
+
+**The pages** are served at `/` with a strict content security policy (scripts, styles and connections from Kolab only; fonts from Google Fonts, as the design system loads them), `X-Frame-Options: DENY` and no referrer. Assets are named by their hash and cached for a year; `index.html` isn't cached. Any other path that asks for HTML gets `index.html`; `/api`, `/mcp` and `/healthz` are never shadowed. Without a build, `/` says how to make one. The look is the Konjir design system's: Predawn (dark) by default and Daybreak (light), Fraunces, Instrument Sans and JetBrains Mono, and the prototype's layout.
+
+```
+npx nx run @konjir/web:demo        # builds the page and serves a Kolab seeded with the prototype's example on http://127.0.0.1:7421;
+                                    # the actors' session tokens are in apps/web/.konjir-demo/tokens.json (only you can read it)
+npx nx run @konjir/web:dev         # Vite with hot reload on :5173, proxying /api to a Kolab on 127.0.0.1:7420 (KONJIR_WEB_PROXY)
+npx playwright install chromium     # once, for the end-to-end test
+npx nx run @konjir/web:e2e         # the demo Kolab and Chromium: Lee answers, edits and submits; pm-agent approves;
+                                    # eng-agent sees what went stale and clears it; each page updates live
+```
+
+**Deploying.** Nothing new to set up: `install.sh` builds the page with the rest, Caddy already proxies every path to Kolab, and the event stream passes through it as `/mcp`'s listen streams do. The release zip grows by about 70 KB of source; it leaves out the demo's tokens (`.konjir-demo`) and Playwright's output.
+
+**Module boundaries (IMP2).** The web app imports only `@konjir/types`, never the engine or the database. Its Nx project is tagged `scope:web` and `@konjir/types` `scope:shared`; `npx nx run @konjir/web:lint` fails if its `package.json` or any source file reaches a project not tagged `scope:shared`, or a Node module. (Nx's own ESLint rule needs `@nx/js`, which the workspace doesn't install.)
+
+**Tests.** `apps/server/test/web.test.ts` drives the API and the event stream over HTTP: signing in and the refusals (the admin token, an unknown token, a foreign host or origin), reading with questions, links and marks, answering, asking, settling marks, the review flow, a failed check, tenancy between two kolabs, the stream's signals and end, and serving the pages. `apps/web/test` renders the document page in jsdom against a stubbed API. `apps/web/e2e` is the Playwright test above; CI doesn't run it.
 
 ## Deploying to AWS for testing
 
@@ -503,7 +556,8 @@ Their feedback drove these changes:
 - **Review waits aren't durable yet** (W1.8). A review request and its verdict are rows, so a restart keeps them, but nothing retries a commit or cascade an approval started if the process stops part way, and a version whose only reviewers lose Write waits until its author resubmits it (which commits it unreviewed) or abandons it.
 - **The reviewers are those of the moment** the version is submitted or resubmitted; one who gains Write later can still review it, and its request is added on resubmission.
 - **Review requests are readable by every session in their kolab**, like versions and questions there: their notes and findings included. Product review of bindings (VER13), editorial commits (VER14) and reviews of work packages (VER17, PLN16) aren't built.
-- **Session tokens are bearer tokens** with no expiry or OAuth; Kolab stores only their hashes. They're fine on one machine or a trusted network, but not on the open internet.
+- **Session tokens are bearer tokens** with no expiry or OAuth; Kolab stores only their hashes. They're fine on one machine or a trusted network, but not on the open internet. A person signs in to the web interface with one too, kept in an `HttpOnly` cookie.
+- **The web interface** can't create a kolab or open a session (only the admin token can), and works in one kolab per session: it lists the other kolabs the actor reaches but doesn't read them (D49 would allow their committed work). It has no case files or rulings beyond resolving overrides until their verbs exist (CASE5–CASE7), no links (agents declare them), and its activity shows when versions were written, not committed, and not when questions were answered, since Kolab doesn't record those times.
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **The cascade isn't durable.** A commit's cascade runs after it commits, in the calling process. If that process stops part way, or the cascade stops on a `CascadeError`, variants it hadn't reached stay on the old parent, with no mark, until the parent or the variant commits again.
