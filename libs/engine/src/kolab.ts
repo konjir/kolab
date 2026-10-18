@@ -806,12 +806,13 @@ export class Kolab {
   }
 
   /** The outbox's jobs, oldest first, or only those in `state`: for an admin (konjir_admin_outbox). */
-  async outboxJobs(opts: { state?: OutboxState } = {}): Promise<OutboxJobView[]> {
+  async outboxJobs(opts: { state?: OutboxState; kolab?: string } = {}): Promise<OutboxJobView[]> {
+    if (opts.kolab !== undefined) await this.requireKolab(opts.kolab);
     const rows = (await this.db.query<{ id: string; kind: OutboxKind; state: OutboxState; kolab_id: string; name: string; seq: number;
       attempts: number; claimed_by: string | null; run_after: Date | string; last_error: string | null; created_at: Date | string }>(
       `select o.id, o.kind, o.state, o.kolab_id, n.name, v.seq, o.attempts, o.claimed_by, o.run_after, o.last_error, o.created_at
          from outbox o join version v on v.id = o.version_id join node n on n.id = v.node_id
-        where $1::text is null or o.state = $1 order by o.id`, [opts.state ?? null])).rows;
+        where ($1::text is null or o.state = $1) and ($2::text is null or o.kolab_id = $2) order by o.id`, [opts.state ?? null, opts.kolab ?? null])).rows;
     return rows.map((r) => ({
       id: r.id, kind: r.kind, state: r.state, subject: formatAddress({ kolab: r.kolab_id, node: r.name, version: r.seq }),
       attempts: r.attempts, claimed_by: r.claimed_by, run_after: new Date(r.run_after).toISOString(), last_error: r.last_error,
@@ -1002,7 +1003,7 @@ export class Kolab {
   private async requireLayer(sessionId: string, layer: Layer, kolab?: string) {
     const s = await this.session(sessionId);
     if (LAYER_OF_ROLE[s.active_role] !== layer) {
-      throw new RoleError(`a ${s.active_role} session may not write the ${layer} layer`);
+      throw new RoleError(`${withArticle(s.active_role)} session may not write the ${layer} layer`);
     }
     if (kolab !== undefined && kolab !== s.kolab) throw new AccessError(`that is not in kolab ${s.kolab}, the kolab this session works in`);
     if (!s.access.layers.includes(layer)) {
@@ -3321,6 +3322,11 @@ async function ownerAccess(q: Q, owner: string, kolab: string): Promise<Access> 
 }
 
 /** "Write on the functional layer", "Read", "no access". */
+/** A word with its indefinite article, by its first letter: "a product", "an engineer". */
+function withArticle(word: string): string {
+  return `${/^[aeiou]/i.test(word) ? 'an' : 'a'} ${word}`;
+}
+
 function describeAccess(a: Access): string {
   if (!a.level) return 'no access';
   const level = a.level[0].toUpperCase() + a.level.slice(1);

@@ -21,7 +21,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 300 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 302 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -309,7 +309,7 @@ The server is built so it can't drift across that line:
 | `link` | Declare that one of your elements relies on an address |
 | `clear_mark`, `resolve_override` | Settle a mark |
 | `ask`, `annotate`, `answer_query` | The question tier. Questions and notes route to the layer that owns the answer; see below |
-| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session`, `admin_apply_ruling`, `admin_outbox` | Admin token only. `admin_add_actor owner=<account>` adds an agent of that person or organization; `admin_open_session kolab=<name>` opens the session in that kolab, and is the only verb that shows its token. `admin_end_session` names the session by exactly one of `token=`, `session=<key>` or `actor=`. `admin_apply_ruling` applies one of Lee's rulings to a node (D47; see *Review*). `admin_outbox [state=dead] [retry=<id>]` lists the outbox's jobs, and retries a dead one (see *Durable waits*) |
+| `admin_add_actor`, `admin_list_actors`, `admin_open_session`, `admin_end_session`, `admin_apply_ruling`, `admin_outbox` | Admin token only: an agent session doesn't see them, and the CLI says plainly that only the admin token may call one. `admin_add_actor owner=<account>` adds an agent of that person or organization; `admin_open_session kolab=<name>` opens the session in that kolab, and is the only verb that shows its token. `admin_end_session` names the session by exactly one of `token=`, `session=<key>` or `actor=`. `admin_apply_ruling` applies one of Lee's rulings to a node (D47; see *Review*). `admin_outbox [state=dead] [kolab=<name>] [retry=<id>]` lists the outbox's jobs, or one kolab's, and retries a dead one (see *Durable waits*) |
 | `admin_add_organization`, `admin_add_member`, `admin_remove_member`, `admin_add_team`, `admin_add_team_member`, `admin_remove_team_member`, `admin_add_kolab`, `admin_list_kolabs`, `admin_grant`, `admin_revoke`, `admin_access` | Admin token only: accounts, kolabs, teams and grants (see *Accounts, kolabs and access*) |
 
 In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it. `konjir watch` streams your inbox (see below).

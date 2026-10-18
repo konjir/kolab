@@ -54,6 +54,7 @@ const applyRuling = z.object({
 });
 const outbox = z.object({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
+  kolab: z.string().optional().describe('Only jobs of this kolab'),
   retry: z.string().optional().describe('The id of a dead job, or one waiting out its backoff, to run again now'),
 });
 
@@ -121,14 +122,14 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_outbox',
-    description: 'Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again.',
+    description: 'Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error; kolab=<name> for one kolab\'s. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again.',
     schema: outbox,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async outbox({ state, retry }: z.infer<typeof outbox>) {
+  async outbox({ state, kolab, retry }: z.infer<typeof outbox>) {
     try {
       if (retry !== undefined && !(await this.kolab.retryOutboxJob(retry))) throw new GateError(`no job ${retry} to retry: it is done, or a live process is running it`);
-      return ok({ ...(retry !== undefined ? { retried: retry } : {}), jobs: await this.kolab.outboxJobs({ state }) });
+      return ok({ ...(retry !== undefined ? { retried: retry } : {}), jobs: await this.kolab.outboxJobs({ state, kolab }) });
     } catch (e) { return fail(e); }
   }
 

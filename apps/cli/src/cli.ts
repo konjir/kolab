@@ -79,9 +79,26 @@ export function listenRefusal(e: unknown): string | undefined {
   return typeof err.data?.reason === 'string' ? err.data.reason : 'refused';
 }
 
+/**
+ * Whether Kolab refused a call for the token's scope: HTTP 403 insufficient_scope, which the MCP
+ * client raises as its InsufficientScopeError. Kolab requires a scope only of the admin verbs.
+ */
+const insufficientScope = (e: unknown) =>
+  (e as { constructor?: { mcpBrand?: unknown } } | undefined)?.constructor?.mcpBrand === 'mcp.InsufficientScopeError';
+
+/** The refusal for an agent session calling an admin verb, said plainly. */
+const adminOnly = (verb: string) =>
+  `${toolName(verb)} is an admin verb: only the admin token may call it, and this token is an agent session's. Ask whoever runs Kolab.`;
+
 /** Call a tool and return its structured result, or throw with the tool's error text. */
 export async function call(client: Client, verb: string, args: Record<string, unknown> = {}) {
-  const r = await client.callTool({ name: toolName(verb), arguments: args });
+  let r: Awaited<ReturnType<Client['callTool']>>;
+  try {
+    r = await client.callTool({ name: toolName(verb), arguments: args });
+  } catch (e) {
+    if (insufficientScope(e)) throw new Error(adminOnly(verb));
+    throw e;
+  }
   const text = (r.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('\n');
   if (r.isError) throw new Error(text);
   return r.structuredContent ?? text;
@@ -233,7 +250,8 @@ export async function main(argv: string[]) {
       case 'help': {
         const name = toolName(rest[0]);
         const tool = (await client.listTools()).tools.find((t) => t.name === name);
-        if (!tool) throw new Error(`no verb ${rest[0]}; run konjir tools`);
+        // An agent session doesn't see the admin verbs (toolVisibility 'authorized').
+        if (!tool) throw new Error(`no verb ${rest[0]}${name.startsWith('konjir_admin_') ? ' for this token: the admin verbs are for the admin token only' : ''}; run konjir tools`);
         const schema = tool.inputSchema as { properties?: Record<string, { type?: string; enum?: string[]; description?: string }>; required?: string[] };
         const params = Object.entries(schema.properties ?? {}).map(([k, p]) =>
           `  ${k}${schema.required?.includes(k) ? '' : ' (optional)'}: ${p.enum ? p.enum.join(' | ') : p.type ?? 'json'}${p.description ? ` — ${p.description}` : ''}`);

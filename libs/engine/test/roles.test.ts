@@ -12,6 +12,13 @@ test('an engineer session cannot create or write the functional layer', async ()
   await kolab.close();
 });
 
+test('a role refusal names the session with the right article: "an engineer", "a product"', async () => {
+  const { kolab, product, engineer } = await setup();
+  expect(await rejection(kolab.createNode(engineer, 'functional_spec', 'Checkout'))).toMatch(/RoleError: an engineer session may not write the functional layer/);
+  expect(await rejection(kolab.createNode(product, 'technical_binding', 'Checkout on Postgres'))).toMatch(/RoleError: a product session may not write the technical layer/);
+  await kolab.close();
+});
+
 test('dynamic separation of duty: one active role per actor at a time', async () => {
   const { kolab } = await setup();
   const asProduct = await kolab.openSession('carol', 'product');
