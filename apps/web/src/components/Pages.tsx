@@ -172,7 +172,15 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
 }
 
 /** All kolabs the signed-in actor can reach. A session works in one; the others need a session of their own. */
-export function KolabsView({ overview, act, onCreated }: { overview: WebOverview; act: Act; onCreated(name: string): void }) {
+export function KolabsView({ overview, act, onCreated, onOpen, onCreateKolab, start }: {
+  /** An empty kolab's first page: only the form for its first document. */
+  start?: boolean;
+  overview: WebOverview; act: Act; onCreated(name: string): void; onOpen(kolab: string): void; onCreateKolab(name: string, title: string): Promise<boolean>;
+}) {
+  const [kTitle, setKTitle] = useState('');
+  const [kName, setKName] = useState('');
+  const [kTouched, setKTouched] = useState(false);
+  const slug = (t: string) => t.toLowerCase().normalize('NFKD').replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
   const [kind, setKind] = useState<Kind>(overview.me.layer === 'functional' ? 'functional_spec' : 'technical_binding');
   const [title, setTitle] = useState('');
   const [name, setName] = useState('');
@@ -183,6 +191,7 @@ export function KolabsView({ overview, act, onCreated }: { overview: WebOverview
   };
   return (
     <>
+      {!start && <>
       <section className="summary" aria-label="Kolabs">
         <h1>Kolabs</h1>
         <span className="fact">A kolab is one project with a hard edge. Its one spec, the bindings built on it, their links and questions stay inside it.</span>
@@ -192,10 +201,24 @@ export function KolabsView({ overview, act, onCreated }: { overview: WebOverview
           <article key={k.id} className={`kcard${k.current ? ' current' : ''}`} aria-labelledby={`k-${k.id}`}>
             <div className="khead"><h3 id={`k-${k.id}`}>{k.title || k.id}</h3><span className="slug">{k.id}</span>{k.current && <span className="kind">Open now</span>}</div>
             <p>{k.visibility} · owned by {k.owner}</p>
-            <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : 'Your session works in another kolab. To work here, sign in with a session opened in it.'}</span></div>
+            <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : `You hold ${k.access.level ?? 'no access'} here.`}</span>
+              {k.current ? null : <button type="button" className="btn primary" onClick={() => onOpen(k.id)}>Open</button>}</div>
           </article>
         ))}
       </div></section>
+      <section className="newk" aria-labelledby="k-new">
+        <h2 className="section-title" id="k-new">New kolab</h2>
+        <p className="why-not">A kolab of your own, private until you share it. You’ll work in it as {overview.me.name} ({overview.me.role}); this session ends and one opens there.</p>
+        <form onSubmit={async (e) => { e.preventDefault(); if (await onCreateKolab(kName, kTitle)) { setKTitle(''); setKName(''); setKTouched(false); } }}>
+          <div className="field"><label htmlFor="kTitle">Name</label>
+            <input id="kTitle" value={kTitle} maxLength={60} autoComplete="off" placeholder="Billing" onChange={(e) => { setKTitle(e.target.value); if (!kTouched) setKName(slug(e.target.value)); }} /></div>
+          <div className="field"><label htmlFor="kName">Short name</label>
+            <input id="kName" value={kName} maxLength={40} autoComplete="off" spellCheck={false} placeholder="billing" onChange={(e) => { setKName(e.target.value); setKTouched(true); }} />
+            <span className="hint">Lowercase letters, digits and hyphens, unique across all of Konjir so the kolab can move to another owner. Its addresses are <span className="addr">kj:{kName || 'billing'}/…</span>, or just <span className="addr">kj:…</span> inside it.</span></div>
+          <div className="edit-row"><button type="submit" className="btn primary" disabled={!kTitle.trim() || !kName.trim()}>Create kolab</button></div>
+        </form>
+      </section>
+      </>}
       {overview.me.access.layers.includes(overview.me.layer) && (
         <section className="newk" aria-labelledby="n-new">
           <h2 className="section-title" id="n-new">New document in {overview.kolab.id}</h2>
@@ -223,7 +246,7 @@ export function SignIn({ onSignedIn, error: initial }: { onSignedIn(token: strin
     <main className="signin">
       <section className="newk" aria-labelledby="si-title">
         <h1 className="section-title" id="si-title">Sign in to Kolab</h1>
-        <p className="why-not">Paste the session token you were given. It names you, your kolab and your role. Kolab keeps it in this browser’s cookie for this site, out of the page’s reach; signing out removes it.</p>
+        <p className="why-not">Paste the session token you were given: your own, as a person, not an agent’s. It names you, your kolab and your role. Kolab keeps it in this browser’s cookie, out of the page’s reach, until the browser closes; signing out ends the session.</p>
         <form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setError(await onSignedIn(token.trim())); setBusy(false); }}>
           <div className="field"><label htmlFor="token">Session token</label>
             <input id="token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} aria-invalid={!!error} aria-describedby={error ? 'token-err' : undefined} />

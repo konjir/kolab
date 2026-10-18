@@ -10,7 +10,7 @@ import { ListenScope } from './listen-scope.js';
 import { ListenStreams } from './listen-streams.js';
 import { OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
 import { KOLAB, MCP_ROUTE, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
-import { WebSessionGuard } from './web/auth.js';
+import { WebPeople, WebSessionGuard } from './web/auth.js';
 import { WebController, WebSessionController } from './web/web.controller.js';
 import { WebEventsController, WebStreams } from './web/events.controller.js';
 import { WebService } from './web/web.service.js';
@@ -67,6 +67,7 @@ export class KolabServerModule implements NestModule {
         { provide: SERVER_OPTIONS, useValue: serverOptions },
         { provide: WEB_OPTIONS, useValue: { adminToken: serverOptions.adminToken, publicHost, versionsPollMs: webVersionsPollMs } },
         WebService,
+        WebPeople,
         WebSessionGuard,
         WebStreams,
         KonjirAuth,

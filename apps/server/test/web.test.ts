@@ -2,7 +2,8 @@
 // reads a spec with its questions and marks beside each element, answers, asks, settles marks,
 // submits and reviews, all through the same engine calls as the agents' verbs, inside their kolab.
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, expect, test } from '@jest/globals';
@@ -27,7 +28,7 @@ async function signIn(base: string, token: string) {
   });
   expect(res.status).toBe(200);
   const cookie = res.headers.getSetCookie()[0];
-  expect(cookie).toMatch(/^konjir_session=.+; Path=\/api; HttpOnly; SameSite=Strict; Max-Age=\d+$/);
+  expect(cookie).toMatch(/^konjir_session=.+; Path=\/api; HttpOnly; SameSite=Strict$/);   // a session cookie: no Max-Age
   const jar = cookie.split(';')[0];
   const call = async <T = unknown>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') => {
     const r = await fetch(`${base}/api/${path}`, {
@@ -82,12 +83,61 @@ test('a person signs in with a session token; the admin token, a stranger, anoth
   });
   expect(status).toBe(403);
 
-  // Signing out clears the cookie; ending the session signs every page out.
+  // An agent's session is refused: the web interface is for people.
+  await people(kolab, 'alice-pm', { owner: 'alice', layers: ['functional'] });
+  const agent = await kolab.openSession('alice-pm', 'product');
+  expect((await post({ token: agent })).status).toBe(403);
+
+  // Signing out ends the session itself, so the token is revoked everywhere, and clears the cookie.
   const out = await fetch(`${base}/api/session`, { method: 'DELETE', headers: { origin: base, cookie: jar } });
   expect(out.status).toBe(204);
   expect(out.headers.getSetCookie()[0]).toMatch(/^konjir_session=; .*Max-Age=0/);
-  await kolab.endSession(product);
+  expect(await kolab.sessionOpen(product)).toBe(false);
   expect((await call('me')).status).toBe(401);
+});
+
+test('behind the TLS proxy the cookie is __Host- prefixed: Secure, Path=/, no Domain', async () => {
+  const { kolab, product } = await setup();
+  // The server names its public host in its URL, so give it a port of our own to reach it on.
+  const port = await new Promise<number>((resolve) => { const t = createServer().listen(0, '127.0.0.1', () => { const p = (t.address() as AddressInfo).port; t.close(() => resolve(p)); }); });
+  closeAtEnd(await startServer({ adminToken: 'admin-token', kolab, port, webRoot: null, publicHost: 'kolab.example.com' }));
+  const res = await new Promise<{ status: number; cookie: string }>((resolve, reject) => {
+    const body = JSON.stringify({ token: product });
+    const r = request({ host: '127.0.0.1', port, path: '/api/session', method: 'POST',
+      headers: { host: 'kolab.example.com', origin: 'https://kolab.example.com', 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } },
+    (x) => { x.resume(); resolve({ status: x.statusCode!, cookie: String(x.headers['set-cookie']?.[0]) }); });
+    r.on('error', reject);
+    r.end(body);
+  });
+  expect(res.status).toBe(200);
+  expect(res.cookie).toMatch(/^__Host-konjir_session=.+; Path=\/; Secure; HttpOnly; SameSite=Strict$/);
+});
+
+test('switching kolab or role ends the session and opens another, and a person makes a kolab of their own', async () => {
+  const { kolab, product } = await setup();
+  await kolab.createKolab('second', { owner: 'test-org' });
+  await kolab.grant('second', 'alice', 'read');
+  const base = await serve(kolab);
+  const alice = await signIn(base, product);
+  const kolabs = (await alice.call<WebOverview>('overview')).body.kolabs;
+  expect(kolabs.map((k) => [k.id, k.current, k.access.level])).toStrictEqual([['second', false, 'read'], ['test', true, 'write']]);
+
+  const moved = await alice.call<{ kolab: string; role: string }>('session/switch', { kolab: 'second', role: 'engineer' });
+  expect([moved.status, moved.body.kolab, moved.body.role]).toStrictEqual([200, 'second', 'engineer']);
+  expect(await kolab.sessionOpen(product)).toBe(false);   // ENF4: one open session per actor
+  expect((await alice.call('me')).status).toBe(401);       // the old cookie is dead…
+  expect((await alice.call('session/switch', { kolab: 'nowhere', role: 'product' })).status).toBe(401);
+  const sessions = (await kolab.db.query<{ n: number }>(`select count(*)::int as n from session where actor_id = 'alice' and ended_at is null`)).rows[0].n;
+  expect(sessions).toBe(1);                                 // …and exactly one is open, in second
+
+  // A kolab the person can't reach is refused before anything ends; a fresh sign-in shows it.
+  const again = await signIn(base, await kolab.openSession('carol', 'product'));
+  expect((await again.call('session/switch', { kolab: 'second', role: 'product' })).status).toBe(404);
+  expect((await again.call<{ kolab: string }>('me')).body.kolab).toBe('test');
+  const made = await again.call<{ kolab: string }>('session/kolab', { name: 'carols', title: 'Carol\'s' });
+  expect([made.status, made.body.kolab]).toStrictEqual([201, 'carols']);
+  expect((await kolab.listKolabs()).find((k) => k.id === 'carols')).toMatchObject({ owner: 'carol', visibility: 'private' });
+  expect((await again.call('session/kolab', { name: 'test', title: 'Taken' })).status).toBe(401);   // that session moved on
 });
 
 test('a spec reads with its questions and notes beside each element, and a changed spec shows what went stale and how', async () => {
@@ -108,7 +158,7 @@ test('a spec reads with its questions and notes beside each element, and a chang
 
   // Alice answers, and edits R1 through the page: alone on the functional layer, it commits unreviewed.
   expect((await alice.call(`queries/${q}/answer`, { answer: 'Open or Assigned.' })).status).toBe(200);
-  const out = (await alice.call<WebOutcome>('nodes/orders/submit', { changes: [{ kind: 'override', element: 'R1', text: 'Office staff can cancel an Open or Assigned order.' }] })).body;
+  const out = (await alice.call<WebOutcome>('nodes/orders/submit', { base: 1, changes: [{ kind: 'override', element: 'R1', text: 'Office staff can cancel an Open or Assigned order.' }] })).body;
   expect(out).toMatchObject({ ok: true, committed: true, seq: 2, unreviewed: true, abandoned: false });
 
   // b1 relied on R1, so it is stale, with the text it was written against and the text now.
@@ -148,7 +198,7 @@ test('a version goes through review in the page: in review, changes requested, r
   const alice = await signIn(base, product);
   const dave = await signIn(base, reviewer);
 
-  const submitted = (await alice.call<WebOutcome>('nodes/orders/submit', { changes: [{ kind: 'add', element: 'R3', text: 'A cancellation is confirmed by email.' }] })).body;
+  const submitted = (await alice.call<WebOutcome>('nodes/orders/submit', { base: 1, changes: [{ kind: 'add', element: 'R3', text: 'A cancellation is confirmed by email.' }] })).body;
   expect(submitted).toMatchObject({ ok: false, in_review: true, seq: 2, reviewers: ['dave'] });
   const seen = (await dave.call<WebNodeView>('nodes/orders')).body;
   expect(seen.in_review).toStrictEqual([expect.objectContaining({ seq: 2, author: 'alice', reviewers: ['dave'], for_me: true })]);
@@ -166,10 +216,16 @@ test('a version goes through review in the page: in review, changes requested, r
   expect((await alice.call<WebNodeView>('nodes/orders')).body.reading).toMatchObject({ seq: 2, state: 'committed' });
 
   // A draft that fails Kolab's checks is abandoned, and the page keeps the edits.
-  const empty = (await alice.call<WebOutcome>('nodes/orders/submit', { changes: [{ kind: 'override', element: 'R2', text: '   ' }] })).body;
+  const empty = (await alice.call<WebOutcome>('nodes/orders/submit', { base: 2, changes: [{ kind: 'override', element: 'R2', text: '   ' }] })).body;
   expect(empty).toMatchObject({ ok: false, in_review: false, abandoned: true });
   expect((await alice.call<WebNodeView>('nodes/orders')).body.drafts).toStrictEqual([]);
-  expect((await alice.call('nodes/orders/submit', { changes: [] })).status).toBe(400);
+  expect((await alice.call('nodes/orders/submit', { base: 2, changes: [] })).status).toBe(400);
+
+  // Edits made on an older version are refused as stale, never laid over the newer one (CAS7).
+  const late = await alice.call<{ error: string; message: string }>('nodes/orders/submit', { base: 1, changes: [{ kind: 'override', element: 'R1', text: 'Written against v1.' }] });
+  expect([late.status, late.body.error]).toStrictEqual([409, 'stale']);
+  expect(late.body.message).toMatch(/your edits were made on version 1, and it is at version 2 now/);
+  expect((await alice.call<WebNodeView>('nodes/orders')).body.drafts).toStrictEqual([]);
 });
 
 test('a page reads and writes only its session\'s kolab', async () => {
@@ -219,6 +275,10 @@ test('the event stream signals changes, commits and the end of the session', asy
   /** The next event that isn't a `changed` of another kind: a write may signal more than one thing, and a poll may see a commit in two steps. */
   const nextBut = async (skip: (e: WebEvent) => boolean) => { for (;;) { const e = await next(); if (e === 'closed' || !skip(e)) return e; } };
   expect(await next()).toStrictEqual({ type: 'ready' });
+  // A session holds a few streams at once, not a flood.
+  const more = await Promise.all(Array.from({ length: 6 }, () => fetch(`${base}/api/events`, { headers: { cookie: jar } })));
+  expect(more.map((r) => r.status).sort()).toStrictEqual([200, 200, 200, 200, 200, 429]);
+  for (const r of more) await r.body?.cancel();
   await kolab.raiseQuery(engineer, 'kj:orders#R2', 'Partial refunds?');
   expect(await next()).toStrictEqual({ type: 'changed', what: 'layer', layer: 'functional' });
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b2', text: 'Refunds go through the payments queue, retried.' }] });

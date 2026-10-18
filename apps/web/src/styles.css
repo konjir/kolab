@@ -9,9 +9,9 @@
   --sun: #e9ba7b; --moon: #fef6bf;
   --sky-zenith: #656c82; --sky-veil: #aeadb3; --sky-glow: #fef6bf; --sky-horizon: #e9ba7b; --sky-field: #77695d;
   --ins: #24321f; --del: #3a2219;
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
-  --font-sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "Fraunces Variable", "Fraunces", Georgia, "Times New Roman", serif;
+  --font-sans: "Instrument Sans Variable", "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --r-hair: 2px; --r-md: 6px; --r-full: 999px;
   color-scheme: dark;
 }

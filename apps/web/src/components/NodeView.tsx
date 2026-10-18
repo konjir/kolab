@@ -88,6 +88,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus }: Node
   };
   const submit = async () => {
     const body = {
+      base: view.node.latest,
       changes: [
         ...Object.entries(draft.changes).map(([element, text]) => ({ kind: 'override' as const, element, text })),
         ...draft.added.map((a) => ({ kind: 'add' as const, element: a.id, text: a.text })),

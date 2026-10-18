@@ -3,8 +3,9 @@
  * interface and for its end-to-end test: the kolab `accounts`, owned by Lee, with the password
  * reset spec at version 3 (PR8 tightened to 3 an hour), its Postgres binding at version 2 (B9 stale
  * against PR8), two answered questions and one open one, on PR3. Lee owns the kolab; pm-agent,
- * eng-agent and qa-agent are agents of Lee's, with Write on one layer each, so every version is
- * reviewed by another writer of its layer.
+ * eng-agent and qa-agent are agents of Lee's, with Write on one layer each, who wrote its history
+ * through the engine as agents do through MCP. Pat (product) and Eli (engineering) are people with
+ * Write on one layer each, so a person reviews what Lee submits, and a person settles the binding.
  *
  *   npx nx run @konjir/web:demo                        # builds the page, serves http://127.0.0.1:7421
  *   PORT=7430 KONJIR_DEMO_TOKENS=/path/tokens.json …   # another port, or another place for the tokens
@@ -69,6 +70,10 @@ export async function seed(kolab: Kolab) {
     await kolab.addActor(agent, { owner: 'lee' });
     await kolab.grant('accounts', agent, 'write', { layers: [layer] });
   }
+  for (const [person, name, layer] of [['pat', 'Pat', 'functional'], ['eli', 'Eli', 'technical']] as const) {
+    await kolab.addActor(person, { name });
+    await kolab.grant('accounts', person, 'write', { layers: [layer] });
+  }
   const pm = await kolab.openSession('pm-agent', 'product', { kolab: 'accounts' });
   const eng = await kolab.openSession('eng-agent', 'engineer', { kolab: 'accounts' });
   const qa = await kolab.openSession('qa-agent', 'engineer', { kolab: 'accounts' });
@@ -105,7 +110,10 @@ export async function seed(kolab: Kolab) {
   for (const m of await kolab.describeMarks({ layer: 'technical', kolab: 'accounts' })) await kolab.clear(eng, m.mark);
   await commit(lee, pm, 'password-reset', els({ ...specV2, PR8: 'At most 3 reset requests per email address per hour. Requests over the limit get the same response as PR3.' }));
   await kolab.raiseQuery(eng, 'kj:password-reset#PR3', 'PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.');
-  return { lee, 'pm-agent': pm, 'eng-agent': eng, 'qa-agent': qa };
+  // The people's sessions, for the web interface; the agents' stay with the agents.
+  return {
+    lee, pat: await kolab.openSession('pat', 'product', { kolab: 'accounts' }), eli: await kolab.openSession('eli', 'engineer', { kolab: 'accounts' }),
+  };
 }
 
 async function main() {
@@ -117,7 +125,7 @@ async function main() {
   writeFileSync(tokensFile, JSON.stringify(sessions, null, 2), { mode: 0o600 });
   chmodSync(tokensFile, 0o600);
   const origin = new URL(server.url).origin;
-  console.log(`Kolab demo: ${origin}/ (sign in with a token from ${tokensFile}: lee, pm-agent, eng-agent or qa-agent)`);
+  console.log(`Kolab demo: ${origin}/ (sign in with a person's token from ${tokensFile}: lee, pat or eli)`);
   const stop = async () => { await server.close(); await kolab.close(); process.exit(0); };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);

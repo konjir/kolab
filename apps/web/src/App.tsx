@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebMe, WebOverview } from '@konjir/types';
-import { ApiError, api, signIn, signOut } from './api.js';
+import { ApiError, api, createKolab, signIn, signOut, switchTo } from './api.js';
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
@@ -14,10 +14,11 @@ import type { Act } from './components/Marks.js';
  */
 export type Route =
   | { view: 'node'; name: string; version?: number; focus?: string }
-  | { view: 'questions' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'home' };
+  | { view: 'questions' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'home' | 'start' };
 
 export function parseRoute(hash: string): Route {
-  const h = decodeURIComponent(hash.replace(/^#\/?/, ''));
+  let h: string;
+  try { h = decodeURIComponent(hash.replace(/^#\/?/, '')); } catch { return { view: 'home' }; }
   const node = /^node\/([^@#]+)(?:@(\d+))?(?:#(.+))?$/.exec(h);
   if (node) return { view: 'node', name: node[1], version: node[2] ? Number(node[2]) : undefined, focus: node[3] ? `${node[1]}#${node[3]}` : undefined };
   if (['questions', 'reviews', 'lineage', 'activity', 'kolabs'].includes(h)) return { view: h as 'questions' };
@@ -81,6 +82,12 @@ export function App() {
     },
   };
   const go = (r: string) => { location.hash = `#/${r}`; };
+  /** After the session moved to another kolab or role: a fresh page, at its spec. */
+  const moved = (next: WebMe, what: string) => { setMe(next); setOverview(undefined); setTick((t) => t + 1); go(''); say(what); };
+  const move = (kolab: string, role: string) => act.run(async () => {
+    const next = await switchTo(kolab, role);
+    moved(next, `Working in ${next.kolab} as ${next.role}`);
+  }, '');
 
   if (me === undefined) return <p className="empty" style={{ padding: 24 }}>Connecting to Kolab…</p>;
   if (me === null) {
@@ -96,12 +103,13 @@ export function App() {
 
   const specs = overview?.nodes ?? [];
   const home = specs.find((n) => n.kind === 'functional_spec') ?? specs[0];
-  const r: Route = route.view === 'home' ? (home ? { view: 'node', name: home.name } : { view: 'kolabs' }) : route;
+  const r: Route = route.view === 'home' ? (home ? { view: 'node', name: home.name } : { view: 'start' }) : route;
   const counts = overview?.counts;
   return (
     <>
-      <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} kolab={overview?.kolab.title || me.kolab}
-        onSignOut={async () => { await signOut().catch(() => undefined); signedOut(); }} />
+      <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
+        onMove={move} onAllKolabs={() => go('kolabs')}
+        onSignOut={async () => { await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended: sign in with a new token.'); }} />
       <div className="frame">
         <nav className="rail" aria-label="Places">
           <button type="button" className="place" aria-current={r.view === 'kolabs' ? 'page' : undefined} onClick={() => go('kolabs')}>All kolabs</button>
@@ -129,7 +137,9 @@ export function App() {
           {r.view === 'reviews' && <ReviewsView tick={tick} go={go} />}
           {r.view === 'lineage' && <LineageView tick={tick} go={go} />}
           {r.view === 'activity' && <ActivityView tick={tick} />}
-          {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} />}
+          {r.view === 'start' && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
+          {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)}
+            onCreateKolab={(name, title) => act.run(async () => { moved(await createKolab(name, title), `Created ${name}. Its spec is empty: start it.`); }, '')} />}
         </main>
       </div>
       {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
@@ -154,23 +164,57 @@ function Summary({ overview: o }: { overview: WebOverview }) {
   );
 }
 
-function Bar({ theme, setTheme, me, kolab, onSignOut }: { theme: Theme; setTheme(t: 'light' | 'dark'): void; me?: WebMe; kolab?: string; onSignOut?(): void }) {
+function Bar({ theme, setTheme, me, overview, onSignOut, onMove, onAllKolabs }: {
+  theme: Theme; setTheme(t: 'light' | 'dark'): void; me?: WebMe; overview?: WebOverview;
+  onSignOut?(): void; onMove?(kolab: string, role: string): void; onAllKolabs?(): void;
+}) {
   const dark = theme ? theme === 'dark' : !(typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches);
+  const [open, setOpen] = useState(false);
+  const current = overview?.kolab;
   return (
     <header className="bar">
       <div className="bar-in">
         <a className="brand" href="#/" aria-label="Konjir"><Wordmark /></a>
-        {me && <span className="kolab-btn" title={`You work in the kolab ${me.kolab}`}><span className="lbl">Kolab</span><span className="nm">{kolab}</span></span>}
+        {me && (
+          <div className="kolab-pick">
+            <button type="button" className="kolab-btn" aria-expanded={open} aria-controls="kolabMenu" onClick={() => setOpen(!open)}>
+              <span className="lbl">Kolab</span><span className="nm">{current?.title || me.kolab}</span>
+              <svg viewBox="0 0 10 10" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4" /></svg>
+            </button>
+            {open && (
+              <div className="menu" id="kolabMenu">
+                {(overview?.kolabs ?? []).map((k) => (
+                  <button key={k.id} type="button" className="mi" aria-current={k.current} onClick={() => { setOpen(false); if (!k.current) onMove?.(k.id, me.role); }}>
+                    <span className="nm">{k.title || k.id}</span><span className="slug">{k.id} · {k.access.level ?? 'no access'}</span>
+                  </button>
+                ))}
+                <hr />
+                <button type="button" className="mi plain" onClick={() => { setOpen(false); onAllKolabs?.(); }}>All kolabs</button>
+                <button type="button" className="mi plain" onClick={() => { setOpen(false); onAllKolabs?.(); setTimeout(() => document.getElementById('kName')?.focus(), 50); }}>New kolab</button>
+              </div>
+            )}
+          </div>
+        )}
         <span className="server">{location.host}</span>
         <span className="spacer" />
-        {me && <span className="who">Working as <b>{me.name}</b> · {me.role}{me.kind === 'agent' ? ` · agent of ${me.owner}` : ''}</span>}
+        {me && (
+          <>
+            <span className="who" id="whoLabel">Working as <b>{me.name}</b></span>
+            <div className="seg" role="radiogroup" aria-labelledby="whoLabel">
+              {(['product', 'engineer'] as const).map((r) => (
+                <button key={r} type="button" role="radio" aria-checked={me.role === r} title={me.role === r ? `You work as ${r}` : `Switch to ${r}: this session ends, and one opens in that role`}
+                  onClick={() => { if (me.role !== r) onMove?.(me.kolab, r); }}>{r}</button>
+              ))}
+            </div>
+          </>
+        )}
         <div className="seg icons" role="radiogroup" aria-label="Theme">
           <button type="button" role="radio" aria-checked={!dark} aria-label="Daybreak, the light theme" title="Daybreak" onClick={() => setTheme('light')}>
             <svg viewBox="0 0 37 37" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" fill="var(--sun)" /></svg></button>
           <button type="button" role="radio" aria-checked={dark} aria-label="Predawn, the dark theme" title="Predawn" onClick={() => setTheme('dark')}>
             <svg viewBox="65.5 17 37 37" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" fill="var(--moon)" stroke="var(--moon)" strokeWidth="0.6" strokeLinejoin="round" /></svg></button>
         </div>
-        {onSignOut && <button type="button" className="btn quiet" onClick={onSignOut}>Sign out</button>}
+        {onSignOut && <button type="button" className="btn quiet" onClick={onSignOut} title="Ends this session: its token stops working everywhere">Sign out</button>}
       </div>
       <div className="horizon" aria-hidden="true"><i /><i /><i /><i /><i /></div>
     </header>

@@ -5,8 +5,9 @@
  * None of them writes.
  */
 import type { QuoteSelector } from '@konjir/address';
-import type { Layer, MarkReason, QueryKind, VersionState } from '@konjir/types';
-import type { Kolab } from './kolab.js';
+import { formatAddress } from '@konjir/address';
+import type { Kind, Layer, MarkReason, QueryKind, ReviewRequestState, VersionState } from '@konjir/types';
+import { NEXT_STEP, type Kolab } from './kolab.js';
 
 export interface VersionHistoryRow {
   seq: number; state: VersionState; actor: string; role: string; at: string; note: string | null; base_seq: number | null;
@@ -58,12 +59,15 @@ export interface MarkDetailRow {
   override_element: string | null; override_text: string | null; parent_before: string | null; parent_now: string | null;
   /** The open question the mark raised. */
   question: string | null;
+  /** Why, in words, and what settles it, as konjir_list_stale says them. */
+  because: string; next: string;
 }
 
 /** The open marks of the session's kolab, with the texts a person compares to settle each. */
 export async function markDetails(kolab: Kolab, session: string): Promise<MarkDetailRow[]> {
   const here = await kolab.sessionKolab(session);
-  return kolab.readAs(session, async (q) => (await q.query<MarkDetailRow & { at: Date | string }>(
+  return kolab.readAs(session, async (q) => (await q.query<Omit<MarkDetailRow, 'because' | 'next'> & { at: Date | string; note: string | null; edge_id: string | null;
+    target_selector: QuoteSelector | null; trig_node: string; trig_seq: number; cause_count: number }>(
     `select i.id, i.reason, n.name as node, v.seq, v.layer, i.element_id as element, i.created_at as at,
             etn.name as target_node, e.target_element_id as target_element, etv.seq as target_pinned,
             (select max(l.seq) from version l where l.node_id = etv.node_id and l.state = 'committed') as target_now,
@@ -73,14 +77,74 @@ export async function markDetails(kolab: Kolab, session: string): Promise<MarkDe
             d.element_id as override_element, d.text as override_text,
             (select x.text from element x where x.version_id = d.base_version_id and x.element_id = d.element_id) as parent_before,
             (select x.text from element x where x.version_id = v.parent_version_id and x.element_id = d.element_id) as parent_now,
-            (select qq.id from query qq where qq.invalidation_id = i.id and qq.state = 'open' order by qq.id limit 1) as question
+            (select qq.id from query qq where qq.invalidation_id = i.id and qq.state = 'open' order by qq.id limit 1) as question,
+            i.note, i.edge_id, e.target_selector, tn.name as trig_node, tv.seq as trig_seq,
+            (select count(*)::int from invalidation_cause c where c.mark_id = i.id) as cause_count
        from invalidation i
+       join version tv on tv.id = i.triggered_by join node tn on tn.id = tv.node_id
        join version v on v.id = i.version_id join node n on n.id = v.node_id
        left join edge e on e.id = i.edge_id
        left join version etv on etv.id = e.target_version_id left join node etn on etn.id = etv.node_id
        left join delta d on d.id = i.delta_id
       where i.state = 'open' and i.kolab_id = $1
-      order by i.created_at, i.id`, [here])).rows.map((r) => ({ ...r, at: iso(r.at) })));
+      order by i.created_at, i.id`, [here])).rows.map(({ note, edge_id, target_selector, trig_node, trig_seq, cause_count, ...r }) => ({
+    ...r, at: iso(r.at),
+    // The same words as describeMarks, read under row-level security.
+    because: r.reason === 'query_answered' ? note ?? 'your question was answered'
+      : note ? `review gate: ${note}`
+      : edge_id ? `${formatAddress({ node: trig_node, element: r.target_element ?? undefined, selector: target_selector ?? undefined })} changed in version ${trig_seq}`
+      : r.reason === 'upstream_dirty' ? `${cause_count} upstream mark(s) are open`
+      : `parent ${trig_node} version ${trig_seq}`,
+    next: NEXT_STEP[r.reason] ?? '',
+  })));
+}
+
+export interface NodeRowView { name: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }
+
+/** The session's kolab's nodes, with their latest committed version and how many drafts and versions in review each has. */
+export async function kolabNodes(kolab: Kolab, session: string): Promise<NodeRowView[]> {
+  const here = await kolab.sessionKolab(session);
+  return kolab.readAs(session, async (q) => (await q.query<NodeRowView>(
+    `select n.name, n.kind, n.layer, n.title,
+            (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
+            (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts,
+            (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review
+       from node n where n.kolab_id = $1 order by n.kind, n.name`, [here])).rows);
+}
+
+export interface ReviewRequestRow { node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }
+
+/** The open review requests in the session's kolab, on versions still in review, oldest first. */
+export async function openReviewRequests(kolab: Kolab, session: string): Promise<ReviewRequestRow[]> {
+  const here = await kolab.sessionKolab(session);
+  return kolab.readAs(session, async (q) => (await q.query<ReviewRequestRow & { at: Date | string }>(
+    `select n.name as node, v.seq, v.layer, v.actor_id as author, r.reviewer_id as reviewer, r.created_at as at
+       from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
+      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1
+      order by r.created_at, r.reviewer_id, r.id`, [here])).rows.map((r) => ({ ...r, at: iso(r.at) })));
+}
+
+export interface SubmissionRow {
+  node: string; seq: number; state: VersionState; note: string | null;
+  verdicts: { reviewer: string; state: ReviewRequestState; note: string | null }[];
+}
+
+/** What `actor` submitted for review in the session's kolab, newest first, with the verdicts. */
+export async function submissionsOf(kolab: Kolab, session: string, actor: string, limit = 20): Promise<SubmissionRow[]> {
+  const here = await kolab.sessionKolab(session);
+  return kolab.readAs(session, async (q) => {
+    const versions = (await q.query<{ id: string; node: string; seq: number; state: VersionState; note: string | null }>(
+      `select v.id, n.name as node, v.seq, v.state, v.review_note as note
+         from version v join node n on n.id = v.node_id
+        where v.actor_id = $1 and v.kolab_id = $2 and exists (select 1 from review_request r where r.version_id = v.id)
+        order by v.created_at desc, v.id desc limit $3`, [actor, here, limit])).rows;
+    const out: SubmissionRow[] = [];
+    for (const { id, ...v } of versions) {
+      out.push({ ...v, verdicts: (await q.query<{ reviewer: string; state: ReviewRequestState; note: string | null }>(
+        `select reviewer_id as reviewer, state, note from review_request where version_id = $1 order by created_at, reviewer_id, id`, [id])).rows });
+    }
+    return out;
+  });
 }
 
 export interface QueryDetailRow {

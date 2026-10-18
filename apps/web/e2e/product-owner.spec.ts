@@ -1,7 +1,8 @@
 // What the Konjir Kolab prototype simulates, against a real Kolab (W3.1's done-when): a product
 // owner reads the spec with its questions beside each element, answers one, asks one, edits a
-// requirement and submits it for review; the reviewer approves it in the page; the engineer
-// sees what went stale and says it still holds; and every page stays live as the others act.
+// requirement and submits it for review; another person approves it in the page; an engineer
+// sees what went stale and says it still holds; every page stays live as the others act; and
+// the product owner makes a kolab of her own, switches role, and comes back through the picker.
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { TOKENS } from '../playwright.config.js';
@@ -34,23 +35,30 @@ test('a product owner does what the prototype simulates, against the real server
 
   // The engineer, in another browser, sees B9 stale against PR8, and says it still holds.
   const eng = await (await browser.newContext()).newPage();
-  await signIn(eng, 'eng-agent');
+  await signIn(eng, 'eli');
   await eng.getByRole('button', { name: 'Password reset on Postgres' }).click();
   const b9 = eng.locator('li.el', { has: eng.getByRole('button', { name: 'B9', exact: true }) });
   await expect(b9.locator('.diff del')).toHaveText('5');
   await shot(eng, '2-binding-stale');
 
-  // Lee edits PR1 and submits; pm-agent, the other writer of the functional layer, is asked.
+  // A token that isn't a person's open session is refused (an agent's too: apps/server/test/web.test.ts).
+  const agent = await (await browser.newContext()).newPage();
+  await agent.goto('/');
+  await agent.getByLabel('Session token').fill('kjs_not-a-person');
+  await agent.getByRole('button', { name: 'Sign in' }).click();
+  await expect(agent.getByRole('alert')).toBeVisible();
+
+  // Lee edits PR1 and submits; Pat and pm-agent, the other writers of the functional layer, are asked.
   await lee.locator('li.el', { has: lee.getByRole('button', { name: 'PR1', exact: true }) }).getByRole('button', { name: 'Edit' }).click();
   await lee.getByLabel('Edit PR1').fill('A user who has forgotten their password can request a reset link by entering their email address or username.');
   await lee.getByRole('button', { name: 'Keep in draft' }).click();
   await lee.getByRole('button', { name: 'Submit for review' }).click();
-  await expect(lee.getByText(/pm-agent has been asked to review it/)).toBeVisible();
+  await expect(lee.getByText(/pat.*been asked to review it/)).toBeVisible();
   await expect(lee.getByRole('region', { name: 'In review' })).toBeVisible();
 
-  // pm-agent approves it in the page.
+  // Pat approves it in the page.
   const pm = await (await browser.newContext()).newPage();
-  await signIn(pm, 'pm-agent');
+  await signIn(pm, 'pat');
   await expect(pm.getByRole('region', { name: 'In review' })).toBeVisible();
   await shot(pm, '3-review');
   await pm.getByRole('button', { name: 'Approve' }).click();
@@ -86,7 +94,23 @@ test('a product owner does what the prototype simulates, against the real server
   await expect(lee.getByText(/approved kj:password-reset@4/)).toBeVisible();
   await shot(lee, '5-activity');
 
-  // Signing out returns to the sign-in page.
+  // Lee makes a kolab of her own: the session moves into it, empty.
+  await lee.getByRole('button', { name: 'All kolabs' }).click();
+  await lee.locator('#kTitle').fill('Billing');
+  await expect(lee.getByLabel('Short name')).toHaveValue('billing');
+  await lee.getByRole('button', { name: 'Create kolab' }).click();
+  await expect(lee.getByRole('heading', { level: 1 })).toHaveText('Nothing written yet. Start with the spec.');
+  await expect(lee.locator('.kolab-btn .nm')).toHaveText('Billing');
+  // She switches to the engineer role there, and back to Accounts through the picker, as product.
+  await lee.getByRole('radio', { name: 'engineer' }).click();
+  await expect(lee.getByRole('radio', { name: 'engineer' })).toHaveAttribute('aria-checked', 'true');
+  await lee.locator('.kolab-btn').click();
+  await lee.getByRole('button', { name: /Accounts/ }).click();
+  await expect(lee.locator('.kolab-btn .nm')).toHaveText('Accounts');
+  await lee.getByRole('radio', { name: 'product' }).click();
+  await expect(lee.getByRole('heading', { name: 'Password reset', level: 2 })).toBeVisible();
+
+  // Signing out ends the session and returns to the sign-in page.
   await lee.getByRole('button', { name: 'Sign out' }).click();
   await expect(lee.getByLabel('Session token')).toBeVisible();
 });

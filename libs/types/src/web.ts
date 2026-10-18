@@ -15,7 +15,11 @@ export interface WebMe {
 }
 
 /** A kolab the actor can reach. Only the session's own is open for work. */
-export interface WebKolab { id: string; title: string; owner: string; visibility: Visibility; current: boolean }
+export interface WebKolab {
+  id: string; title: string; owner: string; visibility: Visibility; current: boolean;
+  /** The signed-in person's access there, as kj_access computes it. */
+  access: Access;
+}
 
 export interface WebNodeSummary {
   name: string; kind: Kind; layer: Layer; title: string;
@@ -155,6 +159,12 @@ export interface WebSignIn { token: string }
 export interface WebCreateNode { kind: Kind; title: string; name: string }
 /** A change to one node: elements edited, added or removed, against its latest committed version. */
 export interface WebSubmit {
+  /**
+   * The version the page's edits were made on: the node's latest committed version when the page
+   * read it, or null for a node with none. If the node has moved on since, the submission is
+   * refused as stale (409), and the page keeps the edits.
+   */
+  base: number | null;
   changes: { kind: 'add' | 'override' | 'remove'; element: string; text?: string; parent?: string }[];
   /** A draft of the session's own that this one replaces, abandoned once the new one is written. */
   replaces?: number;
@@ -166,6 +176,10 @@ export interface WebVerdict {
 export interface WebResolve { resolution: OverrideResolution; text?: string }
 export interface WebAsk { node: string; element?: string; seq?: number; kind: QueryKind; text: string }
 export interface WebAnswer { answer: string }
+/** Switch the signed-in person's session to another kolab, or the other role: the old session ends, and a new one opens (ENF4). */
+export interface WebSwitch { kolab: string; role: Role }
+/** A kolab of the signed-in person's own (TEN2, TEN3): its name is unique across Konjir (TEN4). The session switches into it. */
+export interface WebCreateKolab { name: string; title: string }
 
 /** An error the API returns: an HTTP status with this body. */
 export interface WebError { error: string; message: string }
