@@ -20,8 +20,11 @@ export async function startServer(opts: {
   webRoot?: string | null;
   /** How often a web event stream checks its kolab's versions, in ms (3 s by default). */
   webVersionsPollMs?: number;
+  /** How many kolabs a person may own when they make their own (D54; 10 by default). */
+  kolabsPerPerson?: number;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl });
+  if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
   const app = await NestFactory.create(
     KolabServerModule.register({ kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs }),
     { logger: ['error', 'warn'] },

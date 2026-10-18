@@ -190,7 +190,11 @@ export async function main(argv: string[]) {
     console.log('review: Kolab\'s structural checks, then reviewing agents (konjir_review); Kolab makes no model calls');
     const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
     const databaseUrl = flag(rest, 'database-url') ?? process.env.KONJIR_DATABASE_URL;
-    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost });
+    // How many kolabs a person may own when they make their own in the web interface (D54).
+    const perPerson = process.env.KONJIR_KOLABS_PER_PERSON;
+    const kolabsPerPerson = perPerson === undefined || perPerson === '' ? undefined : Number(perPerson);
+    if (kolabsPerPerson !== undefined && !(Number.isInteger(kolabsPerPerson) && kolabsPerPerson >= 0)) throw new Error('KONJIR_KOLABS_PER_PERSON is a whole number');
+    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson });
     console.log(`Kolab listening on ${s.url}`);
     console.log(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);

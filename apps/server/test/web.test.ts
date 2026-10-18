@@ -87,6 +87,9 @@ test('a person signs in with a session token; the admin token, a stranger, anoth
   await people(kolab, 'alice-pm', { owner: 'alice', layers: ['functional'] });
   const agent = await kolab.openSession('alice-pm', 'product');
   expect((await post({ token: agent })).status).toBe(403);
+  // …and signing out with one in the cookie clears the cookie but ends nothing.
+  const agentOut = await fetch(`${base}/api/session`, { method: 'DELETE', headers: { origin: base, cookie: `konjir_session=${agent}` } });
+  expect([agentOut.status, await kolab.sessionOpen(agent)]).toStrictEqual([204, true]);
 
   // Signing out ends the session itself, so the token is revoked everywhere, and clears the cookie.
   const out = await fetch(`${base}/api/session`, { method: 'DELETE', headers: { origin: base, cookie: jar } });
@@ -130,14 +133,21 @@ test('switching kolab or role ends the session and opens another, and a person m
   const sessions = (await kolab.db.query<{ n: number }>(`select count(*)::int as n from session where actor_id = 'alice' and ended_at is null`)).rows[0].n;
   expect(sessions).toBe(1);                                 // …and exactly one is open, in second
 
-  // A kolab the person can't reach is refused before anything ends; a fresh sign-in shows it.
-  const again = await signIn(base, await kolab.openSession('carol', 'product'));
-  expect((await again.call('session/switch', { kolab: 'second', role: 'product' })).status).toBe(404);
-  expect((await again.call<{ kolab: string }>('me')).body.kolab).toBe('test');
-  const made = await again.call<{ kolab: string }>('session/kolab', { name: 'carols', title: 'Carol\'s' });
-  expect([made.status, made.body.kolab]).toStrictEqual([201, 'carols']);
-  expect((await kolab.listKolabs()).find((k) => k.id === 'carols')).toMatchObject({ owner: 'carol', visibility: 'private' });
-  expect((await again.call('session/kolab', { name: 'test', title: 'Taken' })).status).toBe(401);   // that session moved on
+  // A kolab the person can't reach is refused, and the session stays as it was (one transaction).
+  const carol = await kolab.openSession('carol', 'product');
+  const again = await signIn(base, carol);
+  expect((await again.call('session/switch', { kolab: 'second', role: 'product' })).status).toBe(403);
+  expect([await kolab.sessionOpen(carol), (await again.call<{ kolab: string }>('me')).body.kolab]).toStrictEqual([true, 'test']);
+  // Carol only reads, so she can't make a kolab (D54 lets people with Write).
+  expect((await again.call('session/kolab', { name: 'carols', title: 'Carol\'s' })).status).toBe(403);
+
+  // Erin, who writes, makes one: private, hers, and her session moves into it.
+  await people(kolab, 'erin');
+  const erin = await signIn(base, await kolab.openSession('erin', 'product'));
+  const made = await erin.call<{ kolab: string }>('session/kolab', { name: 'erins', title: 'Erin\'s' });
+  expect([made.status, made.body.kolab]).toStrictEqual([201, 'erins']);
+  expect((await kolab.listKolabs()).find((k) => k.id === 'erins')).toMatchObject({ owner: 'erin', visibility: 'private' });
+  expect((await erin.call('session/kolab', { name: 'more', title: 'More' })).status).toBe(401);   // that session moved on
 });
 
 test('a spec reads with its questions and notes beside each element, and a changed spec shows what went stale and how', async () => {

@@ -120,6 +120,9 @@ export class CascadeError extends Error { name = 'CascadeError'; }
  * session. The token itself is shown once, when the session opens, and never leaves the process
  * after that: events cross processes (W2.2) and can reach logs.
  */
+/** Kolab names kept for Konjir's own kolabs (D15, D54): `kolab`, and anything starting `konjir`. */
+export const isReservedKolabName = (name: string) => name === 'kolab' || name.startsWith('konjir');
+
 export const sessionKey = (id: string) => createHash('sha256').update(id).digest('base64url');
 
 /** A sessionKey's form: 43 base64url characters. A token is `kjs_` and 32, so the two never look alike. */
@@ -1293,6 +1296,75 @@ export class Kolab {
    * Creates a kolab owned by an account. Its name is unique across all of Konjir (TEN4), so
    * one taken by any other account is refused.
    */
+  /**
+   * How many kolabs a person may own (`max`), and how many they may make in a window (`burst` per
+   * `windowMs`, counted in this process) when they make one themselves (createOwnKolab, D54).
+   * The admin's createKolab has no such limits.
+   */
+  readonly ownKolabs = { max: 10, burst: 3, windowMs: 10 * 60_000 };
+  private readonly ownKolabTimes = new Map<string, number[]>();
+
+  /**
+   * A person makes a private kolab of their own (D54; TEN2, TEN3), from a session that holds at
+   * least Write in its kolab, so a reader invited to look can't. Its name follows the kolab
+   * grammar, at most 40 characters, is unique across Konjir (TEN4) and is none of the reserved
+   * names (`kolab`, and anything starting `konjir`, such as D15's konjir-site and konjir-brand).
+   * Its title is at most 100 characters. A person owns at most `ownKolabs.max` kolabs and makes at
+   * most `ownKolabs.burst` in a window. The count and the insert run under the access lock, so two
+   * calls at once can't both pass the cap.
+   */
+  async createOwnKolab(sessionId: string, name: string, opts: { title: string }): Promise<void> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person makes a kolab of their own`);
+    if (!s.access.level || ACCESS_LEVELS.indexOf(s.access.level) < ACCESS_LEVELS.indexOf('write')) {
+      throw new AccessError(`making a kolab needs Write where you work; you hold ${describeAccess(s.access)} in ${s.kolab}`);
+    }
+    if (!isKolabName(name) || name.length > 40) throw new TenancyError(`"${name}" isn't a valid kolab name: up to 40 lowercase letters, digits and '-', starting with a letter or digit`);
+    if (isReservedKolabName(name)) throw new TenancyError(`the kolab name ${name} is reserved for Konjir's own kolabs; choose another`);
+    const title = opts.title.trim();
+    if (!title || title.length > 100) throw new TenancyError('a kolab\'s title is 1 to 100 characters');
+    const now = Date.now();
+    const recent = (this.ownKolabTimes.get(s.actor_id) ?? []).filter((t) => now - t < this.ownKolabs.windowMs);
+    if (recent.length >= this.ownKolabs.burst) {
+      throw new TenancyError(`you made ${recent.length} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
+    }
+    try {
+      await this.db.transaction(async (tx) => {
+        await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+        const owned = (await tx.query<{ n: number }>(`select count(*)::int as n from kolab where owner_id = $1`, [s.actor_id])).rows[0].n;
+        if (owned >= this.ownKolabs.max) throw new TenancyError(`you own ${owned} kolabs, the most a person may own here (${this.ownKolabs.max})`);
+        if ((await tx.query(`select 1 from kolab where id = $1`, [name])).rows.length) throw new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
+        await tx.query(`insert into kolab(id, owner_id, title, visibility) values ($1, $2, $3, 'private')`, [name, s.actor_id, title]);
+      });
+    } catch (e) {
+      if (String(e).includes('kolab_pkey')) throw new TenancyError(`the kolab name ${name} is taken: kolab names are unique across all of Konjir`);
+      throw e;
+    }
+    this.ownKolabTimes.set(s.actor_id, [...recent, now]);
+  }
+
+  /**
+   * Moves a session's actor to another kolab or role (the web interface's kolab picker and role
+   * switch): in one transaction under the access lock, the session ends, a new one opens and its
+   * access is checked, so either both happen or neither does, and the old session's end is
+   * signalled only once that commits (D41). Returns the new session's token.
+   */
+  async switchSession(sessionId: string, to: { kolab: string; role: Role }): Promise<string> {
+    if (!ROLES.includes(to.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
+    await this.requireKolab(to.kolab);
+    const id = `kjs_${randomBytes(24).toString('base64url')}`;
+    await this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      const old = (await tx.query<{ id: string; actor_id: string }>(
+        `update session set ended_at = now() where id = $1 and ended_at is null returning id, actor_id`, [sessionKey(sessionId)])).rows[0];
+      if (!old) throw new RoleError('this session has ended');
+      await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [sessionKey(id), old.actor_id, to.role, to.kolab]);
+      if (!(await accessIn(tx, old.actor_id, to.kolab)).level) throw new AccessError(`no kolab ${to.kolab} you can reach`);
+      await signal({ session: 'ended', id: old.id });
+    });
+    return id;
+  }
+
   async createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel }) {
     if (!isKolabName(name)) throw new TenancyError(`"${name}" isn't a valid kolab name: use lowercase letters, digits and '-', starting with a letter or digit`);
     if (opts.visibility !== undefined && !VISIBILITIES.includes(opts.visibility)) throw new TenancyError(`visibility is one of ${VISIBILITIES.join(', ')}`);
