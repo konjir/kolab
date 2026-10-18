@@ -126,7 +126,7 @@ test('a person signs up with the identity provider, consents, and their client g
   expect(c.html).toContain('Test harness');
   expect(c.html).toMatch(/value="engineer" checked/);   // preselected from the scope
   expect(c.csrf).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'new-agent', agent_label: 'harness', kolab: 'new', new_kolab_name: 'zeds', new_kolab_title: 'Zed\'s', role: 'engineer' });
+  const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'new-agent', agent_label: 'harness', kolab: '@new', new_kolab_name: 'zeds', new_kolab_title: 'Zed\'s', role: 'engineer' });
   expect(done.left?.origin + done.left!.pathname).toBe(CB);
   expect(done.left!.searchParams.get('state')).toBe('client-state');
   expect(done.left!.searchParams.get('iss')).toBe(base);   // RFC 9207
@@ -175,7 +175,7 @@ test('PKCE is required, S256 only, and the verifier must match; a refused reques
   const verifier = randomBytes(32).toString('base64url');
   const c = await toConsent(base, idp, client, { subject: '502', login: 'yan' }, { verifier });
   await kolab.grant('test', 'yan', 'write');
-  const { left } = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'self', kolab: 'test', role: 'product' });
+  const { left } = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'self', kolab: 'kolab:test', role: 'product' });
   const code = left!.searchParams.get('code')!;
   const wrong = await token(base, { grant_type: 'authorization_code', client_id: client, code, redirect_uri: CB, code_verifier: randomBytes(32).toString('base64url') });
   expect([wrong.status, wrong.body.error]).toStrictEqual([400, 'invalid_grant']);
@@ -228,7 +228,7 @@ test('state and CSRF: the provider\'s answer counts only in the browser that ask
   expect((await victim.go(tampered)).res.status).toBe(400);
   // The consent form: from another origin, or with no origin, or the wrong token, refused.
   const c = await toConsent(base, idp, client, { subject: '504', login: 'wu' });
-  const form = { csrf: c.csrf, decision: 'allow', as: 'self', kolab: 'new', new_kolab_name: 'wus', new_kolab_title: 'Wu', role: 'product' };
+  const form = { csrf: c.csrf, decision: 'allow', as: 'self', kolab: '@new', new_kolab_name: 'wus', new_kolab_title: 'Wu', role: 'product' };
   const post = (headers: Record<string, string>, body = form) => c.browser.fetch('/oauth/consent', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body).toString() });
   expect((await post({ origin: 'http://evil.example' })).status).toBe(403);
   expect((await post({})).status).toBe(403);
@@ -279,7 +279,7 @@ test('the web interface signs a person in with the identity provider, refreshes 
   const consent = await browser.go('/api/session/oauth/start');
   const html = await consent.res.text();
   expect(html).not.toContain('name="as"');   // the web interface is for people: no agents
-  const done = await browser.consent({ csrf: csrfOf(html), decision: 'allow', kolab: 'new', new_kolab_name: 'tess', new_kolab_title: 'Tess', role: 'product' });
+  const done = await browser.consent({ csrf: csrfOf(html), decision: 'allow', kolab: '@new', new_kolab_name: 'tess', new_kolab_title: 'Tess', role: 'product' });
   expect([done.at.pathname, done.at.search]).toStrictEqual(['/', '']);   // back on the page, with no sign-in error (no web build here, so it says so)
   expect([...browser.cookies.keys()].sort()).toStrictEqual(['konjir_refresh', 'konjir_session']);
   const me = () => browser.fetch('/api/me', { headers: { origin: base } });
@@ -324,7 +324,7 @@ test('a web page\'s event stream outlives no access token: when it expires the s
   await kolab.signInWith({ provider: 'stub', subject: '801', login: 'sol' });
   await kolab.grant('test', 'sol', 'write');
   const html = await (await browser.go('/api/session/oauth/start')).res.text();
-  await browser.consent({ csrf: csrfOf(html), decision: 'allow', kolab: 'test', role: 'product' });
+  await browser.consent({ csrf: csrfOf(html), decision: 'allow', kolab: 'kolab:test', role: 'product' });
   const read = async (res: Response) => {
     const text: string[] = [];
     const reader = res.body!.getReader();

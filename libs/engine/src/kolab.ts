@@ -1771,14 +1771,27 @@ export class Kolab {
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
     if (!ROLES.includes(choice.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
     if (opts.selfOnly && choice.as.kind !== 'self') throw new AccessError('the web interface is for people: sign in as yourself');
+    const code = `kjc_${randomBytes(24).toString('base64url')}`;
+    // One use: whichever submission deletes the request issues the code, in the transaction `tx`.
+    const issue = async (tx: Q, actor: string, kolab: string) => {
+      const used = await tx.query(`delete from oauth_request where id = $1 and csrf_key = $2 returning id`, [sessionKey(binding), sessionKey(csrf)]);
+      if (!used.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in was already used; start again');
+      await tx.query(
+        `insert into oauth_code(key, client_id, redirect_uri, code_challenge, person_id, actor_id, kolab, role, scope, resource, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 second')`,
+        [sessionKey(code), req.client_id, req.redirect_uri, req.code_challenge, person, actor, kolab, choice.role, grantedScope(kolab, choice.role), req.resource, this.oauth.codeTtlS]);
+    };
+    const issued = { code, redirectUri: req.redirect_uri, clientState: req.client_state };
     let kolab: string;
     if (typeof choice.kolab === 'string') kolab = choice.kolab;
     else if ('invite' in choice.kolab) {
-      // The invite this sign-in carries (W3.4): accepted now, once, as the person, under the access lock.
+      // The invite this sign-in carries (W3.4): accepted as the person, under the access lock, in the
+      // one transaction that also issues the code, so either both happen or neither does.
       if (!req.invite_key) throw new AccessError('this sign-in carries no invite: choose a kolab');
       // Only a person, through Kolab's own web page, joins with one: never a registered client, nor as an agent.
       if (!opts.selfOnly || choice.as.kind !== 'self') throw new AccessError('an invite is accepted by a person, on Kolab\'s own web page');
-      kolab = (await this.acceptInviteByKey(req.invite_key, person)).kolab;
+      await this.acceptInviteByKey(req.invite_key, person, (tx, joined) => issue(tx, person, joined));
+      return issued;
     } else {
       await this.makeOwnKolab(person, choice.kolab.name, choice.kolab.title);
       kolab = choice.kolab.name;
@@ -1794,18 +1807,8 @@ export class Kolab {
     }
     if (actor !== person) await this.grantOwnAgent(person, actor, kolab);
     if (!(await accessIn(this.db, actor, kolab)).level) throw new AccessError(`${actor} has no access to kolab ${kolab}`);
-    const code = `kjc_${randomBytes(24).toString('base64url')}`;
-    const scope = grantedScope(kolab, choice.role);
-    await this.db.transaction(async (tx) => {
-      // One use: whichever submission deletes the request issues the code.
-      const used = await tx.query(`delete from oauth_request where id = $1 and csrf_key = $2 returning id`, [sessionKey(binding), sessionKey(csrf)]);
-      if (!used.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in was already used; start again');
-      await tx.query(
-        `insert into oauth_code(key, client_id, redirect_uri, code_challenge, person_id, actor_id, kolab, role, scope, resource, expires_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 second')`,
-        [sessionKey(code), req.client_id, req.redirect_uri, req.code_challenge, person, actor, kolab, choice.role, scope, req.resource, this.oauth.codeTtlS]);
-    });
-    return { code, redirectUri: req.redirect_uri, clientState: req.client_state };
+    await this.db.transaction((tx) => issue(tx, actor, kolab));
+    return issued;
   }
 
   /**
@@ -2090,9 +2093,11 @@ export class Kolab {
   /**
    * A person accepts an invite (W3.4): they are granted its access in its kolab, once. It is refused,
    * saying nothing of why, if it is unknown, accepted, revoked or expired, if its kolab is archived,
-   * or if whoever made it no longer holds Admin there. Accepting never lowers anyone's access: one
-   * who already holds as much keeps what they have, and a grant of theirs is raised to cover both
-   * (the higher level; for Write, the layers of either). Only a person accepts one: an agent gets
+   * or if whoever made it no longer holds Admin there. It always writes the person's own grant there:
+   * their direct grant, if any, raised to cover the invite (the higher level; for Write, the layers
+   * of either), so it never lowers a grant, and never leans on access that reaches them only through
+   * the kolab being public, a team or a base permission. In an organization's kolab, a person who
+   * isn't a member becomes an outside collaborator (TEN10). Only a person accepts one: an agent gets
    * access from its owner (D30, D56). Runs under the access lock, as any change of access does.
    * Returns the kolab, to open a session in.
    */
@@ -2101,7 +2106,8 @@ export class Kolab {
     return this.acceptInviteByKey(sessionKey(token), person);
   }
 
-  private async acceptInviteByKey(key: string, person: string): Promise<{ kolab: string; access: Access }> {
+  /** As acceptInvite, by the invite's key; `then` runs in the same transaction, after the grant (the consent's code). */
+  private async acceptInviteByKey(key: string, person: string, then?: (tx: Q, kolab: string) => Promise<void>): Promise<{ kolab: string; access: Access }> {
     const p = await this.findActor(person);
     if (!p || p.kind !== 'person') throw new AccessError(`${person} isn't a person: only a person accepts an invite; an agent gets its access from its owner`);
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it accepts no invite`);
@@ -2115,17 +2121,18 @@ export class Kolab {
       // Its maker must still hold Admin there, now, in this transaction.
       if ((await accessIn(tx, inv.created_by, inv.kolab_id)).level !== 'admin') throw new TenancyError(INVITE_GONE);
       const want: Access = { level: inv.level, layers: LAYERS.filter((l) => (l === 'functional' ? inv.functional : inv.technical)) };
-      const have = await accessIn(tx, person, inv.kolab_id);
-      if (!covers(have, want)) {
-        const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
-          `select level, functional, technical from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person])).rows[0];
-        const merged = g ? mergeAccess({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, want) : { ...want, level: inv.level };
-        await tx.query(`delete from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person]);
-        await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)`,
-          [inv.kolab_id, person, merged.level, merged.layers.includes('functional'), merged.layers.includes('technical')]);
-      }
+      // Against the person's own grant there, never what reaches them through the kolab being
+      // public, a team or a base permission: the invite's access is theirs to keep, and their
+      // agents may borrow it (kj_agent_cap, D56). Raised to cover both, so no grant is lowered.
+      const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
+        `select level, functional, technical from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person])).rows[0];
+      const merged = g ? mergeAccess({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, want) : { level: inv.level, layers: want.layers };
+      await tx.query(`delete from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person]);
+      await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)`,
+        [inv.kolab_id, person, merged.level, merged.layers.includes('functional'), merged.layers.includes('technical')]);
       await tx.query(`update kolab_invite set accepted_by = $2, accepted_at = now() where id = $1`, [inv.id, person]);
       kolab = inv.kolab_id;
+      if (then) await then(tx, inv.kolab_id);
     });
     return { kolab: kolab!, access: await accessIn(this.db, person, kolab!) };
   }
@@ -5714,12 +5721,6 @@ function layersOf(level: AccessLevel, given?: Layer[]): Layer[] {
 }
 
 const rankOf = (level: AccessLevel | null) => (level ? ACCESS_LEVELS.indexOf(level) + 1 : 0);
-
-/** Whether `have` gives at least what `want` does: as high a level, and for Write, its layers too. */
-function covers(have: Access, want: Access): boolean {
-  if (rankOf(have.level) < rankOf(want.level)) return false;
-  return want.layers.every((l) => have.layers.includes(l));
-}
 
 /** One grant that gives what both do: the higher level, and at Write, the layers of either. */
 function mergeAccess(a: Access, b: Access): { level: AccessLevel; layers: Layer[] } {

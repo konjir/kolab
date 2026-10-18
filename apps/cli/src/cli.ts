@@ -12,7 +12,7 @@
  *   konjir queries [all]
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
  *   konjir login [--kolab K] [--role R]  -> sign in with the browser (OAuth, D55); later commands use it
- *   konjir logout
+ *   konjir logout [--forget]
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -57,7 +57,7 @@ export async function connect(url: string, auth: string | OAuthClientProvider): 
   const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
     ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } } }
-    : { authProvider: auth }));
+    : { authProvider: auth, ...(auth instanceof StoredLogin ? { fetch: auth.fetch } : {}) }));
   return client;
 }
 
@@ -274,7 +274,10 @@ export async function main(argv: string[]) {
     return;
   }
   if (cmd === 'logout') {
-    console.log(await logout(url) ? `Signed out of ${url}: the sign-in is revoked and forgotten.` : `No sign-in kept for ${url}.`);
+    const r = await logout(url, { forget: rest.includes('--forget') });
+    console.log(!r.had ? `No sign-in kept for ${url}.`
+      : r.revoked ? `Signed out of ${url}: the sign-in is revoked and forgotten.`
+        : `Forgotten, but not revoked at ${url}: it lapses within 30 days unused, or an admin can end it.`);
     return;
   }
 
@@ -300,14 +303,22 @@ export async function main(argv: string[]) {
     let finished = false;
     const done = new Promise<void>((resolve, reject) => {
       const finish = () => { finished = true; resolve(); };
+      // Listening again backs off when streams keep closing at once: 1 s, doubling to 30 s, reset by a stream that lasted a minute.
+      let retries = 0;
+      let opened = Date.now();
       const subscribe = (first: boolean) => void watch(client, (uri, body) => {
         console.log(JSON.stringify({ updated: uri, ...(body as object) }));
         if (once) finish();
       }).then(async (w) => {
+        opened = Date.now();
         if (!once && first) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
         void w.subscription.closed.then((how) => {
           // A stream lives as long as its access token (D55): with a sign-in, listen again, which refreshes it.
-          if (!finished && how === 'remote' && stored) { subscribe(false); return; }
+          if (!finished && how === 'remote' && stored) {
+            retries = Date.now() - opened > 60_000 ? 0 : retries + 1;
+            setTimeout(() => { if (!finished) subscribe(false); }, retries ? Math.min(30_000, 1000 * 2 ** (retries - 1)) : 0);
+            return;
+          }
           if (!finished && how === 'remote') console.error('Kolab closed the subscription; run konjir watch again');
           finish();
         });

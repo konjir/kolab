@@ -54,7 +54,10 @@ export interface ConsentView {
   person: string; login: string; provider: string; created: boolean;
   kolabs: { id: string; title: string; access: Access }[];
   agents: string[];
-  /** What to preselect: from the client's scope, or the last choice. */
+  /**
+   * What to preselect: from the client's scope, or the last choice. `kolab` is a form value:
+   * `kolab:<name>`, `@new` or `@invite`, so no kolab's name can be taken for either choice.
+   */
   pick: { kolab?: string; role?: Role; as?: string; label?: string; newName?: string; newTitle?: string };
   error?: string;
   /** The invite the person opened, while it is still good (W3.4): the web interface's sign-in only. */
@@ -68,7 +71,8 @@ export interface ConsentView {
  */
 export function consentPage(v: ConsentView): string {
   const checked = (on: boolean) => (on ? ' checked' : '');
-  const kolab = v.pick.kolab ?? (v.invite ? 'invite' : v.kolabs[0]?.id ?? 'new');
+  // An invite is chosen already only for someone with no kolab yet; anyone else picks, explicitly (W3.4).
+  const kolab = v.pick.kolab ?? (v.invite ? (v.kolabs.length ? '' : '@invite') : v.kolabs[0] ? `kolab:${v.kolabs[0].id}` : '@new');
   const as = v.pick.as ?? (v.web ? 'self' : v.agents[0] ? `agent:${v.agents[0]}` : 'new-agent');
   const role = v.pick.role ?? 'product';
   const who = v.web ? '' : `<fieldset><legend>Work as</legend>
@@ -84,9 +88,9 @@ ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">
 ${who}
 <fieldset><legend>In the kolab</legend>
-${v.invite ? `<label class="opt"><input type="radio" name="kolab" value="invite"${checked(kolab === 'invite')}><span>Join <code>${esc(v.invite.kolab)}</code> ${esc(v.invite.title)}<small>${esc(v.invite.invited_by)} invites you, with ${esc(describe(v.invite))}, owned by ${esc(v.invite.owner)}. Choose it only if you expected this invite.</small></span></label>` : ''}
-${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value="${esc(k.id)}"${checked(kolab === k.id)}><span><code>${esc(k.id)}</code> ${esc(k.title)}<small>You hold ${esc(describe(k.access))}</small></span></label>`).join('\n')}
-<label class="opt"><input type="radio" name="kolab" value="new"${checked(kolab === 'new')}><span>A new private kolab of your own
+${v.invite ? `<label class="opt"><input type="radio" name="kolab" value="@invite"${checked(kolab === '@invite')}><span>Join <code>${esc(v.invite.kolab)}</code> ${esc(v.invite.title)}<small>${esc(v.invite.invited_by)} invites you, with ${esc(describe(v.invite))}, owned by ${esc(v.invite.owner)}. Choose it only if you expected this invite.</small></span></label>` : ''}
+${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value="kolab:${esc(k.id)}"${checked(kolab === `kolab:${k.id}`)}><span><code>${esc(k.id)}</code> ${esc(k.title)}<small>You hold ${esc(describe(k.access))}</small></span></label>`).join('\n')}
+<label class="opt"><input type="radio" name="kolab" value="@new"${checked(kolab === '@new')}><span>A new private kolab of your own
 <input type="text" name="new_kolab_name" value="${esc(v.pick.newName ?? '')}" maxlength="40" placeholder="short-name" aria-label="The new kolab's short name">
 <input type="text" name="new_kolab_title" value="${esc(v.pick.newTitle ?? '')}" maxlength="100" placeholder="A name people read" aria-label="The new kolab's title"></span></label>
 </fieldset>

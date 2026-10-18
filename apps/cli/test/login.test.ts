@@ -3,12 +3,12 @@
 // agent works there through the CLI, whose 15-minute token refreshes by itself; the person invites
 // a teammate with a link, who joins; and `konjir logout` revokes the agent's grant. The identity
 // provider is a stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
-import { credentialsPath, login, logout, main } from '../src/cli.js';
+import { StoredLogin, call, connect, credentialsPath, login, logout, main } from '../src/cli.js';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
 /** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on the CLI's loopback callback. */
@@ -59,7 +59,7 @@ test('from nothing to an agent working in its own kolab, with a teammate invited
   let page = '';
   const me = await login(server.url, {
     scope: 'konjir role:engineer',
-    open: (u) => { void browse(u, { as: 'new-agent', agent_label: 'cli', kolab: 'new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'engineer' }).then((h) => { page = h; }); },
+    open: (u) => { void browse(u, { as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'engineer' }).then((h) => { page = h; }); },
   });
   expect(me).toMatchObject({ actor: 'ann-cli', kind: 'agent', owner: 'ann', kolab: 'anns', role: 'engineer', layer: 'technical' });
   expect(page).toContain('Welcome: you are <code>ann</code> here');
@@ -101,7 +101,69 @@ test('from nothing to an agent working in its own kolab, with a teammate invited
   expect(out.join('\n')).toMatch(/Signed out of .*: the sign-in is revoked and forgotten/);
   expect((await kolab.db.query(`select 1 from session where actor_id = 'ann-cli' and ended_at is null`)).rows).toStrictEqual([]);
   expect(await rejection(main(['whoami']))).toMatch(/or run konjir login/);
-  expect(await logout(server.url)).toBe(false);
+  expect(await logout(server.url)).toStrictEqual({ had: false, revoked: false });
+});
+
+/** Ann signs in with konjir login, as a new agent of hers, in a first kolab. */
+async function signedIn(label = 'cli') {
+  const kolab = await openKolab();
+  const idp = new StubIdentity();
+  const server = await startServer({ adminToken: 'login-admin', kolab, identity: idp, webRoot: null });
+  closeAtEnd(server);
+  process.env.KONJIR_URL = server.url;
+  const again = async (form: Record<string, string>) => {
+    idp.next({ subject: '41', login: 'ann' });
+    return login(server.url, { log: () => undefined, open: (u) => { void browse(u, { as: 'new-agent', ...form }); } });
+  };
+  await again({ agent_label: label, kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'engineer' });
+  return { kolab, server, again };
+}
+
+test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
+  // The folder already exists, more open than it should be: konjir closes it.
+  mkdirSync(join(process.env.KONJIR_CREDENTIALS!, '..'), { recursive: true, mode: 0o755 });
+  const { kolab, server } = await signedIn();
+  expect(statSync(join(credentialsPath(), '..')).mode & 0o777).toBe(0o700);
+  const a = await connect(server.url, new StoredLogin(server.url));
+  const b = await connect(server.url, new StoredLogin(server.url));
+  closeAtEnd(a, b);
+  for (let round = 0; round < 3; round++) {
+    await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-cli' and ended_at is null`);
+    const both = await Promise.all([call(a, 'whoami'), call(b, 'whoami'), call(a, 'list_nodes'), call(b, 'list_nodes')]);
+    expect(both.slice(0, 2)).toMatchObject([{ actor: 'ann-cli' }, { actor: 'ann-cli' }]);
+  }
+  expect((await kolab.db.query(`select revoked_at from oauth_grant where actor_id = 'ann-cli'`)).rows).toStrictEqual([{ revoked_at: null }]);
+  expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token).toMatch(/^kjr_/);
+  expect(() => statSync(`${credentialsPath()}.lock`)).toThrow();   // no lock left behind
+}, 120_000);
+
+test('konjir login again revokes the sign-in it replaces; logout that can\'t reach Kolab keeps the sign-in and says so, unless told to forget it', async () => {
+  const { kolab, server, again } = await signedIn();
+  const before = (await kolab.db.query<{ id: string }>(`select id from oauth_grant`)).rows.map((r) => r.id);
+  await again({ agent_label: 'other', kolab: '@new', new_kolab_name: 'anns-2', new_kolab_title: 'Two', role: 'product' });
+  const grants = (await kolab.db.query<{ id: string; revoked: boolean }>(`select id, revoked_at is not null as revoked from oauth_grant order by created_at`)).rows;
+  expect(grants.filter((g) => before.includes(g.id)).every((g) => g.revoked)).toBe(true);
+  expect(grants.filter((g) => !before.includes(g.id)).map((g) => g.revoked)).toStrictEqual([false]);
+
+  // The same sign-in, kept for a Kolab that isn't answering.
+  const gone = 'http://127.0.0.1:9/mcp';
+  const all = JSON.parse(readFileSync(credentialsPath(), 'utf8'));
+  writeFileSync(credentialsPath(), JSON.stringify({ ...all, [gone]: all[server.url] }));
+  expect(await rejection(logout(gone))).toMatch(/couldn't reach Kolab .* wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget/);
+  expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[gone]).toBeDefined();
+  expect(await logout(gone, { forget: true })).toStrictEqual({ had: true, revoked: false });
+  expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[gone]).toBeUndefined();
+  expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url]).toBeDefined();   // the other Kolab's is untouched
+});
+
+test('a credentials file konjir can\'t read is never overwritten: konjir says where it is', async () => {
+  const path = credentialsPath();
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, '{ not json');
+  process.env.KONJIR_URL = 'http://127.0.0.1:9/mcp';
+  expect(await rejection(main(['whoami']))).toContain(`${path} isn't konjir's credentials (not valid JSON), so konjir won't touch it`);
+  expect(await rejection(logout('http://127.0.0.1:9/mcp'))).toContain('not valid JSON');
+  expect(readFileSync(path, 'utf8')).toBe('{ not json');
 });
 
 test('a sign-in that was revoked elsewhere says to run konjir login; the answer to another sign-in is refused', async () => {
@@ -116,7 +178,7 @@ test('a sign-in that was revoked elsewhere says to run konjir login; the answer 
       const cb = new URL(u.searchParams.get('redirect_uri')!);
       const forged = await fetch(`${cb.origin}${cb.pathname}?code=kjc_forged&state=nope`);
       expect(forged.status).toBe(400);
-      void browse(u, { as: 'new-agent', agent_label: 'cli', kolab: 'new', new_kolab_name: 'bos', new_kolab_title: 'Bo\'s', role: 'product' });
+      void browse(u, { as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'bos', new_kolab_title: 'Bo\'s', role: 'product' });
     },
   });
   // An admin ends the agent's session; its grant goes with it on the next refresh.

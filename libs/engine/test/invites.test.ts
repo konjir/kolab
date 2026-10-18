@@ -133,6 +133,39 @@ test('accepting never lowers anyone\'s access: as much already stands, and a gra
   expect((await kolab.db.query(`select count(*)::int as n from kolab_grant where kolab_id = 'anns' and user_id = 'gus'`)).rows).toStrictEqual([{ n: 1 }]);
 });
 
+test('accepting always writes the person\'s own grant, even where a public kolab, a team or a base permission already reaches them, so their agents may borrow it (D56)', async () => {
+  const { kolab, ann, session } = await anns();
+  await kolab.db.query(`update kolab set visibility = 'public' where id = 'anns'`);
+  const { actor: eli } = await kolab.signInWith(github('12', 'eli'));
+  expect(await kolab.access(eli, 'anns')).toStrictEqual({ level: 'read', layers: [] });   // only because it is public
+  await kolab.acceptInvite((await kolab.createInvite(session, { level: 'read' })).token, eli);
+  expect((await kolab.db.query(`select level from kolab_grant where kolab_id = 'anns' and user_id = 'eli'`)).rows).toStrictEqual([{ level: 'read' }]);
+  // The grant is Eli's own, so an agent of his may read there; and it stands if the kolab goes private.
+  const agent = await kolab.addOwnAgent(eli, 'claude');
+  await kolab.grant('anns', agent, 'read');
+  expect((await kolab.sessionInfo(await kolab.openSession(agent, 'product', { kolab: 'anns' }))).access).toStrictEqual({ level: 'read', layers: [] });
+  await kolab.db.query(`update kolab set visibility = 'private' where id = 'anns'`);
+  expect(await kolab.access(eli, 'anns')).toStrictEqual({ level: 'read', layers: [] });
+  expect(ann).toBe('ann');
+});
+
+test('accepting at consent and issuing the code are one transaction: if issuing fails, the invite is unused and nothing is granted', async () => {
+  const { kolab, session } = await anns();
+  const { token } = await kolab.createInvite(session, { level: 'write', layers: ['technical'] });
+  const { actor: eli } = await kolab.signInWith(github('12', 'eli'));
+  const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: 'konjir-web', redirectUri: 'http://127.0.0.1:9/api/session/oauth/callback', codeChallenge: s256('v'.repeat(43)), invite: token });
+  const { csrf } = await kolab.identifyAuthorization(binding, state, eli);
+  await kolab.db.exec(`create function fail_code() returns trigger language plpgsql as $$ begin raise exception 'no codes today'; end $$;
+                       create trigger fail_code before insert on oauth_code for each row execute function fail_code();`);
+  expect(await rejection(kolab.consent(binding, csrf, { as: { kind: 'self' }, kolab: { invite: true }, role: 'engineer' }, { selfOnly: true }))).toMatch(/no codes today/);
+  expect(await kolab.previewInvite(token)).toBeDefined();
+  expect((await kolab.db.query(`select 1 from kolab_grant where user_id = 'eli'`)).rows).toStrictEqual([]);
+  // Fixed, the same sign-in goes through: the claim was released.
+  await kolab.db.exec(`drop trigger fail_code on oauth_code`);
+  await kolab.consent(binding, csrf, { as: { kind: 'self' }, kolab: { invite: true }, role: 'engineer' }, { selfOnly: true });
+  expect(await kolab.access(eli, 'anns')).toStrictEqual({ level: 'write', layers: ['technical'] });
+});
+
 test('invite limits: so many open per kolab, so many an hour per person, counted in the database', async () => {
   const { kolab, session } = await anns();
   kolab.invites.openPerKolab = 2;
