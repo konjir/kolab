@@ -100,6 +100,13 @@ export const LAYER_OF_ROLE: Record<Role, Layer> = { product: 'functional', engin
 
 export interface ElementInput { id?: string; text: string; parent?: string }
 export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string }
+/**
+ * A link a draft drops, so its next version doesn't carry it forward (CAS3, LNK6, D48): by its id,
+ * as konjir_lineage and konjir_list_stale give it, or by what it links: the source element (none
+ * for a link from the whole version) and the target's address, whose version is ignored. Without
+ * `kind`, links of every kind between the two go.
+ */
+export type LinkRef = { link: string } | { sourceElement?: string; target: string; kind?: EdgeKind };
 
 export interface ElementRow {
   element_id: string;

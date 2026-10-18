@@ -10,5 +10,6 @@
   "0009_drop_submission_findings.sql": "3cb728c26af418bf4b608557126385a23b3e74425cb54cbec338ddb24ed5b1e7",
   "0010_durable_waits.sql": "8672fa8e25c4015ad832ba43e173a020c2eec7a009e3a3714ed44b3f0c82ba17",
   "0011_hashed_session_tokens.sql": "8c1d901ce3aeeb074ea80a2a61086d1a4de5f6a05528315ecfd013637f3d896c",
+  "0012_unlink_and_edge_index.sql": "9f8885749c4bc702d887d1b34fecda932caf3ec6ff3e0de51e87e9368bd97e7f",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

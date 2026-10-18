@@ -1,8 +1,9 @@
 // Property tests for the cascade and rebases (W2.5, binding element TST2, serving LNK4, LNK5 and
 // OVR3-OVR7). fast-check generates a spec family (cascade-model.ts) and a sequence of edits to it:
 // parent commits that change, delete and restore elements, variant overrides, edits of marked
-// binding, WBS and work-package elements, clears and override resolutions, some of which the
-// review gate rejects. After every step the test compares Kolab with the reference model, and
+// binding, WBS and work-package elements, clears, override resolutions, links removed in a draft
+// (with or without an edit of their element) and linked again, some of which the review gate
+// rejects. After every step the test compares Kolab with the reference model, and
 // checks that every link either re-pins to the element it fingerprints or carries an open mark.
 //
 // Deterministic: the seed is fixed. Environment variables tune it:
@@ -47,6 +48,10 @@ const op = fc.oneof(
   { weight: 2, arbitrary: fc.record({
     t: fc.constant('resolve' as const), k: fc.nat(), how: fc.constantFrom<Resolution>('reaffirm', 'adopt_parent', 'amend'), i: text,
   }) },
+  // The owner removes one of its links in a draft (LNK6, D48), now and then editing its element too.
+  { weight: 2, arbitrary: fc.record({ t: fc.constant('unlink' as const), k: fc.nat(), i: fc.option(text, { nil: undefined }) }) },
+  // The owner links a removed link again.
+  { weight: 1, arbitrary: fc.record({ t: fc.constant('relink' as const), k: fc.nat() }) },
 );
 type Op = typeof op extends fc.Arbitrary<infer T> ? T : never;
 
@@ -304,6 +309,41 @@ async function apply(ctx: Ctx, run: Run, m: Model, o: Op, marks: Map<string, str
       }
       await kolab.clear(session, id);
       return `clear ${key}`;
+    }
+    case 'unlink': {
+      if (!m.edges.length) return 'unlink (no link to remove)';
+      const e = [...m.edges].sort((a, b) => a.key.localeCompare(b.key))[o.k % m.edges.length];
+      const text = o.i === undefined ? undefined : t(e.srcEl, o.i);
+      const what = `unlink ${e.key}${text === undefined ? '' : `, ${e.src}.${e.srcEl} := ${JSON.stringify(text)}`}`;
+      const unlink = [{ sourceElement: e.srcEl, target: `kj:${run.ids[e.tgt]}${e.tgtEl ? `#${e.tgtEl}` : ''}` }];
+      const owner = FUNCTIONAL.includes(e.src) ? product : engineer;
+      const draft = e.src === 'V2'
+        ? { deltas: text === undefined ? [] : [{ kind: 'override' as const, element: e.srcEl, text }], unlink }
+        : { elements: m.mat(e.src).map((x) => (x.id === e.srcEl && text !== undefined ? { ...x, text } : x)).map(input), unlink };
+      const outcome = m.unlink(e.key, text);
+      const call = kolab.commit(owner, run.ids[e.src], draft);
+      if (outcome === 'rejected') {
+        await expect(call).rejects.toThrow(GateError);
+        return `${what} (rejected)`;
+      }
+      await call;
+      return what;
+    }
+    case 'relink': {
+      const removed = LINKS.filter((l) => !m.edges.some((e) => e.key === linkKey(l)));
+      if (!removed.length) return 'relink (nothing removed)';
+      const l = removed[o.k % removed.length];
+      const what = `relink ${linkKey(l)}`;
+      const call = kolab.link(FUNCTIONAL.includes(l.src) ? product : engineer, {
+        kind: 'dependency', source: (await kolab.latestCommitted(run.ids[l.src]))!.id, sourceElement: l.srcEl,
+        target: (await kolab.latestCommitted(run.ids[l.tgt]))!.id, targetElement: l.tgtEl ?? undefined,
+      });
+      if (!m.relink(l)) {
+        await expect(call).rejects.toThrow(/does not resolve exactly/);
+        return `${what} (refused: the target is gone)`;
+      }
+      await call;
+      return what;
     }
     case 'resolve': {
       const open = [...marks.keys()].filter((k) => k.startsWith('override_')).sort();

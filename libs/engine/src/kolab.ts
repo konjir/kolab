@@ -10,7 +10,7 @@ import {
   ACCESS_LEVELS, FINDING_KINDS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, ROLES, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type Access, type AccessLevel, type Actor, type ActorKind, type Author, type KolabRow, type OrgRole, type Visibility,
-  type DeltaInput, type DeltaKind, type ElementInput, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
+  type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState,
@@ -31,6 +31,22 @@ interface EdgeRow {
   target_version_id: string; target_element_id: string | null;
   target_selector: QuoteSelector | null; target_fingerprint: string;
 }
+
+/**
+ * What a link is, apart from the versions it joins: the identity copyEdges carries forward by, and
+ * a link_removal row records (0012). `carried` says whether the version the draft was built on
+ * has such a link, which its commit would otherwise carry forward.
+ */
+interface LinkIdentity {
+  kind: string; source_element_id: string | null; target_node_id: string;
+  target_element_id: string | null; target_selector: QuoteSelector | null; carried: boolean;
+}
+
+/** Matches a link_removal row `r` against an edge `e` whose target version is `t`. */
+const REMOVES = (r: string, e: string, t: string) =>
+  `${r}.kind = ${e}.kind and ${r}.source_element_id is not distinct from ${e}.source_element_id
+   and ${r}.target_node_id = ${t}.node_id and ${r}.target_element_id is not distinct from ${e}.target_element_id
+   and ${r}.target_selector is not distinct from ${e}.target_selector`;
 
 /**
  * An override resolution waiting on its review (W2.5): what commitStep records, in the transaction
@@ -1200,11 +1216,13 @@ export class Kolab {
     const { node, version: v } = await this.locateVersion(where, { ...parseNodeRef(ref), version });
     if (!v) throw new Error(`${ref} has no ${version === undefined ? 'committed version' : `version ${version}`}`);
     const from = await this.sessionKolab(sessionId);
-    return this.read(where, async (q) => ({
+    const read = await this.read(where, async (q) => ({
       node, version: v, from,
       elements: await this.elements(v.id, q),
       queries: await this.listQueries({ node: node.id, from }, q),
     }));
+    // The links it drops (0012), for its reviewers: private to its kolab, like its links (D49).
+    return { ...read, removes: await this.removedLinks(where, v) };
   }
 
   /**
@@ -1495,7 +1513,7 @@ export class Kolab {
    * `parent` defaults to this node's latest committed version.
    */
   async draft(sessionId: string, nodeId: string,
-    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
+    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] }): Promise<string> {
     await this.requireNodeIn(sessionId, nodeId);   // another kolab's node reads as no node at all
     const node = await this.node(nodeId);
     const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
@@ -1510,7 +1528,7 @@ export class Kolab {
    * per-node commit step as any other commit, so a stale one is rejected (CAS7), and its note
    * records the ruling and who applied it.
    */
-  async applyRuling(nodeId: string, input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string },
+  async applyRuling(nodeId: string, input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
     ruling: { id: string; actor: string }): Promise<GateResult> {
     if (!/^D\d+$/.test(ruling.id)) throw new GateError(`a ruling is named by its Decisions Log ID, such as D47, not "${ruling.id}"`);
     const node = await this.node(nodeId);
@@ -1525,9 +1543,12 @@ export class Kolab {
     return this.judge(id, undefined, ruling.id);
   }
 
-  /** A draft's version, with its elements and deltas, written by `as` (an agent's session, or Kolab). */
+  /**
+   * A draft's version, with its elements and deltas, and the links it drops (`unlink`, which name
+   * links of the version it is built on), written by `as` (an agent's session, or Kolab).
+   */
   private async writeDraft(nodeId: string, layer: Layer, s: { actor_id: string; active_role: string; kolab: string },
-    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string },
+    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
     as: (fn: (tx: Q, signal: Signal) => Promise<void>) => Promise<void>): Promise<string> {
 
     // A variant's new version keeps its foreign parent and carries its
@@ -1573,12 +1594,16 @@ export class Kolab {
     }
 
     const els = materialize(parentEls, deltaRows);
+    const removals = input.unlink?.length ? await this.linkIdentities(nodeId, latest?.id ?? null, null, input.unlink) : [];
     const id = ulid();
     // Built on the live version read above: if the node moves on before this commits, review sees it.
-    await as(async (tx) => writeVersion(tx, {
-      id, node_id: nodeId, seq: await nextSeq(tx, nodeId), parent_version_id: parentId, base_version_id: latest?.id ?? null,
-      layer, actor_id: s.actor_id, active_role: s.active_role,
-    }, els, deltaRows));
+    await as(async (tx) => {
+      await writeVersion(tx, {
+        id, node_id: nodeId, seq: await nextSeq(tx, nodeId), parent_version_id: parentId, base_version_id: latest?.id ?? null,
+        layer, actor_id: s.actor_id, active_role: s.active_role,
+      }, els, deltaRows);
+      await applyRemovals(tx, id, removals);
+    });
     return id;
   }
 
@@ -2222,14 +2247,138 @@ export class Kolab {
       [e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
         e.selector ? JSON.stringify(e.selector) : null]);
     if (dup.rows[0]) return dup.rows[0].id;
+    // Re-pointing (D48): a link of the same kind from the same element to the same target element
+    // that carries an open mark (its quoted words changed or went) is replaced by this one. On a
+    // committed version the link itself moves to the new address, and its mark settles; in a draft,
+    // the draft drops it, and its mark settles when the draft commits.
+    const stale = (await this.db.query<EdgeRow & { mark: string }>(
+      `select e.*, i.id as mark from edge e join version t on t.id = e.target_version_id
+         join invalidation i on i.edge_id = e.id and i.state = 'open'
+        where e.source_version_id = any($1) and e.kind = $2 and e.source_element_id is not distinct from $3
+          and t.node_id = $4 and e.target_element_id is not distinct from $5`,
+      [[e.source, src.base_version_id].filter(Boolean), e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null])).rows;
+    if (src.state === 'committed' && stale.some((x) => x.source_version_id === e.source)) {
+      const old = stale.find((x) => x.source_version_id === e.source)!;
+      const at = `${await this.nameOf(src.node_id)}@${src.seq}`;
+      await this.asSystem(async (tx, signal) => {
+        await tx.query(`update edge set target_version_id = $2, target_selector = $3::jsonb, target_fingerprint = $4 where id = $1`,
+          [old.id, e.target, e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]);
+        await this.closeMarkIn(tx, signal, old.mark, `its link was re-pointed by ${s.actor_id} on ${at}`);
+      }, src.node_id);
+      return old.id;
+    }
     const id = ulid();
-    await this.asAgent(sessionId, (tx) => tx.query(
-      `insert into edge(id, kind, source_version_id, source_element_id, target_version_id,
-                        target_element_id, target_selector, target_fingerprint)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
-        e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]));
+    if (src.state === 'drafted' && stale.some((x) => x.source_version_id === src.base_version_id)) {
+      const ids = await this.linkIdentities(src.node_id, src.base_version_id, null, stale.map((x) => ({ link: x.id })));
+      await this.asAgent(sessionId, (tx) => applyRemovals(tx, src.id, ids), src.node_id);
+    }
+    await this.asAgent(sessionId, async (tx) => {
+      // Linking in a draft what the draft drops keeps the link after all: the later word wins.
+      if (src.state === 'drafted') {
+        await tx.query(
+          `delete from link_removal where version_id = $1 and kind = $2 and source_element_id is not distinct from $3
+              and target_node_id = $4 and target_element_id is not distinct from $5 and target_selector is not distinct from $6::jsonb`,
+          [e.source, e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null, e.selector ? JSON.stringify(e.selector) : null]);
+      }
+      await tx.query(
+        `insert into edge(id, kind, source_version_id, source_element_id, target_version_id,
+                          target_element_id, target_selector, target_fingerprint)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
+          e.selector ? JSON.stringify(e.selector) : null, r.fingerprint]);
+    });
     return id;
+  }
+
+  /**
+   * Removes links in a draft of the session's own (LNK6, D48): its commit doesn't carry them forward
+   * from the version it was built on (CAS3), and their open marks settle then, with what those
+   * marks alone caused. A link the draft declared itself goes at once. The removal is part of the
+   * version: it is reviewed with it, and nothing changes until the version commits; a draft that is
+   * abandoned, rejected or sent back changes nothing. Returns the links removed, as addresses.
+   */
+  async unlink(sessionId: string, versionId: string, refs: LinkRef[]): Promise<{ kind: string; source: string; target: string }[]> {
+    if (!refs.length) throw new Error('name at least one link to remove');
+    const v = await this.version(versionId);
+    await this.requireNodeIn(sessionId, v.node_id);
+    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
+    const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
+    if (v.actor_id !== s.actor_id) throw new RoleError(`${here} is ${v.actor_id}'s draft: only its author changes it`);
+    if (v.state !== 'drafted') {
+      throw new GateError(`${here} is ${v.state}: links are removed in a draft, before it is submitted; draft a new version to remove them`);
+    }
+    const ids = await this.linkIdentities(v.node_id, v.base_version_id, v.id, refs);
+    await this.asAgent(sessionId, (tx) => applyRemovals(tx, v.id, ids), v.node_id);
+    return Promise.all(ids.map((x) => this.describeIdentity(v, x)));
+  }
+
+  /**
+   * The links `refs` name, among those of `base` (the version a draft is built on) and of `draft`
+   * itself. Each must name at least one; a ref without a kind names links of every kind.
+   */
+  private async linkIdentities(nodeId: string, base: string | null, draft: string | null, refs: LinkRef[]): Promise<LinkIdentity[]> {
+    const node = await this.node(nodeId);
+    const at = base ? `${node.name}@${(await this.version(base)).seq}` : node.name;
+    const cols = `e.id, e.kind, e.source_element_id, t.node_id as target_node_id, e.target_element_id, e.target_selector, e.source_version_id`;
+    const out = new Map<string, LinkIdentity>();
+    for (const ref of refs) {
+      let rows: (Omit<LinkIdentity, 'carried'> & { id: string; source_version_id: string })[];
+      let what: string;
+      if ('link' in ref) {
+        what = `link ${ref.link}`;
+        // A link of any version of the node names the same link in the base or the draft.
+        const e = (await this.db.query<Omit<LinkIdentity, 'carried'>>(
+          `select ${cols} from edge e join version t on t.id = e.target_version_id join version s on s.id = e.source_version_id
+            where e.id = $1 and s.node_id = $2`, [ref.link, nodeId])).rows[0];
+        if (!e) throw new Error(`${node.name} has no ${what}: konjir_lineage direction=upstream lists its links`);
+        rows = await this.matchingLinks(cols, [base, draft], e);
+      } else {
+        const a = parseAddress(ref.target);
+        what = `link from ${ref.sourceElement ?? 'the whole version'} to ${ref.target}`;
+        if (a.kolab !== undefined && a.kolab !== node.kolab_id) throw new AccessError(`the link target is not in kolab ${node.kolab_id}, the node's kolab`);
+        const t = await this.findNode(this.db, node.kolab_id, a.node);
+        rows = t ? await this.matchingLinks(cols, [base, draft], {
+          kind: ref.kind ?? null, source_element_id: ref.sourceElement ?? null, target_node_id: t.id,
+          target_element_id: a.element ?? null, target_selector: a.selector ?? null,
+        }) : [];
+      }
+      if (!rows.length) throw new Error(`${at} has no ${what}${draft ? ', and neither has this draft' : ''}: konjir_lineage direction=upstream lists its links`);
+      for (const r of rows) {
+        const key = JSON.stringify([r.kind, r.source_element_id, r.target_node_id, r.target_element_id, r.target_selector]);
+        const x = out.get(key) ?? { kind: r.kind, source_element_id: r.source_element_id, target_node_id: r.target_node_id,
+          target_element_id: r.target_element_id, target_selector: r.target_selector, carried: false };
+        if (r.source_version_id === base) x.carried = true;
+        out.set(key, x);
+      }
+    }
+    return [...out.values()];
+  }
+
+  /** The links of `versions` with the identity `x` (any kind, when `x.kind` is null). */
+  private async matchingLinks(cols: string, versions: (string | null)[], x: Omit<LinkIdentity, 'carried'> | { kind: string | null } & Omit<LinkIdentity, 'carried' | 'kind'>) {
+    return (await this.db.query<Omit<LinkIdentity, 'carried'> & { id: string; source_version_id: string }>(
+      `select ${cols} from edge e join version t on t.id = e.target_version_id
+        where e.source_version_id = any($1) and ($2::text is null or e.kind = $2) and e.source_element_id is not distinct from $3
+          and t.node_id = $4 and e.target_element_id is not distinct from $5 and e.target_selector is not distinct from $6::jsonb`,
+      [versions.filter((v): v is string => !!v), x.kind, x.source_element_id, x.target_node_id, x.target_element_id,
+        x.target_selector ? JSON.stringify(x.target_selector) : null])).rows;
+  }
+
+  /** A link's identity as addresses, read from version `v` of its source node. */
+  private async describeIdentity(v: VersionRow, x: Pick<LinkIdentity, 'kind' | 'source_element_id' | 'target_node_id' | 'target_element_id' | 'target_selector'>) {
+    return {
+      kind: x.kind,
+      source: formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: x.source_element_id ?? undefined }),
+      target: formatAddress({ node: await this.nameOf(x.target_node_id), element: x.target_element_id ?? undefined, selector: x.target_selector ?? undefined }),
+    };
+  }
+
+  /** The links version `v` removes (0012), as addresses: what its commit doesn't carry forward. */
+  async removedLinks(where: Where, v: VersionRow) {
+    const rows = await this.read(where, (q) => q.query<LinkIdentity>(
+      `select kind, source_element_id, target_node_id, target_element_id, target_selector from link_removal
+        where version_id = $1 order by source_element_id nulls first, target_node_id, target_element_id, kind`, [v.id]));
+    return Promise.all(rows.rows.map((x) => this.describeIdentity(v, x)));
   }
 
   /**
@@ -2383,7 +2532,7 @@ export class Kolab {
    * its dependent relies on the element all the same (W2.5). That includes an edge whose own mark
    * says its target was orphaned: if an element with the same id comes back and is then marked,
    * the edge's address resolves to it again, so its dependent gets an upstream_dirty mark too.
-   * (Edge lookups by target version have no index of their own yet; see W2.5's follow-up.)
+   * Edges into a version are found by edge_target_version (0012).
    */
   private async propagateIn(tx: Q, signal: Signal,
     m: { id: string; version_id: string; element_id: string | null; edge_id: string; triggered_by: string }) {
@@ -2522,7 +2671,14 @@ export class Kolab {
         base_version_id: opts.base ?? child.id, layer: child.layer,
         actor_id: opts.author?.actor_id ?? SYSTEM_ACTOR, active_role: opts.author?.active_role ?? 'system',
       }, els, kept);
-      if (opts.edgesFrom) await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
+      if (opts.edgesFrom) {
+        await copyEdges(tx, opts.edgesFrom, id, new Set(els.map((e) => e.element_id)));
+        // A fold drops what the version it folds drops.
+        const removals = (await tx.query<LinkIdentity>(
+          `select kind, source_element_id, target_node_id, target_element_id, target_selector from link_removal where version_id = $1`,
+          [opts.edgesFrom])).rows;
+        await applyRemovals(tx, id, removals.map((r) => ({ ...r, carried: true })));
+      }
       if (opts.author) {
         // A fold carries what waits on the person's version, the resolution it makes, and
         // remembers the version it folds, the first of a chain of folds.
@@ -2918,6 +3074,7 @@ export class Kolab {
       return {
         mark: r.id,
         reason: r.reason,
+        ...(r.edge_id ? { link: r.edge_id } : {}),
         dirty: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }),
         layer: r.layer,
         because: r.reason === 'query_answered' ? r.note ?? 'your question was answered'
@@ -3108,7 +3265,23 @@ export class Kolab {
     const live = new Set((await this.elements(v.id)).map((e) => e.element_id));
     const at = `${await this.nameOf(v.node_id)}@${v.seq}`;
     await this.asSystem(async (tx, signal) => {
-      await copyEdges(tx, p.id, v.id, live);
+      // The links this version removes (LNK6, D48) aren't carried forward, and their open marks
+      // settle, with what those marks alone caused. A run again after a stop finds them settled.
+      const removed = (await tx.query<{ id: string }>(
+        `select e.id from edge e join version t on t.id = e.target_version_id
+          where e.source_version_id = $1
+            and exists (select 1 from link_removal r where r.version_id = $2 and ${REMOVES('r', 'e', 't')})`, [p.id, v.id])).rows.map((r) => r.id);
+      if (removed.length) {
+        const marks = await tx.query<{ id: string }>(`select id from invalidation where edge_id = any($1) and state = 'open'`, [removed]);
+        for (const m of marks.rows) await this.closeMarkIn(tx, signal, m.id, `its link was removed by ${at}`);
+      }
+      // A mark never moves onto an element that no longer exists: removing the element settles
+      // its marks, its links' marks among them, since its links go with it (copyEdges).
+      const gone = await tx.query<{ id: string }>(
+        `select id from invalidation where version_id = $1 and state = 'open' and delta_id is null
+            and element_id is not null and not (element_id = any($2))`, [p.id, [...live]]);
+      for (const m of gone.rows) await this.closeMarkIn(tx, signal, m.id, `its element was removed by ${at}`);
+      await copyEdges(tx, p.id, v.id, live, new Set(removed));
       // Edge and transitive marks move to the new version.
       await tx.query(`update invalidation set version_id = $2 where version_id = $1 and state = 'open' and delta_id is null`, [p.id, v.id]);
       // An override mark follows its element if the new version's override is still not clean;
@@ -3163,9 +3336,9 @@ const NO_REVIEWER = (layer: Layer) =>
   `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`;
 
 const NEXT_STEP: Record<string, string> = {
-  changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it.',
-  fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target and either clear the mark or re-link, quoting the current words with their current context.',
-  orphaned: 'The target no longer exists. Re-link to its replacement, or remove the dependency in a new draft.',
+  changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',
+  fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target, then konjir_link your element to the current words with their current context (that re-points this link and settles the mark), or konjir_clear_mark if it still holds, or remove the link with konjir_unlink in a draft.',
+  orphaned: 'The target no longer exists. konjir_link your element to its replacement (the same element\'s current words re-point this link and settle the mark), or remove the link: konjir_unlink it (link=<this mark\'s link>) in a draft of yours, or pass it in konjir_draft\'s unlink, and the mark settles when that version commits. Removing your element settles it too.',
   upstream_dirty: 'Something this depends on is dirty. Wait for that mark to clear, or check it yourself and clear the upstream mark.',
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',
@@ -3294,9 +3467,10 @@ function subtreeText(els: ElementRow[], rootId: string): string | undefined {
  * has (same kind, source element, target node, target scope) is not
  * duplicated. Open marks follow their edge either way.
  */
-async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<string>) {
+async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<string>, removed = new Set<string>()) {
   const out = await tx.query<EdgeRow>(`select * from edge where source_version_id = $1`, [from]);
   for (const e of out.rows) {
+    if (removed.has(e.id)) continue;
     if (e.source_element_id && !liveElements.has(e.source_element_id)) continue;
     const selector = e.target_selector ? JSON.stringify(e.target_selector) : null;
     const existing = await tx.query<{ id: string }>(
@@ -3319,6 +3493,26 @@ async function copyEdges(tx: Q, from: string, to: string, liveElements: Set<stri
         [nid, e.kind, to, e.source_element_id, e.target_version_id, e.target_element_id, selector, e.target_fingerprint]);
     }
     await tx.query(`update invalidation set edge_id = $2 where edge_id = $1 and state = 'open'`, [e.id, nid]);
+  }
+}
+
+/**
+ * Records, on draft `version`, the links it drops: each one the version it was built on has
+ * (`carried`) gets a link_removal row, so its commit doesn't carry it forward; any the draft
+ * declared itself go now. Written by the draft's writer, so row-level security checks an agent's.
+ */
+async function applyRemovals(tx: Q, version: string, ids: LinkIdentity[]) {
+  for (const x of ids) {
+    const params = [version, x.kind, x.source_element_id, x.target_node_id, x.target_element_id, x.target_selector ? JSON.stringify(x.target_selector) : null];
+    await tx.query(
+      `delete from edge e using version t
+        where t.id = e.target_version_id and e.source_version_id = $1 and e.kind = $2
+          and e.source_element_id is not distinct from $3 and t.node_id = $4
+          and e.target_element_id is not distinct from $5 and e.target_selector is not distinct from $6::jsonb`, params);
+    if (!x.carried) continue;
+    await tx.query(
+      `insert into link_removal(id, version_id, kind, source_element_id, target_node_id, target_element_id, target_selector)
+       values ($7, $1, $2, $3, $4, $5, $6::jsonb) on conflict do nothing`, [...params, ulid()]);
   }
 }
 
