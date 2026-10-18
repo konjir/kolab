@@ -756,10 +756,13 @@ export class Kolab {
   private async finishRebase(job: { token: string; kind: OutboxKind; versionId: string }) {
     let rerun = false;
     const r = await this.inTransaction(async (tx) => {
-      const row = (await tx.query<{ id: string; again: boolean }>(
-        `select id, coalesce((payload->>'again')::boolean, false) as again from outbox where claim = $1 for update`, [job.token])).rows[0];
+      const row = (await tx.query<{ id: string; again: boolean; lapsed: boolean }>(
+        `select id, coalesce((payload->>'again')::boolean, false) as again, claimed_until < clock_timestamp() as lapsed
+           from outbox where claim = $1 for update`, [job.token])).rows[0];
       if (!row) return { rows: [] };
-      if (!row.again) return tx.query(`delete from outbox where id = $1 returning id`, [row.id]);
+      // A run whose lease lapsed may have missed a parent commit that found the job unclaimed-looking,
+      // so it never deletes the job: it frees it, to run once more (P6).
+      if (!row.again && !row.lapsed) return tx.query(`delete from outbox where id = $1 returning id`, [row.id]);
       await tx.query(`update outbox set claim = null, claimed_by = null, claimed_until = null, attempts = 0, run_after = clock_timestamp(),
                         payload = payload - 'again' where id = $1`, [row.id]);
       await this.notifyWork(tx);
@@ -2415,7 +2418,7 @@ export class Kolab {
       // the node's catch-up (onCommit, step 5). One a worker is running now finishes as a no-op.
       await tx.query(
         `delete from outbox o using version ov where o.kind = 'rebase' and ov.id = o.version_id and ov.node_id = $1
-            and o.version_id <> $2 and not (o.claim is not null and o.claimed_until >= clock_timestamp())`, [v.node_id, v.id]);
+            and o.version_id <> $2 and o.claim is null`, [v.node_id, v.id]);
       const rebases = await this.enqueueRebases(tx, v);
       if (rebases) await this.notifyWork(tx);
       return { committed: true, rebases };
@@ -2430,8 +2433,9 @@ export class Kolab {
    * live when the job runs, so the list taken here only says which variants owe a rebase, never
    * what to rebase. A variant owes one job at a time:
    * - one already waiting for a worker (pending and not claimed) covers it, and nothing is added;
-   * - one a worker is running now may have read the parent before `v` committed, so it is told to
-   *   run again once it is done (`payload.again`, see finish), rather than lose `v`;
+   * - one claimed may be running now, even if its lease lapsed (a stalled worker still finishes),
+   *   and may have read the parent before `v` committed, so it is told to run again once it is done
+   *   (`payload.again`, see finishRebase), rather than lose `v`;
    * - a dead one stops nothing: the job for the variant's live version is revived, or a new one
    *   written, so each parent commit tries again, as CAS7 says.
    *
@@ -2446,7 +2450,9 @@ export class Kolab {
   private async enqueueRebases(q: Q, v: VersionRow, skipFailedSince = false): Promise<number> {
     // One statement: list and insert. Ids share a fresh ULID and add the variant's place in the
     // list, so a batch sorts together, in order, after every job written before it.
-    const live = `(o.claim is not null and o.claimed_until >= clock_timestamp())`;
+    // Any claim may be a run still going: a lapsed lease nobody has taken yet may belong to a
+    // worker that stalled, and will finish (finishRebase). Only an unclaimed job is waiting.
+    const live = `(o.claim is not null)`;
     const r = await q.query(
       `insert into outbox(id, kind, version_id, payload)
        select $3::text || '.' || lpad((row_number() over (order by c.id))::text, 12, '0'), 'rebase', c.id,
@@ -2481,6 +2487,8 @@ export class Kolab {
     if (parentNode === nodeId) return;
     const latest = (await this.latestCommitted(parentNode))!;
     if (latest.id === live.parent_version_id) return;
+    // The same check as every rebase: a variant that may not be rebased is not marked against its parent either.
+    if (!(await this.mayRebase(live, latest))) return;
     await this.rebaseFailed(nodeId, latest.id, `Rebasing onto the new parent kept failing, and Kolab has stopped trying: ${maskTokens(error).slice(0, 300)}. Commit a new version to rebase it, or wait for the parent's next commit.`);
   }
 

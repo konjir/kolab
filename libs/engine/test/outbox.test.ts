@@ -566,21 +566,27 @@ test('closing waits for the outbox work this process is running, then frees noth
     if (ctx.version.node_id === 'V' && ctx.version.active_role === 'system') { reached.open(); await held.opened; }
     return structuralChecks(ctx);
   };
-  // Long enough that close() waits for the work however slow the runner, so the test turns only on
-  // the order of events, never on how long they take.
-  const k = await openKolab({ ...store, checks, outboxLeaseMs: LEASE_MS, closeWaitMs: 60_000 });
+  // Nothing here turns on time: the lease is the default 30 s, so a loaded runner never lets the
+  // held run's claim lapse; close() may wait a minute; and the gate opens only once close() is
+  // seen to be waiting.
+  const k = await openKolab({ ...store, checks, closeWaitMs: 60_000, queued: true });
   await people(k, 'alice', { layers: ['functional'] });
   const alice = await k.openSession('alice', 'product');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
   await k.createNode(alice, 'functional_spec', 'V', 'V');
   await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
-  const p2 = k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  await k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
+  // The worker's rebase of V, queued by P@2's commit (P6), reaches its checks and is held there.
+  const drained = k.drainOutbox();
   await reached.opened;
-  const closing = k.close();
-  setTimeout(() => held.open(), 200);
+  let closed = false;
+  const closing = k.close().then(() => { closed = true; });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  expect(closed).toBe(false);   // close() waits for the held run
+  held.open();
   await closing;
-  await p2;
+  expect(await drained).toBe(1);
   const b = await openKolab(store);
   expect(await jobs(b)).toStrictEqual([]);
   expect(await textOf(b, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
