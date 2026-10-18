@@ -39,6 +39,10 @@
 //   clears, as a cleared mark's would, but nothing re-pins. An upstream_dirty mark that reached
 //   its element, or anything below it, only through the link clears too (LNK5). A removal rejected with its version
 //   changes nothing. A link removed can be linked again, pinned to its target as it is then.
+// - D43, P6 (with `deferred`): a commit queues its variants' rebases instead of running them. A
+//   variant reads as the parent version it sits on until its rebase runs; the queue runs oldest
+//   first, holds a variant once however many commits queue it, and each rebase is built on the
+//   parent's content when it runs. A rebase that commits queues the variant's own variants.
 //
 // Readings of the spec this model makes deliberately, where it could be read another way:
 // - A link that already carries an open mark isn't re-checked by later commits (CAS1's "each live
@@ -129,14 +133,47 @@ export class Model {
   /** Precedent, by `${base}|${parent}|${child}` fingerprints. The first ruling stands. */
   precedent = new Map<string, { how: Resolution; amended: string | null }>();
   private commits = 0;
+  /** What each variant's live version sits on: its parent's elements when it last committed or rebased. */
+  on: Partial<Record<VariantKey, El[]>> = {};
+  /** Rebases queue instead of running at once (D43, P6); runRebase runs the oldest. */
+  deferred = false;
+  /** The variants whose rebase is queued, oldest first. */
+  queue: VariantKey[] = [];
 
   parentOf(v: VariantKey): NodeKey { return v === 'V1' ? 'P' : 'V1'; }
+
+  /** A variant committed onto its parent as the parent is now. */
+  placed(v: VariantKey) { this.on[v] = this.mat(this.parentOf(v)).map((e) => ({ ...e })); }
+
+  /** A variant owes a rebase: at once, or queued once (deferred). */
+  private owe(v: VariantKey) {
+    if (!this.deferred) this.rebase(v);
+    else if (!this.queue.includes(v)) this.queue.push(v);
+  }
+
+  /**
+   * A person committed a variant whose rebase was queued: the commit's own catch-up rebases it at
+   * once (step 5), and its queued job has nothing left to do.
+   */
+  private caughtUp(v: VariantKey) {
+    if (!this.queue.includes(v)) return;
+    this.queue = this.queue.filter((x) => x !== v);
+    this.rebase(v);
+  }
+
+  /** Runs the oldest queued rebase, if any. Returns whether there was one. */
+  runRebase(): boolean {
+    const v = this.queue.shift();
+    if (!v) return false;
+    this.rebase(v);
+    return true;
+  }
 
   /** A node's elements, in order, as Kolab materializes them. */
   mat(key: NodeKey): El[] {
     if (key === 'P') return this.P;
     if (key === 'B' || key === 'W' || key === 'X') return [...this.plain[key]].map(([id, text]) => ({ id, text, parent: null }));
-    const out = this.mat(this.parentOf(key)).map((e) => ({ ...e }));
+    const out = (this.on[key] ?? this.mat(this.parentOf(key))).map((e) => ({ ...e }));
     for (const [id, d] of this.V[key]) {
       const e = out.find((x) => x.id === id);
       if (e) e.text = d.text;
@@ -263,12 +300,13 @@ export class Model {
     this.syncOverrideMarks(v);
     if (before) this.revised(v, before);
     this.inbound(v);
-    if (v === 'V1') this.rebase('V2');
+    if (v === 'V1') this.owe('V2');
   }
 
   /** The three-way rule (CAS5, OVR4-OVR7), with precedent (CAS6, OVR9). */
   private rebase(v: VariantKey) {
-    const parent = new Map(this.mat(this.parentOf(v)).map((e) => [e.id, e]));
+    this.placed(v);
+    const parent = new Map(this.on[v]!.map((e) => [e.id, e]));
     const next = new Map<string, Delta>();
     for (const [id, d] of this.V[v]) {
       if (d.kind === 'add') { next.set(id, d); continue; }
@@ -313,19 +351,20 @@ export class Model {
     this.P = next.map((e, i) => (was[i]?.id === e.id && fp(was[i].text) === fp(e.text) ? { ...e, text: was[i].text } : e));
     this.revised('P', was);
     this.inbound('P');
-    this.rebase('V1');
+    this.owe('V1');
     return true;
   }
 
   /** The product owner overrides `el` in a variant. Refused if the parent doesn't have it. */
   override(v: VariantKey, el: string, text: string): 'ok' | 'refused' | 'rejected' {
-    const pe = this.mat(this.parentOf(v)).find((e) => e.id === el);
+    const pe = (this.on[v] ?? this.mat(this.parentOf(v))).find((e) => e.id === el);
     if (!pe) return 'refused';
     if (vetoed(text)) return 'rejected';
     const before = this.mat(v);
     this.V[v].delete(el);
     this.V[v].set(el, { kind: 'override', text, baseFp: fp(pe.text), state: 'clean', parent: pe.parent });
     this.variantCommitted(v, before);
+    this.caughtUp(v);
     return 'ok';
   }
 
@@ -333,7 +372,7 @@ export class Model {
   resolve(v: VariantKey, el: string, how: Resolution, amended: string): boolean {
     if (how === 'amend' && vetoed(amended)) return false;
     const d = this.V[v].get(el)!;
-    const pe = this.mat(this.parentOf(v)).find((e) => e.id === el);
+    const pe = (this.on[v] ?? this.mat(this.parentOf(v))).find((e) => e.id === el);
     const before = this.mat(v);
     if (pe) {
       const key = `${d.baseFp}|${fp(pe.text)}|${fp(d.text)}`;
@@ -348,6 +387,7 @@ export class Model {
     }
     this.ovr.delete(`${v}.${el}`);
     this.variantCommitted(v, before);
+    this.caughtUp(v);
     return true;
   }
 

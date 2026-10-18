@@ -4,6 +4,17 @@ What one parent commit costs when many variants inherit from it, measured on 16 
 
 **Since this report:** W1.17 made each node's commit step serial, as recommended below, and closed bugs 1 and 2. `--races` now prints `SAFE` for all four races on both backends, and `libs/engine/test/concurrency.test.ts` runs them as tests. Race 2a now starts the human's commit at the storm's version-number read without awaiting it there, since that read now holds the variant's lock. The measurements below were taken before W1.17.
 
+**Since P6 (PR #40, D43):** the parent's commit no longer waits for the storm. It queues one `rebase` job per variant and returns, and the outbox worker rebases them level by level, one variant per job. The script now times both: `commitMs`, what the parent's author waits, and `ms`, the commit plus every rebase, with this process draining the outbox at once as a worker would. On 18 October 2026, on the same machine, PGlite, E = 20 and 100, K = 10, three runs each with the median shown. The load average was 5 to 6 while these ran, other agents' work included, so the figures are comparable with each other but not with the tables below. The pre-P6 column ran the engine as merged on main (5540d3d) over the same shapes, at a load average of 2 to 5, about half an hour later:
+
+| E | W × D × B | Variants | P6 commitMs | P6 ms (per rebase) | pre-P6 ms (per rebase) | Statements per rebase, P6 / pre-P6 |
+|---|---|---|---|---|---|---|
+| 20 | 200 × 1 × 1 | 200 | 59 | 3,771 (18.9) | 3,142 (15.7) | 91 / 86 |
+| 20 | 200 × 5 × 1 | 1,000 | 72 | 22,941 (22.9) | 19,737 (19.7) | 87 / 82 |
+| 100 | 200 × 1 × 1 | 200 | 93 | 7,477 (37.4) | 7,256 (36.3) | 188 / 183 |
+| 100 | 200 × 5 × 1 | 1,000 | 114 | 59,980 (60) | not run | 180 / not run |
+
+The parent's commit now returns in 59 to 114 ms, against 3 to 60 s for the whole storm. The storm as a whole costs 3% to 20% more, which comes to 5 statements more per rebase. Those are the job's claim, its delete in a transaction of its own that checks for a rerun, the commit step's listing of the rebase's own variants and its delete of moot jobs, and the cascade's second listing. Each rebase also takes about one more transaction. A separate count of one 50-variant storm at E = 20, K = 1 gives 75.7 statements per rebase against 70.7, and at E = 100, 157.3 against 152.3. The longest transaction is unchanged, since a job never holds more than one rebase's. Postgres was not rerun for this note.
+
 ## What was measured
 
 A parent spec `P` has E elements. W variant trees hang under it, each D levels deep with B children per variant per level, so there are V = W × (1 + B + … + B^(D−1)) variants. Each variant overrides 20% of the elements (F = 0.2), a different window each. `P` then commits a version that changes its first K elements, and the script times that one `commit` call. That call returns only when every variant has been rebased (OVR3), each rebase passing the structural gate (OVR10, VER12) and the three-way rule (CAS5).

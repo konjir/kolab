@@ -136,13 +136,15 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_nodes',
-    description: 'List the specs, bindings, WBS, work packages and implementations in your kolab, with their latest committed version number.',
+    description: 'List the specs, bindings, WBS, work packages and implementations in your kolab, with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again.',
     schema: listNodes,
     annotations: { readOnlyHint: true },
   })
   listNodes({ kind }: z.infer<typeof listNodes>, context?: McpToolContext) {
     return asAgent(context, async (s) => (await this.kolab.listNodes(kind, await this.kolab.sessionKolab(s)))
-      .map(({ name, kind: k, layer, title, latest, drafts, in_review }) => ({ id: name, kind: k, layer, title, latest, drafts, in_review })));
+      .map(({ name, kind: k, layer, title, latest, drafts, in_review, rebase_pending, rebase_dead }) => ({
+        id: name, kind: k, layer, title, latest, drafts, in_review, ...(rebase_pending ? { rebase_pending } : {}), ...(rebase_dead ? { rebase_dead } : {}),
+      })));
   }
 
   @McpTool({
@@ -161,7 +163,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: 'Read every element of a node version, with who wrote it, each with its address, the questions and notes raised on it (open and answered, from any version), the rulings on it, which are precedent, and its open case files. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read.',
+    description: 'Read every element of a node version, with who wrote it, each with its address, the questions and notes raised on it (open and answered, from any version), the rulings on it, which are precedent, and its open case files. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done.',
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
@@ -170,7 +172,7 @@ export class AgentTools {
       const kolab = this.kolab;
       // As kj_agent: row-level security bounds the read as well as Kolab (0008). Only who wrote
       // the version comes from Kolab's login, since kj_agent reads no actors.
-      const { node: n, version: row, from: here, elements: els, queries, removes, rulings, cases } = await kolab.readNode(s, node, version);
+      const { node: n, version: row, from: here, elements: els, queries, removes, rulings, cases, rebase } = await kolab.readNode(s, node, version);
       const threads = new Map<string | null, ReturnType<typeof thread>[]>();
       for (const q of queries) {
         const el = parseAddress(q.address).element ?? null;
@@ -188,6 +190,7 @@ export class AgentTools {
       return {
         node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
         ...(removes.length ? { removes_links: removes } : {}),
+        ...(rebase ? { rebase: { ...rebase, ...(rebase.after ? { after: formatAddress(parseAddress(rebase.after), { from: here }) } : {}) } } : {}),
         ...(threads.get(null) ? { questions: threads.get(null) } : {}),
         ...(ruled.get(null) ? { rulings: ruled.get(null) } : {}),
         elements: els.map((e) => ({
@@ -350,8 +353,9 @@ export class AgentTools {
       ok: r.ok, review: r.note ?? null, committed: r.ok ? at : null, stale: r.stale ?? false,
       in_review: r.in_review ? at : null, ...(r.reviewers ? { reviewers: r.reviewers } : {}), unreviewed: r.unreviewed ?? false,
       ...(r.cascade ? { cascade: r.cascade } : {}),
+      ...(r.rebases ? { rebases_queued: r.rebases } : {}),
       stale_after_commit: r.ok ? await kolab.describeMarks({ node: n.id, kolab: await kolab.sessionKolab(session) }) : [],
-      next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''} Others can now link to it; check konjir_list_stale.`
+      next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
         : r.in_review ? `In review: ${r.reviewers?.length ? `${r.reviewers.join(', ')} each have a review request in their inbox, and ` : ''}one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
         : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
         : `Not committed: the checks found what the review names. The draft stays yours, drafted: draft a new version that fixes it (and konjir_abandon node=${node} version=${submitted ?? v.seq}), or resubmit it if the finding was wrong.`,

@@ -313,36 +313,48 @@ async function retried(kolab: Kolab) {
   expect((await kolab.db.query(`select 1 from outbox`)).rows).toStrictEqual([]);
 }
 
-test('a failure in a committed rebase\'s own cascade fails the parent\'s commit with a CascadeError, and marks nothing', async () => {
+/** The outbox's jobs, by kind and what failed them. */
+const owed = async (kolab: Kolab) =>
+  (await kolab.db.query<{ kind: string; last_error: string | null }>(`select kind, last_error from outbox order by id`)).rows;
+
+test('a failure in a committed rebase\'s own cascade leaves that job to retry; the parent\'s commit returned, and nothing is marked (P6)', async () => {
   const { kolab, product } = await setup();
   const { ids, next } = await family(kolab, product, 2);
   const fail = failOnce(kolab, supersedeRead('V0'));
-  let error: string;
-  try { error = await rejection(kolab.commit(product, 'P', { elements: next })); } finally { fail.restore(); }
+  let r: Awaited<ReturnType<Kolab['review']>>;
+  // The commit returns once P is committed, with its variants' rebases queued (D43); the worker
+  // (here, the drain after the write) runs them, and V0's rebase's own cascade fails.
+  try { r = await kolab.review(await kolab.draft(product, 'P', { elements: next })); } finally { fail.restore(); }
 
   expect(fail.fired()).toBe(true);
-  expect(error).toMatch(/^CascadeError: V0@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
-  expect(await stranded(kolab, ['V0'])).toStrictEqual([]);   // V0's rebase stands
+  expect(r).toMatchObject({ ok: true, rebases: 2 });
+  expect(await stranded(kolab, ids)).toStrictEqual([]);   // V0's rebase stands, and V1's ran
   expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
-  // The storm stopped loudly. Its cascades wait in the outbox (W1.8), and the parent's next commit
-  // waits behind them, in commit order. Once their backoff is over, the worker catches everything up.
+  // The failure is the jobs', not the commit's: V0's rebase's cascade, and the rebase job that ran it, wait to retry.
+  expect(await owed(kolab)).toStrictEqual([
+    { kind: 'rebase', last_error: 'V0@2 committed, but its cascade did not finish: Connection terminated unexpectedly' },
+    { kind: 'after_commit', last_error: 'V0@2 committed, but its cascade did not finish: Connection terminated unexpectedly' },
+  ]);
+  // The parent's next commit queues them again, and V0's next cascade waits behind its failed one,
+  // in commit order. Once their backoff is over, the worker catches everything up.
   await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
-  expect(await stranded(kolab, ids)).toStrictEqual(['V0', 'V1']);
   await retried(kolab);
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
 
-test('a lost connection during a variant\'s rebase fails the parent\'s commit, rather than returning ok over variants left behind', async () => {
+test('a lost connection during a variant\'s rebase leaves its job to retry, and the other variants rebase (P6)', async () => {
   const { kolab, product } = await setup();
   const { ids, next } = await family(kolab, product, 3);
   const fail = failOnce(kolab, (sql, params) => sql.includes('coalesce(max(seq)') && params?.[0] === 'V1');
-  let error: string;
-  try { error = await rejection(kolab.commit(product, 'P', { elements: next })); } finally { fail.restore(); }
+  let r: Awaited<ReturnType<Kolab['review']>>;
+  try { r = await kolab.review(await kolab.draft(product, 'P', { elements: next })); } finally { fail.restore(); }
 
-  expect(error).toMatch(/^CascadeError: P@2 committed, but its cascade did not finish: Connection terminated unexpectedly/);
-  expect(await stranded(kolab, ids)).toContain('V1');
+  expect(fail.fired()).toBe(true);
+  expect(r).toMatchObject({ ok: true, rebases: 3 });
+  // Only V1 is behind, and it says so: its rebase waits in the outbox with the error, unmarked.
+  expect(await stranded(kolab, ids)).toStrictEqual(['V1']);
+  expect(await kolab.pendingRebase('V1')).toMatchObject({ state: 'pending', attempts: 1, last_error: 'Connection terminated unexpectedly' });
   expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
-  await kolab.commit(product, 'P', { elements: els({ E0: 'Parent element 0, rev 3.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
   await retried(kolab);
   expect(await stranded(kolab, ids)).toStrictEqual([]);
 });
