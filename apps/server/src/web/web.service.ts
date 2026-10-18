@@ -185,7 +185,9 @@ export class WebService {
    */
   async submit(s: string, name: string, b: WebSubmit): Promise<WebOutcome> {
     const k = this.kolab;
-    if (!Array.isArray(b?.changes) || !b.changes.length) throw bad('nothing changed, so there is nothing to submit');
+    const unlink = b?.unlink ?? [];
+    if (!Array.isArray(unlink) || unlink.some((x) => typeof x !== 'string')) throw bad('unlink lists links by their edge');
+    if (!Array.isArray(b?.changes) || (!b.changes.length && !unlink.length)) throw bad('nothing changed, so there is nothing to submit');
     if (b.base !== null && !Number.isInteger(b.base)) throw bad('say which version the edits were made on (base)');
     const n = await k.nodeIn(s, name, 'drafting');
     const live = await k.latestCommitted(n.id);
@@ -208,7 +210,7 @@ export class WebService {
       } else throw bad('a change is add, override or remove');
     }
     const replaced = b.replaces === undefined ? undefined : await this.ownDraft(s, n.name, b.replaces);
-    const id = await k.draft(s, n.id, { elements });
+    const id = await k.draft(s, n.id, { elements, ...(unlink.length ? { unlink: unlink.map((link) => ({ link })) } : {}) });
     // A commit between the check above and the draft: the draft was built on a newer version than
     // the edits were, so it is abandoned, and the page keeps them.
     const drafted = await k.version(id);

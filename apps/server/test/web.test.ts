@@ -180,6 +180,11 @@ test('a spec reads with its questions and notes beside each element, and a chang
   expect((await bob.call(`marks/${mark.id}/clear`, {})).status).toBe(200);
   expect((await bob.call<{ marks: WebMark[] }>('marks')).body.marks).toStrictEqual([]);
 
+  // Bob drops b2's link to R2 in a draft (konjir_draft's unlink); it commits without it.
+  const b2 = binding.elements.find((e) => e.id === 'b2')!.relies_on[0];
+  expect((await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 1, changes: [], unlink: [b2.edge] })).body).toMatchObject({ committed: true, seq: 2 });
+  expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.elements.find((e) => e.id === 'b2')!.relies_on).toStrictEqual([]);
+
   // Asking from the page routes to the layer that owns the answer; a note too.
   expect((await bob.call('queries', { node: 'orders', element: 'R2', kind: 'note', text: 'Assuming refunds include shipping.' })).status).toBe(201);
   const queries = (await alice.call<{ queries: WebQuery[] }>('queries')).body.queries;

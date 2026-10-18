@@ -166,6 +166,8 @@ export interface WebSubmit {
    */
   base: number | null;
   changes: { kind: 'add' | 'override' | 'remove'; element: string; text?: string; parent?: string }[];
+  /** Links of the base version to drop (konjir_draft's unlink), by their edge: the commit settles their open marks. */
+  unlink?: string[];
   /** A draft of the session's own that this one replaces, abandoned once the new one is written. */
   replaces?: number;
 }
