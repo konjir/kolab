@@ -105,6 +105,9 @@ export class CascadeError extends Error { name = 'CascadeError'; }
  */
 export const sessionKey = (id: string) => createHash('sha256').update(id).digest('base64url');
 
+/** A sessionKey's form: 43 base64url characters. A token is `kjs_` and 32, so the two never look alike. */
+export const SESSION_KEY = /^[A-Za-z0-9_-]{43}$/;
+
 type Q = Pick<Db, 'query' | 'exec'>;
 
 /** Tells every listener in every process about `e`, once the transaction it's called in commits. */
@@ -155,7 +158,7 @@ export function isKolabEvent(x: unknown): x is KolabEvent {
   if (x.inbox === 'layer') return hasKeys(x, 'inbox', 'layer') && LAYERS.includes(x.layer as Layer);
   if (x.inbox === 'actor') return hasKeys(x, 'inbox', 'actor') && typeof x.actor === 'string' && ACTOR_ID.test(x.actor);
   // A session's sessionKey: a sha256, base64url, never the token itself.
-  if (x.session === 'ended') return hasKeys(x, 'session', 'id') && typeof x.id === 'string' && /^[A-Za-z0-9_-]{43}$/.test(x.id);
+  if (x.session === 'ended') return hasKeys(x, 'session', 'id') && typeof x.id === 'string' && SESSION_KEY.test(x.id);
   return false;
 }
 

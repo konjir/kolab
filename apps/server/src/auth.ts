@@ -1,7 +1,8 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { OAuthError, OAuthErrorCode, type McpAuthInfo, type McpAuthStrategy, type McpListenStream, type McpListenStreamRefusal } from '@onivoro/server-mcp';
 import type { AuthInfo, OAuthTokenVerifier } from '@modelcontextprotocol/server';
-import { Kolab, maskTokens } from '@konjir/engine';
+import { Kolab, maskTokens, sessionKey } from '@konjir/engine';
 import { KOLAB, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 
 /**
@@ -17,14 +18,24 @@ import { KOLAB, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
-    @Inject(SERVER_OPTIONS) private readonly options: ServerOptions,
-  ) {}
+    @Inject(SERVER_OPTIONS) options: ServerOptions,
+  ) {
+    this.adminDigest = createHash('sha256').update(options.adminToken).digest();
+  }
+
+  /** The admin token's digest, compared in constant time: equal-length buffers, whatever was sent. */
+  private readonly adminDigest: Buffer;
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const expiresAt = Math.floor(Date.now() / 1000) + 300;
-    if (token === this.options.adminToken) return { token, clientId: 'admin', scopes: ['admin'], expiresAt };
+    if (this.isAdmin(token)) return { token, clientId: 'admin', scopes: ['admin'], expiresAt };
     if (!(await this.kolab.sessionOpen(token))) throw new OAuthError(OAuthErrorCode.InvalidToken, 'missing or invalid Konjir token');
-    return { token, clientId: token, scopes: ['agent'], expiresAt };
+    // The client is named by the session's key, never its token, so nothing that logs a principal logs a token.
+    return { token, clientId: sessionKey(token), scopes: ['agent'], expiresAt };
+  }
+
+  private isAdmin(token: string) {
+    return timingSafeEqual(createHash('sha256').update(token).digest(), this.adminDigest);
   }
 
   /**

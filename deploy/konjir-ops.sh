@@ -74,7 +74,7 @@ $actor ($role in kolab $kolab${owner:+, an agent of $owner}) can connect with th
   Shell / CLI:  export KONJIR_URL=$url KONJIR_TOKEN=$token
                 konjir instructions
 
-Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh admin-token) bin/konjir admin_end_session token=$token
+Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh admin-token) bin/konjir admin_end_session actor=$actor
 EOF
 }
 

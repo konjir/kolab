@@ -244,8 +244,9 @@ test('ending a session that is not listening, or one already ended, closes nothi
   const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });
 
   await call(admin, 'admin_end_session', { token: eng.token });
-  await call(admin, 'admin_end_session', { token: eng.token });
-  await call(admin, 'admin_end_session', { token: 'kjs_no-such-session' });
+  // Ending it again, or a session that never was, is an error, and closes nothing.
+  await expect(call(admin, 'admin_end_session', { token: eng.token })).rejects.toThrow(/no open session matched/);
+  await expect(call(admin, 'admin_end_session', { token: 'kjs_no-such-session' })).rejects.toThrow(/no open session matched/);
   expect(await settled(sub.closed, 200)).toBe('open');
 
   const eng2 = await agent(server, admin, 'eng-2', 'engineer');

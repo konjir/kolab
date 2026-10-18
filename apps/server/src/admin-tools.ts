@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { GateError, Kolab, sessionKey } from '@konjir/engine';
+import { GateError, Kolab, SESSION_KEY, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES } from '@konjir/types';
 import { fail, ok } from './results.js';
@@ -97,14 +97,24 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_end_session',
-    description: "Admin: end a session, revoking its token. Name it by exactly one of its token, its key (whoami's session) or its actor. Returns the ended session's key, or null if no such session was open.",
+    description: "Admin: end a session, revoking its token. Name it by exactly one of token (kjs_…), session (its 43-character key, as whoami and admin_open_session give it) or actor (whose open session it is). Returns the ended session's key; an error if no open session matched, so a mistyped revoke never passes for one that worked.",
     schema: endSession,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async endSession({ token, session, actor }: z.infer<typeof endSession>) {
     try {
       if ([token, session, actor].filter((x) => x !== undefined).length !== 1) throw new Error('name the session by exactly one of token, session or actor');
+      // Each argument in its own form, so a token passed as a key (or the reverse) is refused, not looked up and missed.
+      if (token !== undefined && !token.startsWith('kjs_')) {
+        throw new Error(SESSION_KEY.test(token) ? "that is a session's key, not a token; pass it as session=" : 'that is not a session token, which starts kjs_');
+      }
+      if (session !== undefined && !SESSION_KEY.test(session)) {
+        throw new Error(session.startsWith('kjs_') ? 'that is a token, not a session key; pass it as token=' : "that is not a session key, which is 43 base64url characters (whoami's session)");
+      }
       const ended = await this.kolab.endSession(token ?? (session !== undefined ? { key: session } : { actor: actor! }));
+      if (!ended) {
+        throw new Error(actor !== undefined ? `${actor} has no open session` : 'no open session matched; it has already ended, or never existed');
+      }
       return ok({ ended });
     } catch (e) { return fail(e); }
   }

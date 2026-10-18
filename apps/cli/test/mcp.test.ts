@@ -143,9 +143,18 @@ test('a token is shown once, when its session opens: whoami and the database hol
 
   expect(await rejection(call(admin, 'admin_end_session', {}))).toMatch(/exactly one of token, session or actor/);
   expect(await rejection(call(admin, 'admin_end_session', { token: opened.token, actor: 'pm' }))).toMatch(/exactly one of token, session or actor/);
+  // Each argument in its own form: a token as session=, or a key as token=, is refused, naming the right one.
+  expect(await rejection(call(admin, 'admin_end_session', { session: opened.token }))).toMatch(/that is a token, not a session key; pass it as token=/);
+  expect(await rejection(call(admin, 'admin_end_session', { token: opened.session }))).toMatch(/that is a session's key, not a token; pass it as session=/);
+  expect(await rejection(call(admin, 'admin_end_session', { session: 'nonsense' }))).toMatch(/not a session key/);
+  expect(await rejection(call(admin, 'admin_end_session', { token: 'nonsense' }))).toMatch(/not a session token/);
+  expect(await call(pm, 'whoami')).toMatchObject({ actor: 'pm' });   // none of those ended it
   expect(await call(admin, 'admin_end_session', { session: opened.session })).toStrictEqual({ ended: opened.session });
   await expect(connect(server.url, opened.token)).rejects.toThrow();
-  expect(await call(admin, 'admin_end_session', { session: opened.session })).toStrictEqual({ ended: null });
+  // Nothing open matched: an error, never a quiet success.
+  expect(await rejection(call(admin, 'admin_end_session', { session: opened.session }))).toMatch(/no open session matched/);
+  expect(await rejection(call(admin, 'admin_end_session', { token: opened.token }))).toMatch(/no open session matched/);
+  expect(await rejection(call(admin, 'admin_end_session', { actor: 'pm' }))).toMatch(/pm has no open session/);
 
   // By actor, for an admin who kept no token.
   const again = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string; session: string };

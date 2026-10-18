@@ -23,9 +23,12 @@ export function fail(e: unknown) {
   return { content: [{ type: 'text' as const, text: `${err.name ?? 'Error'}: ${err.message}.${hint}` }], isError: true };
 }
 
-/** The agent session a request carries, if its token is an agent token (see KonjirAuth). */
-export const sessionOf = (authInfo: { clientId: string; scopes: string[] } | undefined) =>
-  authInfo?.scopes.includes('agent') ? authInfo.clientId : undefined;
+/**
+ * The agent session a request carries, by its token, if that is an agent token (see KonjirAuth).
+ * The token stays in this process: the engine hashes it to find the session.
+ */
+export const sessionOf = (authInfo: { token: string; scopes: string[] } | undefined) =>
+  authInfo?.scopes.includes('agent') ? authInfo.token : undefined;
 
 /** Run a tool for an agent session, mapping Kolab errors to actionable tool errors. */
 export async function asAgent(context: McpToolContext | undefined, fn: (session: string) => Promise<unknown>) {
