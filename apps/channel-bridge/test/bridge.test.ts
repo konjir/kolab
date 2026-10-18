@@ -87,15 +87,15 @@ test('stop() returns promptly while a request to Kolab hangs', async () => {
 
 /**
  * A fetch that marks each subscriptions/listen request, and a Kolab whose session check does
- * `atGate` to the check that request's listen gate makes: the second after the mark, the first
- * being the request's own auth.
+ * `atGate` to the check that request's listen gate makes: the first sessionOpen after the mark, since
+ * the request's own auth checks the token with liveSession.
  */
 function atListenGate(server: Awaited<ReturnType<typeof startServer>>, atGate: (id: string, check: (id: string) => Promise<boolean>) => Promise<boolean>) {
   let checks = -1;
   const kolab = server.kolab;
   const sessionOpen = kolab.sessionOpen.bind(kolab);
   kolab.sessionOpen = async (id) => {
-    if (checks >= 0 && ++checks === 2) { checks = -1; kolab.sessionOpen = sessionOpen; return atGate(id, sessionOpen); }
+    if (checks >= 0 && ++checks === 1) { checks = -1; kolab.sessionOpen = sessionOpen; return atGate(id, sessionOpen); }
     return sessionOpen(id);
   };
   const fetchStub: typeof fetch = (input, init) => {

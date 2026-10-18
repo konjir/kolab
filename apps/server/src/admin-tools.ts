@@ -29,6 +29,12 @@ const addActor = z.object({
   name: z.string().optional(),
   owner: z.string().optional().describe('For an agent: the account that owns it, a person or an organization. Omit to register a person, who is also a user account.'),
 });
+const linkIdentity = z.object({
+  actor: z.string().describe('The person to link'),
+  provider: z.enum(['github']).describe('The identity provider'),
+  subject: z.string().regex(/^[0-9]{1,20}$/).describe("The provider's id for the person: GitHub's numeric user id (gh api users/<login> --jq .id), never the login, which can change hands"),
+  login: z.string().optional().describe('Their login there, for display'),
+});
 const listActors = z.object({
   owner: z.string().optional().describe("Only this account's agents"),
   archived: z.boolean().optional().describe('Also list archived actors, and agents of an archived account, each with archived: true or false'),
@@ -110,6 +116,19 @@ export class AdminTools {
     try {
       await this.kolab.addActor(id, { name, owner });
       return ok({ actor: id, kind: owner === undefined ? 'person' : 'agent', owner: owner ?? null });
+    } catch (e) { return fail(e); }
+  }
+
+  @McpTool({
+    name: 'konjir_admin_link_identity',
+    description: "Admin: link an existing person to their identity at an identity provider (D55), so that signing in with it reaches them instead of signing up someone new. Kolab never matches a person by name. Refused if the identity is linked to someone else, or the person already has one there.",
+    schema: linkIdentity,
+  })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async linkIdentity({ actor, provider, subject, login }: z.infer<typeof linkIdentity>) {
+    try {
+      await this.kolab.linkIdentity(actor, { provider, subject, login });
+      return ok({ actor, identities: await this.kolab.identities(actor) });
     } catch (e) { return fail(e); }
   }
 

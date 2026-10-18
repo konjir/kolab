@@ -9,8 +9,10 @@ import { Inboxes } from './inboxes.js';
 import { ListenScope } from './listen-scope.js';
 import { ListenStreams } from './listen-streams.js';
 import { OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
-import { KOLAB, MCP_ROUTE, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
-import { WebPeople, WebSessionGuard } from './web/auth.js';
+import { KOLAB, MCP_ROUTE, OAUTH_OPTIONS, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
+import type { IdentityProvider } from './oauth/identity.js';
+import { OAuthController } from './oauth/oauth.controller.js';
+import { WebPeople, WebRefresher, WebSessionGuard } from './web/auth.js';
 import { WebController, WebSessionController } from './web/web.controller.js';
 import { WebEventsController, WebStreams } from './web/events.controller.js';
 import { WebService } from './web/web.service.js';
@@ -21,12 +23,17 @@ export interface KolabServerModuleOptions extends ServerOptions {
   publicHost?: string;
   /** How often a web event stream checks its kolab's versions, in ms (3 s by default). */
   webVersionsPollMs?: number;
+  /** Who signs people in (D55): GitHub on the test server. Without one, there is no OAuth, and only hand-issued tokens work. */
+  identity?: IdentityProvider;
+  /** Whether the web interface still takes a pasted session token: by default, only when there is no identity provider. */
+  webTokenSignIn?: boolean;
 }
 
 /**
  * Konjir over MCP: one kolab, served by @onivoro/server-mcp as a stateless Streamable
  * HTTP endpoint at /mcp (MCP 2026-07-28, with the SDK's fallback for 2025-era clients),
- * plus GET /healthz, and the web interface's API and server-sent events under /api (API8).
+ * plus GET /healthz, the web interface's API and server-sent events under /api (API8), and Kolab's
+ * OAuth 2.1 authorization server (D55): its metadata under /.well-known, its endpoints under /oauth.
  * startServer serves the web interface's pages themselves.
  */
 @Module({})
@@ -41,7 +48,8 @@ export class KolabServerModule implements NestModule {
   }
 
   static register(options: KolabServerModuleOptions): DynamicModule {
-    const { kolab, publicHost, webVersionsPollMs, ...serverOptions } = options;
+    const { kolab, publicHost, webVersionsPollMs, identity, webTokenSignIn, ...serverOptions } = options;
+    const handIssuedTokens = serverOptions.handIssuedTokens !== false;
     return {
       module: KolabServerModule,
       imports: [
@@ -50,7 +58,12 @@ export class KolabServerModule implements NestModule {
           route: MCP_ROUTE,
           // Its acceptListenStream gates each listen stream as it opens (D41).
           authStrategy: KonjirAuth,
-          requireBearerAuth: true,
+          // A request without a valid token gets 401, naming the protected-resource metadata that
+          // leads an MCP client to Kolab's authorization server (D55). Behind the TLS proxy, its URL
+          // is the public one; on loopback, the request's own origin.
+          requireBearerAuth: publicHost
+            ? { resourceMetadataUrl: `https://${publicHost}/.well-known/oauth-protected-resource/${MCP_ROUTE}` }
+            : true,
           // Agents don't see the admin verbs; the admin token sees everything.
           toolVisibility: 'authorized',
           exposeErrorMessages: false,
@@ -61,13 +74,21 @@ export class KolabServerModule implements NestModule {
             : { trustForwardedHosts: false }),
         }),
       ],
-      controllers: [HealthController, WebSessionController, WebController, WebEventsController],
+      controllers: [HealthController, OAuthController, WebSessionController, WebController, WebEventsController],
       providers: [
         { provide: KOLAB, useValue: kolab },
-        { provide: SERVER_OPTIONS, useValue: serverOptions },
-        { provide: WEB_OPTIONS, useValue: { adminToken: serverOptions.adminToken, publicHost, versionsPollMs: webVersionsPollMs } },
+        { provide: SERVER_OPTIONS, useValue: { ...serverOptions, handIssuedTokens } },
+        { provide: OAUTH_OPTIONS, useValue: { identity, publicHost } },
+        {
+          provide: WEB_OPTIONS,
+          useValue: {
+            adminToken: serverOptions.adminToken, publicHost, versionsPollMs: webVersionsPollMs,
+            tokenSignIn: webTokenSignIn ?? !identity, identityLabel: identity?.label, handIssuedTokens,
+          },
+        },
         WebService,
         WebPeople,
+        WebRefresher,
         WebSessionGuard,
         WebStreams,
         KonjirAuth,

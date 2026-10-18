@@ -1,13 +1,18 @@
 import { Controller, Get, HttpException, Inject, Injectable, Logger, type OnModuleDestroy, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { Kolab, maskTokens, sessionKey, versionsRevision } from '@konjir/engine';
+import { Kolab, maskTokens, versionsRevision } from '@konjir/engine';
 import { isInboxEvent, isSessionEnded, type KolabEvent, type WebEvent, type WebMe } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
-import { WebSession, WebSessionGuard, WebWho } from './auth.js';
+import { WebSession, WebSessionGuard, WebSessionId, WebWho } from './auth.js';
 
 /** The most event streams one session may hold open at once: a few tabs, not a flood. */
 export const MAX_STREAMS_PER_SESSION = 6;
 
+/**
+ * One page's stream: the access token it opened with, and its session's id (key). A stream lives
+ * as long as its token: when the token expires or rotates (D55) but the session lives on, the
+ * stream closes without `ended`, and the browser reconnects, refreshing the token as it does.
+ */
 interface Stream { token: string; key: string; kolab: string; send(e: WebEvent): void; end(why?: 'ended'): void }
 
 /**
@@ -70,8 +75,9 @@ export class WebStreams implements OnModuleDestroy {
         try {
           now = await versionsRevision(this.kolab, s.token);
         } catch (e) {
-          // That session ended or lost its access: tell its page, and try the next stream's.
-          if (!(await this.kolab.sessionOpen(s.token).catch(() => true))) { s.end('ended'); continue; }
+          // That session ended or lost its access, or its token expired: tell its page, and try the next stream's.
+          const state = await tokenState(this.kolab, s).catch(() => 'live' as const);
+          if (state !== 'live') { s.end(state === 'ended' ? 'ended' : undefined); continue; }
           throw e;
         }
         if (k.revision !== undefined && now !== k.revision) for (const t of k.streams) t.send({ type: 'changed', what: 'versions' });
@@ -116,8 +122,7 @@ export class WebEventsController {
   ) {}
 
   @Get('events')
-  events(@WebSession() s: string, @WebWho() me: WebMe, @Req() req: Request, @Res() res: Response) {
-    const key = sessionKey(s);
+  events(@WebSession() s: string, @WebSessionId() key: string, @WebWho() me: WebMe, @Req() req: Request, @Res() res: Response) {
     if (req.destroyed || res.destroyed) return;
     if (!this.streams.canOpen(key)) {
       const e = new HttpException({ error: 'too_many_streams', message: `a session may hold ${MAX_STREAMS_PER_SESSION} event streams at once; close a tab` }, 429);
@@ -132,6 +137,8 @@ export class WebEventsController {
       connection: 'keep-alive',
     });
     res.flushHeaders();
+    // Reconnect soon after a close that isn't the session's end: an access token's expiry (D55).
+    res.write('retry: 1000\n\n');
 
     let ended = false;
     const pending = new Map<string, WebEvent>();
@@ -157,7 +164,8 @@ export class WebEventsController {
       const events = [...pending.values()];
       pending.clear();
       try {
-        if (!(await this.kolab.sessionOpen(s))) return stream.end('ended');
+        const state = await tokenState(this.kolab, stream);
+        if (state !== 'live') return stream.end(state === 'ended' ? 'ended' : undefined);
       } catch (e) {
         this.logger.warn(`could not check a web session before signalling it, so it wasn't signalled: ${maskTokens(e)}`);
         return;
@@ -184,4 +192,13 @@ export class WebEventsController {
     res.on('close', () => stream.end());
     void this.streams.add(stream).then(() => send({ type: 'ready' }));
   }
+}
+
+/**
+ * Where a stream's token stands: still `live`; `expired`, or rotated by a refresh (D55), while its
+ * session lives on, so the page reconnects; or `ended` with its session.
+ */
+async function tokenState(kolab: Kolab, s: Pick<Stream, 'token' | 'key'>): Promise<'live' | 'expired' | 'ended'> {
+  if (await kolab.sessionOpen(s.token)) return 'live';
+  return (await kolab.liveSessions([s.key])).has(s.key) ? 'expired' : 'ended';
 }

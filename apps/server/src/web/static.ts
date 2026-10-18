@@ -15,8 +15,8 @@ export function defaultWebRoot(): string | null {
   }
 }
 
-/** Kolab's own routes, which the page never shadows. */
-const OWN = /^\/(api|mcp|healthz)(\/|$)/i;
+/** Kolab's own routes, which the page never shadows: its API, MCP, health, and its authorization server (D55). */
+const OWN = /^\/(api|mcp|healthz|oauth|\.well-known)(\/|$)/i;
 
 /**
  * The page's security headers: everything is Kolab's own, the fonts included (bundled with the
@@ -36,7 +36,7 @@ function secure(res: Response) {
 
 /**
  * Serves the web interface (API8) at the root: its files, and index.html for any other page the
- * single-page app routes (GET, asking for HTML, with no file extension), but never /api, /mcp or /healthz. Vite names each
+ * single-page app routes (GET, asking for HTML, with no file extension), but never /api, /mcp, /healthz, /oauth or /.well-known. Vite names each
  * asset by its content hash, so assets are cached for a year and index.html not at all. With no
  * build, the root says how to make one.
  */

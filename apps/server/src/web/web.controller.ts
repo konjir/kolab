@@ -1,13 +1,18 @@
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  BadRequestException, Body, Controller, Delete, Get, HttpCode, Inject, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
+  BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, Inject, Logger, NotFoundException, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { Kolab, maskTokens } from '@konjir/engine';
 import type {
-  WebAnswer, WebAsk, WebCreateKolab, WebCreateNode, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect, WebSignIn, WebSubmit,
+  WebAnswer, WebAsk, WebCreateKolab, WebCreateNode, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect, WebSignIn, WebSignInMethods, WebSubmit,
   WebSwitch, WebVerdict,
 } from '@konjir/types';
-import { WEB_OPTIONS, type WebOptions } from '../tokens.js';
-import { WebPeople, WebSession, WebSessionGuard, WebWho, checkOrigin, clearSessionCookie, setSessionCookie, tokenOf } from './auth.js';
+import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
+import { WEB_CALLBACK, WEB_CLIENT, cookieOf, originOf, sameSecret } from '../oauth/oauth.controller.js';
+import {
+  WebPeople, WebSession, WebSessionGuard, WebWho, checkOrigin, clearSessionCookie, refreshCookieName, setSessionCookie, tokenOf,
+} from './auth.js';
 import { WebService, httpError } from './web.service.js';
 
 /** Runs a call, turning Kolab's errors into the API's (WebError), with any token masked. */
@@ -24,35 +29,103 @@ function one(name: string, v: unknown): string | undefined {
   return v;
 }
 
+/** The cookie that carries the web interface's own PKCE verifier and state while it signs in: only to its callback. */
+const pkceCookie = (options: WebOptions) => (options.publicHost ? '__Secure-konjir_web_oauth' : 'konjir_web_oauth');
+const pkcePath = WEB_CALLBACK.slice(0, WEB_CALLBACK.lastIndexOf('/'));
+
 /** Signing in and out of the web interface, and switching kolab or role (see auth.ts). */
 @Controller('api/session')
 export class WebSessionController {
+  private readonly logger = new Logger('WebSignIn');
+
   constructor(
     @Inject(WEB_OPTIONS) private readonly options: WebOptions,
     @Inject(WebService) private readonly web: WebService,
     @Inject(WebPeople) private readonly people: WebPeople,
+    @Inject(KOLAB) private readonly kolab: Kolab,
   ) {}
 
-  /** Checks the token is a person's open session, and keeps it in the page's cookie. */
+  /** How a person may sign in here: with the identity provider (D55), with a pasted token (development), or both. */
+  @Get('methods')
+  methods(@Req() req: Request): WebSignInMethods {
+    checkOrigin(req, this.options);
+    return { provider: this.options.identityLabel ?? null, token: this.options.tokenSignIn };
+  }
+
+  /**
+   * Starts signing in with the identity provider (D55): the web interface is Kolab's own OAuth
+   * client, `konjir-web`, with PKCE and a state of its own, kept in a cookie only its callback reads.
+   */
+  @Get('oauth/start')
+  start(@Req() req: Request, @Res() res: Response) {
+    checkOrigin(req, this.options);
+    if (!this.options.identityLabel) throw new NotFoundException({ error: 'not_found', message: 'signing in with an identity provider isn\'t set up on this Kolab' });
+    const base = originOf(req, this.options)!;
+    const verifier = randomBytes(32).toString('base64url');
+    const state = randomBytes(24).toString('base64url');
+    const secure = this.options.publicHost ? '; Secure' : '';
+    res.setHeader('set-cookie', `${pkceCookie(this.options)}=${state}.${verifier}; Path=${pkcePath}; HttpOnly; SameSite=Lax; Max-Age=900${secure}`);
+    const u = new URL('/oauth/authorize', base);
+    u.search = new URLSearchParams({
+      response_type: 'code', client_id: WEB_CLIENT, redirect_uri: `${base}${WEB_CALLBACK}`, state,
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+    }).toString();
+    res.redirect(302, u.pathname + u.search);
+  }
+
+  /** The web interface's code comes back: exchanged here, in the process, for the person's tokens, kept in the cookies. */
+  @Get('oauth/callback')
+  async callback(@Req() req: Request, @Res() res: Response, @Query() q: Record<string, unknown>) {
+    checkOrigin(req, this.options);
+    const base = originOf(req, this.options)!;
+    const back = (error?: string) => {
+      const secure = this.options.publicHost ? '; Secure' : '';
+      res.append('set-cookie', `${pkceCookie(this.options)}=; Path=${pkcePath}; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+      res.redirect(303, error ? `/?signin_error=${encodeURIComponent(error)}` : '/');
+    };
+    const [state, verifier] = (cookieOf(req, pkceCookie(this.options)) ?? '').split('.');
+    if (!state || !verifier || typeof q.state !== 'string' || !sameSecret(state, q.state)) return back('That sign-in didn\'t start in this browser, or took too long. Try again.');
+    if (q.iss !== undefined && q.iss !== base) return back('That sign-in came back from another server. Try again.');
+    if (typeof q.code !== 'string') return back(q.error === 'access_denied' ? 'Signing in was cancelled.' : 'Signing in didn\'t finish. Try again.');
+    try {
+      const t = await this.kolab.exchangeCode({ code: q.code, clientId: WEB_CLIENT, redirectUri: `${base}${WEB_CALLBACK}`, codeVerifier: verifier });
+      await this.people.check(t.accessToken);
+      setSessionCookie(res, t.accessToken, this.options, t.refreshToken);
+      back();
+    } catch (e) {
+      this.logger.warn(`a web sign-in failed: ${maskTokens(e)}`);
+      back('Signing in didn\'t finish. Try again.');
+    }
+  }
+
+  /** With token sign-in on (development): checks the token is a person's open session, and keeps it in the page's cookie. */
   @Post()
   @HttpCode(200)
   async signIn(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Body() body: WebSignIn): Promise<WebMe> {
     checkOrigin(req, this.options);
+    if (!this.options.tokenSignIn) {
+      throw new ForbiddenException({ error: 'forbidden', message: `signing in with a token is turned off here: sign in${this.options.identityLabel ? ` with ${this.options.identityLabel}` : ''}` });
+    }
     const token = typeof body?.token === 'string' ? body.token.trim() : '';
     const me = await run(() => this.people.check(token || undefined));
     setSessionCookie(res, token, this.options);
     return me;
   }
 
-  /** Signs out: a person's session ends, so its token is revoked everywhere, and the cookie is cleared. */
+  /**
+   * Signs out: a person's session ends, so its token is revoked everywhere, and so does the grant
+   * its refresh token renews (D55); the cookies are cleared.
+   */
   @Delete()
   @HttpCode(204)
   async signOut(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     checkOrigin(req, this.options);
     const token = tokenOf(req, this.options);
-    // Only a person's session ends here; the cookie is cleared whatever it held.
+    const refresh = tokenOf(req, this.options, refreshCookieName(this.options));
+    // Only a person's session ends here; the cookies are cleared whatever they held.
     const person = token ? await this.people.check(token).then(() => true, () => false) : false;
     if (person) await run(() => this.web.signOut(token!));
+    if (refresh) await this.kolab.revokeToken(refresh, { clientId: WEB_CLIENT }).catch(() => undefined);
     clearSessionCookie(res, this.options);
   }
 
