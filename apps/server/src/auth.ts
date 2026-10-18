@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { OAuthError, OAuthErrorCode, type McpAuthInfo, type McpAuthStrategy, type McpListenStream, type McpListenStreamRefusal } from '@onivoro/server-mcp';
 import type { AuthInfo, OAuthTokenVerifier } from '@modelcontextprotocol/server';
-import { Kolab, maskTokens, sessionKey } from '@konjir/engine';
+import { Kolab, maskTokens } from '@konjir/engine';
 import { KOLAB, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 
 /**
@@ -16,18 +16,21 @@ export function adminTokenMatcher(adminToken: string): (token: string) => boolea
 
 /**
  * Identity rides the transport, not the tool arguments: every request carries
- * `Authorization: Bearer <token>`. An agent token is an open session (one actor, one
- * active role), with the `agent` scope; the admin token has the `admin` scope.
+ * `Authorization: Bearer <token>`. An agent token reaches an open session (one actor, one
+ * active role, one kolab), with the `agent` scope; the admin token has the `admin` scope.
  *
- * Konjir's tokens don't expire yet (P2 replaces them), but the transport requires an
- * expiry on every verified token. The session is checked against the database on every
- * request, so each verification is given a short expiry of its own.
+ * A session's token is either an OAuth access token (D55), which expires 15 minutes after it is
+ * issued or refreshed, or, during the transition, a hand-issued token (konjir_admin_open_session),
+ * which doesn't, and which `handIssuedTokens: false` turns off. The session is checked against
+ * the database on every request, so each verification is given a short expiry of its own, never
+ * past the access token's. The verified client is named by the session's id, its key, which
+ * stays the same as its access token rotates, and never by the token.
  */
 @Injectable()
 export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
-    @Inject(SERVER_OPTIONS) options: ServerOptions,
+    @Inject(SERVER_OPTIONS) private readonly options: ServerOptions,
   ) {
     this.isAdmin = adminTokenMatcher(options.adminToken);
   }
@@ -35,11 +38,15 @@ export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
   private readonly isAdmin: (token: string) => boolean;
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const expiresAt = Math.floor(Date.now() / 1000) + 300;
-    if (this.isAdmin(token)) return { token, clientId: 'admin', scopes: ['admin'], expiresAt };
-    if (!(await this.kolab.sessionOpen(token))) throw new OAuthError(OAuthErrorCode.InvalidToken, 'missing or invalid Konjir token');
-    // The client is named by the session's key, never its token, so nothing that logs a principal logs a token.
-    return { token, clientId: sessionKey(token), scopes: ['agent'], expiresAt };
+    const now = Math.floor(Date.now() / 1000);
+    if (this.isAdmin(token)) return { token, clientId: 'admin', scopes: ['admin'], expiresAt: now + 300 };
+    const s = await this.kolab.liveSession(token);
+    if (!s) throw new OAuthError(OAuthErrorCode.InvalidToken, 'missing, expired or invalid Konjir token');
+    if (!s.granted && this.options.handIssuedTokens === false) {
+      throw new OAuthError(OAuthErrorCode.InvalidToken, 'hand-issued Konjir tokens are turned off here: connect with OAuth');
+    }
+    const expiresAt = Math.min(now + 300, s.expiresAt ? Math.floor(s.expiresAt.getTime() / 1000) : Infinity);
+    return { token, clientId: s.id, scopes: ['agent'], expiresAt };
   }
 
   /**

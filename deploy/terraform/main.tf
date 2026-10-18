@@ -35,8 +35,10 @@ module "storage" {
 }
 
 module "secrets" {
-  source = "./modules/secrets"
-  name   = var.name
+  source               = "./modules/secrets"
+  name                 = var.name
+  github_client_id     = var.github_oauth_client_id
+  github_client_secret = var.github_oauth_client_secret
 }
 
 module "database" {
@@ -56,6 +58,7 @@ module "iam" {
   artifact_bucket_arn    = module.storage.artifact_bucket_arn
   admin_token_param_arn  = module.secrets.admin_token_param_arn
   database_url_param_arn = module.database.database_url_param_arn
+  github_param_arns      = module.secrets.github_param_arns
 }
 
 module "kolab" {

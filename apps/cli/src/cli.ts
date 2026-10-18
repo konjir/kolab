@@ -124,7 +124,10 @@ Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; k
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token.
 Version:   konjir --version
 ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--public-host kolab.example.com]
-        Kolab runs structural checks only and makes no model calls; reviewing agents review.` : `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.`}`;
+        Kolab runs structural checks only and makes no model calls; reviewing agents review.
+        Sign-in with GitHub (D55): KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET, a GitHub OAuth app's,
+        whose callback is <origin>/oauth/callback/github. KONJIR_WEB_TOKEN_SIGN_IN=on keeps pasting a token in the
+        web page (on by default without GitHub); KONJIR_HAND_ISSUED_TOKENS=off turns admin-issued session tokens off.` : `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.`}`;
 
 function parseKv(argv: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -163,6 +166,40 @@ export function retiredReviewSettings(env: Record<string, string | undefined>, r
   return {};
 }
 
+/** An on/off setting: on, off, or unset (undefined). Anything else is refused. */
+function onOff(env: Record<string, string | undefined>, name: string): boolean | undefined {
+  const v = env[name]?.trim().toLowerCase();
+  if (v === undefined || v === '') return undefined;
+  if (['on', '1', 'true', 'yes'].includes(v)) return true;
+  if (['off', '0', 'false', 'no'].includes(v)) return false;
+  throw new Error(`${name} is on or off`);
+}
+
+/**
+ * How `konjir serve` signs people in (D55): with GitHub when KONJIR_GITHUB_CLIENT_ID and
+ * KONJIR_GITHUB_CLIENT_SECRET are both set (one alone is refused); a pasted token in the web page
+ * when KONJIR_WEB_TOKEN_SIGN_IN is on, or by default without GitHub; hand-issued session tokens
+ * unless KONJIR_HAND_ISSUED_TOKENS is off. Never prints a secret.
+ */
+export function signInSettings(env: Record<string, string | undefined>) {
+  const id = env.KONJIR_GITHUB_CLIENT_ID?.trim();
+  const secret = env.KONJIR_GITHUB_CLIENT_SECRET?.trim();
+  if (!!id !== !!secret) throw new Error('set both KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET for sign-in with GitHub, or neither');
+  const github = !!id && !!secret;
+  const webTokenSignIn = onOff(env, 'KONJIR_WEB_TOKEN_SIGN_IN') ?? !github;
+  const handIssuedTokens = onOff(env, 'KONJIR_HAND_ISSUED_TOKENS') ?? true;
+  return {
+    github, webTokenSignIn, handIssuedTokens,
+    describe: [github ? 'GitHub' : 'no identity provider (set KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET)',
+      webTokenSignIn ? 'a pasted token in the web page' : '', handIssuedTokens ? 'hand-issued session tokens' : ''].filter(Boolean).join('; '),
+    async identity(load: () => Promise<{ GitHubIdentity: new (c: { clientId: string; clientSecret: string }) => unknown }>) {
+      if (!github) return {};
+      const { GitHubIdentity } = await load();
+      return { identity: new GitHubIdentity({ clientId: id!, clientSecret: secret! }) as never };
+    },
+  };
+}
+
 export async function main(argv: string[]) {
   const url = flag(argv, 'url') ?? process.env.KONJIR_URL ?? 'http://127.0.0.1:7420/mcp';
   const token = flag(argv, 'token') ?? process.env.KONJIR_TOKEN;
@@ -194,7 +231,9 @@ export async function main(argv: string[]) {
     const perPerson = process.env.KONJIR_KOLABS_PER_PERSON;
     const kolabsPerPerson = perPerson === undefined || perPerson === '' ? undefined : Number(perPerson);
     if (kolabsPerPerson !== undefined && !(Number.isInteger(kolabsPerPerson) && kolabsPerPerson >= 0)) throw new Error('KONJIR_KOLABS_PER_PERSON is a whole number');
-    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson });
+    const sign = signInSettings(process.env);
+    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens });
+    console.log(`sign-in: ${sign.describe}`);
     console.log(`Kolab listening on ${s.url}`);
     console.log(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);

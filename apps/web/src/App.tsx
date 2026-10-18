@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { WebMe, WebOverview } from '@konjir/types';
+import type { WebMe, WebOverview, WebSignInMethods } from '@konjir/types';
 import { ApiError, api, createKolab, signIn, signOut, switchTo } from './api.js';
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
@@ -43,7 +43,13 @@ const store = {
 
 export function App() {
   const [me, setMe] = useState<WebMe | null>();
-  const [signInError, setSignInError] = useState<string>();
+  const [signInError, setSignInError] = useState<string | undefined>(() => {
+    // A sign-in with the identity provider that didn't finish comes back with why (D55).
+    const why = new URLSearchParams(location.search).get('signin_error') ?? undefined;
+    if (why) history.replaceState(null, '', location.pathname + location.hash);
+    return why;
+  });
+  const [methods, setMethods] = useState<WebSignInMethods>();
   const [overview, setOverview] = useState<WebOverview>();
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
   const [tick, setTick] = useState(0);
@@ -57,9 +63,16 @@ export function App() {
     toastTimer.current = setTimeout(() => setToast(undefined), 3600);
   }, []);
   const signedOut = useCallback((why?: string) => { setMe(null); setOverview(undefined); setSignInError(why); }, []);
+  useEffect(() => {
+    if (me !== null || methods) return;
+    api<WebSignInMethods>('session/methods').then(setMethods, () => setMethods({ provider: null, token: true }));
+  }, [me, methods]);
 
   useEffect(() => {
-    api<WebMe>('me').then(setMe, (e: unknown) => signedOut(e instanceof ApiError && e.status === 401 ? undefined : (e as Error).message));
+    api<WebMe>('me').then(setMe, (e: unknown) => {
+      if (e instanceof ApiError && e.status === 401) { setMe(null); return; }
+      signedOut((e as Error).message);
+    });
   }, [signedOut]);
   useEffect(() => {
     if (!me) return;
@@ -104,7 +117,7 @@ export function App() {
     return (
       <>
         <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} />
-        <SignIn error={signInError} onSignedIn={async (token) => {
+        <SignIn error={signInError} methods={methods} onSignedIn={async (token) => {
           try { setMe(await signIn(token)); setSignInError(undefined); return undefined; } catch (e) { return (e as Error).message; }
         }} />
       </>
@@ -123,7 +136,7 @@ export function App() {
     <>
       <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
         onMove={move} onAllKolabs={() => go('kolabs')}
-        onSignOut={async () => { await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended: sign in with a new token.'); }} />
+        onSignOut={async () => { await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended.'); }} />
       <div className="frame">
         <nav className="rail" aria-label="Places">
           <button type="button" className="place" aria-current={r.view === 'kolabs' ? 'page' : undefined} onClick={() => go('kolabs')}>All kolabs</button>

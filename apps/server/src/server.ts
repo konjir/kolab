@@ -3,10 +3,12 @@ import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
 import { KolabServerModule } from './kolab-server.module.js';
+import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
 
 export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
 export { answersUri, inboxUri, uriOf } from './uris.js';
+export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
 
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
 
@@ -22,11 +24,20 @@ export async function startServer(opts: {
   webVersionsPollMs?: number;
   /** How many kolabs a person may own when they make their own (D54; 10 by default). */
   kolabsPerPerson?: number;
+  /** Who signs people in (D55): GitHubIdentity on the test server, StubIdentity in tests. Without one, no OAuth. */
+  identity?: IdentityProvider;
+  /** Whether the web interface still takes a pasted session token: by default, only without an identity provider. */
+  webTokenSignIn?: boolean;
+  /** Whether hand-issued session tokens still work beside OAuth's (true by default, during the transition). */
+  handIssuedTokens?: boolean;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
   const app = await NestFactory.create(
-    KolabServerModule.register({ kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs }),
+    KolabServerModule.register({
+      kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
+      identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
+    }),
     { logger: ['error', 'warn'] },
   );
   // The web interface's pages, at the root (API8); its API is the module's, under /api.

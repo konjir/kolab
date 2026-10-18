@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
   KINDS, LAYER_OF_KIND,
-  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebQuery, type WebReviewsView,
+  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebQuery, type WebReviewsView, type WebSignInMethods,
 } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago } from '../util.js';
@@ -272,23 +272,41 @@ export function ForeignKolabView({ kolab, tick, go, onOpen }: { kolab: string; t
   );
 }
 
-/** Signing in with a Konjir session token, until OAuth is bound (P2). */
-export function SignIn({ onSignedIn, error: initial }: { onSignedIn(token: string): Promise<string | undefined>; error?: string }) {
+/**
+ * Signing in (D55): with the identity provider (GitHub), through Kolab's own OAuth server, or, where
+ * token sign-in is on (development), by pasting a session token of one's own.
+ */
+export function SignIn({ onSignedIn, error: initial, methods }: { onSignedIn(token: string): Promise<string | undefined>; error?: string; methods?: WebSignInMethods }) {
   const [token, setToken] = useState('');
   const [error, setError] = useState(initial);
   const [busy, setBusy] = useState(false);
+  const provider = methods?.provider;
+  const tokens = methods ? methods.token : false;
   return (
     <main className="signin">
       <section className="newk" aria-labelledby="si-title">
         <h1 className="section-title" id="si-title">Sign in to Kolab</h1>
-        <p className="why-not">Paste the session token you were given: your own, as a person, not an agent’s. It names you, your kolab and your role. Kolab keeps it in this browser’s cookie, out of the page’s reach, until the browser closes; signing out ends the session.</p>
-        <form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setError(await onSignedIn(token.trim())); setBusy(false); }}>
-          <div className="field"><label htmlFor="token">Session token</label>
-            <input id="token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} aria-invalid={!!error} aria-describedby={error ? 'token-err' : undefined} />
-            {error && <span className="err" id="token-err" role="alert">{error}</span>}
-            <span className="hint">An admin opens one for you: <span className="addr">konjir admin_open_session actor=you role=product kolab=…</span></span></div>
-          <div className="edit-row"><button type="submit" className="btn primary" disabled={!token.trim() || busy}>Sign in</button></div>
-        </form>
+        {error && !tokens && <p className="err" role="alert">{error}</p>}
+        {provider && (
+          <>
+            <p className="why-not">Sign in, or sign up, with {provider}. You choose the kolab and role to work in. Kolab keeps your session in this browser’s cookies, out of the page’s reach; it renews itself until you sign out.</p>
+            <div className="edit-row"><a className="btn primary" href="/api/session/oauth/start">Sign in with {provider}</a></div>
+          </>
+        )}
+        {!methods && <p className="why-not">Connecting to Kolab…</p>}
+        {methods && !provider && !tokens && <p className="why-not">This Kolab has no way to sign in from the web set up yet. Ask whoever runs it.</p>}
+        {tokens && (
+          <>
+            <p className="why-not">{provider ? 'Or, for development, paste' : 'Paste'} the session token you were given: your own, as a person, not an agent’s. It names you, your kolab and your role. Kolab keeps it in this browser’s cookie, out of the page’s reach, until the browser closes; signing out ends the session.</p>
+            <form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setError(await onSignedIn(token.trim())); setBusy(false); }}>
+              <div className="field"><label htmlFor="token">Session token</label>
+                <input id="token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} aria-invalid={!!error} aria-describedby={error ? 'token-err' : undefined} />
+                {error && <span className="err" id="token-err" role="alert">{error}</span>}
+                <span className="hint">An admin opens one for you: <span className="addr">konjir admin_open_session actor=you role=product kolab=…</span></span></div>
+              <div className="edit-row"><button type="submit" className="btn" disabled={!token.trim() || busy}>Sign in with a token</button></div>
+            </form>
+          </>
+        )}
       </section>
     </main>
   );

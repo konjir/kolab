@@ -3,6 +3,19 @@
 
 variable "name" { type = string }
 
+# The GitHub OAuth app people sign in with (D55). Empty until Lee registers the app: then Kolab
+# runs without GitHub sign-in, as before. The secret is a SecureString, and, like the admin
+# token, it is also in Terraform state.
+variable "github_client_id" {
+  type    = string
+  default = ""
+}
+variable "github_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 resource "random_password" "admin_token" {
   length  = 40
   special = false
@@ -18,3 +31,32 @@ resource "aws_ssm_parameter" "admin_token" {
 
 output "admin_token_param_name" { value = aws_ssm_parameter.admin_token.name }
 output "admin_token_param_arn" { value = aws_ssm_parameter.admin_token.arn }
+
+resource "aws_ssm_parameter" "github_client_id" {
+  count       = var.github_client_id == "" ? 0 : 1
+  name        = "/konjir/${var.name}/github-client-id"
+  description = "Client id of the GitHub OAuth app Kolab signs people in with (D55)"
+  type        = "String"
+  value       = var.github_client_id
+}
+
+resource "aws_ssm_parameter" "github_client_secret" {
+  #checkov:skip=CKV_AWS_337:SecureString with the AWS-managed SSM key; a customer-managed key is a production step
+  count       = var.github_client_id == "" ? 0 : 1
+  name        = "/konjir/${var.name}/github-client-secret"
+  description = "Client secret of the GitHub OAuth app Kolab signs people in with (D55)"
+  type        = "SecureString"
+  value       = var.github_client_secret
+
+  lifecycle {
+    precondition {
+      condition     = var.github_client_secret != ""
+      error_message = "github_client_secret must be set with github_client_id."
+    }
+  }
+}
+
+# Kolab's start script finds them beside the admin token: /konjir/<name>/github-client-id and -secret.
+output "github_param_arns" {
+  value = concat(aws_ssm_parameter.github_client_id[*].arn, aws_ssm_parameter.github_client_secret[*].arn)
+}

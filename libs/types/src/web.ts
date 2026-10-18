@@ -8,6 +8,9 @@ import type {
   ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
 } from './index.js';
 
+/** How a person may sign in to this Kolab (D55): with its identity provider, named for the button, and with a pasted token (development). */
+export interface WebSignInMethods { provider: string | null; token: boolean }
+
 /** Who is signed in: the session's actor and role, its kolab and its access there. */
 export interface WebMe {
   actor: string; name: string; kind: ActorKind; owner: string | null;

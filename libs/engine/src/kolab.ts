@@ -79,6 +79,106 @@ export class ActorError extends Error { name = 'ActorError'; }
 export class AccessError extends Error { name = 'AccessError'; }
 /** About accounts, kolabs, teams and grants: one that doesn't exist or already does, or an invalid name. */
 export class TenancyError extends Error { name = 'TenancyError'; }
+
+/**
+ * An OAuth request refused (D55), with the error code RFC 6749 gives it (`invalid_grant`,
+ * `invalid_request`, `access_denied`, `invalid_redirect_uri`, …), which the authorization server
+ * answers with.
+ */
+export class OAuthGrantError extends Error {
+  name = 'OAuthGrantError';
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+/** A client registered with Kolab's authorization server (RFC 7591): public, with no secret. */
+export interface OAuthClient { id: string; name: string; redirectUris: string[] }
+
+/** An authorization waiting for its person to sign in, or to consent. */
+export interface PendingAuthorization {
+  clientId: string; redirectUri: string; clientState: string | null; scope: string | null; provider: string;
+  /** The person, once the identity provider has said who signed in. */
+  person: string | null;
+}
+
+/** What a person consents to: who the client acts as, in which kolab (or a new one of theirs), in which role. */
+export interface ConsentChoice {
+  as: { kind: 'self' } | { kind: 'agent'; agent: string } | { kind: 'new-agent'; label: string };
+  kolab: string | { name: string; title: string };
+  role: Role;
+}
+
+/** What the token endpoint hands a client: the secrets, shown once, and the session they reach. */
+export interface OAuthTokens {
+  accessToken: string; refreshToken: string; expiresIn: number; scope: string;
+  /** The session's id, its key. */
+  session: string; actor: string; kolab: string; role: Role;
+}
+
+/** An identity provider's name, as the identity table holds it. */
+const IDP_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** A provider's id for a person: GitHub's is a number. */
+const IDP_SUBJECT = /^[A-Za-z0-9._@|:-]{1,200}$/;
+/** A PKCE S256 challenge (RFC 7636 §4.2): the base64url sha256 of the verifier. */
+const PKCE_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
+/** A PKCE verifier (RFC 7636 §4.1). */
+const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
+
+/** The scope a grant carries: Konjir's, with the kolab and role its session works in. */
+export const grantedScope = (kolab: string, role: Role) => `konjir kolab:${kolab} role:${role}`;
+
+/**
+ * Names a person may not sign up as (D55): Kolab's own actor, and anything starting `konjir`, as
+ * for kolab names (D15, D54).
+ */
+export const isReservedPersonName = (name: string) => name.toLowerCase() === SYSTEM_ACTOR || name.toLowerCase().startsWith('konjir');
+
+/**
+ * The names a new person signing up as `login` tries, in order: the login, lowercased, then
+ * `<login>_2` to `<login>_20`, then one with a random suffix. A GitHub login never holds '_', so
+ * no variant is ever another GitHub user's own login. A reserved name tries `gh_<login>` instead.
+ */
+export function* signUpNames(login: string): Generator<string> {
+  const base = login.toLowerCase().replace(/[^a-z0-9.@-]/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 39) || 'person';
+  const root = isReservedPersonName(base) ? `gh_${base}` : base;
+  if (!isReservedPersonName(root)) yield root;
+  for (let i = 2; i <= 20; i++) yield `${root}_${i}`;
+  yield `${root}_${randomBytes(4).toString('hex')}`;
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
+
+/**
+ * Whether Kolab may send codes to `uri` (OAuth 2.1 §2.3.1, RFC 8252): an https URL; http only on a
+ * loopback address; or a private-use scheme of a native app, with a dot in it (com.example.app:/cb).
+ * Never with a fragment or credentials, and never javascript:, data:, file: and the like.
+ */
+export function validRedirectUri(uri: string): boolean {
+  if (typeof uri !== 'string' || uri.length > 2000) return false;
+  let u: URL;
+  try { u = new URL(uri); } catch { return false; }
+  if (u.hash || u.username || u.password) return false;
+  const scheme = u.protocol.slice(0, -1);
+  if (scheme === 'https') return !!u.hostname;
+  if (scheme === 'http') return LOOPBACK_HOSTS.has(u.hostname);
+  return /^[a-z][a-z0-9+-]*(\.[a-z0-9+-]+)+$/.test(scheme);
+}
+
+/**
+ * Whether a redirect URI given at authorization matches one a client registered: exactly, but for
+ * the port of a loopback http URI, which a native client picks when it runs (RFC 8252 §7.3).
+ */
+export function redirectUriMatches(registered: string[], given: string): boolean {
+  if (registered.includes(given)) return true;
+  let g: URL;
+  try { g = new URL(given); } catch { return false; }
+  if (g.protocol !== 'http:' || !LOOPBACK_HOSTS.has(g.hostname)) return false;
+  return registered.some((r) => {
+    try {
+      const u = new URL(r);
+      return u.protocol === 'http:' && u.hostname === g.hostname && u.pathname === g.pathname && u.search === g.search;
+    } catch { return false; }
+  });
+}
 /**
  * A name another kolab, account or actor holds. The message is the same whether that one is live
  * or archived, so whoever asked learns only that the name is taken; `archived` names the archived
@@ -186,13 +286,25 @@ export type ListenerState =
   | { state: 'restored' }
   | { state: 'resync_failed'; retryInMs: number; error: string };
 
-/** A session token's pattern: the bearer token a session opened with. */
-const SESSION_TOKEN = /kjs_[A-Za-z0-9_-]+/g;
+/**
+ * The patterns of Kolab's secrets: a session's bearer token (an OAuth access token is one too),
+ * a refresh token and an authorization code (D55).
+ */
+const SECRETS = /(kj[src])_[A-Za-z0-9_-]+/g;
 
-/** An error's message, fit to log: any session token in it is masked. */
+/** An error's message, fit to log: any session token, refresh token or code in it is masked. */
 export function maskTokens(e: unknown): string {
-  return String((e as { message?: unknown })?.message ?? e).replace(SESSION_TOKEN, 'kjs_***');
+  return String((e as { message?: unknown })?.message ?? e).replace(SECRETS, '$1_***');
 }
+
+/**
+ * The open session a bearer token reaches now, as the database's kj_session_id finds it (0018),
+ * on `session s`, with the token's sessionKey as `$1`. A grant's session (D55) is reached by its
+ * current access token, only until that token expires; a hand-issued session by its id, which is
+ * its token's key (P1), and it never expires.
+ */
+const LIVE_SESSION = `s.ended_at is null and (s.token_key = $1 or (s.token_key is null and s.id = $1))
+       and (s.expires_at is null or s.expires_at > now())`;
 
 const isObject = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
@@ -1097,11 +1209,11 @@ export class Kolab {
       kolab = reach[0];
     }
     await this.requireLiveKolab(kolab, 'opens no session');
-    const id = `kjs_${randomBytes(24).toString('base64url')}`;
+    const id = newSessionToken();
     try {
       await this.db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-        await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [sessionKey(id), actorId, role, kolab]);
+        await insertSession(tx, id, { actor: actorId, role, kolab: kolab! });
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
         if (!access.level) {
@@ -1131,20 +1243,50 @@ export class Kolab {
     return this.inTransaction(async (tx, signal) => {
       const r = typeof which === 'object' && 'actor' in which
         ? await tx.query<{ id: string }>(`update session set ended_at = now() where actor_id = $1 and ended_at is null returning id`, [which.actor])
-        : await tx.query<{ id: string }>(`update session set ended_at = now() where id = $1 and ended_at is null returning id`,
-          [typeof which === 'string' ? sessionKey(which) : which.key]);
+        : typeof which === 'string'
+          // By its token: a grant's session by its current access token, expired or not, so signing out still works.
+          ? await tx.query<{ id: string }>(`update session s set ended_at = now()
+              where s.ended_at is null and (s.token_key = $1 or (s.token_key is null and s.id = $1)) returning s.id`, [sessionKey(which)])
+          : await tx.query<{ id: string }>(`update session set ended_at = now() where id = $1 and ended_at is null returning id`, [which.key]);
       const key = r.rows[0]?.id ?? null;
       if (key) await signal({ session: 'ended', id: key });
       return key;
     });
   }
 
-  /** Which of the session `tokens` are open, in one query. */
+  /** Which of the session `tokens` still reach their open session, in one query (an expired access token doesn't). */
   async openSessions(tokens: string[]): Promise<Set<string>> {
     if (!tokens.length) return new Set();
     const keys = new Map(tokens.map((t) => [sessionKey(t), t]));
-    const r = await this.db.query<{ id: string }>(`select id from session where id = any($1) and ended_at is null`, [[...keys.keys()]]);
-    return new Set(r.rows.map((x) => keys.get(x.id)!));
+    const r = await this.db.query<{ key: string }>(
+      `select coalesce(s.token_key, s.id) as key from session s
+        where s.ended_at is null and (s.token_key = any($1) or (s.token_key is null and s.id = any($1)))
+          and (s.expires_at is null or s.expires_at > now())`, [[...keys.keys()]]);
+    return new Set(r.rows.map((x) => keys.get(x.key)!));
+  }
+
+  /**
+   * Which of the sessions with these ids are still open, in one query, whatever their access
+   * tokens' expiry: a grant's session lives until it ends or its grant lapses (D55). A listen
+   * stream lives as long as its session (D41).
+   */
+  async liveSessions(ids: string[]): Promise<Set<string>> {
+    if (!ids.length) return new Set();
+    const r = await this.db.query<{ id: string }>(
+      `select s.id from session s left join oauth_grant g on g.id = s.grant_id
+        where s.id = any($1) and s.ended_at is null and (g.id is null or (g.revoked_at is null and g.expires_at > now()))`, [ids]);
+    return new Set(r.rows.map((x) => x.id));
+  }
+
+  /**
+   * The session a bearer token reaches now: its id (the key whoami and events name it by), and
+   * when its access token expires (null for a hand-issued token, which never does), or undefined.
+   */
+  async liveSession(token: string): Promise<{ id: string; expiresAt: Date | null; granted: boolean } | undefined> {
+    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean }>(
+      `select s.id, s.expires_at, s.grant_id is not null as granted from session s where ${LIVE_SESSION}`, [sessionKey(token)]);
+    const row = r.rows[0];
+    return row && { id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted };
   }
 
   /**
@@ -1155,21 +1297,21 @@ export class Kolab {
    */
   async sessionScope(token: string): Promise<{ kolab: string; actor: string } | undefined> {
     const r = await this.db.query<{ kolab: string; actor: string }>(
-      `select kolab_id as kolab, actor_id as actor from session where id = $1 and ended_at is null`, [sessionKey(token)]);
+      `select s.kolab_id as kolab, s.actor_id as actor from session s where ${LIVE_SESSION}`, [sessionKey(token)]);
     return r.rows[0];
   }
 
-  /** Whether `token` is an open session's: it is still good. */
+  /** Whether `token` reaches an open session: it is still good, and, for an access token, hasn't expired. */
   async sessionOpen(token: string): Promise<boolean> {
-    const r = await this.db.query(`select 1 from session where id = $1 and ended_at is null`, [sessionKey(token)]);
+    const r = await this.db.query(`select 1 from session s where ${LIVE_SESSION}`, [sessionKey(token)]);
     return r.rows.length > 0;
   }
 
   private async session(token: string): Promise<Session> {
     const r = await this.db.query<Omit<Session, 'access'>>(
-      `select s.actor_id, s.active_role, s.kolab_id as kolab, a.kind, a.owner_id as owner
+      `select s.id, s.actor_id, s.active_role, s.kolab_id as kolab, a.kind, a.owner_id as owner
          from session s join actor a on a.id = s.actor_id
-        where s.id = $1 and s.ended_at is null`, [sessionKey(token)]);
+        where ${LIVE_SESSION}`, [sessionKey(token)]);
     if (!r.rows[0]) throw new RoleError('no open session for that token');
     const s = { ...r.rows[0], access: await accessIn(this.db, r.rows[0].actor_id, r.rows[0].kolab) };
     // Access is computed on each use, so a session narrows the moment its access (or, for an
@@ -1392,6 +1534,379 @@ export class Kolab {
     return version;
   }
 
+  // ---- signing in, and Kolab as an OAuth 2.1 authorization server (D55) ----
+
+  /**
+   * The authorization server's lifetimes and limits (D55). An access token lives `accessTtlS`
+   * (15 minutes); a grant lives `refreshTtlS` (30 days) past its last refresh; an authorization
+   * code `codeTtlS`; a sign-in has `requestTtlS` to be consented to. A refresh token presented
+   * again within `refreshGraceS` of its use is a concurrent request, refused without revoking
+   * anything; later, a replay, which revokes its grant. A person owns at most `agentsPerPerson`
+   * agents they made themselves.
+   */
+  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 600, refreshGraceS: 10, agentsPerPerson: 10 };
+  private readonly ownAgentTimes = new Map<string, number[]>();
+
+  /**
+   * The person an identity provider says signed in (D55). An identity is the provider's own stable
+   * id for someone (`subject`: GitHub's numeric user id), never their login, which can change
+   * hands. The first time an identity signs in, it signs up: a new person, and their user account,
+   * named after their login (lowercased), or, if a live or archived account or actor holds that
+   * name in any case (D52), or it is reserved, a variant of it (signUpNames). An existing person is
+   * never matched by name: an admin links one to an identity (linkIdentity). A person who is
+   * archived, or whose identity is linked to an archived person, doesn't sign in.
+   */
+  async signInWith(who: { provider: string; subject: string; login: string; name?: string }): Promise<{ actor: string; created: boolean }> {
+    if (!IDP_NAME.test(who.provider) || !IDP_SUBJECT.test(who.subject)) throw new ActorError('that identity provider gave no usable identity');
+    const login = who.login.trim();
+    if (!login || login.length > 200) throw new ActorError('that identity provider gave no usable login');
+    const name = (who.name?.trim() || login).slice(0, 200);
+    const linked = async () => {
+      const id = (await this.db.query<{ actor_id: string }>(
+        `update identity set login = $3, last_seen_at = now() where provider = $1 and subject = $2 returning actor_id`,
+        [who.provider, who.subject, login])).rows[0]?.actor_id;
+      if (id && await this.archivedActor(id)) throw new ActorError(`${id} is archived, so it can't sign in; an admin can unarchive it`);
+      return id;
+    };
+    const known = await linked();
+    if (known) return { actor: known, created: false };
+    for (const candidate of signUpNames(login)) {
+      try {
+        await this.requireFreeName(candidate, 'ActorError');
+        await this.db.transaction(async (tx) => {
+          await tx.query(`insert into account(id, kind, name) values ($1, 'user', $2)`, [candidate, name]);
+          await tx.query(`insert into actor(id, name, kind) values ($1, $2, 'person')`, [candidate, name]);
+          await tx.query(`insert into identity(provider, subject, actor_id, login) values ($1, $2, $3, $4)`, [who.provider, who.subject, candidate, login]);
+        });
+        return { actor: candidate, created: true };
+      } catch (e) {
+        // The same identity signed up at the same moment: it is that person.
+        if (String(e).includes('identity_pkey')) {
+          const again = await linked();
+          if (again) return { actor: again, created: false };
+        }
+        if (e instanceof NameTakenError || /actor_pkey|actor_id_lower|account_pkey|account_id_lower/.test(String(e))) continue;
+        throw e;
+      }
+    }
+    throw new ActorError(`no free name for ${login} to sign up with; ask an admin`);
+  }
+
+  /** Links an existing person to an identity (admin), so their first sign-in with it reaches them. */
+  async linkIdentity(actorId: string, who: { provider: string; subject: string; login?: string }) {
+    if (!IDP_NAME.test(who.provider) || !IDP_SUBJECT.test(who.subject)) throw new ActorError('name the provider (github) and its id for the person (GitHub\'s numeric user id)');
+    const a = await this.actor(actorId);
+    if (a.kind !== 'person') throw new ActorError(`${actorId} is an agent: only a person signs in`);
+    try {
+      await this.db.query(`insert into identity(provider, subject, actor_id, login) values ($1, $2, $3, $4)`,
+        [who.provider, who.subject, actorId, who.login ?? who.subject]);
+    } catch (e) {
+      if (String(e).includes('identity_pkey')) {
+        const holder = (await this.db.query<{ actor_id: string }>(`select actor_id from identity where provider = $1 and subject = $2`, [who.provider, who.subject])).rows[0]?.actor_id;
+        throw new ActorError(`that ${who.provider} identity is already linked to ${holder}`);
+      }
+      if (String(e).includes('identity_one_per_provider')) throw new ActorError(`${actorId} is already linked to a ${who.provider} identity`);
+      throw e;
+    }
+  }
+
+  /** A person's identities, provider and login. */
+  async identities(actorId: string): Promise<{ provider: string; subject: string; login: string }[]> {
+    return (await this.db.query<{ provider: string; subject: string; login: string }>(
+      `select provider, subject, login from identity where actor_id = $1 order by provider`, [actorId])).rows;
+  }
+
+  /**
+   * Registers a public client (RFC 7591): one with no secret, as every MCP client is, that receives
+   * codes only at `redirectUris` (validRedirectUri). Returns its client id.
+   */
+  async registerClient(c: { name?: string; redirectUris: string[] }): Promise<OAuthClient> {
+    const uris = [...new Set(c.redirectUris)];
+    if (!uris.length || uris.length > 10) throw new OAuthGrantError('invalid_redirect_uri', 'register 1 to 10 redirect URIs');
+    for (const u of uris) if (!validRedirectUri(u)) throw new OAuthGrantError('invalid_redirect_uri', `${u.slice(0, 200)} isn't a redirect URI Kolab sends codes to: use https, http on a loopback address, or an app's own scheme (RFC 8252)`);
+    const name = (c.name ?? '').trim().slice(0, 200) || 'An MCP client';
+    const id = `kjcl_${randomBytes(18).toString('base64url')}`;
+    await this.db.query(`insert into oauth_client(id, name, redirect_uris) values ($1, $2, $3)`, [id, name, uris]);
+    return { id, name, redirectUris: uris };
+  }
+
+  /** A registered client, or undefined. */
+  async oauthClient(id: string): Promise<OAuthClient | undefined> {
+    const r = (await this.db.query<{ id: string; name: string; redirect_uris: string[] }>(
+      `select id, name, redirect_uris from oauth_client where id = $1`, [id])).rows[0];
+    return r && { id: r.id, name: r.name, redirectUris: r.redirect_uris };
+  }
+
+  /**
+   * Starts an authorization (GET /oauth/authorize), already checked against its client. Returns two
+   * secrets, each stored only as its key: `binding`, for the browser's cookie, and `state`, for the
+   * identity provider, so the provider's answer counts only in the browser that asked, with the
+   * state it was given (CSRF). Old requests and codes are cleared as it goes.
+   */
+  async beginAuthorization(r: { provider: string; clientId: string; redirectUri: string; clientState?: string; codeChallenge: string; scope?: string; resource?: string }): Promise<{ binding: string; state: string }> {
+    if (!PKCE_CHALLENGE.test(r.codeChallenge)) throw new OAuthGrantError('invalid_request', 'code_challenge must be an S256 challenge: 43 base64url characters');
+    const binding = randomBytes(32).toString('base64url');
+    const state = randomBytes(32).toString('base64url');
+    await this.db.query(`delete from oauth_request where expires_at < now()`);
+    await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
+    await this.db.query(
+      `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10 * interval '1 second')`,
+      [sessionKey(binding), sessionKey(state), r.provider, r.clientId, r.redirectUri, r.clientState ?? null, r.codeChallenge,
+        r.scope ?? null, r.resource ?? null, this.oauth.requestTtlS]);
+    return { binding, state };
+  }
+
+  /**
+   * The identity provider's answer reached the browser that asked: the authorization is now the
+   * person's to consent to. Returns the consent form's token (stored as its key). Refused if the
+   * binding and state don't belong to one unexpired authorization not yet identified.
+   */
+  async identifyAuthorization(binding: string, state: string, person: string): Promise<{ csrf: string }> {
+    const csrf = randomBytes(32).toString('base64url');
+    const r = await this.db.query(
+      `update oauth_request set actor_id = $3, csrf_key = $4
+        where id = $1 and state_key = $2 and actor_id is null and expires_at > now() returning id`,
+      [sessionKey(binding), sessionKey(state), person, sessionKey(csrf)]);
+    if (!r.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
+    return { csrf };
+  }
+
+  /** The authorization a browser's binding names, while it lasts, for the consent page. */
+  async pendingAuthorization(binding: string): Promise<PendingAuthorization | undefined> {
+    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string }>(
+      `select client_id, redirect_uri, client_state, scope, actor_id, provider from oauth_request where id = $1 and expires_at > now()`, [sessionKey(binding)])).rows[0];
+    return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider };
+  }
+
+  /**
+   * What the consent page offers a person: the kolabs they can reach, with their access there, and
+   * their own agents (D30), each live.
+   */
+  async consentOptions(person: string): Promise<{ kolabs: { id: string; title: string; access: Access }[]; agents: string[] }> {
+    const kolabs = [];
+    for (const id of await this.reachable(person)) {
+      const k = await this.requireKolab(id);
+      if (!k.archived) kolabs.push({ id, title: k.title, access: await accessIn(this.db, person, id) });
+    }
+    return { kolabs, agents: (await this.listActors({ owner: person })).map((a) => a.id) };
+  }
+
+  /**
+   * The person consents (POST /oauth/consent, with the form's `csrf` token): the client may act as
+   * them, or as an agent of theirs, in one kolab and role. A new kolab of their own (D54, with
+   * makeOwnKolab's limits) or a new agent of theirs (addOwnAgent) may be made on the way. An agent
+   * reaches the kolab by its own grant, never more than its owner holds there (D30): if it has
+   * none, it is granted what its owner holds, at most Write. With `selfOnly` (the web interface,
+   * which is for people), only the person themselves. Returns the authorization code, one use, and
+   * where to send it; the authorization is used up.
+   */
+  async consent(binding: string, csrf: string, choice: ConsentChoice, opts: { selfOnly?: boolean } = {}): Promise<{ code: string; redirectUri: string; clientState: string | null }> {
+    const req = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string | null }>(
+      `select client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id from oauth_request
+        where id = $1 and csrf_key = $2 and expires_at > now()`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+    if (!req?.actor_id) throw new OAuthGrantError('access_denied', 'this sign-in expired or was already used; start again');
+    const person = req.actor_id;
+    if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
+    if (!ROLES.includes(choice.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
+    if (opts.selfOnly && choice.as.kind !== 'self') throw new AccessError('the web interface is for people: sign in as yourself');
+    let kolab: string;
+    if (typeof choice.kolab === 'string') kolab = choice.kolab;
+    else {
+      await this.makeOwnKolab(person, choice.kolab.name, choice.kolab.title);
+      kolab = choice.kolab.name;
+    }
+    if (!(await accessIn(this.db, person, kolab)).level) throw new AccessError(`no kolab ${kolab} you can reach`);
+    let actor = person;
+    if (choice.as.kind === 'agent') {
+      const a = await this.findActor(choice.as.agent);
+      if (!a || a.kind !== 'agent' || a.owner !== person || await this.archivedActor(a.id)) throw new AccessError(`no agent ${choice.as.agent} of yours`);
+      actor = a.id;
+    } else if (choice.as.kind === 'new-agent') {
+      actor = await this.addOwnAgent(person, choice.as.label);
+    }
+    if (actor !== person) await this.grantOwnAgent(person, actor, kolab);
+    if (!(await accessIn(this.db, actor, kolab)).level) throw new AccessError(`${actor} has no access to kolab ${kolab}`);
+    const code = `kjc_${randomBytes(24).toString('base64url')}`;
+    const scope = grantedScope(kolab, choice.role);
+    await this.db.transaction(async (tx) => {
+      // One use: whichever submission deletes the request issues the code.
+      const used = await tx.query(`delete from oauth_request where id = $1 and csrf_key = $2 returning id`, [sessionKey(binding), sessionKey(csrf)]);
+      if (!used.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in was already used; start again');
+      await tx.query(
+        `insert into oauth_code(key, client_id, redirect_uri, code_challenge, person_id, actor_id, kolab, role, scope, resource, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 second')`,
+        [sessionKey(code), req.client_id, req.redirect_uri, req.code_challenge, person, actor, kolab, choice.role, scope, req.resource, this.oauth.codeTtlS]);
+    });
+    return { code, redirectUri: req.redirect_uri, clientState: req.client_state };
+  }
+
+  /**
+   * The identity provider answered with an error (the person cancelled there): the authorization
+   * whose binding and state these are is dropped. Returns where to tell the client.
+   */
+  async abandonAuthorization(binding: string, state: string): Promise<{ redirectUri: string; clientState: string | null } | undefined> {
+    const r = (await this.db.query<{ redirect_uri: string; client_state: string | null }>(
+      `delete from oauth_request where id = $1 and state_key = $2 and actor_id is null returning redirect_uri, client_state`,
+      [sessionKey(binding), sessionKey(state)])).rows[0];
+    return r && { redirectUri: r.redirect_uri, clientState: r.client_state };
+  }
+
+  /** The person declined: the authorization is dropped. Returns where to tell the client, if it was theirs to decline. */
+  async declineAuthorization(binding: string, csrf: string): Promise<{ redirectUri: string; clientState: string | null } | undefined> {
+    const r = (await this.db.query<{ redirect_uri: string; client_state: string | null }>(
+      `delete from oauth_request where id = $1 and csrf_key = $2 returning redirect_uri, client_state`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+    return r && { redirectUri: r.redirect_uri, clientState: r.client_state };
+  }
+
+  /**
+   * Exchanges an authorization code (POST /oauth/token, RFC 6749 §4.1.3) for an access token and a
+   * refresh token: once, by the client it was issued to, at the same redirect URI, with the PKCE
+   * verifier of its challenge (S256). A code used a second time revokes the grant it opened. The
+   * grant's session opens in the consented kolab and role, under the access lock, with access
+   * checked as any session's is; it replaces any session its actor already holds (ENF4: one each),
+   * whose streams are told (D41), so the newest sign-in wins.
+   */
+  async exchangeCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string }): Promise<OAuthTokens> {
+    const key = sessionKey(p.code);
+    const access = newSessionToken();
+    const refresh = `kjr_${randomBytes(32).toString('base64url')}`;
+    const grantId = randomBytes(24).toString('base64url');
+    let replayed: string | null = null;
+    const out = await this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      const c = (await tx.query<{ client_id: string; redirect_uri: string; code_challenge: string; person_id: string; actor_id: string; kolab: string; role: Role; scope: string; resource: string | null; expired: boolean; used_at: Date | null; grant_id: string | null }>(
+        `select client_id, redirect_uri, code_challenge, person_id, actor_id, kolab, role, scope, resource, expires_at <= now() as expired, used_at, grant_id
+           from oauth_code where key = $1 for update`, [key])).rows[0];
+      if (!c || c.client_id !== p.clientId) return undefined;
+      if (c.used_at) { replayed = c.grant_id; return undefined; }
+      if (c.expired || c.redirect_uri !== p.redirectUri || !PKCE_VERIFIER.test(p.codeVerifier)
+          || createHash('sha256').update(p.codeVerifier).digest('base64url') !== c.code_challenge) return undefined;
+      if (p.resource !== undefined && c.resource !== null && p.resource !== c.resource) return undefined;
+      // The newest sign-in wins: the actor's one open session ends (ENF4), and its streams close (D41).
+      for (const { id } of (await tx.query<{ id: string }>(`update session set ended_at = now() where actor_id = $1 and ended_at is null returning id`, [c.actor_id])).rows) {
+        await signal({ session: 'ended', id });
+      }
+      await tx.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, resource, expires_at)
+                      values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second')`,
+        [grantId, c.client_id, c.actor_id, c.person_id, c.scope, c.resource, this.oauth.refreshTtlS]);
+      await tx.query(`update oauth_code set used_at = now(), grant_id = $2 where key = $1`, [key, grantId]);
+      const session = await insertSession(tx, access, { actor: c.actor_id, role: c.role, kolab: c.kolab, grant: grantId, ttlS: this.oauth.accessTtlS });
+      if (!(await accessIn(tx, c.actor_id, c.kolab)).level) throw new OAuthGrantError('access_denied', `${c.actor_id} can no longer reach kolab ${c.kolab}`);
+      await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
+        [sessionKey(refresh), grantId, this.oauth.refreshTtlS]);
+      return { accessToken: access, refreshToken: refresh, expiresIn: this.oauth.accessTtlS, scope: c.scope, session, actor: c.actor_id, kolab: c.kolab, role: c.role };
+    }).catch((e) => {
+      if (/is archived/.test(String(e))) throw new OAuthGrantError('access_denied', String((e as Error).message ?? e));
+      throw e;
+    });
+    if (replayed) await this.revokeGrant(replayed);
+    if (!out) throw new OAuthGrantError('invalid_grant', 'that authorization code is unknown, expired, already used, or was issued to another client, redirect URI or PKCE verifier');
+    return out;
+  }
+
+  /**
+   * Refreshes a grant (RFC 6749 §6): a new access token for its session, and a new refresh token
+   * in place of the one used (rotation). The session keeps its id, kolab and role; its access is
+   * checked again, and one that can no longer reach its kolab ends. A refresh token used once
+   * before, past refreshGraceS, is a replay: the grant is revoked and its session ends (D41).
+   */
+  async refreshGrant(p: { refreshToken: string; clientId: string }): Promise<OAuthTokens> {
+    const key = sessionKey(p.refreshToken);
+    const access = newSessionToken();
+    const refresh = `kjr_${randomBytes(32).toString('base64url')}`;
+    let replayed: string | null = null;
+    const out = await this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      const t = (await tx.query<{ grant_id: string; client_id: string; used_long_ago: boolean | null; dead: boolean; scope: string }>(
+        `select t.grant_id, g.client_id, (t.used_at is not null and t.used_at < now() - $2 * interval '1 second') as used_long_ago,
+                (t.used_at is not null or t.expires_at <= now() or g.revoked_at is not null or g.expires_at <= now()) as dead, g.scope
+           from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where t.key = $1 for update of t`, [key, this.oauth.refreshGraceS])).rows[0];
+      if (!t || t.client_id !== p.clientId) return undefined;
+      if (t.used_long_ago) { replayed = t.grant_id; return undefined; }
+      if (t.dead) return undefined;
+      const s = (await tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role }>(
+        `select id, actor_id, kolab_id, active_role from session where grant_id = $1 and ended_at is null for update`, [t.grant_id])).rows[0];
+      if (!s) return undefined;
+      if (!(await accessIn(tx, s.actor_id, s.kolab_id)).level) {
+        await tx.query(`update session set ended_at = now() where id = $1`, [s.id]);
+        await signal({ session: 'ended', id: s.id });
+        return 'unreachable' as const;
+      }
+      await tx.query(`update oauth_refresh_token set used_at = now() where key = $1`, [key]);
+      await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
+        [sessionKey(refresh), t.grant_id, this.oauth.refreshTtlS]);
+      await tx.query(`update oauth_grant set expires_at = now() + $2 * interval '1 second' where id = $1`, [t.grant_id, this.oauth.refreshTtlS]);
+      await tx.query(`update session set token_key = $2, expires_at = now() + $3 * interval '1 second' where id = $1`,
+        [s.id, sessionKey(access), this.oauth.accessTtlS]);
+      return { accessToken: access, refreshToken: refresh, expiresIn: this.oauth.accessTtlS, scope: grantedScope(s.kolab_id, s.active_role), session: s.id, actor: s.actor_id, kolab: s.kolab_id, role: s.active_role };
+    });
+    if (replayed) await this.revokeGrant(replayed);
+    if (out === 'unreachable') throw new OAuthGrantError('invalid_grant', 'this grant\'s actor can no longer reach its kolab; sign in again');
+    if (!out) throw new OAuthGrantError('invalid_grant', 'that refresh token is unknown, expired, revoked, already used, or was issued to another client; sign in again');
+    return out;
+  }
+
+  /**
+   * Revokes the grant a refresh token or an access token belongs to (RFC 7009), ending its session
+   * so its streams close (D41). A hand-issued token, or one that matches nothing, is left alone,
+   * and so is one issued to another client than `clientId`, when given. Returns whether a grant was revoked.
+   */
+  async revokeToken(token: string, opts: { clientId?: string } = {}): Promise<boolean> {
+    const key = sessionKey(token);
+    const g = (await this.db.query<{ id: string; client_id: string }>(
+      token.startsWith('kjr_')
+        ? `select g.id, g.client_id from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where t.key = $1`
+        : `select g.id, g.client_id from session s join oauth_grant g on g.id = s.grant_id where s.token_key = $1`, [key])).rows[0];
+    if (!g || (opts.clientId !== undefined && opts.clientId !== g.client_id)) return false;
+    await this.revokeGrant(g.id);
+    return true;
+  }
+
+  /** Revokes a grant: no refresh renews it, and its session ends, telling its streams (D41). */
+  private async revokeGrant(grantId: string): Promise<void> {
+    await this.inTransaction(async (tx, signal) => {
+      await tx.query(`update oauth_grant set revoked_at = coalesce(revoked_at, now()) where id = $1`, [grantId]);
+      for (const { id } of (await tx.query<{ id: string }>(`update session set ended_at = now() where grant_id = $1 and ended_at is null returning id`, [grantId])).rows) {
+        await signal({ session: 'ended', id });
+      }
+    });
+  }
+
+  /**
+   * A person makes an agent of their own (D30, D55), `<person>-<label>`, to authorize a harness
+   * as. The label is up to 24 lowercase letters, digits and '-'; the name must be free, as any
+   * actor's (D52); a person makes at most `oauth.agentsPerPerson` agents, and at most 3 in 10 minutes.
+   */
+  async addOwnAgent(person: string, label: string): Promise<string> {
+    const p = await this.actor(person);
+    if (p.kind !== 'person') throw new AccessError(`${person} is an agent: only a person makes agents`);
+    if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent name: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
+    const id = `${person}-${label}`;
+    const owned = (await this.listActors({ owner: person, archived: true })).length;
+    if (owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${owned} agents, the most a person may make here (${this.oauth.agentsPerPerson})`);
+    const now = Date.now();
+    const recent = (this.ownAgentTimes.get(person) ?? []).filter((t) => now - t < 10 * 60_000);
+    if (recent.length >= 3) throw new ActorError(`you made ${recent.length} agents in the last 10 minutes; wait a while before making another`);
+    await this.addActor(id, { owner: person });
+    this.ownAgentTimes.set(person, [...recent, now]);
+    return id;
+  }
+
+  /**
+   * Gives a person's own agent access to a kolab where it has none (D30): what its owner holds
+   * there, at most Write, on the layers its owner writes. A grant an admin or the kolab's owners
+   * gave it stands as it is.
+   */
+  private async grantOwnAgent(person: string, agent: string, kolab: string) {
+    if ((await accessIn(this.db, agent, kolab)).level) return;
+    const mine = await accessIn(this.db, person, kolab);
+    if (!mine.level) throw new AccessError(`no kolab ${kolab} you can reach`);
+    const writes = ACCESS_LEVELS.indexOf(mine.level) >= ACCESS_LEVELS.indexOf('write');
+    if (writes && mine.layers.length) await this.grant(kolab, agent, 'write', { layers: mine.layers });
+    else await this.grant(kolab, agent, writes ? 'read' : mine.level);
+  }
+
   // ---- accounts, kolabs, teams and grants (TEN1–TEN11) -----------------------
 
   private async findAccount(id: string) {
@@ -1589,9 +2104,22 @@ export class Kolab {
     if (!s.access.level || ACCESS_LEVELS.indexOf(s.access.level) < ACCESS_LEVELS.indexOf('write')) {
       throw new AccessError(`making a kolab needs Write where you work; you hold ${describeAccess(s.access)} in ${s.kolab}`);
     }
+    await this.makeOwnKolab(s.actor_id, name, opts.title);
+  }
+
+  /**
+   * A private kolab owned by `person`, with createOwnKolab's limits but the session's: the name
+   * grammar and reserved names, the title, the cap per person and the rate. A person signing in
+   * makes one this way (D54, D55): someone new has no kolab to hold Write in yet.
+   */
+  async makeOwnKolab(person: string, name: string, titleGiven: string): Promise<void> {
+    const p = await this.actor(person);
+    if (p.kind !== 'person') throw new AccessError(`${person} is an agent: only a person makes a kolab of their own`);
+    if (await this.archivedActor(person)) throw new AccessError(`${person} is archived, so it owns no new kolab`);
+    const s = { actor_id: person };
     if (!isKolabName(name) || name.length > 40) throw new TenancyError(`"${name}" isn't a valid kolab name: up to 40 lowercase letters, digits and '-', starting with a letter or digit`);
     if (isReservedKolabName(name)) throw new TenancyError(`the kolab name ${name} is reserved for Konjir's own kolabs; choose another`);
-    const title = opts.title.trim();
+    const title = titleGiven.trim();
     if (!title || title.length > 100) throw new TenancyError('a kolab\'s title is 1 to 100 characters');
     const now = Date.now();
     const recent = (this.ownKolabTimes.get(s.actor_id) ?? []).filter((t) => now - t < this.ownKolabs.windowMs);
@@ -1622,18 +2150,19 @@ export class Kolab {
   async switchSession(sessionId: string, to: { kolab: string; role: Role }): Promise<string> {
     if (!ROLES.includes(to.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
     await this.requireKolab(to.kolab);
-    const id = `kjs_${randomBytes(24).toString('base64url')}`;
+    const token = newSessionToken();
     await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      const old = (await tx.query<{ id: string; actor_id: string }>(
-        `update session set ended_at = now() where id = $1 and ended_at is null returning id, actor_id`, [sessionKey(sessionId)])).rows[0];
+      const old = (await tx.query<{ id: string; actor_id: string; grant_id: string | null }>(
+        `update session s set ended_at = now() where ${LIVE_SESSION} returning s.id, s.actor_id, s.grant_id`, [sessionKey(sessionId)])).rows[0];
       if (!old) throw new RoleError('this session has ended');
       // Access first, so an archived kolab is refused as any other it can't reach, saying nothing of the archive (D52).
       if (!(await accessIn(tx, old.actor_id, to.kolab)).level) throw new AccessError(`no kolab ${to.kolab} you can reach`);
-      await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [sessionKey(id), old.actor_id, to.role, to.kolab]);
+      // A grant's session moves with its grant (D55): the new one carries it, with a fresh access token, so the refresh token keeps working.
+      await insertSession(tx, token, { actor: old.actor_id, role: to.role, kolab: to.kolab, grant: old.grant_id, ttlS: this.oauth.accessTtlS });
       await signal({ session: 'ended', id: old.id });
     });
-    return id;
+    return token;
   }
 
   /**
@@ -4259,7 +4788,7 @@ export class Kolab {
   async sessionInfo(sessionId: string) {
     const s = await this.session(sessionId);
     return {
-      session: sessionKey(sessionId), actor: s.actor_id, kind: s.kind, owner: s.owner,
+      session: s.id, actor: s.actor_id, kind: s.kind, owner: s.owner,
       role: s.active_role, layer: LAYER_OF_ROLE[s.active_role], kolab: s.kolab, access: s.access,
     };
   }
@@ -4842,7 +5371,29 @@ interface MarkInput {
 }
 
 /** An open session: its actor, role and kolab, and the actor's access there now. */
+/** A new bearer token for a session: random, not a sortable ULID. An OAuth access token is one too (D55). */
+const newSessionToken = () => `kjs_${randomBytes(24).toString('base64url')}`;
+
+/**
+ * Inserts an open session for `token`. A hand-issued session's id is its token's key (P1). A
+ * grant's (D55) gets an id of its own, random and never a token's key, with its access token's key
+ * and expiry beside it, so the token can rotate while the session, and its id, stay.
+ */
+async function insertSession(tx: Q, token: string, s: { actor: string; role: Role; kolab: string; grant?: string | null; ttlS?: number }) {
+  if (!s.grant) {
+    await tx.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, $2, $3, $4)`, [sessionKey(token), s.actor, s.role, s.kolab]);
+    return sessionKey(token);
+  }
+  const id = randomBytes(32).toString('base64url');
+  await tx.query(
+    `insert into session(id, actor_id, active_role, kolab_id, grant_id, token_key, expires_at)
+     values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second')`, [id, s.actor, s.role, s.kolab, s.grant, sessionKey(token), s.ttlS ?? 900]);
+  return id;
+}
+
 interface Session {
+  /** The session's id: its key, which whoami and events name it by. */
+  id: string;
   actor_id: string; active_role: Role; kolab: string; kind: ActorKind; owner: string | null; access: Access;
 }
 

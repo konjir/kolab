@@ -1,10 +1,15 @@
-# The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL.
+# The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL,
+# and the GitHub OAuth app's client id and secret once they are set (D55).
 # Nothing else: Kolab makes no model calls (REV5), so it has no Bedrock access.
 
 variable "name" { type = string }
 variable "artifact_bucket_arn" { type = string }
 variable "admin_token_param_arn" { type = string }
 variable "database_url_param_arn" { type = string }
+variable "github_param_arns" {
+  type    = list(string)
+  default = []
+}
 
 data "aws_partition" "current" {}
 
@@ -42,7 +47,7 @@ data "aws_iam_policy_document" "kolab" {
   statement {
     sid       = "ReadAdminTokenAndDatabaseUrl"
     actions   = ["ssm:GetParameter"]
-    resources = [var.admin_token_param_arn, var.database_url_param_arn]
+    resources = concat([var.admin_token_param_arn, var.database_url_param_arn], var.github_param_arns)
   }
 }
 

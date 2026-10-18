@@ -177,15 +177,15 @@ test('archiving closes the listen streams of every session it ends: a person\'s 
   await expect(call(again, 'admin_archive', { kolab: 'test' })).rejects.toThrow(/konjir_admin_archive is an admin verb/);
 });
 
-/** Ends the next session whose token is checked, right after that check: between a request's auth and its listen gate. */
+/** Ends the next session whose token is checked, right after that check: between a request's auth (liveSession) and its listen gate. */
 function endAfterAuth(server: KonjirServer) {
   const kolab = server.kolab;
-  const sessionOpen = kolab.sessionOpen.bind(kolab);
-  kolab.sessionOpen = async (id) => {
-    const open = await sessionOpen(id);
-    kolab.sessionOpen = sessionOpen;
+  const liveSession = kolab.liveSession.bind(kolab);
+  kolab.liveSession = async (id) => {
+    const live = await liveSession(id);
+    kolab.liveSession = liveSession;
     await kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(id)]);
-    return open;
+    return live;
   };
 }
 
@@ -226,8 +226,9 @@ test('a listen stream whose session can\'t be checked is refused as gate_failed,
   const kolab = server.kolab;
   const sessionOpen = kolab.sessionOpen.bind(kolab);
   let calls = 0;
+  // The first check is the listen gate's: the request's own auth checks the token with liveSession.
   kolab.sessionOpen = async (id) => {
-    if (++calls === 2) { kolab.sessionOpen = sessionOpen; throw new Error(`connection terminated while checking ${id}`); }
+    if (++calls === 1) { kolab.sessionOpen = sessionOpen; throw new Error(`connection terminated while checking ${id}`); }
     return sessionOpen(id);
   };
   const warned: string[] = [];
@@ -330,16 +331,19 @@ test('each change checks every listening session in one query, however many stre
   for (const l of listeners) for (let j = 0; j < 3; j++) await l.client.listen({ resourceSubscriptions: [INBOX] });
 
   const kolab = server.kolab;
-  const counts = { openSessions: 0, sessionOpen: 0 };
-  const openSessions = kolab.openSessions.bind(kolab);
+  const counts = { liveSessions: 0, liveSession: 0, sessionOpen: 0 };
+  const liveSessions = kolab.liveSessions.bind(kolab);
+  const liveSession = kolab.liveSession.bind(kolab);
   const sessionOpen = kolab.sessionOpen.bind(kolab);
-  kolab.openSessions = (ids) => { counts.openSessions++; return openSessions(ids); };
+  kolab.liveSessions = (ids) => { counts.liveSessions++; return liveSessions(ids); };
+  kolab.liveSession = (id) => { counts.liveSession++; return liveSession(id); };
   kolab.sessionOpen = (id) => { counts.sessionOpen++; return sessionOpen(id); };
 
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   await until('all 12 streams to hear it', () => listeners.every((l) => l.updates.length === 3));
-  expect(counts.openSessions).toBe(1);
-  expect(counts.sessionOpen).toBe(1); // the asker's own auth check, nothing per stream
+  expect(counts.liveSessions).toBe(1);
+  expect(counts.liveSession).toBe(1); // the asker's own auth check, nothing per stream
+  expect(counts.sessionOpen).toBe(0);
   await server.close();
 });
 
@@ -351,8 +355,8 @@ test('a failed session check holds back that one change, and closes no stream', 
   const sub = await pm.client.listen({ resourceSubscriptions: [INBOX] });
 
   const kolab = server.kolab;
-  const openSessions = kolab.openSessions.bind(kolab);
-  kolab.openSessions = async () => { kolab.openSessions = openSessions; throw new Error('connection terminated unexpectedly'); };
+  const liveSessions = kolab.liveSessions.bind(kolab);
+  kolab.liveSessions = async () => { kolab.liveSessions = liveSessions; throw new Error('connection terminated unexpectedly'); };
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   await new Promise((r) => setTimeout(r, 200));
   expect(pm.updates).toStrictEqual([]);
