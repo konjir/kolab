@@ -4,7 +4,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import { Kolab, OAuthGrantError, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
-import { els, openKolab, people, rejection } from '../src/testing.js';
+import { els, openKolab, people, persistentStore, rejection } from '../src/testing.js';
+
+const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
 
 const github = (subject: string, login: string, name?: string) => ({ provider: 'github', subject, login, name });
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
@@ -52,7 +54,7 @@ test('a login that is taken, in any case, by a live or archived account or actor
   }
   // A login that reads as an existing person's agent, <person>-<label>, can't pass for one (D30).
   expect(await kolab.signInWith(github('8', 'Alice-Claude'))).toStrictEqual({ actor: 'gh_alice-claude', created: true });
-  expect(await kolab.signInWith(github('9', 'acme-bot'))).toStrictEqual({ actor: 'acme-bot', created: true });   // acme is an organization, not a person
+  expect(await kolab.signInWith(github('9', 'acme-bot'))).toStrictEqual({ actor: 'gh_acme-bot', created: true });   // nor for an organization's (D30)
   expect(await kolab.signInWith(github('10', 'nobody-here'))).toStrictEqual({ actor: 'nobody-here', created: true });
   expect(await kolab.actor('alice')).toMatchObject({ kind: 'person' });   // untouched
 });
@@ -299,4 +301,73 @@ test('the cap on a person\'s agents holds for calls at once; unused registered c
   await kolab.db.query(`update oauth_client set last_used_at = now() - interval '31 days' where id = $1`, [used.id]);
   expect(await kolab.pruneClients()).toBe(1);
   expect([await kolab.oauthClient(used.id), (await kolab.oauthClient(fresh.id))?.id]).toStrictEqual([undefined, fresh.id]);
+});
+
+test('whoever takes a name first keeps it: a person lee-claude who signed up before lee stays a person, and lee\'s label claude is refused', async () => {
+  const kolab = await openKolab();
+  expect(await kolab.signInWith(github('31', 'lee-claude'))).toStrictEqual({ actor: 'lee-claude', created: true });   // no lee yet
+  expect(await kolab.signInWith(github('32', 'lee'))).toStrictEqual({ actor: 'lee', created: true });
+  expect(await kolab.actor('lee-claude')).toMatchObject({ kind: 'person', owner: null });   // shown as a person, never as lee's agent
+  expect(await rejection(kolab.addOwnAgent('lee', 'claude'))).toMatch(/lee-claude is a person here, not an agent of yours: choose another label/);
+  await kolab.addOrganization('lee-bots');
+  expect(await rejection(kolab.addOwnAgent('lee', 'bots'))).toMatch(/lee-bots is an organization here/);
+  expect(await kolab.addOwnAgent('lee', 'pm')).toBe('lee-pm');
+  // And now lee exists, a newcomer whose login reads as lee's agent doesn't take it.
+  expect(await kolab.signInWith(github('33', 'lee-eng'))).toStrictEqual({ actor: 'gh_lee-eng', created: true });
+});
+
+test('D56 on every use: an agent holds nothing where its owner reads only by visibility, and loses its access, and session, when the owner\'s team grant goes', async () => {
+  const kolab = await openKolab();
+  const { actor: zoe } = await kolab.signInWith(github('40', 'zoe'));
+  await kolab.addOrganization('acme');
+  await kolab.addMember('acme', zoe);
+  await kolab.addTeam('acme', 'devs');
+  await kolab.addTeamMember('acme/devs', zoe);
+  await kolab.createKolab('pub-app', { owner: 'acme', visibility: 'public' });
+  await kolab.grant('pub-app', 'acme/devs', 'write');
+  const t = await (await authorized(kolab, zoe, { as: { kind: 'new-agent', label: 'claude' }, kolab: 'pub-app', role: 'product' })).tokens();
+  expect((await kolab.access('zoe-claude', 'pub-app')).level).toBe('write');
+  const ended: string[] = [];
+  kolab.onEvent((e) => { if ('session' in e) ended.push(e.id); });
+  await kolab.revoke('pub-app', 'acme/devs');
+  expect(await kolab.access(zoe, 'pub-app')).toStrictEqual({ level: 'read', layers: [] });   // public: she still reads it
+  expect(await kolab.access('zoe-claude', 'pub-app')).toStrictEqual({ level: null, layers: [] });   // her agent, nothing
+  expect(ended).toStrictEqual([t.session]);
+  expect(await kolab.sessionOpen(t.accessToken)).toBe(false);
+  // An admin's grant to an agent counts no more than its owner lends: nothing here.
+  expect(await rejection(kolab.grant('pub-app', 'zoe-claude', 'read'))).toMatch(/holds no access/);
+
+  // A plain member of the owning organization, of a public kolab with no base permission, reads it only by its visibility.
+  await kolab.createKolab('pub2', { owner: 'acme', visibility: 'public' });
+  expect(await rejection(authorized(kolab, zoe, { as: { kind: 'agent', agent: 'zoe-claude' }, kolab: 'pub2', role: 'product' }))).toMatch(/only because it is public/);
+  expect((await kolab.db.query(`select 1 from kolab_grant where kolab_id = 'pub2'`)).rows).toStrictEqual([]);
+  // An internal kolab she reads as a member, through the organization: her agent may read it too.
+  await kolab.createKolab('inside', { owner: 'acme', visibility: 'internal' });
+  const inside = await (await authorized(kolab, zoe, { as: { kind: 'agent', agent: 'zoe-claude' }, kolab: 'inside', role: 'product' })).tokens();
+  expect((await kolab.sessionInfo(inside.accessToken)).access).toStrictEqual({ level: 'read', layers: [] });
+});
+
+(onPostgres ? test : test.skip)('two Kolab processes at once: the agent cap and rate, and the kolab cap, hold in the database', async () => {
+  const store = await persistentStore();
+  const a = await openKolab(store);
+  const b = await openKolab(store);
+  const { actor } = await a.signInWith(github('50', 'par'));
+  a.oauth.agentsPerPerson = b.oauth.agentsPerPerson = 10;
+  const agents = await Promise.allSettled(['a', 'b', 'c', 'd', 'e', 'f'].map((l, i) => (i % 2 ? a : b).addOwnAgent(actor, l)));
+  expect(agents.filter((x) => x.status === 'fulfilled').length).toBe(3);   // 3 in 10 minutes, across both
+  expect((await a.listActors({ owner: actor })).length).toBe(3);
+  a.ownKolabs.max = b.ownKolabs.max = 2;
+  a.ownKolabs.burst = b.ownKolabs.burst = 100;
+  const kolabs = await Promise.allSettled(['k1', 'k2', 'k3', 'k4'].map((n, i) => (i % 2 ? a : b).makeOwnKolab(actor, `par-${n}`, n)));
+  expect(kolabs.filter((x) => x.status === 'fulfilled').length).toBe(2);
+  a.ownKolabs.burst = b.ownKolabs.burst = 1;
+  a.ownKolabs.max = b.ownKolabs.max = 10;
+  expect(await rejection(b.makeOwnKolab(actor, 'par-k5', 'k5'))).toMatch(/wait a while/);
+  // One consent form, submitted to both at once, makes one thing.
+  const client = (await a.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  a.ownKolabs.burst = b.ownKolabs.burst = 100;
+  const { binding, state } = await a.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256('v'.repeat(43)) });
+  const { csrf } = await a.identifyAuthorization(binding, state, actor);
+  const tries = await Promise.allSettled([a, b, a, b].map((k, i) => k.consent(binding, csrf, { as: { kind: 'self' }, kolab: { name: `par-c${i}`, title: 'c' }, role: 'product' })));
+  expect(tries.filter((x) => x.status === 'fulfilled').length).toBe(1);
 });

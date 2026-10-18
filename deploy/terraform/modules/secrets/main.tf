@@ -3,17 +3,21 @@
 
 variable "name" { type = string }
 
-# The GitHub OAuth app people sign in with (D55). Empty until Lee registers the app: then Kolab
-# runs without GitHub sign-in, as before. The secret is a SecureString, and, like the admin
-# token, it is also in Terraform state.
+# The GitHub OAuth app people sign in with (D55). Its client id is public, so Terraform keeps
+# it as a String parameter. Its client secret is never Terraform's: Lee puts it himself as the
+# SecureString /konjir/<name>/github-client-secret (README, "Deploying to AWS for testing"), so it
+# is in no Terraform variable, file or state. The instance may read it by that name.
 variable "github_client_id" {
   type    = string
   default = ""
 }
-variable "github_client_secret" {
-  type      = string
-  default   = ""
-  sensitive = true
+
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+locals {
+  github_client_secret_name = "/konjir/${var.name}/github-client-secret"
 }
 
 resource "random_password" "admin_token" {
@@ -40,23 +44,12 @@ resource "aws_ssm_parameter" "github_client_id" {
   value       = var.github_client_id
 }
 
-resource "aws_ssm_parameter" "github_client_secret" {
-  #checkov:skip=CKV_AWS_337:SecureString with the AWS-managed SSM key; a customer-managed key is a production step
-  count       = var.github_client_id == "" ? 0 : 1
-  name        = "/konjir/${var.name}/github-client-secret"
-  description = "Client secret of the GitHub OAuth app Kolab signs people in with (D55)"
-  type        = "SecureString"
-  value       = var.github_client_secret
-
-  lifecycle {
-    precondition {
-      condition     = var.github_client_secret != ""
-      error_message = "github_client_secret must be set with github_client_id."
-    }
-  }
-}
-
-# Kolab's start script finds them beside the admin token: /konjir/<name>/github-client-id and -secret.
+# Kolab's start script finds them beside the admin token: /konjir/<name>/github-client-id, and the
+# secret Lee puts by hand, named here by its ARN whether or not it exists yet.
 output "github_param_arns" {
-  value = concat(aws_ssm_parameter.github_client_id[*].arn, aws_ssm_parameter.github_client_secret[*].arn)
+  value = concat(aws_ssm_parameter.github_client_id[*].arn, [
+    "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.github_client_secret_name}",
+  ])
 }
+
+output "github_client_secret_param_name" { value = local.github_client_secret_name }

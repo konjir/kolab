@@ -35,10 +35,9 @@ module "storage" {
 }
 
 module "secrets" {
-  source               = "./modules/secrets"
-  name                 = var.name
-  github_client_id     = var.github_oauth_client_id
-  github_client_secret = var.github_oauth_client_secret
+  source           = "./modules/secrets"
+  name             = var.name
+  github_client_id = var.github_oauth_client_id
 }
 
 module "database" {

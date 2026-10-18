@@ -29,6 +29,12 @@ data "archive_file" "app" {
     "deploy/terraform/terraform.tfstate",
     "deploy/terraform/terraform.tfstate.backup",
     "deploy/terraform/.terraform.lock.hcl",
+    # Defence in depth: variable files and a browser agent's captures never ship.
+    "*.tfvars",
+    "**/*.tfvars",
+    "*.tfvars.json",
+    "**/*.tfvars.json",
+    "**/.playwright-mcp",
   ]
 }
 

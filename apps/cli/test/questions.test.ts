@@ -110,6 +110,8 @@ test('a database from the previous release is migrated on open', async () => {
       alter table session drop column grant_id, drop column token_key, drop column expires_at;
       drop table oauth_refresh_token, oauth_code, oauth_grant, oauth_request, oauth_client, identity;
       drop function kj_identity_of_person(), kj_session_id();
+      drop function kj_agent_cap(text, text);
+      alter table actor drop column created_at;
       drop policy edge_target on edge;
       drop policy version_parent on version;
       drop policy delta_base on delta;

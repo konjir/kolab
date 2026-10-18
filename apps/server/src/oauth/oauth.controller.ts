@@ -51,9 +51,10 @@ const providerVerifier = (binding: string) => createHash('sha256').update(`konji
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 
 /**
- * At most `perKey` calls in `windowMs` for any one key (a client address, a client), and at most
- * `total` in all, per process: one caller can't use up everyone's budget, and the total is a
- * backstop. Keys idle for a window are forgotten.
+ * At most `perKey` calls in `windowMs` for any one key (a client address), and at most `total` in
+ * all, per process: one caller can't use up everyone's budget, and the total is a backstop. All
+ * are checked before any is taken, so a refused call spends nothing. Keys idle for a window are
+ * forgotten.
  */
 export class Limit {
   private readonly byKey = new Map<string, number[]>();
@@ -82,7 +83,23 @@ export function clientAddress(req: Request, options: { publicHost?: string }): s
   const socket = req.socket?.remoteAddress ?? '';
   const viaProxy = !!options.publicHost && /^(127\.|::1$|::ffff:127\.)/.test(socket);
   const forwarded = typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',').pop()?.trim() : undefined;
-  return `ip:${viaProxy && forwarded ? forwarded : socket}`;
+  return `ip:${addressKey(viaProxy && forwarded ? forwarded : socket)}`;
+}
+
+/**
+ * The key a client address is limited by: an IPv4 address as it is (an IPv4-mapped IPv6 one too),
+ * and an IPv6 address by its /64, which one host or network can fill with addresses of its own.
+ */
+export function addressKey(address: string): string {
+  const a = address.trim().replace(/^\[|\]$/g, '').split('%')[0];
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(a);
+  if (mapped) return mapped[1];
+  if (!a.includes(':')) return a;
+  const [head, tail = ''] = a.toLowerCase().split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = a.includes('::') ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t] : h;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
 }
 
 /** The scope a client asks with may name a kolab and a role to preselect: `kolab:<name> role:<role>`. */
@@ -135,9 +152,12 @@ export class OAuthController {
   private readonly logger = new Logger('OAuth');
   /** Registrations: 10 an hour from one address, 500 in all. */
   private readonly registrations = new Limit(10, 500, 60 * 60_000);
-  /** Authorizations of a known client at a registered redirect URI: 30 a minute from one address, 60 for one client, 3000 in all. */
+  /**
+   * Authorizations of a known client at a registered redirect URI: 30 a minute from one address
+   * (an IPv6 /64), 3000 in all. No limit per client: a client id is public (the web interface's
+   * above all), so a limit on it would let a few addresses lock everyone out of it.
+   */
   private readonly authorizations = new Limit(30, 3000, 60_000);
-  private readonly authorizationsPerClient = new Limit(60, 3000, 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -242,7 +262,7 @@ export class OAuthController {
     if (!client) return sendError(res, 400, 'The app asked to sign in as a client this Kolab doesn\'t know. Reconnect it to register again.');
     if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri)) return sendError(res, 400, 'The app asked for its answer at an address it didn\'t register, so Kolab won\'t send it there.');
     // Counted only once the client checks out, per address and per client.
-    if (!this.authorizations.take(clientAddress(req, this.options)) || !this.authorizationsPerClient.take(`client:${clientId}`)) {
+    if (!this.authorizations.take(clientAddress(req, this.options))) {
       return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
     }
     const state = str('state');

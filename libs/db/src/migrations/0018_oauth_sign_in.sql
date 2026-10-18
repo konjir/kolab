@@ -14,6 +14,9 @@
 -- refresh. A hand-issued session has neither: its id is its token's key, as 0011 made it, and it
 -- never expires.
 --
+-- It also settles what an owner lends their agent (D56): kj_access now caps an agent at
+-- kj_agent_cap, its owner's access without what public visibility alone gives.
+--
 -- Nothing here stores a token, a code or a secret: every one is held as its sha256, base64url
 -- (P1). None of these tables is kolab data, and only Kolab's own login reads them: kj_agent and
 -- kj_system are granted nothing on them.
@@ -223,3 +226,81 @@ language sql stable security definer set search_path = pg_catalog, public, pg_te
                      from public.session s cross join lateral public.kj_access(s.actor_id, s.kolab_id) a
                     where s.id = (select public.kj_session_id())), false)
 $$;
+
+-- ---------------------------------------------------------------------------
+-- What an agent's owner lends it (D30, D56)
+-- ---------------------------------------------------------------------------
+
+-- The most an agent of `p_owner` may hold in `p_kolab`: for a user, their own access there but
+-- what they have only because the kolab is public, which gives their agents nothing (D56); for an
+-- organization, all of its own kolabs and nothing of anyone else's. So an agent whose owner's
+-- only tie to a kolab is its visibility holds nothing there, whatever grant it has, and once a
+-- team or grant behind its owner's access goes, so does the agent's, and its session ends with it.
+create function kj_agent_cap(p_owner text, p_kolab text,
+  out rank int, out functional boolean, out technical boolean)
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+  with recursive teams(id) as (
+    select tm.team_id from public.team_member tm where tm.user_id = p_owner
+    union
+    select t.parent_id from public.team t join teams on t.id = teams.id where t.parent_id is not null
+  ), o as (
+    select a.kind from public.account a where a.id = p_owner
+  ), k as (
+    select k.owner_id, k.visibility, k.base_permission, m.role as member_role
+      from public.kolab k left join public.org_member m on m.org_id = k.owner_id and m.user_id = p_owner
+     where k.id = p_kolab
+  ), src(rank, functional, technical) as (
+    select 5, true, true from k, o where k.owner_id = p_owner
+    union all
+    select 5, true, true from k, o where o.kind = 'user' and k.member_role = 'owner'
+    union all
+    select public.kj_level_rank(k.base_permission), public.kj_level_rank(k.base_permission) >= 3, public.kj_level_rank(k.base_permission) >= 3
+      from k, o where o.kind = 'user' and k.member_role is not null and k.base_permission is not null
+    union all
+    -- An internal kolab is read through the organization, not its visibility alone.
+    select 1, false, false from k, o where o.kind = 'user' and k.visibility = 'internal' and k.member_role is not null
+    union all
+    select public.kj_level_rank(g.level), g.functional, g.technical
+      from public.kolab_grant g, o
+     where o.kind = 'user' and g.kolab_id = p_kolab
+       and (g.user_id = p_owner
+            or g.team_id in (select t.id from teams join public.team t on t.id = teams.id join k on t.org_id = k.owner_id))
+  )
+  select coalesce(max(src.rank), 0), coalesce(bool_or(src.functional), false), coalesce(bool_or(src.technical), false) from src
+$$;
+revoke execute on function kj_agent_cap(text, text) from public;
+
+-- kj_access as 0014 left it, with an agent cut down to kj_agent_cap rather than its owner's whole access.
+create or replace function kj_access(p_actor text, p_kolab text,
+  out rank int, out functional boolean, out technical boolean)
+language plpgsql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+declare
+  a_kind text; a_owner text;
+  o_rank int; o_functional boolean; o_technical boolean;
+begin
+  rank := 0; functional := false; technical := false;
+  if kj_actor_archived(p_actor) or kj_kolab_archived(p_kolab) then return; end if;
+  select a.kind, a.owner_id into a_kind, a_owner from actor a where a.id = p_actor;
+  if a_kind is null then return; end if;
+  if a_kind = 'person' then
+    select p.rank, p.functional, p.technical into rank, functional, technical from kj_person_access(p_actor, p_kolab) p;
+    return;
+  end if;
+  select kj_level_rank(g.level), g.functional, g.technical into rank, functional, technical
+    from kolab_grant g where g.kolab_id = p_kolab and g.agent_id = p_actor;
+  if not found then
+    rank := 0; functional := false; technical := false;
+    return;
+  end if;
+  select c.rank, c.functional, c.technical into o_rank, o_functional, o_technical from kj_agent_cap(a_owner, p_kolab) c;
+  rank := least(rank, o_rank);
+  functional := rank >= 3 and functional and o_functional;
+  technical := rank >= 3 and technical and o_technical;
+end
+$$;
+
+-- When an actor was added, for the rate at which a person makes agents of their own (D55), in the
+-- database, so every Kolab process counts the same. Actors added before this have none.
+alter table actor add column created_at timestamptz;
+alter table actor alter column created_at set default now();
+create index actor_owner_created on actor(owner_id, created_at) where owner_id is not null;
