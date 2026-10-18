@@ -114,7 +114,7 @@ export interface VersionRow {
   base_version_id: string | null;
   layer: Layer; state: VersionState; actor_id: string; active_role: string;
   /** The kolab the version's node is in. */
-  kolab_id?: string;
+  kolab_id: string;
   /** For a fold: the person's version Kolab rebased it from (CAS7). */
   folded_from?: string | null;
 }
@@ -190,10 +190,11 @@ export type Resolution =
   | { status: 'orphan' };
 
 /**
- * Something an agent should look at: a layer's work queue (open questions,
- * notes and marks it owns) or an actor's answers (replies to what they raised).
+ * Something an agent should look at, in one kolab: a layer's work queue there (open questions,
+ * notes and marks it owns) or an actor's answers there (replies to what they raised). Each names
+ * its kolab, so only that kolab's subscribers are told (D50, TEN12).
  */
-export type InboxEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; actor: string };
+export type InboxEvent = { inbox: 'layer'; kolab: string; layer: Layer } | { inbox: 'actor'; kolab: string; actor: string };
 
 /**
  * A session ended, so its token is revoked: every listen stream it holds closes (D41).

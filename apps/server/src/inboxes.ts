@@ -26,8 +26,9 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Push: every open subscriptions/listen stream that subscribed to an inbox hears when it
-   * changes, whichever Kolab process on the database made the change (API5). First,
-   * ListenStreams closes the streams of any session that has ended (D41).
+   * changes, whichever Kolab process on the database made the change (API5). An inbox is one
+   * kolab's, so a change in one kolab signals no other's (D50). First, ListenStreams closes the
+   * streams of any session that has ended (D41).
    */
   async onModuleInit() {
     this.unsubscribe = this.kolab.onEvent((e) => {
@@ -51,7 +52,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
   report(s: ListenerState) {
     if (s.state === 'lost') this.logger.error('push across processes is down: the LISTEN connection is lost, so this process\'s subscribers miss changes made through other processes until it reconnects');
     else if (s.state === 'resync_failed') this.logger.error(`push across processes: the LISTEN connection is back, but signalling what changed meanwhile failed (${s.error}); retrying in ${Math.round(s.retryInMs / 1000)} s`);
-    else this.logger.warn('push across processes restored: the LISTEN connection is back, and every inbox was signalled again for what changed meanwhile');
+    else this.logger.warn('push across processes restored: the LISTEN connection is back, and every inbox with a listening session was signalled again for what changed meanwhile');
   }
 
   private async signal() {
@@ -69,21 +70,22 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
 
   @McpResource({
     name: 'konjir_inbox',
-    uri: 'konjir://inbox/{layer}',
+    uri: 'konjir://inbox/{kolab}/{layer}',
     isTemplate: true,
-    title: 'A layer\'s work queue',
-    description: 'Open questions and notes the layer owns, open marks on its work, and the review requests waiting for you on it. Subscribe to your own layer\'s inbox; it is updated whenever that queue changes.',
+    title: 'A layer\'s work queue in your kolab',
+    description: 'Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, and the review requests waiting for you on it. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.',
     mimeType: 'application/json',
   })
   async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
     const layer = String(vars.layer) as Layer;
-    if (!LAYERS.includes(layer)) throw new Error(`no inbox ${uri.href}`);
     const session = sessionOf(context?.authInfo);
     if (!session) throw new RoleError('reading an inbox needs an agent session token');
-    // The layer's queue in the session's own kolab (TEN12).
-    const kolab = await this.kolab.sessionKolab(session);
     const me = await this.kolab.sessionInfo(session);
+    // Only the session's own kolab (TEN12). Another kolab's inbox reads as if it didn't exist.
+    if (!LAYERS.includes(layer) || decodeURIComponent(String(vars.kolab)) !== me.kolab) throw new Error(`no inbox ${uri.href}`);
+    const kolab = me.kolab;
     const body = {
+      kolab,
       layer,
       queries: await this.kolab.listQueries({ layer, state: 'open', kolab }),
       marks: await this.kolab.describeMarks({ layer, kolab }),
@@ -95,18 +97,20 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
 
   @McpResource({
     name: 'konjir_answers',
-    uri: 'konjir://answers/{actor}',
+    uri: 'konjir://answers/{kolab}/{actor}',
     isTemplate: true,
-    title: 'Answers to what you raised',
-    description: 'Your questions and notes with their replies, and the versions you submitted for review with their verdicts. Updated whenever one of them is answered or reviewed.',
+    title: 'Answers to what you raised in your kolab',
+    description: 'Your questions and notes in your session\'s kolab with their replies, and the versions you submitted there for review with their verdicts. Updated whenever one of them is answered or reviewed. Only your own answers, in your own kolab, can be read or subscribed to.',
     mimeType: 'application/json',
   })
   async answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
     const session = sessionOf(context?.authInfo);
     if (!session) throw new RoleError('reading answers needs an agent session token');
     const me = await this.kolab.sessionInfo(session);
-    if (decodeURIComponent(String(vars.actor)) !== me.actor) throw new RoleError('you can only read your own answers');
-    const body = { actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }) };
+    if (decodeURIComponent(String(vars.actor)) !== me.actor || decodeURIComponent(String(vars.kolab)) !== me.kolab) {
+      throw new RoleError('you can only read your own answers, in your session\'s kolab');
+    }
+    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }) };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
 }

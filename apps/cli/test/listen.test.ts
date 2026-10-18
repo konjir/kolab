@@ -7,7 +7,7 @@ import { sessionKey } from '@konjir/engine';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'listen-test-admin';
-const INBOX = 'konjir://inbox/functional';
+const INBOX = 'konjir://inbox/test/functional';
 
 async function boot() {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
@@ -322,5 +322,94 @@ test('a failed session check holds back that one change, and closes no stream', 
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'And refunds?' });
   await until('the next change', () => pm.updates.length === 1);
   await sub.close();
+  await server.close();
+});
+
+/** A session in a second kolab, `other`, with Write on `role`'s layer there. */
+async function inOther(admin: Client, server: KonjirServer, id: string, role: 'product' | 'engineer') {
+  await call(admin, 'admin_add_kolab', { name: 'other', owner: 'test-org' }).catch(() => undefined);
+  await call(admin, 'admin_add_actor', { id });
+  await call(admin, 'admin_grant', { kolab: 'other', to: id, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });
+  const { token } = await call(admin, 'admin_open_session', { actor: id, role, kolab: 'other' }) as { token: string };
+  const client = await connect(server.url, token);
+  closeAtEnd(client);
+  const updates: string[] = [];
+  client.setNotificationHandler('notifications/resources/updated', (n) => { updates.push(n.params.uri); });
+  return { token, client, updates };
+}
+
+test('a change in one kolab wakes its own subscribers and no other kolab\'s', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const eng = await agent(server, admin, 'eng', 'engineer');
+  const otherPm = await inOther(admin, server, 'other-pm', 'product');
+  const otherEng = await inOther(admin, server, 'other-eng', 'engineer');
+  await spec(pm.client);
+  // In the other kolab, its product agent is alone on its layer, so the checks alone commit its spec (W1.6).
+  await call(otherPm.client, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(otherPm.client, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
+  await call(otherPm.client, 'submit_for_review', { node: 'orders', version: 1 });
+
+  // Each listens to what whoami lists for it: its own kolab's.
+  const subscribe = async (c: Client) => (await call(c, 'whoami') as { subscribe: string[] }).subscribe;
+  expect(await subscribe(otherPm.client)).toStrictEqual(['konjir://inbox/other/functional', 'konjir://answers/other/other-pm']);
+  for (const c of [pm, eng, otherPm, otherEng]) await c.client.listen({ resourceSubscriptions: await subscribe(c.client) });
+
+  const { query } = await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' }) as { query: string };
+  await call(pm.client, 'answer_query', { query, answer: 'Any before Completed.' });
+  await until('the test kolab to hear both', () => pm.updates.length === 2 && eng.updates.length === 1);
+  await new Promise((r) => setTimeout(r, 200));
+  expect(pm.updates).toStrictEqual([INBOX, INBOX]);
+  expect(eng.updates).toStrictEqual(['konjir://answers/test/eng']);
+  expect([otherPm.updates, otherEng.updates]).toStrictEqual([[], []]);
+
+  await call(otherEng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
+  await until('the other kolab to hear it', () => otherPm.updates.length === 1);
+  await new Promise((r) => setTimeout(r, 200));
+  expect(otherPm.updates).toStrictEqual(['konjir://inbox/other/functional']);
+  expect([pm.updates.length, eng.updates.length]).toStrictEqual([2, 1]);
+  await server.close();
+});
+
+test('a session may listen to and read only its own kolab\'s inboxes and its own answers there', async () => {
+  const { server, admin } = await boot();
+  const pm = await agent(server, admin, 'pm', 'product');
+  const otherPm = await inOther(admin, server, 'other-pm', 'product');
+  await spec(pm.client);
+
+  // Another kolab's inbox, a release before D50's per-layer inbox, and another actor's answers are each refused in-band.
+  for (const uri of [INBOX, 'konjir://inbox/functional', 'konjir://answers/other/pm', 'konjir://inbox/other/nonsense']) {
+    const refused = await otherPm.client.listen({ resourceSubscriptions: ['konjir://inbox/other/functional', uri] }).then(() => undefined, (e: unknown) => e);
+    expect(refused).toMatchObject({ code: -32003, data: { reason: 'not_subscribable' } });
+    expect(listenRefusal(refused)).toBe('not_subscribable');
+  }
+  // Nothing about the other kolab is in the refusal.
+  const raw = await fetch(server.url, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${otherPm.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2026-07-28', 'mcp-method': 'subscriptions/listen',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'raw:3', method: 'subscriptions/listen', params: { notifications: { resourceSubscriptions: [INBOX] } } }),
+  });
+  const body = await raw.json() as { id: string; error: { code: number; data: { reason: string } } };
+  expect(body).toMatchObject({ id: 'raw:3', error: { code: -32003, data: { reason: 'not_subscribable' } } });
+  expect(JSON.stringify(body)).not.toMatch(/orders|pm\b|kjs_/);
+
+  // Its own still open, and the refused tries closed nothing.
+  const own = await otherPm.client.listen({ resourceSubscriptions: ['konjir://inbox/other/functional', 'konjir://inbox/other/technical', 'konjir://answers/other/other-pm'] });
+  expect(await settled(own.closed, 100)).toBe('open');
+
+  // Reading another kolab's inbox is as if it didn't exist; another kolab's answers, or another actor's, are refused.
+  await expect(otherPm.client.readResource({ uri: INBOX })).rejects.toThrow(/no inbox/);
+  await expect(otherPm.client.readResource({ uri: 'konjir://answers/test/other-pm' })).rejects.toThrow(/your own answers/);
+  await expect(pm.client.readResource({ uri: 'konjir://answers/other/other-pm' })).rejects.toThrow(/your own answers/);
+  const mine = JSON.parse(((await otherPm.client.readResource({ uri: 'konjir://inbox/other/functional' })).contents[0] as { text: string }).text) as { kolab: string; queries: unknown[] };
+  expect(mine).toMatchObject({ kolab: 'other', queries: [] });
+
+  // The admin token, which belongs to no kolab, may listen to any.
+  const any = await admin.listen({ resourceSubscriptions: [INBOX, 'konjir://inbox/other/functional'] });
+  expect(await settled(any.closed, 100)).toBe('open');
+  await own.close(); await any.close();
   await server.close();
 });
