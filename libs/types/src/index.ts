@@ -197,8 +197,8 @@ export type InboxEvent = { inbox: 'layer'; layer: Layer } | { inbox: 'actor'; ac
 
 /**
  * A session ended, so its token is revoked: every listen stream it holds closes (D41).
- * `id` is the session's key: the sha256 of its id, base64url (the engine's sessionKey).
- * Never the id itself, which is the bearer token.
+ * `id` is the session's key: the sha256 of its bearer token, base64url (the engine's
+ * sessionKey), which is also its id in the database (P1, 0011). Never the token itself.
  */
 export type SessionEndedEvent = { session: 'ended'; id: string };
 
