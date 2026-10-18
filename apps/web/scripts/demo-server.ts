@@ -6,6 +6,8 @@
  * eng-agent and qa-agent are agents of Lee's, with Write on one layer each, who wrote its history
  * through the engine as agents do through MCP. Pat (product) and Eli (engineering) are people with
  * Write on one layer each, so a person reviews what Lee submits, and a person settles the binding.
+ * A second kolab, `checkout`, also Lee's, holds the prototype's checkout spec at version 2, with a
+ * question on R5 and a draft of version 3, for reading another kolab's committed work in place (D49).
  *
  *   npx nx run @konjir/web:demo                        # builds the page, serves http://127.0.0.1:7421
  *   PORT=7430 KONJIR_DEMO_TOKENS=/path/tokens.json …   # another port, or another place for the tokens
@@ -63,6 +65,15 @@ const serves: Record<string, string[]> = {
 };
 const els = (o: Record<string, string>): ElementInput[] => Object.entries(o).map(([id, text]) => ({ id, text }));
 
+const checkoutV2: Record<string, string> = {
+  R1: 'A signed-in user can pay for the items in their cart with a saved card or a new one.',
+  R2: 'The total shown on the review page is the amount charged, including tax and shipping.',
+  R3: 'Pressing Pay more than once, or retrying after a timeout, charges the card once.',
+  R4: 'If a payment fails, the cart is kept and the user sees why in plain words.',
+  R5: 'A receipt email is sent within a minute of a successful payment.',
+};
+const checkoutV1 = { ...checkoutV2, R3: 'A payment is never taken twice.' };
+
 export async function seed(kolab: Kolab) {
   await kolab.addActor('lee', { name: 'Lee' });
   await kolab.createKolab('accounts', { owner: 'lee', title: 'Accounts' });
@@ -74,6 +85,21 @@ export async function seed(kolab: Kolab) {
     await kolab.addActor(person, { name });
     await kolab.grant('accounts', person, 'write', { layers: [layer] });
   }
+  // Checkout, Lee's other kolab: its spec at version 2, a question from eng-agent, and Lee's draft of
+  // version 3, which a reader from another kolab never sees. Each actor holds one open session at a
+  // time (ENF4), so these end before the accounts sessions open.
+  await kolab.createKolab('checkout', { owner: 'lee', title: 'Checkout' });
+  await kolab.grant('checkout', 'eng-agent', 'write', { layers: ['technical'] });
+  const leeThere = await kolab.openSession('lee', 'product', { kolab: 'checkout' });
+  await kolab.createNode(leeThere, 'functional_spec', 'Checkout', 'checkout');
+  await kolab.commit(leeThere, 'checkout', { elements: els(checkoutV1) });
+  await kolab.commit(leeThere, 'checkout', { elements: els(checkoutV2) });
+  const engThere = await kolab.openSession('eng-agent', 'engineer', { kolab: 'checkout' });
+  await kolab.raiseQuery(engThere, 'kj:checkout#R5', 'R5 says within a minute. If the email provider is down, should the receipt be retried until it sends, or is a late receipt a failure someone should hear about?');
+  await kolab.draft(leeThere, 'checkout', { elements: els({ ...checkoutV2, R5: 'A receipt email is sent within five minutes of a successful payment.' }) });
+  await kolab.endSession(engThere);
+  await kolab.endSession(leeThere);
+
   const pm = await kolab.openSession('pm-agent', 'product', { kolab: 'accounts' });
   const eng = await kolab.openSession('eng-agent', 'engineer', { kolab: 'accounts' });
   const qa = await kolab.openSession('qa-agent', 'engineer', { kolab: 'accounts' });

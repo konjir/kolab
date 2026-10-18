@@ -46,3 +46,23 @@ export function nextElementId(ids: string[], fallback: string): string {
 
 export const addr = (node: string, seq?: number | null, element?: string | null) =>
   `kj:${node}${seq ? `@${seq}` : ''}${element ? `#${element}` : ''}`;
+
+/**
+ * A `kj:` address as the go-to box takes it: `kj:[<kolab>/]<node>[@<version>][#<element>]`, a
+ * quote selector ignored. The page imports nothing of Kolab's but its types (IMP2), so this is the
+ * grammar's shape only; Kolab decides what the address names, and whether the session may read it.
+ */
+export function parseKj(text: string): { kolab?: string; node: string; version?: number; element?: string } | undefined {
+  const m = /^(?:kj:)?(?:([a-z0-9][a-z0-9-]*)\/)?([^/@#~\s]+)(?:@(\d+))?(?:#([^~\s]+))?(?:~q\(.*\))?$/.exec(text.trim());
+  if (!m) return undefined;
+  return { ...(m[1] ? { kolab: m[1] } : {}), node: m[2], ...(m[3] ? { version: Number(m[3]) } : {}), ...(m[4] ? { element: m[4] } : {}) };
+}
+
+/** Where the page shows an address: in the session's kolab, the node's page; in another, read in place. */
+export function routeOf(a: { kolab?: string; node: string; version?: number; element?: string }, here: string): string {
+  const tail = `${a.node}${a.version ? `@${a.version}` : ''}${a.element ? `#${a.element}` : ''}`;
+  return !a.kolab || a.kolab === here ? `node/${tail}` : `read/${a.kolab}/${tail}`;
+}
+
+/** A side of a case file, in words. */
+export const sideWord = (seeks: string | null) => (seeks === 'change_intent' ? 'change the intent' : seeks === 'keep_intent' ? 'keep the intent' : 'no side recorded');

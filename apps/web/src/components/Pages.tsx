@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
   KINDS, LAYER_OF_KIND,
-  type Kind, type WebActivityView, type WebLineageView, type WebMe, type WebOverview, type WebQuery, type WebReviewsView,
+  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebQuery, type WebReviewsView,
 } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago } from '../util.js';
@@ -9,7 +9,7 @@ import { Addr, Pill } from './bits.js';
 import { QueryBox, type Act } from './Marks.js';
 
 /** Re-reads `path` whenever `tick` moves. */
-function useRead<T>(path: string, tick: number) {
+export function useRead<T>(path: string, tick: number) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -172,10 +172,12 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
 }
 
 /** All kolabs the signed-in actor can reach. A session works in one; the others need a session of their own. */
-export function KolabsView({ overview, act, onCreated, onOpen, onCreateKolab, start }: {
+export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateKolab, start }: {
   /** An empty kolab's first page: only the form for its first document. */
   start?: boolean;
   overview: WebOverview; act: Act; onCreated(name: string): void; onOpen(kolab: string): void; onCreateKolab(name: string, title: string): Promise<boolean>;
+  /** Reads another kolab's committed work in place, without leaving this session's kolab (D49). */
+  onRead?(kolab: string): void;
 }) {
   const [kTitle, setKTitle] = useState('');
   const [kName, setKName] = useState('');
@@ -202,7 +204,9 @@ export function KolabsView({ overview, act, onCreated, onOpen, onCreateKolab, st
             <div className="khead"><h3 id={`k-${k.id}`}>{k.title || k.id}</h3><span className="slug">{k.id}</span>{k.current && <span className="kind">Open now</span>}</div>
             <p>{k.visibility} · owned by {k.owner}</p>
             <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : `You hold ${k.access.level ?? 'no access'} here.`}</span>
-              {k.current ? null : <button type="button" className="btn primary" onClick={() => onOpen(k.id)}>Open</button>}</div>
+              {k.current ? null : <span className="edit-row" style={{ marginTop: 0 }}>
+                {onRead && <button type="button" className="btn" onClick={() => onRead(k.id)} title="Its committed work, read only, without leaving this kolab">Read here</button>}
+                <button type="button" className="btn primary" onClick={() => onOpen(k.id)} title="This session ends, and one opens there">Open</button></span>}</div>
           </article>
         ))}
       </div></section>
@@ -233,6 +237,37 @@ export function KolabsView({ overview, act, onCreated, onOpen, onCreateKolab, st
           </form>
         </section>
       )}
+    </>
+  );
+}
+
+/**
+ * Another kolab, read in place (D49): its nodes at their latest committed version, read only. Its
+ * drafts, reviews, links, marks, case files and rulings stay private to its work.
+ */
+export function ForeignKolabView({ kolab, tick, go, onOpen }: { kolab: string; tick: number; go(r: string): void; onOpen(kolab: string): void }) {
+  const { data, error } = useRead<WebForeignKolab>(`kolabs/${encodeURIComponent(kolab)}/nodes`, tick);
+  if (error) return <p className="empty" role="alert">{error}</p>;
+  if (!data) return <p className="empty">Reading {kolab}…</p>;
+  const k = data.kolab;
+  const committed = data.nodes.filter((n) => n.latest !== null);
+  return (
+    <>
+      <section className="summary" aria-label={`Kolab ${k.id}`}>
+        <h1>{k.title || k.id}</h1>
+        <span className="fact"><span className="addr">kj:{k.id}/…</span> · {k.visibility} · owned by {k.owner} · you hold {k.access.level}</span>
+      </section>
+      <div className="foreign" role="note">
+        <span>Read in place, from your session in another kolab: its committed work only. Its drafts, reviews, links, marks, case files and rulings stay with those who work in it.</span>
+        {k.access.layers.length > 0 && <button type="button" className="btn" onClick={() => onOpen(k.id)}>Work in {k.id}</button>}
+      </div>
+      <section aria-labelledby="fk-nodes"><h2 className="section-title" id="fk-nodes">Documents</h2>
+        {committed.length ? <ul className="qlist">{committed.map((n) => (
+          <li key={n.name} className="qitem"><div className="row">
+            <button type="button" className="chip" onClick={() => go(`read/${k.id}/${n.name}`)}>kj:{k.id}/{n.name}@{n.latest}</button>
+            <span>{n.title} · {n.kind.replace(/_/g, ' ')}</span></div></li>
+        ))}</ul> : <p className="empty">Nothing committed there yet.</p>}
+      </section>
     </>
   );
 }
