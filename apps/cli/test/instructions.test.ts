@@ -1,10 +1,10 @@
 // The instructions for an agent connected only over MCP, with no konjir CLI: its client shows the
 // prompts to the person, not to the model, so the same texts are a tool, konjir_instructions, and
 // two resources. Each serves exactly what the matching prompt serves, scoped to the session's kolab.
-import { expect, test } from '@jest/globals';
+import { expect, jest, test } from '@jest/globals';
 import type { Client } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
-import { connect, call } from '../src/cli.js';
+import { connect, call, main } from '../src/cli.js';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'instructions-test-admin';
@@ -84,6 +84,75 @@ test('an agent with only MCP tools gets the full operating instructions with its
   await server.close();
 });
 
+test('one actor in two kolabs: each session sees only its own kolab\'s precedent (TEN13)', async () => {
+  const { server, admin, open } = await boot();
+  // Ann holds Write in two kolabs, each with its own precedent. An actor has one open session at a
+  // time, so she works in each in turn.
+  const first = await open('ann', 'anns');
+  await call(admin, 'admin_add_kolab', { name: 'teams', owner: 'ann' });
+  await precedent(first.client, 'alpha');
+  const check = async (c: Client, own: string, other: string) => {
+    const text = await toolText(c);
+    expect(text).toBe(await promptText(c, 'konjir_operating_instructions'));
+    expect(text).toBe(await resourceText(c, 'konjir://instructions'));
+    expect(text).toMatch(new RegExp(`Rulings, newest first \\(1\\): kj:spec@1#R1: "Ruling private to ${own}\\."`));
+    expect(text).toMatch(new RegExp(`What does ${own} mean\\?" -> "Answer private to ${own}\\.`));
+    expect(text).not.toMatch(new RegExp(other));
+  };
+  await check(first.client, 'alpha', 'bravo');
+  await call(admin, 'admin_end_session', { token: first.token });
+
+  const session = async (kolab: string) => {
+    const { token } = await call(admin, 'admin_open_session', { actor: 'ann', role: 'product', kolab }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return { client, token };
+  };
+  const inTeams = await session('teams');
+  await precedent(inTeams.client, 'bravo');
+  await check(inTeams.client, 'bravo', 'alpha');
+  await call(admin, 'admin_end_session', { token: inTeams.token });
+
+  // Back in her first kolab, after the second has its own precedent: still only the first's.
+  const { client: again } = await session('anns');
+  await check(again, 'alpha', 'bravo');
+  await server.close();
+});
+
+test('a session that holds only Read gets no precedent and no question a mark raised (D49, D51), unlike list_queries today', async () => {
+  const { server, admin, open } = await boot();
+  const erin = await open('erin', 'other');
+  await precedent(erin.client, 'alpha');
+  // A ruling that changes the intent raises a question on the element, by its mark (D51); amending
+  // the element settles it, answered.
+  await call(erin.client, 'rule', { address: 'kj:spec#R1', text: 'Mark-raised ruling.', effect: 'change_intent' });
+  const raised = (await call(erin.client, 'list_queries', {}) as { queries: { id: string; mark: string | null }[] }).queries.filter((q) => q.mark);
+  expect(raised.length).toBe(1);
+  await call(erin.client, 'draft', { node: 'spec', elements: [{ id: 'R1', text: 'The amended requirement.' }] });
+  await call(erin.client, 'submit_for_review', { node: 'spec', version: 2 });
+  const inside = await toolText(erin.client);
+  expect(inside).toMatch(/Answered questions and notes \(2\)/);
+  expect(inside).toMatch(/Mark-raised ruling/);
+
+  await call(admin, 'admin_add_actor', { id: 'alice' });
+  await call(admin, 'admin_grant', { kolab: 'other', to: 'alice', level: 'read' });
+  const { token } = await call(admin, 'admin_open_session', { actor: 'alice', role: 'product', kolab: 'other' }) as { token: string };
+  const alice = await connect(server.url, token);
+  closeAtEnd(alice);
+  const text = await toolText(alice);
+  expect(text).toBe(await promptText(alice, 'konjir_operating_instructions'));
+  expect(text).toBe(await resourceText(alice, 'konjir://instructions'));
+  expect(text).toMatch(/Precedent on stale overrides \(0\): none yet/);
+  expect(text).toMatch(/Rulings, newest first \(0\): none yet/);
+  expect(text).toMatch(/Answered questions and notes \(1\): kj:spec@1#R1: asked "What does alpha mean\?" -> "Answer private to alpha\."/);
+  expect(text).not.toMatch(/Answered by mark|Mark-raised|Ruling private/);
+  // A known gap, flagged in PR #49 and outside it: konjir_list_queries still gives this Read-only
+  // session, in its own kolab, the question the mark raised. When that is fixed, this flips.
+  const listed = (await call(alice, 'list_queries', { state: 'answered', all_layers: true }) as { queries: { question: string; mark: string | null }[] }).queries;
+  expect(listed.map((q) => q.mark !== null)).toStrictEqual([false, true]);
+  await server.close();
+});
+
 test('the reviewer variant is the reviewer prompt, for every session and the admin token', async () => {
   const { server, admin, open } = await boot();
   const ann = await open('ann', 'anns');
@@ -136,5 +205,32 @@ test('the server instructions tell an MCP session to call konjir_instructions fi
   // No advice to run the CLI is given as if every session had it.
   expect(served).not.toMatch(/run `konjir instructions` in a shell/);
   expect(served).not.toMatch(/Otherwise, while you wait on answers, run `konjir watch/);
+  // Without subscriptions, rule 8 says when to check, and checks the inbox as well as the answers.
+  expect(served).toMatch(/Otherwise, check both at the start of work, before finishing, and after each commit or submit: your inbox with konjir_list_queries, konjir_list_stale, konjir_list_cases and konjir_list_reviews, and your answers with konjir_list_queries mine=true and konjir_list_cases mine=true/);
+  await server.close();
+});
+
+test('the CLI: konjir instructions, konjir instructions reviewer and konjir instructions which=reviewer', async () => {
+  const { server, open } = await boot();
+  const ann = await open('ann', 'anns');
+  await precedent(ann.client, 'alpha');
+  const env = { ...process.env };
+  const out: string[] = [];
+  const log = jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+  try {
+    process.env.KONJIR_URL = server.url;
+    process.env.KONJIR_TOKEN = ann.token;
+    const run = async (...argv: string[]) => { out.length = 0; await main(argv); return out.join('\n'); };
+    const operating = await promptText(ann.client, 'konjir_operating_instructions');
+    const reviewer = await promptText(ann.client, 'konjir_reviewer_instructions');
+    expect(await run('instructions')).toBe(operating);
+    expect(await run('instructions', 'which=operating')).toBe(operating);
+    expect(await run('instructions', 'reviewer')).toBe(reviewer);
+    expect(await run('instructions', 'which=reviewer')).toBe(reviewer);
+    await expect(main(['instructions', 'admin'])).rejects.toThrow(/no instructions "admin"/);
+  } finally {
+    log.mockRestore();
+    process.env = env;
+  }
   await server.close();
 });

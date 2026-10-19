@@ -61,7 +61,7 @@ export function ConnectView({ me, origin = location.origin }: { me: WebMe; origi
         <p className="why-not">Add it, then run <span className="mono">/mcp</span> in Claude Code and sign in.</p>
         <Command label="Add Kolab to Claude Code" text={`claude mcp add --transport http konjir ${mcp}`} />
         <h3 id="c-opencode">OpenCode</h3>
-        <p className="why-not">Add this to <span className="mono">opencode.json</span>, then sign in.</p>
+        <p className="why-not">Merge this <span className="mono">mcp.konjir</span> entry into your <span className="mono">opencode.json</span>, keeping what is already there (or start the file with it), then sign in.</p>
         <Command label="OpenCode's opencode.json" text={openCodeConfig(mcp)} />
         <Command label="Sign OpenCode in" text="opencode mcp auth konjir" />
         <h3 id="c-other">Any other MCP client</h3>

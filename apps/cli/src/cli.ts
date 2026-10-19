@@ -353,7 +353,7 @@ export async function main(argv: string[]) {
     // Shortcuts take a bare positional argument; with key=value or --json they
     // fall through to the generic form, so every verb accepts every form.
     const generic = rest.some((a) => a === '--json' || a.includes('='));
-    switch (generic && ['resolve', 'read', 'stale', 'queries'].includes(cmd) ? '' : cmd) {
+    switch (generic && ['resolve', 'read', 'stale', 'queries', 'instructions'].includes(cmd) ? '' : cmd) {
       case 'tools':
         result = (await client.listTools()).tools.map((t) => `${t.name.replace(/^konjir_/, '')}  — ${t.description}`).join('\n'); break;
       case 'help': {

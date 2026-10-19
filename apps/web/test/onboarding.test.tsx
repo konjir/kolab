@@ -55,6 +55,7 @@ test('the MCP route (Claude Code, OpenCode, then konjir_instructions) is apart f
   expect(within(mcpRoute).getByLabelText('Add Kolab to Claude Code')).toBeTruthy();
   expect(JSON.parse(within(mcpRoute).getByLabelText('OpenCode\'s opencode.json').textContent!).mcp)
     .toStrictEqual({ konjir: { type: 'remote', url: 'https://kolab.example.com/mcp' } });
+  expect(within(mcpRoute).getByText(/Merge this .* into your .*, keeping what is already there/)).toBeTruthy();
   expect(within(mcpRoute).getByLabelText('Sign OpenCode in').textContent).toBe('opencode mcp auth konjir');
   expect(within(mcpRoute).getByText('konjir_instructions')).toBeTruthy();
   expect(within(mcpRoute).queryByText(/konjir login/)).toBeNull();
