@@ -23,14 +23,17 @@ const CSP = [`default-src 'none'`, `style-src 'sha256-${STYLE_HASH}'`, `form-act
 
 /**
  * Sends one of the authorization server's pages: no script, nothing loaded from anywhere, never
- * framed (clickjacking), never cached, and no referrer, so a code or state in its URL goes nowhere.
+ * framed (clickjacking), never cached, and a referrer for Kolab alone, so a code or state in its URL
+ * goes nowhere else. The policy is `same-origin`, never `no-referrer`: under `no-referrer` a browser
+ * sends `Origin: null` with the page's own form POST (Fetch, "serializing a request origin"), and
+ * POST /oauth/consent refuses any origin but Kolab's.
  */
 export function sendPage(res: Response, status: number, title: string, body: string) {
   res.status(status);
   res.setHeader('content-security-policy', CSP);
   res.setHeader('x-frame-options', 'DENY');
   res.setHeader('x-content-type-options', 'nosniff');
-  res.setHeader('referrer-policy', 'no-referrer');
+  res.setHeader('referrer-policy', 'same-origin');
   res.setHeader('cache-control', 'no-store');
   res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Kolab</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`);

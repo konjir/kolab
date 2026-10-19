@@ -20,7 +20,10 @@ const OWN = /^\/(api|mcp|healthz|oauth|\.well-known)(\/|$)/i;
 
 /**
  * The page's security headers: everything is Kolab's own, the fonts included (bundled with the
- * page), so no third party sees who opens it.
+ * page), so no third party sees who opens it. The referrer goes to Kolab alone (`same-origin`),
+ * never `no-referrer`: under that, a browser may send `Origin: null` with the page's own changes,
+ * and /api refuses any origin but Kolab's (checkOrigin). The page's routes live in the fragment,
+ * which no Referer carries.
  */
 const CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self'", "font-src 'self'",
@@ -30,7 +33,7 @@ const CSP = [
 function secure(res: Response) {
   res.setHeader('content-security-policy', CSP);
   res.setHeader('x-content-type-options', 'nosniff');
-  res.setHeader('referrer-policy', 'no-referrer');
+  res.setHeader('referrer-policy', 'same-origin');
   res.setHeader('x-frame-options', 'DENY');
 }
 
@@ -58,7 +61,8 @@ export function webApp(root: string | null) {
       if ((!root && /\.[A-Za-z0-9]+$/.test(req.path)) || !req.accepts('html')) return next();
       secure(res);
       res.setHeader('cache-control', 'no-cache');
-      if (index && existsSync(index)) return res.sendFile(index);
+      // Kolab's own file, at a path it chose: served even from a checkout under a dot folder (.claude/worktrees).
+      if (index && existsSync(index)) return res.sendFile(index, { dotfiles: 'allow' });
       res.status(503).type('text/plain').send('The Kolab web interface is not built. Run `npx nx run @konjir/web:build` in the Kolab checkout, then reload.\n');
     };
     if (!files || root) return page();
