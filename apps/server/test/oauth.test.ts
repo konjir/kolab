@@ -68,7 +68,7 @@ const csrfOf = (html: string) => /name="csrf" value="([^"]+)"/.exec(html)?.[1] ?
 
 async function register(base: string, redirectUris = [CB]) {
   const r = await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Test harness', redirect_uris: redirectUris, grant_types: ['authorization_code', 'refresh_token'], token_endpoint_auth_method: 'none' }) });
-  return { status: r.status, body: await r.json() as { client_id: string; error?: string } };
+  return { status: r.status, body: await r.json() as { client_id: string; error?: string; error_description?: string } };
 }
 
 function authorizeUrl(base: string, client: string, p: { verifier?: string; state?: string; redirect?: string; scope?: string; method?: string; challenge?: string | null } = {}) {
@@ -203,6 +203,9 @@ test('redirect URIs: registered ones only, exactly, so nothing is sent to an add
   for (const bad of [['http://evil.example/cb'], ['javascript:alert(1)'], [], ['https://a.example/cb#frag'], ['com.example.app:/cb'], ['http://u@localhost/cb']]) {
     expect(await register(base, bad)).toMatchObject({ status: 400, body: { error: 'invalid_redirect_uri' } });
   }
+  // A trailing dot on the host is refused, and the refusal says so.
+  expect(await register(base, ['https://example.com./cb'])).toMatchObject({ status: 400, body: { error: 'invalid_redirect_uri', error_description: expect.stringMatching(/its host ends in a dot, which Kolab doesn't allow .*without the trailing dot/) } });
+  expect((await register(base, ['https://a_b.example/cb'])).body.error_description).not.toMatch(/dot/);
   expect((await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ redirect_uris: [CB], token_endpoint_auth_method: 'client_secret_basic' }) })).status).toBe(400);
   const client = (await register(base, ['https://app.example/cb', 'http://localhost:5000/cb'])).body.client_id;
   for (const redirect of ['https://app.example/cb/../evil', 'https://app.example/cb2', 'https://evil.example/cb', 'http://127.0.0.1:5000/cb', 'http://localhost:5000/cb#x', 'http://u:p@localhost:5000/cb']) {
@@ -498,6 +501,7 @@ test('the consent page\'s form-action names the client\'s redirect URI, so a bro
   expect(formActionSource('http://127.0.0.1:19876/mcp/oauth/callback')).toBe('http://127.0.0.1:19876');
   expect(formActionSource('https://app.example.com/cb?x=1')).toBe('https://app.example.com');
   expect(formActionSource('http://[::1]:7000/cb')).toBe('http:');   // a CSP source can't name an IPv6 host: the scheme alone
+  expect(formActionSource('https://[2001:db8::1]/cb')).toBe('https:');   // any IPv6 literal, not only loopback
   expect(formActionSource('com.example.app:/cb')).toBeUndefined();   // never registered (validRedirectUri)
   expect(formActionSource('https://a_b.example/cb')).toBeUndefined();   // nor this: registration refuses it
   expect(formActionSource('not a uri')).toBeUndefined();
@@ -615,6 +619,16 @@ test('a sign-in that is over lets its cookie go: cancelled at the provider, expi
   await kolab.db.query(`update oauth_request set expires_at = now() - interval '3 hours' where expires_at < now()`);
   await browser.fetch(authorizeUrl(base, client));
   expect((await kolab.db.query(`select 1 from oauth_request where expires_at < now()`)).rows).toStrictEqual([]);
+  // The sweep reaches only those not yet made tombstones, by index (migration 0021), never walking the tombstones.
+  expect((await kolab.db.query(`select indexdef from pg_indexes where indexname = 'oauth_request_untombstoned'`)).rows).toStrictEqual([
+    { indexdef: expect.stringMatching(/CREATE INDEX oauth_request_untombstoned ON (public\.)?oauth_request USING btree \(expires_at\) WHERE/) },
+  ]);
+  const plan = await kolab.db.transaction(async (tx) => {
+    await tx.exec(`set local enable_seqscan = off`);
+    return (await tx.query<{ 'QUERY PLAN': string }>(`explain update oauth_request set client_state = null, scope = null, resource = null, invite_key = null, redirect_uri = ''
+    where expires_at < now() and (redirect_uri <> '' or client_state is not null or scope is not null or resource is not null or invite_key is not null)`)).rows.map((r) => r['QUERY PLAN']).join('\n');
+  });
+  expect(plan).toMatch(/oauth_request_untombstoned/);
   // The consent token's lookup is by index (migration 0020).
   expect((await kolab.db.query(`select indexdef from pg_indexes where indexname = 'oauth_request_csrf'`)).rows).toStrictEqual([
     { indexdef: expect.stringMatching(/CREATE UNIQUE INDEX oauth_request_csrf ON (public\.)?oauth_request USING btree \(csrf_key\) WHERE \(csrf_key IS NOT NULL\)/) },

@@ -28,8 +28,10 @@ const csp = (formTargets: string[]) =>
  * `form-action` too (CSP3), so under `form-action 'self'` alone Kolab's 303 to an app's own
  * listener, http://127.0.0.1:<port>/… for OpenCode, is blocked after the consent has gone through.
  * A redirect URI is https, or http on loopback, on a host registration checked (validRedirectHost),
- * so this is its origin, port and all. The one exception is an IPv6 literal, `http://[::1]:<port>`,
- * which a CSP source can't name: then the scheme alone, `http:` (which CSP3 lets match https too).
+ * so this is its origin, port and all. The one exception is any IPv6 literal host, which a CSP
+ * source can't name: loopback http, `http://[::1]:<port>`, or https, `https://[2001:db8::1]/…`
+ * (registration takes either). Then the scheme alone, `http:` or `https:` (CSP3 lets `http:` match
+ * https too).
  * That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only to the
  * sign-in's own registered redirect URI. Anything else, none.
  */
