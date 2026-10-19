@@ -250,6 +250,20 @@ test('state and CSRF: the provider\'s answer counts only in the browser that ask
   const h = await new Browser(base).fetch(authorizeUrl(base, 'kjcl_nobody0000000000000000'));
   expect(h.headers.get('x-frame-options')).toBe('DENY');
   expect(h.headers.get('content-security-policy')).toMatch(/default-src 'none'.*frame-ancestors 'none'/);
+  // A referrer for Kolab alone: never no-referrer, under which a browser sends the consent form's
+  // POST with Origin: null, which the consent refuses (apps/web/e2e/sign-in.spec.ts, in Chromium).
+  expect(h.headers.get('referrer-policy')).toBe('same-origin');
+  idp.next({ subject: '507', login: 'tia' });
+  const shown = await new Browser(base).go(authorizeUrl(base, client));
+  expect([shown.res.status, shown.at.pathname, shown.res.headers.get('referrer-policy')]).toStrictEqual([200, '/oauth/callback/stub', 'same-origin']);
+  // Origin: null, what no-referrer made browsers send, stays refused, as does a missing origin.
+  const nul = await toConsent(base, idp, client, { subject: '508', login: 'uma' });
+  for (const origin of ['null', undefined]) {
+    const r = await nul.browser.go('/oauth/consent', {
+      method: 'POST', headers: { ...(origin ? { origin } : {}), 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf: nul.csrf, decision: 'allow', kolab: '@new', new_kolab_name: 'uma', role: 'product' }).toString(),
+    });
+    expect([r.res.status, await r.res.text()]).toStrictEqual([403, expect.stringContaining('confirmed from Kolab')]);
+  }
 });
 
 test('sign-up names: a login taken by a live or archived account, or reserved, signs up as a variant; an archived person can\'t sign in', async () => {

@@ -69,6 +69,7 @@ test('a person signs in with a session token; the admin token, a stranger, anoth
   expect((await post({ token: 'kjs_nope' })).status).toBe(401);
   expect((await post({ token: product }, { origin: 'http://evil.example' })).status).toBe(403);
   expect((await post({ token: product }, {})).status).toBe(403);   // no origin at all
+  expect((await post({ token: product }, { origin: 'null' })).status).toBe(403);   // an opaque origin
   expect((await fetch(`${base}/api/me`)).status).toBe(401);
 
   const { me, call, jar } = await signIn(base, product);
@@ -321,6 +322,9 @@ test('the server serves the built pages at the root, with their security headers
   expect([page.status, await page.text()]).toStrictEqual([200, '<!doctype html><title>Kolab</title>']);
   expect(page.headers.get('content-security-policy')).toContain("script-src 'self'");
   expect(page.headers.get('x-frame-options')).toBe('DENY');
+  // A referrer for Kolab alone: never no-referrer, under which a browser may send the page's own
+  // changes with Origin: null, which /api refuses (apps/web/e2e/sign-in.spec.ts, in Chromium).
+  expect(page.headers.get('referrer-policy')).toBe('same-origin');
   const deep = await fetch(`${base}/questions`, { headers: { accept: 'text/html' } });
   expect(await deep.text()).toContain('<title>Kolab</title>');
   const asset = await fetch(`${base}/assets/app-abc123.js`);
