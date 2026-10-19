@@ -20,6 +20,6 @@
   "0019_kolab_invites.sql": "47ad61959cb5f072d294fbd5a3d2841ac761a727b56acf44c89dbf6c128d0646",
   "0020_oauth_request_csrf.sql": "640c32434703ee18fb782f5e39c92b854d1207785c9ed61ee0fa456440d3b9b1",
   "0021_oauth_request_untombstoned.sql": "efaddaaef3290919d03ed877576c58db1d82d0e63f044d96c0986bf54b76e182",
-  "0022_read_only_mark_questions.sql": "2356a587f6bb50e253d2e1e8b00f003d356d2b1cf0c694ad57cd9b2b9bba4517",
+  "0022_read_only_marks.sql": "671347444a46dd5c88dfe8e81efeebd216dde64b48eabbb6eb27ff23126f5ed1",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

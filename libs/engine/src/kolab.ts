@@ -4735,7 +4735,11 @@ export class Kolab {
       version_id: string; element_id: string | null; invalidation_id: string | null; state: string;
       kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null;
     }>(`select * from query where id = $1`, [queryId])).rows[0];
-    if (!q) throw new Error(`no query ${queryId}`);
+    // Who may answer comes first, so the query's state, and whether a mark raised it, are told only
+    // to the layer that owns the answer. Another kolab's query reads as one that isn't there.
+    const v = q ? await this.version(q.version_id) : undefined;
+    if (!q || !v || v.kolab_id !== await this.sessionKolab(sessionId)) throw new Error(`no query ${queryId}`);
+    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
     if (q.state !== 'open') throw new GateError(`query ${queryId} is already answered`);
     const mark = q.invalidation_id ? await this.markRow(q.invalidation_id) : undefined;
     if (mark?.reason === 'ruled') {
@@ -4744,8 +4748,6 @@ export class Kolab {
     if (mark && mark.reason !== 'role_boundary') {
       throw new GateError(`query ${queryId} is about a dirty mark; resolve it with konjir_resolve_override or konjir_clear_mark`);
     }
-    const v = await this.version(q.version_id);
-    const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
     // Everything an answer causes happens in the transaction that answers, so nothing of it waits
     // in memory (W1.8): the owner's queue shrinks, the asker's answers grow, a boundary question's
     // mark is settled with it, and the element that asked is marked.
@@ -5101,6 +5103,20 @@ export class Kolab {
     return this.read({ session: sessionId }, (q) => this.listQueries({ ...filter, kolab }, q));
   }
 
+  /**
+   * A session's open marks, described: describeMarks in its own kolab, over the marks the session
+   * reads as kj_agent. Row-level security gives a session that holds only Read none (0022; D49):
+   * a mark's note can quote a ruling or the review gate's finding, private to those who belong to
+   * the kolab's work. The marks are picked as the session and described as Kolab, since a mark's
+   * trigger may be a version in another kolab the session can no longer read (access_lost).
+   */
+  async marksFor(sessionId: string, filter: { layer?: Layer; node?: string } = {}) {
+    const kolab = await this.sessionKolab(sessionId);
+    const ids = await this.read({ session: sessionId }, async (q) => (await q.query<{ id: string }>(
+      `select id from invalidation where state = 'open' and kolab_id = $1`, [kolab])).rows.map((r) => r.id));
+    return ids.length ? this.describeMarks({ ...filter, kolab, ids }) : [];
+  }
+
   /** Whether a session belongs to its kolab's work (D49): its actor holds Write on a layer of it, not Read alone. */
   async sessionBelongs(sessionId: string): Promise<boolean> {
     return (await this.session(sessionId)).access.layers.length > 0;
@@ -5161,7 +5177,7 @@ export class Kolab {
    * Open marks with the addresses involved, so an agent can act without more lookups. `node` is a
    * node's id. Addresses are in the short form of the mark's own kolab.
    */
-  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string } = {}) {
+  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string; ids?: string[] } = {}) {
     const rows = (await this.db.query<MarkRow & {
       node: string; seq: number; layer: Layer; trig_node: string; trig_kolab: string; trig_seq: number;
       t_element: string | null; t_selector: QuoteSelector | null; cause_count: number; kolab_id: string;
@@ -5179,7 +5195,8 @@ export class Kolab {
           and ($1::text is null or v.layer = $1)
           and ($2::text is null or v.node_id = $2)
           and ($3::text is null or i.kolab_id = $3)
-        order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null, filter.kolab ?? null])).rows;
+          and ($4::text[] is null or i.id = any($4))
+        order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null, filter.kolab ?? null, filter.ids ?? null])).rows;
     return rows.map((r) => {
       const from = r.kolab_id;
       const trig = (a: Omit<Address, 'node' | 'kolab'>) => formatAddress({ kolab: r.trig_kolab, node: r.trig_node, ...a }, { from });
@@ -5210,6 +5227,8 @@ export class Kolab {
    */
   async listQueries(filter: {
     layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind; kolab?: string; from?: string;
+    /** Only the newest this many, by id (ULIDs sort by time), still listed oldest first. */
+    newest?: number;
   } = {}, q: Q = this.db): Promise<Query[]> {
     const rows = (await q.query<{
       id: string; kind: QueryKind; node: string; seq: number; element_id: string | null; kolab_id: string;
@@ -5225,8 +5244,9 @@ export class Kolab {
         where ($1::text is null or v.layer = $1) and ($2::text is null or q.state = $2)
           and ($3::text is null or q.raised_by = $3) and ($4::text is null or v.node_id = $4)
           and ($5::text is null or q.kind = $5) and ($6::text is null or q.kolab_id = $6)
-        order by q.id`,
-      [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null, filter.kolab ?? null])).rows;
+        order by q.id desc limit $7`,
+      [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null, filter.kolab ?? null,
+        filter.newest ?? null])).rows.reverse();
     // A reader outside a query's kolab (D49) sees only the questions and notes people raised: never
     // one a mark raised (a boundary, a ruling that changes the intent, D51), since that kolab's marks
     // and rulings stay private, and never which element of its asked. Row-level security holds

@@ -64,6 +64,9 @@ export async function instructionsText(kolab: Kolab, which: InstructionKind, ses
   return which === 'reviewer' ? REVIEWER_INSTRUCTIONS : operatingInstructionsText(kolab, session);
 }
 
+/** How many answered questions and notes the operating instructions print, newest first read. */
+const ANSWERED_SHOWN = 20;
+
 async function operatingInstructionsText(engine: Kolab, session: string | undefined): Promise<string> {
   // Precedent, rulings and answers come only from the kolab the session works in (TEN13). The
   // admin token works in no kolab, so it gets the rules alone.
@@ -74,7 +77,10 @@ async function operatingInstructionsText(engine: Kolab, session: string | undefi
     `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
   // Read as the session: a reader outside the kolab's work gets only the questions and notes people
   // raised, never one a mark raised, since its marks and rulings stay private (D49, D51; 0022).
-  const answered = session ? await engine.queriesFor(session, { state: 'answered' }) : [];
+  // Only the newest 20 are read and printed, with how many there are in all.
+  const answered = session ? await engine.queriesFor(session, { state: 'answered', newest: ANSWERED_SHOWN }) : [];
+  const answeredInAll = session && kolab ? await engine.readAs(session, async (q) => (await q.query<{ n: number }>(
+    `select count(*)::int as n from query where kolab_id = $1 and state = 'answered'`, [kolab])).rows[0].n) : 0;
   const rulings = session ? await engine.rulingsFor(session, { limit: 20 }) : [];
   return [
     INSTRUCTIONS,
@@ -93,7 +99,7 @@ async function operatingInstructionsText(engine: Kolab, session: string | undefi
     '',
     `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
     `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: "${r.text}" (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces "${r.replaces}"` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
-    `Answered questions and notes (${answered.length}): ` + (answered.slice(-20).map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
+    `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
   ].join('\n');
 }
 

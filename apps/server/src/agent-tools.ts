@@ -228,7 +228,7 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing marks')).id;
-      return { marks: await this.kolab.describeMarks({ layer: all_layers ? undefined : me.layer, node: id, kolab: me.kolab }) };
+      return { marks: await this.kolab.marksFor(s, { layer: all_layers ? undefined : me.layer, node: id }) };
     });
   }
 
@@ -355,7 +355,7 @@ export class AgentTools {
       in_review: r.in_review ? at : null, ...(r.reviewers ? { reviewers: r.reviewers } : {}), unreviewed: r.unreviewed ?? false,
       ...(r.cascade ? { cascade: r.cascade } : {}),
       ...(r.rebases ? { rebases_queued: r.rebases } : {}),
-      stale_after_commit: r.ok ? await kolab.describeMarks({ node: n.id, kolab: await kolab.sessionKolab(session) }) : [],
+      stale_after_commit: r.ok ? await kolab.marksFor(session, { node: n.id }) : [],
       next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
         : r.in_review ? `In review: ${r.reviewers?.length ? `${r.reviewers.join(', ')} each have a review request in their inbox, and ` : ''}one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
         : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
