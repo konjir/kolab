@@ -72,9 +72,9 @@ async function operatingInstructionsText(engine: Kolab, session: string | undefi
   const belongs = session ? await engine.sessionBelongs(session) : false;
   const prec = kolab && belongs ? (await engine.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
     `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
-  // A reader outside the kolab's work gets only the questions and notes people raised, never one a
-  // mark raised: its marks and rulings stay private (D49, D51), as read_node and the database keep them.
-  const answered = kolab ? (await engine.listQueries({ state: 'answered', kolab })).filter((q) => belongs || !q.mark) : [];
+  // Read as the session: a reader outside the kolab's work gets only the questions and notes people
+  // raised, never one a mark raised, since its marks and rulings stay private (D49, D51; 0022).
+  const answered = session ? await engine.queriesFor(session, { state: 'answered' }) : [];
   const rulings = session ? await engine.rulingsFor(session, { limit: 20 }) : [];
   return [
     INSTRUCTIONS,

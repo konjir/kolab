@@ -242,8 +242,8 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing questions')).id;
-      if (mine) return { queries: await this.kolab.listQueries({ raisedBy: me.actor, state, kind, node: id, kolab: me.kolab }) };
-      return { queries: await this.kolab.listQueries({ layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node: id, kolab: me.kolab }) };
+      if (mine) return { queries: await this.kolab.queriesFor(s, { raisedBy: me.actor, state, kind, node: id }) };
+      return { queries: await this.kolab.queriesFor(s, { layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node: id }) };
     });
   }
 
