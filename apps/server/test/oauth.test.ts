@@ -20,6 +20,8 @@ async function serve(kolab: Kolab, opts: { identity?: StubIdentity | null; handI
 /** A browser: a cookie jar (paths aside), following redirects within Kolab, stopping at one that leaves it. */
 class Browser {
   readonly cookies = new Map<string, string>();
+  /** The sign-in each consent form shown names, by its token: the form sends it back. */
+  readonly signIns = new Map<string, string>();
   constructor(readonly base: string) {}
   private keep(res: Response) {
     for (const c of res.headers.getSetCookie()) {
@@ -33,6 +35,12 @@ class Browser {
     const headers = { ...(init.headers as Record<string, string> | undefined), cookie: [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ') };
     const res = await fetch(new URL(url, this.base), { ...init, headers, redirect: 'manual' });
     this.keep(res);
+    if (res.headers.get('content-type')?.startsWith('text/html')) {
+      const html = await res.clone().text();
+      const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
+      const signIn = /name="sign_in" value="([^"]+)"/.exec(html)?.[1];
+      if (csrf && signIn) this.signIns.set(csrf, signIn);
+    }
     return res;
   }
   async go(url: string | URL, init?: RequestInit): Promise<{ res: Response; at: URL; left?: URL }> {
@@ -46,10 +54,12 @@ class Browser {
     }
     return { res, at };
   }
+  /** A consent form as the page sends it: with the sign-in it names. */
+  form(form: Record<string, string>) { return { sign_in: this.signIns.get(form.csrf) ?? '', ...form }; }
   /** Submits the consent page's form, as the page would: from Kolab's origin, urlencoded. */
   consent(form: Record<string, string>) {
     return this.go('/oauth/consent', {
-      method: 'POST', headers: { origin: this.base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form).toString(),
+      method: 'POST', headers: { origin: this.base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(this.form(form)).toString(),
     });
   }
 }
@@ -229,11 +239,11 @@ test('state and CSRF: the provider\'s answer counts only in the browser that ask
   // The consent form: from another origin, or with no origin, or the wrong token, refused.
   const c = await toConsent(base, idp, client, { subject: '504', login: 'wu' });
   const form = { csrf: c.csrf, decision: 'allow', as: 'self', kolab: '@new', new_kolab_name: 'wus', new_kolab_title: 'Wu', role: 'product' };
-  const post = (headers: Record<string, string>, body = form) => c.browser.fetch('/oauth/consent', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body).toString() });
+  const post = (headers: Record<string, string>, body = form) => c.browser.fetch('/oauth/consent', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(c.browser.form(body)).toString() });
   expect((await post({ origin: 'http://evil.example' })).status).toBe(403);
   expect((await post({})).status).toBe(403);
   expect((await post({ origin: base }, { ...form, csrf: randomBytes(32).toString('base64url') })).status).toBe(400);
-  expect((await new Browser(base).fetch('/oauth/consent', { method: 'POST', headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form).toString() })).status).toBe(400);
+  expect((await new Browser(base).fetch('/oauth/consent', { method: 'POST', headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(c.browser.form(form)).toString() })).status).toBe(400);
   // The real one works once.
   expect((await c.browser.consent(form)).left?.searchParams.get('code')).toMatch(/^kjc_/);
   expect((await post({ origin: base })).status).toBe(400);
@@ -260,7 +270,7 @@ test('state and CSRF: the provider\'s answer counts only in the browser that ask
   const nul = await toConsent(base, idp, client, { subject: '508', login: 'uma' });
   for (const origin of ['null', undefined]) {
     const r = await nul.browser.go('/oauth/consent', {
-      method: 'POST', headers: { ...(origin ? { origin } : {}), 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf: nul.csrf, decision: 'allow', kolab: '@new', new_kolab_name: 'uma', role: 'product' }).toString(),
+      method: 'POST', headers: { ...(origin ? { origin } : {}), 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(nul.browser.form({ csrf: nul.csrf, decision: 'allow', kolab: '@new', new_kolab_name: 'uma', role: 'product' })).toString(),
     });
     expect([r.res.status, await r.res.text()]).toStrictEqual([403, expect.stringContaining('confirmed from Kolab')]);
   }
@@ -428,7 +438,7 @@ test('behind the TLS proxy the sign-in cookies are __Host-: Secure, Path=/, no D
     request({ host: '127.0.0.1', port, path, headers: { host: 'kolab.example.com' } }, (x) => { x.resume(); resolve(x.headers['set-cookie'] ?? []); }).on('error', reject).end();
   });
   const u = new URL(authorizeUrl('https://kolab.example.com', client));
-  expect((await get(u.pathname + u.search))[0]).toMatch(/^__Host-konjir_oauth=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
+  expect((await get(u.pathname + u.search))[0]).toMatch(/^__Host-konjir_oauth_[A-Za-z0-9_-]{11}=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=1200$/);
   expect((await get('/api/session/oauth/start'))[0]).toMatch(/^__Host-konjir_web_oauth=[^;]+; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=900$/);
 });
 
@@ -481,4 +491,82 @@ test('a request with no address to count by is refused, and sign-in has no total
   for (let a = 0; a < 200; a++) for (let i = 0; i < 30; i++) expect(limit.take(`ip:10.0.${a >> 8}.${a & 255}`)).toBe(true);
   expect(limit.take('ip:10.9.9.9')).toBe(true);
   expect(limit.take('ip:10.0.0.0')).toBe(false);
+});
+
+test('the consent page\'s form-action names the client\'s redirect URI, so a browser lets the 303 there through, Allow and Deny alike', async () => {
+  const { formActionSource } = await import('../src/oauth/pages.js');
+  expect(formActionSource('http://127.0.0.1:19876/mcp/oauth/callback')).toBe('http://127.0.0.1:19876');
+  expect(formActionSource('https://app.example.com/cb?x=1')).toBe('https://app.example.com');
+  expect(formActionSource('http://[::1]:7000/cb')).toBe('http:');   // a CSP source can't name an IPv6 host
+  expect(formActionSource('com.example.app:/cb')).toBe('com.example.app:');
+  expect(formActionSource('not a uri')).toBeUndefined();
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base, ['http://127.0.0.1/cb'])).body.client_id;
+  idp.next({ subject: '520', login: 'oda' });
+  const browser = new Browser(base);
+  // A loopback redirect may name any port (RFC 8252): the page names the one this sign-in uses.
+  const { res } = await browser.go(authorizeUrl(base, client, { redirect: 'http://127.0.0.1:19876/cb' }));
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-security-policy')).toContain(`form-action 'self' http://127.0.0.1:19876;`);
+  // Pages that aren't a consent page lead nowhere else.
+  expect((await browser.fetch(authorizeUrl(base, 'kjcl_nobody0000000000000000'))).headers.get('content-security-policy')).toContain(`form-action 'self';`);
+});
+
+test('one binding cookie per sign-in: two in one browser, interleaved, both go through; each later failure says plainly why', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const browser = new Browser(base);
+  const bindings = () => [...browser.cookies.keys()].filter((k) => k.startsWith('konjir_oauth_'));
+  const open = async (subject: string, login: string, state: string) => {
+    idp.next({ subject, login });
+    const { res } = await browser.go(authorizeUrl(base, client, { state }));
+    return { csrf: csrfOf(await res.text()), status: res.status };
+  };
+  const one = await open('530', 'pia', 'one');
+  const two = await open('531', 'quinn', 'two');
+  expect([one.status, two.status, bindings().length]).toStrictEqual([200, 200, 2]);
+  const form = (csrf: string, name: string) => ({ csrf, decision: 'allow', as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: name, role: 'product' });
+  // The earlier one first: the later one's cookie is untouched, and only its own is cleared.
+  expect((await browser.consent(form(one.csrf, 'pias'))).left?.searchParams.get('state')).toBe('one');
+  expect(bindings()).toHaveLength(1);
+  expect((await browser.consent(form(two.csrf, 'quinns'))).left?.searchParams.get('state')).toBe('two');
+  expect(bindings()).toHaveLength(0);
+
+  const said = async (r: { res: Response }) => [r.res.status, /class="err">([^<]*)/.exec(await r.res.text())?.[1]];
+  // Submitted again once it went through: already used.
+  expect(await said(await browser.consent(form(one.csrf, 'pias')))).toStrictEqual([400, expect.stringMatching(/^This sign-in was already used/)]);
+  // From another browser, while it is open: not that browser's.
+  const three = await open('532', 'ros', 'three');
+  const other = new Browser(base);
+  const post = (b: Browser) => b.go('/oauth/consent', {
+    method: 'POST', headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(browser.form(form(three.csrf, 'ross'))).toString(),
+  });
+  expect(await said(await post(other))).toStrictEqual([400, expect.stringMatching(/^This sign-in didn&#39;t start in this browser/)]);
+  // Past its 20 minutes: expired, whether the browser still sends its cookie or has dropped it.
+  await kolab.db.query(`update oauth_request set expires_at = now() - interval '1 second'`);
+  const expired = 'This sign-in expired: it lasts 20 minutes from when the app opened it. Start again from the app you were connecting.';
+  expect(await said(await post(browser))).toStrictEqual([400, expired]);
+  expect(await said(await post(other))).toStrictEqual([400, expired]);
+  // A form that names no sign-in, and a provider's answer that names none, are refused.
+  expect((await browser.consent({ ...form('x'.repeat(43), 'x'), sign_in: '' })).res.status).toBe(400);
+  expect((await browser.go('/oauth/callback/stub?state=nodot&code=c')).res.status).toBe(400);
+});
+
+test('at most 10 sign-ins open in one browser at once: the 11th is refused, politely', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const browser = new Browser(base);
+  for (let i = 0; i < 10; i++) {
+    // Each stops before the provider answers: its cookie set, the sign-in left open.
+    idp.next({ subject: `54${i}`, login: `open${i}` });
+    expect((await browser.fetch(authorizeUrl(base, client))).status).toBe(302);
+  }
+  const r = await browser.fetch(authorizeUrl(base, client));
+  expect(r.status).toBe(429);
+  expect(await r.text()).toContain('10 sign-ins are already open in this browser');
+  // Another browser is unaffected.
+  expect((await new Browser(base).fetch(authorizeUrl(base, client))).status).toBe(302);
 });

@@ -20,6 +20,8 @@ async function serve(kolab: Kolab) {
 class Browser {
   readonly cookies = new Map<string, string>();
   readonly set: string[] = [];
+  /** The sign-in each consent form shown names, by its token: the form sends it back. */
+  readonly signIns = new Map<string, string>();
   constructor(readonly base: string) {}
   async fetch(url: string | URL, init: RequestInit = {}) {
     const headers = { ...(init.headers as Record<string, string> | undefined), cookie: [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ') };
@@ -30,6 +32,12 @@ class Browser {
       const name = kv.slice(0, kv.indexOf('=')).trim();
       const value = kv.slice(kv.indexOf('=') + 1).trim();
       if (!value || /max-age=0/i.test(c)) this.cookies.delete(name); else this.cookies.set(name, value);
+    }
+    if (res.headers.get('content-type')?.startsWith('text/html')) {
+      const html = await res.clone().text();
+      const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
+      const signIn = /name="sign_in" value="([^"]+)"/.exec(html)?.[1];
+      if (csrf && signIn) this.signIns.set(csrf, signIn);
     }
     return res;
   }
@@ -49,7 +57,8 @@ class Browser {
       : { method: 'POST', headers: { origin: this.base, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   }
   consent(form: Record<string, string>) {
-    return this.go('/oauth/consent', { method: 'POST', headers: { origin: this.base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form).toString() });
+    const body = { sign_in: this.signIns.get(form.csrf) ?? '', ...form };
+    return this.go('/oauth/consent', { method: 'POST', headers: { origin: this.base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
   }
 }
 

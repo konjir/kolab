@@ -30,6 +30,8 @@ class Newcomers extends StubIdentity {
 }
 
 const kolab = await Kolab.open({});
+// A sign-in's lifetime, shortened for the test of one that expires (KONJIR_SIGNIN_TTL_S).
+if (process.env.KONJIR_SIGNIN_TTL_S) kolab.oauth.requestTtlS = Number(process.env.KONJIR_SIGNIN_TTL_S);
 await kolab.addActor('lee', { name: 'Lee' });
 await kolab.createKolab('accounts', { owner: 'lee', title: 'Accounts' });
 const lee = await kolab.openSession('lee', 'product', { kolab: 'accounts' });
