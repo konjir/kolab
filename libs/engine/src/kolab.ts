@@ -1557,7 +1557,7 @@ export class Kolab {
    * anything; later, a replay, which revokes its grant. A person owns at most `agentsPerPerson`
    * agents they made themselves.
    */
-  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 600, refreshGraceS: 10, agentsPerPerson: 10 };
+  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshGraceS: 10, agentsPerPerson: 10 };
 
   /**
    * The person an identity provider says signed in (D55). An identity is the provider's own stable
@@ -1686,7 +1686,8 @@ export class Kolab {
     const inviteKey = r.invite !== undefined && INVITE_TOKEN.test(r.invite) ? sessionKey(r.invite) : null;
     const binding = randomBytes(32).toString('base64url');
     const state = randomBytes(32).toString('base64url');
-    await this.db.query(`delete from oauth_request where expires_at < now()`);
+    // An expired request is kept a day, unusable, so a late consent form can be told it expired.
+    await this.db.query(`delete from oauth_request where expires_at < now() - interval '1 day'`);
     await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
     await this.db.query(
       `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key)
@@ -1714,13 +1715,14 @@ export class Kolab {
   /**
    * The authorization a browser's binding names, while it lasts, for the consent page. With
    * `state`, only if that is the state sent to the identity provider for it, so a forged callback
-   * is refused before its code reaches the provider (RFC 6749 §10.12).
+   * is refused before its code reaches the provider (RFC 6749 §10.12). With `csrf`, only if that is
+   * its consent form's token: a form from an earlier sign-in that this one replaced has another.
    */
-  async pendingAuthorization(binding: string, opts: { state?: string } = {}): Promise<PendingAuthorization | undefined> {
+  async pendingAuthorization(binding: string, opts: { state?: string; csrf?: string } = {}): Promise<PendingAuthorization | undefined> {
     const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null }>(
       `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key from oauth_request
-        where id = $1 and expires_at > now() and ($2::text is null or state_key = $2)`,
-      [sessionKey(binding), opts.state === undefined ? null : sessionKey(opts.state)])).rows[0];
+        where id = $1 and expires_at > now() and ($2::text is null or state_key = $2) and ($3::text is null or csrf_key = $3)`,
+      [sessionKey(binding), opts.state === undefined ? null : sessionKey(opts.state), opts.csrf === undefined ? null : sessionKey(opts.csrf)])).rows[0];
     return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider, inviteKey: r.invite_key };
   }
 
@@ -1817,7 +1819,7 @@ export class Kolab {
    */
   async abandonAuthorization(binding: string, state: string): Promise<{ redirectUri: string; clientState: string | null } | undefined> {
     const r = (await this.db.query<{ redirect_uri: string; client_state: string | null }>(
-      `delete from oauth_request where id = $1 and state_key = $2 and actor_id is null returning redirect_uri, client_state`,
+      `delete from oauth_request where id = $1 and state_key = $2 and actor_id is null and expires_at > now() returning redirect_uri, client_state`,
       [sessionKey(binding), sessionKey(state)])).rows[0];
     return r && { redirectUri: r.redirect_uri, clientState: r.client_state };
   }
@@ -1825,8 +1827,20 @@ export class Kolab {
   /** The person declined: the authorization is dropped. Returns where to tell the client, if it was theirs to decline. */
   async declineAuthorization(binding: string, csrf: string): Promise<{ redirectUri: string; clientState: string | null } | undefined> {
     const r = (await this.db.query<{ redirect_uri: string; client_state: string | null }>(
-      `delete from oauth_request where id = $1 and csrf_key = $2 returning redirect_uri, client_state`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+      `delete from oauth_request where id = $1 and csrf_key = $2 and expires_at > now() returning redirect_uri, client_state`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
     return r && { redirectUri: r.redirect_uri, clientState: r.client_state };
+  }
+
+  /**
+   * What became of a sign-in that can't go on, for the page that says so, by any one of its secrets:
+   * the browser's binding, the identity provider's state, or the consent form's token. `open` while
+   * it lasts, `expired` once its `requestTtlS` is up (an expired one is kept a day), and undefined
+   * once it was used, declined or cancelled, or for a secret that names none.
+   */
+  async signInStatus(by: { binding: string } | { state: string } | { csrf: string }): Promise<'open' | 'expired' | undefined> {
+    const [column, secret] = 'binding' in by ? ['id', by.binding] : 'state' in by ? ['state_key', by.state] : ['csrf_key', by.csrf];
+    const r = (await this.db.query<{ open: boolean }>(`select expires_at > now() as open from oauth_request where ${column} = $1`, [sessionKey(secret)])).rows[0];
+    return r === undefined ? undefined : r.open ? 'open' : 'expired';
   }
 
   /**

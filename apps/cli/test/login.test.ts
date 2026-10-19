@@ -25,9 +25,10 @@ async function browse(start: URL, form: Record<string, string>): Promise<string>
   while (res.status >= 300 && res.status < 400) { url = new URL(res.headers.get('location')!, url); res = await go(url); }
   const html = await res.text();
   const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
+  const signIn = /name="sign_in" value="([^"]+)"/.exec(html)?.[1];
   if (!csrf) throw new Error(`no consent page at ${url.pathname}: ${res.status}`);
   const done = await go(new URL('/oauth/consent', url), {
-    method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, decision: 'allow', ...form }).toString(),
+    method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, sign_in: signIn ?? '', decision: 'allow', ...form }).toString(),
   });
   const back = new URL(done.headers.get('location')!);
   // The CLI's own loopback server receives the code.
