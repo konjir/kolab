@@ -2,7 +2,7 @@
 // inviting a teammate with a link shown once, an invite opened from its link, and the routes. Kolab's
 // own rules are apps/server/test/onboarding.test.ts's.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { InvitePreview, InviteView, WebMe, WebOverview } from '@konjir/types';
 import { ConnectView, GettingStarted, InviteCard, PeopleView, accessWords, inviteLink } from '../src/components/Onboarding.js';
 import type { Act } from '../src/components/Marks.js';
@@ -46,6 +46,21 @@ test('connecting a harness is one command each, naming this Kolab, the kolab and
   await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Copy' })[0]); });
   expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith('claude mcp add --transport http konjir https://kolab.example.com/mcp');
+});
+
+test('the MCP route (Claude Code, OpenCode, then konjir_instructions) is apart from the CLI route (konjir login, then konjir instructions)', () => {
+  render(<ConnectView me={eli} origin="https://kolab.example.com" />);
+  const mcpRoute = screen.getByRole('region', { name: 'Over MCP: Claude Code, OpenCode' });
+  const cliRoute = screen.getByRole('region', { name: 'In a shell: the konjir CLI, for Codex or you' });
+  expect(within(mcpRoute).getByLabelText('Add Kolab to Claude Code')).toBeTruthy();
+  expect(JSON.parse(within(mcpRoute).getByLabelText('OpenCode\'s opencode.json').textContent!).mcp)
+    .toStrictEqual({ konjir: { type: 'remote', url: 'https://kolab.example.com/mcp' } });
+  expect(within(mcpRoute).getByLabelText('Sign OpenCode in').textContent).toBe('opencode mcp auth konjir');
+  expect(within(mcpRoute).getByText('konjir_instructions')).toBeTruthy();
+  expect(within(mcpRoute).queryByText(/konjir login/)).toBeNull();
+  expect(within(cliRoute).getByLabelText('Sign the konjir CLI in').textContent).toMatch(/^npx konjir login /);
+  expect(within(cliRoute).getByLabelText('Read the instructions with the konjir CLI').textContent).toBe('npx konjir instructions');
+  expect(within(cliRoute).queryByText('konjir_instructions')).toBeNull();
 });
 
 test('an admin makes an invite link, shown once, and revokes an open one; anyone else is told who invites', async () => {

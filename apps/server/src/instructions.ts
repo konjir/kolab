@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { McpPrompt, type McpHandlerContext } from '@onivoro/server-mcp';
+import { McpPrompt, McpResource, McpTool, type McpHandlerContext, type McpToolContext } from '@onivoro/server-mcp';
+import * as z from 'zod/v4';
 import { Kolab } from '@konjir/engine';
-import { sessionOf } from './results.js';
+import { fail, sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
 
 export const INSTRUCTIONS = `Konjir holds the canonical specs, bindings and work for this project. Your session token fixes your actor and role (product writes the functional layer; engineer writes the technical layer).
@@ -11,11 +12,11 @@ Rules:
 3. Never change behavior from the technical layer. If the spec can't be met as written, konjir_ask the spec, don't patch around it. Pass from=<your element> so the answer comes back to that element as a mark. To flag an interpretation or assumption that needs no answer, konjir_annotate the spec. A disagreement you and the other side can't settle between yourselves becomes a case file: konjir_open_case on the element, with your claim and evidence; the other side answers with konjir_add_position, and a person rules (konjir_rule). Work continues while it is open.
 4. Drafts are not truth until review commits them. Nothing may link to an uncommitted version. konjir_submit_for_review runs Kolab's structural checks, then puts the version in review: one approval from another actor with Write on its layer commits it. If no one else holds Write on the layer, the checks alone commit it, recorded as unreviewed; plan and work-package versions always commit on the checks alone. A failed check or a request for changes returns it to you as a draft, with the reason; redraft, or resubmit it unchanged. If your version waits in review and its reviewers have gone, resubmit it: Kolab asks whoever can review it now, or commits it unreviewed. konjir_abandon drops a draft or a version in review you wrote.
 5. Before finishing work, run konjir_list_stale and handle every mark on your layer.
-6. Review what you are asked to. A review request for you in your inbox (or konjir_list_reviews) names a version you didn't write. Read it with konjir_read_node, then konjir_review it: approve, or request_changes with a note. Report a contradiction (two elements that cannot both hold, or a binding element that conflicts with a requirement it links to) only with request_changes; a layer_leak (content in the wrong layer that conflicts with nothing: implementation in a spec, or behavior a binding adds that its linked requirements don't mention) may come with approve, and raises a question to the layer that owns the answer. Anything that conflicts is a contradiction. Send a compound requirement back to be split. Never approve on another's behalf: the verdict is yours. Kolab runs no model: the semantic review is yours, and the konjir_reviewer_instructions prompt says how to do it.
+6. Review what you are asked to. A review request for you in your inbox (or konjir_list_reviews) names a version you didn't write. Read it with konjir_read_node, then konjir_review it: approve, or request_changes with a note. Report a contradiction (two elements that cannot both hold, or a binding element that conflicts with a requirement it links to) only with request_changes; a layer_leak (content in the wrong layer that conflicts with nothing: implementation in a spec, or behavior a binding adds that its linked requirements don't mention) may come with approve, and raises a question to the layer that owns the answer. Anything that conflicts is a contradiction. Send a compound requirement back to be split. Never approve on another's behalf: the verdict is yours. Kolab runs no model: the semantic review is yours, and konjir_instructions which=reviewer says how to do it.
 7. Rulings are precedent. A person's ruling, on a case file or given directly, settles its question in this kolab: never argue it again, and follow it. konjir_list_rulings lists them, and konjir_read_node shows each beside its element. A ruling that keeps the intent asks for another way to meet the element as written; one that changes it means the element is to be amended. Only a person rules, never an agent.
-8. Your inbox is pushed. If your client supports subscriptions/listen, subscribe to the resources konjir_whoami lists (your layer's inbox and your answers, in your session's kolab; no other kolab's can be subscribed to) and re-read one when it is updated. Otherwise, while you wait on answers, run \`konjir watch --once\` (the konjir CLI, with KONJIR_URL and KONJIR_TOKEN set) as a background command: it exits with the change as soon as your inbox has one.`;
+8. Your inbox is pushed. If your client supports subscriptions/listen, subscribe to the resources konjir_whoami lists (your layer's inbox and your answers, in your session's kolab; no other kolab's can be subscribed to) and re-read one when it is updated. Otherwise, while you wait on answers, re-read them when you next check (read the resources, or konjir_list_queries mine=true, konjir_list_cases mine=true and konjir_list_reviews); if you work in a shell with the konjir CLI, \`konjir watch --once\` run as a background command exits with the change as soon as your inbox has one.`;
 
-const MORE = 'Full operating instructions and precedent: the konjir_operating_instructions MCP prompt, or run `konjir instructions` in a shell. How to review a version: the konjir_reviewer_instructions prompt, or `konjir instructions reviewer`.';
+const MORE = 'Before your first change, call the konjir_instructions tool: it returns the full operating instructions with your kolab\'s precedent, rulings and answered questions. Before reviewing a version, call konjir_instructions which=reviewer. The same texts are the resources konjir://instructions and konjir://instructions/reviewer. Alternatives: a person can invoke them as the konjir_operating_instructions and konjir_reviewer_instructions prompts, and an agent working in a shell with the konjir CLI can run `konjir instructions` and `konjir instructions reviewer`.';
 
 /**
  * How to review a version (VER6, VER8, VER9, VER10, REV5): Kolab makes no model calls, so the
@@ -44,6 +45,58 @@ The verdict is yours; never give one on another's behalf. These instructions cov
 /** Served as the server's instructions, so the rules arrive with the connection. */
 export const SERVER_INSTRUCTIONS = `${INSTRUCTIONS}\n${MORE}`;
 
+/** Which instructions konjir_instructions returns: the operating instructions, or the reviewer's. */
+export const INSTRUCTION_KINDS = ['operating', 'reviewer'] as const;
+export type InstructionKind = (typeof INSTRUCTION_KINDS)[number];
+
+/** The resources that serve the same texts, for clients that read resources rather than call tools. */
+export const OPERATING_INSTRUCTIONS_URI = 'konjir://instructions';
+export const REVIEWER_INSTRUCTIONS_URI = 'konjir://instructions/reviewer';
+
+/**
+ * The instructions of either kind as `session` gets them. The prompts, the konjir_instructions
+ * tool and the instruction resources all serve this one text, so they can't drift. The reviewer
+ * instructions are the same for everyone; the operating instructions carry the session's kolab's
+ * precedent, rulings and answered questions (TEN13). The admin token, which works in no kolab
+ * (`session` undefined), gets the rules alone.
+ */
+export async function instructionsText(kolab: Kolab, which: InstructionKind, session: string | undefined): Promise<string> {
+  return which === 'reviewer' ? REVIEWER_INSTRUCTIONS : operatingInstructionsText(kolab, session);
+}
+
+async function operatingInstructionsText(engine: Kolab, session: string | undefined): Promise<string> {
+  // Precedent, rulings and answers come only from the kolab the session works in (TEN13). The
+  // admin token works in no kolab, so it gets the rules alone.
+  const kolab = session ? await engine.sessionKolab(session) : undefined;
+  // A reader who holds only Read doesn't belong to the kolab's work, so gets no precedent (D49).
+  const belongs = session ? await engine.sessionBelongs(session) : false;
+  const prec = kolab && belongs ? (await engine.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
+    `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
+  const answered = kolab ? await engine.listQueries({ state: 'answered', kolab }) : [];
+  const rulings = session ? await engine.rulingsFor(session, { limit: 20 }) : [];
+  return [
+    INSTRUCTIONS,
+    '',
+    'Working loop: konjir_whoami, then konjir_list_reviews, konjir_list_stale, konjir_list_queries and konjir_list_cases for your layer (and konjir_list_queries mine=true and konjir_list_cases mine=true for what came back to you); review what waits for you; resolve what you need with konjir_resolve; draft with links, submit for review; finish by checking konjir_list_stale again.',
+    'Reviewing: check that each element states one testable intent (send compound ones back to be split), that no two elements contradict each other, that a binding element doesn\'t conflict with what it links to (a contradiction) or add behavior it doesn\'t mention (a layer leak), and that nothing belongs to the other layer. Cite element IDs in findings. Approve when nothing blocks the commit; a version needs one approval. konjir_instructions which=reviewer (or the konjir_reviewer_instructions prompt) has the full checklist and what each finding does. Another agent of the same person counts as a reviewer, but never the author. Kolab\'s own rebases of variants, and rulings of Lee\'s applied through the admin token (D47), commit after structural checks, without review; no agent session can do that.',
+    'Answering questions: if the answer settles or changes intent, also amend the spec element and commit it. The answer alone reaches only the asker; the spec change reaches everyone who depends on that element, through the cascade.',
+    '',
+    'Writing specs (product): intent and behavior only, one testable requirement per element, readable stable IDs (e.g. R1, R2 or a feature prefix like PR1). Reuse an element\'s ID when you edit it; a new ID means a new requirement. To edit, draft with deltas (override/add/remove) rather than resending everything.',
+    'Writing bindings and work (engineer): one element per implementation decision; link each element to exactly the requirement(s) it serves, with source_element set. Questions about intent go to the spec with konjir_ask; never encode a behavior change in a binding.',
+    'Questions and notes: ask on the narrowest address (an element, or a quoted span with ~q). Set from to your element that waits on the answer; when it is answered that element gets a query_answered mark, which editing the element or konjir_clear_mark settles. Use konjir_annotate for an interpretation or assumption you are proceeding on, so the owner can object; it blocks nothing. Both show beside the element in konjir_read_node.',
+    'Case files: ask first; most questions need an answer, not a ruling. Open a case file (konjir_open_case) only for a genuine disagreement you can\'t settle with the other side, typically a requirement on one side and code reality on the other: one element, the question in one sentence, your claim, and evidence (kj: addresses, commits, file and line, test runs). The other side takes the second position with konjir_add_position. A person with Write on the element\'s layer rules on it with konjir_rule, sustaining or overruling each position; no agent can. Keep working meanwhile, at risk. Once ruled, follow the ruling and don\'t reopen it: it is precedent.',
+    'Variants: when a parent commits, Kolab rebases each variant onto it, in the background: the parent\'s commit returns at once with rebases_queued, and each variant gets a new version once its rebase runs (konjir_read_node shows a variant\'s queued rebase). Editing a variant meanwhile is safe: the rebase is built on your version. A rebase that fails for the variant\'s own reasons (Kolab\'s checks refuse it) leaves the variant on its old parent with one rebase_failed mark and a question saying why; a later failure re-points that mark rather than adding another. Commit a version that resolves it, either on your current parent (Kolab then rebases it) or with parent set to the parent\'s latest version; the mark and its question settle once the variant sits on its parent\'s latest version.',
+    'Edge kinds: dependency = this element relies on that one (the usual choice); derivation = this element was generated from that one (e.g. a WBS item from a binding element); equivalence = two representations that must stay in sync (spec and prototype). All three are re-checked the same way when the target changes.',
+    'Links inside one spec are allowed: they say one requirement relies on another, and Kolab re-checks them when the target requirement changes.',
+    '',
+    `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
+    `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: "${r.text}" (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces "${r.replaces}"` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
+    `Answered questions and notes (${answered.length}): ` + (answered.slice(-20).map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
+  ].join('\n');
+}
+
+const asPrompt = (text: string) => ({ messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] });
+
 /** The konjir_operating_instructions prompt: the rules plus precedent and answered questions. */
 @Injectable()
 export class OperatingInstructions {
@@ -55,36 +108,7 @@ export class OperatingInstructions {
     description: 'The rules for working through Konjir, plus recent precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated.',
   })
   async operatingInstructions(context?: McpHandlerContext) {
-    // Precedent, rulings and answers come only from the kolab the session works in (TEN13). The
-    // admin token works in no kolab, so it gets the rules alone.
-    const session = sessionOf(context?.authInfo);
-    const kolab = session ? await this.kolab.sessionKolab(session) : undefined;
-    // A reader who holds only Read doesn't belong to the kolab's work, so gets no precedent (D49).
-    const belongs = session ? await this.kolab.sessionBelongs(session) : false;
-    const prec = kolab && belongs ? (await this.kolab.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
-      `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
-    const answered = kolab ? await this.kolab.listQueries({ state: 'answered', kolab }) : [];
-    const rulings = session ? await this.kolab.rulingsFor(session, { limit: 20 }) : [];
-    const text = [
-      INSTRUCTIONS,
-      '',
-      'Working loop: konjir_whoami, then konjir_list_reviews, konjir_list_stale, konjir_list_queries and konjir_list_cases for your layer (and konjir_list_queries mine=true and konjir_list_cases mine=true for what came back to you); review what waits for you; resolve what you need with konjir_resolve; draft with links, submit for review; finish by checking konjir_list_stale again.',
-      'Reviewing: check that each element states one testable intent (send compound ones back to be split), that no two elements contradict each other, that a binding element doesn\'t conflict with what it links to (a contradiction) or add behavior it doesn\'t mention (a layer leak), and that nothing belongs to the other layer. Cite element IDs in findings. Approve when nothing blocks the commit; a version needs one approval. The konjir_reviewer_instructions prompt has the full checklist and what each finding does. Another agent of the same person counts as a reviewer, but never the author. Kolab\'s own rebases of variants, and rulings of Lee\'s applied through the admin token (D47), commit after structural checks, without review; no agent session can do that.',
-      'Answering questions: if the answer settles or changes intent, also amend the spec element and commit it. The answer alone reaches only the asker; the spec change reaches everyone who depends on that element, through the cascade.',
-      '',
-      'Writing specs (product): intent and behavior only, one testable requirement per element, readable stable IDs (e.g. R1, R2 or a feature prefix like PR1). Reuse an element\'s ID when you edit it; a new ID means a new requirement. To edit, draft with deltas (override/add/remove) rather than resending everything.',
-      'Writing bindings and work (engineer): one element per implementation decision; link each element to exactly the requirement(s) it serves, with source_element set. Questions about intent go to the spec with konjir_ask; never encode a behavior change in a binding.',
-      'Questions and notes: ask on the narrowest address (an element, or a quoted span with ~q). Set from to your element that waits on the answer; when it is answered that element gets a query_answered mark, which editing the element or konjir_clear_mark settles. Use konjir_annotate for an interpretation or assumption you are proceeding on, so the owner can object; it blocks nothing. Both show beside the element in konjir_read_node.',
-      'Case files: ask first; most questions need an answer, not a ruling. Open a case file (konjir_open_case) only for a genuine disagreement you can\'t settle with the other side, typically a requirement on one side and code reality on the other: one element, the question in one sentence, your claim, and evidence (kj: addresses, commits, file and line, test runs). The other side takes the second position with konjir_add_position. A person with Write on the element\'s layer rules on it with konjir_rule, sustaining or overruling each position; no agent can. Keep working meanwhile, at risk. Once ruled, follow the ruling and don\'t reopen it: it is precedent.',
-      'Variants: when a parent commits, Kolab rebases each variant onto it, in the background: the parent\'s commit returns at once with rebases_queued, and each variant gets a new version once its rebase runs (konjir_read_node shows a variant\'s queued rebase). Editing a variant meanwhile is safe: the rebase is built on your version. A rebase that fails for the variant\'s own reasons (Kolab\'s checks refuse it) leaves the variant on its old parent with one rebase_failed mark and a question saying why; a later failure re-points that mark rather than adding another. Commit a version that resolves it, either on your current parent (Kolab then rebases it) or with parent set to the parent\'s latest version; the mark and its question settle once the variant sits on its parent\'s latest version.',
-      'Edge kinds: dependency = this element relies on that one (the usual choice); derivation = this element was generated from that one (e.g. a WBS item from a binding element); equivalence = two representations that must stay in sync (spec and prototype). All three are re-checked the same way when the target changes.',
-      'Links inside one spec are allowed: they say one requirement relies on another, and Kolab re-checks them when the target requirement changes.',
-      '',
-      `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
-      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: "${r.text}" (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces "${r.replaces}"` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
-      `Answered questions and notes (${answered.length}): ` + (answered.slice(-20).map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
-    ].join('\n');
-    return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
+    return asPrompt(await instructionsText(this.kolab, 'operating', sessionOf(context?.authInfo)));
   }
 }
 
@@ -97,6 +121,65 @@ export class ReviewerInstructions {
     description: 'How to review a version that waits for you: what to check, what a contradiction and a layer leak are and what each does, and how to approve or request changes with konjir_review.',
   })
   reviewerInstructions() {
-    return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text: REVIEWER_INSTRUCTIONS } }] };
+    return asPrompt(REVIEWER_INSTRUCTIONS);
+  }
+}
+
+const which = z.object({
+  which: z.enum(INSTRUCTION_KINDS).optional().describe('operating (the default): the rules, with your kolab\'s precedent, rulings and answered questions. reviewer: how to review a version that waits for you.'),
+});
+
+/**
+ * The same instructions for a session that sees only tools or only resources: clients show MCP
+ * prompts to the person, as slash commands, not to the model, and an agent connected only over
+ * MCP usually has no konjir CLI. The tool is read-only; the resources are read, never pushed: no
+ * one is signalled on them, and ListenScope refuses a session's listen stream that asks for them,
+ * as for anything but its own kolab's inboxes and answers (D50).
+ */
+@Injectable()
+export class InstructionsAccess {
+  constructor(@Inject(KOLAB) private readonly kolab: Kolab) {}
+
+  @McpTool({
+    name: 'konjir_instructions',
+    title: 'Konjir instructions',
+    description: 'Call before your first change: the full operating instructions for working through Konjir, with your kolab\'s precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.',
+    schema: which,
+    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+  })
+  async instructions({ which: kind }: z.infer<typeof which>, context?: McpToolContext) {
+    try {
+      const text = await instructionsText(this.kolab, kind ?? 'operating', sessionOf(context?.authInfo));
+      return { content: [{ type: 'text' as const, text }] };
+    } catch (e) {
+      return fail(e);
+    }
+  }
+
+  @McpResource({
+    name: 'konjir_operating_instructions',
+    uri: OPERATING_INSTRUCTIONS_URI,
+    title: 'Konjir operating instructions',
+    description: 'Read before your first change: the rules for working through Konjir, with your kolab\'s precedent, rulings and answered questions. The same text as the konjir_instructions tool. Not subscribable.',
+    mimeType: 'text/plain',
+  })
+  async operatingResource(uri: URL, context?: McpHandlerContext) {
+    return this.resource(uri, 'operating', context);
+  }
+
+  @McpResource({
+    name: 'konjir_reviewer_instructions',
+    uri: REVIEWER_INSTRUCTIONS_URI,
+    title: 'Konjir reviewer instructions',
+    description: 'Read before reviewing: how to review a version that waits for you. The same text as konjir_instructions which=reviewer. Not subscribable.',
+    mimeType: 'text/plain',
+  })
+  async reviewerResource(uri: URL, context?: McpHandlerContext) {
+    return this.resource(uri, 'reviewer', context);
+  }
+
+  private async resource(uri: URL, kind: InstructionKind, context?: McpHandlerContext) {
+    const text = await instructionsText(this.kolab, kind, sessionOf(context?.authInfo));
+    return { contents: [{ uri: uri.href, mimeType: 'text/plain', text }] };
   }
 }
