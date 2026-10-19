@@ -27,16 +27,18 @@ const csp = (formTargets: string[]) =>
  * URI the client gets its answer at. A browser holds a form submission's redirects to the page's
  * `form-action` too (CSP3), so under `form-action 'self'` alone Kolab's 303 to an app's own
  * listener, http://127.0.0.1:<port>/… for OpenCode, is blocked after the consent has gone through.
- * Its origin, port and all; or, where a CSP source can't name the host (an IPv6 literal), or for an
- * app's own scheme, the scheme alone.
+ * A redirect URI is https, or http on loopback, on a host registration checked (validRedirectHost),
+ * so this is its origin, port and all. The one exception is an IPv6 literal, `http://[::1]:<port>`,
+ * which a CSP source can't name: then the scheme alone, `http:` (which CSP3 lets match https too).
+ * That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only to the
+ * sign-in's own registered redirect URI. Anything else, none.
  */
 export function formActionSource(redirectUri: string): string | undefined {
   let u: URL;
   try { u = new URL(redirectUri); } catch { return undefined; }
-  if (u.protocol === 'http:' || u.protocol === 'https:') {
-    return /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(u.origin) ? u.origin : u.protocol;
-  }
-  return /^[a-z][a-z0-9+.-]*:$/i.test(u.protocol) ? u.protocol : undefined;
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined;
+  if (/^\[[0-9a-f:.]+\]$/.test(u.hostname)) return u.protocol;
+  return /^https?:\/\/[a-z0-9.-]+(:\d+)?$/.test(u.origin) ? u.origin : undefined;
 }
 
 /**

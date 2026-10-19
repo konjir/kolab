@@ -43,11 +43,23 @@ const bindingCookie = (options: OAuthOptions, id: string) => `${bindingPrefix(op
 const SIGN_IN_ID = /^[A-Za-z0-9_-]{11}$/;
 /**
  * At most this many sign-ins open in one browser at once, each a cookie of about 80 bytes on every
- * request to Kolab; one that is abandoned is gone when its cookie's Max-Age is up.
+ * request to Kolab. A new sign-in always goes ahead: at the cap, the oldest are let go to make
+ * room, so no other site, sending the browser to /oauth/authorize over and over, can lock its
+ * person out. One let go says, at its consent form, that it didn't start in this browser.
  */
 export const OPEN_SIGN_INS = 10;
-const openSignIns = (req: Request, options: { publicHost?: string }) =>
-  (req.headers.cookie ?? '').split(';').filter((c) => c.trim().startsWith(bindingPrefix(options)) && /=\s*\S/.test(c)).length;
+/** The binding cookies a request carries: each sign-in's id and binding. */
+function bindingsOf(req: Request, options: { publicHost?: string }): { id: string; binding: string }[] {
+  const prefix = bindingPrefix(options);
+  const out: { id: string; binding: string }[] = [];
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const i = part.indexOf('=');
+    const name = part.slice(0, i).trim();
+    const value = part.slice(i + 1).trim();
+    if (i > 0 && name.startsWith(prefix) && SIGN_IN_ID.test(name.slice(prefix.length)) && value) out.push({ id: name.slice(prefix.length), binding: value });
+  }
+  return out;
+}
 export const bindingCookieAttrs = (options: { publicHost?: string }, path: string) => (options.publicHost ? 'Path=/; Secure' : `Path=${path}`);
 
 /**
@@ -83,7 +95,7 @@ const lasting = (ttlS: number) => (ttlS % 60 ? `${ttlS} seconds` : `${ttlS / 60}
 /** What the person is told when a sign-in can't go on, by what became of it (Kolab.signInStatus). */
 const EXPIRED = (ttlS: number) => `This sign-in expired: it lasts ${lasting(ttlS)} from when the app opened it. Start again from the app you were connecting.`;
 const USED = 'This sign-in was already used: it was allowed, denied or cancelled. If the app you were connecting isn\'t signed in, start again from there.';
-const NOT_HERE = 'This sign-in didn\'t start in this browser, or the browser dropped its cookie. Finish it in the browser the app opened, or start again from the app you were connecting.';
+const NOT_HERE = `This sign-in didn't start in this browser, or the browser let it go: it holds ${OPEN_SIGN_INS} sign-ins at most, and newer ones took its place. Finish it in the browser the app opened, or start again from the app you were connecting.`;
 
 /**
  * At most `perKey` calls in `windowMs` for any one key (a client address), and at most `total` in
@@ -196,6 +208,12 @@ export class OAuthController {
    * interface's above all), and a shared bucket would let a few addresses lock everyone out.
    */
   private readonly authorizations = new Limit(30, Infinity, 60_000);
+  /**
+   * The identity provider's answers, and consent forms: each 30 a minute from one address, counted
+   * before Kolab looks anything up, as authorizations are.
+   */
+  private readonly callbacks = new Limit(30, Infinity, 60_000);
+  private readonly consents = new Limit(30, Infinity, 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -315,8 +333,13 @@ export class OAuthController {
       return refuse(`this authorization server issues tokens for ${base}/${MCP_ROUTE} only`);
     }
     if ((state?.length ?? 0) > 1000 || (str('scope')?.length ?? 0) > 1000) return refuse('state and scope are at most 1000 characters');
-    if (openSignIns(req, this.options) >= OPEN_SIGN_INS) {
-      return sendError(res, 429, `${OPEN_SIGN_INS} sign-ins are already open in this browser. Finish one, or wait for them to expire (each lasts ${lasting(this.kolab.oauth.requestTtlS)}), then start again.`);
+    // At the cap, the oldest sign-ins in this browser are let go, so this one has room.
+    const held = bindingsOf(req, this.options);
+    const evict: string[] = [];
+    if (held.length >= OPEN_SIGN_INS) {
+      const oldest = await this.kolab.signInsByAge(held.map((h) => h.binding));
+      const drop = new Set(oldest.slice(0, held.length - OPEN_SIGN_INS + 1));
+      for (const h of held) if (drop.has(h.binding)) evict.push(h.id);
     }
     // Only the web interface's own sign-in carries an invite (W3.4), from the cookie its page set.
     const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
@@ -324,7 +347,8 @@ export class OAuthController {
       provider: this.idp.id, clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
     });
     const id = randomBytes(8).toString('base64url');
-    res.setHeader('set-cookie', `${bindingCookie(this.options, id)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
+    for (const old of evict) clearBinding(res, this.options, old);
+    res.append('set-cookie', `${bindingCookie(this.options, id)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
     res.setHeader('referrer-policy', 'no-referrer');
     res.redirect(302, this.idp.authorizationUrl({ redirectUri: `${base}/oauth/callback/${this.idp.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding)) }));
   }
@@ -334,6 +358,7 @@ export class OAuthController {
   async callback(@Req() req: Request, @Res() res: Response, @Param('provider') provider: string, @Query() q: Record<string, unknown>) {
     const base = originOf(req, this.options);
     if (!base || !this.idp || provider !== this.idp.id) return sendError(res, 404, 'No such sign-in.');
+    if (!this.callbacks.take(clientAddress(req, this.options))) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
     // The provider's state is `<id>.<state>`: the sign-in's id names its cookie.
     const full = typeof q.state === 'string' ? q.state : '';
     const dot = full.indexOf('.');
@@ -344,12 +369,14 @@ export class OAuthController {
     if (!binding) return this.stopped(res, { state });
     if (typeof q.error === 'string' || typeof q.code !== 'string') {
       const r = await this.kolab.abandonAuthorization(binding, state);
-      if (!r) return this.stopped(res, { binding });
+      if (!r) return this.stopped(res, { binding }, id);
+      // Cancelled: the sign-in is over, and its cookie goes with it.
+      clearBinding(res, this.options, id);
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: `the sign-in with ${this.idp.label} was cancelled`, state: r.clientState ?? undefined, iss: base }));
     }
     // The binding and the state together, before the code goes anywhere (RFC 6749 §10.12).
     const pending = await this.kolab.pendingAuthorization(binding, { state });
-    if (!pending) return this.stopped(res, { binding });
+    if (!pending) return this.stopped(res, { binding }, id);
     // The provider's answer came back a second time (the page reloaded, say): it counts once.
     if (pending.person) return sendError(res, 400, `${this.idp.label}'s answer for this sign-in was already used. Go back to the consent page it showed, or start again from the app you were connecting.`);
     let who;
@@ -379,15 +406,18 @@ export class OAuthController {
   /**
    * A sign-in that can't go on, and why, as plainly as Kolab can tell: it expired, it was used, or
    * it is still open but not in this browser. `by` is whichever of its secrets the request carried.
+   * `id` names the sign-in whose cookie the request carried: one that expired or was used is over,
+   * and its cookie is cleared, so it holds no place under the cap.
    */
-  private async stopped(res: Response, by: Parameters<Kolab['signInStatus']>[0]) {
+  private async stopped(res: Response, by: Parameters<Kolab['signInStatus']>[0], id?: string) {
     const status = await this.kolab.signInStatus(by);
+    if (id && status !== 'open') clearBinding(res, this.options, id);
     return sendError(res, 400, status === 'expired' ? EXPIRED(this.kolab.oauth.requestTtlS) : status === 'open' ? NOT_HERE : USED);
   }
 
   private async consent(res: Response, status: number, id: string, binding: string, csrf: string, extra: { login?: string; created?: boolean; error?: string; pick?: ConsentView['pick'] }) {
     const pending = await this.kolab.pendingAuthorization(binding);
-    if (!pending?.person) return this.stopped(res, { binding });
+    if (!pending?.person) return this.stopped(res, { binding }, id);
     const client = await this.client(pending.clientId, '');
     const web = pending.clientId === WEB_CLIENT;
     const { kolabs, agents, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null });
@@ -414,6 +444,7 @@ export class OAuthController {
     const base = originOf(req, this.options);
     if (!base || !this.idp) return sendError(res, 404, 'No such sign-in.');
     if (req.headers.origin !== base) return sendError(res, 403, 'A sign-in must be confirmed from Kolab\'s own page.');
+    if (!this.consents.take(clientAddress(req, this.options))) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
     const str = (k: string) => (typeof body?.[k] === 'string' ? (body[k] as string).trim() : '');
     const csrf = str('csrf');
     const id = str('sign_in');
@@ -422,10 +453,10 @@ export class OAuthController {
     const binding = cookieOf(req, bindingCookie(this.options, id));
     if (!binding) return this.stopped(res, { csrf });
     const pending = await this.kolab.pendingAuthorization(binding, { csrf });
-    if (!pending?.person) return this.stopped(res, { binding });
+    if (!pending?.person) return this.stopped(res, { binding }, id);
     if (str('decision') !== 'allow') {
       const r = await this.kolab.declineAuthorization(binding, csrf);
-      if (!r) return this.stopped(res, { binding });
+      if (!r) return this.stopped(res, { binding }, id);
       clearBinding(res, this.options, id);
       // Declining drops the invite too, so no later sign-in in this browser offers it (W3.4).
       if (pending.inviteKey) clearInviteCookie(res, this.options);

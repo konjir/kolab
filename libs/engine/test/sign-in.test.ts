@@ -75,9 +75,11 @@ test('an archived person does not sign in; an admin links an existing person to 
 });
 
 test('redirect URIs: https, or http only on loopback (any port there); never an app scheme, javascript:, data:, a fragment or credentials', () => {
-  for (const ok of ['https://app.example.com/cb', 'http://127.0.0.1:33418/callback', 'http://localhost/cb', 'http://[::1]:8080/cb']) expect([ok, validRedirectUri(ok)]).toStrictEqual([ok, true]);
+  for (const ok of ['https://app.example.com/cb', 'https://xn--bcher-kva.example/cb', 'https://203.0.113.9/cb', 'https://[2001:db8::1]/cb', 'http://127.0.0.1:33418/callback', 'http://localhost/cb', 'http://[::1]:8080/cb']) expect([ok, validRedirectUri(ok)]).toStrictEqual([ok, true]);
   for (const bad of ['http://evil.example/cb', 'javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'https://a.example/cb#x', 'https://a.example/cb#', 'https://u:p@a.example/cb',
-    'http://u@127.0.0.1/cb', 'http://@127.0.0.1/cb', 'myapp:/cb', 'com.example.app:/oauth', 'not a url']) {
+    'http://u@127.0.0.1/cb', 'http://@127.0.0.1/cb', 'myapp:/cb', 'com.example.app:/oauth', 'not a url',
+    // Hosts a CSP source can't name, which the URL parser lets through: never registered.
+    'https://a_b.example/cb', 'https://a;b.example/cb', 'https://-a.example/cb', 'https://a-.example/cb', 'https://999.1.1.1/cb', `https://${'a'.repeat(64)}.example/cb`]) {
     expect([bad, validRedirectUri(bad)]).toStrictEqual([bad, false]);
   }
   expect(redirectUriMatches(['http://localhost:5000/cb'], 'http://localhost:61234/cb')).toBe(true);   // RFC 8252 §7.3

@@ -497,8 +497,9 @@ test('the consent page\'s form-action names the client\'s redirect URI, so a bro
   const { formActionSource } = await import('../src/oauth/pages.js');
   expect(formActionSource('http://127.0.0.1:19876/mcp/oauth/callback')).toBe('http://127.0.0.1:19876');
   expect(formActionSource('https://app.example.com/cb?x=1')).toBe('https://app.example.com');
-  expect(formActionSource('http://[::1]:7000/cb')).toBe('http:');   // a CSP source can't name an IPv6 host
-  expect(formActionSource('com.example.app:/cb')).toBe('com.example.app:');
+  expect(formActionSource('http://[::1]:7000/cb')).toBe('http:');   // a CSP source can't name an IPv6 host: the scheme alone
+  expect(formActionSource('com.example.app:/cb')).toBeUndefined();   // never registered (validRedirectUri)
+  expect(formActionSource('https://a_b.example/cb')).toBeUndefined();   // nor this: registration refuses it
   expect(formActionSource('not a uri')).toBeUndefined();
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
@@ -554,19 +555,80 @@ test('one binding cookie per sign-in: two in one browser, interleaved, both go t
   expect((await browser.go('/oauth/callback/stub?state=nodot&code=c')).res.status).toBe(400);
 });
 
-test('at most 10 sign-ins open in one browser at once: the 11th is refused, politely', async () => {
+test('at most 10 sign-ins open in one browser: a new one always goes ahead, the oldest let go to make room, and that one says so', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
   const client = (await register(base)).body.client_id;
   const browser = new Browser(base);
-  for (let i = 0; i < 10; i++) {
-    // Each stops before the provider answers: its cookie set, the sign-in left open.
+  const bindings = () => [...browser.cookies.keys()].filter((k) => k.startsWith('konjir_oauth_'));
+  // The person's own sign-in reaches its consent page first.
+  idp.next({ subject: '540', login: 'sal' });
+  const mine = csrfOf(await (await browser.go(authorizeUrl(base, client, { state: 'mine' }))).res.text());
+  // Then another site sends the browser to /oauth/authorize, again and again: each stops before the
+  // provider answers, its cookie set and its sign-in left open.
+  for (let i = 1; i <= 10; i++) {
     idp.next({ subject: `54${i}`, login: `open${i}` });
     expect((await browser.fetch(authorizeUrl(base, client))).status).toBe(302);
+    expect(bindings()).toHaveLength(Math.min(i + 1, 10));
   }
-  const r = await browser.fetch(authorizeUrl(base, client));
-  expect(r.status).toBe(429);
-  expect(await r.text()).toContain('10 sign-ins are already open in this browser');
-  // Another browser is unaffected.
-  expect((await new Browser(base).fetch(authorizeUrl(base, client))).status).toBe(302);
+  // Never more than 10, and never a refusal: the oldest, the person's own, was let go.
+  const late = await browser.consent({ csrf: mine, decision: 'allow', as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'sals', role: 'product' });
+  expect([late.res.status, /class="err">([^<]*)/.exec(await late.res.text())?.[1]]).toStrictEqual([400, expect.stringMatching(/^This sign-in didn&#39;t start in this browser, or the browser let it go: it holds 10 sign-ins at most/)]);
+  // Starting again works, and makes room the same way.
+  idp.next({ subject: '540', login: 'sal' });
+  const again = await browser.go(authorizeUrl(base, client, { state: 'again' }));
+  expect(again.res.status).toBe(200);
+  expect(bindings()).toHaveLength(10);
+  const done = await browser.consent({ csrf: csrfOf(await again.res.text()), decision: 'allow', as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'sals', role: 'product' });
+  expect(done.left?.searchParams.get('state')).toBe('again');
+});
+
+test('a sign-in that is over lets its cookie go: cancelled at the provider, expired, or used', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const browser = new Browser(base);
+  const bindings = () => [...browser.cookies.keys()].filter((k) => k.startsWith('konjir_oauth_'));
+  // Cancelled at the provider: back to the app, and the cookie cleared.
+  idp.as = undefined;
+  expect((await browser.go(authorizeUrl(base, client))).left?.searchParams.get('error')).toBe('access_denied');
+  expect(bindings()).toStrictEqual([]);
+  // Expired, at the consent form: the page says so, and the cookie is cleared.
+  idp.next({ subject: '550', login: 'tam' });
+  const page = await browser.go(authorizeUrl(base, client));
+  const csrf = csrfOf(await page.res.text());
+  expect(bindings()).toHaveLength(1);
+  await kolab.db.query(`update oauth_request set expires_at = now() - interval '1 second'`);
+  const late = await browser.consent({ csrf, decision: 'allow', kolab: '@new', new_kolab_name: 'tams', role: 'product' });
+  expect(await late.res.text()).toContain('This sign-in expired');
+  expect(bindings()).toStrictEqual([]);
+  // What an expired sign-in keeps is a tombstone: its keys and times, nothing the client sent.
+  idp.next({ subject: '551', login: 'uli' });
+  await browser.go(authorizeUrl(base, client, { state: 'x'.repeat(900), scope: 'konjir kolab:somewhere' }));
+  await kolab.db.query(`update oauth_request set expires_at = now() - interval '1 second'`);
+  idp.next({ subject: '552', login: 'val' });
+  await browser.fetch(authorizeUrl(base, client));
+  const kept = (await kolab.db.query<{ redirect_uri: string; client_state: string | null; scope: string | null; resource: string | null; invite_key: string | null }>(
+    `select redirect_uri, client_state, scope, resource, invite_key from oauth_request where expires_at < now()`)).rows;
+  expect(kept).toStrictEqual([{ redirect_uri: '', client_state: null, scope: null, resource: null, invite_key: null }, { redirect_uri: '', client_state: null, scope: null, resource: null, invite_key: null }]);
+  // Gone 2 hours after it expired.
+  await kolab.db.query(`update oauth_request set expires_at = now() - interval '3 hours' where expires_at < now()`);
+  await browser.fetch(authorizeUrl(base, client));
+  expect((await kolab.db.query(`select 1 from oauth_request where expires_at < now()`)).rows).toStrictEqual([]);
+  // The consent token's lookup is by index (migration 0020).
+  expect((await kolab.db.query(`select indexdef from pg_indexes where indexname = 'oauth_request_csrf'`)).rows).toStrictEqual([
+    { indexdef: expect.stringMatching(/CREATE UNIQUE INDEX oauth_request_csrf ON (public\.)?oauth_request USING btree \(csrf_key\) WHERE \(csrf_key IS NOT NULL\)/) },
+  ]);
+});
+
+test('the provider\'s answers and consent forms are limited per address, 30 a minute each, counted before anything is looked up', async () => {
+  const { kolab } = await setup();
+  const { base } = await serve(kolab);
+  const browser = new Browser(base);
+  const callback = () => browser.fetch(`/oauth/callback/stub?state=${'a'.repeat(11)}.${'b'.repeat(43)}&code=c`);
+  const consent = () => browser.fetch('/oauth/consent', { method: 'POST', headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf: 'c'.repeat(43), sign_in: 'd'.repeat(11) }).toString() });
+  for (let i = 0; i < 30; i++) expect([(await callback()).status, (await consent()).status]).toStrictEqual([400, 400]);
+  const [c, f] = [await callback(), await consent()];
+  expect([c.status, f.status]).toStrictEqual([429, 429]);
+  expect(await f.text()).toContain('Too many sign-ins just now');
 });
