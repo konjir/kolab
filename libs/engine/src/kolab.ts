@@ -185,6 +185,18 @@ export function validRedirectUri(uri: string): boolean {
 }
 
 /**
+ * Whether a redirect URI that validRedirectUri refused would pass but for a trailing dot on its
+ * host (`https://example.com./cb`, a fully qualified name), so its refusal can say so.
+ */
+function trailingDotHost(uri: string): boolean {
+  let u: URL;
+  try { u = new URL(uri); } catch { return false; }
+  if (!u.hostname.endsWith('.')) return false;
+  u.hostname = u.hostname.replace(/\.+$/, '');
+  return validRedirectUri(u.href);
+}
+
+/**
  * Whether a redirect URI given at authorization matches one a client registered: a valid one
  * (validRedirectUri: no fragment or credentials), exactly, but for the port of a loopback http
  * URI, which a native client picks when it runs (RFC 8252 §7.3).
@@ -1657,7 +1669,12 @@ export class Kolab {
   async registerClient(c: { name?: string; redirectUris: string[] }): Promise<OAuthClient> {
     const uris = [...new Set(c.redirectUris)];
     if (!uris.length || uris.length > 10) throw new OAuthGrantError('invalid_redirect_uri', 'register 1 to 10 redirect URIs');
-    for (const u of uris) if (!validRedirectUri(u)) throw new OAuthGrantError('invalid_redirect_uri', `${u.slice(0, 200)} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials`);
+    for (const u of uris) {
+      if (validRedirectUri(u)) continue;
+      const shown = u.slice(0, 200);
+      if (trailingDotHost(u)) throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: its host ends in a dot, which Kolab doesn't allow (the consent page couldn't name it), so write the host without the trailing dot`);
+      throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials`);
+    }
     const name = (c.name ?? '').trim().slice(0, 200) || 'An MCP client';
     const id = `kjcl_${randomBytes(18).toString('base64url')}`;
     await this.pruneClients();
@@ -1700,7 +1717,8 @@ export class Kolab {
     const binding = randomBytes(32).toString('base64url');
     const state = randomBytes(32).toString('base64url');
     // An expired request is kept 2 hours, unusable, so a late consent form can be told it expired:
-    // as a tombstone, its keys and times only, what signInStatus reads.
+    // as a tombstone, its keys and times only, what signInStatus reads. The update's condition is
+    // migration 0021's index predicate, so it reaches only those not yet made tombstones.
     await this.db.query(`delete from oauth_request where expires_at < now() - interval '2 hours'`);
     await this.db.query(`update oauth_request set client_state = null, scope = null, resource = null, invite_key = null, redirect_uri = ''
       where expires_at < now() and (redirect_uri <> '' or client_state is not null or scope is not null or resource is not null or invite_key is not null)`);
@@ -1848,12 +1866,6 @@ export class Kolab {
   }
 
   /**
-   * What became of a sign-in that can't go on, for the page that says so, by any one of its secrets:
-   * the browser's binding, the identity provider's state, or the consent form's token. `open` while
-   * it lasts, `expired` once its `requestTtlS` is up (an expired one is kept 2 hours), and undefined
-   * once it was used, declined or cancelled, or for a secret that names none.
-   */
-  /**
    * The bindings a browser holds, oldest sign-in first: those Kolab has no record of, then the
    * rest by when they started. For making room for a new sign-in in a browser at its cap.
    */
@@ -1866,6 +1878,12 @@ export class Kolab {
     return [...bindings.filter((b) => !found.includes(b)), ...found];
   }
 
+  /**
+   * What became of a sign-in that can't go on, for the page that says so, by any one of its secrets:
+   * the browser's binding, the identity provider's state, or the consent form's token. `open` while
+   * it lasts, `expired` once its `requestTtlS` is up (an expired one is kept 2 hours), and undefined
+   * once it was used, declined or cancelled, or for a secret that names none.
+   */
   async signInStatus(by: { binding: string } | { state: string } | { csrf: string }): Promise<'open' | 'expired' | undefined> {
     const [column, secret] = 'binding' in by ? ['id', by.binding] : 'state' in by ? ['state_key', by.state] : ['csrf_key', by.csrf];
     const r = (await this.db.query<{ open: boolean }>(`select expires_at > now() as open from oauth_request where ${column} = $1`, [sessionKey(secret)])).rows[0];
