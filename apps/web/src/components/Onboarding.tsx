@@ -28,7 +28,7 @@ export function Command({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="cmd">
-      <code aria-label={label}>{text}</code>
+      <code aria-label={label} className={text.includes('\n') ? 'block' : undefined}>{text}</code>
       <button type="button" className="btn quiet" onClick={() => {
         void navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }, () => undefined);
       }}>{copied ? 'Copied' : 'Copy'}</button>
@@ -36,10 +36,15 @@ export function Command({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** OpenCode's config for Kolab: an `mcp.konjir` entry for a remote server, in opencode.json. */
+export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { konjir: { type: 'remote', url: mcp } } }, null, 2);
+
 /**
- * Connecting a harness: one command each. A harness that speaks MCP's authorization (Claude Code)
- * needs only the URL, and signs in on Kolab's own page, where the person chooses the agent it works
- * as (D30, D56), the kolab and the role; a shell harness signs in with `konjir login`.
+ * Connecting a harness, by one of two routes. Over MCP (Claude Code, OpenCode, any client that
+ * speaks MCP's authorization), the harness needs only the URL and signs in on Kolab's own page,
+ * where the person chooses the agent it works as (D30, D56), the kolab and the role; its agent then
+ * calls the konjir_instructions tool, since such an agent usually has no konjir CLI. In a shell,
+ * the konjir CLI signs in with `konjir login`, and `konjir instructions` gives the same text.
  */
 export function ConnectView({ me, origin = location.origin }: { me: WebMe; origin?: string }) {
   const mcp = `${origin}/mcp`;
@@ -47,22 +52,27 @@ export function ConnectView({ me, origin = location.origin }: { me: WebMe; origi
     <>
       <section className="summary" aria-label="Connect a harness">
         <h1>Connect a harness</h1>
-        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you (D30).</span>
+        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you (D30). Connect it over MCP, or through the konjir CLI in a shell.</span>
       </section>
-      <section className="newk" aria-labelledby="c-claude">
-        <h2 className="section-title" id="c-claude">Claude Code</h2>
-        <p className="why-not">Add Kolab as an MCP server, then run <span className="mono">/mcp</span> in Claude Code and sign in. On Kolab’s page, choose the agent it works as (a new one of yours by default), the kolab ({me.kolab}) and its role.</p>
+      <section className="newk" aria-labelledby="c-mcp">
+        <h2 className="section-title" id="c-mcp">Over MCP: Claude Code, OpenCode</h2>
+        <p className="why-not">Add Kolab as an MCP server and sign in. On Kolab’s page, choose the agent it works as (a new one of yours by default), the kolab ({me.kolab}) and its role. Then ask the agent to call <span className="mono">konjir_instructions</span> before its first change: it returns the rules and {me.kolab}’s precedent. No CLI is needed.</p>
+        <h3 id="c-claude">Claude Code</h3>
+        <p className="why-not">Add it, then run <span className="mono">/mcp</span> in Claude Code and sign in.</p>
         <Command label="Add Kolab to Claude Code" text={`claude mcp add --transport http konjir ${mcp}`} />
-      </section>
-      <section className="newk" aria-labelledby="c-shell">
-        <h2 className="section-title" id="c-shell">Any shell: Codex, opencode, or you</h2>
-        <p className="why-not">The konjir CLI signs in with your browser and keeps the sign-in, renewing it by itself. Every konjir command then works as the agent you chose; start with <span className="mono">konjir instructions</span>.</p>
-        <Command label="Sign the konjir CLI in" text={`npx konjir login --url ${mcp} --kolab ${me.kolab} --role ${me.role}`} />
-      </section>
-      <section className="newk" aria-labelledby="c-other">
-        <h2 className="section-title" id="c-other">Any other MCP client</h2>
+        <h3 id="c-opencode">OpenCode</h3>
+        <p className="why-not">Add this to <span className="mono">opencode.json</span>, then sign in.</p>
+        <Command label="OpenCode's opencode.json" text={openCodeConfig(mcp)} />
+        <Command label="Sign OpenCode in" text="opencode mcp auth konjir" />
+        <h3 id="c-other">Any other MCP client</h3>
         <p className="why-not">One that speaks MCP’s authorization needs only the URL, and signs in as Claude Code does.</p>
         <Command label="Kolab's MCP URL" text={mcp} />
+      </section>
+      <section className="newk" aria-labelledby="c-shell">
+        <h2 className="section-title" id="c-shell">In a shell: the konjir CLI, for Codex or you</h2>
+        <p className="why-not">The konjir CLI signs in with your browser and keeps the sign-in, renewing it by itself. Every konjir command then works as the agent you chose; start with <span className="mono">konjir instructions</span>.</p>
+        <Command label="Sign the konjir CLI in" text={`npx konjir login --url ${mcp} --kolab ${me.kolab} --role ${me.role}`} />
+        <Command label="Read the instructions with the konjir CLI" text="npx konjir instructions" />
       </section>
     </>
   );
@@ -164,7 +174,7 @@ export function GettingStarted({ me, go }: { me: WebMe; go(r: string): void }) {
     <section className="notice" aria-label="Getting started">
       <h2>Getting started in {me.kolab}</h2>
       <ol>
-        <li><button type="button" className="chip" onClick={() => go('connect')}>Connect a harness</button> with one command: Claude Code, or any shell with the konjir CLI.</li>
+        <li><button type="button" className="chip" onClick={() => go('connect')}>Connect a harness</button> over MCP (Claude Code, OpenCode) or with the konjir CLI in a shell.</li>
         {me.access.level === 'admin' && <li><button type="button" className="chip" onClick={() => go('people')}>Invite a teammate</button> with a link: an engineer to write the binding, or a product owner.</li>}
         <li>Write the spec below, or let your agent draft it for you to review.</li>
       </ol>

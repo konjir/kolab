@@ -8,7 +8,7 @@ import { HealthController } from './health.controller.js';
 import { Inboxes } from './inboxes.js';
 import { ListenScope } from './listen-scope.js';
 import { ListenStreams } from './listen-streams.js';
-import { OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
+import { InstructionsAccess, OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
 import { KOLAB, MCP_ROUTE, OAUTH_OPTIONS, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { OAuthController } from './oauth/oauth.controller.js';
@@ -100,6 +100,7 @@ export class KolabServerModule implements NestModule {
         ListenScope,
         OperatingInstructions,
         ReviewerInstructions,
+        InstructionsAccess,
       ],
     };
   }
