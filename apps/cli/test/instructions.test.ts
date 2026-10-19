@@ -119,7 +119,7 @@ test('one actor in two kolabs: each session sees only its own kolab\'s precedent
   await server.close();
 });
 
-test('a session that holds only Read gets no precedent and no question a mark raised (D49, D51), unlike list_queries today', async () => {
+test('a session that holds only Read gets no precedent and no question a mark raised (D49, D51), as list_queries gives it', async () => {
   const { server, admin, open } = await boot();
   const erin = await open('erin', 'other');
   await precedent(erin.client, 'alpha');
@@ -146,10 +146,9 @@ test('a session that holds only Read gets no precedent and no question a mark ra
   expect(text).toMatch(/Rulings, newest first \(0\): none yet/);
   expect(text).toMatch(/Answered questions and notes \(1\): kj:spec@1#R1: asked "What does alpha mean\?" -> "Answer private to alpha\."/);
   expect(text).not.toMatch(/Answered by mark|Mark-raised|Ruling private/);
-  // A known gap, flagged in PR #49 and outside it: konjir_list_queries still gives this Read-only
-  // session, in its own kolab, the question the mark raised. When that is fixed, this flips.
+  // konjir_list_queries gives the same session the same: only the question a person asked (0022).
   const listed = (await call(alice, 'list_queries', { state: 'answered', all_layers: true }) as { queries: { question: string; mark: string | null }[] }).queries;
-  expect(listed.map((q) => q.mark !== null)).toStrictEqual([false, true]);
+  expect(listed.map((q) => [q.question, q.mark])).toStrictEqual([['What does alpha mean?', null]]);
   await server.close();
 });
 

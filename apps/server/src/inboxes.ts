@@ -87,7 +87,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     const body = {
       kolab,
       layer,
-      queries: await this.kolab.listQueries({ layer, state: 'open', kolab }),
+      queries: await this.kolab.queriesFor(session, { layer, state: 'open' }),
       marks: await this.kolab.describeMarks({ layer, kolab }),
       // Each review request waits in its own reviewer's inbox (REV2).
       reviews: await this.kolab.reviewRequests({ layer, reviewer: me.actor, kolab }),
@@ -113,7 +113,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (decoded(vars.actor) !== me.actor || decoded(vars.kolab) !== me.kolab) {
       throw new RoleError('you can only read your own answers, in your session\'s kolab');
     }
-    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.listQueries({ raisedBy: me.actor, kolab: me.kolab }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
+    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.queriesFor(session, { raisedBy: me.actor }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
       // Most recently changed first, so a case file just argued or ruled on is always among them.
       cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20 }),
     };

@@ -100,13 +100,19 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019) and before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request) and before Read-only sessions' mark-raised questions (0022),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop policy kolab_read on query;
+      create policy kolab_read on query for select to kj_agent
+        using (kolab_id = (select kj_session_kolab())
+               or (kolab_id = any ((select kj_session_readable_kolabs())::text[])
+                   and invalidation_id is null
+                   and exists (select 1 from version v where v.id = query.version_id and v.state = 'committed')));
       drop table kolab_invite;
       alter table session drop column grant_id, drop column token_key, drop column expires_at;
       drop table oauth_refresh_token, oauth_code, oauth_grant, oauth_request, oauth_client, identity;

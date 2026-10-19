@@ -5091,6 +5091,16 @@ export class Kolab {
     return this.read({ session: sessionId }, (q) => this.listRulings({ ...filter, kolab }, q));
   }
 
+  /**
+   * A session's questions and notes, read as kj_agent: listQueries in its own kolab. Row-level
+   * security leaves out, for a session that holds only Read, the questions marks raised there
+   * (0022; D49, D51): its marks and rulings stay private to those who belong to its work.
+   */
+  async queriesFor(sessionId: string, filter: Omit<Parameters<Kolab['listQueries']>[0], 'kolab' | 'from'>): Promise<Query[]> {
+    const kolab = await this.sessionKolab(sessionId);
+    return this.read({ session: sessionId }, (q) => this.listQueries({ ...filter, kolab }, q));
+  }
+
   /** Whether a session belongs to its kolab's work (D49): its actor holds Write on a layer of it, not Read alone. */
   async sessionBelongs(sessionId: string): Promise<boolean> {
     return (await this.session(sessionId)).access.layers.length > 0;
