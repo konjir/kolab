@@ -157,8 +157,21 @@ export function* signUpNames(login: string, agentLike: (name: string) => boolean
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
 /**
+ * A host a redirect URI may name: a DNS hostname (labels of letters, digits and hyphens, neither
+ * starting nor ending with one, at most 63 each and 253 in all, as the URL parser leaves it:
+ * lowercased, an IDN in punycode), an IPv4 address, or an IPv6 literal in brackets. So it can be
+ * written as a CSP source on the consent page (formActionSource), but for an IPv6 literal, which
+ * CSP can't name. `a_b` or `a;b`, which the URL parser lets through, are refused.
+ */
+export function validRedirectHost(host: string): boolean {
+  if (/^\[[0-9a-f:.]+\]$/.test(host)) return true;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host.split('.').every((o) => Number(o) <= 255);
+  return host.length <= 253 && host.split('.').every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
+}
+
+/**
  * Whether Kolab may send codes to `uri` (OAuth 2.1 §2.3.1, RFC 8252): an https URL, or http on a
- * loopback address. Never a fragment or credentials (written as `#`, `user@` or `user:pass@`, even
+ * loopback address, on a host validRedirectHost allows. Never a fragment or credentials (written as `#`, `user@` or `user:pass@`, even
  * empty), and no other scheme: no app's own scheme, and never javascript:, data:, file: and the like.
  */
 export function validRedirectUri(uri: string): boolean {
@@ -166,7 +179,7 @@ export function validRedirectUri(uri: string): boolean {
   let u: URL;
   try { u = new URL(uri); } catch { return false; }
   if (u.username || u.password || /^[a-z]+:\/\/[^/?]*@/i.test(uri)) return false;
-  if (u.protocol === 'https:') return !!u.hostname;
+  if (u.protocol === 'https:') return !!u.hostname && validRedirectHost(u.hostname);
   if (u.protocol === 'http:') return LOOPBACK_HOSTS.has(u.hostname);
   return false;
 }
@@ -1686,8 +1699,11 @@ export class Kolab {
     const inviteKey = r.invite !== undefined && INVITE_TOKEN.test(r.invite) ? sessionKey(r.invite) : null;
     const binding = randomBytes(32).toString('base64url');
     const state = randomBytes(32).toString('base64url');
-    // An expired request is kept a day, unusable, so a late consent form can be told it expired.
-    await this.db.query(`delete from oauth_request where expires_at < now() - interval '1 day'`);
+    // An expired request is kept 2 hours, unusable, so a late consent form can be told it expired:
+    // as a tombstone, its keys and times only, what signInStatus reads.
+    await this.db.query(`delete from oauth_request where expires_at < now() - interval '2 hours'`);
+    await this.db.query(`update oauth_request set client_state = null, scope = null, resource = null, invite_key = null, redirect_uri = ''
+      where expires_at < now() and (redirect_uri <> '' or client_state is not null or scope is not null or resource is not null or invite_key is not null)`);
     await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
     await this.db.query(
       `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key)
@@ -1834,9 +1850,22 @@ export class Kolab {
   /**
    * What became of a sign-in that can't go on, for the page that says so, by any one of its secrets:
    * the browser's binding, the identity provider's state, or the consent form's token. `open` while
-   * it lasts, `expired` once its `requestTtlS` is up (an expired one is kept a day), and undefined
+   * it lasts, `expired` once its `requestTtlS` is up (an expired one is kept 2 hours), and undefined
    * once it was used, declined or cancelled, or for a secret that names none.
    */
+  /**
+   * The bindings a browser holds, oldest sign-in first: those Kolab has no record of, then the
+   * rest by when they started. For making room for a new sign-in in a browser at its cap.
+   */
+  async signInsByAge(bindings: string[]): Promise<string[]> {
+    if (!bindings.length) return [];
+    const keys = new Map(bindings.map((b) => [sessionKey(b), b]));
+    const found = (await this.db.query<{ id: string }>(
+      `select id from oauth_request where id = any($1::text[]) order by created_at, id`, [[...keys.keys()]])).rows.map((r) => keys.get(r.id)!);
+    // Those Kolab has no record of (expired and gone, or never its own) are the oldest of all.
+    return [...bindings.filter((b) => !found.includes(b)), ...found];
+  }
+
   async signInStatus(by: { binding: string } | { state: string } | { csrf: string }): Promise<'open' | 'expired' | undefined> {
     const [column, secret] = 'binding' in by ? ['id', by.binding] : 'state' in by ? ['state_key', by.state] : ['csrf_key', by.csrf];
     const r = (await this.db.query<{ open: boolean }>(`select expires_at > now() as open from oauth_request where ${column} = $1`, [sessionKey(secret)])).rows[0];
