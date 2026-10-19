@@ -78,7 +78,7 @@ export interface MarkDetailRow {
 export async function markDetails(kolab: Kolab, session: string): Promise<MarkDetailRow[]> {
   const here = await kolab.sessionKolab(session);
   return kolab.readAs(session, async (q) => (await q.query<Omit<MarkDetailRow, 'because' | 'next'> & { at: Date | string; note: string | null; edge_id: string | null;
-    target_selector: QuoteSelector | null; trig_node: string; trig_seq: number; cause_count: number }>(
+    target_selector: QuoteSelector | null; trig_node: string | null; trig_kolab: string | null; trig_seq: number | null; cause_count: number }>(
     `select i.id, i.reason, n.name as node, v.seq, v.layer, i.element_id as element, i.created_at as at,
             etn.name as target_node, e.target_element_id as target_element, etv.seq as target_pinned,
             (select max(l.seq) from version l where l.node_id = etv.node_id and l.state = 'committed') as target_now,
@@ -89,25 +89,36 @@ export async function markDetails(kolab: Kolab, session: string): Promise<MarkDe
             (select x.text from element x where x.version_id = d.base_version_id and x.element_id = d.element_id) as parent_before,
             (select x.text from element x where x.version_id = v.parent_version_id and x.element_id = d.element_id) as parent_now,
             (select qq.id from query qq where qq.invalidation_id = i.id and qq.state = 'open' order by qq.id limit 1) as question,
-            i.note, i.edge_id, e.target_selector, tn.name as trig_node, tv.seq as trig_seq,
+            i.note, i.edge_id, e.target_selector, tn.name as trig_node, tn.kolab_id as trig_kolab, tv.seq as trig_seq,
             (select count(*)::int from invalidation_cause c where c.mark_id = i.id) as cause_count
        from invalidation i
-       join version tv on tv.id = i.triggered_by join node tn on tn.id = tv.node_id
+       left join version tv on tv.id = i.triggered_by left join node tn on tn.id = tv.node_id
        join version v on v.id = i.version_id join node n on n.id = v.node_id
        left join edge e on e.id = i.edge_id
        left join version etv on etv.id = e.target_version_id left join node etn on etn.id = etv.node_id
        left join delta d on d.id = i.delta_id
       where i.state = 'open' and i.kolab_id = $1
-      order by i.created_at, i.id`, [here])).rows.map(({ note, edge_id, target_selector, trig_node, trig_seq, cause_count, ...r }) => ({
-    ...r, at: iso(r.at),
-    // The same words as describeMarks, read under row-level security.
-    because: r.reason === 'query_answered' ? note ?? 'your question was answered'
-      : note ? `review gate: ${note}`
-      : edge_id ? `${formatAddress({ node: trig_node, element: r.target_element ?? undefined, selector: target_selector ?? undefined })} changed in version ${trig_seq}`
-      : r.reason === 'upstream_dirty' ? `${cause_count} upstream mark(s) are open`
-      : `parent ${trig_node} version ${trig_seq}`,
-    next: NEXT_STEP[r.reason] ?? '',
-  })));
+      order by i.created_at, i.id`, [here])).rows.map(({ note, edge_id, target_selector, trig_node, trig_kolab, trig_seq, cause_count, ...r }) => {
+    // What triggered it, in the short form of this kolab: a version in another kolab the session
+    // can no longer read (access_lost) reads as no row here, so it goes unnamed.
+    const trig = (a: { element?: string; selector?: QuoteSelector }) => trig_node
+      ? formatAddress({ kolab: trig_kolab ?? undefined, node: trig_node, ...a }, { from: here }) : 'a version in another kolab';
+    const linked = trig({ element: r.target_element ?? undefined, selector: target_selector ?? undefined });
+    return {
+      ...r, at: iso(r.at),
+      // The same words as describeMarks, read under row-level security.
+      because: r.reason === 'query_answered' ? note ?? 'your question was answered'
+        : r.reason === 'ruled' ? note ?? 'a ruling changed its intent'
+        : r.reason === 'access_lost' ? (edge_id
+          ? `${linked} is in another kolab: ${note ?? 'its holder can no longer read it'}`
+          : `parent ${trig({}).replace(/^kj:/, '')} is in another kolab: ${note ?? 'its holder can no longer read it'}`)
+        : note ? `review gate: ${note}`
+        : edge_id ? `${linked} changed in version ${trig_seq}`
+        : r.reason === 'upstream_dirty' ? `${cause_count} upstream mark(s) are open`
+        : `parent ${trig({}).replace(/^kj:/, '')} version ${trig_seq}`,
+      next: NEXT_STEP[r.reason] ?? '',
+    };
+  }));
 }
 
 export interface NodeRowView { name: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }

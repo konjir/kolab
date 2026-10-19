@@ -152,6 +152,23 @@ test('a session that holds only Read gets no precedent and no question a mark ra
   await server.close();
 });
 
+test('the instructions print the newest 20 answered questions, and say how many there are in all', async () => {
+  const { server, open } = await boot();
+  const ann = await open('ann', 'anns');
+  await call(ann.client, 'create_node', { kind: 'functional_spec', title: 'Spec', id: 'spec' });
+  await call(ann.client, 'draft', { node: 'spec', elements: [{ id: 'R1', text: 'The requirement.' }] });
+  await call(ann.client, 'submit_for_review', { node: 'spec', version: 1 });
+  for (let i = 1; i <= 22; i++) {
+    const { query } = await call(ann.client, 'ask', { address: 'kj:spec#R1', question: `Q${i}?` }) as { query: string };
+    await call(ann.client, 'answer_query', { query, answer: `A${i}.` });
+  }
+  const text = await toolText(ann.client);
+  expect(text).toMatch(/Answered questions and notes \(newest 20 of 22\): kj:spec@1#R1: asked "Q3\?" -> "A3\."/);
+  expect(text).toMatch(/"Q22\?" -> "A22\."$/);
+  expect(text).not.toMatch(/"Q[12]\?"/);
+  await server.close();
+});
+
 test('the reviewer variant is the reviewer prompt, for every session and the admin token', async () => {
   const { server, admin, open } = await boot();
   const ann = await open('ann', 'anns');

@@ -88,7 +88,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       kolab,
       layer,
       queries: await this.kolab.queriesFor(session, { layer, state: 'open' }),
-      marks: await this.kolab.describeMarks({ layer, kolab }),
+      marks: await this.kolab.marksFor(session, { layer }),
       // Each review request waits in its own reviewer's inbox (REV2).
       reviews: await this.kolab.reviewRequests({ layer, reviewer: me.actor, kolab }),
       // Case files about the layer's elements, waiting for their other position or a ruling (CASE1, CASE2).

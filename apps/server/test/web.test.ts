@@ -261,7 +261,7 @@ test('a page reads and writes only its session\'s kolab', async () => {
   expect((await alice.call('nodes/other%2Fsecret')).status).toBe(403);
   expect((await theirs.call('nodes/orders')).status).toBe(404);
   expect((await theirs.call<{ queries: WebQuery[] }>('queries')).body.queries).toStrictEqual([]);
-  expect((await theirs.call(`queries/${q}/answer`, { answer: 'mine now' })).status).toBe(403);
+  expect((await theirs.call(`queries/${q}/answer`, { answer: 'mine now' })).status).toBe(404);   // another kolab's question reads as one that isn't there
   expect((await alice.call<WebOverview>('overview')).body.kolabs.map((k) => k.id)).toStrictEqual(['test']);
   expect((await theirs.call<WebOverview>('overview')).body.nodes.map((n) => n.name)).toStrictEqual(['secret']);
 });
