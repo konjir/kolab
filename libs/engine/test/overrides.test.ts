@@ -1,5 +1,5 @@
 import { expect, test } from '@jest/globals';
-import { commitReviewed, els, marksOn, people, setup, textOf } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, people, rejection, setup, textOf } from '@konjir/engine/testing';
 
 const PARENT_V1 = {
   E1: 'Background is white.',
@@ -145,5 +145,54 @@ test('a rebase that fails the structural checks leaves its variant a rebase_fail
   expect((await kolab.latestCommitted(child))!.id).toBe(c1); // child stays on its old parent
   expect((await kolab.openMarks()).map((m) => [m.version_id, m.reason])).toStrictEqual([[c1, 'rebase_failed']]);
   expect((await kolab.openQueries())[0].question).toMatch(/A2 repeats A1 word for word/);
+  await kolab.close();
+});
+
+test('resolving an override checks who may resolve before telling what the mark is: a Read-only session and another kolab\'s learn nothing of it', async () => {
+  const { kolab, product, parent, child } = await family();
+  const p1 = (await kolab.latestCommitted(parent))!.id;
+  const d1 = await kolab.commit(product, await kolab.createNode(product, 'functional_spec', 'Docs', 'D'), { elements: els({ D1: 'Sessions time out.' }) });
+  await kolab.link(product, { kind: 'dependency', source: d1, sourceElement: 'D1', target: p1, targetElement: 'E3' });
+  await kolab.commit(product, parent, { elements: els({ ...PARENT_V1, E3: 'Session timeout is 10 minutes.' }) });
+  const childV = (await kolab.latestCommitted(child))!.id;
+  const override = (await kolab.openMarks()).find((m) => m.version_id === childV && m.element_id === 'E3')!;
+  const changed = (await kolab.openMarks()).find((m) => m.reason === 'changed')!;
+
+  // carol holds only Read: refused for want of Write, whichever the mark.
+  const carol = await kolab.openSession('carol', 'product');
+  for (const m of [override, changed]) {
+    const refused = await rejection(kolab.resolveOverride(carol, m.id, 'reaffirm'));
+    expect(refused).toMatch(/AccessError: carol may not write the functional layer/);
+    expect(refused).not.toMatch(/override mark/);
+  }
+  expect(await rejection(kolab.resolveOverride(carol, 'nope', 'reaffirm'))).toBe('Error: no mark nope');
+  // From another kolab, the marks are as if they weren't there, like an id no mark has.
+  await kolab.addActor('dana');
+  await kolab.createKolab('elsewhere', { owner: 'dana' });
+  const dana = await kolab.openSession('dana', 'product', { kolab: 'elsewhere' });
+  for (const id of [override.id, changed.id]) expect(await rejection(kolab.resolveOverride(dana, id, 'reaffirm'))).toBe(`Error: no mark ${id}`);
+  // Only to the layer that owns it is a mark that isn't an override's told so.
+  expect(await rejection(kolab.resolveOverride(product, changed.id, 'reaffirm'))).toBe(`Error: ${changed.id} is not an open override mark`);
+  await kolab.close();
+});
+
+test('marksFor picks only the marks its filter asks for, as the session, before describing them', async () => {
+  const { kolab, product, parent, child, sibling } = await family();
+  await kolab.commit(product, parent, { elements: els({ ...PARENT_V1, E3: 'Session timeout is 10 minutes.' }) });
+  const childV = (await kolab.latestCommitted(child))!.id;
+  const childMarks = (await kolab.openMarks()).filter((m) => m.version_id === childV).map((m) => m.id).sort();
+  expect(childMarks).toHaveLength(1);
+  expect((await kolab.openMarks()).length).toBeGreaterThan(childMarks.length);   // the sibling's too
+
+  const described: (string[] | undefined)[] = [];
+  const describe = kolab.describeMarks.bind(kolab);
+  kolab.describeMarks = (filter) => { described.push(filter?.ids); return describe(filter); };
+  expect((await kolab.marksFor(product, { node: child })).map((m) => m.mark)).toStrictEqual(childMarks);
+  expect(described).toStrictEqual([childMarks]);
+  // A layer with no marks picks none, so nothing is described.
+  expect(await kolab.marksFor(product, { layer: 'technical' })).toStrictEqual([]);
+  expect(described).toHaveLength(1);
+  expect((await kolab.marksFor(product, { node: sibling })).map((m) => m.reason)).toStrictEqual(['override_stale']);
+  expect(described).toHaveLength(2);
   await kolab.close();
 });

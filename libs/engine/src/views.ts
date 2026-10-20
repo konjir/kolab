@@ -7,7 +7,7 @@
 import type { QuoteSelector } from '@konjir/address';
 import { formatAddress } from '@konjir/address';
 import type { Kind, Layer, MarkReason, QueryKind, ReviewRequestState, VersionState } from '@konjir/types';
-import { NEXT_STEP, type Kolab } from './kolab.js';
+import { markBecause, NEXT_STEP, type Kolab } from './kolab.js';
 
 export interface VersionHistoryRow {
   seq: number; state: VersionState; actor: string; role: string; at: string; note: string | null; base_seq: number | null;
@@ -99,23 +99,16 @@ export async function markDetails(kolab: Kolab, session: string): Promise<MarkDe
        left join delta d on d.id = i.delta_id
       where i.state = 'open' and i.kolab_id = $1
       order by i.created_at, i.id`, [here])).rows.map(({ note, edge_id, target_selector, trig_node, trig_kolab, trig_seq, cause_count, ...r }) => {
-    // What triggered it, in the short form of this kolab: a version in another kolab the session
-    // can no longer read (access_lost) reads as no row here, so it goes unnamed.
-    const trig = (a: { element?: string; selector?: QuoteSelector }) => trig_node
-      ? formatAddress({ kolab: trig_kolab ?? undefined, node: trig_node, ...a }, { from: here }) : 'a version in another kolab';
-    const linked = trig({ element: r.target_element ?? undefined, selector: target_selector ?? undefined });
+    // What triggered it, in the short form of this kolab, named only if the session reads it: a
+    // version in another kolab it no longer holds Read on (access_lost) reads as no row here.
+    const trig = (linked: boolean) => trig_node ? formatAddress({
+      kolab: trig_kolab ?? undefined, node: trig_node,
+      ...(linked ? { element: r.target_element ?? undefined, selector: target_selector ?? undefined } : {}),
+    }, { from: here }) : undefined;
     return {
       ...r, at: iso(r.at),
-      // The same words as describeMarks, read under row-level security.
-      because: r.reason === 'query_answered' ? note ?? 'your question was answered'
-        : r.reason === 'ruled' ? note ?? 'a ruling changed its intent'
-        : r.reason === 'access_lost' ? (edge_id
-          ? `${linked} is in another kolab: ${note ?? 'its holder can no longer read it'}`
-          : `parent ${trig({}).replace(/^kj:/, '')} is in another kolab: ${note ?? 'its holder can no longer read it'}`)
-        : note ? `review gate: ${note}`
-        : edge_id ? `${linked} changed in version ${trig_seq}`
-        : r.reason === 'upstream_dirty' ? `${cause_count} upstream mark(s) are open`
-        : `parent ${trig({}).replace(/^kj:/, '')} version ${trig_seq}`,
+      // The same words as konjir_list_stale and the inbox (describeMarks), read under row-level security.
+      because: markBecause({ reason: r.reason, note, edge_id, trig_seq, cause_count }, trig),
       next: NEXT_STEP[r.reason] ?? '',
     };
   }));
