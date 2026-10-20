@@ -73,8 +73,14 @@ jobs:
 
       - uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
 
-      - name: Typecheck, build, test and lint
-        run: npx nx affected -t typecheck build test lint --output-style=static
+      - name: Typecheck, build and lint
+        run: npx nx affected -t typecheck build lint --output-style=static
+
+      # The test suites run apart, two projects at a time with two Jest workers each: Nx's three
+      # at once, each with a worker per core and a PGlite database per suite, ran the arm64
+      # runner out of memory, and it was shut down mid-run.
+      - name: Test
+        run: npx nx affected -t test --parallel=2 --output-style=static -- --maxWorkers=2
 
   postgres:
     name: Test on Postgres
