@@ -1517,7 +1517,8 @@ export class Kolab {
       cases: await this.listCases({ kolab: node.kolab_id, node: node.id, state: 'open' }, q),
     }));
     // The links it drops (0012), for its reviewers: private to its kolab, like its links (D49).
-    // Only a reader who belongs to the node's kolab's work learns of its pending rebase (D49).
+    // Its pending rebase is told to any reader in the node's kolab, one who holds only Read too
+    // (D58): a reader from another kolab doesn't learn of it.
     return { ...read, removes: await this.removedLinks(where, v), ...(node.kolab_id === from ? { rebase: await this.pendingRebase(node.id) } : {}) };
   }
 
@@ -4527,10 +4528,13 @@ export class Kolab {
 
   /** Resolve a stale or orphaned override. Records precedent for the triple. */
   async resolveOverride(sessionId: string, markId: string, resolution: OverrideResolution, amendedText?: string) {
-    const m = await this.markRow(markId);
-    if (!m.delta_id || m.state !== 'open') throw new Error(`${markId} is not an open override mark`);
-    const v = await this.version(m.version_id);
+    // Who may resolve comes first, so whether a mark is an open override mark is told only to the
+    // layer that owns it, as answerQuery does. Another kolab's mark reads as one that isn't there.
+    const m = (await this.db.query<MarkRow>(`select * from invalidation where id = $1`, [markId])).rows[0];
+    const v = m ? await this.version(m.version_id) : undefined;
+    if (!m || !v || v.kolab_id !== await this.sessionKolab(sessionId)) throw new Error(`no mark ${markId}`);
     const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
+    if (!m.delta_id || m.state !== 'open') throw new Error(`${markId} is not an open override mark`);
     const deltas = await this.deltas(v.id);
     const d = deltas.find((x) => x.id === m.delta_id)!;
     const parentEls = await this.elements(v.parent_version_id!);
@@ -5107,14 +5111,22 @@ export class Kolab {
    * A session's open marks, described: describeMarks in its own kolab, over the marks the session
    * reads as kj_agent. Row-level security gives a session that holds only Read none (0022; D49):
    * a mark's note can quote a ruling or the review gate's finding, private to those who belong to
-   * the kolab's work. The marks are picked as the session and described as Kolab, since a mark's
-   * trigger may be a version in another kolab the session can no longer read (access_lost).
+   * the kolab's work. The marks are picked as the session, filtered there by layer and node, and
+   * described as Kolab. What triggered a mark is named only if the session reads it too: a version
+   * in another kolab it no longer holds Read on (access_lost) goes unnamed, as on the web page.
    */
   async marksFor(sessionId: string, filter: { layer?: Layer; node?: string } = {}) {
     const kolab = await this.sessionKolab(sessionId);
-    const ids = await this.read({ session: sessionId }, async (q) => (await q.query<{ id: string }>(
-      `select id from invalidation where state = 'open' and kolab_id = $1`, [kolab])).rows.map((r) => r.id));
-    return ids.length ? this.describeMarks({ ...filter, kolab, ids }) : [];
+    const picked = await this.read({ session: sessionId }, async (q) => (await q.query<{ id: string; named: boolean }>(
+      `select i.id, tn.id is not null as named
+         from invalidation i join version v on v.id = i.version_id
+         left join version tv on tv.id = i.triggered_by left join node tn on tn.id = tv.node_id
+        where i.state = 'open' and i.kolab_id = $1
+          and ($2::text is null or v.layer = $2) and ($3::text is null or v.node_id = $3)`,
+      [kolab, filter.layer ?? null, filter.node ?? null])).rows);
+    return picked.length ? this.describeMarks({
+      ...filter, kolab, ids: picked.map((r) => r.id), unnamed: picked.filter((r) => !r.named).map((r) => r.id),
+    }) : [];
   }
 
   /** Whether a session belongs to its kolab's work (D49): its actor holds Write on a layer of it, not Read alone. */
@@ -5175,9 +5187,10 @@ export class Kolab {
 
   /**
    * Open marks with the addresses involved, so an agent can act without more lookups. `node` is a
-   * node's id. Addresses are in the short form of the mark's own kolab.
+   * node's id. Addresses are in the short form of the mark's own kolab. The marks in `unnamed` don't
+   * name what triggered them: their reader can't read it (marksFor).
    */
-  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string; ids?: string[] } = {}) {
+  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string; ids?: string[]; unnamed?: string[] } = {}) {
     const rows = (await this.db.query<MarkRow & {
       node: string; seq: number; layer: Layer; trig_node: string; trig_kolab: string; trig_seq: number;
       t_element: string | null; t_selector: QuoteSelector | null; cause_count: number; kolab_id: string;
@@ -5197,6 +5210,7 @@ export class Kolab {
           and ($3::text is null or i.kolab_id = $3)
           and ($4::text[] is null or i.id = any($4))
         order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null, filter.kolab ?? null, filter.ids ?? null])).rows;
+    const unnamed = new Set(filter.unnamed ?? []);
     return rows.map((r) => {
       const from = r.kolab_id;
       const trig = (a: Omit<Address, 'node' | 'kolab'>) => formatAddress({ kolab: r.trig_kolab, node: r.trig_node, ...a }, { from });
@@ -5206,16 +5220,8 @@ export class Kolab {
         ...(r.edge_id ? { link: r.edge_id } : {}),
         dirty: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }),
         layer: r.layer,
-        because: r.reason === 'query_answered' ? r.note ?? 'your question was answered'
-          : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
-          : r.reason === 'access_lost' ? (r.edge_id
-            ? `${trig({ element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} is in another kolab: ${r.note ?? 'its holder can no longer read it'}`
-            : `parent ${trig({}).slice('kj:'.length)} is in another kolab: ${r.note ?? 'its holder can no longer read it'}`)
-          : r.note ? `review gate: ${r.note}`
-          : r.edge_id
-          ? `${trig({ element: r.t_element ?? undefined, selector: r.t_selector ?? undefined })} changed in version ${r.trig_seq}`
-          : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
-          : `parent ${trig({}).slice('kj:'.length)} version ${r.trig_seq}`,
+        because: markBecause(r, (linked) => unnamed.has(r.id) ? undefined
+          : trig(linked ? { element: r.t_element ?? undefined, selector: r.t_selector ?? undefined } : {})),
         next: NEXT_STEP[r.reason] ?? '',
       };
     });
@@ -5488,6 +5494,29 @@ export const structuralChecks: Checks = ({ elements }) => {
 /** What a commit with no reviewer says (VER11). */
 const NO_REVIEWER = (layer: Layer) =>
   `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`;
+
+/**
+ * Why a mark is open, in words: konjir_list_stale, the inbox and the web page all say it so.
+ * `trigger` gives the address of what triggered it, the linked element (`linked`) or the parent
+ * node (not), or undefined when the reader can't read it (a version in another kolab it no longer
+ * holds Read on, access_lost). The trigger is named only to a reader who can read it (D53).
+ */
+export function markBecause(r: {
+  reason: string; note: string | null; edge_id: string | null; trig_seq: number | null; cause_count: number;
+}, trigger: (linked: boolean) => string | undefined): string {
+  const lost = r.note ?? 'its holder can no longer read it';
+  const linked = trigger(true);
+  const parent = trigger(false)?.replace(/^kj:/, '');
+  return r.reason === 'query_answered' ? r.note ?? 'your question was answered'
+    : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
+    : r.reason === 'access_lost' ? (r.edge_id
+      ? (linked ? `${linked} is in another kolab: ${lost}` : `it links to a version in another kolab: ${lost}`)
+      : (parent ? `parent ${parent} is in another kolab: ${lost}` : `its parent is a version in another kolab: ${lost}`))
+    : r.note ? `review gate: ${r.note}`
+    : r.edge_id ? `${linked ?? 'a version in another kolab'} changed in version ${r.trig_seq}`
+    : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
+    : parent ? `parent ${parent} version ${r.trig_seq}` : `its parent, a version in another kolab, changed`;
+}
 
 export const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',

@@ -6,7 +6,7 @@
 // is a variant of another kolab's spec, rebased onto its parent's commits while its holder reads
 // the parent's kolab. Neither kolab learns anything private of the other.
 import { expect, test } from '@jest/globals';
-import { sessionKey, type Kolab } from '@konjir/engine';
+import { markDetails, sessionKey, type Kolab } from '@konjir/engine';
 import { commitReviewed, els, openKolab, rejection, textOf } from '@konjir/engine/testing';
 
 /** alice owns `orders`, bob owns `billing`, each with a spec; alice reads billing. */
@@ -224,6 +224,38 @@ test('a holder who leaves the dependent\'s kolab is no channel into it: the fork
   expect(await textOf(kolab, 'eu')).toStrictEqual({ R1: 'Invoices are sent monthly.', R2: 'Invoices are in euros and pounds.' });
   expect((await kolab.db.query(`select v.seq from edge e join version v on v.id = e.target_version_id where e.source_version_id = $1`, [o1])).rows).toStrictEqual([{ seq: 1 }]);
   expect(await marks(kolab, 'orders')).toStrictEqual([['access_lost', 'kj:orders-spec@1#O1'], ['access_lost', 'kj:eu@1']]);
+});
+
+test('an access_lost mark names what triggered it only to a session that reads it, in the same words on list_stale, the inbox and the web page', async () => {
+  const { kolab, alice } = await twoKolabs();
+  await kolab.addActor('dave');
+  await kolab.addActor('erin');
+  await kolab.grant('orders', 'dave', 'write', { layers: ['functional'] });
+  await kolab.grant('orders', 'erin', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'dave', 'read');
+  const dave = await kolab.openSession('dave', 'product', { kolab: 'orders' });
+  const erin = await kolab.openSession('erin', 'product', { kolab: 'orders' });
+  // dave forks billing/checkout into orders, and links an orders spec to it; then leaves orders.
+  await kolab.createNode(dave, 'functional_spec', 'EU', 'eu');
+  const parent = await kolab.versionIn(dave, 'kj:billing/checkout@1', { what: 'a variant (a fork)', across: true });
+  await commitReviewed(kolab, dave, alice, 'eu', { parent: parent.id, deltas: [{ kind: 'override', element: 'R2', text: 'Invoices are in euros and pounds.' }] });
+  await kolab.createNode(dave, 'functional_spec', 'Orders', 'orders-spec');
+  const o1 = await commitReviewed(kolab, dave, alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  await linkAcross(kolab, dave, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.revoke('orders', 'dave');
+  const why = 'dave, whose access it rests on, can no longer write the functional layer of kolab orders';
+
+  // alice reads billing: both surfaces name the link's target and the fork's parent.
+  // erin doesn't: both say only that it is a version in another kolab.
+  const cases: [string, string[]][] = [
+    [alice, [`kj:billing/checkout#R1 is in another kolab: ${why}`, `parent billing/checkout is in another kolab: ${why}`]],
+    [erin, [`it links to a version in another kolab: ${why}`, `its parent is a version in another kolab: ${why}`]],
+  ];
+  for (const [s, words] of cases) {
+    expect((await kolab.marksFor(s)).map((m) => m.because)).toStrictEqual(words);
+    expect((await markDetails(kolab, s)).map((m) => m.because)).toStrictEqual(words);
+  }
+  expect(JSON.stringify([await kolab.marksFor(erin), await markDetails(kolab, erin)])).not.toMatch(/billing|checkout/);
 });
 
 test('removing a link into another kolab is recorded in the draft, and settles its access_lost mark when it commits', async () => {
