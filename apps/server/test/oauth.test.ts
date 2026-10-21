@@ -213,6 +213,12 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
     expect([refused.res.status, refused.left]).toStrictEqual([400, undefined]);
     expect(await refused.res.text()).toContain(`no agent ${other} of yours`);
   }
+  // A consent form with no `as` from an MCP client defaults to a new agent of theirs, never to the person.
+  await kolab.db.query(`update actor set created_at = now() - interval '1 hour' where owner_id = $1`, [zed]);   // past the 3-in-10-minutes rate
+  const bare = await shown('konjir kolab:test');
+  const made = await bare.browser.consent({ csrf: bare.csrf, decision: 'allow', kolab: 'kolab:test', role: 'product', agent_label: 'bare' });
+  expect(made.left?.searchParams.get('code')).toMatch(/^kjc_/);
+  expect(await kolab.actor('zed-bare')).toMatchObject({ kind: 'agent', owner: zed });
   // A kolab the person can't reach isn't preselected either.
   expect(checked((await shown('konjir kolab:elsewhere agent:zed-product')).html)).toStrictEqual(['agent:zed-product', 'kolab:test', 'product']);
 });
@@ -707,4 +713,6 @@ test('the web page learns how to run the konjir CLI: npx only with a pinned spec
   }
   expect(await rejection(startServer({ adminToken: 'admin-token', kolab: await openKolab(), webRoot: null, cliNpmSpec: 'konjir' }))).toMatch(/KONJIR_CLI_NPM_SPEC is a package pinned to an exact version/);
   expect(isPinnedNpmSpec('@konjir/cli@0.6.0-rc.1')).toBe(true);
+  for (const zeros of ['konjir@01.2.3', 'konjir@1.02.3', 'konjir@1.2.03']) expect([zeros, isPinnedNpmSpec(zeros)]).toStrictEqual([zeros, false]);
+  expect(isPinnedNpmSpec('konjir@10.0.0')).toBe(true);
 });

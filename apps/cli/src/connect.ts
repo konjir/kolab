@@ -11,7 +11,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -95,7 +95,7 @@ export function mergeOpencode(path: string, before: string, entries: Entry[], fo
   const root = parseOrRefuse(path, text, 'OpenCode');
   if (root.type !== 'object') throw new Error(`${path} isn't an OpenCode configuration (not a JSON object), so konjir connect won't touch it`);
   const mcp = member(root, 'mcp');
-  if (mcp && mcp.type !== 'object') throw new Error(`${path}: its "mcp" isn't an object, so konjir connect won't touch it`);
+  if (mcp && mcp.type !== 'object') throw new Error(`${path}: its "mcp" is ${mcp.type === 'null' ? 'null' : 'not an object'}, so konjir connect won't touch it: make it {} or remove it, then run konjir connect again`);
   refuseTaken(path, entries, Object.keys((mcp ? valueOf(mcp) : {}) as object), force);
   const after = setEntries(text, 'mcp', entries.map((e) => [e.name, opencodeEntry(e)]));
   checkMerge(path, text, after, 'mcp', entries.map((e) => [e.name, opencodeEntry(e)]));
@@ -117,8 +117,9 @@ export function mergeClaude(path: string, before: string, entries: Entry[], forc
     throw new Error(`${path} isn't JSON (${(e as Error).message}), so konjir connect won't touch it: fix it, then run konjir connect again`);
   }
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error(`${path} isn't a Claude Code MCP configuration (not a JSON object), so konjir connect won't touch it`);
-  const servers = (config as Record<string, unknown>).mcpServers ?? {};
-  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error(`${path}: its "mcpServers" isn't an object, so konjir connect won't touch it`);
+  const raw = config as Record<string, unknown>;
+  const servers = 'mcpServers' in raw ? raw.mcpServers : {};
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error(`${path}: its "mcpServers" is ${servers === null ? 'null' : 'not an object'}, so konjir connect won't touch it: make it {} or remove it, then run konjir connect again`);
   refuseTaken(path, entries, Object.keys(servers), force);
   const after = setEntries(before, 'mcpServers', set);
   checkMerge(path, before, after, 'mcpServers', set);
@@ -258,7 +259,7 @@ export function unifiedDiff(path: string, before: string, after: string, exists:
  * so never through a link left there), with the file's own mode if it has one, then moved into
  * place. A path that is a symbolic link is written where it leads, so the link stays.
  */
-export function writeAtomically(path: string, text: string) {
+export function writeAtomically(path: string, text: string, opts: { within?: string } = {}) {
   let target = path;
   const link = linkTarget(path);
   if (link) {
@@ -271,10 +272,44 @@ export function writeAtomically(path: string, text: string) {
   try { mode = statSync(target).mode & 0o777; } catch { /* new */ }
   const tmp = join(dir, `.${basename(target)}.${randomBytes(6).toString('hex')}.tmp`);
   writeFileSync(tmp, text, { mode, flag: 'wx' });
-  try { renameSync(tmp, target); } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  try {
+    // Checked again just before the rename, as real paths: a link or folder swapped in meanwhile
+    // can't aim the write outside `within`, nor replace a link with a file.
+    if (opts.within !== undefined) {
+      const now = linkTarget(path);
+      const real = join(realpathSync(dirname(target)), basename(target));
+      if ((link ? now?.real !== target : !!now) || !inside(real, opts.within)) throw new Error(`${path} changed while konjir connect wrote it, or leads outside ${opts.within}; nothing written`);
+    }
+    if (existsSync(target) && !lstatSync(target).isFile()) throw new Error(`${target} isn't a regular file; nothing written`);
+    renameSync(tmp, target);
+  } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
 }
 
-const readText = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
+/** The most of a config file konjir connect reads: a harness's config is far smaller. */
+export const MAX_CONFIG_BYTES = 1024 * 1024;
+
+/**
+ * A config file's text, or '' if there is none: only a regular file (a link is followed to one; a
+ * link to nothing reads as none, and writeAtomically refuses it), of at most MAX_CONFIG_BYTES, read
+ * from the descriptor it was checked through, so a FIFO, a device or a folder is never read.
+ */
+function readText(path: string): string {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0)); } catch (e) {
+    if ((e as { code?: string }).code === 'ENOENT') return '';
+    throw new Error(`konjir connect can't read ${path} (${(e as { code?: string }).code ?? e})`);
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error(`${path} isn't a regular file, so konjir connect won't read or write it`);
+    if (st.size > MAX_CONFIG_BYTES) throw new Error(`${path} is over ${MAX_CONFIG_BYTES / 1024 / 1024} MiB, far more than a harness's config; konjir connect won't read it`);
+    const buf = Buffer.alloc(st.size + 1);
+    let n = 0;
+    for (let r; n < buf.length && (r = readSync(fd, buf, n, buf.length - n, n)) > 0;) n += r;
+    if (n > st.size) throw new Error(`${path} grew while konjir connect read it; run konjir connect again`);
+    return buf.subarray(0, n).toString('utf8');
+  } finally { closeSync(fd); }
+}
 
 /** What `konjir connect` is asked to do. */
 export interface ConnectOptions {
@@ -352,7 +387,19 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   if (opts.kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(opts.kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
   const session = await io.person();
   let closed = false;
-  const closeSession = async () => { if (!closed) { closed = true; await session.close(); } };
+  // Interrupted (Ctrl-C, a kill) while it holds the sign-in as the person: that is revoked first.
+  const onSignal = (signal: NodeJS.Signals) => {
+    void closeSession().finally(() => { process.kill(process.pid, signal); });
+  };
+  const closeSession = async () => {
+    if (closed) return;
+    closed = true;
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    await session.close();
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   try {
     const { me } = session;
     if (me.kind !== 'person') {
@@ -377,9 +424,13 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       // it, to refuse an entry already there, and lets Claude Code's own command write it.
       const path = claudeUserConfig(opts.env);
       let servers: Record<string, unknown> = {};
-      try { servers = (JSON.parse(readText(path) || '{}') as { mcpServers?: Record<string, unknown> }).mcpServers ?? {}; } catch {
+      let parsed: unknown;
+      try { parsed = JSON.parse(readText(path) || '{}'); } catch {
         throw new Error(`${path} isn't JSON, so konjir connect can't tell which servers Claude Code already has: fix it, then run konjir connect again`);
       }
+      const s = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).mcpServers ?? {} : null;
+      if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error(`${path}: its "mcpServers" isn't an object, so konjir connect can't tell which servers Claude Code already has`);
+      servers = s as Record<string, unknown>;
       refuseTaken(`Claude Code's user settings (${path})`, entries, Object.keys(servers), opts.force);
       commands = entries.flatMap((e) => [
         ...(e.name in servers ? [['claude', 'mcp', 'remove', '--scope', 'user', e.name]] : []),
@@ -428,7 +479,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     if (change) {
       // Written only if nobody changed it since it was read: never over an edit made meanwhile.
       if (readText(change.path) !== change.before) throw new Error(`${change.path} changed while konjir connect was waiting; nothing written. Run konjir connect again`);
-      writeAtomically(change.path, change.after);
+      writeAtomically(change.path, change.after, opts.forcePath ? {} : { within: opts.global ? dirname(change.path) : opts.cwd });
       io.log(`Wrote ${change.path}. It holds no token: each entry signs in by itself.`);
     } else {
       for (const c of commands) {

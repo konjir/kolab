@@ -7,6 +7,7 @@
 // scope; the person's "browser" follows Kolab's redirects with its cookies and clicks Allow on the
 // page as it arrives, preselected.
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
@@ -16,7 +17,7 @@ import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 import { StoredLogin, call, connect, login, main, personSession } from '../src/cli.js';
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
-import { connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
+import { MAX_CONFIG_BYTES, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
 const entry = (label: string, role: 'product' | 'engineer', over: Partial<Entry> = {}): Entry =>
@@ -100,7 +101,7 @@ test('OpenCode: an entry already there is refused without --force, and replaced 
   expect(Object.keys(forced.mcp)).toStrictEqual(['konjir-product', 'other']);
   expect(() => mergeOpencode('opencode.json', '{ "mcp": { ', [entry('product', 'product')], false)).toThrow(/isn't JSON that OpenCode reads \(.+ on line 1\), so konjir connect won't touch it/);
   expect(() => mergeOpencode('opencode.json', '[1]', [entry('product', 'product')], false)).toThrow(/not a JSON object/);
-  expect(() => mergeOpencode('opencode.json', '{ "mcp": [] }', [entry('product', 'product')], false)).toThrow(/its "mcp" isn't an object/);
+  expect(() => mergeOpencode('opencode.json', '{ "mcp": [] }', [entry('product', 'product')], false)).toThrow(/its "mcp" is not an object/);
 });
 
 /**
@@ -530,4 +531,33 @@ test('Claude Code: an existing .mcp.json is edited in place, keeping its own for
   expect(after).toContain('        "sentry": {"type": "http", "url": "https://mcp.sentry.dev/mcp"},\n        "konjir-pm": {');
   expect(after).toContain('"id": 12345678901234567890');
   expect(JSON.parse(after).mcpServers['konjir-pm']).toStrictEqual({ type: 'http', url: URL_, oauth: { scopes: 'konjir kolab:anns role:product agent:ann-pm' } });
+});
+
+test('konjir connect reads only a regular config file of at most 1 MiB, and refuses an "mcp" or "mcpServers" that is null', async () => {
+  const { idp, server } = await local();
+  const fifo = scratch();
+  execFileSync('mkfifo', [join(fifo, 'opencode.json')]);
+  expect(await rejection(connectHarness(options(server, fifo, { yes: true, auth: false }), world(server, idp, async () => 0)))).toMatch(/opencode.json isn't a regular file, so konjir connect won't read or write it/);
+  const dir = scratch();
+  mkdirSync(join(dir, 'opencode.json'));
+  expect(await rejection(connectHarness(options(server, dir, { yes: true, auth: false }), world(server, idp, async () => 0)))).toMatch(/isn't a regular file/);
+  const big = scratch();
+  writeFileSync(join(big, 'opencode.json'), `{"a": "${'x'.repeat(MAX_CONFIG_BYTES)}"}`);
+  expect(await rejection(connectHarness(options(server, big, { yes: true, auth: false }), world(server, idp, async () => 0)))).toMatch(/is over 1 MiB/);
+  expect(() => mergeClaude('.mcp.json', '{"mcpServers": null}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is null, so konjir connect won't touch it: make it \{\} or remove it/);
+  expect(() => mergeClaude('.mcp.json', '{"mcpServers": 3}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is not an object/);
+  expect(() => mergeOpencode('opencode.json', '{"mcp": null}', [entry('p', 'product')], false)).toThrow(/its "mcp" is null/);
+});
+
+test('writeAtomically checks again, just before the rename, that the file still leads inside the project', () => {
+  const project = scratch();
+  const elsewhere = scratch();
+  writeFileSync(join(project, 'opencode.json'), '{}');
+  writeAtomically(join(project, 'opencode.json'), '{"x":1}', { within: project });
+  expect(readFileSync(join(project, 'opencode.json'), 'utf8')).toBe('{"x":1}');
+  // Swapped for a link outside between the plan and the write: refused, nothing written there.
+  writeFileSync(join(elsewhere, 'target.json'), 'keep');
+  symlinkSync(join(elsewhere, 'target.json'), join(project, 'swapped.json'));
+  expect(() => writeAtomically(join(project, 'swapped.json'), '{}', { within: project })).toThrow(/leads outside/);
+  expect(readFileSync(join(elsewhere, 'target.json'), 'utf8')).toBe('keep');
 });

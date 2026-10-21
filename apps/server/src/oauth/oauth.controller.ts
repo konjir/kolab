@@ -479,7 +479,9 @@ export class OAuthController {
       if (pending.inviteKey) clearInviteCookie(res, this.options);
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: 'the person declined', state: r.clientState ?? undefined, iss: base }));
     }
-    const asField = str('as') || 'self';
+    // A form with no `as` is the web interface's (which works only as the person) or a hand-made one:
+    // it never defaults to the person for an MCP client, only to a new agent of theirs.
+    const asField = str('as') || (pending.clientId === WEB_CLIENT ? 'self' : 'new-agent');
     const role = str('role') as Role;
     const kolabField = str('kolab');
     const pick = { kolab: kolabField, role, as: asField, label: str('agent_label'), newName: str('new_kolab_name'), newTitle: str('new_kolab_title') };

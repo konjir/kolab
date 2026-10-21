@@ -431,11 +431,11 @@ export async function personSession(url: string, token: string | undefined, opts
   const log = opts.log ?? ((l: string) => console.error(l));
   const open = async (auth: string | OAuthClientProvider) => {
     let client: Client;
-    try { client = await connect(url, auth); } catch (e) { if (auth instanceof StoredLogin) auth.releaseLock(); throw unreachable(e, url) ?? e; }
+    try { client = await connect(url, auth); } catch (e) { if (auth instanceof StoredLogin) auth.releaseIdleLock(); throw unreachable(e, url) ?? e; }
     try {
       return { client, me: await call(client, 'whoami') as PersonSession['me'] };
     } catch (e) {
-      if (auth instanceof StoredLogin) auth.releaseLock();
+      if (auth instanceof StoredLogin) auth.releaseIdleLock();
       await client.close();
       throw e;
     }
@@ -448,9 +448,9 @@ export async function personSession(url: string, token: string | undefined, opts
   if (stored.signedIn) {
     const s = await open(stored).catch(() => undefined);
     if (s?.me.kind === 'person') {
-      return { me: s.me, call: (verb, args) => call(s.client, verb, args), close: async () => { stored.releaseLock(); await s.client.close(); } };
+      return { me: s.me, call: (verb, args) => call(s.client, verb, args), close: async () => { stored.releaseIdleLock(); await s.client.close(); } };
     }
-    if (s) { stored.releaseLock(); await s.client.close(); }
+    if (s) { stored.releaseIdleLock(); await s.client.close(); }
   }
   log(`Signing you in as yourself for a moment, only to make your agents: on Kolab's page, choose Yourself. konjir keeps none of it, and revokes it once they are made.`);
   let memory: MemoryLogin;

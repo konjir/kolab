@@ -21,7 +21,7 @@ import { WebService } from './web/web.service.js';
  * Whether `spec` names an npm package at one exact version (`konjir@1.2.3`, `@scope/konjir@1.2.3-rc.1`):
  * what `npx` may be told to run (W3.7). A bare name or a range would run whatever is published under it next.
  */
-export const isPinnedNpmSpec = (spec: string) => /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*@\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(spec);
+export const isPinnedNpmSpec = (spec: string) => /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*@(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(spec);
 
 export interface KolabServerModuleOptions extends ServerOptions {
   kolab: Kolab;
