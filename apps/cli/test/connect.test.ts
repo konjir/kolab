@@ -10,6 +10,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { auth, type OAuthClientProvider, type StoredOAuthClientInformation, type StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { StubIdentity, startServer } from '@konjir/server';
@@ -330,7 +331,8 @@ function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run']
 }
 
 const options = (server: { url: string }, cwd: string, over: Partial<ConnectOptions> = {}): ConnectOptions => ({
-  harness: 'opencode', url: server.url, agents: parseAgents([]), global: false, force: false, yes: false, auth: true, cwd, env: {}, ...over,
+  // A scratch config folder by default: no test ever reaches the person's own ~/.config.
+  harness: 'opencode', url: server.url, agents: parseAgents([]), global: false, force: false, yes: false, auth: true, cwd, env: { XDG_CONFIG_HOME: scratch() }, ...over,
 });
 
 test('done when: one command sets up two OpenCode agents, product and engineer, in a project, and each signs in as its own agent, with no hand-edited config', async () => {
@@ -501,6 +503,45 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
   expect(await rejection(connectHarness(options(server, scratch(), { harness: 'claude', bridge: '', yes: true }), world(server, idp, async () => 0))))
     .toMatch(/runs from a checkout of github.com\/konjir\/kolab, and this konjir isn't running from one.*or pass --http/);
   expect(await rejection(connectHarness(options(server, scratch(), { http: true, yes: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
+});
+
+test('W3.8: a channel entry signed in as anyone but its agent (another chosen on Kolab\'s page) is revoked, forgotten and not counted', async () => {
+  const { kolab, idp, server } = await local();
+  const project = scratch();
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
+  const io: ConnectIO & { lines: string[] } = {
+    ...world(server, idp, async () => 0),
+    // The person chooses Yourself by hand, not the preselected agent.
+    signInAgent: (e, credentials) => signInAgent(e, credentials, {
+      log: () => undefined,
+      open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'self' }, true); },
+    }),
+  };
+  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), yes: true, env }), io);
+  const said = io.lines.join('\n');
+  expect(said).toContain('konjir-pm didn\'t sign in (it signed in as ann, not ann-pm, so that sign-in was revoked and nothing is kept for konjir-pm)');
+  expect(said).not.toContain('konjir-pm is signed in');
+  expect(said).toContain('On first start each entry signs in by itself in your browser');
+  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-pm', env) }).signedIn).toBe(false);
+  // No grant as Ann is left: not this one, nor konjir connect's own sign-in as her.
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
+});
+
+test('W3.8: the bridge is found only in the checkout this konjir runs from; a konjir installed in a project that ships channel-bridge/scripts/start.sh finds none', () => {
+  expect(bridgeCommand()).toBe(realpathSync(join(import.meta.dirname, '..', '..', 'channel-bridge', 'scripts', 'start.sh')));
+  // A hostile project: konjir installed under node_modules (the published bundle), beside a start.sh of its own.
+  const hostile = scratch();
+  mkdirSync(join(hostile, 'channel-bridge', 'scripts'), { recursive: true });
+  writeFileSync(join(hostile, 'channel-bridge', 'scripts', 'start.sh'), '#!/bin/sh\necho pwned\n', { mode: 0o755 });
+  writeFileSync(join(hostile, 'package.json'), JSON.stringify({ name: 'kolab', workspaces: ['apps/*'] }));
+  mkdirSync(join(hostile, 'node_modules', 'konjir'), { recursive: true });
+  writeFileSync(join(hostile, 'node_modules', 'konjir', 'konjir.mjs'), '');
+  expect(bridgeCommand(pathToFileURL(join(hostile, 'node_modules', 'konjir', 'konjir.mjs')).href)).toBeUndefined();
+  // Installed globally, or run as a binary: none either.
+  mkdirSync(join(hostile, 'lib', 'node_modules', 'konjir', 'dist'), { recursive: true });
+  writeFileSync(join(hostile, 'lib', 'node_modules', 'konjir', 'dist', 'konjir.mjs'), '');
+  expect(bridgeCommand(pathToFileURL(join(hostile, 'lib', 'node_modules', 'konjir', 'dist', 'konjir.mjs')).href)).toBeUndefined();
+  expect(bridgeCommand('file:///$bunfs/root/konjir')).toBeUndefined();
 });
 
 test('a kept konjir login is never made the person: one that works as an agent stays as it is, untouched; one already the person\'s is used, and left alone', async () => {

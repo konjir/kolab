@@ -1,7 +1,9 @@
 // End to end: Kolab in-process, the bridge as a child process on stdio (started the way the
 // plugin's .mcp.json starts it), and this test as the Claude Code side of the pipe.
 import { expect, test } from '@jest/globals';
-import { resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { startServer, type KonjirServer } from '@konjir/server';
@@ -9,6 +11,8 @@ import { closeAtEnd, persistentStore, type Store } from '@konjir/engine/testing'
 
 const ADMIN = 'channel-test-admin';
 const START = resolve(import.meta.dirname, '../scripts/start.sh');
+/** A scratch home for each spawned bridge: none ever reaches the person's own ~/.config. */
+const scratchHome = () => mkdtempSync(join(tmpdir(), 'konjir-home-'));
 
 async function kolabClient(url: string, token: string) {
   const c = new Client({ name: 'channel-test', version: '0' }, { versionNegotiation: { mode: 'auto' } });
@@ -46,7 +50,7 @@ type Channel = { content: string; meta: Record<string, string> };
 async function bridge(url: string, token: string, options: ConstructorParameters<typeof Client>[1] = {}) {
   const transport = new StdioClientTransport({
     command: START,
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KONJIR_URL: url, KONJIR_TOKEN: token, KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
+    env: { PATH: process.env.PATH ?? '', HOME: scratchHome(), XDG_CONFIG_HOME: scratchHome(), KONJIR_URL: url, KONJIR_TOKEN: token, KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
     stderr: 'pipe',
   });
   let stderr = '';

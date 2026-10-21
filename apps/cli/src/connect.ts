@@ -21,7 +21,7 @@ import { basename, dirname, join, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { JsoncError, commentsOf, member, parseTree, tokens, valueOf, type JsonNode } from './jsonc.js';
-import { agentCredentialsPath } from './login.js';
+import { agentCredentials } from './login.js';
 
 export const HARNESSES = ['opencode', 'claude'] as const;
 export type Harness = typeof HARNESSES[number];
@@ -87,13 +87,29 @@ export const claudeBridgeEntry = (e: Entry, command: string) => ({
 export const CHANNEL_CLIENT_NAME = 'konjir channel (Claude Code)';
 
 /**
- * The channel bridge's start.sh in the checkout this konjir runs from, or undefined when it runs
- * from elsewhere (the published package, a binary), which has no bridge.
+ * The channel bridge's start.sh in the Kolab checkout this konjir runs from, or undefined when it
+ * doesn't run from one: the published package or a binary, which have no bridge. Proven from this
+ * module's own place, never from a path relative to wherever it was installed: this file must be
+ * `<root>/apps/cli/src/connect.ts` (or `dist/connect.js`) inside `<root>`, whose package.json is the
+ * kolab workspace, which is a git checkout, and whose `apps/channel-bridge` is the bridge's package.
+ * `moduleUrl` is for tests.
  */
-export function bridgeCommand(): string | undefined {
+export function bridgeCommand(moduleUrl: string = import.meta.url): string | undefined {
   try {
-    const path = fileURLToPath(new URL('../../channel-bridge/scripts/start.sh', import.meta.url));
-    return existsSync(path) ? realpathSync(path) : undefined;
+    const self = realpathSync(fileURLToPath(moduleUrl));
+    const where = dirname(self);
+    if (!['src', 'dist'].includes(basename(where)) || basename(dirname(where)) !== 'cli' || basename(dirname(dirname(where))) !== 'apps') return undefined;
+    const root = dirname(dirname(dirname(where)));
+    const json = (path: string) => JSON.parse(readText(path) || '{}') as { name?: string; workspaces?: unknown };
+    const workspace = json(join(root, 'package.json'));
+    if (workspace.name !== 'kolab' || !Array.isArray(workspace.workspaces)) return undefined;
+    if (!existsSync(join(root, '.git'))) return undefined;
+    if (json(join(root, 'apps', 'cli', 'package.json')).name !== 'konjir') return undefined;
+    if (json(join(root, 'apps', 'channel-bridge', 'package.json')).name !== '@konjir/channel-bridge') return undefined;
+    const start = realpathSync(join(root, 'apps', 'channel-bridge', 'scripts', 'start.sh'));
+    // Both inside this same checkout, as real paths: no link leads either elsewhere.
+    if (!inside(self, realpathSync(join(root, 'apps', 'cli'))) || !inside(start, realpathSync(join(root, 'apps', 'channel-bridge')))) return undefined;
+    return start;
   } catch {
     return undefined;
   }
@@ -409,7 +425,11 @@ function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: 
   return [
     `Start Claude Code with the Konjir channel${global ? '' : `, from ${cwd}`}:`,
     `  claude --dangerously-load-development-channels ${entries.map((e) => `server:${e.name}`).join(' ')}`,
-    ...(global ? [] : ['  Claude Code asks first whether to use the servers in this project\'s .mcp.json: approve the konjir- ones.']),
+    '  Channels need Claude Code signed in with a claude.ai account (not an API key); without one the tools still work, and no channel messages arrive.',
+    ...(global ? [] : [
+      '  Claude Code asks first whether to use the servers in this project\'s .mcp.json: approve the konjir- ones.',
+      '  These entries name this checkout\'s absolute path, so they work only on this machine: don\'t commit them (or use --global).',
+    ]),
     '  At the warning, choose "I am using this for local development".',
     signedIn
       ? `  Each entry is one Konjir server: Kolab's tools and its channel, on its agent's sign-in. Don't also add Kolab's HTTP server as the same agent: one session each (ENF4).`
@@ -554,8 +574,10 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
         for (const e of entries) {
           io.log(`Signing ${e.name} in as ${e.agent}, in your browser. Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow.`);
           try {
-            const actor = await io.signInAgent(e, agentCredentialsPath(e.agent, opts.env));
-            io.log(actor === e.agent ? `${e.name} is signed in as ${e.agent}.` : `warning: ${e.name} signed in as ${actor}, not ${e.agent}: it works as ${actor}.`);
+            // signInAgent revokes and forgets a sign-in that works as anyone but e.agent, and throws.
+            const actor = await io.signInAgent(e, agentCredentials(e.agent, opts.env));
+            if (actor !== e.agent) throw new Error(`it worked as ${actor}, not ${e.agent}`);
+            io.log(`${e.name} is signed in as ${e.agent}.`);
             signed++;
           } catch (err) {
             io.log(`${e.name} didn't sign in (${(err as Error).message}). It signs in by itself, in your browser, when Claude Code first starts it.`);

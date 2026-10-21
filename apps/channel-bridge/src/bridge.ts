@@ -33,6 +33,8 @@ export interface BridgeOptions {
   awaiting?: 'another-channel';
   /** The command that signs this bridge's sign-in in again, as the session is told it; `konjir login --url <url>` by default. */
   loginCommand?: string;
+  /** KONJIR_AGENT: the actor this bridge's sign-in must work as. Any other, and it serves and hears nothing. */
+  agent?: string;
   /** Deliver a message to the Claude Code session. */
   forward(message: ChannelMessage): Promise<void>;
   /** A line for the operator (stderr). Never carries a token. */
@@ -58,8 +60,13 @@ export interface BridgeOptions {
 export type ListKind = 'tools' | 'prompts' | 'resources' | 'resourceTemplates';
 const LIST_KINDS: ListKind[] = ['tools', 'prompts', 'resources', 'resourceTemplates'];
 
+/** A call the bridge didn't send to Kolab at all: nothing of it reached Kolab. */
+export class NotSent extends Error {}
 /** A call the bridge couldn't pass to Kolab, because it has no connection to Kolab now. Nothing was sent. */
-export class NotConnected extends Error {}
+export class NotConnected extends NotSent {}
+
+/** The sign-in kept for KONJIR_AGENT works as someone else: the bridge serves and hears nothing with it. */
+class WrongActor extends Error {}
 
 export interface Whoami { actor: string; role: string; layer: string; subscribe: string[] }
 
@@ -172,6 +179,8 @@ export class KolabBridge {
         client = this.client = this.newClient();
         await client.connect(this.transport());
         const me = await this.whoami(client);
+        // A sign-in kept for KONJIR_AGENT that works as anyone else (chosen otherwise at consent, say) is refused whole.
+        if (this.opts.agent && me.actor !== this.opts.agent) throw new WrongActor(me.actor);
         this.me = me;
 
         let end!: (why: Ended) => void;
@@ -253,7 +262,7 @@ export class KolabBridge {
           const awaiting = none && this.opts.awaiting === 'another-channel';
           await this.problem(none ? 'no-sign-in' : 'signed-out',
             awaiting ? `waiting for the browser sign-in to ${url} another konjir channel started, checking every ${Math.round(maxMs / 1000)}s`
-              : `${none ? 'no sign-in is kept' : 'the sign-in kept has ended or was revoked'} for ${url}; waiting for konjir login, checking every ${Math.round(maxMs / 1000)}s`, {
+              : `${none ? 'no sign-in is kept' : 'the sign-in kept has ended or was revoked'} for ${url}; waiting for ${this.loginCommand}, checking every ${Math.round(maxMs / 1000)}s`, {
               content: awaiting
                 ? `The Konjir channel is waiting for a sign-in to Kolab at ${url} that another Konjir channel started in the browser, and picks it up by itself once it is done. If none finishes, tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as.`
                 : `The Konjir channel ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${url}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
@@ -263,6 +272,13 @@ export class KolabBridge {
           // Refused mid-way (the session ended as the stream opened, say): the next connection
           // refreshes the sign-in, or finds it ended and says so.
           await this.problem('refused', `Kolab at ${safeUrl(this.opts.url)} refused the sign-in's token; trying again`);
+        } else if (e instanceof WrongActor) {
+          delay = maxMs;
+          const agent = this.opts.agent!;
+          await this.problem(`wrong-actor:${e.message}`, `the sign-in kept for ${agent} works as ${e.message}, not ${agent}: serving nothing; run ${this.loginCommand}, choosing ${agent}`, {
+            content: `The Konjir channel's sign-in for ${agent} works as ${e.message}, not ${agent}, so it serves no Konjir tools and hears no inbox changes. Tell the user to run ${this.loginCommand} in a terminal and choose ${agent} on Kolab's page. The channel picks the new sign-in up by itself.`,
+            meta: { kind: 'bridge', status: 'wrong_actor' },
+          });
         } else if (e instanceof NotAnAgentToken) {
           delay = maxMs;
           await this.problem('not-agent', `KONJIR_TOKEN is not an agent session token: ${msg}. Retrying every ${Math.round(maxMs / 1000)}s`, {
@@ -308,28 +324,32 @@ export class KolabBridge {
       return `it has no sign-in to Kolab at ${url}: tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as`;
     }
     if (e instanceof NotAnAgentToken) return 'its KONJIR_TOKEN is not an agent session token';
+    if (e instanceof WrongActor) return `its sign-in works as ${e.message}, not ${this.opts.agent}: tell the user to run ${this.loginCommand} in a terminal, choosing ${this.opts.agent}`;
     if (isRefusal(e) || listenRefusal(e) === 'session_ended') return `Kolab at ${url} refused its sign-in just now`;
     return `it can't reach Kolab at ${url} just now`;
   }
 
   /**
    * Closes a connection no longer listening, once every call in flight on it is answered (each has
-   * its own timeout), so a reconnect at token expiry never cuts a call off after it was sent. `now`:
-   * stop() aborts every request anyway, so close at once.
+   * its own timeout), so a reconnect at token expiry never cuts a call off after it was sent. No call
+   * joins it once it isn't live (forward() checks, in the same tick as it registers), and this waits
+   * until the set is empty, not on a snapshot. `now`: stop() aborts every request anyway.
    */
   private async retire(client: Client, now: boolean) {
-    const calls = this.inflight.get(client);
     const close = async () => { this.inflight.delete(client); await client.close().catch(() => undefined); };
-    if (now || !calls?.size) { await close(); return; }
-    void Promise.allSettled([...calls]).then(close);
+    if (now) { await close(); return; }
+    void (async () => {
+      for (let calls = this.inflight.get(client); calls?.size; calls = this.inflight.get(client)) await Promise.allSettled([...calls]);
+      await close();
+    })();
   }
 
-  /** The connection to pass a call through, waiting up to `waitMs` for one; throws NotConnected, having sent nothing. */
+  /** Waits up to `waitMs` for a live connection; throws NotSent (nothing was sent) if there's none, or Claude Code cancels. */
   private async connection(signal: AbortSignal | undefined, waitMs: number): Promise<Client> {
     const end = Date.now() + waitMs;
     while (!this.live) {
       if (this.stopped) throw new NotConnected(this.down);
-      if (signal?.aborted) throw signal.reason ?? new Error('cancelled');
+      if (signal?.aborted) throw new NotSent('Claude Code cancelled it before it was sent');
       const left = end - Date.now();
       if (left <= 0) throw new NotConnected(this.down);
       await new Promise<void>((resolve) => {
@@ -343,28 +363,48 @@ export class KolabBridge {
     return this.live;
   }
 
+  /** Each list's refresh in progress: one at a time, with one more run asked for if Kolab said it changed meanwhile. */
+  private readonly refreshing = new Map<ListKind, { client: Client; again: boolean; run: Promise<void> }>();
+
   /**
-   * Re-reads Kolab's lists of `kinds`, and says which changed. A list Kolab doesn't serve is empty;
-   * one that can't be read just now keeps what was read before.
+   * Re-reads Kolab's lists of `kinds`, and says which changed. Per list, reads run one at a time, in
+   * order, and a burst of list_changed while one runs costs one more read, on the newest connection:
+   * so the last read is always the latest, and wins.
    */
   private async refresh(client: Client, kinds: ListKind[]) {
+    await Promise.all(kinds.map((kind) => {
+      const running = this.refreshing.get(kind);
+      if (running) { running.client = client; running.again = true; return running.run; }
+      const state = { client, again: false, run: Promise.resolve() };
+      state.run = (async () => {
+        try {
+          do { state.again = false; await this.readList(state.client, kind); } while (state.again);
+        } finally {
+          this.refreshing.delete(kind);
+        }
+      })();
+      this.refreshing.set(kind, state);
+      return state.run;
+    }));
+  }
+
+  /** Reads one of Kolab's lists. A list Kolab doesn't serve is empty; one that can't be read just now keeps what was read before. */
+  private async readList(client: Client, kind: ListKind) {
     const caps = client.getServerCapabilities() ?? {};
-    for (const kind of kinds) {
-      let items: unknown[];
-      try {
-        if (kind === 'tools') items = caps.tools ? (await client.listTools(undefined, { cacheMode: 'bypass' })).tools : [];
-        else if (kind === 'prompts') items = caps.prompts ? (await client.listPrompts(undefined, { cacheMode: 'bypass' })).prompts : [];
-        else if (kind === 'resources') items = caps.resources ? (await client.listResources(undefined, { cacheMode: 'bypass' })).resources : [];
-        else items = caps.resources ? (await client.listResourceTemplates(undefined, { cacheMode: 'bypass' })).resourceTemplates : [];
-      } catch (e) {
-        this.log(`could not list Kolab's ${kind}: ${messageOf(e)}`);
-        continue;
-      }
-      const json = JSON.stringify(items);
-      if (this.catalog.get(kind)?.json === json) continue;
-      this.catalog.set(kind, { json, items });
-      this.onListChanged?.(kind);
+    let items: unknown[];
+    try {
+      if (kind === 'tools') items = caps.tools ? (await client.listTools(undefined, { cacheMode: 'bypass' })).tools : [];
+      else if (kind === 'prompts') items = caps.prompts ? (await client.listPrompts(undefined, { cacheMode: 'bypass' })).prompts : [];
+      else if (kind === 'resources') items = caps.resources ? (await client.listResources(undefined, { cacheMode: 'bypass' })).resources : [];
+      else items = caps.resources ? (await client.listResourceTemplates(undefined, { cacheMode: 'bypass' })).resourceTemplates : [];
+    } catch (e) {
+      this.log(`could not list Kolab's ${kind}: ${messageOf(e)}`);
+      return;
     }
+    const json = JSON.stringify(items);
+    if (this.catalog.get(kind)?.json === json) return;
+    this.catalog.set(kind, { json, items });
+    this.onListChanged?.(kind);
   }
 
   /**
@@ -384,18 +424,26 @@ export class KolabBridge {
   /**
    * Passes one request to Kolab as it came, on the connection listening now, and returns Kolab's
    * result as it came. Sent once (see the file's comment). `signal` is Claude Code cancelling it.
+   * Throws NotSent when nothing was sent; anything else was sent, and may have run.
    */
   async forward(method: 'tools/call' | 'resources/read' | 'prompts/get', params: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const { connectWaitMs = 15_000, callTimeoutMs = 120_000 } = this.opts.passthrough ?? {};
-    const client = await this.connection(signal, connectWaitMs);
-    let calls = this.inflight.get(client);
-    if (!calls) this.inflight.set(client, calls = new Set());
-    const call = client.request({ method, params }, { signal, timeout: callTimeoutMs }) as Promise<Record<string, unknown>>;
-    calls.add(call);
-    try {
-      return await call;
-    } finally {
-      calls.delete(call);
+    const end = Date.now() + connectWaitMs;
+    for (;;) {
+      const client = await this.connection(signal, Math.max(0, end - Date.now()));
+      // Resumed a tick later: send only if it is still the live connection, registering the call in
+      // this same tick, so retire() never closes a connection with a call it doesn't know of.
+      if (this.live !== client) continue;
+      if (signal?.aborted) throw new NotSent('Claude Code cancelled it before it was sent');
+      let calls = this.inflight.get(client);
+      if (!calls) this.inflight.set(client, calls = new Set());
+      const call = client.request({ method, params }, { signal, timeout: callTimeoutMs }) as Promise<Record<string, unknown>>;
+      calls.add(call);
+      try {
+        return await call;
+      } finally {
+        calls.delete(call);
+      }
     }
   }
 

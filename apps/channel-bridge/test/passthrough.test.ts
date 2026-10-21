@@ -4,7 +4,9 @@
 // bridge as a child process on stdio (as Claude Code starts it), and this test as Claude Code.
 // In-process: a call is sent once (never again after a timeout), and errors are masked.
 import { expect, test } from '@jest/globals';
-import { resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { startServer, type KonjirServer } from '@konjir/server';
@@ -16,6 +18,8 @@ import type { ChannelMessage } from '../src/messages.js';
 
 const ADMIN = 'passthrough-test-admin';
 const START = resolve(import.meta.dirname, '../scripts/start.sh');
+/** A scratch home for each spawned bridge: none ever reaches the person's own ~/.config. */
+const scratchHome = () => mkdtempSync(join(tmpdir(), 'konjir-home-'));
 
 async function kolabClient(url: string, token: string) {
   const c = new Client({ name: 'passthrough-test', version: '0' }, { versionNegotiation: { mode: 'auto' } });
@@ -62,7 +66,7 @@ async function session(server: KonjirServer, actor: string, role: 'product' | 'e
 async function bridge(url: string, token: string, env: Record<string, string> = {}, options: ConstructorParameters<typeof Client>[1] = {}) {
   const transport = new StdioClientTransport({
     command: START,
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KONJIR_URL: url, KONJIR_TOKEN: token, KONJIR_CHANNEL_BACKOFF_MS: '100,1000', ...env },
+    env: { PATH: process.env.PATH ?? '', HOME: scratchHome(), XDG_CONFIG_HOME: scratchHome(), KONJIR_URL: url, KONJIR_TOKEN: token, KONJIR_CHANNEL_BACKOFF_MS: '100,1000', ...env },
     stderr: 'pipe',
   });
   let stderr = '';
@@ -224,6 +228,37 @@ test('errors from Kolab and the transport are masked, and Kolab\'s text is other
   expect(missing).toStrictEqual({ content: [{ type: 'text', text: 'mark not found; your token *** is fine' }], isError: true });
   for (const r of [refused, broke, missing]) expect(JSON.stringify(r) + String((r as { message?: string } | undefined)?.message)).not.toContain(pm);
   expect(mask(secret)).toBe('***');
+  await b.stop();
+  await server.close();
+}, 60_000);
+
+test('Kolab\'s lists are read one at a time, in order: a burst of list_changed costs one more read, and the latest read wins', async () => {
+  const server = await boot();
+  const pm = await session(server, 'pm', 'product');
+  let lists = 0;
+  let running = 0;
+  let overlapped = false;
+  const fetchStub: typeof fetch = async (input, init) => {
+    if (typeof init?.body === 'string' && init.body.includes('"method":"tools/list"')) {
+      lists++;
+      if (++running > 1) overlapped = true;
+      await new Promise((r) => setTimeout(r, 100));
+      try { return await fetch(input, init); } finally { running--; }
+    }
+    return fetch(input, init);
+  };
+  let listens = 0;
+  const b = new KolabBridge({ url: server.url, token: pm, fetch: fetchStub as never, forward: async () => undefined, log: () => undefined });
+  b.onListening = () => { listens++; };
+  closeAtEnd({ close: () => b.stop() });
+  b.start();
+  await until('listening', () => listens > 0 || undefined);
+  const before = lists;
+  const inner = b as unknown as { refresh(c: unknown, kinds: string[]): Promise<void>; live: unknown };
+  await Promise.all(Array.from({ length: 6 }, () => inner.refresh(inner.live, ['tools'])));
+  expect(lists - before).toBe(2);   // the one running, and one more for the burst
+  expect(overlapped).toBe(false);
+  expect((await b.list('tools')).length).toBeGreaterThan(0);
   await b.stop();
   await server.close();
 }, 60_000);
