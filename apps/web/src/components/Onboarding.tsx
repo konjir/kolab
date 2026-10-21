@@ -200,6 +200,17 @@ const grantAccess = (value: string) => {
   return { level: g.level, layers: g.layers ?? (g.level === 'read' || g.level === 'triage' ? [] : ['functional', 'technical'] as Layer[]) };
 };
 
+const RANK = ['read', 'triage', 'write', 'maintain', 'admin'];
+/** Whether `want` gives anything `current` doesn't: a higher level, or at Write a layer more (as Kolab's own check). */
+export function raisesAccess(current: { level: AccessLevel | null; layers: Layer[] }, want: { level: AccessLevel; layers: Layer[] }): boolean {
+  return RANK.indexOf(want.level) > RANK.indexOf(current.level ?? '')
+    || (want.level === 'write' && current.level === 'write' && want.layers.some((l) => !current.layers.includes(l)));
+}
+
+/** The levels a holder's direct grant may be changed to here: for an agent, only its grant or lower, since raising one is its owner's (D56). */
+export const grantChoices = (h: Pick<AccessHolder, 'kind' | 'grant'>) =>
+  (h.kind === 'agent' && h.grant ? GRANT_LEVELS.filter((l) => !raisesAccess(h.grant!, grantAccess(l.value))) : GRANT_LEVELS);
+
 type Pending = { holder: AccessHolder; remove: true } | { holder: AccessHolder; remove?: false; value: string };
 
 /**
@@ -264,7 +275,7 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
               <div className="edit-row">
                 <div className="field"><label htmlFor={`g-${h.actor}`}>Grant for {h.actor}</label>
                   <select id={`g-${h.actor}`} value={value} onChange={(e) => setChosen({ ...chosen, [h.actor]: e.target.value })}>
-                    {GRANT_LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                    {grantChoices(h).map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
                   </select></div>
                 <button type="button" className="btn" disabled={value === levelValue(h.grant)} onClick={() => setPending({ holder: h, value })}>Change</button>
                 <button type="button" className="btn quiet" onClick={() => setPending({ holder: h, remove: true })}>Remove access</button>

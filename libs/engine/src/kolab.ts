@@ -2057,7 +2057,6 @@ export class Kolab {
    * stored there. A grant an admin or the kolab's owners gave the agent stands as it is.
    */
   private async grantOwnAgent(person: string, agent: string, kolab: string) {
-    if ((await accessIn(this.db, agent, kolab)).level) return;
     if (!(await accessIn(this.db, person, kolab)).level) throw new AccessError(`no kolab ${kolab} you can reach`);
     // What the person lends an agent: their access without what public visibility alone gives (kj_agent_cap, D56).
     const mine = await ownerAccess(this.db, person, kolab);
@@ -2065,8 +2064,14 @@ export class Kolab {
       throw new AccessError(`you read kolab ${kolab} only because it is public, which gives your agents nothing there (D56): work there as yourself, or ask its owners for a grant`);
     }
     const writes = ACCESS_LEVELS.indexOf(mine.level) >= ACCESS_LEVELS.indexOf('write');
-    if (writes && mine.layers.length) await this.grant(kolab, agent, 'write', { layers: mine.layers });
-    else await this.grant(kolab, agent, writes ? 'read' : mine.level);
+    const lend: Access = writes && mine.layers.length ? { level: 'write', layers: mine.layers } : { level: writes ? 'read' : mine.level, layers: [] };
+    // A grant the agent holds stands unless this lends more: one an Admin lowered on the People page
+    // is raised again, within these rules (W3.6); one above them, from Konjir's admin or the kolab's
+    // owners, is never lowered here.
+    const g = (await this.db.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
+      `select level, functional, technical from kolab_grant where kolab_id = $1 and agent_id = $2`, [kolab, agent])).rows[0];
+    if (g && !raises({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, lend)) return;
+    await this.grant(kolab, agent, lend.level!, lend.level === 'write' ? { layers: lend.layers } : {});
   }
 
   // ---- invites: a kolab's admins bring people in, with no admin of Konjir's (W3.4, P15) ----
@@ -2328,7 +2333,6 @@ export class Kolab {
       if (level === 'admin' && rankOf(current.level) < rankOf('admin') && !(await ownsKolab(tx, s.actor_id, s.kolab))) {
         throw new AccessError(`Admin in kolab ${s.kolab} is given by its owners; you hold Admin there, but don't own it: grant up to Maintain`);
       }
-      if (grantee.column === 'agent_id') await requireWithinCap(tx, grantee, s.kolab, want);
       await tx.query(`update kolab_grant set level = $3, functional = $4, technical = $5 where kolab_id = $1 and ${grantee.column} = $2`,
         [s.kolab, grantee.id, level, layers.includes('functional'), layers.includes('technical')]);
     });
@@ -2371,9 +2375,6 @@ export class Kolab {
       throw new TenancyError(`a team's access is its grant to the team, kept with the organization's teams, not changed here`);
     }
     const none = () => new TenancyError(`${actor} holds no direct grant in kolab ${s.kolab}; access from owning it, its organization, the base permission or a team is changed where those are kept`);
-    const a = await this.findActor(actor);
-    if (!a) throw none();
-    const grantee = a.kind === 'person' ? { column: 'user_id' as const, id: actor } : { column: 'agent_id' as const, id: actor, owner: a.owner! };
     await this.requireLiveKolab(s.kolab, 'changes no access');
     return this.changeAccess({ users: [actor] }, async (tx) => {
       // Again, now, under the lock: a sign-out, an archive or another admin's change may have come first.
@@ -2385,12 +2386,18 @@ export class Kolab {
       }
       const mine = await accessIn(tx, s.actor_id, s.kolab);
       if (mine.level !== 'admin') throw new AccessError(`changing who holds access to kolab ${s.kolab} needs Admin there; you hold ${describeAccess(mine)}`);
+      // Who `actor` is, looked up here, under the lock, for an unknown actor as for a known one.
+      const a = (await tx.query<{ kind: ActorKind; owner_id: string | null }>(`select kind, owner_id from actor where id = $1`, [actor])).rows[0];
+      if (!a) throw none();
+      const grantee = a.kind === 'person' ? { column: 'user_id' as const, id: actor } : { column: 'agent_id' as const, id: actor, owner: a.owner_id! };
       const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
         `select level, functional, technical from kolab_grant where kolab_id = $1 and ${grantee.column} = $2`, [s.kolab, actor])).rows[0];
       if (!g) throw none();
       const current: Access = { level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) };
       if (g.level === 'admin' && actor !== s.actor_id && !(await ownsKolab(tx, s.actor_id, s.kolab))) {
-        throw new AccessError(`${actor} holds Admin in kolab ${s.kolab} by a grant its owners gave: only they lower or remove it`);
+        throw new AccessError(a.kind === 'agent'
+          ? `${actor}, an agent, holds Admin in kolab ${s.kolab} by a grant from Konjir's admin or the kolab's owners: only the kolab's owners lower or remove it here`
+          : `${actor} holds Admin in kolab ${s.kolab} by a grant its owners gave: only they lower or remove it`);
       }
       await write(tx, s, grantee, current);
       if (!(await holderRows(tx, s.kolab)).some((h) => h.kind === 'person' && h.rank === 5)) {
