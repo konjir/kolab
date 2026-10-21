@@ -90,8 +90,6 @@ export interface ConsentView {
   error?: string;
   /** The invite the person opened, while it is still good (W3.4): the web interface's sign-in only. */
   invite?: InvitePreview;
-  /** The app asked, in its scope, to work as the person, and Yourself is chosen for it (D59): said plainly, above the choices. */
-  asksForYou?: boolean;
 }
 
 /**
@@ -115,7 +113,6 @@ ${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="a
 <form class="card" method="post" action="/oauth/consent">
 <p><strong>${esc(v.client)}</strong> ${v.web ? 'opens a session for you.' : `asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just connected it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.`}</p>
 ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
-${v.asksForYou ? `<p class="err" role="note">This app asks to act as you, with all your access, not as one of your agents. Choose an agent of yours below unless you meant to.</p>` : ''}
 <input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">
 ${who}

@@ -155,15 +155,16 @@ export function addressKey(address: string): string {
 /**
  * The scope a client asks with may name what to preselect on the consent page (D59): a kolab and a
  * role, `kolab:<name> role:<role>`, and who the client works as, `agent:<id>` (an agent of the
- * person's) or `as:self`. It only preselects: the page honours each word only for a choice the
- * person signing in has anyway (consent), and the person confirms there.
+ * person's). It only preselects: the page honours each word only for a choice the person signing
+ * in has anyway (consent), and the person confirms there. No client preselects the person (D60):
+ * `as:self` is ignored, from any client, and the person chooses Yourself by hand.
  */
-export function preselect(scope: string | null | undefined): { kolab?: string; role?: Role; agent?: string; self: boolean } {
+export function preselect(scope: string | null | undefined): { kolab?: string; role?: Role; agent?: string } {
   const words = (scope ?? '').split(/\s+/);
   const kolab = words.find((w) => w.startsWith('kolab:'))?.slice(6);
   const role = words.find((w) => w.startsWith('role:'))?.slice(5) as Role | undefined;
   const agent = words.find((w) => w.startsWith('agent:'))?.slice(6);
-  return { kolab, role: role && ROLES.includes(role) ? role : undefined, agent: agent || undefined, self: words.includes('as:self') };
+  return { kolab, role: role && ROLES.includes(role) ? role : undefined, agent: agent || undefined };
 }
 
 const json = (res: Response, status: number, body: unknown) => {
@@ -432,18 +433,14 @@ export class OAuthController {
     const { kolabs, agents, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
-    // `as:self` flips the page's safe default (an agent of theirs, capped at Write) to the person,
-    // with all their access: honoured only for an app on the person's own machine, whose every
-    // registered redirect URI is loopback (the konjir CLI's is), never a hosted one, and then said
-    // plainly on the page. A client's name is its own say-so; where its answer goes is not.
-    const selfHonoured = !web && pre.self && !pre.agent && !!client?.redirectUris.length && client.redirectUris.every(isLoopbackUri);
     // An invite the person opened is what they came for: offered first (W3.4). Someone new, with no
     // kolab and no invite, makes their first kolab here, named after them if that name is free to try.
     const pick = extra.pick ?? {
       kolab: invite ? undefined : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? `kolab:${pre.kolab}` : undefined, role: pre.role,
       // Who the client works as, only among the person's own choices: an agent the scope names that
-      // isn't a live agent of theirs is ignored, never shown and never honoured (D59).
-      as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : selfHonoured ? 'self' : undefined,
+      // isn't a live agent of theirs is ignored, never shown and never honoured (D59). Never
+      // Yourself: no client preselects the person, who chooses that by hand (D60).
+      as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : undefined,
       newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
     };
     // The form leads on to the client's redirect URI, Allow and Deny alike, so the page's
@@ -451,7 +448,7 @@ export class OAuthController {
     const target = formActionSource(pending.redirectUri);
     sendPage(res, status, 'Sign in', consentPage({
       signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
-      kolabs, agents: web ? [] : agents, pick, error: extra.error, invite, asksForYou: selfHonoured && pick.as === 'self',
+      kolabs, agents: web ? [] : agents, pick, error: extra.error, invite,
     }), { formTargets: target ? [target] : [] });
   }
 
@@ -563,14 +560,6 @@ export class OAuthController {
 /** Clears one sign-in's binding cookie, and no other's. */
 function clearBinding(res: Response, options: OAuthOptions, id: string) {
   res.append('set-cookie', `${bindingCookie(options, id)}=; ${bindingCookieAttrs(options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=0`);
-}
-
-/** Whether a redirect URI is a loopback one, http on 127.0.0.1, [::1] or localhost (RFC 8252 §7.3): an app on the person's own machine. */
-export function isLoopbackUri(uri: string): boolean {
-  try {
-    const u = new URL(uri);
-    return u.protocol === 'http:' && LOOPBACK.has(u.hostname.toLowerCase());
-  } catch { return false; }
 }
 
 /** A redirect URI as the consent page shows it: its origin, or for an app's own scheme, the URI. */

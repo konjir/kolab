@@ -1,5 +1,6 @@
 // `konjir connect opencode` from a real browser (W3.7, D59): the person signs in as herself, in memory
-// only, on Kolab's page, which arrives with Yourself chosen and says what that means; konjir connect makes her two agents
+// only, on Kolab's page, where she chooses Yourself by hand, as the terminal tells her (no client
+// preselects it, D60); konjir connect makes her two agents
 // and writes opencode.json; then each entry signs in as OpenCode's `opencode mcp auth` does (the MCP
 // SDK's auth(), the entry's oauth.scope as its client metadata's scope, a loopback listener for the
 // code), and Kolab's page arrives with that entry's agent, kolab and role chosen: she only clicks
@@ -74,7 +75,7 @@ async function opencodeAuth(page: Page, cwd: string, name: string, store: Map<st
   }
 }
 
-test('konjir connect opencode: Ann signs the CLI in as herself, gets two agents and two entries, and each entry signs in as its own agent with the page preselected', async ({ page }) => {
+test('konjir connect opencode: Ann signs the CLI in as herself, choosing Yourself by hand, gets two agents and two entries, and each entry signs in as its own agent with the page preselected', async ({ page }) => {
   const { call, connect, connectHarness, parseAgents, personSession } = await cli();
   process.env.KONJIR_CREDENTIALS = join(mkdtempSync(join(tmpdir(), 'konjir-e2e-')), 'credentials.json');
   const mcp = `${SIGNIN_ANN}/mcp`;
@@ -95,7 +96,11 @@ test('konjir connect opencode: Ann signs the CLI in as herself, gets two agents 
       open: async (u) => {
         await page.goto(u.toString());
         login = await checked(page);
-        await expect(page.getByText('This app asks to act as you, with all your access, not as one of your agents.')).toBeVisible();
+        await expect(page.getByText('asks to act as you')).toHaveCount(0);
+        // The terminal told her to choose Yourself by hand; the page says what that means.
+        expect(lines.join('\n')).toContain('under "Work as", choose "Yourself" by hand');
+        await page.getByRole('radio', { name: /^Yourself/ }).check();
+        await expect(page.getByText('Ends any other session you hold open')).toBeVisible();
         await page.locator('input[name=new_kolab_name]').fill('anns');
         await page.locator('input[name=new_kolab_title]').fill('Ann\'s');
         await page.getByRole('button', { name: 'Allow' }).click();
@@ -103,7 +108,7 @@ test('konjir connect opencode: Ann signs the CLI in as herself, gets two agents 
     }),
   });
 
-  expect(login).toStrictEqual(['self', '@new', 'product']);   // Yourself, preselected from the scope
+  expect(login).toStrictEqual(['new-agent', '@new', 'product']);   // a new agent by default: never Yourself (D60)
   expect(shown.get('konjir-product')).toStrictEqual(['agent:ann-product', 'kolab:anns', 'product']);
   expect(shown.get('konjir-engineer')).toStrictEqual(['agent:ann-engineer', 'kolab:anns', 'engineer']);
   expect(lines).toContain('Connected: each entry works as its own agent in anns.');

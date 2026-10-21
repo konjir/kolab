@@ -145,7 +145,7 @@ Sign in:   konjir login [--kolab <name>] [--role product|engineer] signs in with
 Harnesses: konjir connect opencode|claude [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--yes]
            [--no-auth] connects a harness to a kolab, one agent per entry (by default product and engineer):
            it makes or reuses your agents <you>-<label> (signed in as yourself for a moment, in memory only, then
-           revoked), shows the change to opencode.json or .mcp.json (with --global, your own settings) and asks
+           revoked: on Kolab's page, choose Yourself by hand), shows the change to opencode.json or .mcp.json (with --global, your own settings) and asks
            first, then signs each entry in as its agent. --force replaces konjir-<label> entries already there;
            --force-path writes a config file that links outside the project.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
@@ -422,8 +422,9 @@ export async function main(argv: string[]) {
 /**
  * The CLI signed in as the person, for `konjir connect` (D59), never kept: `token` if one is given;
  * or the sign-in `konjir login` keeps for `url`, but only if it already works as the person, and
- * then it is left as it is; otherwise a sign-in in memory alone (ephemeralLogin, preselecting
- * Yourself and the kolab on Kolab's page), revoked on close(). A kept sign-in that works as an
+ * then it is left as it is; otherwise a sign-in in memory alone (ephemeralLogin, preselecting the
+ * kolab on Kolab's page; the person chooses Yourself there by hand, since no client may preselect
+ * it, D60), revoked on close(), or at once if the person chose anyone else. A kept sign-in that works as an
  * agent stays kept, untouched. So connect never leaves an uncapped sign-in as the person on disk.
  * `open` is how the browser is sent there (tests).
  */
@@ -452,10 +453,10 @@ export async function personSession(url: string, token: string | undefined, opts
     }
     if (s) { stored.releaseIdleLock(); await s.client.close(); }
   }
-  log(`Signing you in as yourself for a moment, only to make your agents: on Kolab's page, choose Yourself. konjir keeps none of it, and revokes it once they are made.`);
+  log(`Signing you in as yourself for a moment, only to make your agents. On Kolab's page, under "Work as", choose "Yourself" by hand: it isn't chosen for you. konjir keeps none of it, and revokes it once they are made.`);
   let memory: MemoryLogin;
   try {
-    memory = await ephemeralLogin(url, { scope: ['konjir', 'as:self', opts.kolab && `kolab:${opts.kolab}`].filter(Boolean).join(' '), open: opts.open, log });
+    memory = await ephemeralLogin(url, { scope: ['konjir', opts.kolab && `kolab:${opts.kolab}`].filter(Boolean).join(' '), open: opts.open, log });
   } catch (e) {
     throw unreachable(e, url) ?? e;
   }
@@ -465,6 +466,11 @@ export async function personSession(url: string, token: string | undefined, opts
   };
   let s;
   try { s = await open(memory); } catch (e) { await end(); throw e; }
+  if (s.me.kind !== 'person') {
+    await s.client.close();
+    await end();
+    throw new Error(`on Kolab's page you chose ${s.me.actor}, not Yourself, and konjir connect makes your agents as you. Run it again, and under "Work as" choose "Yourself"`);
+  }
   return { me: s.me, call: (verb, args) => call(s.client, verb, args), close: async () => { await s.client.close(); await end(); } };
 }
 
