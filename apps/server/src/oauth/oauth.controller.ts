@@ -152,12 +152,18 @@ export function addressKey(address: string): string {
   return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
 }
 
-/** The scope a client asks with may name a kolab and a role to preselect: `kolab:<name> role:<role>`. */
-function preselect(scope: string | null | undefined): { kolab?: string; role?: Role } {
+/**
+ * The scope a client asks with may name what to preselect on the consent page (D59): a kolab and a
+ * role, `kolab:<name> role:<role>`, and who the client works as, `agent:<id>` (an agent of the
+ * person's) or `as:self`. It only preselects: the page honours each word only for a choice the
+ * person signing in has anyway (consent), and the person confirms there.
+ */
+export function preselect(scope: string | null | undefined): { kolab?: string; role?: Role; agent?: string; self: boolean } {
   const words = (scope ?? '').split(/\s+/);
   const kolab = words.find((w) => w.startsWith('kolab:'))?.slice(6);
   const role = words.find((w) => w.startsWith('role:'))?.slice(5) as Role | undefined;
-  return { kolab, role: role && ROLES.includes(role) ? role : undefined };
+  const agent = words.find((w) => w.startsWith('agent:'))?.slice(6);
+  return { kolab, role: role && ROLES.includes(role) ? role : undefined, agent: agent || undefined, self: words.includes('as:self') };
 }
 
 const json = (res: Response, status: number, body: unknown) => {
@@ -229,11 +235,14 @@ export class OAuthController {
     cors(res);
     const base = originOf(req, this.options);
     if (!base || !this.idp) return json(res, 404, { error: 'not_found' });
+    // No scopes_supported here (RFC 9728 makes it optional): an MCP client asks with the scope its
+    // configuration gives only when the resource names none (MCP's scope selection), and a scope is
+    // how a harness's configuration preselects its agent, kolab and role at consent (D59). Kolab
+    // requires no scope of a client.
     json(res, 200, {
       resource: `${base}/${MCP_ROUTE}`,
       authorization_servers: [base],
       bearer_methods_supported: ['header'],
-      scopes_supported: ['konjir'],
       resource_name: 'Kolab',
     });
   }
@@ -427,6 +436,9 @@ export class OAuthController {
     // kolab and no invite, makes their first kolab here, named after them if that name is free to try.
     const pick = extra.pick ?? {
       kolab: invite ? undefined : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? `kolab:${pre.kolab}` : undefined, role: pre.role,
+      // Who the client works as, only among the person's own choices: an agent the scope names that
+      // isn't a live agent of theirs is ignored, never shown and never honoured (D59).
+      as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : pre.self ? 'self' : undefined,
       newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
     };
     // The form leads on to the client's redirect URI, Allow and Deny alike, so the page's

@@ -2048,6 +2048,40 @@ export class Kolab {
   }
 
   /**
+   * A person's own session makes, or finds again, an agent of theirs by label (D59, W3.7), for a
+   * harness to sign in as: `<person>-<label>`, made through addOwnAgent, within its limits (at most
+   * `oauth.agentsPerPerson` agents, 3 in 10 minutes, counted in the database under the access lock).
+   * An agent of theirs already called that is reused, never made twice; one that is archived is
+   * refused, as is a name another account or another account's agent holds. Only a person: an
+   * agent's session never makes agents. It grants nothing: the agent reaches a kolab when its
+   * person consents to it there, with what they hold, at most Write (grantOwnAgent, D30, D56).
+   */
+  async createOwnAgent(session: string, label: string): Promise<{ agent: string; created: boolean; owner: string }> {
+    const me = await this.sessionInfo(session);
+    if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person makes agents. Sign in as yourself (konjir login, choosing Yourself) to make them`);
+    if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent label: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
+    const id = `${me.actor}-${label}`;
+    const mine = async () => {
+      const a = await this.findActor(id);
+      if (!a) return undefined;
+      if (a.kind !== 'agent' || a.owner !== me.actor) {
+        throw new NameTakenError(`${id} is ${a.kind === 'agent' ? `an agent of ${a.owner}'s` : 'a person'} here, not an agent of yours: choose another label`, undefined, 'ActorError');
+      }
+      if (await this.archivedActor(id)) throw new ActorError(`your agent ${id} is archived: choose another label, or ask an admin to unarchive it`);
+      return { agent: id, created: false, owner: me.actor };
+    };
+    const found = await mine();
+    if (found) return found;
+    try {
+      return { agent: await this.addOwnAgent(me.actor, label), created: true, owner: me.actor };
+    } catch (e) {
+      // Made by another call at the same moment: it is that agent, found again.
+      if (e instanceof NameTakenError) { const again = await mine(); if (again) return again; }
+      throw e;
+    }
+  }
+
+  /**
    * Gives a person's own agent access to a kolab where it has none (D30, D56): what its owner
    * holds there, at most Write, on the layers its owner writes, in any kolab the person reaches
    * by owning it, a grant, a team or their organization, an organization's included. The grant

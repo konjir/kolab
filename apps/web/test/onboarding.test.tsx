@@ -45,7 +45,16 @@ test('connecting a harness is one command each, naming this Kolab, the kolab and
   expect(screen.getByLabelText('Sign the konjir CLI in').textContent).toBe('npx konjir login --url https://kolab.example.com/mcp --kolab anns --role engineer');
   await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Copy' })[0]); });
   expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
-  expect(navigator.clipboard.writeText).toHaveBeenCalledWith('claude mcp add --transport http konjir https://kolab.example.com/mcp');
+  expect(navigator.clipboard.writeText).toHaveBeenCalledWith('npx konjir connect opencode --url https://kolab.example.com --kolab anns');
+});
+
+test('the page shows konjir connect first: one command per harness, naming this Kolab and the kolab, and the agents it makes (W3.7)', () => {
+  render(<ConnectView me={eli} origin="https://kolab.example.com" />);
+  const one = screen.getByRole('region', { name: 'One command: konjir connect' });
+  expect(within(one).getByLabelText('Connect OpenCode with konjir connect').textContent).toBe('npx konjir connect opencode --url https://kolab.example.com --kolab anns');
+  expect(within(one).getByLabelText('Connect Claude Code with konjir connect').textContent).toBe('npx konjir connect claude --url https://kolab.example.com --kolab anns');
+  expect(within(one).getByText(`${eli.actor}-product`)).toBeTruthy();
+  expect(within(one).getByText(/It writes no token/)).toBeTruthy();
 });
 
 test('the MCP route (Claude Code, OpenCode, then konjir_instructions) is apart from the CLI route (konjir login, then konjir instructions)', () => {

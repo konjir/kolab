@@ -114,6 +114,7 @@ const listCases = z.object({
 });
 const readCase = z.object({ case: z.string() });
 const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab') });
+const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
 @Injectable()
@@ -522,6 +523,17 @@ export class AgentTools {
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
       return { rulings: await this.kolab.rulingsFor(s, { node: id }) };
     });
+  }
+
+  // ---- a person's own agents (D59) -----------------------------------------------
+
+  @McpTool({
+    name: 'konjir_create_agent',
+    description: 'For a person\'s own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect calls this). An agent of yours already called that is reused. A person makes at most 10 agents, and 3 in 10 minutes. It grants nothing: the agent reaches a kolab once you choose it on Kolab\'s sign-in page there, with no more access than you hold, at most Write. An agent\'s session and the admin token are refused.',
+    schema: createAgent,
+  })
+  createAgent({ label }: z.infer<typeof createAgent>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.createOwnAgent(s, label));
   }
 }
 

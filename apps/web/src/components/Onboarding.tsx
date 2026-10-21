@@ -39,6 +39,9 @@ export function Command({ text, label }: { text: string; label: string }) {
 /** OpenCode's config for Kolab: an `mcp.konjir` entry for a remote server, in opencode.json. */
 export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { konjir: { type: 'remote', url: mcp } } }, null, 2);
 
+/** `konjir connect` for a harness (W3.7, D59): one agent of yours per entry, product and engineer by default. */
+export const konjirConnect = (harness: 'opencode' | 'claude', origin: string, kolab: string) => `npx konjir connect ${harness} --url ${origin} --kolab ${kolab}`;
+
 /**
  * Connecting a harness, by one of two routes. Over MCP (Claude Code, OpenCode, any client that
  * speaks MCP's authorization), the harness needs only the URL and signs in on Kolab's own page,
@@ -52,11 +55,20 @@ export function ConnectView({ me, origin = location.origin }: { me: WebMe; origi
     <>
       <section className="summary" aria-label="Connect a harness">
         <h1>Connect a harness</h1>
-        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you (D30). Connect it over MCP, or through the konjir CLI in a shell.</span>
+        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you (D30). Connect it with one command, over MCP by hand, or through the konjir CLI in a shell.</span>
+      </section>
+      <section className="newk" aria-labelledby="c-connect">
+        <h2 className="section-title" id="c-connect">One command: konjir connect</h2>
+        <p className="why-not">Run it in your project. It signs the konjir CLI in as you (with your browser, the first time), makes or reuses one agent of yours per entry, <span className="mono">{me.actor}-product</span> and <span className="mono">{me.actor}-engineer</span> by default, and shows the change to the harness’s config before it writes it. It writes no token. Each entry then signs in as its own agent: Kolab’s page arrives with the agent, {me.kolab} and the role chosen, for you to check and allow.</p>
+        <h3 id="c-connect-opencode">OpenCode</h3>
+        <Command label="Connect OpenCode with konjir connect" text={konjirConnect('opencode', origin, me.kolab)} />
+        <h3 id="c-connect-claude">Claude Code</h3>
+        <Command label="Connect Claude Code with konjir connect" text={konjirConnect('claude', origin, me.kolab)} />
+        <p className="why-not">Choose the agents with <span className="mono">--agent &lt;label&gt;[:product|engineer]</span>, once for each; <span className="mono">--global</span> writes your own settings rather than the project’s.</p>
       </section>
       <section className="newk" aria-labelledby="c-mcp">
         <h2 className="section-title" id="c-mcp">Over MCP: Claude Code, OpenCode</h2>
-        <p className="why-not">Add Kolab as an MCP server and sign in. On Kolab’s page, choose the agent it works as (a new one of yours by default), the kolab ({me.kolab}) and its role. Then ask the agent to call <span className="mono">konjir_instructions</span> before its first change: it returns the rules and {me.kolab}’s precedent. No CLI is needed.</p>
+        <p className="why-not">Or by hand: add Kolab as an MCP server and sign in. On Kolab’s page, choose the agent it works as (a new one of yours by default), the kolab ({me.kolab}) and its role. Then ask the agent to call <span className="mono">konjir_instructions</span> before its first change: it returns the rules and {me.kolab}’s precedent. No CLI is needed.</p>
         <h3 id="c-claude">Claude Code</h3>
         <p className="why-not">Add it, then run <span className="mono">/mcp</span> in Claude Code and sign in.</p>
         <Command label="Add Kolab to Claude Code" text={`claude mcp add --transport http konjir ${mcp}`} />

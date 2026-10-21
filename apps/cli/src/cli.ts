@@ -13,6 +13,8 @@
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
  *   konjir login [--kolab K] [--role R]  -> sign in with the browser (OAuth, D55); later commands use it
  *   konjir logout [--forget]
+ *   konjir connect opencode|claude [--kolab K] [--agent label[:role]]… [--global] [--force] [--yes] [--no-auth]
+ *                                        -> one MCP entry per agent of yours in the harness's config (W3.7, D59)
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -24,8 +26,10 @@ import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, login, logout } from './login.js';
+import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness, type PersonSession } from './connect.js';
 
 export { StoredLogin, credentialsPath, login, logout } from './login.js';
+export { connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
 // commands that need it, so the client verbs start without loading it. The published
@@ -134,9 +138,15 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
            prints it and exits.
 Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; kj:<node> is a node in your kolab
-Sign in:   konjir login [--kolab <name>] [--role product|engineer] signs in with your browser (GitHub, through
-           Kolab): you choose who this CLI works as (an agent of yours, by default), the kolab and the role.
-           Every later command uses that sign-in, renewing it by itself. konjir logout revokes it.
+Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--self] signs in with your browser (GitHub,
+           through Kolab): you choose who this CLI works as (an agent of yours, by default; --self preselects
+           yourself), the kolab and the role. Every later command uses that sign-in, renewing it by itself.
+           konjir logout revokes it.
+Harnesses: konjir connect opencode|claude [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--yes]
+           [--no-auth] connects a harness to a kolab, one agent per entry (by default product and engineer):
+           it makes or reuses your agents <you>-<label> (signed in as yourself, with konjir login first if need
+           be), shows the change to opencode.json or .mcp.json (with --global, your own settings) and asks
+           first, then signs each entry in as its agent. --force replaces konjir-<label> entries already there.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
            token, the sign-in konjir login keeps for that URL.
 Version:   konjir --version
@@ -259,12 +269,28 @@ export async function main(argv: string[]) {
     return;
   }
 
+  if (cmd === 'connect') {
+    const harness = rest.shift();
+    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--yes] [--no-auth] [--url <kolab>]`);
+    const kolab = flag(rest, 'kolab');
+    const agents: string[] = [];
+    for (let a = flag(rest, 'agent'); a !== undefined; a = flag(rest, 'agent')) agents.push(a);
+    const on = (name: string) => { const i = rest.indexOf(`--${name}`); if (i >= 0) rest.splice(i, 1); return i >= 0; };
+    const opts = { global: on('global'), force: on('force'), yes: on('yes'), auth: !on('no-auth') };
+    if (rest.length) throw new Error(`konjir connect: unknown ${rest.join(' ')}`);
+    const mcp = mcpUrl(url);
+    await connectHarness({ harness: harness as Harness, url: mcp, kolab, agents: parseAgents(agents), cwd: process.cwd(), env: process.env, ...opts },
+      terminalIO(() => personSession(mcp, token, { kolab })));
+    return;
+  }
+
   if (cmd === 'login') {
     const kolab = flag(rest, 'kolab');
     const role = flag(rest, 'role');
+    const self = rest.includes('--self');
     if (role !== undefined && !ROLES.includes(role)) throw new Error(`--role is one of ${ROLES.join(', ')}`);
     if (kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
-    const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`].filter(Boolean).join(' ');
+    const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`, self && 'as:self'].filter(Boolean).join(' ');
     let me;
     try {
       me = await login(url, { scope });
@@ -385,6 +411,38 @@ export async function main(argv: string[]) {
   } finally {
     stored?.releaseLock();
     await client.close();
+  }
+}
+
+/**
+ * The CLI signed in as the person, for `konjir connect` (D59): `token` if one is given, or the
+ * sign-in `konjir login` keeps for `url`; with neither, `konjir login` first, preselecting
+ * Yourself (and the kolab) on Kolab's page. `open` is how the browser is sent there (tests).
+ */
+export async function personSession(url: string, token: string | undefined, opts: { kolab?: string; open?: (u: URL) => void | Promise<void>; path?: string } = {}): Promise<PersonSession> {
+  if (!token && !new StoredLogin(url, { path: opts.path }).signedIn) {
+    console.error(`No konjir sign-in for ${url} yet: signing you in first, as yourself (konjir login --self). On Kolab's page, choose Yourself. It ends any other session you hold as yourself, such as Kolab's web page: one session per person.`);
+    try {
+      await login(url, { path: opts.path, scope: ['konjir', 'as:self', opts.kolab && `kolab:${opts.kolab}`].filter(Boolean).join(' '), open: opts.open });
+    } catch (e) {
+      throw unreachable(e, url) ?? e;
+    }
+  }
+  const stored = token ? undefined : new StoredLogin(url, { path: opts.path });
+  let client: Client;
+  try {
+    client = await connect(url, token ?? stored!);
+  } catch (e) {
+    stored?.releaseLock();
+    throw unreachable(e, url) ?? e;
+  }
+  try {
+    const me = await call(client, 'whoami') as PersonSession['me'];
+    return { me, call: (verb, args) => call(client, verb, args), close: async () => { stored?.releaseLock(); await client.close(); } };
+  } catch (e) {
+    stored?.releaseLock();
+    await client.close();
+    throw e;
   }
 }
 

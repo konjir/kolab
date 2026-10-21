@@ -109,7 +109,7 @@ test('discovery: /mcp challenges with its protected-resource metadata, which nam
   expect(r.status).toBe(401);
   expect(r.headers.get('www-authenticate')).toContain(`resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`);
   const prm = await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json();
-  expect(prm).toStrictEqual({ resource: `${base}/mcp`, authorization_servers: [base], bearer_methods_supported: ['header'], scopes_supported: ['konjir'], resource_name: 'Kolab' });
+  expect(prm).toStrictEqual({ resource: `${base}/mcp`, authorization_servers: [base], bearer_methods_supported: ['header'], resource_name: 'Kolab' });
   const as = await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json();
   expect(as).toMatchObject({
     issuer: base, authorization_endpoint: `${base}/oauth/authorize`, token_endpoint: `${base}/oauth/token`, registration_endpoint: `${base}/oauth/register`,
@@ -168,6 +168,43 @@ test('a person signs up with the identity provider, consents, and their client g
   const dump = JSON.stringify((await kolab.db.query(`select * from session`)).rows) + JSON.stringify((await kolab.db.query(`select * from oauth_code`)).rows)
     + JSON.stringify((await kolab.db.query(`select * from oauth_refresh_token`)).rows) + JSON.stringify((await kolab.db.query(`select * from oauth_request`)).rows);
   for (const secret of [code, t.body.access_token, t.body.refresh_token, r.body.access_token, r.body.refresh_token, c.csrf]) expect(dump).not.toContain(secret);
+});
+
+test('the scope preselects the agent, kolab and role on the consent page, only among the person\'s own choices; an agent not theirs is ignored, and the form is still the authority (D59)', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const { actor: zed } = await kolab.signInWith({ provider: 'stub', subject: '601', login: 'zed' });
+  await kolab.grant('test', zed, 'write');
+  await kolab.addOwnAgent(zed, 'product');
+  await kolab.addOwnAgent(zed, 'engineer');
+  await kolab.addOwnAgent('bob', 'eng');
+  await kolab.addOwnAgent(zed, 'gone');
+  await kolab.archive({ actor: 'zed-gone' });
+  const shown = async (scope: string) => (await toConsent(base, idp, client, { subject: '601', login: 'zed' }, { scope }));
+  const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
+
+  // Its agent, kolab and role, named: all three arrive chosen.
+  const c = await shown('konjir kolab:test role:engineer agent:zed-engineer');
+  expect(checked(c.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'engineer']);
+  const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'agent:zed-engineer', kolab: 'kolab:test', role: 'engineer' });
+  expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
+
+  // Yourself, named.
+  expect(checked((await shown('konjir as:self role:product')).html)).toStrictEqual(['self', 'kolab:test', 'product']);
+  // An agent that isn't the person's (another's, an archived one of theirs, or none at all) is ignored:
+  // never named on the page, and the page's own default stands.
+  for (const other of ['bob-eng', 'zed-gone', 'zed-nobody']) {
+    const o = await shown(`konjir kolab:test agent:${other}`);
+    expect(o.html).not.toContain(other);
+    expect(checked(o.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+    // Submitting it anyway is refused: the consent page checks whose agent it is, as before.
+    const refused = await o.browser.consent({ csrf: o.csrf, decision: 'allow', as: `agent:${other}`, kolab: 'kolab:test', role: 'product' });
+    expect([refused.res.status, refused.left]).toStrictEqual([400, undefined]);
+    expect(await refused.res.text()).toContain(`no agent ${other} of yours`);
+  }
+  // A kolab the person can't reach isn't preselected either.
+  expect(checked((await shown('konjir kolab:elsewhere agent:zed-product')).html)).toStrictEqual(['agent:zed-product', 'kolab:test', 'product']);
 });
 
 test('PKCE is required, S256 only, and the verifier must match; a refused request is a page, never a redirect', async () => {

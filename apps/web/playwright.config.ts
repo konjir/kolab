@@ -16,6 +16,8 @@ export const INVITE = process.env.KONJIR_SIGNIN_INVITE ?? `${import.meta.dirname
 /** A third Kolab like the second, whose sign-ins last `SHORT_TTL_S` seconds, for one that expires. */
 export const SHORT_TTL_S = 4;
 export const SIGNIN_SHORT = `http://127.0.0.1:${signinPort + 1}`;
+/** A fourth, whose every sign-in is the same person, `ann`: for `konjir connect`, her agents signing in after her (W3.7). */
+export const SIGNIN_ANN = `http://127.0.0.1:${signinPort + 2}`;
 
 export default defineConfig({
   testDir: 'e2e',
@@ -43,6 +45,14 @@ export default defineConfig({
       command: 'npm run signin-demo',
       url: `${SIGNIN_SHORT}/healthz`,
       env: { PORT: String(signinPort + 1), KONJIR_SIGNIN_INVITE: `${INVITE}.short`, KONJIR_SIGNIN_TTL_S: String(SHORT_TTL_S) },
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: 'ignore',
+    },
+    {
+      command: 'npm run signin-demo',
+      url: `${SIGNIN_ANN}/healthz`,
+      env: { PORT: String(signinPort + 2), KONJIR_SIGNIN_INVITE: `${INVITE}.ann`, KONJIR_SIGNIN_AS: 'ann' },
       reuseExistingServer: false,
       timeout: 120_000,
       stdout: 'ignore',
