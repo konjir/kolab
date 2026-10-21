@@ -6,22 +6,24 @@
 // OpenCode's McpOAuthProvider drives it, with the entry's oauth.scope as its client metadata's
 // scope; the person's "browser" follows Kolab's redirects with its cookies and clicks Allow on the
 // page as it arrives, preselected.
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { auth, type OAuthClientProvider, type StoredOAuthClientInformation, type StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
-import { call, connect, main, personSession } from '../src/cli.js';
-import { parseTree, valueOf } from '../src/jsonc.js';
-import { connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
+import { StoredLogin, call, connect, login, main, personSession } from '../src/cli.js';
+import { parse as ocParse, type ParseError } from 'jsonc-parser';
+import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
+import { connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
 const entry = (label: string, role: 'product' | 'engineer', over: Partial<Entry> = {}): Entry =>
   ({ name: `konjir-${label}`, agent: `ann-${label}`, label, role, kolab: 'anns', url: URL_, ...over });
-/** What OpenCode reads in a file: JSON with comments and trailing commas. */
-const jsonc = { parse: (text: string) => valueOf(parseTree(text)) };
+/** What OpenCode reads in a file, as OpenCode's own parser reads it: JSON with comments and trailing commas. */
+const jsonc = { parse: (text: string) => { const errors: ParseError[] = []; const v = ocParse(text, errors, { allowTrailingComma: true }); if (errors.length) throw new Error(`OpenCode can't read ${JSON.stringify(text)}`); return v as unknown; } };
+const ours = (text: string) => valueOf(parseTree(text));
 const scratch = () => mkdtempSync(join(tmpdir(), 'konjir-connect-'));
 
 // ---- the agents konjir connect is asked for ----
@@ -40,9 +42,9 @@ test('--agent <label>[:<role>]: by default product and engineer; a role\'s name 
 
 test('JSON with comments: plain JSON reads as JSON.parse reads it; comments and trailing commas are allowed; anything else is refused, naming its line', () => {
   for (const plain of ['{}', '[]', '"x"', '0', '-1.5e3', 'true', 'null', '{"a":[1,{"b":"\\u00e9\\n\\"q\\""}],"c":{}}', '{"a":1,"a":2}', '﻿{"x":1}']) {
-    expect([plain, jsonc.parse(plain)]).toStrictEqual([plain, JSON.parse(plain.replace(/^﻿/, ''))]);
+    expect([plain, ours(plain)]).toStrictEqual([plain, JSON.parse(plain.replace(/^﻿/, ''))]);
   }
-  expect(jsonc.parse('// lead\n{ /* a */ "a": [1, 2,], // b\n "c": "//not a comment", }\n')).toStrictEqual({ a: [1, 2], c: '//not a comment' });
+  expect(ours('// lead\n{ /* a */ "a": [1, 2,], // b\n "c": "//not a comment", }\n')).toStrictEqual({ a: [1, 2], c: '//not a comment' });
   for (const [bad, line] of [['{ "a": 1 "b": 2 }', 1], ['{\n "a": ,\n}', 2], ['{ "a": 1,, }', 1], ['[,]', 1], ['{ a: 1 }', 1], ['{ "a": 1 }\n x', 2], ['{ /* open', 1], ['{ "a": "b\n" }', 1], ['{ "a": 01 }', 1], ['', 1], ['{ "a": undefined }', 1]] as const) {
     expect(() => parseTree(bad)).toThrow(new RegExp(`on line ${line}$`));
   }
@@ -101,6 +103,79 @@ test('OpenCode: an entry already there is refused without --force, and replaced 
   expect(() => mergeOpencode('opencode.json', '{ "mcp": [] }', [entry('product', 'product')], false)).toThrow(/its "mcp" isn't an object/);
 });
 
+/**
+ * The corpus, against OpenCode's own parser (jsonc-parser, a test-only dependency): every file
+ * merged must read, to OpenCode, as the file before with just the entries set, keep every comment,
+ * and keep all of its own text but for what is added.
+ */
+const CORPUS = [
+  '{}', '{ }', '{\n}\n', '{ "mcp": {} }', '{"a": 1}', '{ "a": 1, }', '{ "a": 1 /* c */ }', '{\r\n  "a": 1\r\n}\r\n',
+  '{\n  "mcp": {\n    // none yet\n  }\n}', '{ /* only */ }', '{"mcp": { // c\n}}',
+  // The review's shapes: a block comment over lines after the last member, and a comma before a comment.
+  '{\n  "a": 1 /* start\n  end */\n}\n', '{\n  "mcp": {\n    "x": {} /* a\n b */\n  }\n}\n', '{"a": 1, /* c */}', '{"mcp": {"x": 1, /* c */}}',
+  '{\n  "a": 1, // trailing\n}\n', '{\n  "a": 1 // no comma\n}\n', '{\r\n  "a": 1 // crlf\r\n}\r\n', '{\n\t"a": [1, 2,],\n\t"mcp": {\n\t\t"x": { "type": "local" }, // keep\n\t},\n}\n',
+  '// lead\n{\n  "a": "/* not a comment */"\n}\n// tail\n', '{"a":{"b":{"c":[{"d":null}]}},"mcp":{"y":true}}', '{"a": 12345678901234567890}',
+];
+
+function checkAgainstOpenCode(before: string, set: Entry[], force = false) {
+  const after = mergeOpencode('opencode.json', before, set, force);
+  const errors: ParseError[] = [];
+  const read = ocParse(after, errors, { allowTrailingComma: true }) as Record<string, unknown>;
+  expect([before, errors]).toStrictEqual([before, []]);
+  const was = (before.trim() ? ocParse(before, [], { allowTrailingComma: true }) : { $schema: 'https://opencode.ai/config.json' }) as Record<string, unknown>;
+  const want = { ...was, mcp: { ...(was.mcp as object | undefined), ...Object.fromEntries(set.map((e) => [e.name, opencodeEntry(e)])) } };
+  expect([before, read]).toStrictEqual([before, want]);
+  // Every comment kept, and every line of the file before still in it.
+  for (const c of commentsOf(before)) expect([before, after.includes(c)]).toStrictEqual([before, true]);
+  return after;
+}
+
+test('OpenCode, against its own parser: every corpus file merged reads as the file with just the entries set, every comment kept', () => {
+  for (const before of CORPUS) {
+    checkAgainstOpenCode(before, [entry('product', 'product')]);
+    checkAgainstOpenCode(before, [entry('product', 'product'), entry('engineer', 'engineer')]);
+  }
+  // The review's three: nothing lands inside a comment, and no double comma.
+  expect(mergeOpencode('opencode.json', '{\n  "a": 1 /* start\n  end */\n}\n', [entry('p', 'product')], false)).toMatch(/^\{\n {2}"a": 1, \/\* start\n {2}end \*\/\n {2}"mcp": \{/);
+  expect(mergeOpencode('opencode.json', '{"a": 1, /* c */}', [entry('p', 'product')], false)).not.toMatch(/,\s*(\/\*.*?\*\/)?\s*,/);
+  // An empty object keeps its comments.
+  expect(mergeOpencode('opencode.json', '{\n  "mcp": {\n    // none yet\n  }\n}', [entry('p', 'product')], false)).toContain('    // none yet\n    "konjir-p": {');
+  expect(mergeOpencode('opencode.json', '{ /* only */ }', [entry('p', 'product')], false)).toContain('/* only */');
+});
+
+test('OpenCode, against its own parser: random edits of the corpus either merge correctly or are refused, never written wrong', () => {
+  let seed = 7;
+  const rand = (n: number) => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed % n; };
+  const bits = ['//x\n', '/*y*/', ',', ' ', '\n', '"k": 1,', '{', '}', '[', ']'];
+  let merged = 0;
+  for (let i = 0; i < 1500; i++) {
+    const base = CORPUS[rand(CORPUS.length)];
+    const at = rand(base.length + 1);
+    const text = base.slice(0, at) + bits[rand(bits.length)] + base.slice(at);
+    let after: string;
+    try { after = mergeOpencode('opencode.json', text, [entry('p', 'product')], true); } catch { continue; }
+    merged++;
+    const errors: ParseError[] = [];
+    const read = ocParse(after, errors, { allowTrailingComma: true }) as { mcp?: Record<string, unknown> };
+    expect([text, errors.length, read?.mcp?.['konjir-p']]).toStrictEqual([text, 0, opencodeEntry(entry('p', 'product'))]);
+  }
+  expect(merged).toBeGreaterThan(300);
+});
+
+test('OpenCode, with --force and a key there twice: every copy is replaced, so whichever a reader takes is the new one', () => {
+  const twice = '{"mcp": {"konjir-p": {"url": "old1"}, "konjir-p": {"url": "old2"}}}';
+  const after = checkAgainstOpenCode(twice, [entry('p', 'product')], true);
+  expect(after).not.toMatch(/old[12]/);
+  // A duplicate "mcp": the last is the one every reader takes, and the one edited.
+  checkAgainstOpenCode('{"mcp": {"a": 1}, "mcp": {"b": 2}}', [entry('p', 'product')]);
+});
+
+test('JSON with comments: nesting past 512 levels is refused plainly, never a stack overflow', () => {
+  expect(() => parseTree('['.repeat(200_000))).toThrow(/nesting deeper than 512 levels on line 1/);
+  expect(() => mergeOpencode('opencode.json', `{"a": ${'['.repeat(600)}${']'.repeat(600)}}`, [entry('p', 'product')], false)).toThrow(/isn't JSON that OpenCode reads \(nesting deeper than 512 levels/);
+  expect(ours(`${'['.repeat(500)}${']'.repeat(500)}`)).toBeTruthy();
+});
+
 // ---- Claude Code's .mcp.json ----
 
 test('Claude Code: .mcp.json exactly as `claude mcp add --scope project --transport http` writes it, with the scope in its OAuth settings; other servers kept', () => {
@@ -143,7 +218,7 @@ test('the diff shows what is added and what is kept, and a file is written atomi
  * where Kolab sent the browser back to; with `deliver`, the browser goes there too (the CLI's own
  * loopback listener).
  */
-async function consentAt(start: URL, form: Record<string, string> = {}, deliver = false): Promise<{ html: string; back: URL }> {
+async function consentAt(start: URL, form: Record<string, string> | ((html: string) => Record<string, string>) = {}, deliver = false): Promise<{ html: string; back: URL }> {
   const jar = new Map<string, string>();
   const go = async (url: URL, init: RequestInit = {}) => {
     const res = await fetch(url, { ...init, redirect: 'manual', headers: { ...(init.headers as Record<string, string>), cookie: [...jar].map(([k, v]) => `${k}=${v}`).join('; ') } });
@@ -160,7 +235,7 @@ async function consentAt(start: URL, form: Record<string, string> = {}, deliver 
   const shown = Object.fromEntries([...html.matchAll(/name="(as|kolab|role)" value="([^"]+)" checked/g)].map((m) => [m[1], m[2]]));
   const done = await go(new URL('/oauth/consent', url), {
     method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf, sign_in: field('sign_in') ?? '', decision: 'allow', ...shown, ...form }).toString(),
+    body: new URLSearchParams({ csrf, sign_in: field('sign_in') ?? '', decision: 'allow', ...shown, ...(typeof form === 'function' ? form(html) : form) }).toString(),
   });
   if (done.status !== 303) throw new Error(`the consent was refused: ${done.status} ${(await done.text()).slice(0, 400)}`);
   const back = new URL(done.headers.get('location')!);
@@ -229,8 +304,12 @@ async function local() {
   return { kolab, idp, server };
 }
 
-/** konjir connect's world: a terminal that says yes (or `answer`), the harnesses as `run`, and Ann's sign-in, `konjir login` first if need be. */
-function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run'], o: { answer?: boolean; interactive?: boolean; asked?: string[] } = {}): ConnectIO & { lines: string[] } {
+/**
+ * konjir connect's world: a terminal that says yes (or `answer`), the harnesses as `run`, and Ann's
+ * sign-in as herself, in memory, the page submitted as it arrives (Ann, new here, makes her first
+ * kolab on the way). `logins` gets each of those consent pages.
+ */
+function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run'], o: { answer?: boolean; interactive?: boolean; asked?: string[]; logins?: string[] } = {}): ConnectIO & { lines: string[] } {
   const lines: string[] = [];
   return {
     lines,
@@ -239,8 +318,11 @@ function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run']
     confirm: async (q) => { o.asked?.push(q); return o.answer ?? true; },
     run,
     person: () => personSession(server.url, undefined, {
-      // konjir login, as yourself: Ann, new here, makes her first kolab on the way.
-      open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' }, true); },
+      log: (l) => lines.push(l),
+      open: (u) => {
+        idp.next({ subject: '41', login: 'ann' });
+        void consentAt(u, (html): Record<string, string> => { o.logins?.push(html); return html.includes('value="kolab:anns"') ? {} : { kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' }; }, true);
+      },
     }),
   };
 }
@@ -257,14 +339,21 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   const auths: string[] = [];
   const signIn = opencode(server, idp, store, pages);
   const asked: string[] = [];
+  const logins: string[] = [];
   const io = world(server, idp, async (cmd, args, { cwd }) => {
     auths.push([cmd, ...args].join(' '));
     expect(cmd).toBe('opencode');
+    // The sign-in as Ann ended before any harness signs in.
+    expect((await kolab.db.query(`select 1 from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows).toStrictEqual([]);
     return signIn(cwd, args[2]);
-  }, { asked });
+  }, { asked, logins });
 
-  // konjir connect opencode: no sign-in yet, so konjir login first, as Ann herself.
+  // konjir connect opencode: Ann signs in as herself, in memory only; the page arrives with Yourself
+  // chosen (the konjir CLI's redirect is loopback) and says plainly what that means.
   const entries = await connectHarness(options(server, project), io);
+  expect(logins).toHaveLength(1);
+  expect(logins[0]).toMatch(/name="as" value="self" checked/);
+  expect(logins[0]).toContain('This app asks to act as you, with all your access, not as one of your agents.');
   expect(entries.map((e) => [e.name, e.agent, e.role, e.kolab])).toStrictEqual([['konjir-product', 'ann-product', 'product', 'anns'], ['konjir-engineer', 'ann-engineer', 'engineer', 'anns']]);
   // It showed the diff and asked before writing.
   expect(asked).toStrictEqual([`Make these agents and write ${join(project, 'opencode.json')}?`]);
@@ -301,9 +390,13 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
     'konjir-engineer': { type: 'remote', url: server.url, oauth: { scope: 'konjir kolab:anns role:engineer agent:ann-engineer' } },
   });
   const secrets = [...store.values()].flatMap((t) => [t.access_token, t.refresh_token!]);
-  const cli = JSON.parse(readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8'))[server.url].tokens;
-  for (const s of [...secrets, cli.access_token, cli.refresh_token]) expect(text).not.toContain(s);
+  for (const s of secrets) expect(text).not.toContain(s);
   expect(text).not.toMatch(/kj[sr]_/);
+  // The sign-in as Ann was kept nowhere, and was revoked once the agents were made, before anything was written.
+  expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is not null`)).rows[0]).toStrictEqual({ n: 1 });
+  expect(io.lines.indexOf('Revoked the sign-in as you.')).toBeGreaterThan(io.lines.indexOf('Made your agent ann-engineer.'));
+  expect(io.lines.indexOf('Revoked the sign-in as you.')).toBeLessThan(io.lines.findIndex((l) => l.startsWith('Wrote ')));
 
   // Again: refused without --force, nothing changed and nothing made.
   expect(await rejection(connectHarness(options(server, project), world(server, idp, async () => 0)))).toMatch(/already has konjir-product, konjir-engineer. konjir connect won't overwrite them: pass --force/);
@@ -347,21 +440,94 @@ test('Claude Code: the project\'s .mcp.json, then the /mcp steps to sign each en
   expect(Object.keys(JSON.parse(readFileSync(join(home, 'opencode', 'opencode.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
 });
 
-test('konjir connect refuses a sign-in that works as an agent: it makes agents as the person', async () => {
+test('a kept konjir login is never made the person: one that works as an agent stays as it is, untouched; one already the person\'s is used, and left alone', async () => {
   const { kolab, idp, server } = await local();
   await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
   await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
   // konjir login, choosing a new agent of hers, as it offers by default.
-  const { login } = await import('../src/login.js');
   await login(server.url, { log: () => undefined, open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'new-agent', agent_label: 'cli', kolab: 'kolab:anns' }, true); } });
+  const kept = readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8');
   const project = scratch();
-  expect(await rejection(connectHarness(options(server, project, { yes: true }), world(server, idp, async () => 0))))
-    .toMatch(/your konjir sign-in to .* works as ann-cli, an agent of ann's. Run konjir login --self/);
-  // The verb itself refuses the admin token: it has no person to make an agent for.
+  const io = world(server, idp, async () => 0);
+  await connectHarness(options(server, project, { yes: true, auth: false, agents: parseAgents(['pm:product']) }), io);
+  expect(io.lines).toContain('Made your agent ann-pm.');
+  expect(io.lines).toContain('Revoked the sign-in as you.');
+  // The CLI's own sign-in, ann-cli's, is exactly as it was, and still works as ann-cli.
+  expect(readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8')).toBe(kept);
+  const cli = await connect(server.url, new StoredLogin(server.url));
+  closeAtEnd(cli);
+  expect(await call(cli, 'whoami')).toMatchObject({ actor: 'ann-cli', kind: 'agent' });
+
+  // A kept sign-in that is already Ann's own (she chose Yourself at konjir login): used, never revoked.
+  await login(server.url, { log: () => undefined, open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'self', kolab: 'kolab:anns' }, true); } });
+  const mine = readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8');
+  const quiet = world(server, idp, async () => { throw new Error('no browser this time'); });
+  quiet.person = () => personSession(server.url, undefined, { log: (l) => quiet.lines.push(l), open: () => { throw new Error('no browser this time'); } });
+  await connectHarness(options(server, project, { yes: true, auth: false, force: true, agents: parseAgents(['pm:product']) }), quiet);
+  expect(quiet.lines).toContain('Using your agent ann-pm.');
+  expect(quiet.lines).not.toContain('Revoked the sign-in as you.');
+  expect(readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8')).toBe(mine);
+  const still = await connect(server.url, new StoredLogin(server.url));
+  closeAtEnd(still);
+  expect(await call(still, 'whoami')).toMatchObject({ actor: 'ann', kind: 'person' });
+});
+
+test('konjir connect makes agents as the person only: an agent\'s token is refused; so is the admin token, at the verb', async () => {
+  const { kolab, server } = await local();
+  await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
+  await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
+  await kolab.addOwnAgent('ann', 'cli');
+  await kolab.grant('anns', 'ann-cli', 'write', { layers: ['functional'] });
+  const token = await kolab.openSession('ann-cli', 'product', { kolab: 'anns' });
+  const io = world(server, new StubIdentity(), async () => 0);
+  io.person = () => personSession(server.url, token);
+  expect(await rejection(connectHarness(options(server, scratch(), { yes: true }), io)))
+    .toMatch(/the token it was given \(KONJIR_TOKEN or --token\) works as ann-cli, an agent of ann's. Unset it/);
   const admin = await connect(server.url, 'connect-admin');
   closeAtEnd(admin);
   expect(await rejection(call(admin, 'create_agent', { label: 'x' }))).toMatch(/needs an agent session token, not the admin token/);
-  expect(await kolab.listActors({ owner: 'ann' })).toMatchObject([{ id: 'ann-cli' }]);
-  // And from the shell: konjir connect with a harness it doesn't know.
+  expect((await kolab.listActors({ owner: 'ann' })).map((a) => a.id)).toStrictEqual(['ann-cli']);
+  // And from the shell: konjir connect with a harness it doesn't know, or a URL with credentials in it.
   expect(await rejection(main(['connect', 'codex']))).toMatch(/konjir connect opencode\|claude/);
+  expect(() => mcpUrl('https://ann:secret@kolab.example.com')).toThrow(/without a user name or password/);
+  expect(() => mcpUrl('https://kolab.example.com/?token=x')).toThrow(/without a query or fragment/);
+  expect(mcpUrl('https://kolab.example.com')).toBe('https://kolab.example.com/mcp');
+});
+
+test('a config file that is a link: written where it leads inside the project; refused outside it unless --force-path, even with --yes; a dangling one refused', async () => {
+  const { idp, server } = await local();
+  const project = scratch();
+  const elsewhere = scratch();
+  writeFileSync(join(elsewhere, 'settings.json'), '{\n  "keep": true\n}\n');
+  symlinkSync(join(elsewhere, 'settings.json'), join(project, 'opencode.json'));
+  const io = world(server, idp, async () => 0);
+  expect(await rejection(connectHarness(options(server, project, { yes: true, auth: false }), io)))
+    .toMatch(/opencode.json is a link to .*settings.json, outside .*; konjir connect won't write there. Pass --force-path/);
+  expect(readFileSync(join(elsewhere, 'settings.json'), 'utf8')).toBe('{\n  "keep": true\n}\n');
+  const forced = world(server, idp, async () => 0);
+  await connectHarness(options(server, project, { yes: true, auth: false, forcePath: true }), forced);
+  expect(forced.lines.join('\n')).toContain(`is a link to ${realpathSync(join(elsewhere, 'settings.json'))}, which konjir connect would change`);
+  expect(Object.keys(JSON.parse(readFileSync(join(elsewhere, 'settings.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
+  expect(lstatSync(join(project, 'opencode.json')).isSymbolicLink()).toBe(true);
+  // Inside the project, a link is followed, and said.
+  const inner = scratch();
+  mkdirSync(join(inner, 'config'));
+  writeFileSync(join(inner, 'config', 'opencode.json'), '{}');
+  symlinkSync(join(inner, 'config', 'opencode.json'), join(inner, 'opencode.json'));
+  await connectHarness(options(server, inner, { yes: true, auth: false, force: true }), world(server, idp, async () => 0));
+  expect(Object.keys(JSON.parse(readFileSync(join(inner, 'config', 'opencode.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
+  // A link to nothing: refused, never replaced by a file.
+  const dangling = scratch();
+  symlinkSync(join(dangling, 'gone.json'), join(dangling, 'opencode.json'));
+  expect(await rejection(connectHarness(options(server, dangling, { yes: true, auth: false, force: true, forcePath: true }), world(server, idp, async () => 0))))
+    .toMatch(/is a link to .*gone.json, which isn't there; konjir connect won't write through it/);
+  expect(lstatSync(join(dangling, 'opencode.json')).isSymbolicLink()).toBe(true);
+});
+
+test('Claude Code: an existing .mcp.json is edited in place, keeping its own formatting and big numbers, never re-serialised', () => {
+  const before = '{\n    "mcpServers": {\n        "sentry": {"type": "http", "url": "https://mcp.sentry.dev/mcp"}\n    },\n    "id": 12345678901234567890\n}\n';
+  const after = mergeClaude('.mcp.json', before, [entry('pm', 'product')], false);
+  expect(after).toContain('        "sentry": {"type": "http", "url": "https://mcp.sentry.dev/mcp"},\n        "konjir-pm": {');
+  expect(after).toContain('"id": 12345678901234567890');
+  expect(JSON.parse(after).mcpServers['konjir-pm']).toStrictEqual({ type: 'http', url: URL_, oauth: { scopes: 'konjir kolab:anns role:product agent:ann-pm' } });
 });

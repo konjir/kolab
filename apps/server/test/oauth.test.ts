@@ -4,8 +4,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { closeAtEnd, openKolab, people, setup } from '@konjir/engine/testing';
-import { StubIdentity, startServer } from '../src/server.js';
+import { closeAtEnd, openKolab, people, rejection, setup } from '@konjir/engine/testing';
+import { StubIdentity, isPinnedNpmSpec, startServer } from '../src/server.js';
 
 const CB = 'http://127.0.0.1:9/cb';
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
@@ -190,8 +190,18 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'agent:zed-engineer', kolab: 'kolab:test', role: 'engineer' });
   expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
 
-  // Yourself, named.
-  expect(checked((await shown('konjir as:self role:product')).html)).toStrictEqual(['self', 'kolab:test', 'product']);
+  expect(c.html).not.toContain('asks to act as you');
+  // Yourself, named, by an app on the person's own machine (every redirect URI loopback): chosen, and said plainly.
+  const self = await shown('konjir as:self role:product');
+  expect(checked(self.html)).toStrictEqual(['self', 'kolab:test', 'product']);
+  expect(self.html).toContain('This app asks to act as you, with all your access, not as one of your agents.');
+  // A hosted app (an https redirect URI, or any one not loopback) asking for Yourself is ignored: an agent stays the default, with no notice.
+  for (const uris of [['https://app.example.com/cb'], [CB, 'https://app.example.com/cb']]) {
+    const hosted = (await register(base, uris)).body.client_id;
+    const h = await toConsent(base, idp, hosted, { subject: '601', login: 'zed' }, { scope: 'konjir as:self', redirect: uris.at(-1) });
+    expect(checked(h.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+    expect(h.html).not.toContain('asks to act as you');
+  }
   // An agent that isn't the person's (another's, an archived one of theirs, or none at all) is ignored:
   // never named on the page, and the page's own default stands.
   for (const other of ['bob-eng', 'zed-gone', 'zed-nobody']) {
@@ -682,4 +692,19 @@ test('the provider\'s answers and consent forms are limited per address, 30 a mi
   const [c, f] = [await callback(), await consent()];
   expect([c.status, f.status]).toStrictEqual([429, 429]);
   expect(await f.text()).toContain('Too many sign-ins just now');
+});
+
+test('the web page learns how to run the konjir CLI: npx only with a pinned spec the operator set (KONJIR_CLI_NPM_SPEC), never a bare name (W3.7)', async () => {
+  const unset = await serve(await openKolab());
+  expect(await (await fetch(`${unset.base}/api/session/cli`, { headers: { origin: unset.base } })).json()).toStrictEqual({ npm: null });
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'admin-token', kolab, webRoot: null, cliNpmSpec: 'konjir@1.2.3' });
+  closeAtEnd(server);
+  const base = new URL(server.url).origin;
+  expect(await (await fetch(`${base}/api/session/cli`, { headers: { origin: base } })).json()).toStrictEqual({ npm: 'konjir@1.2.3' });
+  for (const bad of ['konjir', 'konjir@latest', 'konjir@^1.2.3', 'konjir@1.2', 'konjir@1.2.3 && curl x', 'https://x/k.tgz', '@scope/konjir']) {
+    expect([bad, isPinnedNpmSpec(bad)]).toStrictEqual([bad, false]);
+  }
+  expect(await rejection(startServer({ adminToken: 'admin-token', kolab: await openKolab(), webRoot: null, cliNpmSpec: 'konjir' }))).toMatch(/KONJIR_CLI_NPM_SPEC is a package pinned to an exact version/);
+  expect(isPinnedNpmSpec('@konjir/cli@0.6.0-rc.1')).toBe(true);
 });

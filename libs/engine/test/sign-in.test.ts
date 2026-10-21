@@ -391,7 +391,7 @@ test('createOwnAgent: a person\'s session makes <person>-<label>, and finds it a
   expect((await kolab.listActors({ owner: ann })).map((a) => a.id)).toStrictEqual(['ann-engineer', 'ann-product']);
 });
 
-test('createOwnAgent refuses an agent\'s session, a bad label, a name someone else holds, and an archived agent of yours; and keeps D56\'s limits', async () => {
+test('createOwnAgent refuses an agent\'s session, a bad label, a name someone else holds, and an archived agent of yours, and another account\'s namespace; keeps D56\'s limits, the cap on live agents only; archiveOwnAgent frees a place', async () => {
   const kolab = await openKolab();
   const { actor: ann } = await kolab.signInWith(github('71', 'ann'));
   await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
@@ -401,29 +401,46 @@ test('createOwnAgent refuses an agent\'s session, a bad label, a name someone el
   await kolab.grant('anns', agent, 'write', { layers: ['functional'] });
   const agentSession = await kolab.openSession(agent, 'product', { kolab: 'anns' });
   expect(await rejection(kolab.createOwnAgent(agentSession, 'more'))).toMatch(/AccessError: ann-cli is an agent: only a person makes agents/);
+  expect(await rejection(kolab.archiveOwnAgent(agentSession, 'cli'))).toMatch(/only a person archives their agents/);
   // Labels: lowercase letters, digits and '-', at most 24.
   for (const bad of ['', 'Product', '-x', 'a b', 'x'.repeat(25), '../etc']) {
     expect(await rejection(kolab.createOwnAgent(s, bad))).toMatch(/isn't a valid agent label/);
   }
-  // Taken: by a person who signed up first, by an organization, by another account's agent.
+  // Not free: held by a person who signed up first, an organization, another account's agent, or a
+  // case variant. One message whoever holds it, so the verb probes nothing.
   await kolab.addActor('ann-pm');
-  expect(await rejection(kolab.createOwnAgent(s, 'pm'))).toMatch(/ann-pm is a person here, not an agent of yours: choose another label/);
   await kolab.addOrganization('ann-bots');
-  expect(await rejection(kolab.createOwnAgent(s, 'bots'))).toMatch(/ann-bots is an organization here/);
   await kolab.addActor('ann-x', { owner: 'ann-bots' });
-  expect(await rejection(kolab.createOwnAgent(s, 'x'))).toMatch(/ann-x is an agent of ann-bots's here, not an agent of yours/);
+  await kolab.addActor('Ann-Up');
+  for (const taken of ['pm', 'bots', 'x', 'up']) {
+    expect(await rejection(kolab.createOwnAgent(s, taken))).toBe(`ActorError: the name ann-${taken} isn't available: choose another label`);
+  }
+  // Another account's namespace: ann-pm owns ann-pm-*, and ann-bots ann-bots-*, so ann can't squat them.
+  for (const squat of ['pm-product', 'bots-engineer', 'PM-x'.toLowerCase()]) {
+    expect(await rejection(kolab.createOwnAgent(s, squat))).toBe(`ActorError: the name ann-${squat} isn't available: choose another label`);
+  }
+  // A label merely starting like another's is fine: ann-pmx isn't ann-pm's.
+  expect((await kolab.createOwnAgent(s, 'pmx')).created).toBe(true);
   // Archived: refused, never brought back by reuse.
   await kolab.archive({ actor: 'ann-cli' });
   expect(await rejection(kolab.createOwnAgent(s, 'cli'))).toMatch(/your agent ann-cli is archived/);
-  // At most 3 in 10 minutes (ann-cli was one), and at most agentsPerPerson in all.
+  // At most 3 made in 10 minutes (ann-cli and ann-pmx were two), archived ones included.
   expect((await kolab.createOwnAgent(s, 'a')).created).toBe(true);
-  expect((await kolab.createOwnAgent(s, 'b')).created).toBe(true);
   expect(await rejection(kolab.createOwnAgent(s, 'c'))).toMatch(/you made 3 agents in the last 10 minutes/);
   // Reusing one already made still works at the limit.
   expect(await kolab.createOwnAgent(s, 'a')).toStrictEqual({ agent: 'ann-a', created: false, owner: 'ann' });
+  // The cap counts live agents only: ann-pmx and ann-a, with ann-cli archived.
   await kolab.db.query(`update actor set created_at = now() - interval '1 hour' where owner_id = $1`, [ann]);
-  kolab.oauth.agentsPerPerson = 3;
-  expect(await rejection(kolab.createOwnAgent(s, 'c'))).toMatch(/you have 3 agents, the most a person may make here \(3\)/);
+  kolab.oauth.agentsPerPerson = 2;
+  expect(await rejection(kolab.createOwnAgent(s, 'c'))).toMatch(/you have 2 live agents, the most a person may have here \(2\): archive one you no longer use/);
+  // Archiving one of hers frees its place; its sessions end; its name stays hers, archived.
+  const pmx = await kolab.openSession('ann-pmx', 'product', { kolab: 'anns' }).catch(() => undefined);
+  expect(await kolab.archiveOwnAgent(s, 'pmx')).toMatchObject({ archived: 'ann-pmx' });
+  if (pmx) expect(await kolab.sessionOpen(pmx)).toBe(false);
+  expect((await kolab.createOwnAgent(s, 'c')).created).toBe(true);
+  expect(await rejection(kolab.createOwnAgent(s, 'pmx'))).toMatch(/your agent ann-pmx is archived/);
+  // Only her own live agents, and only as a person: the rest refused alike.
+  for (const label of ['pmx', 'nobody', 'pm', 'x', 'Bad']) expect(await rejection(kolab.archiveOwnAgent(s, label))).toMatch(/you have no live agent ann-/);
 });
 
 test('createOwnAgent at once: one label made once, whoever asks; distinct labels held to 3 in 10 minutes', async () => {

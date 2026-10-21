@@ -1,10 +1,10 @@
-// `konjir connect opencode` from a real browser (W3.7, D59): the person signs the konjir CLI in as
-// herself on Kolab's page, which arrives with Yourself chosen; konjir connect makes her two agents
+// `konjir connect opencode` from a real browser (W3.7, D59): the person signs in as herself, in memory
+// only, on Kolab's page, which arrives with Yourself chosen and says what that means; konjir connect makes her two agents
 // and writes opencode.json; then each entry signs in as OpenCode's `opencode mcp auth` does (the MCP
 // SDK's auth(), the entry's oauth.scope as its client metadata's scope, a loopback listener for the
 // code), and Kolab's page arrives with that entry's agent, kolab and role chosen: she only clicks
 // Allow. Needs the konjir CLI built (`npx nx run konjir:build`), which this imports.
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -18,7 +18,7 @@ interface Client { close(): Promise<void> }
 interface Cli {
   connectHarness(opts: Record<string, unknown>, io: Record<string, unknown>): Promise<unknown>;
   parseAgents(values: string[]): unknown;
-  personSession(url: string, token: undefined, opts: { open: (u: URL) => Promise<void> }): Promise<unknown>;
+  personSession(url: string, token: undefined, opts: { log: (l: string) => void; open: (u: URL) => Promise<void> }): Promise<unknown>;
   connect(url: string, token: string): Promise<Client>;
   call(client: Client, verb: string, args?: Record<string, unknown>): Promise<unknown>;
 }
@@ -91,9 +91,11 @@ test('konjir connect opencode: Ann signs the CLI in as herself, gets two agents 
     run: (_cmd: string, args: string[], { cwd }: { cwd: string }) => opencodeAuth(page, cwd, args[2], store, shown),
     // konjir login first, as herself: new here, she makes her first kolab on the way.
     person: () => personSession(mcp, undefined, {
+      log: (l: string) => lines.push(l),
       open: async (u) => {
         await page.goto(u.toString());
         login = await checked(page);
+        await expect(page.getByText('This app asks to act as you, with all your access, not as one of your agents.')).toBeVisible();
         await page.locator('input[name=new_kolab_name]').fill('anns');
         await page.locator('input[name=new_kolab_title]').fill('Ann\'s');
         await page.getByRole('button', { name: 'Allow' }).click();
@@ -115,6 +117,9 @@ test('konjir connect opencode: Ann signs the CLI in as herself, gets two agents 
     await product.close();
     await engineer.close();
   }
+  // The sign-in as Ann was kept nowhere: konjir connect revoked it once her agents were made.
+  expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);
+  expect(lines).toContain('Revoked the sign-in as you.');
   const text = readFileSync(join(project, 'opencode.json'), 'utf8');
   for (const t of store.values()) { expect(text).not.toContain(t.access_token); expect(text).not.toContain(t.refresh_token!); }
 });

@@ -408,31 +408,28 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
   return 'revoked';
 }
 
+/** How a browser sign-in is started and finished: its scope, how the browser opens, where it says so, how long it may take. */
+interface BrowserOpts { scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; again?: string }
+
 /**
- * Signs in (`konjir login`): `scope` may preselect the kolab and role on Kolab's page
- * (`konjir kolab:<name> role:<role>`). `open` is how the person's browser is sent to Kolab; by
- * default it is opened, and the URL printed to `log`. A sign-in kept from before is revoked first,
- * so no grant is left behind. Resolves once the CLI's session works, with who it is.
+ * Signs a provider in through the person's browser: a loopback listener on a port of its own
+ * (RFC 8252), the authorization URL opened (with `scope`, which Kolab reads for what to preselect),
+ * and only the answer that carries this sign-in's state taken. `make` builds the provider for the
+ * listener's redirect URL. Resolves with the provider, signed in.
  */
-export async function login(url: string, opts: { path?: string; scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number } = {}) {
+async function signInWithBrowser<P extends OAuthClientProvider & { expectedState: string }>(url: string, make: (redirectUrl: string, onAuthorize: (u: URL) => Promise<void>) => P, opts: BrowserOpts): Promise<P> {
   const log = opts.log ?? ((l: string) => console.error(l));
   const server: Server = createServer();
   await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', () => resolve()));
   const port = (server.address() as { port: number }).port;
   try {
-    // A fresh sign-in, which ignores the one kept from before: that one stays, and working, until this succeeds.
-    const before = new StoredLogin(url, { path: opts.path }).saved();
-    const provider = new StoredLogin(url, {
-      path: opts.path, redirectUrl: `http://127.0.0.1:${port}/callback`, fresh: true,
-      onAuthorize: async (u) => {
-        // What to preselect on Kolab's page: the kolab and role (Kolab reads them from the scope).
-        if (opts.scope) u.searchParams.set('scope', opts.scope);
-        log(`Opening your browser to sign in to Kolab. If it doesn't open, go to:\n  ${u.toString()}`);
-        await (opts.open ?? openBrowser)(u);
-      },
+    const provider = make(`http://127.0.0.1:${port}/callback`, async (u) => {
+      if (opts.scope) u.searchParams.set('scope', opts.scope);
+      log(`Opening your browser to sign in to Kolab. If it doesn't open, go to:\n  ${u.toString()}`);
+      await (opts.open ?? openBrowser)(u);
     });
     const back = new Promise<URLSearchParams>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('the sign-in took too long; run konjir login again')), opts.timeoutMs ?? 5 * 60_000);
+      const timer = setTimeout(() => reject(new Error(`the sign-in took too long; ${opts.again ?? 'run konjir login again'}`)), opts.timeoutMs ?? 5 * 60_000);
       server.on('request', (req, res) => {
         const u = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
         if (u.pathname !== '/callback') { res.writeHead(404).end(); return; }
@@ -456,24 +453,88 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
       if (!(e instanceof UnauthorizedError)) throw e;
       await first.finishAuth(await back);
     }
-    const kept = new StoredLogin(url, { path: opts.path });
-    const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
-    await client.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: kept, fetch: kept.fetch }));
-    let me;
-    try {
-      const r = await client.callTool({ name: 'konjir_whoami', arguments: {} });
-      me = r.structuredContent as { actor: string; kind: string; owner: string | null; kolab: string; role: string; layer: string };
-    } finally {
-      await client.close();
-    }
-    // Replaced: the sign-in kept from before is revoked now, so its grant doesn't linger.
-    if (before.tokens?.refresh_token && before.tokens.refresh_token !== kept.saved().tokens?.refresh_token) {
-      await revoke(url, before).catch((e: Error) => log(`warning: the sign-in this one replaces wasn't revoked: ${e.message}. It lapses within 30 days unused.`));
-    }
-    return me;
+    return provider;
   } finally {
     server.close();
   }
+}
+
+/**
+ * Signs in (`konjir login`): `scope` may preselect the kolab and role on Kolab's page
+ * (`konjir kolab:<name> role:<role>`). `open` is how the person's browser is sent to Kolab; by
+ * default it is opened, and the URL printed to `log`. A sign-in kept from before is revoked first,
+ * so no grant is left behind. Resolves once the CLI's session works, with who it is.
+ */
+export async function login(url: string, opts: { path?: string } & BrowserOpts = {}) {
+  const log = opts.log ?? ((l: string) => console.error(l));
+  // A fresh sign-in, which ignores the one kept from before: that one stays, and working, until this succeeds.
+  const before = new StoredLogin(url, { path: opts.path }).saved();
+  await signInWithBrowser(url, (redirectUrl, onAuthorize) => new StoredLogin(url, { path: opts.path, redirectUrl, fresh: true, onAuthorize }), opts);
+  const kept = new StoredLogin(url, { path: opts.path });
+  const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
+  await client.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: kept, fetch: kept.fetch }));
+  let me;
+  try {
+    const r = await client.callTool({ name: 'konjir_whoami', arguments: {} });
+    me = r.structuredContent as { actor: string; kind: string; owner: string | null; kolab: string; role: string; layer: string };
+  } finally {
+    await client.close();
+  }
+  // Replaced: the sign-in kept from before is revoked now, so its grant doesn't linger.
+  if (before.tokens?.refresh_token && before.tokens.refresh_token !== kept.saved().tokens?.refresh_token) {
+    await revoke(url, before).catch((e: Error) => log(`warning: the sign-in this one replaces wasn't revoked: ${e.message}. It lapses within 30 days unused.`));
+  }
+  return me;
+}
+
+/**
+ * A sign-in kept in this process's memory only, never written anywhere: for `konjir connect`, which
+ * signs in as the person just long enough to make their agents (D59), then revokes it.
+ */
+export class MemoryLogin implements OAuthClientProvider {
+  private client?: StoredOAuthClientInformation;
+  private kept?: StoredOAuthTokens;
+  private discovery?: OAuthDiscoveryState;
+  private verifier = '';
+  readonly expectedState = randomBytes(24).toString('base64url');
+  constructor(private readonly opts: { redirectUrl: string; onAuthorize?: (u: URL) => Promise<void> }) {}
+  get redirectUrl() { return this.opts.redirectUrl; }
+  get clientMetadata(): OAuthClientMetadata {
+    return { client_name: 'konjir CLI', redirect_uris: [REDIRECT], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' };
+  }
+  state() { return this.expectedState; }
+  clientInformation() { return this.client; }
+  saveClientInformation(c: StoredOAuthClientInformation) { this.client = c; }
+  tokens() { return this.kept; }
+  saveTokens(t: StoredOAuthTokens) { this.kept = t; }
+  async redirectToAuthorization(u: URL) {
+    if (!this.opts.onAuthorize) throw new Error('this sign-in has ended');
+    await this.opts.onAuthorize(u);
+  }
+  saveCodeVerifier(v: string) { this.verifier = v; }
+  codeVerifier() { return this.verifier; }
+  saveDiscoveryState(d: OAuthDiscoveryState) { this.discovery = d; }
+  discoveryState() { return this.discovery; }
+  invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery') {
+    if (scope === 'all' || scope === 'client') this.client = undefined;
+    if (scope === 'all' || scope === 'tokens') this.kept = undefined;
+    if (scope === 'all' || scope === 'verifier') this.verifier = '';
+    if (scope === 'all' || scope === 'discovery') this.discovery = undefined;
+  }
+  /** Revokes this sign-in at Kolab and forgets it: its grant ends, and its session with it. */
+  async revoke(url: string): Promise<void> {
+    const saved = { client: this.client, tokens: this.kept };
+    this.kept = undefined;
+    await revoke(url, saved);
+  }
+}
+
+/**
+ * Signs in through the browser into memory only (`konjir connect`): nothing is written to the
+ * credentials file, and the caller revokes it (MemoryLogin.revoke) once it is done with it.
+ */
+export function ephemeralLogin(url: string, opts: BrowserOpts = {}): Promise<MemoryLogin> {
+  return signInWithBrowser(url, (redirectUrl, onAuthorize) => new MemoryLogin({ redirectUrl, onAuthorize }), { again: 'run konjir connect again', ...opts });
 }
 
 /**

@@ -21,18 +21,22 @@ export class JsoncError extends Error {
   }
 }
 
-type Token = { kind: '{' | '}' | '[' | ']' | ':' | ',' | 'string' | 'number' | 'word' | 'eof'; offset: number; end: number; value?: unknown };
+export type Token = { kind: '{' | '}' | '[' | ']' | ':' | ',' | 'string' | 'number' | 'word' | 'comment' | 'eof'; offset: number; end: number; value?: unknown };
 
-/** The tokens of `text` from `start`, comments and whitespace skipped. */
-export function* tokens(text: string, start = 0, end = text.length): Generator<Token> {
+/** How deep objects and arrays may nest: deeper is refused, plainly, never a stack overflow. */
+export const MAX_DEPTH = 512;
+
+/** The tokens of `text` from `start` to `end`, whitespace skipped; comments too, unless `comments`, when each is a token of its own. */
+export function* tokens(text: string, start = 0, end = text.length, opts: { comments?: boolean } = {}): Generator<Token> {
   let i = start;
   while (i < end) {
     const c = text[i];
     if (c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '﻿') { i++; continue; }
-    if (c === '/' && text[i + 1] === '/') { while (i < end && text[i] !== '\n') i++; continue; }
+    if (c === '/' && text[i + 1] === '/') { const from = i; while (i < end && text[i] !== '\n') i++; if (opts.comments) yield { kind: 'comment', offset: from, end: i }; continue; }
     if (c === '/' && text[i + 1] === '*') {
       const close = text.indexOf('*/', i + 2);
       if (close < 0 || close + 2 > end) throw new JsoncError('an unclosed comment', i, text);
+      if (opts.comments) yield { kind: 'comment', offset: i, end: close + 2 };
       i = close + 2;
       continue;
     }
@@ -63,8 +67,9 @@ export function parseTree(text: string): JsonNode {
   const next = () => { current = it.next().value as Token; };
   /** The token at hand, read afresh each time (next() moves it). */
   const tok = (): Token => current;
-  const value = (): JsonNode => {
+  const value = (depth = 0): JsonNode => {
     const start = tok();
+    if (depth > MAX_DEPTH) throw new JsoncError(`nesting deeper than ${MAX_DEPTH} levels`, start.offset, text);
     if (start.kind === 'string' || start.kind === 'number') { next(); return { type: start.kind, offset: start.offset, length: start.end - start.offset, value: start.value }; }
     if (tok().kind === 'word') { next(); return { type: start.value === null ? 'null' : 'boolean', offset: start.offset, length: start.end - start.offset, value: start.value }; }
     if (tok().kind === '{' || tok().kind === '[') {
@@ -79,10 +84,10 @@ export function parseTree(text: string): JsonNode {
           next();
           if (tok().kind !== ':') throw new JsoncError('a colon expected', tok().offset, text);
           next();
-          const v = value();
+          const v = value(depth + 1);
           children.push({ type: 'property', offset: key.offset, length: v.offset + v.length - key.offset, value: key.value, children: [key, v] });
         } else {
-          children.push(value());
+          children.push(value(depth + 1));
         }
         if (tok().kind === ',') { next(); continue; }
         if (tok().kind !== close) throw new JsoncError(`a comma or ${close} expected`, tok().offset, text);
@@ -108,3 +113,6 @@ export function valueOf(n: JsonNode): unknown {
 /** The value of an object's member `key`, if it has one (the last, if it is there twice, as JSON.parse takes it). */
 export const member = (obj: JsonNode, key: string): JsonNode | undefined =>
   obj.type === 'object' ? obj.children?.filter((p) => p.value === key).at(-1)?.children?.[1] : undefined;
+
+/** The comments in `text`, in order, as they are written. */
+export const commentsOf = (text: string) => [...tokens(text, 0, text.length, { comments: true })].filter((t) => t.kind === 'comment').map((t) => text.slice(t.offset, t.end));

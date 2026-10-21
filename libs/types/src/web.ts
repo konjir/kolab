@@ -11,6 +11,13 @@ import type {
 /** How a person may sign in to this Kolab (D55): with its identity provider, named for the button, and with a pasted token (development). */
 export interface WebSignInMethods { provider: string | null; token: boolean }
 
+/**
+ * How this Kolab says to get the konjir CLI (W3.7): `npm` is the published package spec its
+ * operator set (KONJIR_CLI_NPM_SPEC, pinned to an exact version), for `npx <npm> …`; null while the
+ * package isn't published, when the page shows a checkout's `bin/konjir` instead, and says so.
+ */
+export interface WebCli { npm: string | null }
+
 /** Who is signed in: the session's actor and role, its kolab and its access there. */
 export interface WebMe {
   actor: string; name: string; kind: ActorKind; owner: string | null;

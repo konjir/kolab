@@ -46,4 +46,6 @@ export interface WebOptions {
   identityLabel?: string;
   /** As ServerOptions.handIssuedTokens. */
   handIssuedTokens: boolean;
+  /** The published konjir CLI's npm spec, pinned (`konjir@1.2.3`), when there is one (W3.7); otherwise the page never shows `npx`. */
+  cliNpmSpec?: string;
 }

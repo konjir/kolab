@@ -8,6 +8,7 @@ import { defaultWebRoot, webApp } from './web/static.js';
 
 export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
 export { answersUri, inboxUri, uriOf } from './uris.js';
+export { isPinnedNpmSpec } from './kolab-server.module.js';
 export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
 
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
@@ -30,6 +31,8 @@ export async function startServer(opts: {
   webTokenSignIn?: boolean;
   /** Whether hand-issued session tokens still work beside OAuth's (true by default, during the transition). */
   handIssuedTokens?: boolean;
+  /** The published konjir CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
+  cliNpmSpec?: string;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
@@ -37,6 +40,7 @@ export async function startServer(opts: {
     KolabServerModule.register({
       kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
       identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
+      cliNpmSpec: opts.cliNpmSpec,
     }),
     { logger: ['error', 'warn'] },
   );
