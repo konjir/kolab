@@ -6,7 +6,8 @@ name: Release CLI
 #
 # Four jobs, each with only the permissions it needs:
 # 1. "Build konjir release" (read-only): validates the version, sets it in the runner, refuses a
-#    version npm or a tag already has, builds the npm tarball and the binaries, checks both reach a
+#    version npm or a tag already has, builds the npm tarball and the binaries, checks both carry
+#    LICENSE (Apache-2.0) and the third-party notices and reach a
 #    Kolab started from the checkout, runs npm publish --dry-run on the tarball, and uploads the
 #    files as an artifact. It is the only job that installs dependencies or runs Bun.
 # 2. "Draft GitHub release" (contents, attestations): attests the files' build provenance and
@@ -135,7 +136,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release"
           npm pack ./apps/cli/dist-npm --pack-destination "$RUNNER_TEMP/release"
           cp apps/cli/dist-bin/* "$RUNNER_TEMP/release/"
-          cd "$RUNNER_TEMP/release" && sha256sum konjir-* THIRD-PARTY-NOTICES.md > SHA256SUMS && cat SHA256SUMS
+          cd "$RUNNER_TEMP/release" && sha256sum konjir-* LICENSE THIRD-PARTY-NOTICES.md > SHA256SUMS && cat SHA256SUMS
+
+      # konjir is Apache-2.0: the tarball and the release's binaries carry LICENSE and the third-party notices.
+      - name: Check the licence ships
+        run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/release/konjir-*.tgz "$RUNNER_TEMP/release"
 
       - name: Choose a throwaway admin token for the test Kolab
         run: |

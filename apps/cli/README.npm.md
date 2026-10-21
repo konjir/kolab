@@ -33,3 +33,7 @@ konjir watch --once          # wait for the next change to your inbox
 `--url` and `--token` work too. The token decides who you are and which layer you may write.
 
 This package is the client only. Kolab itself, and `konjir serve`, run from a checkout of [github.com/konjir/kolab](https://github.com/konjir/kolab).
+
+## Licence
+
+konjir is licensed under the [Apache License 2.0](LICENSE). The packages it bundles keep their own licences, which are in `THIRD-PARTY-NOTICES.md`; the single-file binaries carry the same `LICENSE` and notices on each GitHub release.
