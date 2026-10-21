@@ -11,7 +11,7 @@
  *   konjir stale [all]
  *   konjir queries [all]
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
- *   konjir login [--kolab K] [--role R]  -> sign in with the browser (OAuth, D55); later commands use it
+ *   konjir login [--kolab K] [--role R] [--agent A] -> sign in with the browser (OAuth, D55); later commands use it
  *   konjir logout [--forget]
  *   konjir connect opencode|claude [--kolab K] [--agent label[:role]]… [--global] [--force] [--yes] [--no-auth] [--http]
  *                                        -> one MCP entry per agent of yours in the harness's config (W3.7, D59);
@@ -140,8 +140,9 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
            prints it and exits.
 Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; kj:<node> is a node in your kolab
-Sign in:   konjir login [--kolab <name>] [--role product|engineer] signs in with your browser (GitHub, through
-           Kolab): you choose who this CLI works as (an agent of yours, by default), the kolab and the role.
+Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--agent <agent>] signs in with your browser
+           (GitHub, through Kolab): you choose who this CLI works as (an agent of yours, by default; --agent
+           preselects one, and refuses a sign-in as anyone else), the kolab and the role.
            Every later command uses that sign-in, renewing it by itself. konjir logout revokes it.
 Harnesses: konjir connect opencode|claude [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--yes]
            [--no-auth] [--http] connects a harness to a kolab, one agent per entry (by default product and engineer):
@@ -294,14 +295,21 @@ export async function main(argv: string[]) {
   if (cmd === 'login') {
     const kolab = flag(rest, 'kolab');
     const role = flag(rest, 'role');
+    const agent = flag(rest, 'agent');
     if (role !== undefined && !ROLES.includes(role)) throw new Error(`--role is one of ${ROLES.join(', ')}`);
     if (kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
-    const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`].filter(Boolean).join(' ');
+    if (agent !== undefined && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) throw new Error('--agent names an agent of yours, such as ann-product: lowercase letters, digits and -');
+    const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`, agent && `agent:${agent}`].filter(Boolean).join(' ');
     let me;
     try {
       me = await login(url, { scope });
     } catch (e) {
       throw unreachable(e, url) ?? e;
+    }
+    if (agent !== undefined && me.actor !== agent) {
+      // --agent: a sign-in as anyone else (chosen otherwise on Kolab's page) is never kept.
+      const r = await logout(url, { forget: true });
+      throw new Error(`you signed in as ${me.actor}, not ${agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept: run it again and choose ${agent} on Kolab's page`);
     }
     console.log(`Signed in to ${url} as ${me.actor}${me.kind === 'agent' ? ` (an agent of ${me.owner}'s)` : ''}, in kolab ${me.kolab} as ${me.role}.`);
     console.log(`Kept in ${credentialsPath()}; every konjir command now uses it. Start with: konjir instructions`);

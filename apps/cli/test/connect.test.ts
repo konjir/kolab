@@ -468,11 +468,12 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
   const text = readFileSync(join(project, '.mcp.json'), 'utf8');
   expect(JSON.parse(text)).toStrictEqual({
     mcpServers: {
-      'konjir-pm': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } },
-      'konjir-dev': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_AGENT: 'ann-dev', KONJIR_SCOPE: 'konjir kolab:anns role:engineer agent:ann-dev' } },
+      'konjir-pm': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } },
+      'konjir-dev': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-dev', KONJIR_SCOPE: 'konjir kolab:anns role:engineer agent:ann-dev' } },
     },
   });
-  expect(text).not.toMatch(/kj[src]_|token|bearer|authorization|as:self/i);
+  // No token: KONJIR_TOKEN is set empty, so one in Claude Code's own environment never overrides the agent's sign-in.
+  expect(text.replaceAll('"KONJIR_TOKEN": ""', '')).not.toMatch(/kj[src]_|token|bearer|authorization|as:self/i);
 
   // Each signed in as its own agent, the page preselected, and kept in that agent's own file, where the bridge looks.
   const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
@@ -496,7 +497,7 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
   const ran: string[][] = [];
   const g = world(server, idp, async (cmd, args) => { ran.push([cmd, ...args]); return 0; });
   await connectHarness(options(server, project, { harness: 'claude', global: true, yes: true, auth: false, agents: parseAgents(['pm:product']), env: { ...env, HOME: scratch() } }), g);
-  expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-pm', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } })]]);
+  expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-pm', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } })]]);
   expect(g.lines.join('\n')).toContain('On first start each entry signs in by itself in your browser, as its own agent');
 
   // From a konjir with no checkout beside it (the published package), the channel can't be set up: --http can.

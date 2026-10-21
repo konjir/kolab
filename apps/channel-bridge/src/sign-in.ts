@@ -18,7 +18,7 @@ import { randomBytes } from 'node:crypto';
 import type { ChannelMessage } from './messages.js';
 
 /** What the bridge reaches Kolab with: exactly one of a token and a sign-in (and how that sign-in is made again). */
-export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefined; loginCommand?: undefined; agent?: undefined }
+export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefined; loginCommand?: undefined; agent?: string }
   | { token?: undefined; login: StoredLogin; awaiting?: 'another-channel'; loginCommand?: string; agent?: string };
 
 /**
@@ -79,14 +79,16 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   timeoutMs?: number;
 }): Promise<BridgeAuth> {
   // An empty KONJIR_TOKEN is unset: the plugin's .mcp.json passes ${KONJIR_TOKEN:-}.
-  if (env.KONJIR_TOKEN) return { token: env.KONJIR_TOKEN };
+  // KONJIR_AGENT: this entry's agent keeps its own sign-in, apart from the CLI's (konjir connect claude, W3.8).
+  // With KONJIR_TOKEN too, the token must work as that agent, or the bridge serves nothing.
+  const agent = env.KONJIR_AGENT?.trim() || undefined;
+  if (env.KONJIR_TOKEN) return { token: env.KONJIR_TOKEN, agent };
   checkKolabUrl(url);
   const shown = safeUrl(url);
-  // KONJIR_AGENT: this entry's agent keeps its own sign-in, apart from the CLI's (konjir connect claude, W3.8).
-  const agent = env.KONJIR_AGENT?.trim() || undefined;
   const path = agent ? agentCredentials(agent, env) : undefined;
   const scope = scopeFrom(env);
-  const loginCommand = path ? `KONJIR_CREDENTIALS=${shellWord(path)} konjir login --url ${shown}` : undefined;
+  // It preselects the agent, and konjir login refuses a sign-in as anyone else.
+  const loginCommand = path ? `KONJIR_CREDENTIALS=${shellWord(path)} konjir login --url ${shown} --agent ${agent}` : undefined;
   const kept = () => new StoredLogin(url, { clientName: CLIENT_NAME, path });
   const stored = kept();
   if (stored.signedIn) {

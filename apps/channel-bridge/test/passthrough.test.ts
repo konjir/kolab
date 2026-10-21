@@ -262,3 +262,25 @@ test('Kolab\'s lists are read one at a time, in order: a burst of list_changed c
   await b.stop();
   await server.close();
 }, 60_000);
+
+test('after a wrong_actor refusal, what an earlier connection listed is no longer served: the lists empty, and Claude Code is told they changed', async () => {
+  const server = await boot();
+  const pm = await session(server, 'pm', 'product');
+  const b = new KolabBridge({ url: server.url, token: pm, agent: 'pm', forward: async () => undefined, log: () => undefined, backoff: { initialMs: 100, maxMs: 200 } });
+  const changed: string[] = [];
+  let listens = 0;
+  b.onListening = () => { listens++; };
+  b.onListChanged = (kind) => { changed.push(kind); };
+  closeAtEnd({ close: () => b.stop() });
+  b.start();
+  await until('listening', () => listens > 0 || undefined);
+  expect((await b.list('tools')).length).toBeGreaterThan(0);
+  // The bridge now finds its credential works as someone else (as a swapped sign-in would).
+  (b as unknown as { opts: { agent: string } }).opts.agent = 'someone-else';
+  changed.length = 0;
+  await (b as unknown as { client?: { close(): Promise<void> } }).client?.close();
+  await until('the lists cleared', () => (changed.includes('tools') && changed.includes('prompts')) || undefined);
+  expect(await b.list('tools', 100)).toStrictEqual([]);
+  await b.stop();
+  await server.close();
+}, 60_000);
