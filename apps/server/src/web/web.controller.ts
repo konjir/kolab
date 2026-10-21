@@ -5,7 +5,7 @@ import {
 import type { Request, Response } from 'express';
 import { Kolab, maskTokens } from '@konjir/engine';
 import type {
-  InvitePreview, WebAnswer, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
+  InvitePreview, WebAnswer, WebChangeGrant, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
   WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
 } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
@@ -229,6 +229,16 @@ export class WebController {
 
   @Post('invites/:id/revoke') @HttpCode(204)
   async revokeInvite(@WebSession() s: string, @Param('id') id: string) { await run(() => this.web.revokeInvite(s, id)); }
+
+  // ---- who holds access (W3.6): for those with Admin in the session's kolab, as Kolab decides ----
+
+  @Get('access') access(@WebSession() s: string) { return run(() => this.web.access(s)); }
+
+  @Post('access/:actor') @HttpCode(200)
+  changeGrant(@WebSession() s: string, @Param('actor') actor: string, @Body() body: WebChangeGrant) { return run(() => this.web.changeGrant(s, actor, body)); }
+
+  @Post('access/:actor/remove') @HttpCode(200)
+  removeGrant(@WebSession() s: string, @Param('actor') actor: string) { return run(() => this.web.removeGrant(s, actor)); }
 
   @Get('nodes/:name')
   node(@WebSession() s: string, @Param('name') name: string, @Query('version') v?: unknown) {

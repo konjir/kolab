@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import type { InvitePreview, InviteView, Layer, WebInviteMade, WebInvitesView, WebMe, WebOverview } from '@konjir/types';
+import type {
+  AccessHolder, AccessLevel, AccessSource, InvitePreview, InviteView, KolabAccessView, Layer, WebAccessChanged, WebInviteMade, WebInvitesView, WebMe, WebOverview,
+} from '@konjir/types';
 import { api } from '../api.js';
 import { ago } from '../util.js';
 import { Pill } from './bits.js';
@@ -138,6 +140,7 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
           </div>
         )}
       </section>
+      <AccessList me={me} tick={tick} act={act} />
       <section aria-labelledby="p-list"><h2 className="section-title" id="p-list">Invites</h2>
         {error && <p className="empty" role="alert">{error}</p>}
         {invites.length ? <ul className="qlist">{invites.map((i) => (
@@ -149,6 +152,136 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
         ))}</ul> : <p className="empty">No invites yet.</p>}
       </section>
     </>
+  );
+}
+
+/** The levels a direct grant may be changed to (W3.6): an invite's, and Admin, which only the kolab's owners give (Kolab refuses anyone else). */
+const GRANT_LEVELS: { value: string; label: string; level: AccessLevel; layers?: Layer[] }[] = [
+  ...LEVELS, { value: 'admin', label: 'Admin: also manages who holds access', level: 'admin' },
+];
+
+/** Which of GRANT_LEVELS an access is. */
+export function levelValue(a: { level: AccessLevel | null; layers: Layer[] }): string {
+  if (a.level !== 'write') return a.level ?? '';
+  return a.layers.length === 2 ? 'write' : `write-${a.layers[0]}`;
+}
+
+/** Where some access comes from, in words. */
+export function sourceWords(s: AccessSource, kolab: string, outside: boolean): string {
+  switch (s.kind) {
+    case 'owner': return `owns ${kolab}: Admin`;
+    case 'org_owner': return `an owner of ${s.org}: Admin`;
+    case 'base': return `${s.org}'s base permission: ${accessWords(s)}`;
+    case 'internal': return `a member of ${s.org}, whose internal kolabs its members read: Read`;
+    case 'team': return `team ${s.team}: ${accessWords(s)}`;
+    case 'grant': return `${outside ? 'outside collaborator, granted' : 'granted'} ${accessWords(s)}`;
+  }
+}
+
+/** Where access that isn't a direct grant is changed: never in this page (W3.6). */
+export function whereToChange(s: AccessSource, kolab: string): string | undefined {
+  switch (s.kind) {
+    case 'owner': return `It comes with owning ${kolab}.`;
+    case 'org_owner': return `It comes with owning ${s.org}: change it in ${s.org}'s owners.`;
+    case 'base': return `Change it in ${s.org}'s base permission for ${kolab}.`;
+    case 'internal': return `Change it in ${s.org}'s members, or ${kolab}'s visibility.`;
+    case 'team': return `Change it in team ${s.team}'s grant or members.`;
+    case 'grant': return undefined;
+  }
+}
+
+/** The access a choice of GRANT_LEVELS grants. */
+const grantAccess = (value: string) => {
+  const g = GRANT_LEVELS.find((l) => l.value === value)!;
+  return { level: g.level, layers: g.layers ?? (g.level === 'read' || g.level === 'triage' ? [] : ['functional', 'technical'] as Layer[]) };
+};
+
+type Pending = { holder: AccessHolder; remove: true } | { holder: AccessHolder; remove?: false; value: string };
+
+/**
+ * Who holds access to the session's kolab (W3.6), for those with Admin there: each person and agent
+ * with what they hold and every source of it, and for a direct grant, changing its level or removing
+ * it, each confirmed first. Access from owning the kolab, its organization, the base permission or a
+ * team is shown, and says where it is changed. Kolab decides each change, under its own rules.
+ */
+export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Act }) {
+  const [again, setAgain] = useState(0);
+  const [chosen, setChosen] = useState<Record<string, string>>({});
+  const [pending, setPending] = useState<Pending>();
+  const { data, error } = useRead<KolabAccessView>('access', tick + again);
+  const kolab = data?.kolab.id ?? me.kolab;
+  const confirm = async () => {
+    const p = pending!;
+    const path = `access/${encodeURIComponent(p.holder.actor)}`;
+    const ok = p.remove
+      ? await act.run(() => api<WebAccessChanged>(`${path}/remove`, {}), `${p.holder.actor}'s access removed`)
+      : await act.run(() => {
+        const g = grantAccess(p.value);
+        return api<WebAccessChanged>(path, { level: g.level, ...(g.level === 'write' ? { layers: g.layers } : {}) });
+      }, `${p.holder.actor}'s access changed`);
+    setPending(undefined);
+    if (ok) setAgain((n) => n + 1);
+  };
+  const consequence = (h: AccessHolder) => (h.kind === 'person'
+    ? `Their agents hold no more than they do, and any session, theirs or their agents', that can no longer reach ${kolab} ends.`
+    : `Its sessions end if it can no longer reach ${kolab}.`);
+  return (
+    <section aria-labelledby="p-access"><h2 className="section-title" id="p-access">Who holds access</h2>
+      <p className="why-not">Here you change or remove a direct grant. Access from owning {kolab}, its organization, a base permission or a team is shown, and changed where it is kept: by the organization's owners, through Konjir's admin for now.{data?.kolab.visibility === 'public' ? ` ${kolab} is public: anyone may read it, so its readers aren't listed.` : ''}</p>
+      {error && <p className="empty" role="alert">{error}</p>}
+      {pending && (
+        <div className="notice" role="alertdialog" aria-labelledby="p-confirm">
+          <h2 id="p-confirm">{pending.remove ? `Remove ${pending.holder.actor}'s access?` : `Change ${pending.holder.actor}'s access?`}</h2>
+          <p>{pending.remove
+            ? `Their direct grant on ${kolab}, ${accessWords(pending.holder.grant!)}, goes. They keep only what reaches them by other routes. `
+            : `From ${accessWords(pending.holder.grant!)} to ${accessWords(grantAccess(pending.value))}. `}
+          {consequence(pending.holder)}{pending.holder.actor === me.actor ? ' This is your own access: you may lose Admin here.' : ''}</p>
+          <div className="edit-row">
+            <button type="button" className="btn primary" onClick={() => void confirm()}>{pending.remove ? 'Remove access' : 'Change access'}</button>
+            <button type="button" className="btn quiet" onClick={() => setPending(undefined)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {!data && !error && <p className="empty">Reading who holds access…</p>}
+      {data && (data.holders.length ? <ul className="qlist" aria-label="People and agents">{data.holders.map((h) => {
+        const value = chosen[h.actor] ?? (h.grant ? levelValue(h.grant) : '');
+        const elsewhere = h.sources.map((s) => whereToChange(s, kolab)).filter((w): w is string => !!w);
+        return (
+          <li key={h.actor} className="qitem" aria-label={h.actor}>
+            <div className="row">
+              <Pill tone={h.access.level ? (h.capped ? 'stale' : 'clean') : 'boundary'}>{accessWords(h.access)}</Pill>
+              <span className="mono">{h.actor}</span>
+              {h.actor === me.actor && <span>you</span>}
+              {h.kind === 'agent' && <span>agent of {h.owner}{h.cap && h.capped ? `, capped at ${accessWords(h.cap)} by what its owner holds` : ''}</span>}
+              <span>{h.sources.map((s) => sourceWords(s, kolab, h.outside)).join(' · ')}</span>
+            </div>
+            {elsewhere.length > 0 && <p className="why-not">{elsewhere.join(' ')}</p>}
+            {h.grant && (
+              <div className="edit-row">
+                <div className="field"><label htmlFor={`g-${h.actor}`}>Grant for {h.actor}</label>
+                  <select id={`g-${h.actor}`} value={value} onChange={(e) => setChosen({ ...chosen, [h.actor]: e.target.value })}>
+                    {GRANT_LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                  </select></div>
+                <button type="button" className="btn" disabled={value === levelValue(h.grant)} onClick={() => setPending({ holder: h, value })}>Change</button>
+                <button type="button" className="btn quiet" onClick={() => setPending({ holder: h, remove: true })}>Remove access</button>
+              </div>
+            )}
+          </li>
+        );
+      })}</ul> : <p className="empty">Nobody holds access yet.</p>)}
+      {data && data.teams.length > 0 && (
+        <>
+          <h3 id="p-teams">Teams granted access</h3>
+          <ul className="qlist" aria-labelledby="p-teams">{data.teams.map((t) => (
+            <li key={t.team} className="qitem"><div className="row">
+              <Pill tone="clean">{accessWords(t)}</Pill><span className="mono">{t.team}</span>
+              <span>{t.members === 1 ? '1 person' : `${t.members} people`}, its sub-teams' members included</span>
+              <span className="why-not">Change it in team {t.team}'s grant or members.</span>
+            </div></li>
+          ))}</ul>
+        </>
+      )}
+    </section>
   );
 }
 
