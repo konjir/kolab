@@ -12,7 +12,7 @@
  * credentials file's lock, and re-reads what changed meanwhile.
  */
 import { Client, StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
-import type { StoredLogin } from '@konjir/login';
+import { safeUrl, type StoredLogin } from '@konjir/login';
 import { describeChange, describeStartup, type ChannelMessage } from './messages.js';
 import { VERSION } from './version.js';
 
@@ -26,8 +26,12 @@ export interface BridgeOptions {
   forward(message: ChannelMessage): Promise<void>;
   /** A line for the operator (stderr). Never carries a token. */
   log(line: string): void;
-  /** Reconnect delays: doubles from `initialMs` up to `maxMs`. */
-  backoff?: { initialMs: number; maxMs: number };
+  /**
+   * Reconnect delays: doubles from `initialMs` up to `maxMs`, back to `initialMs` only once a
+   * stream has lived `steadyMs` (60 s by default), so a Kolab that admits and closes at once is
+   * not asked again every second.
+   */
+  backoff?: { initialMs: number; maxMs: number; steadyMs?: number };
   /** How often to check on Kolab while listening, and how long to wait for the reply. */
   liveness?: { intervalMs: number; timeoutMs: number };
   /** The fetch the Kolab transport uses (tests stand in a network here). */
@@ -116,7 +120,7 @@ export class KolabBridge {
   }
 
   private async run() {
-    const { initialMs, maxMs } = this.opts.backoff ?? { initialMs: 1000, maxMs: 30_000 };
+    const { initialMs, maxMs, steadyMs = 60_000 } = this.opts.backoff ?? { initialMs: 1000, maxMs: 30_000 };
     let delay = initialMs;
     let everConnected = false;
     while (!this.stopped) {
@@ -127,8 +131,6 @@ export class KolabBridge {
           this.hadSignIn = true;
         }
         client = this.client = this.newClient();
-        // An error the SDK reports only here (a background stream's refresh) lets go of the refresh lock.
-        if (this.opts.login) { const l = this.opts.login; client.onerror = () => l.releaseLock(); }
         await client.connect(this.transport());
         const me = await this.whoami(client);
         this.me = me;
@@ -163,7 +165,6 @@ export class KolabBridge {
           this.lastProblem = undefined;
           this.log(`${everConnected ? 'reconnected' : 'connected'} to Kolab at ${safeUrl(this.opts.url)} as ${me.actor} (${me.role}); watching ${me.subscribe.join(', ')}`);
           everConnected = true;
-          delay = initialMs;
           if (!this.summarized && firstReads.length) {
             this.summarized = true;
             const summary = describeStartup(firstReads);
@@ -171,8 +172,10 @@ export class KolabBridge {
           }
           this.onListening?.(me);
           const alive = this.watchLiveness(client, stop);
+          const opened = Date.now();
           const how = await Promise.race([subscription.closed.then(() => 'closed' as const), ended, this.stopping]);
           alive();
+          if (Date.now() - opened >= steadyMs) delay = initialMs;
           if (how !== 'closed') await subscription.close().catch(() => undefined);
           if (how === 'stopped') break;
           this.log(how === 'refused' ? `Kolab refused a read with ${this.credential}; reconnecting`
@@ -220,8 +223,9 @@ export class KolabBridge {
       } finally {
         await client?.close().catch(() => undefined);
         if (this.client === client) this.client = undefined;
-        // A refresh cut short by the connection ending must not keep other konjir waiting on the lock.
-        this.opts.login?.releaseLock();
+        // A hold this connection leaked is let go, but never a refresh still in flight (its lock and its
+        // compare-and-swap protect the tokens another konjir saves meanwhile); the lock's maximum hold covers the rest.
+        this.opts.login?.releaseIdleLock();
       }
       if (this.stopped) break;
       await this.sleep(delay);
@@ -324,13 +328,4 @@ function messageOf(e: unknown) {
   return `${String(err?.message ?? e)}${cause}`;
 }
 
-/** The URL fit to print: no credentials, no query. */
-function safeUrl(url: string) {
-  try {
-    const u = new URL(url);
-    u.username = ''; u.password = ''; u.search = '';
-    return u.toString();
-  } catch {
-    return '(invalid KONJIR_URL)';
-  }
-}
+

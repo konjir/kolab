@@ -58,8 +58,9 @@ export async function connect(url: string, auth: string | OAuthClientProvider): 
   await client.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
     ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } } }
     : { authProvider: auth, ...(auth instanceof StoredLogin ? { fetch: auth.fetch } : {}) }));
-  // An error the SDK reports only here (a background stream's refresh) lets go of the refresh lock.
-  if (auth instanceof StoredLogin) client.onerror = () => auth.releaseLock();
+  // An error the SDK reports only here lets go of a leaked hold, never of a refresh still in flight
+  // (that would let another konjir refresh with the same token, and undo the compare-and-swap).
+  if (auth instanceof StoredLogin) client.onerror = () => auth.releaseIdleLock();
   return client;
 }
 
