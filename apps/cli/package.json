@@ -51,6 +51,7 @@
       "bundle": {
         "inputs": [
           "production",
+          "^production",
           "{projectRoot}/scripts/package.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
@@ -68,6 +69,7 @@
       "compile": {
         "inputs": [
           "production",
+          "^production",
           "{projectRoot}/scripts/package.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
