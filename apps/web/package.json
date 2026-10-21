@@ -3,6 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "description": "The Kolab web interface: a React and Vite single-page app served by Kolab, kept live with server-sent events",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     "./package.json": "./package.json"

@@ -138,7 +138,8 @@ jobs:
           cp apps/cli/dist-bin/* "$RUNNER_TEMP/release/"
           cd "$RUNNER_TEMP/release" && sha256sum konjir-* LICENSE THIRD-PARTY-NOTICES.md > SHA256SUMS && cat SHA256SUMS
 
-      # konjir is Apache-2.0: the tarball and the release's binaries carry LICENSE and the third-party notices.
+      # konjir is Apache-2.0 (D63): the tarball and the release's binaries carry LICENSE and the third-party
+      # notices, and bundle none of the FSL-1.1-ALv2 rest of the repository (D64).
       - name: Check the licence ships
         run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/release/konjir-*.tgz "$RUNNER_TEMP/release"
 

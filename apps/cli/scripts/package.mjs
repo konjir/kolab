@@ -89,17 +89,41 @@ const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konji
 
 /**
  * The first-party code the bundle may inline: the CLI's own source and @konjir/login's, nothing
- * else of the workspace's (no server, engine, db or address code). The build fails on anything
- * else, since the @konjir/source condition would otherwise inline it from TypeScript unseen.
+ * else of the workspace's (no server, engine, db or address code). Those two are the workspace's
+ * only Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2 (D64), which the Apache-2.0
+ * konjir (D63) must never carry. The build fails on anything else, since the @konjir/source
+ * condition would otherwise inline it from TypeScript unseen, and on either of the two if its
+ * package.json stops declaring Apache-2.0.
  */
-const FIRST_PARTY = [join(app, 'src') + '/', join(root, 'libs/login/src') + '/'];
+const FIRST_PARTY = ['apps/cli', 'libs/login'].map((dir) => join(root, dir));
+/** The workspace package a first-party input belongs to: the nearest directory above it with a package.json. */
+function owningPackage(path) {
+  for (let dir = dirname(path); dir.startsWith(root + '/'); dir = dirname(dir)) {
+    if (existsSync(join(dir, 'package.json'))) return dir;
+  }
+  return root;
+}
 function checkFirstParty(metafile, out) {
-  const stray = Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs).map((input) => resolve(app, input))
-    .filter((path) => !/\/node_modules\//.test(path) || /\/node_modules\/@konjir\//.test(path))
-    .filter((path) => !FIRST_PARTY.some((dir) => path.startsWith(dir)));
+  const stray = [];
+  for (const path of Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs).map((input) => resolve(app, input))) {
+    if (/\/node_modules\//.test(path) && !/\/node_modules\/@konjir\//.test(path)) continue;
+    const pkg = owningPackage(path);
+    const { license } = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
+    if (!FIRST_PARTY.includes(pkg) || !path.startsWith(join(pkg, 'src') + '/') || license !== 'Apache-2.0') {
+      stray.push(`${path} (${pkg === root ? 'the workspace root' : pkg.slice(root.length + 1)}, licensed ${license ?? 'nothing'})`);
+    }
+  }
   // Nothing is left behind from a build that fails it.
   if (stray.length) rmSync(out, { recursive: true, force: true });
-  if (stray.length) throw new Error(`the bundle inlines first-party code outside apps/cli/src and libs/login/src: ${stray.join(', ')}`);
+  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src and libs/login/src: ${stray.join(', ')}`);
+}
+
+/** No package the bundle inlines may be FSL-licensed, as the rest of this workspace is (D64). */
+function checkBundledLicences(packages, out) {
+  const fsl = packages.filter((p) => /\bFSL-|Functional Source License/i.test(`${p.license}\n${p.text ?? ''}`));
+  if (fsl.length) rmSync(out, { recursive: true, force: true });
+  if (fsl.length) throw new Error(`the bundle inlines FSL-licensed packages, which the Apache-2.0 konjir can't carry: ${fsl.map((p) => p.name).join(', ')}`);
+  return packages;
 }
 
 /** The packages the bundle inlines, from Bun's metafile: the last node_modules/<name> of each input. */
@@ -163,7 +187,7 @@ if (mode === 'bun') {
   bun(['--target=node', '--format=esm', '--minify-syntax', '--minify-whitespace', `--metafile=${metafile}`, '--outfile', join(out, 'konjir.mjs')]);
   checkFirstParty(metafile, out);
   chmodSync(join(out, 'konjir.mjs'), 0o755);
-  writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
+  writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(checkBundledLicences(bundledPackages(metafile), out)));
   rmSync(metafile);
   // The published manifest: no dependencies (they're bundled) and nothing private.
   const published = {
@@ -199,7 +223,7 @@ if (mode === 'bun') {
       '--minify', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', `--metafile=${metafile}`, '--outfile', file]);
     checkFirstParty(metafile, out);
   }
-  writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
+  writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(checkBundledLicences(bundledPackages(metafile), out)));
   rmSync(metafile);
   copyFileSync(join(app, 'LICENSE'), join(out, 'LICENSE'));
 } else {
