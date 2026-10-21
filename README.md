@@ -238,16 +238,17 @@ That one connection is the only static setup a harness needs. The rules come dow
 Outside a checkout, `konjir` is the client alone: every verb, `instructions`, `watch` and `--version`, but no `serve`, which runs Kolab and needs a checkout. It needs only a Kolab's URL and a token.
 
 ```
-# Not yet: the konjir package isn't published on npm, so don't run `npx konjir` or `npm install -g konjir`,
-# which would run whatever someone else published under that name. Once it is, pin it:
-#   npx konjir@<version> --help         # Node 22 or later; the package has no dependencies
-# and the Kolab that serves it sets KONJIR_CLI_NPM_SPEC=konjir@<version> for its web page.
-# Until then, from a checkout:  git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)
-#                               ~/kolab/bin/konjir --help
+# From npm (Node 22 or later; the package has no dependencies). Pin the version:
+npx konjir@0.5.0 --help                 # run it without installing
+npm i -g konjir@0.5.0                   # or install it, then run `konjir`
+# A Kolab sets KONJIR_CLI_NPM_SPEC=konjir@<version> so its web page shows the same npx commands.
 
-# or a single-file binary, which needs no Node, from the GitHub release:
+# Or from a checkout:  git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)
+#                      ~/kolab/bin/konjir --help
+
+# Or a single-file binary, which needs no Node, from the GitHub release:
 #   konjir-linux-x64, konjir-linux-arm64, konjir-darwin-arm64, konjir-darwin-x64, konjir-windows-x64.exe
-curl -fLo konjir https://github.com/konjir/kolab/releases/download/konjir%40<version>/konjir-darwin-arm64
+curl -fLo konjir https://github.com/konjir/kolab/releases/download/konjir%400.5.0/konjir-darwin-arm64
 chmod +x konjir                         # each release also carries SHA256SUMS
 xattr -d com.apple.quarantine konjir    # macOS: the binaries aren't signed
 
