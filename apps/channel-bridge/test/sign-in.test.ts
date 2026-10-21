@@ -4,14 +4,14 @@
 // the browser by itself when nothing is kept, waits for konjir login once signed out, and never
 // prints a token. KONJIR_TOKEN still works, and overrides a kept sign-in. The identity provider is a
 // stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
-import { mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, test } from '@jest/globals';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { StubIdentity, startServer } from '@konjir/server';
-import { FileLock, StoredLogin, login } from '@konjir/login';
+import { FileLock, StoredLogin, agentCredentialsPath, login } from '@konjir/login';
 import { closeAtEnd, openKolab } from '@konjir/engine/testing';
 import { KolabBridge } from '../src/bridge.js';
 import type { ChannelMessage } from '../src/messages.js';
@@ -445,3 +445,66 @@ test('the backoff returns to its first step only after a stream that lived stead
   expect(gap(3)).toBeGreaterThanOrEqual(95);
   await server.close();
 }, 60_000);
+
+test('W3.8 done when: with only the bridge configured, as konjir connect claude writes it (KONJIR_AGENT), Claude Code calls Kolab\'s tools and hears its channel on one sign-in, through an access token expiring mid-session, and no session ends another', async () => {
+  const { kolab, idp, server } = await kolabWithSignIn();
+  // konjir connect claude signs the entry in as its own agent, kept apart from the CLI's sign-in.
+  const agentFile = agentCredentialsPath('ann-claude');
+  idp.next({ subject: '41', login: 'ann' });
+  await login(server.url, {
+    path: agentFile, clientName: CLIENT_NAME, scope: 'konjir role:product', log: () => undefined,
+    open: (u) => { void browse(u, { as: 'new-agent', agent_label: 'claude', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }); },
+  });
+  expect(existsSync(credentials)).toBe(false);   // the CLI's own sign-in is untouched: there is none
+
+  const transport = new StdioClientTransport({
+    command: START,
+    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-claude', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-claude', KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_SIGN_IN: 'off', KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
+    stderr: 'pipe',
+  });
+  let stderr = '';
+  transport.stderr!.on('data', (d) => { stderr += String(d); });
+  const messages: ChannelMessage[] = [];
+  const claude = new Client({ name: 'claude-code-stand-in', version: '0' });
+  claude.fallbackNotificationHandler = async (n) => { if (n.method === 'notifications/claude/channel') messages.push(n.params as unknown as ChannelMessage); };
+  await claude.connect(transport);
+  closeAtEnd(claude);
+  const more = () => `messages: ${JSON.stringify(messages, null, 2)}\nbridge stderr:\n${stderr}`;
+  const listening = (n: number) => until(`listen #${n}`, () => stderr.split('\n').filter((l) => /\b(re)?connected to Kolab\b/.test(l)).length >= n || undefined, 40_000, more);
+
+  // The agent works through the bridge's tools: the same session the channel listens as.
+  expect((await claude.listTools()).tools.map((t) => t.name)).toContain('konjir_instructions');
+  expect(await call(claude, 'whoami')).toMatchObject({ actor: 'ann-claude', kolab: 'anns', role: 'product' });
+  await listening(1);
+  expect(stderr).toMatch(/using the sign-in kept for ann-claude at/);
+  await call(claude, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(claude, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
+  await call(claude, 'submit_for_review', { node: 'orders', version: 1 });
+  const product = await kolabClient(server.url, await annAs(kolab, 'product'));
+  await call(product, 'review', { node: 'orders', version: 1, verdict: 'approve' });
+  await product.close();
+  const ann = await kolabClient(server.url, await annAs(kolab, 'engineer'));
+  await call(ann, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?' });
+  await until('the question', () => messages.find((m) => m.content.includes('"From which statuses?"')), 20_000, more);
+
+  // The access token expires mid-session. The next call is refused (401) before it runs, refreshed
+  // under the lock and sent again, once; the channel reconnects with the refreshed token.
+  const keptRefresh = () => JSON.parse(readFileSync(agentFile, 'utf8'))[server.url].tokens.refresh_token as string;
+  const before = keptRefresh();
+  await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-claude' and ended_at is null`);
+  await call(claude, 'ask', { address: 'kj:orders#R8', question: 'Is a note enough here?', kind: 'note' });
+  expect(keptRefresh()).not.toBe(before);   // refreshed, and kept in the agent's own file
+  const mine = JSON.stringify(await call(claude, 'list_queries', { all: true }));
+  expect(mine.split('Is a note enough here?').length - 1).toBe(1);   // sent once: one note
+  await call(ann, 'ask', { address: 'kj:orders#R8', question: 'And refunds?' });
+  await until('the question after the expiry', () => messages.find((m) => m.content.includes('"And refunds?"')), 40_000, more);
+  expect(await call(claude, 'whoami')).toMatchObject({ actor: 'ann-claude' });
+
+  // One sign-in, one grant, never revoked; one open session; nothing told the session it was signed out.
+  expect((await kolab.db.query(`select revoked_at from oauth_grant where actor_id = 'ann-claude'`)).rows).toStrictEqual([{ revoked_at: null }]);
+  expect((await kolab.db.query(`select count(*)::int as n from session where actor_id = 'ann-claude' and ended_at is null`)).rows).toStrictEqual([{ n: 1 }]);
+  expect(messages.filter((m) => m.meta.kind === 'bridge')).toStrictEqual([]);
+  expect(JSON.stringify(messages) + stderr).not.toMatch(/\bkj[src]_[A-Za-z0-9_-]{8,}/);
+  await claude.close();
+  await server.close();
+}, 180_000);

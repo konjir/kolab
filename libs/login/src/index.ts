@@ -92,6 +92,17 @@ export function credentialsPath(env: Record<string, string | undefined> = proces
   return join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'konjir', 'credentials.json');
 }
 
+/**
+ * Where one agent's own sign-in is kept, apart from the CLI's: `agents/<agent>.json` beside the
+ * credentials file. `konjir connect claude` signs each Konjir channel entry in there (W3.8), and the
+ * channel bridge started with KONJIR_AGENT uses it, so two entries, each its own agent, never share
+ * one sign-in. The agent's id is a Kolab actor id, checked, so it can't name a path elsewhere.
+ */
+export function agentCredentialsPath(agent: string, env: Record<string, string | undefined> = process.env): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) throw new Error(`KONJIR_AGENT ${JSON.stringify(agent)} isn't an agent's id: lowercase letters, digits and -`);
+  return join(dirname(credentialsPath(env)), 'agents', `${agent}.json`);
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A lock untouched for longer than this is taken for a crashed or frozen holder's, and broken. */

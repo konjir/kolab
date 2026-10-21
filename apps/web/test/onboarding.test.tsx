@@ -52,7 +52,12 @@ test('the page shows konjir connect first: one command per harness, naming this 
   render(<ConnectView me={eli} cli={{ npm: 'konjir@1.2.3' }} origin="https://kolab.example.com" />);
   const one = screen.getByRole('region', { name: 'One command: konjir connect' });
   expect(within(one).getByLabelText('Connect OpenCode with konjir connect').textContent).toBe('npx konjir@1.2.3 connect opencode --url https://kolab.example.com --kolab anns');
-  expect(within(one).getByLabelText('Connect Claude Code with konjir connect').textContent).toBe('npx konjir@1.2.3 connect claude --url https://kolab.example.com --kolab anns');
+  // Claude Code's entry is the Konjir channel (W3.8), which runs from a checkout even when the CLI is published; --http is the plain entry.
+  expect(within(one).getByLabelText('Connect Claude Code with konjir connect').textContent).toBe('~/kolab/bin/konjir connect claude --url https://kolab.example.com --kolab anns');
+  expect(within(one).getByLabelText('Get the Konjir channel from its repository').textContent).toBe('git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)');
+  expect(within(one).getByLabelText('Start Claude Code with the Konjir channel').textContent).toBe('claude --dangerously-load-development-channels server:konjir-product server:konjir-engineer');
+  expect(within(one).getByLabelText('Connect Claude Code over HTTP, with no channel').textContent).toBe('npx konjir@1.2.3 connect claude --url https://kolab.example.com --kolab anns --http');
+  expect(one.textContent).toMatch(/one Konjir server with Kolab’s tools, which also pushes your inbox into the session/);
   expect(within(one).getByText(`${eli.actor}-product`)).toBeTruthy();
   expect(one.textContent).toMatch(/then revokes that sign-in and keeps none of it\..*writes no token/);
 });

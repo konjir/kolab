@@ -3,11 +3,15 @@
  * (W3.7, D59). It signs the CLI in as the person (`konjir login`, if it isn't already), makes or
  * reuses each agent up front through `konjir_create_agent`, and writes one MCP server entry per
  * agent, `konjir-<label>`, into the harness's own configuration: OpenCode's `opencode.json` (or
- * `.jsonc`), merged with its comments and formatting kept, or Claude Code's project `.mcp.json`,
- * as `claude mcp add --scope project --transport http` writes it. Each entry's OAuth scope names
- * its agent, kolab and role, so Kolab's consent page arrives with them chosen; the person confirms
- * there, and Kolab checks access as it always does. No token is written anywhere: each harness
- * signs in by itself, one entry at a time.
+ * `.jsonc`), merged with its comments and formatting kept, or Claude Code's project `.mcp.json`.
+ * Each entry's OAuth scope names its agent, kolab and role, so Kolab's consent page arrives with
+ * them chosen; the person confirms there, and Kolab checks access as it always does. No token is
+ * written anywhere: each entry signs in by itself, one at a time.
+ *
+ * For Claude Code, each entry is the Konjir channel bridge (W3.8, D61), Claude Code's one Konjir
+ * server: Kolab's tools passed through and the channel, on one sign-in per agent, kept in the
+ * agent's own credentials file (KONJIR_AGENT). `--http` writes Claude Code's plain HTTP entry
+ * instead, as `claude mcp add --scope project --transport http` writes it, with no channel.
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -15,7 +19,9 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 import { JsoncError, commentsOf, member, parseTree, tokens, valueOf, type JsonNode } from './jsonc.js';
+import { agentCredentialsPath } from './login.js';
 
 export const HARNESSES = ['opencode', 'claude'] as const;
 export type Harness = typeof HARNESSES[number];
@@ -65,8 +71,33 @@ export interface Entry { name: string; agent: string; label: string; role: Role;
 
 /** What OpenCode is given for one entry: a remote MCP server, with the scope that preselects its agent. */
 export const opencodeEntry = (e: Entry) => ({ type: 'remote', url: e.url, oauth: { scope: entryScope(e.kolab, e.role, e.agent) } });
-/** What Claude Code is given: as `claude mcp add --transport http` writes it, with the scope in its OAuth settings. */
+/** What Claude Code is given with --http: as `claude mcp add --transport http` writes it, with the scope in its OAuth settings. */
 export const claudeEntry = (e: Entry) => ({ type: 'http', url: e.url, oauth: { scopes: entryScope(e.kolab, e.role, e.agent) } });
+/**
+ * What Claude Code is given by default (W3.8): the Konjir channel bridge, started from `command`
+ * (a checkout's start.sh), as `claude mcp add --scope project` writes a stdio server. KONJIR_AGENT
+ * keeps the agent's sign-in apart; KONJIR_SCOPE preselects it at consent. Neither is a secret.
+ */
+export const claudeBridgeEntry = (e: Entry, command: string) => ({
+  type: 'stdio', command, args: [],
+  env: { KONJIR_URL: e.url, KONJIR_AGENT: e.agent, KONJIR_SCOPE: entryScope(e.kolab, e.role, e.agent) },
+});
+
+/** The name the bridge registers under at Kolab, which its consent page shows: the bridge's own CLIENT_NAME. */
+export const CHANNEL_CLIENT_NAME = 'konjir channel (Claude Code)';
+
+/**
+ * The channel bridge's start.sh in the checkout this konjir runs from, or undefined when it runs
+ * from elsewhere (the published package, a binary), which has no bridge.
+ */
+export function bridgeCommand(): string | undefined {
+  try {
+    const path = fileURLToPath(new URL('../../channel-bridge/scripts/start.sh', import.meta.url));
+    return existsSync(path) ? realpathSync(path) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** A planned change to one configuration file: its text before (empty when it is new) and after. */
 export interface FileChange { path: string; before: string; after: string; exists: boolean }
@@ -109,8 +140,8 @@ export function mergeOpencode(path: string, before: string, entries: Entry[], fo
  * reads it as plain JSON, so a file that isn't (comments included) is refused, never rewritten.
  * Existing entries are refused unless `force`; the result is checked as OpenCode's is.
  */
-export function mergeClaude(path: string, before: string, entries: Entry[], force: boolean): string {
-  const set: [string, unknown][] = entries.map((e) => [e.name, claudeEntry(e)]);
+export function mergeClaude(path: string, before: string, entries: Entry[], force: boolean, make: (e: Entry) => unknown = claudeEntry): string {
+  const set: [string, unknown][] = entries.map((e) => [e.name, make(e)]);
   if (!before.trim()) return JSON.stringify({ mcpServers: Object.fromEntries(set) }, null, 2);
   let config: unknown;
   try { config = JSON.parse(before); } catch (e) {
@@ -327,6 +358,10 @@ export interface ConnectOptions {
   yes: boolean;
   /** Run each harness's sign-in afterwards; without it, print the steps. */
   auth: boolean;
+  /** Claude Code: write the plain HTTP entry (no channel) instead of the channel bridge. */
+  http?: boolean;
+  /** Claude Code: the channel bridge's start.sh; by default the checkout's this konjir runs from. */
+  bridge?: string;
   cwd: string;
   env: Record<string, string | undefined>;
 }
@@ -348,10 +383,12 @@ export interface ConnectIO {
   run: (cmd: string, args: string[], opts: { cwd: string }) => Promise<number>;
   /** The CLI signed in as the person: konjir login's kept sign-in if it is already the person's, or one in memory only, revoked on close. */
   person: () => Promise<PersonSession>;
+  /** Signs a Claude Code channel entry in with the browser as its agent, kept in `credentials`; resolves with who it works as. */
+  signInAgent?: (e: Entry, credentials: string) => Promise<string>;
 }
 
 /** The default terminal: asks on stderr, runs commands attached to it. */
-export const terminalIO = (person: ConnectIO['person']): ConnectIO => ({
+export const terminalIO = (person: ConnectIO['person'], signInAgent?: ConnectIO['signInAgent']): ConnectIO => ({
   log: (line) => console.log(line),
   interactive: !!process.stdin.isTTY,
   async confirm(question) {
@@ -364,7 +401,21 @@ export const terminalIO = (person: ConnectIO['person']): ConnectIO => ({
     child.on('exit', (code) => resolve(code ?? -1));
   }),
   person,
+  signInAgent,
 });
+
+/** How to start Claude Code with the Konjir channel entries (a development channel, during the research preview). */
+function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: boolean): string[] {
+  return [
+    `Start Claude Code with the Konjir channel${global ? '' : `, from ${cwd}`}:`,
+    `  claude --dangerously-load-development-channels ${entries.map((e) => `server:${e.name}`).join(' ')}`,
+    ...(global ? [] : ['  Claude Code asks first whether to use the servers in this project\'s .mcp.json: approve the konjir- ones.']),
+    '  At the warning, choose "I am using this for local development".',
+    signedIn
+      ? `  Each entry is one Konjir server: Kolab's tools and its channel, on its agent's sign-in. Don't also add Kolab's HTTP server as the same agent: one session each (ENF4).`
+      : `  On first start each entry signs in by itself in your browser, as its own agent: Kolab's page arrives with ${entries.map((e) => e.agent).join(' and ')} chosen in turn. Check them, then Allow.`,
+  ];
+}
 
 /** The steps that sign an entry in by hand, per harness. */
 function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: boolean): string[] {
@@ -385,6 +436,14 @@ function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: bo
  */
 export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promise<Entry[]> {
   if (opts.kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(opts.kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
+  if (opts.http && opts.harness !== 'claude') throw new Error('--http is for Claude Code: OpenCode\'s entries are always its remote MCP server');
+  // Claude Code's entry: the channel bridge (W3.8), from a checkout; or, with --http, the plain HTTP server.
+  const channel = opts.harness === 'claude' && !opts.http;
+  const bridge = channel ? opts.bridge ?? bridgeCommand() : undefined;
+  if (channel && !bridge) {
+    throw new Error('konjir connect claude sets up the Konjir channel, Claude Code\'s one Konjir server, which runs from a checkout of github.com/konjir/kolab, and this konjir isn\'t running from one. Run it as <checkout>/bin/konjir connect claude, or pass --http for Claude Code\'s plain HTTP entry (no channel)');
+  }
+  const claudeMake = bridge ? (e: Entry) => claudeBridgeEntry(e, bridge) : claudeEntry;
   const session = await io.person();
   let closed = false;
   // Interrupted (Ctrl-C, a kill) while it holds the sign-in as the person: that is revoked first.
@@ -418,7 +477,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     } else if (!opts.global) {
       const path = join(opts.cwd, '.mcp.json');
       const before = readText(path);
-      change = { path, before, after: mergeClaude(path, before, entries, opts.force), exists: existsSync(path) };
+      change = { path, before, after: mergeClaude(path, before, entries, opts.force, claudeMake), exists: existsSync(path) };
     } else {
       // Claude Code's user settings are its own file, which it rewrites as it runs: konjir only reads
       // it, to refuse an entry already there, and lets Claude Code's own command write it.
@@ -434,7 +493,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       refuseTaken(`Claude Code's user settings (${path})`, entries, Object.keys(servers), opts.force);
       commands = entries.flatMap((e) => [
         ...(e.name in servers ? [['claude', 'mcp', 'remove', '--scope', 'user', e.name]] : []),
-        ['claude', 'mcp', 'add-json', '--scope', 'user', e.name, JSON.stringify(claudeEntry(e))],
+        ['claude', 'mcp', 'add-json', '--scope', 'user', e.name, JSON.stringify(claudeMake(e))],
       ]);
     }
 
@@ -489,6 +548,23 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     }
 
     // Each harness signs in by itself, one entry at a time, as its own agent.
+    if (channel) {
+      let signed = 0;
+      if (opts.auth && io.signInAgent) {
+        for (const e of entries) {
+          io.log(`Signing ${e.name} in as ${e.agent}, in your browser. Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow.`);
+          try {
+            const actor = await io.signInAgent(e, agentCredentialsPath(e.agent, opts.env));
+            io.log(actor === e.agent ? `${e.name} is signed in as ${e.agent}.` : `warning: ${e.name} signed in as ${actor}, not ${e.agent}: it works as ${actor}.`);
+            signed++;
+          } catch (err) {
+            io.log(`${e.name} didn't sign in (${(err as Error).message}). It signs in by itself, in your browser, when Claude Code first starts it.`);
+          }
+        }
+      }
+      for (const line of channelSteps(entries, opts.cwd, opts.global, signed === entries.length)) io.log(line);
+      return entries;
+    }
     if (opts.harness === 'opencode' && opts.auth) {
       for (const [k, e] of entries.entries()) {
         io.log(`Signing ${e.name} in as ${e.agent}. Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow.`);

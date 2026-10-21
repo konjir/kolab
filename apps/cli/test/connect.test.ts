@@ -14,10 +14,10 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { auth, type OAuthClientProvider, type StoredOAuthClientInformation, type StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
-import { StoredLogin, call, connect, login, main, personSession } from '../src/cli.js';
+import { StoredLogin, agentCredentialsPath, call, connect, login, main, personSession, signInAgent } from '../src/cli.js';
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
-import { MAX_CONFIG_BYTES, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
+import { MAX_CONFIG_BYTES, bridgeCommand, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
 const entry = (label: string, role: 'product' | 'engineer', over: Partial<Entry> = {}): Entry =>
@@ -426,11 +426,11 @@ test('nothing is written and no agent made until the person says yes: declined, 
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
 });
 
-test('Claude Code: the project\'s .mcp.json, then the /mcp steps to sign each entry in; and --global OpenCode writes the person\'s own config', async () => {
+test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to sign each entry in; and --global OpenCode writes the person\'s own config', async () => {
   const { idp, server } = await local();
   const project = scratch();
   const io = world(server, idp, async () => { throw new Error('nothing to run for Claude Code'); });
-  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), yes: true }), io);
+  await connectHarness(options(server, project, { harness: 'claude', http: true, agents: parseAgents(['pm:product']), yes: true }), io);
   expect(JSON.parse(readFileSync(join(project, '.mcp.json'), 'utf8'))).toStrictEqual({
     mcpServers: { 'konjir-pm': { type: 'http', url: server.url, oauth: { scopes: 'konjir kolab:anns role:product agent:ann-pm' } } },
   });
@@ -442,6 +442,65 @@ test('Claude Code: the project\'s .mcp.json, then the /mcp steps to sign each en
   const g = world(server, idp, async () => 0);
   await connectHarness(options(server, project, { global: true, yes: true, auth: false, env: { XDG_CONFIG_HOME: home } }), g);
   expect(Object.keys(JSON.parse(readFileSync(join(home, 'opencode', 'opencode.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
+});
+
+test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Code\'s one Konjir server, one entry per agent, and signs each in as its own agent, kept apart', async () => {
+  const { kolab, idp, server } = await local();
+  const project = scratch();
+  const start = bridgeCommand()!;
+  expect(start).toMatch(/apps\/channel-bridge\/scripts\/start\.sh$/);   // this checkout's bridge
+  const pages: string[] = [];
+  const io: ConnectIO & { lines: string[] } = {
+    ...world(server, idp, async () => { throw new Error('nothing to run for Claude Code'); }),
+    // The entry signs in as its agent, with the browser: Kolab's page arrives with it chosen.
+    signInAgent: (e, credentials) => signInAgent(e, credentials, {
+      log: () => undefined,
+      open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, (html) => { pages.push(html); return {}; }, true); },
+    }),
+  };
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };   // never the person's own ~/.config
+  const entries = await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product', 'dev:engineer']), yes: true, env }), io);
+  expect(entries.map((e) => e.agent)).toStrictEqual(['ann-pm', 'ann-dev']);
+
+  // .mcp.json: a stdio server per agent, the bridge from this checkout; no token, no HTTP entry.
+  const text = readFileSync(join(project, '.mcp.json'), 'utf8');
+  expect(JSON.parse(text)).toStrictEqual({
+    mcpServers: {
+      'konjir-pm': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } },
+      'konjir-dev': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_AGENT: 'ann-dev', KONJIR_SCOPE: 'konjir kolab:anns role:engineer agent:ann-dev' } },
+    },
+  });
+  expect(text).not.toMatch(/kj[src]_|token|bearer|authorization|as:self/i);
+
+  // Each signed in as its own agent, the page preselected, and kept in that agent's own file, where the bridge looks.
+  const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
+  expect(pages.map(checked)).toStrictEqual([['agent:ann-pm', 'kolab:anns', 'product'], ['agent:ann-dev', 'kolab:anns', 'engineer']]);
+  expect(pages[0]).toContain('konjir channel (Claude Code)');
+  for (const agent of ['ann-pm', 'ann-dev']) {
+    const kept = new StoredLogin(server.url, { path: agentCredentialsPath(agent) });
+    expect(kept.signedIn).toBe(true);
+    const c = await connect(server.url, kept);
+    closeAtEnd(c);
+    expect(await call(c, 'whoami')).toMatchObject({ actor: agent, kind: 'agent', owner: 'ann', kolab: 'anns' });
+    kept.releaseIdleLock();
+  }
+  expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);   // the CLI's own sign-in: none, as before
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id in ('ann-pm', 'ann-dev') and revoked_at is null`)).rows[0]).toStrictEqual({ n: 2 });
+  const said = io.lines.join('\n');
+  expect(said).toContain('konjir-pm is signed in as ann-pm.');
+  expect(said).toContain('claude --dangerously-load-development-channels server:konjir-pm server:konjir-dev');
+
+  // --global: Claude Code's own command writes the same entry to the person's settings.
+  const ran: string[][] = [];
+  const g = world(server, idp, async (cmd, args) => { ran.push([cmd, ...args]); return 0; });
+  await connectHarness(options(server, project, { harness: 'claude', global: true, yes: true, auth: false, agents: parseAgents(['pm:product']), env: { ...env, HOME: scratch() } }), g);
+  expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-pm', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } })]]);
+  expect(g.lines.join('\n')).toContain('On first start each entry signs in by itself in your browser, as its own agent');
+
+  // From a konjir with no checkout beside it (the published package), the channel can't be set up: --http can.
+  expect(await rejection(connectHarness(options(server, scratch(), { harness: 'claude', bridge: '', yes: true }), world(server, idp, async () => 0))))
+    .toMatch(/runs from a checkout of github.com\/konjir\/kolab, and this konjir isn't running from one.*or pass --http/);
+  expect(await rejection(connectHarness(options(server, scratch(), { http: true, yes: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
 });
 
 test('a kept konjir login is never made the person: one that works as an agent stays as it is, untouched; one already the person\'s is used, and left alone', async () => {
