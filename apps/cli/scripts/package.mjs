@@ -20,9 +20,10 @@
 // (--compile-executable-path), not on runtimes bun fetches itself. A new Bun means new hashes there:
 // take them from the release's SHASUMS256.txt.
 //
-// THIRD-PARTY-NOTICES.md lists every package the bundle inlines (from Bun's metafile), with its
-// licence text, and the Bun runtime the binaries embed. It ships in the npm package and with the
-// binaries.
+// konjir is licensed Apache-2.0 (D63; apps/cli/LICENSE, the full licence text). LICENSE, and
+// THIRD-PARTY-NOTICES.md, which lists every package the bundle inlines (from Bun's metafile) with
+// its licence text, and the Bun runtime the binaries embed, ship in the npm package and with the
+// binaries. The build refuses a manifest that declares any other licence.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -34,6 +35,7 @@ const root = join(app, '../..');
 const manifest = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
 const pinned = JSON.parse(readFileSync(join(app, 'bun-runtimes.json'), 'utf8'));
 const entry = join(app, 'src/main.ts');
+if (manifest.license !== 'Apache-2.0') throw new Error(`apps/cli/package.json declares the licence ${manifest.license}, but konjir is Apache-2.0`);
 // The targets we ship, and the Bun release zip each compiles on. x64 uses Bun's baseline
 // runtime, which runs on CPUs without AVX2. `binaries` with no arguments builds them all.
 const TARGETS = {
@@ -121,7 +123,7 @@ function notices(packages) {
   const parts = [
     '# Third-party notices for konjir',
     '',
-    `konjir ${manifest.version} bundles the following packages into konjir.mjs and into each single-file binary. Their licences follow.`,
+    `konjir ${manifest.version} is licensed under the Apache License 2.0 (see LICENSE). It bundles the following packages into konjir.mjs and into each single-file binary. Their licences follow.`,
     '',
     ...packages.flatMap((p) => [
       `## ${p.name} ${p.version} (${p.license})`,
@@ -175,12 +177,13 @@ if (mode === 'bun') {
     license: manifest.license,
     type: 'module',
     bin: { konjir: 'konjir.mjs' },
-    files: ['konjir.mjs', 'THIRD-PARTY-NOTICES.md'],
+    files: ['konjir.mjs', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
     engines: manifest.engines,
     publishConfig: manifest.publishConfig,
   };
   writeFileSync(join(out, 'package.json'), `${JSON.stringify(published, null, 2)}\n`);
   copyFileSync(join(app, 'README.npm.md'), join(out, 'README.md'));
+  copyFileSync(join(app, 'LICENSE'), join(out, 'LICENSE'));
 } else if (mode === 'binaries') {
   checkBun();
   const targets = rest.length ? rest : Object.keys(TARGETS);
@@ -198,6 +201,7 @@ if (mode === 'bun') {
   }
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
   rmSync(metafile);
+  copyFileSync(join(app, 'LICENSE'), join(out, 'LICENSE'));
 } else {
   throw new Error('usage: node scripts/package.mjs npm | binaries [target…] | bun <dir>');
 }

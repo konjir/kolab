@@ -90,6 +90,10 @@ jobs:
           npm pack ./apps/cli/dist-npm --pack-destination "$RUNNER_TEMP/pack"
           ls -l apps/cli/dist-bin "$RUNNER_TEMP/pack"
 
+      # konjir is Apache-2.0: the tarball and the binaries carry LICENSE and the third-party notices.
+      - name: Check the licence ships
+        run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/pack/konjir-*.tgz apps/cli/dist-bin
+
       - name: Choose a throwaway admin token for the test Kolab
         run: |
           token=$(openssl rand -hex 18)
