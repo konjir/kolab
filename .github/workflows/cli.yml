@@ -21,6 +21,7 @@ on:
     paths: &paths
       - apps/cli/**
       - libs/types/**
+      - libs/login/**
       - package.json
       - package-lock.json
       - nx.json
