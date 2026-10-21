@@ -13,8 +13,9 @@
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
  *   konjir login [--kolab K] [--role R]  -> sign in with the browser (OAuth, D55); later commands use it
  *   konjir logout [--forget]
- *   konjir connect opencode|claude [--kolab K] [--agent label[:role]]… [--global] [--force] [--yes] [--no-auth]
- *                                        -> one MCP entry per agent of yours in the harness's config (W3.7, D59)
+ *   konjir connect opencode|claude [--kolab K] [--agent label[:role]]… [--global] [--force] [--yes] [--no-auth] [--http]
+ *                                        -> one MCP entry per agent of yours in the harness's config (W3.7, D59);
+ *                                           for Claude Code, the Konjir channel bridge (W3.8, D61), or with --http its HTTP entry
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -26,9 +27,9 @@ import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
-import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness, type PersonSession } from './connect.js';
+import { CHANNEL_CLIENT_NAME, HARNESSES, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
 
-export { StoredLogin, credentialsPath, login, logout } from './login.js';
+export { StoredLogin, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -143,11 +144,13 @@ Sign in:   konjir login [--kolab <name>] [--role product|engineer] signs in with
            Kolab): you choose who this CLI works as (an agent of yours, by default), the kolab and the role.
            Every later command uses that sign-in, renewing it by itself. konjir logout revokes it.
 Harnesses: konjir connect opencode|claude [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--yes]
-           [--no-auth] connects a harness to a kolab, one agent per entry (by default product and engineer):
+           [--no-auth] [--http] connects a harness to a kolab, one agent per entry (by default product and engineer):
            it makes or reuses your agents <you>-<label> (signed in as yourself for a moment, in memory only, then
            revoked: on Kolab's page, choose Yourself by hand), shows the change to opencode.json or .mcp.json (with --global, your own settings) and asks
            first, then signs each entry in as its agent. --force replaces konjir-<label> entries already there;
-           --force-path writes a config file that links outside the project.
+           --force-path writes a config file that links outside the project. For Claude Code each entry is the
+           Konjir channel (from this checkout): Kolab's tools and the inbox pushed into the session, on one sign-in;
+           --http writes Claude Code's plain HTTP entry instead, with no channel.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
            token, the sign-in konjir login keeps for that URL.
 Version:   konjir --version
@@ -275,16 +278,16 @@ export async function main(argv: string[]) {
 
   if (cmd === 'connect') {
     const harness = rest.shift();
-    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--yes] [--no-auth] [--url <kolab>]`);
+    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--yes] [--no-auth] [--http] [--url <kolab>]`);
     const kolab = flag(rest, 'kolab');
     const agents: string[] = [];
     for (let a = flag(rest, 'agent'); a !== undefined; a = flag(rest, 'agent')) agents.push(a);
     const on = (name: string) => { const i = rest.indexOf(`--${name}`); if (i >= 0) rest.splice(i, 1); return i >= 0; };
-    const opts = { global: on('global'), force: on('force'), forcePath: on('force-path'), yes: on('yes'), auth: !on('no-auth') };
+    const opts = { global: on('global'), force: on('force'), forcePath: on('force-path'), yes: on('yes'), auth: !on('no-auth'), http: on('http') };
     if (rest.length) throw new Error(`konjir connect: unknown ${rest.join(' ')}`);
     const mcp = mcpUrl(url);
     await connectHarness({ harness: harness as Harness, url: mcp, kolab, agents: parseAgents(agents), cwd: process.cwd(), env: process.env, ...opts },
-      terminalIO(() => personSession(mcp, token, { kolab })));
+      terminalIO(() => personSession(mcp, token, { kolab }), signInAgent));
     return;
   }
 
@@ -472,6 +475,16 @@ export async function personSession(url: string, token: string | undefined, opts
     throw new Error(`on Kolab's page you chose ${s.me.actor}, not Yourself, and konjir connect makes your agents as you. Run it again, and under "Work as" choose "Yourself"`);
   }
   return { me: s.me, call: (verb, args) => call(s.client, verb, args), close: async () => { await s.client.close(); await end(); } };
+}
+
+/**
+ * Signs a Claude Code channel entry in as its agent (W3.8), with the browser, kept in the agent's own
+ * credentials file, where the bridge started with KONJIR_AGENT finds it. Its scope preselects the
+ * agent, kolab and role; never Yourself (D60).
+ */
+export async function signInAgent(e: Entry, credentials: string, opts: { open?: (u: URL) => void | Promise<void>; log?: (line: string) => void } = {}): Promise<string> {
+  const who = await login(e.url, { path: credentials, clientName: CHANNEL_CLIENT_NAME, scope: entryScope(e.kolab, e.role, e.agent), open: opts.open, log: opts.log });
+  return who.actor;
 }
 
 /** The error for a Kolab that isn't there, or undefined for any other failure. */

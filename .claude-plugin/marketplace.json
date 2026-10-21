@@ -6,7 +6,7 @@
     {
       "name": "konjir-channel",
       "source": "./apps/channel-bridge",
-      "description": "Pushes your Kolab inbox into the session as channel messages"
+      "description": "Kolab's tools on one sign-in, and your Kolab inbox pushed into the session as channel messages"
     }
   ]
 }

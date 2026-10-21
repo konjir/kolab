@@ -13,13 +13,26 @@
  * sign-in that finishes after a `konjir login` kept one yields: the other is kept, and the
  * bridge's own grant is revoked.
  */
-import { FileLock, StoredLogin, checkKolabUrl, login, openBrowser, safeUrl } from '@konjir/login';
+import { FileLock, StoredLogin, agentCredentialsPath, checkKolabUrl, login, openBrowser, safeUrl } from '@konjir/login';
 import { randomBytes } from 'node:crypto';
 import type { ChannelMessage } from './messages.js';
 
-/** What the bridge reaches Kolab with: exactly one of a token and a sign-in. */
-export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefined }
-  | { token?: undefined; login: StoredLogin; awaiting?: 'another-channel' };
+/** What the bridge reaches Kolab with: exactly one of a token and a sign-in (and how that sign-in is made again). */
+export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefined; loginCommand?: undefined }
+  | { token?: undefined; login: StoredLogin; awaiting?: 'another-channel'; loginCommand?: string };
+
+/**
+ * KONJIR_SCOPE, as the bridge's own browser sign-in asks for it: what Kolab's consent page
+ * preselects (`konjir kolab:<k> role:<r> agent:<id>`, which `konjir connect claude` writes). Never
+ * `as:self`: no app preselects acting as the person (D60). Anything but those words is dropped.
+ */
+export function scopeFrom(env: NodeJS.ProcessEnv): string | undefined {
+  const words = (env.KONJIR_SCOPE ?? '').split(/\s+/).filter((w) => w === 'konjir' || /^(kolab|role|agent):[a-z0-9][a-z0-9-]*$/.test(w));
+  return words.length ? words.join(' ') : undefined;
+}
+
+/** A word as a POSIX shell reads it, quoted only when it needs to be. */
+const shellWord = (w: string) => (/^[A-Za-z0-9_./:=@-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
 
 /** The name the bridge registers under, which Kolab's consent page shows. */
 export const CLIENT_NAME = 'konjir channel (Claude Code)';
@@ -65,19 +78,25 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   if (env.KONJIR_TOKEN) return { token: env.KONJIR_TOKEN };
   checkKolabUrl(url);
   const shown = safeUrl(url);
-  const stored = new StoredLogin(url, { clientName: CLIENT_NAME });
+  // KONJIR_AGENT: this entry's agent keeps its own sign-in, apart from the CLI's (konjir connect claude, W3.8).
+  const agent = env.KONJIR_AGENT?.trim() || undefined;
+  const path = agent ? agentCredentialsPath(agent, env) : undefined;
+  const scope = scopeFrom(env);
+  const loginCommand = path ? `KONJIR_CREDENTIALS=${shellWord(path)} konjir login --url ${shown}` : undefined;
+  const kept = () => new StoredLogin(url, { clientName: CLIENT_NAME, path });
+  const stored = kept();
   if (stored.signedIn) {
-    io.log(`using the sign-in konjir login keeps for ${shown}`);
-    return { login: stored };
+    io.log(agent ? `using the sign-in kept for ${agent} at ${shown}` : `using the sign-in konjir login keeps for ${shown}`);
+    return { login: stored, loginCommand };
   }
-  const run = `run konjir login --url ${shown} in a terminal`;
+  const run = `run ${loginCommand ?? `konjir login --url ${shown}`} in a terminal`;
   if (!signInOn(env)) {
     io.log(`no sign-in is kept for ${shown}, and KONJIR_CHANNEL_SIGN_IN is off: ${run}`);
-    return { login: stored };
+    return { login: stored, loginCommand };
   }
   if (!io.open && !browserAvailable(env)) {
     io.log(`no sign-in is kept for ${shown}, and no browser can be opened here (CI, SSH or no display): ${run}`);
-    return { login: stored };
+    return { login: stored, loginCommand };
   }
 
   // One bridge at a time: another holding the marker is signing in, and this one picks its sign-in up.
@@ -90,20 +109,22 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
     const why = mask(String((e as Error).message ?? e));
     if (/another konjir holds it/.test(why)) {
       io.log(`another konjir channel started a browser sign-in to ${shown}; this one will use that sign-in once it is done`);
-      return { login: stored, awaiting: 'another-channel' };
+      return { login: stored, awaiting: 'another-channel', loginCommand };
     }
     // A marker that is a symbolic link, or one konjir can't read or remove: said as it is.
     io.log(`the channel can't sign in by itself (${why}); ${run}`);
-    return { login: stored };
+    return { login: stored, loginCommand };
   }
   try {
     // Under the credentials lock: a sign-in kept since the first look is used, and nothing is registered.
     // What it saw there is the sign-in's baseline: none (''), so any kept after this makes it yield.
     if (await stored.locked(async () => stored.signedIn)) {
       io.log(`using the sign-in another konjir kept for ${shown} meanwhile`);
-      return { login: stored };
+      return { login: stored, loginCommand };
     }
     const who = await login(url, {
+      path,
+      scope,
       clientName: CLIENT_NAME,
       timeoutMs,
       yieldTo: '',
@@ -126,5 +147,5 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   } finally {
     marker.release(me);
   }
-  return { login: new StoredLogin(url, { clientName: CLIENT_NAME }) };
+  return { login: kept(), loginCommand };
 }

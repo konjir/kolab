@@ -10,6 +10,13 @@
  * a listen stream when its token expires or a refresh rotates it (API4): the
  * bridge then connects again, the MCP client refreshing the token under the
  * credentials file's lock, and re-reads what changed meanwhile.
+ *
+ * It also passes Kolab's own tools, resources and prompts through to Claude Code (W3.8, D61), on
+ * this same connection and sign-in, so Claude Code needs one Konjir server and one sign-in: one
+ * session per actor (ENF4) holds. It lists them from Kolab, refreshing on list_changed and on each
+ * reconnect, and forwards each call as it came. A call is sent once: the MCP client sends it again
+ * only after Kolab answered 401, which Kolab gives before it runs anything (a token expired or
+ * rotated mid-call, refreshed under the lock), never after a timeout or a lost connection.
  */
 import { Client, StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
 import { safeUrl, type StoredLogin } from '@konjir/login';
@@ -24,6 +31,8 @@ export interface BridgeOptions {
   login?: StoredLogin;
   /** With no sign-in kept yet: another channel's browser sign-in is under way, which this one will use. */
   awaiting?: 'another-channel';
+  /** The command that signs this bridge's sign-in in again, as the session is told it; `konjir login --url <url>` by default. */
+  loginCommand?: string;
   /** Deliver a message to the Claude Code session. */
   forward(message: ChannelMessage): Promise<void>;
   /** A line for the operator (stderr). Never carries a token. */
@@ -38,7 +47,19 @@ export interface BridgeOptions {
   liveness?: { intervalMs: number; timeoutMs: number };
   /** The fetch the Kolab transport uses (tests stand in a network here). */
   fetch?: FetchLike;
+  /**
+   * Passing Kolab through (W3.8): how long a call waits for a connection to Kolab when there is
+   * none just now (reconnecting, say), and how long it waits for Kolab's answer once sent.
+   */
+  passthrough?: { connectWaitMs?: number; callTimeoutMs?: number };
 }
+
+/** What Kolab lists, passed through to Claude Code. */
+export type ListKind = 'tools' | 'prompts' | 'resources' | 'resourceTemplates';
+const LIST_KINDS: ListKind[] = ['tools', 'prompts', 'resources', 'resourceTemplates'];
+
+/** A call the bridge couldn't pass to Kolab, because it has no connection to Kolab now. Nothing was sent. */
+export class NotConnected extends Error {}
 
 export interface Whoami { actor: string; role: string; layer: string; subscribe: string[] }
 
@@ -75,10 +96,24 @@ export class KolabBridge {
   me?: Whoami;
   /** Called each time a subscription is open and caught up; for tests. */
   onListening?: (me: Whoami) => void;
+  /** Called when one of Kolab's lists, as passed through, has changed (or is first known). */
+  onListChanged?: (kind: ListKind) => void;
+  /** Kolab's lists as last read: what Claude Code is shown, unchanged. */
+  private readonly catalog = new Map<ListKind, { json: string; items: unknown[] }>();
+  /** The connection to Kolab that is listening now, which passes calls through; none while (re)connecting. */
+  private live?: Client;
+  private readonly liveWaiters = new Set<() => void>();
+  /** Calls in flight on each connection, so a connection being replaced is closed only once they are answered. */
+  private readonly inflight = new Map<Client, Set<Promise<unknown>>>();
+  /** Why there is no connection just now, as the person should hear it. */
+  private down = 'it is still connecting to Kolab';
 
   constructor(private readonly opts: BridgeOptions) {
     if (!!opts.token === !!opts.login) throw new Error('the bridge takes a token or a sign-in, exactly one');
   }
+
+  /** The command the session is told signs this bridge in again. */
+  private get loginCommand() { return this.opts.loginCommand ?? `konjir login --url ${safeUrl(this.opts.url)}`; }
 
   /** What the bridge reaches Kolab with, as the person knows it. */
   private get credential() { return this.opts.login ? `the sign-in konjir login keeps for ${safeUrl(this.opts.url)}` : 'KONJIR_TOKEN'; }
@@ -91,6 +126,8 @@ export class KolabBridge {
   /** Stop listening. Requests in flight are ended, not waited out. */
   async stop() {
     this.stopped = true;
+    this.down = 'it is stopping';
+    this.setLive(undefined);
     this.wake();
     this.abort.abort();
     await this.client?.close().catch(() => undefined);
@@ -152,8 +189,18 @@ export class KolabBridge {
           });
         };
         client.setNotificationHandler('notifications/resources/updated', (n) => enqueue(n.params.uri));
+        // Kolab's lists, passed through: re-read when Kolab says one changed.
+        const caps = client.getServerCapabilities() ?? {};
+        client.setNotificationHandler('notifications/tools/list_changed', () => { void this.refresh(c, ['tools']); });
+        client.setNotificationHandler('notifications/prompts/list_changed', () => { void this.refresh(c, ['prompts']); });
+        client.setNotificationHandler('notifications/resources/list_changed', () => { void this.refresh(c, ['resources', 'resourceTemplates']); });
         // Listen first, then read: a change landing in between is then both signalled and read.
-        const subscription = await client.listen({ resourceSubscriptions: me.subscribe });
+        const subscription = await client.listen({
+          resourceSubscriptions: me.subscribe,
+          ...(caps.tools?.listChanged ? { toolsListChanged: true } : {}),
+          ...(caps.prompts?.listChanged ? { promptsListChanged: true } : {}),
+          ...(caps.resources?.listChanged ? { resourcesListChanged: true } : {}),
+        });
         // Read each resource: a baseline the first time it is read, and on a reconnect,
         // whatever changed while the bridge was away.
         const firstReads: { uri: string; body: unknown }[] = [];
@@ -165,6 +212,9 @@ export class KolabBridge {
           this.log(`Kolab refused a read with ${this.credential}; reconnecting`);
         } else {
           this.lastProblem = undefined;
+          // Kolab's lists, read afresh on every connection, so a change missed while away is caught.
+          await this.refresh(client, LIST_KINDS);
+          this.setLive(client);
           this.log(`${everConnected ? 'reconnected' : 'connected'} to Kolab at ${safeUrl(this.opts.url)} as ${me.actor} (${me.role}); watching ${me.subscribe.join(', ')}`);
           everConnected = true;
           if (!this.summarized && firstReads.length) {
@@ -177,6 +227,8 @@ export class KolabBridge {
           const opened = Date.now();
           const how = await Promise.race([subscription.closed.then(() => 'closed' as const), ended, this.stopping]);
           alive();
+          this.down = 'it is reconnecting to Kolab';
+          this.setLive(undefined);
           if (Date.now() - opened >= steadyMs) delay = initialMs;
           if (how !== 'closed') await subscription.close().catch(() => undefined);
           if (how === 'stopped') break;
@@ -189,6 +241,7 @@ export class KolabBridge {
         if (this.stopped) break;
         const msg = messageOf(e);
         const login = this.opts.login;
+        this.down = this.reasonDown(e, msg);
         if (login && (e instanceof SignedOut || /has ended or was revoked: run konjir login/.test(msg))) {
           // No sign-in, or it ended (revoked, lapsed, or replaced by a newer one as the same actor, ENF4).
           // The bridge never opens the browser again by itself: it waits, re-reading the credentials
@@ -202,8 +255,8 @@ export class KolabBridge {
             awaiting ? `waiting for the browser sign-in to ${url} another konjir channel started, checking every ${Math.round(maxMs / 1000)}s`
               : `${none ? 'no sign-in is kept' : 'the sign-in kept has ended or was revoked'} for ${url}; waiting for konjir login, checking every ${Math.round(maxMs / 1000)}s`, {
               content: awaiting
-                ? `The Konjir channel is waiting for a sign-in to Kolab at ${url} that another Konjir channel started in the browser, and picks it up by itself once it is done. If none finishes, tell the user to run konjir login --url ${url} in a terminal, choosing the agent this session works as.`
-                : `The Konjir channel ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${url}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run konjir login --url ${url} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
+                ? `The Konjir channel is waiting for a sign-in to Kolab at ${url} that another Konjir channel started in the browser, and picks it up by itself once it is done. If none finishes, tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as.`
+                : `The Konjir channel ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${url}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
               meta: { kind: 'bridge', status: awaiting ? 'awaiting_sign_in' : none ? 'unconfigured' : 'signed_out' },
             });
         } else if (login && (isRefusal(e) || listenRefusal(e) === 'session_ended')) {
@@ -228,7 +281,9 @@ export class KolabBridge {
           await this.problem(`unreachable:${msg}`, `cannot reach Kolab at ${safeUrl(this.opts.url)} (${msg}); retrying with backoff`);
         }
       } finally {
-        await client?.close().catch(() => undefined);
+        if (client && this.live === client) this.setLive(undefined);
+        // A connection being replaced is closed once the calls on it are answered: never cut off mid-call.
+        if (client) await this.retire(client, this.stopped);
         if (this.client === client) this.client = undefined;
         // A hold this connection leaked is let go, but never a refresh still in flight (its lock and its
         // compare-and-swap protect the tokens another konjir saves meanwhile); the lock's maximum hold covers the rest.
@@ -237,6 +292,110 @@ export class KolabBridge {
       if (this.stopped) break;
       await this.sleep(delay);
       delay = Math.min(delay * 2, maxMs);
+    }
+  }
+
+  /** The connection calls go through now, or none; waiting calls are told either way. */
+  private setLive(client: Client | undefined) {
+    this.live = client;
+    for (const w of [...this.liveWaiters]) w();
+  }
+
+  /** Why there's no connection, in words for the session; no token in them. */
+  private reasonDown(e: unknown, msg: string) {
+    const url = safeUrl(this.opts.url);
+    if (e instanceof SignedOut || /has ended or was revoked: run konjir login/.test(msg)) {
+      return `it has no sign-in to Kolab at ${url}: tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as`;
+    }
+    if (e instanceof NotAnAgentToken) return 'its KONJIR_TOKEN is not an agent session token';
+    if (isRefusal(e) || listenRefusal(e) === 'session_ended') return `Kolab at ${url} refused its sign-in just now`;
+    return `it can't reach Kolab at ${url} just now`;
+  }
+
+  /**
+   * Closes a connection no longer listening, once every call in flight on it is answered (each has
+   * its own timeout), so a reconnect at token expiry never cuts a call off after it was sent. `now`:
+   * stop() aborts every request anyway, so close at once.
+   */
+  private async retire(client: Client, now: boolean) {
+    const calls = this.inflight.get(client);
+    const close = async () => { this.inflight.delete(client); await client.close().catch(() => undefined); };
+    if (now || !calls?.size) { await close(); return; }
+    void Promise.allSettled([...calls]).then(close);
+  }
+
+  /** The connection to pass a call through, waiting up to `waitMs` for one; throws NotConnected, having sent nothing. */
+  private async connection(signal: AbortSignal | undefined, waitMs: number): Promise<Client> {
+    const end = Date.now() + waitMs;
+    while (!this.live) {
+      if (this.stopped) throw new NotConnected(this.down);
+      if (signal?.aborted) throw signal.reason ?? new Error('cancelled');
+      const left = end - Date.now();
+      if (left <= 0) throw new NotConnected(this.down);
+      await new Promise<void>((resolve) => {
+        const done = () => { clearTimeout(t); this.liveWaiters.delete(done); signal?.removeEventListener('abort', done); resolve(); };
+        const t = setTimeout(done, left);
+        t.unref();
+        this.liveWaiters.add(done);
+        signal?.addEventListener('abort', done, { once: true });
+      });
+    }
+    return this.live;
+  }
+
+  /**
+   * Re-reads Kolab's lists of `kinds`, and says which changed. A list Kolab doesn't serve is empty;
+   * one that can't be read just now keeps what was read before.
+   */
+  private async refresh(client: Client, kinds: ListKind[]) {
+    const caps = client.getServerCapabilities() ?? {};
+    for (const kind of kinds) {
+      let items: unknown[];
+      try {
+        if (kind === 'tools') items = caps.tools ? (await client.listTools(undefined, { cacheMode: 'bypass' })).tools : [];
+        else if (kind === 'prompts') items = caps.prompts ? (await client.listPrompts(undefined, { cacheMode: 'bypass' })).prompts : [];
+        else if (kind === 'resources') items = caps.resources ? (await client.listResources(undefined, { cacheMode: 'bypass' })).resources : [];
+        else items = caps.resources ? (await client.listResourceTemplates(undefined, { cacheMode: 'bypass' })).resourceTemplates : [];
+      } catch (e) {
+        this.log(`could not list Kolab's ${kind}: ${messageOf(e)}`);
+        continue;
+      }
+      const json = JSON.stringify(items);
+      if (this.catalog.get(kind)?.json === json) continue;
+      this.catalog.set(kind, { json, items });
+      this.onListChanged?.(kind);
+    }
+  }
+
+  /**
+   * Kolab's list of `kind`, unchanged, as last read. Before the first connection it waits up to
+   * `waitMs` for one; with nothing read by then it is empty, and onListChanged says when it is known.
+   */
+  async list(kind: ListKind, waitMs = 10_000): Promise<unknown[]> {
+    if (!this.catalog.has(kind)) await this.connection(undefined, waitMs).catch(() => undefined);
+    return this.catalog.get(kind)?.items ?? [];
+  }
+
+  /** The tool Kolab lists as `name`, if it does. */
+  tool(name: string): { name: string; outputSchema?: Record<string, unknown> } | undefined {
+    return (this.catalog.get('tools')?.items as { name: string; outputSchema?: Record<string, unknown> }[] | undefined)?.find((t) => t.name === name);
+  }
+
+  /**
+   * Passes one request to Kolab as it came, on the connection listening now, and returns Kolab's
+   * result as it came. Sent once (see the file's comment). `signal` is Claude Code cancelling it.
+   */
+  async forward(method: 'tools/call' | 'resources/read' | 'prompts/get', params: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const { connectWaitMs = 15_000, callTimeoutMs = 120_000 } = this.opts.passthrough ?? {};
+    const client = await this.connection(signal, connectWaitMs);
+    let calls = this.inflight.get(client);
+    if (!calls) this.inflight.set(client, calls = new Set());
+    const call = client.request({ method, params }, { signal, timeout: callTimeoutMs }) as Promise<Record<string, unknown>>;
+    calls.add(call);
+    try {
+      return await call;
+    } finally {
+      calls.delete(call);
     }
   }
 

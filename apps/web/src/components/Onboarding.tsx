@@ -53,6 +53,15 @@ export const konjirCommand = (cli: WebCli | undefined) => (cli?.npm ? `npx ${cli
 /** `konjir connect` for a harness (W3.7, D59): one agent of yours per entry, product and engineer by default. */
 export const konjirConnect = (cli: WebCli | undefined, harness: 'opencode' | 'claude', origin: string, kolab: string) => `${konjirCommand(cli)} connect ${harness} --url ${origin} --kolab ${kolab}`;
 
+/**
+ * `konjir connect claude` (W3.8, D61): the Konjir channel bridge, Claude Code's one Konjir server,
+ * which runs from a checkout, so always the checkout's konjir, published or not.
+ */
+export const konjirConnectChannel = (origin: string, kolab: string) => `${CHECKOUT}/bin/konjir connect claude --url ${origin} --kolab ${kolab}`;
+
+/** Starting Claude Code with the entries konjir connect claude writes by default, loaded as development channels. */
+export const CLAUDE_WITH_CHANNEL = 'claude --dangerously-load-development-channels server:konjir-product server:konjir-engineer';
+
 /** Where the konjir CLI comes from, when it isn't published: a checkout of the repository. */
 function GetTheCli({ cli }: { cli: WebCli | undefined }) {
   if (cli?.npm) return <p className="why-not">The konjir CLI is the npm package <span className="mono">{cli.npm}</span>, run with <span className="mono">npx</span> (Node 22 or later).</p>;
@@ -88,14 +97,20 @@ export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; 
         <h3 id="c-connect-opencode">OpenCode</h3>
         <Command label="Connect OpenCode with konjir connect" text={konjirConnect(cli, 'opencode', origin, me.kolab)} />
         <h3 id="c-connect-claude">Claude Code</h3>
-        <Command label="Connect Claude Code with konjir connect" text={konjirConnect(cli, 'claude', origin, me.kolab)} />
+        <p className="why-not">For Claude Code, each entry is the Konjir channel: one Konjir server with Kolab’s tools, which also pushes your inbox into the session as it changes, on one sign-in per agent. It runs from a checkout of <span className="mono">github.com/konjir/kolab</span> at <span className="mono">{CHECKOUT}</span>{cli?.npm ? ', so make one first' : ''}, and signs each entry in as its agent in your browser.</p>
+        {cli?.npm && <Command label="Get the Konjir channel from its repository" text={`git clone https://github.com/konjir/kolab ${CHECKOUT} && (cd ${CHECKOUT} && npm ci)`} />}
+        <Command label="Connect Claude Code with konjir connect" text={konjirConnectChannel(origin, me.kolab)} />
+        <p className="why-not">Then start Claude Code in your project with the channel. Channels are a research preview, so it loads as a development channel: choose “I am using this for local development” at the warning.</p>
+        <Command label="Start Claude Code with the Konjir channel" text={CLAUDE_WITH_CHANNEL} />
+        <p className="why-not">Don’t want channels? <span className="mono">--http</span> writes Claude Code’s plain HTTP entry instead, signed in from <span className="mono">/mcp</span>.</p>
+        <Command label="Connect Claude Code over HTTP, with no channel" text={`${konjirConnect(cli, 'claude', origin, me.kolab)} --http`} />
         <p className="why-not">Choose the agents with <span className="mono">--agent &lt;label&gt;[:product|engineer]</span>, once for each; <span className="mono">--global</span> writes your own settings rather than the project’s.</p>
       </section>
       <section className="newk" aria-labelledby="c-mcp">
         <h2 className="section-title" id="c-mcp">Over MCP: Claude Code, OpenCode</h2>
         <p className="why-not">Or by hand: add Kolab as an MCP server and sign in. On Kolab’s page, choose the agent it works as (a new one of yours by default), the kolab ({me.kolab}) and its role. Then ask the agent to call <span className="mono">konjir_instructions</span> before its first change: it returns the rules and {me.kolab}’s precedent. No CLI is needed.</p>
         <h3 id="c-claude">Claude Code</h3>
-        <p className="why-not">Add it, then run <span className="mono">/mcp</span> in Claude Code and sign in.</p>
+        <p className="why-not">Add it, then run <span className="mono">/mcp</span> in Claude Code and sign in. This entry has no channel; beside the Konjir channel it isn’t needed, and signed in as the same agent the two would end each other’s session (one session each).</p>
         <Command label="Add Kolab to Claude Code" text={`claude mcp add --transport http konjir ${mcp}`} />
         <h3 id="c-opencode">OpenCode</h3>
         <p className="why-not">Merge this <span className="mono">mcp.konjir</span> entry into your <span className="mono">opencode.json</span>, keeping what is already there (or start the file with it), then sign in.</p>

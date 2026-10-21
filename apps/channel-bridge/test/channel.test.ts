@@ -75,12 +75,12 @@ async function bridge(url: string, token: string, options: ConstructorParameters
   };
 }
 
-test('the bridge advertises claude/channel on the 2025-era protocol only', async () => {
+test('the bridge advertises claude/channel, and Kolab passed through, on the 2025-era protocol by default', async () => {
   const server = await boot(await persistentStore());
   const pm = await session(server, 'pm', 'product');
   const b = await bridge(server.url, pm.token);
   expect(b.claude.getServerCapabilities()?.experimental).toStrictEqual({ 'claude/channel': {} });
-  expect(b.claude.getServerCapabilities()?.tools).toBeUndefined();
+  expect(b.claude.getServerCapabilities()?.tools).toStrictEqual({ listChanged: true });   // Kolab's own tools, passed through (W3.8)
   expect(b.claude.getNegotiatedProtocolVersion()).toBe('2025-11-25');
   expect(b.claude.getInstructions()).toMatch(/<channel> tag/);
   await b.claude.close();

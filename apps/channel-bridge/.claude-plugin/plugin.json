@@ -1,7 +1,7 @@
 {
   "name": "konjir-channel",
   "displayName": "Konjir channel",
-  "description": "Pushes your Kolab inbox into the session: questions and notes for your layer, marks on your work, and answers to what you raised.",
+  "description": "Konjir in Claude Code, on one sign-in: Kolab's own tools, and your Kolab inbox pushed into the session (questions and notes for your layer, marks on your work, and answers to what you raised).",
   "author": {
     "name": "Konjir"
   },
