@@ -29,7 +29,7 @@ const ROLES = ['product', 'engineer'];
 import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
 import { CHANNEL_CLIENT_NAME, HARNESSES, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
 
-export { StoredLogin, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
+export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -480,10 +480,15 @@ export async function personSession(url: string, token: string | undefined, opts
 /**
  * Signs a Claude Code channel entry in as its agent (W3.8), with the browser, kept in the agent's own
  * credentials file, where the bridge started with KONJIR_AGENT finds it. Its scope preselects the
- * agent, kolab and role; never Yourself (D60).
+ * agent, kolab and role; never Yourself (D60). A sign-in as anyone else is revoked, forgotten, and an error.
  */
 export async function signInAgent(e: Entry, credentials: string, opts: { open?: (u: URL) => void | Promise<void>; log?: (line: string) => void } = {}): Promise<string> {
   const who = await login(e.url, { path: credentials, clientName: CHANNEL_CLIENT_NAME, scope: entryScope(e.kolab, e.role, e.agent), open: opts.open, log: opts.log });
+  if (who.actor !== e.agent) {
+    // Chosen otherwise on Kolab's page (another agent, or Yourself): never kept as this entry's sign-in.
+    const r = await logout(e.url, { path: credentials, forget: true });
+    throw new Error(`it signed in as ${who.actor}, not ${e.agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept for ${e.name}`);
+  }
   return who.actor;
 }
 

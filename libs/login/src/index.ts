@@ -103,6 +103,23 @@ export function agentCredentialsPath(agent: string, env: Record<string, string |
   return join(dirname(credentialsPath(env)), 'agents', `${agent}.json`);
 }
 
+/**
+ * The agent's credentials file, its folder made ready: `agents/` is konjir's own, whatever folder
+ * KONJIR_CREDENTIALS names, so it is made 0700, and refused if it is a symbolic link, belongs to
+ * someone else, or others may write in it (another local user could then replace the agent's file).
+ */
+export function agentCredentials(agent: string, env: Record<string, string | undefined> = process.env): string {
+  const file = agentCredentialsPath(agent, env);
+  const dir = dirname(file);
+  mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if (codeOf(e) !== 'EEXIST') throw e; }
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} isn't a folder of konjir's (it is a symbolic link, or not a folder), so konjir won't keep an agent's sign-in there: remove it`);
+  if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} belongs to someone else, so konjir won't keep an agent's sign-in there: remove it, or set KONJIR_CREDENTIALS to a file in a folder of your own`);
+  if ((st.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  return file;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A lock untouched for longer than this is taken for a crashed or frozen holder's, and broken. */

@@ -4,20 +4,22 @@
 // the browser by itself when nothing is kept, waits for konjir login once signed out, and never
 // prints a token. KONJIR_TOKEN still works, and overrides a kept sign-in. The identity provider is a
 // stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, test } from '@jest/globals';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { StubIdentity, startServer } from '@konjir/server';
-import { FileLock, StoredLogin, agentCredentialsPath, login } from '@konjir/login';
-import { closeAtEnd, openKolab } from '@konjir/engine/testing';
+import { FileLock, StoredLogin, agentCredentials, agentCredentialsPath, login } from '@konjir/login';
+import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 import { KolabBridge } from '../src/bridge.js';
 import type { ChannelMessage } from '../src/messages.js';
-import { CLIENT_NAME, bridgeAuth, browserAvailable } from '../src/sign-in.js';
+import { CLIENT_NAME, bridgeAuth, browserAvailable, scopeFrom } from '../src/sign-in.js';
 
 const START = resolve(import.meta.dirname, '../scripts/start.sh');
+/** A scratch home for each spawned bridge: none ever reaches the person's own ~/.config. */
+const scratchHome = () => mkdtempSync(join(tmpdir(), 'konjir-home-'));
 
 /** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on the client's loopback callback. */
 async function browse(start: URL, form: Record<string, string>): Promise<string> {
@@ -124,7 +126,7 @@ test('with the sign-in konjir login keeps, and no token, the session hears its i
   // The bridge as Claude Code starts it, with no KONJIR_TOKEN, and its own browser sign-in off: it must use what is kept.
   const transport = new StdioClientTransport({
     command: START,
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_SIGN_IN: 'off', KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
+    env: { PATH: process.env.PATH ?? '', HOME: scratchHome(), XDG_CONFIG_HOME: scratchHome(), KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_SIGN_IN: 'off', KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
     stderr: 'pipe',
   });
   let stderr = '';
@@ -176,7 +178,7 @@ test('with the sign-in konjir login keeps, and no token, the session hears its i
   const handIssued = await annAs(kolab, 'engineer');
   const byToken = new StdioClientTransport({
     command: START,
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KONJIR_URL: server.url, KONJIR_TOKEN: handIssued, KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
+    env: { PATH: process.env.PATH ?? '', HOME: scratchHome(), XDG_CONFIG_HOME: scratchHome(), KONJIR_URL: server.url, KONJIR_TOKEN: handIssued, KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
     stderr: 'pipe',
   });
   let tokenStderr = '';
@@ -459,7 +461,7 @@ test('W3.8 done when: with only the bridge configured, as konjir connect claude 
 
   const transport = new StdioClientTransport({
     command: START,
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-claude', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-claude', KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_SIGN_IN: 'off', KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
+    env: { PATH: process.env.PATH ?? '', HOME: scratchHome(), XDG_CONFIG_HOME: scratchHome(), KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-claude', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-claude', KONJIR_CREDENTIALS: credentials, KONJIR_CHANNEL_SIGN_IN: 'off', KONJIR_CHANNEL_BACKOFF_MS: '100,1000' },
     stderr: 'pipe',
   });
   let stderr = '';
@@ -508,3 +510,56 @@ test('W3.8 done when: with only the bridge configured, as konjir connect claude 
   await claude.close();
   await server.close();
 }, 180_000);
+
+test('W3.8: with KONJIR_AGENT, a sign-in kept for that agent that works as anyone else is refused whole: one message, nothing served, nothing heard', async () => {
+  const { idp, server } = await kolabWithSignIn();
+  const env = { KONJIR_CREDENTIALS: credentials };
+  // The file for ann-claude holds a sign-in as another agent of Ann's (chosen otherwise at consent).
+  const path = agentCredentials('ann-claude', env);
+  idp.next({ subject: '41', login: 'ann' });
+  await login(server.url, {
+    path, clientName: CLIENT_NAME, log: () => undefined,
+    open: (u) => { void browse(u, { as: 'new-agent', agent_label: 'other', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }); },
+  });
+  const messages: ChannelMessage[] = [];
+  const logs: string[] = [];
+  const auth = await bridgeAuth(server.url, { ...env, KONJIR_URL: server.url, KONJIR_AGENT: 'ann-claude', KONJIR_CHANNEL_SIGN_IN: 'off' }, { forward: async (m) => { messages.push(m); }, log: (l) => logs.push(l) });
+  expect(auth.agent).toBe('ann-claude');
+  let listens = 0;
+  const bridge = new KolabBridge({ url: server.url, ...auth, forward: async (m) => { messages.push(m); }, log: (l) => logs.push(l), backoff: { initialMs: 100, maxMs: 200 }, passthrough: { connectWaitMs: 300 } });
+  bridge.onListening = () => { listens++; };
+  closeAtEnd({ close: () => bridge.stop() });
+  bridge.start();
+  const told = await until('the refusal', () => messages.find((m) => m.meta.status === 'wrong_actor'));
+  expect(told.content).toContain('The Konjir channel\'s sign-in for ann-claude works as ann-other, not ann-claude, so it serves no Konjir tools and hears no inbox changes.');
+  expect(told.content).toContain(`KONJIR_CREDENTIALS=${path} konjir login --url ${server.url}`);
+  await new Promise((r) => setTimeout(r, 600));   // retried, and said once
+  expect(messages.filter((m) => m.meta.status === 'wrong_actor')).toHaveLength(1);
+  expect(listens).toBe(0);
+  expect(await bridge.list('tools', 100)).toStrictEqual([]);
+  expect(await rejection(bridge.forward('tools/call', { name: 'konjir_whoami', arguments: {} }))).toMatch(/its sign-in works as ann-other, not ann-claude/);
+  await bridge.stop();
+  await server.close();
+}, 60_000);
+
+test('W3.8: KONJIR_SCOPE keeps only konjir, kolab:, role: and agent: words, never as:self, and with KONJIR_AGENT no other agent', () => {
+  expect(scopeFrom({ KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm as:self openid' })).toBe('konjir kolab:anns role:product agent:ann-pm');
+  expect(scopeFrom({ KONJIR_SCOPE: 'konjir kolab:anns agent:ann-dev', KONJIR_AGENT: 'ann-pm' })).toBe('konjir kolab:anns');
+  expect(scopeFrom({ KONJIR_SCOPE: 'konjir agent:ann-pm', KONJIR_AGENT: 'ann-pm' })).toBe('konjir agent:ann-pm');
+  expect(scopeFrom({})).toBeUndefined();
+});
+
+test('W3.8: konjir keeps an agent\'s sign-in only in an agents/ folder of its own: made 0700, tightened if looser, and refused as a symbolic link', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'konjir-agents-'));
+  const env = { KONJIR_CREDENTIALS: join(dir, 'credentials.json') };
+  expect(agentCredentials('ann-pm', env)).toBe(join(dir, 'agents', 'ann-pm.json'));
+  expect(statSync(join(dir, 'agents')).mode & 0o777).toBe(0o700);
+  chmodSync(join(dir, 'agents'), 0o777);
+  agentCredentials('ann-pm', env);
+  expect(statSync(join(dir, 'agents')).mode & 0o777).toBe(0o700);
+  const other = mkdtempSync(join(tmpdir(), 'konjir-agents-'));
+  const elsewhere = mkdtempSync(join(tmpdir(), 'konjir-elsewhere-'));
+  symlinkSync(elsewhere, join(other, 'agents'));
+  expect(() => agentCredentials('ann-pm', { KONJIR_CREDENTIALS: join(other, 'credentials.json') })).toThrow(/isn't a folder of konjir's \(it is a symbolic link, or not a folder\)/);
+  expect(() => agentCredentials('../ann', env)).toThrow(/isn't an agent's id/);
+});

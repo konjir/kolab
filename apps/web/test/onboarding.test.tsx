@@ -58,6 +58,7 @@ test('the page shows konjir connect first: one command per harness, naming this 
   expect(within(one).getByLabelText('Start Claude Code with the Konjir channel').textContent).toBe('claude --dangerously-load-development-channels server:konjir-product server:konjir-engineer');
   expect(within(one).getByLabelText('Connect Claude Code over HTTP, with no channel').textContent).toBe('npx konjir@1.2.3 connect claude --url https://kolab.example.com --kolab anns --http');
   expect(one.textContent).toMatch(/one Konjir server with Kolab’s tools, which also pushes your inbox into the session/);
+  expect(one.textContent).toMatch(/Channels need Claude Code signed in with a claude.ai account/);
   expect(within(one).getByText(`${eli.actor}-product`)).toBeTruthy();
   expect(one.textContent).toMatch(/then revokes that sign-in and keeps none of it\..*writes no token/);
 });

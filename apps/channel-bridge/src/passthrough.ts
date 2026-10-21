@@ -10,7 +10,7 @@
  * have run.
  */
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import { NotConnected, type KolabBridge, type ListKind } from './bridge.js';
+import { NotSent, type KolabBridge, type ListKind } from './bridge.js';
 
 /** A request as the pass-through reads it, and the cancellation Claude Code sends with it. */
 type Incoming = { params: Record<string, unknown> };
@@ -64,11 +64,14 @@ async function bridgeWithin(holder: BridgeHolder, ms: number) {
 /** An error's message with no token in it. */
 const masked = (holder: BridgeHolder, e: unknown) => holder.redact(String((e as Error)?.message ?? e));
 
-/** A JSON-RPC error Kolab answered with (a number code), as opposed to the SDK's own errors (string codes). */
-const fromKolab = (e: unknown): e is { code: number; message: string; data?: unknown } => typeof (e as { code?: unknown })?.code === 'number';
+/**
+ * A JSON-RPC error with a number code: almost always Kolab's answer, though the MCP client can raise
+ * one itself. Either way it is passed on as it is, never said to be Kolab's.
+ */
+const rpcError = (e: unknown): e is { code: number; message: string; data?: unknown } => typeof (e as { code?: unknown })?.code === 'number';
 
-/** Kolab's JSON-RPC error, passed on with its code and its text, any token masked. */
-function kolabError(holder: BridgeHolder, e: { code: number; message: string; data?: unknown }) {
+/** A JSON-RPC error, passed on with its code and its text, any token masked. */
+function passedError(holder: BridgeHolder, e: { code: number; message: string; data?: unknown }) {
   const data = e.data === undefined ? undefined : JSON.parse(holder.redact(JSON.stringify(e.data))) as unknown;
   return new ProtocolError(e.code, holder.redact(e.message), data);
 }
@@ -104,10 +107,11 @@ export function servePassthrough(server: { server: unknown }, holder: BridgeHold
     try {
       result = await bridge.forward('tools/call', { name, ...(args !== undefined ? { arguments: args } : {}) }, ctx.mcpReq.signal);
     } catch (e) {
-      if (e instanceof NotConnected) return toolError(`The Konjir channel couldn't call ${name}: ${holder.redact(e.message)}. Nothing was sent to Kolab.`);
-      if (fromKolab(e)) throw kolabError(holder, e);
+      if (e instanceof NotSent) return toolError(`The Konjir channel didn't call ${name}: ${holder.redact(e.message)}. Nothing was sent to Kolab.`);
+      if (rpcError(e)) throw passedError(holder, e);
       if (timedOut(e)) return toolError(`Kolab didn't answer ${name} in time. The call was sent once and may or may not have run: check (with a read) before calling it again.`);
-      return toolError(`The Konjir channel couldn't complete ${name}: ${masked(holder, e)}. If it reached Kolab it may have run: check before calling it again.`);
+      if (ctx.mcpReq.signal.aborted) return toolError(`Claude Code cancelled ${name} after it was sent to Kolab. It may or may not have run: check (with a read) before calling it again.`);
+      return toolError(`The Konjir channel sent ${name} to Kolab but got no answer: ${masked(holder, e)}. It may or may not have run: check before calling it again.`);
     }
     // Kolab's result as it came; in an error, any token masked.
     if (result.isError && Array.isArray(result.content)) {
@@ -123,8 +127,10 @@ export function servePassthrough(server: { server: unknown }, holder: BridgeHold
     try {
       return await bridge.forward(method, params, ctx.mcpReq.signal);
     } catch (e) {
-      if (fromKolab(e)) throw kolabError(holder, e);
-      throw new ProtocolError(ProtocolErrorCode.InternalError, `The Konjir channel couldn't pass ${method} to Kolab: ${masked(holder, e)}`);
+      if (rpcError(e)) throw passedError(holder, e);
+      throw new ProtocolError(ProtocolErrorCode.InternalError, e instanceof NotSent
+        ? `The Konjir channel didn't send ${method} to Kolab: ${holder.redact(e.message)}`
+        : `The Konjir channel couldn't pass ${method} to Kolab: ${masked(holder, e)}`);
     }
   };
   low.setRequestHandler('resources/read', passed('resources/read'));
