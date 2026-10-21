@@ -19,7 +19,7 @@
  * client, keeps its sign-in in the same file under the same lock, and so shares one sign-in, one
  * grant and one session with the CLI for the same MCP URL.
  */
-import { spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -32,6 +32,52 @@ import {
 
 /** What the CLI keeps for one Kolab: its registration, its tokens and what it discovered. */
 interface Saved { client?: StoredOAuthClientInformation; tokens?: StoredOAuthTokens; discovery?: OAuthDiscoveryState }
+
+/** A URL fit to print: no credentials, no query, no fragment. */
+export function safeUrl(url: string | URL): string {
+  try {
+    const u = new URL(String(url));
+    u.username = ''; u.password = ''; u.search = ''; u.hash = '';
+    return u.toString();
+  } catch {
+    return '(not a URL)';
+  }
+}
+
+/** Whether a URL's host is this machine: 127.0.0.0/8, ::1 or localhost. */
+export function isLoopback(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/**
+ * Refuses a Kolab URL a sign-in can't safely use: anything but https, or http to this machine
+ * (loopback, for local development). Over http to another host a network could read the refresh
+ * token, which lasts 30 days, and answer Kolab's discovery in its place.
+ */
+export function checkKolabUrl(url: string): URL {
+  let u: URL;
+  try { u = new URL(url); } catch { throw new Error(`${safeUrl(url)} isn't a URL: set KONJIR_URL or --url to Kolab's MCP URL, such as https://kolab.konjir.com/mcp`); }
+  if (u.protocol === 'https:') return u;
+  if (u.protocol === 'http:' && isLoopback(u.hostname)) return u;
+  if (u.protocol === 'http:') throw new Error(`konjir signs in to Kolab only over https, or http on this machine: ${safeUrl(url)} is http to another host, where the network could read your sign-in. Use its https URL`);
+  throw new Error(`konjir signs in to Kolab only over https, or http on this machine: ${safeUrl(url)} is ${u.protocol.replace(/:$/, '')}`);
+}
+
+/**
+ * Refuses a sign-in link that isn't Kolab's own: Kolab is its own authorization server, so its
+ * authorize endpoint is <the MCP URL's origin>/oauth/authorize, over https or http on loopback.
+ * Anything else (another host, another path, a file: or custom scheme), which only a hostile or
+ * impersonated Kolab would name, is never opened or shown.
+ */
+export function checkAuthorizeUrl(u: URL, kolabUrl: string): URL {
+  const kolab = checkKolabUrl(kolabUrl);
+  const scheme = u.protocol === 'https:' || (u.protocol === 'http:' && isLoopback(u.hostname));
+  if (!scheme || u.origin !== kolab.origin || u.pathname !== '/oauth/authorize' || u.username || u.password) {
+    throw new Error(`Kolab at ${safeUrl(kolabUrl)} sent its sign-in to ${safeUrl(u)}, which isn't its own ${kolab.origin}/oauth/authorize, so konjir opens nothing. Check KONJIR_URL`);
+  }
+  return u;
+}
 
 /** The registered redirect: a loopback address, whose port Kolab lets change at each sign-in (RFC 8252 §7.3). */
 const REDIRECT = 'http://127.0.0.1/callback';
@@ -262,12 +308,21 @@ export class StoredLogin implements OAuthClientProvider {
   private refreshing?: string;
   /** With `fresh` (a new `konjir login`), whether this instance has saved its own tokens yet: until it has, it sees none. */
   private savedOwn = false;
+  /** The registration this instance saved, if any: what its own tokens were issued to. */
+  private ownClient?: StoredOAuthClientInformation;
+  /** With `yieldTo`, whether another konjir's sign-in was kept in place of this one's, which was revoked. */
+  yielded = false;
   readonly expectedState = randomBytes(24).toString('base64url');
   /**
    * `fresh`: a new sign-in, which ignores the tokens kept from before (they stay kept, and working,
-   * until it saves its own). `lockWaitMs`: how long to wait for another konjir's lock.
+   * until it saves its own). `yieldTo`, with `fresh`: the refresh token kept when it started ('' for
+   * none); if, when it saves, another konjir has kept a sign-in since, that one is kept and this
+   * one's tokens are revoked (the channel bridge's own sign-in yields to a `konjir login`).
+   * `lockWaitMs`: how long to wait for another konjir's lock. The URL must be https, or http on
+   * loopback (checkKolabUrl).
    */
-  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; lockWaitMs?: number; lockMaxHoldMs?: number; clientName?: string } = {}) {
+  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; yieldTo?: string; lockWaitMs?: number; lockMaxHoldMs?: number; clientName?: string } = {}) {
+    checkKolabUrl(url);
     // Only konjir's own default folder is kept at 0700; one named through KONJIR_CREDENTIALS is the person's.
     this.store = new Store(opts.path ?? credentialsPath(), !opts.path && !process.env.KONJIR_CREDENTIALS, opts.lockWaitMs, opts.lockMaxHoldMs);
   }
@@ -279,8 +334,16 @@ export class StoredLogin implements OAuthClientProvider {
     };
   }
   state() { return this.expectedState; }
-  clientInformation() { return this.store.get(this.url).client; }
-  saveClientInformation(client: StoredOAuthClientInformation) { return this.store.set(this.url, (s) => ({ ...s, client }), this.owner); }
+  /**
+   * This instance's own registration once it has one (a fresh sign-in), so a `konjir login` that
+   * registered meanwhile can't swap the client its code was issued to; otherwise the one kept.
+   */
+  clientInformation() { return this.ownClient ?? this.store.get(this.url).client; }
+  /** What a save of `tokens` keeps: with them, the registration they were issued to, when this instance made it. */
+  private withTokens(s: Saved, tokens: StoredOAuthTokens): Saved { return { ...s, tokens, ...(this.ownClient ? { client: this.ownClient } : {}) }; }
+  saveClientInformation(client: StoredOAuthClientInformation) { this.ownClient = client; return this.store.set(this.url, (s) => ({ ...s, client }), this.owner); }
+  /** The credentials file. */
+  get file() { return this.store.path; }
   /**
    * Read afresh each time, so a refresh another konjir made is seen. Asked by the authorization flow
    * (with `ctx`), that is, about to refresh: the lock is taken first, and held until the new tokens
@@ -304,16 +367,31 @@ export class StoredLogin implements OAuthClientProvider {
       // they are the live ones: keep them, and use them. If not, save these under a lock of their own.
       this.refreshing = undefined;
       if (this.store.get(this.url).tokens?.refresh_token !== was) return;
-      await this.store.set(this.url, (s) => ({ ...s, tokens }));
+      await this.store.set(this.url, (s) => this.withTokens(s, tokens));
       return;
     }
     // The same refresh token, re-saved (the SDK stamping its issuer before it refreshes): still refreshing, still locked.
     if (was !== undefined && tokens.refresh_token === was) {
-      await this.store.set(this.url, (s) => ({ ...s, tokens }), this.owner);
+      await this.store.set(this.url, (s) => this.withTokens(s, tokens), this.owner);
+      return;
+    }
+    if (this.opts.fresh && this.opts.yieldTo !== undefined && was === undefined) {
+      // A sign-in that yields: kept only if no other konjir kept one since it started, checked under the lock.
+      let lost = false;
+      await this.store.set(this.url, (s) => {
+        const now = s.tokens?.refresh_token;
+        if (now && now !== this.opts.yieldTo) { lost = true; return s; }
+        return this.withTokens(s, tokens);
+      }, this.owner);
+      if (lost) {
+        this.yielded = true;
+        const client = this.ownClient ?? this.store.get(this.url).client;
+        await revoke(this.url, { client, tokens }).catch(() => undefined);
+      }
       return;
     }
     try {
-      await this.store.set(this.url, (s) => ({ ...s, tokens }), this.owner);
+      await this.store.set(this.url, (s) => this.withTokens(s, tokens), this.owner);
     } finally {
       this.refreshing = undefined;
       this.store.lock.release(this.owner);
@@ -324,6 +402,14 @@ export class StoredLogin implements OAuthClientProvider {
     this.refreshing = undefined;
     this.store.lock.release(this.owner);
   }
+  /**
+   * Lets go of the lock only if no refresh is in flight: for a long-lived process (the channel
+   * bridge) between connections, where a refresh another request started may still be running.
+   * A hold that leaked is let go by the lock's maximum hold.
+   */
+  releaseIdleLock() {
+    if (this.refreshing === undefined) this.store.lock.release(this.owner);
+  }
   /** Runs `fn` holding the lock (logout: read, revoke and forget at once, with no refresh between). */
   async locked<T>(fn: (owner: string) => Promise<T>): Promise<T> {
     await this.store.lock.acquire(this.owner);
@@ -331,7 +417,7 @@ export class StoredLogin implements OAuthClientProvider {
   }
   async redirectToAuthorization(u: URL) {
     this.store.lock.release(this.owner);
-    if (!this.opts.onAuthorize) throw new Error(`your sign-in to ${this.url} has ended or was revoked: run konjir login`);
+    if (!this.opts.onAuthorize) throw new Error(`your sign-in to ${safeUrl(this.url)} has ended or was revoked: run konjir login`);
     await this.opts.onAuthorize(u);
   }
   saveCodeVerifier(v: string) { this.verifier = v; }
@@ -386,11 +472,28 @@ export class StoredLogin implements OAuthClientProvider {
   forget(owner?: string) { return this.store.set(this.url, () => undefined, owner); }
 }
 
-/** Opens a URL in the person's browser, best effort; the URL is printed either way. */
-export function openBrowser(u: URL) {
-  const [cmd, args] = process.platform === 'darwin' ? ['open', [u.toString()]]
-    : process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', u.toString()]] : ['xdg-open', [u.toString()]];
-  try { spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true }).on('error', () => undefined).unref(); } catch { /* printed below */ }
+/**
+ * The command that opens a URL in the person's browser on `platform`, as a program and fixed
+ * arguments, run with no shell: on Windows through url.dll's FileProtocolHandler, never `cmd /c
+ * start`, which would split a URL at `&`.
+ */
+export function browserCommand(u: URL, platform: NodeJS.Platform = process.platform): [string, string[]] {
+  if (platform === 'darwin') return ['open', [u.toString()]];
+  if (platform === 'win32') return ['rundll32', ['url.dll,FileProtocolHandler', u.toString()]];
+  return ['xdg-open', [u.toString()]];
+}
+
+/**
+ * Opens Kolab's sign-in in the person's browser, best effort (the URL is printed either way), and
+ * only if it is Kolab's own /oauth/authorize (checkAuthorizeUrl): otherwise this throws, opening
+ * nothing. `run` starts the command (tests stand one in).
+ */
+export function openBrowser(u: URL, kolabUrl: string, run: (cmd: string, args: string[]) => void = (cmd, args) => {
+  try { execFile(cmd, args, { windowsHide: true }, () => undefined).unref(); } catch { /* printed instead */ }
+}) {
+  checkAuthorizeUrl(u, kolabUrl);
+  const [cmd, args] = browserCommand(u);
+  run(cmd, args);
 }
 
 /** The page the browser lands on once the code is back: it says to return to the terminal, and loads nothing. */
@@ -412,9 +515,9 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
   });
   let res: Response;
   try { res = await post(refresh, 'refresh_token'); } catch (e) {
-    throw new Error(`couldn't reach Kolab at ${endpoint} (${String((e as { cause?: { code?: string } }).cause?.code ?? (e as Error).message)})`);
+    throw new Error(`couldn't reach Kolab at ${safeUrl(endpoint)} (${String((e as { cause?: { code?: string } }).cause?.code ?? (e as Error).message)})`);
   }
-  if (!res.ok) throw new Error(`Kolab answered ${res.status} at ${endpoint}`);
+  if (!res.ok) throw new Error(`Kolab answered ${res.status} at ${safeUrl(endpoint)}`);
   if (saved.tokens?.access_token) await post(saved.tokens.access_token, 'access_token').catch(() => undefined);
   return 'revoked';
 }
@@ -425,7 +528,8 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
  * default it is opened, and the URL printed to `log`. A sign-in kept from before is revoked first,
  * so no grant is left behind. Resolves once the CLI's session works, with who it is.
  */
-export async function login(url: string, opts: { path?: string; scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; clientName?: string } = {}) {
+export async function login(url: string, opts: { path?: string; scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; clientName?: string; yieldToOthers?: boolean } = {}) {
+  checkKolabUrl(url);
   const log = opts.log ?? ((l: string) => console.error(l));
   const server: Server = createServer();
   await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', () => resolve()));
@@ -435,15 +539,19 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
     const before = new StoredLogin(url, { path: opts.path }).saved();
     const provider = new StoredLogin(url, {
       path: opts.path, redirectUrl: `http://127.0.0.1:${port}/callback`, fresh: true, clientName: opts.clientName,
+      yieldTo: opts.yieldToOthers ? before.tokens?.refresh_token ?? '' : undefined,
       onAuthorize: async (u) => {
         // What to preselect on Kolab's page: the kolab and role (Kolab reads them from the scope).
         if (opts.scope) u.searchParams.set('scope', opts.scope);
+        // Only Kolab's own sign-in page is ever printed or opened.
+        checkAuthorizeUrl(u, url);
         log(`Opening your browser to sign in to Kolab. If it doesn't open, go to:\n  ${u.toString()}`);
-        await (opts.open ?? openBrowser)(u);
+        await (opts.open ?? ((v: URL) => openBrowser(v, url)))(u);
       },
     });
     const back = new Promise<URLSearchParams>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('the sign-in took too long; run konjir login again')), opts.timeoutMs ?? 5 * 60_000);
+      timer.unref();
       server.on('request', (req, res) => {
         const u = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
         if (u.pathname !== '/callback') { res.writeHead(404).end(); return; }
@@ -478,10 +586,11 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
       await client.close();
     }
     // Replaced: the sign-in kept from before is revoked now, so its grant doesn't linger.
-    if (before.tokens?.refresh_token && before.tokens.refresh_token !== kept.saved().tokens?.refresh_token) {
+    if (!provider.yielded && before.tokens?.refresh_token && before.tokens.refresh_token !== kept.saved().tokens?.refresh_token) {
       await revoke(url, before).catch((e: Error) => log(`warning: the sign-in this one replaces wasn't revoked: ${e.message}. It lapses within 30 days unused.`));
     }
-    return me;
+    // `yielded`: another konjir's sign-in, kept meanwhile, is the one kept and used; this one was revoked.
+    return { ...me, yielded: provider.yielded };
   } finally {
     server.close();
   }
@@ -502,7 +611,7 @@ export async function logout(url: string, opts: { path?: string; forget?: boolea
     try {
       revoked = (await revoke(url, saved)) === 'revoked';
     } catch (e) {
-      if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${url} wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget to drop it anyway`);
+      if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${safeUrl(url)} wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget to drop it anyway`);
     }
     await provider.forget(owner);
     return { had: true, revoked };

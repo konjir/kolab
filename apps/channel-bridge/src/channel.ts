@@ -14,7 +14,7 @@ import { Logger, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { McpStderrLogger, McpStdioModule, McpStdioService } from '@onivoro/server-mcp';
 import { KolabBridge } from './bridge.js';
-import { bridgeAuth } from './sign-in.js';
+import { bridgeAuth, mask } from './sign-in.js';
 import type { ChannelMessage } from './messages.js';
 import { VERSION } from './version.js';
 
@@ -69,8 +69,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env) {
     if (closing) return;
     bridge = new KolabBridge({ url, ...auth, forward, log: (line) => logger.log(line), backoff: backoffFrom(env) }).start();
   }, (e: unknown) => {
-    logger.error(`the channel can't start: ${String((e as Error).message ?? e)}`);
-    void forward({ content: `The Konjir channel can't start: ${String((e as Error).message ?? e)}. Tell the user.`, meta: { kind: 'bridge', status: 'misconfigured' } }).catch(() => undefined);
+    // The detail goes to the log, masked; the session gets fixed words.
+    logger.error(`the channel can't start: ${mask(String((e as Error).message ?? e))}`);
+    void forward({ content: 'The Konjir channel can\'t start: its log says why (KONJIR_URL, KONJIR_CHANNEL_SIGN_IN or the credentials file). Tell the user.', meta: { kind: 'bridge', status: 'misconfigured' } }).catch(() => undefined);
   });
 
   const shutdown = async () => {

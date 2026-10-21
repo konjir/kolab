@@ -4,18 +4,18 @@
 // the browser by itself when nothing is kept, waits for konjir login once signed out, and never
 // prints a token. KONJIR_TOKEN still works, and overrides a kept sign-in. The identity provider is a
 // stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, test } from '@jest/globals';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { StubIdentity, startServer } from '@konjir/server';
-import { StoredLogin, login } from '@konjir/login';
+import { FileLock, StoredLogin, login } from '@konjir/login';
 import { closeAtEnd, openKolab } from '@konjir/engine/testing';
 import { KolabBridge } from '../src/bridge.js';
 import type { ChannelMessage } from '../src/messages.js';
-import { CLIENT_NAME, bridgeAuth } from '../src/sign-in.js';
+import { CLIENT_NAME, bridgeAuth, browserAvailable } from '../src/sign-in.js';
 
 const START = resolve(import.meta.dirname, '../scripts/start.sh');
 
@@ -205,8 +205,9 @@ test('with nothing kept, the bridge signs in with the browser by itself, for kon
   });
   expect(page).toContain(CLIENT_NAME);   // Kolab's consent page names the bridge
   const told = messages.find((m) => m.meta.status === 'signing_in')!;
-  expect(told.content).toMatch(/opened the user's browser at Kolab's sign-in page/);
-  expect(told.content).toContain(`${new URL(server.url).origin}/oauth/authorize?`);
+  // Fixed words: the link (its state, PKCE challenge and loopback port) never reaches the model; it is in the log.
+  expect(told.content).toBe(`Konjir needs the user to sign in to Kolab at ${server.url}: a browser window opened at Kolab's sign-in page. If it didn't, the link is in the Konjir channel's log, or the user can run konjir login --url ${server.url} in a terminal. Inbox changes start arriving once that is done. Tell the user.`);
+  expect(logs.join('\n')).toContain(`${new URL(server.url).origin}/oauth/authorize?`);
   expect(logs.join('\n')).toMatch(/signed in to .* as ann-channel, in kolab anns as product; kept for konjir too/);
   expect(auth.login).toBeDefined();
   expect(new StoredLogin(server.url).signedIn).toBe(true);   // the konjir CLI sees the same sign-in
@@ -267,3 +268,102 @@ test('the bridge masks any Kolab secret in what it prints', () => {
   expect(b.redact('a kjs_given, kjr_abc-DEF_1 and kjc_x9 here')).toBe('a ***, *** and *** here');
   expect(() => new KolabBridge({ url: 'http://127.0.0.1:9/mcp', forward: async () => undefined, log: () => undefined })).toThrow(/exactly one/);
 });
+
+test('a bridge sign-in that finishes after a konjir login kept one yields: the CLI\'s is kept, and the bridge\'s own grant is revoked', async () => {
+  const { kolab, idp, server, konjirLogin } = await kolabWithSignIn();
+  await konjirLogin({ as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' });
+  const cli = saved(server.url);
+  // Forgotten here only, so the bridge starts a sign-in of its own; the CLI's grant still holds at Kolab.
+  const all = JSON.parse(readFileSync(credentials, 'utf8'));
+  writeFileSync(credentials, JSON.stringify({}));
+  const logs: string[] = [];
+  const auth = await bridgeAuth(server.url, {}, {
+    forward: async () => undefined, log: (l) => logs.push(l),
+    open: async (u) => {
+      // While the person is on the bridge's page, konjir login keeps a sign-in (here, the one from before).
+      writeFileSync(credentials, JSON.stringify(all));
+      idp.next({ subject: '41', login: 'ann' });
+      await browse(u, { as: 'new-agent', agent_label: 'channel', kolab: 'kolab:anns', role: 'product' });
+    },
+  });
+  expect(logs.join('\n')).toMatch(/another konjir signed in to .* meanwhile, as ann-cli: the channel uses that sign-in, and revoked its own/);
+  expect(saved(server.url).refresh_token).toBe(cli.refresh_token);
+  expect(new StoredLogin(server.url).saved().client?.client_id).toBe(all[server.url].client.client_id);
+  const grants = (await kolab.db.query<{ actor_id: string; revoked: boolean }>(`select actor_id, revoked_at is not null as revoked from oauth_grant order by created_at`)).rows;
+  expect(grants).toStrictEqual([{ actor_id: 'ann-cli', revoked: false }, { actor_id: 'ann-channel', revoked: true }]);
+  expect(await call(await kolabClient(server.url, auth.login!), 'whoami')).toMatchObject({ actor: 'ann-cli' });
+  await server.close();
+}, 60_000);
+
+test('one bridge signs in at a time; none signs in over http to another host, or with no browser to open', async () => {
+  const { server } = await kolabWithSignIn();
+  const logs: string[] = [];
+  const io = { forward: async () => undefined, log: (l: string) => { logs.push(l); }, open: () => { throw new Error('opened'); } };
+  // Another bridge holds the marker: this one opens nothing and waits for that sign-in.
+  const marker = new FileLock(`${credentials}.signing-in`);
+  await marker.acquire('other-bridge');
+  const auth = await bridgeAuth(server.url, {}, io);
+  expect(logs.join('\n')).toMatch(/another konjir channel is signing in to .*; this one will use its sign-in/);
+  expect(auth.login?.signedIn).toBe(false);
+  marker.release('other-bridge');
+  expect((await server.kolab.db.query(`select count(*)::int as n from oauth_client`)).rows).toStrictEqual([{ n: 0 }]);
+
+  await expect(bridgeAuth('http://kolab.example/mcp', {}, io)).rejects.toThrow(/only over https, or http on this machine: http:\/\/kolab\.example\/mcp is http to another host/);
+  expect((await bridgeAuth('http://kolab.example/mcp', { KONJIR_TOKEN: 'kjs_t' }, io)).token).toBe('kjs_t');   // a hand-issued token, as before
+
+  logs.length = 0;
+  await bridgeAuth(server.url, { CI: 'true' }, { ...io, open: undefined });
+  expect(logs.join('\n')).toMatch(/no browser can be opened here \(CI, SSH or no display\): run konjir login --url/);
+  expect(browserAvailable({}, 'darwin')).toBe(true);
+  expect(browserAvailable({ SSH_CONNECTION: '1 2 3 4' }, 'darwin')).toBe(false);
+  expect(browserAvailable({}, 'linux')).toBe(false);
+  expect(browserAvailable({ WAYLAND_DISPLAY: 'wayland-0' }, 'linux')).toBe(true);
+  await server.close();
+});
+
+test('Kolab closing the stream while the bridge refreshes: the refresh keeps its lock, the CLI uses the newer tokens, and nothing is revoked', async () => {
+  const { kolab, server, konjirLogin } = await kolabWithSignIn();
+  await konjirLogin({ as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' });
+  const agent = await kolabClient(server.url, new StoredLogin(server.url));
+  const ann = await specInReview(server.url, kolab, agent);
+  // The bridge's token requests take 1.5 s: long enough for Kolab to close its stream, and the CLI to need a token, meanwhile.
+  let refreshing = 0;
+  const slow: typeof fetch = async (input, init) => {
+    if (String(input instanceof Request ? input.url : input).endsWith('/oauth/token')) {
+      refreshing++;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    return fetch(input, init);
+  };
+  const messages: ChannelMessage[] = [];
+  const logs: string[] = [];
+  const bridge = new KolabBridge({
+    url: server.url, login: new StoredLogin(server.url), fetch: slow as never,
+    forward: async (m) => { messages.push(m); }, log: (l) => logs.push(l),
+    backoff: { initialMs: 100, maxMs: 400 }, liveness: { intervalMs: 150, timeoutMs: 5000 },
+  });
+  let listens = 0;
+  bridge.onListening = () => { listens++; };
+  closeAtEnd({ close: () => bridge.stop() });
+  bridge.start();
+  await until('the first listen', () => listens === 1 || undefined);
+  const before = saved(server.url);
+
+  // The token expires: the bridge's next liveness check starts a refresh, holding the lock.
+  await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-cli' and ended_at is null`);
+  await until('the bridge refreshing', () => refreshing > 0 || undefined);
+  // Meanwhile a change: Kolab closes the bridge's stream (its token has expired), and the bridge's connection ends.
+  await call(ann, 'ask', { address: 'kj:orders#R8', question: 'Asked mid-refresh?' });
+  // The CLI needs a token now too: it waits for the bridge's refresh and uses its tokens, refreshing nothing itself.
+  expect(await call(agent, 'whoami')).toMatchObject({ actor: 'ann-cli' });
+  const after = saved(server.url);
+  expect(after.refresh_token).not.toBe(before.refresh_token);
+  await until('the listen after the refresh', () => listens >= 2 || undefined, 20_000, () => logs.join('\n'));
+  await until('the question', () => messages.find((m) => m.content.includes('"Asked mid-refresh?"')), 20_000, () => logs.join('\n'));
+  // One refresh token at a time: the grant stands, and the tokens kept are the newest, which both use.
+  expect((await kolab.db.query(`select revoked_at from oauth_grant where actor_id = 'ann-cli'`)).rows).toStrictEqual([{ revoked_at: null }]);
+  expect(await call(await kolabClient(server.url, new StoredLogin(server.url)), 'whoami')).toMatchObject({ actor: 'ann-cli' });
+  expect(() => statSync(`${credentials}.lock`)).toThrow();
+  await bridge.stop();
+  await server.close();
+}, 60_000);
