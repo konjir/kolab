@@ -4,7 +4,7 @@
 // the browser by itself when nothing is kept, waits for konjir login once signed out, and never
 // prints a token. KONJIR_TOKEN still works, and overrides a kept sign-in. The identity provider is a
 // stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, test } from '@jest/globals';
@@ -303,8 +303,17 @@ test('one bridge signs in at a time; none signs in over http to another host, or
   const marker = new FileLock(`${credentials}.signing-in`);
   await marker.acquire('other-bridge');
   const auth = await bridgeAuth(server.url, {}, io);
-  expect(logs.join('\n')).toMatch(/another konjir channel is signing in to .*; this one will use its sign-in/);
+  expect(logs.join('\n')).toMatch(/another konjir channel started a browser sign-in to .*; this one will use that sign-in once it is done/);
   expect(auth.login?.signedIn).toBe(false);
+  expect(auth.awaiting).toBe('another-channel');
+  // The session is told what is really happening, not that nothing is kept.
+  const told: ChannelMessage[] = [];
+  const waiting = new KolabBridge({ url: server.url, ...auth, forward: async (m) => { told.push(m); }, log: () => undefined, backoff: { initialMs: 50, maxMs: 100 } });
+  waiting.start();
+  await until('the waiting message', () => told[0]);
+  await waiting.stop();
+  expect(told[0].meta.status).toBe('awaiting_sign_in');
+  expect(told[0].content).toMatch(/waiting for a sign-in to Kolab at .* that another Konjir channel started in the browser, and picks it up by itself once it is done\. If none finishes, tell the user to run konjir login --url/);
   marker.release('other-bridge');
   expect((await server.kolab.db.query(`select count(*)::int as n from oauth_client`)).rows).toStrictEqual([{ n: 0 }]);
 
@@ -365,5 +374,74 @@ test('Kolab closing the stream while the bridge refreshes: the refresh keeps its
   expect(await call(await kolabClient(server.url, new StoredLogin(server.url)), 'whoami')).toMatchObject({ actor: 'ann-cli' });
   expect(() => statSync(`${credentials}.lock`)).toThrow();
   await bridge.stop();
+  await server.close();
+}, 60_000);
+
+test('a crashed bridge\'s stale .signing-in marker is broken, and the next bridge signs in; a marker that is a symbolic link is said as it is', async () => {
+  const { idp, server } = await kolabWithSignIn();
+  const marker = `${credentials}.signing-in`;
+  const logs: string[] = [];
+  // A marker a bridge left when it was killed, untouched for two minutes.
+  mkdirSync(join(credentials, '..'), { recursive: true });
+  writeFileSync(marker, 'b999_dead');
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(marker, old, old);
+  idp.next({ subject: '41', login: 'ann' });
+  const auth = await bridgeAuth(server.url, {}, {
+    forward: async () => undefined, log: (l) => logs.push(l),
+    open: (u) => browse(u, { as: 'new-agent', agent_label: 'channel', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s', role: 'product' }).then(() => undefined),
+  });
+  expect(logs.join('\n')).toMatch(/signed in to .* as ann-channel/);
+  expect(auth.login?.signedIn).toBe(true);
+  expect(() => statSync(marker)).toThrow();   // let go once done
+
+  // A marker that is a symbolic link is never followed, and the log says why rather than blame another channel.
+  writeFileSync(credentials, JSON.stringify({}));
+  symlinkSync(join(credentials, '..', 'nowhere'), marker);
+  logs.length = 0;
+  const refused = await bridgeAuth(server.url, {}, { forward: async () => undefined, log: (l) => logs.push(l), open: () => { throw new Error('opened'); } });
+  expect(logs.join('\n')).toMatch(/the channel can't sign in by itself \(.*is a symbolic link.*\); run konjir login --url/);
+  expect(refused.awaiting).toBeUndefined();
+  unlinkSync(marker);
+  await server.close();
+}, 60_000);
+
+test('the backoff returns to its first step only after a stream that lived steadyMs; shorter ones keep doubling', async () => {
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'channel-backoff-admin', kolab, webRoot: null });
+  closeAtEnd(server);
+  const admin = await kolabClient(server.url, 'channel-backoff-admin');
+  await call(admin, 'admin_add_actor', { id: 'pm' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'pm' });
+  const { token } = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string };
+  // Each listen stream is cut by the "network" after its lifetime here: three short, one long, then short again.
+  const lifetimes = [50, 50, 50, 600, 50];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const cut: typeof fetch = async (input, init) => {
+    const res = await fetch(input, init);
+    if (typeof init?.body !== 'string' || !init.body.includes('"method":"subscriptions/listen"') || !res.body) return res;
+    const life = lifetimes[starts.length] ?? 60_000;
+    starts.push(Date.now());
+    const reader = res.body.getReader();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        setTimeout(() => { ends.push(Date.now()); void reader.cancel().catch(() => undefined); try { c.close(); } catch { /* closed */ } }, life).unref();
+        void (async () => { for (;;) { const r = await reader.read().catch(() => ({ done: true as const, value: undefined })); if (r.done) break; try { c.enqueue(r.value); } catch { break; } } })();
+      },
+    });
+    return new Response(body, { status: res.status, headers: res.headers });
+  };
+  const bridge = new KolabBridge({ url: server.url, token, fetch: cut as never, forward: async () => undefined, log: () => undefined, backoff: { initialMs: 100, maxMs: 5000, steadyMs: 400 } });
+  closeAtEnd({ close: () => bridge.stop() });
+  bridge.start();
+  await until('five streams', () => starts.length >= 5 || undefined, 20_000);
+  await bridge.stop();
+  // The gap after a stream's end is the delay plus a reconnect: 100, 200 and 400 ms after the short ones, 100 after the long one.
+  const gap = (i: number) => starts[i + 1] - ends[i];
+  expect(gap(1)).toBeGreaterThanOrEqual(190);
+  expect(gap(2)).toBeGreaterThanOrEqual(390);
+  expect(gap(3)).toBeLessThan(gap(2) - 150);
+  expect(gap(3)).toBeGreaterThanOrEqual(95);
   await server.close();
 }, 60_000);

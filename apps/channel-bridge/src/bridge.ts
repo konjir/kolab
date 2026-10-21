@@ -22,6 +22,8 @@ export interface BridgeOptions {
   token?: string;
   /** A kept OAuth sign-in, refreshed as it expires (W3.5). */
   login?: StoredLogin;
+  /** With no sign-in kept yet: another channel's browser sign-in is under way, which this one will use. */
+  awaiting?: 'another-channel';
   /** Deliver a message to the Claude Code session. */
   forward(message: ChannelMessage): Promise<void>;
   /** A line for the operator (stderr). Never carries a token. */
@@ -194,10 +196,15 @@ export class KolabBridge {
           delay = maxMs;
           // A bridge that has listened with a sign-in and now has none was signed out (the MCP client forgets refused tokens).
           const none = e instanceof SignedOut && !this.hadSignIn;
+          const url = safeUrl(this.opts.url);
+          const awaiting = none && this.opts.awaiting === 'another-channel';
           await this.problem(none ? 'no-sign-in' : 'signed-out',
-            `${none ? 'no sign-in is kept' : 'the sign-in kept has ended or was revoked'} for ${safeUrl(this.opts.url)}; waiting for konjir login, checking every ${Math.round(maxMs / 1000)}s`, {
-              content: `The Konjir channel ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${safeUrl(this.opts.url)}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run konjir login --url ${safeUrl(this.opts.url)} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
-              meta: { kind: 'bridge', status: none ? 'unconfigured' : 'signed_out' },
+            awaiting ? `waiting for the browser sign-in to ${url} another konjir channel started, checking every ${Math.round(maxMs / 1000)}s`
+              : `${none ? 'no sign-in is kept' : 'the sign-in kept has ended or was revoked'} for ${url}; waiting for konjir login, checking every ${Math.round(maxMs / 1000)}s`, {
+              content: awaiting
+                ? `The Konjir channel is waiting for a sign-in to Kolab at ${url} that another Konjir channel started in the browser, and picks it up by itself once it is done. If none finishes, tell the user to run konjir login --url ${url} in a terminal, choosing the agent this session works as.`
+                : `The Konjir channel ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${url}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run konjir login --url ${url} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
+              meta: { kind: 'bridge', status: awaiting ? 'awaiting_sign_in' : none ? 'unconfigured' : 'signed_out' },
             });
         } else if (login && (isRefusal(e) || listenRefusal(e) === 'session_ended')) {
           // Refused mid-way (the session ended as the stream opened, say): the next connection

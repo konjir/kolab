@@ -280,7 +280,7 @@ export async function main(argv: string[]) {
     const r = await logout(url, { forget: rest.includes('--forget') });
     console.log(!r.had ? `No sign-in kept for ${url}.`
       : r.revoked ? `Signed out of ${url}: the sign-in is revoked and forgotten.`
-        : `Forgotten, but not revoked at ${url}: it lapses within 30 days unused, or an admin can end it.`);
+        : `Forgotten, but not revoked at ${url}${r.why ? ` (${r.why})` : ''}: it lapses within 30 days unused, or an admin can end it.`);
     return;
   }
 
@@ -318,9 +318,11 @@ export async function main(argv: string[]) {
         opened = Date.now();
         if (!once && first) for (const uri of w.uris) console.log(JSON.stringify({ inbox: uri, ...(await w.read(uri)) }));
         void w.subscription.closed.then((how) => {
-          stored?.releaseLock();
-          // A stream lives as long as its access token (D55): with a sign-in, listen again, which refreshes it.
-          if (!finished && how === 'remote' && stored) {
+          stored?.releaseIdleLock();   // never a refresh another request still has in flight
+          // A stream lives as long as its access token (D55), and Kolab closes it gracefully once that
+          // expires or rotates: with a sign-in, listen again on any close but our own, which refreshes it
+          // (or finds the sign-in ended, and says so).
+          if (!finished && how !== 'local' && stored) {
             retries = Date.now() - opened > 60_000 ? 0 : retries + 1;
             setTimeout(() => { if (!finished) subscribe(false); }, retries ? Math.min(30_000, 1000 * 2 ** (retries - 1)) : 0);
             return;
@@ -329,7 +331,7 @@ export async function main(argv: string[]) {
           finish();
         });
       }, (e: unknown) => {
-        stored?.releaseLock();
+        stored?.releaseIdleLock();
         const reason = listenRefusal(e);
         if (reason === 'session_ended') {
           reject(new Error(stored ? `your sign-in to ${url} has ended or was revoked: run konjir login`

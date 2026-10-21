@@ -67,7 +67,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env) {
   // shutdown during it needs no bridge to stop.
   void bridgeAuth(url, env, { forward, log: (line) => logger.log(line) }).then((auth) => {
     if (closing) return;
-    bridge = new KolabBridge({ url, ...auth, forward, log: (line) => logger.log(line), backoff: backoffFrom(env) }).start();
+    const { awaiting, ...credential } = auth;
+    bridge = new KolabBridge({ url, ...credential, awaiting, forward, log: (line) => logger.log(line), backoff: backoffFrom(env) }).start();
   }, (e: unknown) => {
     // The detail goes to the log, masked; the session gets fixed words.
     logger.error(`the channel can't start: ${mask(String((e as Error).message ?? e))}`);
