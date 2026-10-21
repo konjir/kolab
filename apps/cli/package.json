@@ -26,13 +26,14 @@
     "compile": "node scripts/package.mjs binaries"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.3.1",
     "@konjir/login": "*",
     "@konjir/server": "*",
-    "@konjir/types": "*"
+    "@konjir/types": "*",
+    "@modelcontextprotocol/client": "^2.3.1"
   },
   "devDependencies": {
-    "@konjir/engine": "*"
+    "@konjir/engine": "*",
+    "jsonc-parser": "^3.3.1"
   },
   "nx": {
     "targets": {

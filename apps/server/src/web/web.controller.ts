@@ -6,7 +6,7 @@ import type { Request, Response } from 'express';
 import { Kolab, maskTokens } from '@konjir/engine';
 import type {
   InvitePreview, WebAnswer, WebChangeGrant, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
-  WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
+  WebCli, WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
 } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
 import {
@@ -65,6 +65,17 @@ export class WebSessionController {
   methods(@Req() req: Request): WebSignInMethods {
     checkOrigin(req, this.options);
     return { provider: this.options.identityLabel ?? null, token: this.options.tokenSignIn };
+  }
+
+  /**
+   * How to get the konjir CLI here (W3.7): the published package's pinned spec, if the operator set
+   * one; otherwise none, and the page shows a checkout's bin/konjir, never an `npx` of a name
+   * anyone could register.
+   */
+  @Get('cli')
+  cli(@Req() req: Request): WebCli {
+    checkOrigin(req, this.options);
+    return { npm: this.options.cliNpmSpec ?? null };
   }
 
   /**

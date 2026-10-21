@@ -19,12 +19,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 7433);
 const inviteFile = process.env.KONJIR_SIGNIN_INVITE ?? join(here, '..', '.konjir-demo', 'invite.txt');
 
-/** The stub provider, signing in a new person each time it is asked. */
+/**
+ * The stub provider, signing in a new person each time it is asked; or, with KONJIR_SIGNIN_AS, the
+ * same person every time (e2e/connect.spec.ts: one person, then each of their agents, W3.7).
+ */
 class Newcomers extends StubIdentity {
   private k = 0;
   override authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }) {
     this.k++;
-    this.next({ subject: `e2e-${this.k}`, login: `newcomer${this.k}` });
+    const same = process.env.KONJIR_SIGNIN_AS;
+    this.next(same ? { subject: `e2e-${same}`, login: same } : { subject: `e2e-${this.k}`, login: `newcomer${this.k}` });
     return super.authorizationUrl(p);
   }
 }

@@ -40,16 +40,38 @@ const said: string[] = [];
 const runner: Act = { async run(what, done) { await what(); said.push(done); return true; } };
 
 test('connecting a harness is one command each, naming this Kolab, the kolab and the role', async () => {
-  render(<ConnectView me={eli} origin="https://kolab.example.com" />);
+  render(<ConnectView me={eli} cli={{ npm: 'konjir@1.2.3' }} origin="https://kolab.example.com" />);
   expect(screen.getByLabelText('Add Kolab to Claude Code').textContent).toBe('claude mcp add --transport http konjir https://kolab.example.com/mcp');
-  expect(screen.getByLabelText('Sign the konjir CLI in').textContent).toBe('npx konjir login --url https://kolab.example.com/mcp --kolab anns --role engineer');
+  expect(screen.getByLabelText('Sign the konjir CLI in').textContent).toBe('npx konjir@1.2.3 login --url https://kolab.example.com/mcp --kolab anns --role engineer');
   await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Copy' })[0]); });
   expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
-  expect(navigator.clipboard.writeText).toHaveBeenCalledWith('claude mcp add --transport http konjir https://kolab.example.com/mcp');
+  expect(navigator.clipboard.writeText).toHaveBeenCalledWith('npx konjir@1.2.3 connect opencode --url https://kolab.example.com --kolab anns');
+});
+
+test('the page shows konjir connect first: one command per harness, naming this Kolab and the kolab, and the agents it makes (W3.7)', () => {
+  render(<ConnectView me={eli} cli={{ npm: 'konjir@1.2.3' }} origin="https://kolab.example.com" />);
+  const one = screen.getByRole('region', { name: 'One command: konjir connect' });
+  expect(within(one).getByLabelText('Connect OpenCode with konjir connect').textContent).toBe('npx konjir@1.2.3 connect opencode --url https://kolab.example.com --kolab anns');
+  expect(within(one).getByLabelText('Connect Claude Code with konjir connect').textContent).toBe('npx konjir@1.2.3 connect claude --url https://kolab.example.com --kolab anns');
+  expect(within(one).getByText(`${eli.actor}-product`)).toBeTruthy();
+  expect(one.textContent).toMatch(/then revokes that sign-in and keeps none of it\..*writes no token/);
+});
+
+test('until this Kolab names a published, pinned CLI, the page never shows npx: a checkout\'s bin/konjir, and says npm publishing is pending (W3.7)', () => {
+  for (const cli of [undefined, { npm: null }]) {
+    const { container, unmount } = render(<ConnectView me={eli} cli={cli} origin="https://kolab.example.com" />);
+    expect(container.textContent).not.toMatch(/npx/);
+    expect(screen.getByText(/The konjir CLI isn’t published on npm yet/)).toBeTruthy();
+    expect(screen.getByLabelText('Get the konjir CLI from its repository').textContent).toBe('git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)');
+    expect(screen.getByLabelText('Connect OpenCode with konjir connect').textContent).toBe('~/kolab/bin/konjir connect opencode --url https://kolab.example.com --kolab anns');
+    expect(screen.getByLabelText('Sign the konjir CLI in').textContent).toBe('~/kolab/bin/konjir login --url https://kolab.example.com/mcp --kolab anns --role engineer');
+    expect(screen.getByLabelText('Read the instructions with the konjir CLI').textContent).toBe('~/kolab/bin/konjir instructions');
+    unmount();
+  }
 });
 
 test('the MCP route (Claude Code, OpenCode, then konjir_instructions) is apart from the CLI route (konjir login, then konjir instructions)', () => {
-  render(<ConnectView me={eli} origin="https://kolab.example.com" />);
+  render(<ConnectView me={eli} cli={{ npm: 'konjir@1.2.3' }} origin="https://kolab.example.com" />);
   const mcpRoute = screen.getByRole('region', { name: 'Over MCP: Claude Code, OpenCode' });
   const cliRoute = screen.getByRole('region', { name: 'In a shell: the konjir CLI, for Codex or you' });
   expect(within(mcpRoute).getByLabelText('Add Kolab to Claude Code')).toBeTruthy();
@@ -59,8 +81,8 @@ test('the MCP route (Claude Code, OpenCode, then konjir_instructions) is apart f
   expect(within(mcpRoute).getByLabelText('Sign OpenCode in').textContent).toBe('opencode mcp auth konjir');
   expect(within(mcpRoute).getByText('konjir_instructions')).toBeTruthy();
   expect(within(mcpRoute).queryByText(/konjir login/)).toBeNull();
-  expect(within(cliRoute).getByLabelText('Sign the konjir CLI in').textContent).toMatch(/^npx konjir login /);
-  expect(within(cliRoute).getByLabelText('Read the instructions with the konjir CLI').textContent).toBe('npx konjir instructions');
+  expect(within(cliRoute).getByLabelText('Sign the konjir CLI in').textContent).toMatch(/^npx konjir@1.2.3 login /);
+  expect(within(cliRoute).getByLabelText('Read the instructions with the konjir CLI').textContent).toBe('npx konjir@1.2.3 instructions');
   expect(within(cliRoute).queryByText('konjir_instructions')).toBeNull();
 });
 

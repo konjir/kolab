@@ -4,8 +4,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { closeAtEnd, openKolab, people, setup } from '@konjir/engine/testing';
-import { StubIdentity, startServer } from '../src/server.js';
+import { closeAtEnd, openKolab, people, rejection, setup } from '@konjir/engine/testing';
+import { StubIdentity, isPinnedNpmSpec, startServer } from '../src/server.js';
 
 const CB = 'http://127.0.0.1:9/cb';
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
@@ -109,7 +109,7 @@ test('discovery: /mcp challenges with its protected-resource metadata, which nam
   expect(r.status).toBe(401);
   expect(r.headers.get('www-authenticate')).toContain(`resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`);
   const prm = await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json();
-  expect(prm).toStrictEqual({ resource: `${base}/mcp`, authorization_servers: [base], bearer_methods_supported: ['header'], scopes_supported: ['konjir'], resource_name: 'Kolab' });
+  expect(prm).toStrictEqual({ resource: `${base}/mcp`, authorization_servers: [base], bearer_methods_supported: ['header'], resource_name: 'Kolab' });
   const as = await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json();
   expect(as).toMatchObject({
     issuer: base, authorization_endpoint: `${base}/oauth/authorize`, token_endpoint: `${base}/oauth/token`, registration_endpoint: `${base}/oauth/register`,
@@ -168,6 +168,59 @@ test('a person signs up with the identity provider, consents, and their client g
   const dump = JSON.stringify((await kolab.db.query(`select * from session`)).rows) + JSON.stringify((await kolab.db.query(`select * from oauth_code`)).rows)
     + JSON.stringify((await kolab.db.query(`select * from oauth_refresh_token`)).rows) + JSON.stringify((await kolab.db.query(`select * from oauth_request`)).rows);
   for (const secret of [code, t.body.access_token, t.body.refresh_token, r.body.access_token, r.body.refresh_token, c.csrf]) expect(dump).not.toContain(secret);
+});
+
+test('the scope preselects the agent, kolab and role on the consent page, only among the person\'s own choices; an agent not theirs is ignored, and the form is still the authority (D59)', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const { actor: zed } = await kolab.signInWith({ provider: 'stub', subject: '601', login: 'zed' });
+  await kolab.grant('test', zed, 'write');
+  await kolab.addOwnAgent(zed, 'product');
+  await kolab.addOwnAgent(zed, 'engineer');
+  await kolab.addOwnAgent('bob', 'eng');
+  await kolab.addOwnAgent(zed, 'gone');
+  await kolab.archive({ actor: 'zed-gone' });
+  const shown = async (scope: string) => (await toConsent(base, idp, client, { subject: '601', login: 'zed' }, { scope }));
+  const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
+
+  // Its agent, kolab and role, named: all three arrive chosen.
+  const c = await shown('konjir kolab:test role:engineer agent:zed-engineer');
+  expect(checked(c.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'engineer']);
+  const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'agent:zed-engineer', kolab: 'kolab:test', role: 'engineer' });
+  expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
+
+  expect(c.html).not.toContain('asks to act as you');
+  // Yourself, named, by an app on the person's own machine (every redirect URI loopback): chosen, and said plainly.
+  const self = await shown('konjir as:self role:product');
+  expect(checked(self.html)).toStrictEqual(['self', 'kolab:test', 'product']);
+  expect(self.html).toContain('This app asks to act as you, with all your access, not as one of your agents.');
+  // A hosted app (an https redirect URI, or any one not loopback) asking for Yourself is ignored: an agent stays the default, with no notice.
+  for (const uris of [['https://app.example.com/cb'], [CB, 'https://app.example.com/cb']]) {
+    const hosted = (await register(base, uris)).body.client_id;
+    const h = await toConsent(base, idp, hosted, { subject: '601', login: 'zed' }, { scope: 'konjir as:self', redirect: uris.at(-1) });
+    expect(checked(h.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+    expect(h.html).not.toContain('asks to act as you');
+  }
+  // An agent that isn't the person's (another's, an archived one of theirs, or none at all) is ignored:
+  // never named on the page, and the page's own default stands.
+  for (const other of ['bob-eng', 'zed-gone', 'zed-nobody']) {
+    const o = await shown(`konjir kolab:test agent:${other}`);
+    expect(o.html).not.toContain(other);
+    expect(checked(o.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+    // Submitting it anyway is refused: the consent page checks whose agent it is, as before.
+    const refused = await o.browser.consent({ csrf: o.csrf, decision: 'allow', as: `agent:${other}`, kolab: 'kolab:test', role: 'product' });
+    expect([refused.res.status, refused.left]).toStrictEqual([400, undefined]);
+    expect(await refused.res.text()).toContain(`no agent ${other} of yours`);
+  }
+  // A consent form with no `as` from an MCP client defaults to a new agent of theirs, never to the person.
+  await kolab.db.query(`update actor set created_at = now() - interval '1 hour' where owner_id = $1`, [zed]);   // past the 3-in-10-minutes rate
+  const bare = await shown('konjir kolab:test');
+  const made = await bare.browser.consent({ csrf: bare.csrf, decision: 'allow', kolab: 'kolab:test', role: 'product', agent_label: 'bare' });
+  expect(made.left?.searchParams.get('code')).toMatch(/^kjc_/);
+  expect(await kolab.actor('zed-bare')).toMatchObject({ kind: 'agent', owner: zed });
+  // A kolab the person can't reach isn't preselected either.
+  expect(checked((await shown('konjir kolab:elsewhere agent:zed-product')).html)).toStrictEqual(['agent:zed-product', 'kolab:test', 'product']);
 });
 
 test('PKCE is required, S256 only, and the verifier must match; a refused request is a page, never a redirect', async () => {
@@ -645,4 +698,21 @@ test('the provider\'s answers and consent forms are limited per address, 30 a mi
   const [c, f] = [await callback(), await consent()];
   expect([c.status, f.status]).toStrictEqual([429, 429]);
   expect(await f.text()).toContain('Too many sign-ins just now');
+});
+
+test('the web page learns how to run the konjir CLI: npx only with a pinned spec the operator set (KONJIR_CLI_NPM_SPEC), never a bare name (W3.7)', async () => {
+  const unset = await serve(await openKolab());
+  expect(await (await fetch(`${unset.base}/api/session/cli`, { headers: { origin: unset.base } })).json()).toStrictEqual({ npm: null });
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'admin-token', kolab, webRoot: null, cliNpmSpec: 'konjir@1.2.3' });
+  closeAtEnd(server);
+  const base = new URL(server.url).origin;
+  expect(await (await fetch(`${base}/api/session/cli`, { headers: { origin: base } })).json()).toStrictEqual({ npm: 'konjir@1.2.3' });
+  for (const bad of ['konjir', 'konjir@latest', 'konjir@^1.2.3', 'konjir@1.2', 'konjir@1.2.3 && curl x', 'https://x/k.tgz', '@scope/konjir']) {
+    expect([bad, isPinnedNpmSpec(bad)]).toStrictEqual([bad, false]);
+  }
+  expect(await rejection(startServer({ adminToken: 'admin-token', kolab: await openKolab(), webRoot: null, cliNpmSpec: 'konjir' }))).toMatch(/KONJIR_CLI_NPM_SPEC is a package pinned to an exact version/);
+  expect(isPinnedNpmSpec('@konjir/cli@0.6.0-rc.1')).toBe(true);
+  for (const zeros of ['konjir@01.2.3', 'konjir@1.02.3', 'konjir@1.2.03']) expect([zeros, isPinnedNpmSpec(zeros)]).toStrictEqual([zeros, false]);
+  expect(isPinnedNpmSpec('konjir@10.0.0')).toBe(true);
 });

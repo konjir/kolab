@@ -55,7 +55,13 @@
       },
       "e2e": {
         "dependsOn": [
-          "build"
+          "build",
+          {
+            "projects": [
+              "konjir"
+            ],
+            "target": "build"
+          }
         ],
         "cache": false
       },

@@ -6,7 +6,7 @@ import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
 import { ActivityView, ForeignKolabView, KolabsView, LineageView, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
 import { CasesView } from './components/Cases.js';
-import { ConnectView, GettingStarted, InviteCard, PeopleView } from './components/Onboarding.js';
+import { ConnectPage, GettingStarted, InviteCard, PeopleView } from './components/Onboarding.js';
 import { parseKj, routeOf } from './util.js';
 import type { Act } from './components/Marks.js';
 
@@ -208,7 +208,7 @@ export function App() {
           {r.view === 'activity' && <ActivityView tick={tick} />}
           {r.view === 'start' && <GettingStarted me={me} go={go} />}
           {r.view === 'people' && overview && <PeopleView me={me} overview={overview} tick={tick} act={act} />}
-          {r.view === 'connect' && <ConnectView me={me} />}
+          {r.view === 'connect' && <ConnectPage me={me} />}
           {r.view === 'start' && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
           {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onRead={(k) => go(`read/${k}`)}
             onCreateKolab={(name, title) => act.run(async () => { moved(await createKolab(name, title), `Created ${name}. Its spec is empty: start it.`); }, '')} />}

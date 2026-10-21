@@ -2009,7 +2009,8 @@ export class Kolab {
   /**
    * A person makes an agent of their own (D30, D55), `<person>-<label>`, to authorize a harness
    * as. The label is up to 24 lowercase letters, digits and '-'; the name must be free, as any
-   * actor's (D52); a person makes at most `oauth.agentsPerPerson` agents, and at most 3 in 10 minutes.
+   * actor's (D52), and not in another account's namespace, `<their name>-*`; a person has at most
+   * `oauth.agentsPerPerson` live agents (archiving one frees its place), and makes at most 3 in 10 minutes.
    */
   async addOwnAgent(person: string, label: string): Promise<string> {
     const p = await this.actor(person);
@@ -2024,6 +2025,12 @@ export class Kolab {
       `select coalesce(a.kind, o.kind) as kind from (select $1::text as id) n
          left join actor a on lower(a.id) = lower(n.id) left join account o on lower(o.id) = lower(n.id)
         where a.id is not null or o.id is not null`, [id])).rows[0];
+    // Another account's namespace (the mirror of sign-up's agentLike, D30): a person or organization
+    // whose name starts with `<person>-` owns `<their name>-*`, so `ann` can't make `ann-x-pm`
+    // while `ann-x` exists, and `ann-x`'s agents never read as `ann`'s.
+    const squat = (await this.db.query(
+      `select 1 from account where length(id) > length($2) and left(lower($1), length(id) + 1) = lower(id) || '-' limit 1`, [id, person])).rows.length > 0;
+    if (squat) throw new NameTakenError(`the name ${id} isn't available: choose another label`, undefined, 'ActorError');
     if (holder && holder.kind !== 'agent') {
       throw new NameTakenError(`${id} is ${holder.kind === 'organization' ? 'an organization' : 'a person'} here, not an agent of yours: choose another label`, undefined, 'ActorError');
     }
@@ -2034,9 +2041,9 @@ export class Kolab {
       await this.db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
         const c = (await tx.query<{ owned: number; recent: number }>(
-          `select count(*)::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
+          `select count(*) filter (where not kj_actor_archived(id))::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
              from actor where owner_id = $1`, [person])).rows[0];
-        if (c.owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${c.owned} agents, the most a person may make here (${this.oauth.agentsPerPerson})`);
+        if (c.owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}): archive one you no longer use`);
         if (c.recent >= 3) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
         await tx.query(`insert into actor(id, name, kind, owner_id) values ($1, $1, 'agent', $2)`, [id, person]);
       });
@@ -2045,6 +2052,59 @@ export class Kolab {
       throw e;
     }
     return id;
+  }
+
+  /**
+   * A person's own session makes, or finds again, an agent of theirs by label (D59, W3.7), for a
+   * harness to sign in as: `<person>-<label>`, made through addOwnAgent, within its limits (at most
+   * `oauth.agentsPerPerson` live agents, 3 made in 10 minutes, counted in the database under the
+   * access lock). An agent of theirs already called that is reused, never made twice; one that is
+   * archived is refused, and so, with one message whoever holds or reserves it, is any name not free
+   * to them, another account's namespace included (addOwnAgent). Only a person: an
+   * agent's session never makes agents. It grants nothing: the agent reaches a kolab when its
+   * person consents to it there, with what they hold, at most Write (grantOwnAgent, D30, D56).
+   */
+  async createOwnAgent(session: string, label: string): Promise<{ agent: string; created: boolean; owner: string }> {
+    const me = await this.sessionInfo(session);
+    if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person makes agents. Sign in as yourself to make them`);
+    if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent label: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
+    const id = `${me.actor}-${label}`;
+    // One message for every name not free to this person, whoever holds it or reserves it, so the
+    // verb can't be used to probe who holds <me>-<anything>.
+    const unavailable = () => new NameTakenError(`the name ${id} isn't available: choose another label`, undefined, 'ActorError');
+    const mine = async () => {
+      const a = await this.findActor(id);
+      if (!a) return undefined;
+      if (a.kind !== 'agent' || a.owner !== me.actor) throw unavailable();
+      if (await this.archivedActor(id)) throw new ActorError(`your agent ${id} is archived, and its name stays its own: choose another label`);
+      return { agent: id, created: false, owner: me.actor };
+    };
+    const found = await mine();
+    if (found) return found;
+    try {
+      return { agent: await this.addOwnAgent(me.actor, label), created: true, owner: me.actor };
+    } catch (e) {
+      if (!(e instanceof NameTakenError)) throw e;
+      // Made by another call at the same moment: it is that agent, found again.
+      const again = await mine();
+      if (again) return again;
+      throw unavailable();
+    }
+  }
+
+  /**
+   * A person's own session archives an agent of theirs by label (D59, W3.7): its sessions end, and
+   * it no longer counts toward `oauth.agentsPerPerson`. Its name stays its own (D52); an admin may
+   * unarchive it. Only a person, only their own live agent; anything else is refused alike.
+   */
+  async archiveOwnAgent(session: string, label: string): Promise<{ archived: string; ended: number }> {
+    const me = await this.sessionInfo(session);
+    if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person archives their agents`);
+    const id = `${me.actor}-${label}`;
+    const a = /^[a-z0-9][a-z0-9-]{0,23}$/.test(label) ? await this.findActor(id) : undefined;
+    if (!a || a.kind !== 'agent' || a.owner !== me.actor || await this.archivedActor(id)) throw new ActorError(`you have no live agent ${id}`);
+    const r = await this.archive({ actor: id }, { by: me.actor });
+    return { archived: id, ended: r.ended };
   }
 
   /**

@@ -14,7 +14,7 @@
 //   KONJIR_URL            the Kolab's MCP endpoint (default http://127.0.0.1:7420/mcp)
 //   KONJIR_TOKEN          the admin token (or KONJIR_ADMIN_TOKEN)
 //   KONJIR_BIN            the konjir command (default: this checkout's bin/konjir, else konjir on PATH);
-//                         may hold arguments, e.g. "npx -y konjir"
+//                         may hold arguments, e.g. "npx -y konjir@<version>" once published (always pinned)
 //   KONJIR_DEMO_RUN       the suffix that keeps this run's names fresh (default: MMDD plus 4 random characters)
 //   KONJIR_DEMO_STATE     where to write the state file (default ~/.konjir-demo/<run>.json)
 //   KONJIR_DEMO_RULING    the Decisions Log id the ruling step applies (default D1)

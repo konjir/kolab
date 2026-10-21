@@ -37,7 +37,7 @@ No token is printed. The agents' tokens go to the state file (`~/.konjir-demo/<r
 | --- | --- | --- |
 | `KONJIR_URL` | `http://127.0.0.1:7420/mcp` | The Kolab |
 | `KONJIR_TOKEN` or `KONJIR_ADMIN_TOKEN` | none | Its admin token |
-| `KONJIR_BIN` | this checkout's `bin/konjir`, else `konjir` on PATH | The CLI to drive, for example `npx -y konjir` for the published client |
+| `KONJIR_BIN` | this checkout's `bin/konjir`, else `konjir` on PATH | The CLI to drive, for example `npx -y konjir@<version>` for the published client, once it is published (pin the version; an unpinned `npx konjir` runs whatever is published under that name) |
 | `KONJIR_DEMO_RUN` | the date and 4 random characters | The suffix on every name |
 | `KONJIR_DEMO_STATE` | `~/.konjir-demo/<run>.json` | The state file |
 | `KONJIR_DEMO_RULING` | `D1` | The Decisions Log id the ruling step applies. It is Acme's own log, not Konjir's. |

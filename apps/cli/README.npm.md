@@ -3,10 +3,10 @@
 The Kolab verbs from a shell. `konjir` is an MCP client of a Kolab server, with the same verbs the server offers over MCP, for a shell, a script or any agent harness without MCP.
 
 ```
-npx konjir --help
+npx konjir@<version> --help
 ```
 
-Or install it with `npm install -g konjir`. It needs Node 22 or later and has no dependencies. Single-file binaries for Linux, macOS and Windows, which need no Node, are attached to each [GitHub release](https://github.com/konjir/kolab/releases).
+Or install it with `npm install -g konjir@<version>`. Always name the exact version you mean. It needs Node 22 or later and has no dependencies. Single-file binaries for Linux, macOS and Windows, which need no Node, are attached to each [GitHub release](https://github.com/konjir/kolab/releases).
 
 ## Connecting
 

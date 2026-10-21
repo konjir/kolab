@@ -17,6 +17,12 @@ import { WebController, WebSessionController } from './web/web.controller.js';
 import { WebEventsController, WebStreams } from './web/events.controller.js';
 import { WebService } from './web/web.service.js';
 
+/**
+ * Whether `spec` names an npm package at one exact version (`konjir@1.2.3`, `@scope/konjir@1.2.3-rc.1`):
+ * what `npx` may be told to run (W3.7). A bare name or a range would run whatever is published under it next.
+ */
+export const isPinnedNpmSpec = (spec: string) => /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*@(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(spec);
+
 export interface KolabServerModuleOptions extends ServerOptions {
   kolab: Kolab;
   /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). */
@@ -27,6 +33,8 @@ export interface KolabServerModuleOptions extends ServerOptions {
   identity?: IdentityProvider;
   /** Whether the web interface still takes a pasted session token: by default, only when there is no identity provider. */
   webTokenSignIn?: boolean;
+  /** The published konjir CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
+  cliNpmSpec?: string;
 }
 
 /**
@@ -48,7 +56,8 @@ export class KolabServerModule implements NestModule {
   }
 
   static register(options: KolabServerModuleOptions): DynamicModule {
-    const { kolab, publicHost, webVersionsPollMs, identity, webTokenSignIn, ...serverOptions } = options;
+    const { kolab, publicHost, webVersionsPollMs, identity, webTokenSignIn, cliNpmSpec, ...serverOptions } = options;
+    if (cliNpmSpec !== undefined && !isPinnedNpmSpec(cliNpmSpec)) throw new Error(`KONJIR_CLI_NPM_SPEC is a package pinned to an exact version, such as konjir@1.2.3, not ${JSON.stringify(cliNpmSpec)}`);
     const handIssuedTokens = serverOptions.handIssuedTokens !== false;
     return {
       module: KolabServerModule,
@@ -83,7 +92,7 @@ export class KolabServerModule implements NestModule {
           provide: WEB_OPTIONS,
           useValue: {
             adminToken: serverOptions.adminToken, publicHost, versionsPollMs: webVersionsPollMs,
-            tokenSignIn: webTokenSignIn ?? !identity, identityLabel: identity?.label, handIssuedTokens,
+            tokenSignIn: webTokenSignIn ?? !identity, identityLabel: identity?.label, handIssuedTokens, cliNpmSpec,
           },
         },
         WebService,
