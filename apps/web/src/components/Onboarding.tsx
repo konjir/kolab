@@ -155,7 +155,11 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
   );
 }
 
-/** The levels a direct grant may be changed to (W3.6): an invite's, and Admin, which only the kolab's owners give (Kolab refuses anyone else). */
+/**
+ * The levels a direct grant may be changed to (W3.6): an invite's, and Admin, which only the kolab's
+ * owners give. Kolab refuses anything else: raising an agent's grant (its owner's to do, D56), and
+ * lowering a granted Admin unless one owns the kolab or it is one's own.
+ */
 const GRANT_LEVELS: { value: string; label: string; level: AccessLevel; layers?: Layer[] }[] = [
   ...LEVELS, { value: 'admin', label: 'Admin: also manages who holds access', level: 'admin' },
 ];
@@ -252,7 +256,7 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
               <Pill tone={h.access.level ? (h.capped ? 'stale' : 'clean') : 'boundary'}>{accessWords(h.access)}</Pill>
               <span className="mono">{h.actor}</span>
               {h.actor === me.actor && <span>you</span>}
-              {h.kind === 'agent' && <span>agent of {h.owner}{h.cap && h.capped ? `, capped at ${accessWords(h.cap)} by what its owner holds` : ''}</span>}
+              {h.kind === 'agent' && <span>{h.owner ? `agent of ${h.owner}` : 'an agent whose owner holds nothing here'}{h.owner && h.cap && h.capped ? `, capped at ${accessWords(h.cap)} by what its owner holds` : ''}</span>}
               <span>{h.sources.map((s) => sourceWords(s, kolab, h.outside)).join(' · ')}</span>
             </div>
             {elsewhere.length > 0 && <p className="why-not">{elsewhere.join(' ')}</p>}
