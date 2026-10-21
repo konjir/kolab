@@ -4,7 +4,7 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  Access, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
+  Access, AccessLevel, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
   ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
 } from './index.js';
 
@@ -264,6 +264,14 @@ export interface WebInviteMade { token: string; invite: InviteView }
 export interface WebInvitesView { invites: InviteView[] }
 /** An invite's secret, from its link. */
 export interface WebInviteToken { token: string }
+
+/**
+ * A direct grant's new level on the session's kolab (W3.6), and for Write its layers (both by
+ * default). Admin only from the kolab's owners; an agent never above its owner.
+ */
+export interface WebChangeGrant { level: AccessLevel; layers?: Layer[] }
+/** What a change of access did: how many sessions it ended, which can't reach the kolab now. */
+export interface WebAccessChanged { ended: number }
 
 /** An error the API returns: an HTTP status with this body. */
 export interface WebError { error: string; message: string }

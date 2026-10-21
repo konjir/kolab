@@ -89,6 +89,7 @@ test('the MCP route (Claude Code, OpenCode, then konjir_instructions) is apart f
 test('an admin makes an invite link, shown once, and revokes an open one; anyone else is told who invites', async () => {
   replies['GET /api/invites'] = { invites: [invite(), invite({ id: 'inv_bbbbbbbbbbbbbbbb', state: 'accepted', accepted_by: 'fay', level: 'read', layers: [] })] };
   replies['POST /api/invites'] = { token: TOKEN, invite: invite({ id: 'inv_cccccccccccccccc' }) };
+  replies['GET /api/access'] = { kolab: { id: 'anns', owner: 'ann', owner_kind: 'user', visibility: 'private', base_permission: null }, holders: [], teams: [] };
   render(<PeopleView me={ann} overview={overview(ann)} tick={0} act={runner} />);
   expect(await screen.findByText(/joined by fay/)).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Access'), { target: { value: 'write-technical' } });
