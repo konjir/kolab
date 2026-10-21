@@ -321,8 +321,9 @@ export class StoredLogin implements OAuthClientProvider {
    * `lockWaitMs`: how long to wait for another konjir's lock. The URL must be https, or http on
    * loopback (checkKolabUrl).
    */
-  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; yieldTo?: string; lockWaitMs?: number; lockMaxHoldMs?: number; clientName?: string } = {}) {
-    checkKolabUrl(url);
+  constructor(readonly url: string, private readonly opts: { path?: string; redirectUrl?: string; onAuthorize?: (u: URL) => void | Promise<void>; fresh?: boolean; yieldTo?: string; lockWaitMs?: number; lockMaxHoldMs?: number; clientName?: string; skipUrlCheck?: boolean } = {}) {
+    // skipUrlCheck: only for logout --forget, which reads and drops the entry and contacts nothing.
+    if (!opts.skipUrlCheck) checkKolabUrl(url);
     // Only konjir's own default folder is kept at 0700; one named through KONJIR_CREDENTIALS is the person's.
     this.store = new Store(opts.path ?? credentialsPath(), !opts.path && !process.env.KONJIR_CREDENTIALS, opts.lockWaitMs, opts.lockMaxHoldMs);
   }
@@ -528,7 +529,14 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
  * default it is opened, and the URL printed to `log`. A sign-in kept from before is revoked first,
  * so no grant is left behind. Resolves once the CLI's session works, with who it is.
  */
-export async function login(url: string, opts: { path?: string; scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; clientName?: string; yieldToOthers?: boolean } = {}) {
+/**
+ * `yieldTo`: the sign-in yields (see StoredLogin) to any kept since that refresh token was seen
+ * ('' for none), as the caller saw it under the lock; never read here, where another konjir's
+ * could slip in first. The reverse race, a `konjir login` that started first and saves last, keeps
+ * the later one and leaves the other's grant to lapse unused within 30 days, as two `konjir login`s
+ * at once always have.
+ */
+export async function login(url: string, opts: { path?: string; scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; clientName?: string; yieldTo?: string } = {}) {
   checkKolabUrl(url);
   const log = opts.log ?? ((l: string) => console.error(l));
   const server: Server = createServer();
@@ -539,7 +547,7 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
     const before = new StoredLogin(url, { path: opts.path }).saved();
     const provider = new StoredLogin(url, {
       path: opts.path, redirectUrl: `http://127.0.0.1:${port}/callback`, fresh: true, clientName: opts.clientName,
-      yieldTo: opts.yieldToOthers ? before.tokens?.refresh_token ?? '' : undefined,
+      yieldTo: opts.yieldTo,
       onAuthorize: async (u) => {
         // What to preselect on Kolab's page: the kolab and role (Kolab reads them from the scope).
         if (opts.scope) u.searchParams.set('scope', opts.scope);
@@ -601,8 +609,20 @@ export async function login(url: string, opts: { path?: string; scope?: string; 
  * be reached, or refuses, the sign-in is kept, so the person can try again, and this throws, saying
  * so; with `forget`, it is forgotten anyway, unrevoked, and that is said too.
  */
-export async function logout(url: string, opts: { path?: string; forget?: boolean } = {}): Promise<{ had: boolean; revoked: boolean }> {
-  const provider = new StoredLogin(url, { path: opts.path });
+export async function logout(url: string, opts: { path?: string; forget?: boolean } = {}): Promise<{ had: boolean; revoked: boolean; why?: string }> {
+  // A sign-in kept for a URL konjir no longer signs in over (http to another host, kept before the
+  // check): --forget drops it without contacting Kolab, since that would send its tokens over http.
+  let refused: string | undefined;
+  try { checkKolabUrl(url); } catch (e) { refused = (e as Error).message; }
+  if (refused && !opts.forget) throw new Error(`${refused}. To drop the sign-in kept for it without contacting Kolab, run konjir logout --forget`);
+  const provider = new StoredLogin(url, { path: opts.path, skipUrlCheck: !!refused });
+  if (refused) {
+    return provider.locked(async (owner) => {
+      const had = !!provider.saved().tokens;
+      await provider.forget(owner);
+      return { had, revoked: false, why: 'konjir doesn\'t contact Kolab over http to another host' };
+    });
+  }
   // Under the lock: no refresh rotates the tokens between reading them and revoking them.
   return provider.locked(async (owner) => {
     const saved = provider.saved();

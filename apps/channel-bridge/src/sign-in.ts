@@ -18,7 +18,8 @@ import { randomBytes } from 'node:crypto';
 import type { ChannelMessage } from './messages.js';
 
 /** What the bridge reaches Kolab with: exactly one of a token and a sign-in. */
-export type BridgeAuth = { token: string; login?: undefined } | { token?: undefined; login: StoredLogin };
+export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefined }
+  | { token?: undefined; login: StoredLogin; awaiting?: 'another-channel' };
 
 /** The name the bridge registers under, which Kolab's consent page shows. */
 export const CLIENT_NAME = 'konjir channel (Claude Code)';
@@ -85,12 +86,19 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   const me = `b${process.pid}_${randomBytes(12).toString('hex')}`;
   try {
     await marker.acquire(me);
-  } catch {
-    io.log(`another konjir channel is signing in to ${shown}; this one will use its sign-in`);
+  } catch (e) {
+    const why = mask(String((e as Error).message ?? e));
+    if (/another konjir holds it/.test(why)) {
+      io.log(`another konjir channel started a browser sign-in to ${shown}; this one will use that sign-in once it is done`);
+      return { login: stored, awaiting: 'another-channel' };
+    }
+    // A marker that is a symbolic link, or one konjir can't read or remove: said as it is.
+    io.log(`the channel can't sign in by itself (${why}); ${run}`);
     return { login: stored };
   }
   try {
     // Under the credentials lock: a sign-in kept since the first look is used, and nothing is registered.
+    // What it saw there is the sign-in's baseline: none (''), so any kept after this makes it yield.
     if (await stored.locked(async () => stored.signedIn)) {
       io.log(`using the sign-in another konjir kept for ${shown} meanwhile`);
       return { login: stored };
@@ -98,7 +106,7 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
     const who = await login(url, {
       clientName: CLIENT_NAME,
       timeoutMs,
-      yieldToOthers: true,
+      yieldTo: '',
       log: (line) => io.log(mask(line)),
       open: async (u) => {
         // Fixed words only: the link, which login() has checked is Kolab's own sign-in page, stays in the log.

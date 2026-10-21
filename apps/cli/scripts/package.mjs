@@ -91,10 +91,12 @@ const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konji
  * else, since the @konjir/source condition would otherwise inline it from TypeScript unseen.
  */
 const FIRST_PARTY = [join(app, 'src') + '/', join(root, 'libs/login/src') + '/'];
-function checkFirstParty(metafile) {
+function checkFirstParty(metafile, out) {
   const stray = Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs).map((input) => resolve(app, input))
     .filter((path) => !/\/node_modules\//.test(path) || /\/node_modules\/@konjir\//.test(path))
     .filter((path) => !FIRST_PARTY.some((dir) => path.startsWith(dir)));
+  // Nothing is left behind from a build that fails it.
+  if (stray.length) rmSync(out, { recursive: true, force: true });
   if (stray.length) throw new Error(`the bundle inlines first-party code outside apps/cli/src and libs/login/src: ${stray.join(', ')}`);
 }
 
@@ -157,8 +159,8 @@ if (mode === 'bun') {
   mkdirSync(out, { recursive: true });
   const metafile = join(out, '.metafile.json');
   bun(['--target=node', '--format=esm', '--minify-syntax', '--minify-whitespace', `--metafile=${metafile}`, '--outfile', join(out, 'konjir.mjs')]);
+  checkFirstParty(metafile, out);
   chmodSync(join(out, 'konjir.mjs'), 0o755);
-  checkFirstParty(metafile);
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
   rmSync(metafile);
   // The published manifest: no dependencies (they're bundled) and nothing private.
@@ -192,7 +194,7 @@ if (mode === 'bun') {
     // No .env or bunfig.toml autoloading: the binary reads its environment as the npm package does.
     bun(['--compile', `--target=${TARGETS[t].replace(/-aarch64$/, '-arm64')}`, `--compile-executable-path=${await runtime(TARGETS[t])}`,
       '--minify', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', `--metafile=${metafile}`, '--outfile', file]);
-    checkFirstParty(metafile);
+    checkFirstParty(metafile, out);
   }
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
   rmSync(metafile);
