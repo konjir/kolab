@@ -57,6 +57,10 @@ test('the list shows each holder\'s access and its sources; only a direct grant 
   const agent = screen.getByRole('listitem', { name: 'ben-claude' });
   expect(within(agent).getByText('agent of ben, capped at Read by what its owner holds')).toBeTruthy();
   expect((within(agent).getByLabelText('Grant for ben-claude') as HTMLSelectElement).value).toBe('write-technical');
+  // An agent is offered only its grant or lower: raising it is its owner's (D56).
+  expect([...(within(agent).getByLabelText('Grant for ben-claude') as HTMLSelectElement).options].map((o) => o.value)).toStrictEqual(['read', 'triage', 'write-technical']);
+  expect([...(within(screen.getByRole('listitem', { name: 'otto' })).getByLabelText('Grant for otto') as HTMLSelectElement).options].map((o) => o.value))
+    .toStrictEqual(['read', 'triage', 'write-functional', 'write-technical', 'write', 'maintain', 'admin']);
   expect(within(screen.getByRole('listitem', { name: 'old-bot' })).getByText('an agent whose owner holds nothing here')).toBeTruthy();
   expect(within(screen.getByRole('listitem', { name: 'otto' })).getByText('outside collaborator, granted Read')).toBeTruthy();
   const teams = screen.getByRole('list', { name: 'Teams granted access' });

@@ -154,6 +154,34 @@ test('an agent\'s grant is only lowered or removed here: raising one is its owne
   expect(await kolab.removeGrant(fay, 'ann-claude')).toStrictEqual({ ended: 0 });
 });
 
+test('after an Admin lowers an agent, its owner raises it again within their own agents\' rules; a capped agent lowers to any level under its grant', async () => {
+  const { kolab, ann, fay } = await anns();
+  const lendAgain = (person: string, agent: string) =>
+    (kolab as unknown as { grantOwnAgent(p: string, a: string, k: string): Promise<void> }).grantOwnAgent(person, agent, 'anns');
+  // Fay lowers Eli's agent to Read; Eli lends it his access again, as signing it in does: Write on the technical layer.
+  await kolab.changeGrant(fay, 'eli-claude', 'read');
+  await lendAgain('eli', 'eli-claude');
+  expect(await kolab.access('eli-claude', 'anns')).toStrictEqual({ level: 'write', layers: ['technical'] });
+  // At most Write, and never above its owner: Ann's agent is lent Write, not Admin.
+  await kolab.addActor('ann-claude', { owner: 'ann' });
+  await lendAgain('ann', 'ann-claude');
+  expect(await kolab.access('ann-claude', 'anns')).toStrictEqual({ level: 'write', layers: ['functional', 'technical'] });
+  // A grant above those rules, from Konjir's admin, stands: lending never lowers it.
+  await kolab.grant('anns', 'ann-claude', 'admin');
+  await lendAgain('ann', 'ann-claude');
+  expect((await kolab.access('ann-claude', 'anns')).level).toBe('admin');
+  // Only the kolab's owners lower an agent's Admin here, and the refusal says where it came from.
+  expect(await rejection(kolab.changeGrant(fay, 'ann-claude', 'maintain')))
+    .toMatch(/AccessError: ann-claude, an agent, holds Admin in kolab anns by a grant from Konjir's admin or the kolab's owners: only the kolab's owners lower or remove it here/);
+  await kolab.changeGrant(ann, 'ann-claude', 'maintain');
+
+  // Eli drops to Read: his agent, stored at Write, is capped at Read, and may be lowered to Triage, between the two.
+  await kolab.changeGrant(ann, 'eli', 'read');
+  expect(await kolab.changeGrant(fay, 'eli-claude', 'triage')).toStrictEqual({ ended: 0 });
+  expect((await kolab.db.query(`select level from kolab_grant where kolab_id = 'anns' and agent_id = 'eli-claude'`)).rows).toStrictEqual([{ level: 'triage' }]);
+  expect(await kolab.access('eli-claude', 'anns')).toStrictEqual({ level: 'read', layers: [] });
+});
+
 test('an archived person\'s or agent\'s grant isn\'t changed, only removed (D52)', async () => {
   const { kolab, ann } = await anns();
   await kolab.archive({ actor: 'eli' });
