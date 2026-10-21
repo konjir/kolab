@@ -47,6 +47,43 @@ export interface InvitePreview {
   kolab: string; title: string; owner: string; level: InviteLevel; layers: Layer[];
   invited_by: string; expires_at: string;
 }
+/**
+ * Where some of an actor's access to a kolab comes from (W3.6): owning it, being an owner of the
+ * organization that owns it, that organization's base permission, an internal kolab's members'
+ * Read, a direct grant (to a person, an outside collaborator among them, or an agent), or a
+ * team's grant. Only a direct grant is changed in the kolab's People page; the rest are kept
+ * where the organization, its teams and its members are.
+ */
+export const ACCESS_SOURCES = ['owner', 'org_owner', 'base', 'internal', 'grant', 'team'] as const;
+export type AccessSourceKind = typeof ACCESS_SOURCES[number];
+export interface AccessSource {
+  kind: AccessSourceKind; level: AccessLevel; layers: Layer[];
+  /** The team whose grant it is, for `team`; the organization, for `org_owner`, `base` and `internal`. */
+  team?: string; org?: string;
+}
+/**
+ * Someone who holds access to a kolab, or holds a grant there that gives nothing now (W3.6), as
+ * the kolab's Admins see them: what they hold (kj_access), and where it comes from. An agent's
+ * access is its own grant cut down to what its owner lends it (`cap`, D30, D56); `capped` says the
+ * cut takes something away.
+ */
+export interface AccessHolder {
+  actor: string; kind: ActorKind; owner: string | null;
+  access: Access; sources: AccessSource[];
+  /** Their direct grant, the one access the People page changes or removes; null without one. */
+  grant: Access | null;
+  /** A person granted access to an organization's kolab who isn't a member of it (TEN10). */
+  outside: boolean;
+  /** An agent's: what its owner lends it there, at most (kj_agent_cap). */
+  cap?: Access; capped?: boolean;
+}
+/** A team's grant on a kolab (TEN9), with how many people it reaches, its sub-teams' members included. */
+export interface AccessTeamGrant { team: string; level: AccessLevel; layers: Layer[]; members: number }
+/** Who holds access to a kolab (W3.6): its people and agents, and its teams' grants. */
+export interface KolabAccessView {
+  kolab: { id: string; owner: string; owner_kind: AccountKind; visibility: Visibility; base_permission: AccessLevel | null };
+  holders: AccessHolder[]; teams: AccessTeamGrant[];
+}
 /** `archived` is given only by a listing that includes archived kolabs (D52). */
 export interface KolabRow { id: string; owner: string; title: string; visibility: Visibility; base_permission: AccessLevel | null; archived?: boolean }
 /**

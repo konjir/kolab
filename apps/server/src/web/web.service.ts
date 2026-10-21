@@ -6,8 +6,8 @@ import {
 } from '@konjir/engine';
 import { formatAddress, isKolabName, isNodeName, parseAddress } from '@konjir/address';
 import {
-  CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
-  type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type CaseFileState, type CaseFileView, type RulingView,
+  ACCESS_LEVELS, CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
+  type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type KolabAccessView, type WebAccessChanged, type WebChangeGrant, type CaseFileState, type CaseFileView, type RulingView,
   type WebCase, type WebCasesView, type WebForeignKolab, type WebOpenCase, type WebPosition, type WebRuleCase, type WebRuleDirect, type WebRuling,
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
@@ -532,6 +532,24 @@ export class WebService {
 
   async revokeInvite(s: string, id: string): Promise<void> {
     await this.kolab.revokeInvite(s, id);
+  }
+
+  // ---- who holds access (W3.6): Kolab decides who may see and change it ----
+
+  async access(s: string): Promise<KolabAccessView> {
+    return this.kolab.listAccess(s);
+  }
+
+  /** A person's or agent's direct grant on the session's kolab, to another level. */
+  async changeGrant(s: string, actor: string, b: WebChangeGrant): Promise<WebAccessChanged> {
+    if (!ACCESS_LEVELS.includes(b?.level)) throw bad(`a level is one of ${ACCESS_LEVELS.join(', ')}`);
+    if (b.layers !== undefined && (!Array.isArray(b.layers) || b.layers.some((l) => !LAYERS.includes(l)))) throw bad(`a grant's layers are ${LAYERS.join(' and ')}`);
+    return this.kolab.changeGrant(s, actor, b.level, { layers: b.layers });
+  }
+
+  /** A person's or agent's direct grant on the session's kolab, removed. */
+  async removeGrant(s: string, actor: string): Promise<WebAccessChanged> {
+    return this.kolab.removeGrant(s, actor);
   }
 
   /**

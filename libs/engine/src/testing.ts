@@ -77,7 +77,7 @@ export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { qu
  * queue a fork's rebase when its holder holds it again (LNK8).
  */
 const COMMITTING = ['commit', 'review', 'submit', 'recordReview', 'resolveOverride', 'applyRuling',
-  'grant', 'revoke', 'addMember', 'removeMember', 'addTeamMember', 'removeTeamMember'] as const;
+  'grant', 'revoke', 'changeGrant', 'removeGrant', 'addMember', 'removeMember', 'addTeamMember', 'removeTeamMember'] as const;
 
 /** Makes each committing write of `kolab` drain the outbox before it returns or throws (openKolab). */
 export function drainAfterWrites(kolab: Kolab) {
