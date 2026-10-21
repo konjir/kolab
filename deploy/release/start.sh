@@ -23,5 +23,15 @@ if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJI
     unset GITHUB_SECRET
   fi
 fi
+# The published konjir CLI's npm spec (W3.7), which Terraform keeps beside the admin token
+# (/konjir/<name>/cli-npm-spec), so the web page shows npx commands for it. Without the
+# parameter, Kolab runs as before. Like the GitHub app's, it is read here, not in the boot script.
+if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJIR_CLI_NPM_SPEC:-}" ]; then
+  if CLI_NPM_SPEC=$(aws ssm get-parameter --region "$AWS_REGION" --name "${KONJIR_TOKEN_PARAM%/admin-token}/cli-npm-spec" \
+      --query Parameter.Value --output text 2>/dev/null) && [ -n "$CLI_NPM_SPEC" ]; then
+    export KONJIR_CLI_NPM_SPEC="$CLI_NPM_SPEC"
+  fi
+  unset CLI_NPM_SPEC
+fi
 # Plain node on the output install.sh compiled: each package's default export is its dist/.
 exec node apps/cli/dist/main.js serve "$@" --quiet
