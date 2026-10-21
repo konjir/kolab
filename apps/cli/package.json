@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
+    "@konjir/login": "*",
     "@konjir/server": "*",
     "@konjir/types": "*"
   },

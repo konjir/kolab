@@ -8,7 +8,8 @@
 // Both builds bundle the CLI and everything it imports (the MCP client SDK) with Bun, so the npm
 // package has no dependencies and npx konjir works without this workspace. @konjir/server is left
 // out: it brings NestJS and the database, and only `konjir serve` loads it, so the
-// published konjir has no serve (the CLI says so). The @konjir/* libraries reach the CLI as types only.
+// published konjir has no serve (the CLI says so). Of the @konjir/* libraries only @konjir/login, the
+// OAuth client and credentials store `konjir login` uses, is bundled; the others reach the CLI as types only.
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
 // with it, for `konjir --version`.
