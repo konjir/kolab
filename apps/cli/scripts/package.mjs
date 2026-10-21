@@ -80,7 +80,9 @@ function checkBun() {
   if (have !== pinned.version) throw new Error(`bun on PATH is ${have}, but apps/cli/bun-runtimes.json pins ${pinned.version}`);
 }
 
-const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server',
+// The @konjir/source condition bundles @konjir/login from its source, as tsx runs it, so the bundle
+// needs no tsc build of the library first.
+const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server', '--conditions=@konjir/source',
   '--define', `KONJIR_VERSION=${JSON.stringify(manifest.version)}`, ...args], { stdio: 'inherit', cwd: app });
 
 /** The packages the bundle inlines, from Bun's metafile: the last node_modules/<name> of each input. */
