@@ -4,14 +4,17 @@
  * Claude Code starts it over stdio (the plugin's .mcp.json). It serves only the
  * 2025-era protocol, because Claude Code doesn't register a channel server that
  * negotiates 2026-07-28, and declares the claude/channel capability. It connects
- * to Kolab as an MCP client with KONJIR_URL and KONJIR_TOKEN, like the CLI, and
- * forwards each change to the session's inbox or answers as
+ * to Kolab at KONJIR_URL as an MCP client, like the CLI: with the sign-in
+ * `konjir login` keeps for that URL, signing in with the browser by itself on
+ * first start when there is none (W3.5, D55), or with KONJIR_TOKEN, which
+ * overrides it. It forwards each change to the session's inbox or answers as
  * notifications/claude/channel.
  */
 import { Logger, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { McpStderrLogger, McpStdioModule, McpStdioService } from '@onivoro/server-mcp';
 import { KolabBridge } from './bridge.js';
+import { bridgeAuth, mask } from './sign-in.js';
 import type { ChannelMessage } from './messages.js';
 import { VERSION } from './version.js';
 
@@ -46,7 +49,6 @@ export function channelModule() {
 
 export async function main(env: NodeJS.ProcessEnv = process.env) {
   const url = env.KONJIR_URL || 'http://127.0.0.1:7420/mcp';
-  const token = env.KONJIR_TOKEN ?? '';
   const app = await NestFactory.createApplicationContext(channelModule(), { logger: new McpStderrLogger({ colors: false, logLevels: ['log', 'warn', 'error'] }) });
   const logger = new Logger('KonjirChannel');
   const stdio = app.get(McpStdioService);
@@ -59,16 +61,20 @@ export async function main(env: NodeJS.ProcessEnv = process.env) {
     }
   };
 
-  if (!token) {
-    logger.error('KONJIR_TOKEN is not set; the channel has nothing to listen with');
-    void forward({
-      content: 'The Konjir channel has no KONJIR_TOKEN, so it can\'t listen to Kolab. Set KONJIR_URL and KONJIR_TOKEN (an agent session token) in the environment Claude Code starts from, then restart. Tell the user.',
-      meta: { kind: 'bridge', status: 'unconfigured' },
-    }).catch(() => undefined);
-  }
-  const bridge = token ? new KolabBridge({ url, token, forward, log: (line) => logger.log(line), backoff: backoffFrom(env) }).start() : undefined;
-
+  let bridge: KolabBridge | undefined;
   let closing = false;
+  // Signing in may wait on the person's browser: Claude Code's side is served meanwhile, and a
+  // shutdown during it needs no bridge to stop.
+  void bridgeAuth(url, env, { forward, log: (line) => logger.log(line) }).then((auth) => {
+    if (closing) return;
+    const { awaiting, ...credential } = auth;
+    bridge = new KolabBridge({ url, ...credential, awaiting, forward, log: (line) => logger.log(line), backoff: backoffFrom(env) }).start();
+  }, (e: unknown) => {
+    // The detail goes to the log, masked; the session gets fixed words.
+    logger.error(`the channel can't start: ${mask(String((e as Error).message ?? e))}`);
+    void forward({ content: 'The Konjir channel can\'t start: its log says why (KONJIR_URL, KONJIR_CHANNEL_SIGN_IN or the credentials file). Tell the user.', meta: { kind: 'bridge', status: 'misconfigured' } }).catch(() => undefined);
+  });
+
   const shutdown = async () => {
     if (closing) return;
     closing = true;

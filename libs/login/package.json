@@ -1,0 +1,27 @@
+{
+  "name": "@konjir/login",
+  "version": "0.5.0",
+  "private": true,
+  "description": "Signs a local client in to Kolab through OAuth (D55): konjir login's client and its lock-file credentials store, shared by the konjir CLI and the channel bridge",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@konjir/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.3.1"
+  },
+  "nx": {
+    "tags": [
+      "scope:shared"
+    ]
+  }
+}

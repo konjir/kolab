@@ -26,6 +26,7 @@
     "compile": "node scripts/package.mjs binaries"
   },
   "dependencies": {
+    "@konjir/login": "*",
     "@konjir/server": "*",
     "@konjir/types": "*",
     "@modelcontextprotocol/client": "^2.3.1"
@@ -51,6 +52,7 @@
       "bundle": {
         "inputs": [
           "production",
+          "^production",
           "{projectRoot}/scripts/package.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
@@ -68,6 +70,7 @@
       "compile": {
         "inputs": [
           "production",
+          "^production",
           "{projectRoot}/scripts/package.mjs",
           "{projectRoot}/bun-runtimes.json",
           {

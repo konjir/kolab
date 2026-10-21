@@ -8,7 +8,8 @@
 // Both builds bundle the CLI and everything it imports (the MCP client SDK) with Bun, so the npm
 // package has no dependencies and npx konjir works without this workspace. @konjir/server is left
 // out: it brings NestJS and the database, and only `konjir serve` loads it, so the
-// published konjir has no serve (the CLI says so). The @konjir/* libraries reach the CLI as types only.
+// published konjir has no serve (the CLI says so). Of the @konjir/* libraries only @konjir/login, the
+// OAuth client and credentials store `konjir login` uses, is bundled; the others reach the CLI as types only.
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
 // with it, for `konjir --version`.
@@ -79,8 +80,25 @@ function checkBun() {
   if (have !== pinned.version) throw new Error(`bun on PATH is ${have}, but apps/cli/bun-runtimes.json pins ${pinned.version}`);
 }
 
-const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server',
+// The @konjir/source condition bundles @konjir/login from its source, as tsx runs it, so the bundle
+// needs no tsc build of the library first.
+const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server', '--conditions=@konjir/source',
   '--define', `KONJIR_VERSION=${JSON.stringify(manifest.version)}`, ...args], { stdio: 'inherit', cwd: app });
+
+/**
+ * The first-party code the bundle may inline: the CLI's own source and @konjir/login's, nothing
+ * else of the workspace's (no server, engine, db or address code). The build fails on anything
+ * else, since the @konjir/source condition would otherwise inline it from TypeScript unseen.
+ */
+const FIRST_PARTY = [join(app, 'src') + '/', join(root, 'libs/login/src') + '/'];
+function checkFirstParty(metafile, out) {
+  const stray = Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs).map((input) => resolve(app, input))
+    .filter((path) => !/\/node_modules\//.test(path) || /\/node_modules\/@konjir\//.test(path))
+    .filter((path) => !FIRST_PARTY.some((dir) => path.startsWith(dir)));
+  // Nothing is left behind from a build that fails it.
+  if (stray.length) rmSync(out, { recursive: true, force: true });
+  if (stray.length) throw new Error(`the bundle inlines first-party code outside apps/cli/src and libs/login/src: ${stray.join(', ')}`);
+}
 
 /** The packages the bundle inlines, from Bun's metafile: the last node_modules/<name> of each input. */
 function bundledPackages(metafile) {
@@ -141,6 +159,7 @@ if (mode === 'bun') {
   mkdirSync(out, { recursive: true });
   const metafile = join(out, '.metafile.json');
   bun(['--target=node', '--format=esm', '--minify-syntax', '--minify-whitespace', `--metafile=${metafile}`, '--outfile', join(out, 'konjir.mjs')]);
+  checkFirstParty(metafile, out);
   chmodSync(join(out, 'konjir.mjs'), 0o755);
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
   rmSync(metafile);
@@ -175,6 +194,7 @@ if (mode === 'bun') {
     // No .env or bunfig.toml autoloading: the binary reads its environment as the npm package does.
     bun(['--compile', `--target=${TARGETS[t].replace(/-aarch64$/, '-arm64')}`, `--compile-executable-path=${await runtime(TARGETS[t])}`,
       '--minify', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', `--metafile=${metafile}`, '--outfile', file]);
+    checkFirstParty(metafile, out);
   }
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(bundledPackages(metafile)));
   rmSync(metafile);

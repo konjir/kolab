@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
 import { StoredLogin, call, connect, credentialsPath, login, logout, main } from '../src/cli.js';
-import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
+import { closeAtEnd, els, openKolab, rejection } from '@konjir/engine/testing';
 import { FileLock } from '../src/login.js';
 
 /** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on the CLI's loopback callback. */
@@ -291,3 +291,48 @@ test('a hold leaked by an error that escaped the SDK, in a konjir that keeps run
   await watching.saveTokens(tokens(3));
   expect(JSON.parse(readFileSync(path, 'utf8'))[URL_].tokens.refresh_token).toBe('kjr_r2');
 });
+
+test('konjir watch, as its stream closes at token expiry and listens again, lets go only of an idle hold, never of a refresh in flight', async () => {
+  const { kolab, server } = await signedIn();   // ann-cli, an engineer in anns
+  const annAs = async (role: 'product' | 'engineer') => {
+    await kolab.endSession({ actor: 'ann' }).catch(() => undefined);
+    return kolab.openSession('ann', role, { kolab: 'anns' });
+  };
+  // Ann commits a binding in anns; asking about it signals ann-cli's technical inbox.
+  const eng = await annAs('engineer');
+  await kolab.createNode(eng, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  // It waits for ann-cli, the layer's other writer, who approves it.
+  await rejection(kolab.commit(eng, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.' }) }));
+  await main(['review', 'node=orders-pg', 'version=1', 'verdict=approve']);
+  const ask = async (q: string) => kolab.raiseQuery(await annAs('product'), 'kj:orders-pg#b1', q);
+  const keptRefresh = () => JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token as string;
+  const forced = jest.spyOn(StoredLogin.prototype, 'releaseLock');
+  const idle = jest.spyOn(StoredLogin.prototype, 'releaseIdleLock');
+  out = [];
+  let settled = false;
+  const watching = main(['watch', '--once']).finally(() => { settled = true; });
+  await new Promise((r) => setTimeout(r, 1500));   // listening
+  const before = keptRefresh();
+
+  // The token expires: Kolab closes the stream before its next signal, and watch listens again, refreshing.
+  await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-cli' and ended_at is null`);
+  await ask('Asked as the token expired?');
+  const end = Date.now() + 30_000;
+  while (keptRefresh() === before) {
+    if (Date.now() > end) throw new Error(`watch never listened again: settled ${settled}, printed ${out.join(' | ')}, idle ${idle.mock.calls.length}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  // The stream's close let go of an idle hold only: nothing forced the lock off while watch ran.
+  expect(idle).toHaveBeenCalled();
+  expect(forced).not.toHaveBeenCalled();
+  for (let n = 0; !settled; n++) {
+    if (n > 30) throw new Error('watch heard nothing after listening again');
+    await ask(`And now (${n})?`);
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  await watching;
+  expect(out.some((l) => l.includes('"updated"'))).toBe(true);
+  expect(forced).toHaveBeenCalledTimes(1);   // watch's own last release, once all it started has settled
+  expect(() => statSync(`${credentialsPath()}.lock`)).toThrow();
+  await server.close();
+}, 90_000);
