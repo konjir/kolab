@@ -512,7 +512,7 @@ test('W3.8 done when: with only the bridge configured, as konjir connect claude 
 }, 180_000);
 
 test('W3.8: with KONJIR_AGENT, a sign-in kept for that agent that works as anyone else is refused whole: one message, nothing served, nothing heard', async () => {
-  const { idp, server } = await kolabWithSignIn();
+  const { kolab, idp, server } = await kolabWithSignIn();
   const env = { KONJIR_CREDENTIALS: credentials };
   // The file for ann-claude holds a sign-in as another agent of Ann's (chosen otherwise at consent).
   const path = agentCredentials('ann-claude', env);
@@ -532,13 +532,26 @@ test('W3.8: with KONJIR_AGENT, a sign-in kept for that agent that works as anyon
   bridge.start();
   const told = await until('the refusal', () => messages.find((m) => m.meta.status === 'wrong_actor'));
   expect(told.content).toContain('The Konjir channel\'s sign-in for ann-claude works as ann-other, not ann-claude, so it serves no Konjir tools and hears no inbox changes.');
-  expect(told.content).toContain(`KONJIR_CREDENTIALS=${path} konjir login --url ${server.url}`);
+  expect(told.content).toContain(`KONJIR_CREDENTIALS=${path} konjir login --url ${server.url} --agent ann-claude`);
   await new Promise((r) => setTimeout(r, 600));   // retried, and said once
   expect(messages.filter((m) => m.meta.status === 'wrong_actor')).toHaveLength(1);
   expect(listens).toBe(0);
   expect(await bridge.list('tools', 100)).toStrictEqual([]);
   expect(await rejection(bridge.forward('tools/call', { name: 'konjir_whoami', arguments: {} }))).toMatch(/its sign-in works as ann-other, not ann-claude/);
   await bridge.stop();
+
+  // KONJIR_TOKEN with KONJIR_AGENT: a token that works as anyone else is refused the same way.
+  const other = await kolab.openSession('ann', 'product', { kolab: 'anns' });
+  const byToken = await bridgeAuth(server.url, { KONJIR_TOKEN: other, KONJIR_AGENT: 'ann-claude' }, { forward: async () => undefined, log: () => undefined });
+  expect(byToken).toStrictEqual({ token: other, agent: 'ann-claude' });
+  const said: ChannelMessage[] = [];
+  const tokenBridge = new KolabBridge({ url: server.url, ...byToken, forward: async (m) => { said.push(m); }, log: () => undefined, backoff: { initialMs: 100, maxMs: 200 }, passthrough: { connectWaitMs: 100 } });
+  closeAtEnd({ close: () => tokenBridge.stop() });
+  tokenBridge.start();
+  const refused = await until('the token refused', () => said.find((m) => m.meta.status === 'wrong_actor'));
+  expect(refused.content).toContain('KONJIR_TOKEN works as ann, not ann-claude (KONJIR_AGENT)');
+  expect(await tokenBridge.list('tools', 100)).toStrictEqual([]);
+  await tokenBridge.stop();
   await server.close();
 }, 60_000);
 

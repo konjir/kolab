@@ -274,9 +274,16 @@ export class KolabBridge {
           await this.problem('refused', `Kolab at ${safeUrl(this.opts.url)} refused the sign-in's token; trying again`);
         } else if (e instanceof WrongActor) {
           delay = maxMs;
+          // Whatever was listed from an earlier connection is no longer served: Claude Code lists again, and finds nothing.
+          this.clearCatalog();
           const agent = this.opts.agent!;
-          await this.problem(`wrong-actor:${e.message}`, `the sign-in kept for ${agent} works as ${e.message}, not ${agent}: serving nothing; run ${this.loginCommand}, choosing ${agent}`, {
-            content: `The Konjir channel's sign-in for ${agent} works as ${e.message}, not ${agent}, so it serves no Konjir tools and hears no inbox changes. Tell the user to run ${this.loginCommand} in a terminal and choose ${agent} on Kolab's page. The channel picks the new sign-in up by itself.`,
+          const byToken = !!this.opts.token;
+          await this.problem(`wrong-actor:${e.message}`, byToken
+            ? `KONJIR_TOKEN works as ${e.message}, not KONJIR_AGENT ${agent}: serving nothing`
+            : `the sign-in kept for ${agent} works as ${e.message}, not ${agent}: serving nothing; run ${this.loginCommand}, choosing ${agent}`, {
+            content: byToken
+              ? `The Konjir channel's KONJIR_TOKEN works as ${e.message}, not ${agent} (KONJIR_AGENT), so it serves no Konjir tools and hears no inbox changes. Restart Claude Code with KONJIR_TOKEN unset, or set to ${agent}'s token. Tell the user.`
+              : `The Konjir channel's sign-in for ${agent} works as ${e.message}, not ${agent}, so it serves no Konjir tools and hears no inbox changes. Tell the user to run ${this.loginCommand} in a terminal and choose ${agent} on Kolab's page. The channel picks the new sign-in up by itself.`,
             meta: { kind: 'bridge', status: 'wrong_actor' },
           });
         } else if (e instanceof NotAnAgentToken) {
@@ -324,7 +331,7 @@ export class KolabBridge {
       return `it has no sign-in to Kolab at ${url}: tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as`;
     }
     if (e instanceof NotAnAgentToken) return 'its KONJIR_TOKEN is not an agent session token';
-    if (e instanceof WrongActor) return `its sign-in works as ${e.message}, not ${this.opts.agent}: tell the user to run ${this.loginCommand} in a terminal, choosing ${this.opts.agent}`;
+    if (e instanceof WrongActor) return this.opts.token ? `its KONJIR_TOKEN works as ${e.message}, not ${this.opts.agent}` : `its sign-in works as ${e.message}, not ${this.opts.agent}: tell the user to run ${this.loginCommand} in a terminal, choosing ${this.opts.agent}`;
     if (isRefusal(e) || listenRefusal(e) === 'session_ended') return `Kolab at ${url} refused its sign-in just now`;
     return `it can't reach Kolab at ${url} just now`;
   }
@@ -361,6 +368,13 @@ export class KolabBridge {
       });
     }
     return this.live;
+  }
+
+  /** Forgets every list read from Kolab, telling Claude Code each one changed. */
+  private clearCatalog() {
+    const kinds = [...this.catalog.keys()];
+    this.catalog.clear();
+    for (const kind of kinds) this.onListChanged?.(kind);
   }
 
   /** Each list's refresh in progress: one at a time, with one more run asked for if Kolab said it changed meanwhile. */

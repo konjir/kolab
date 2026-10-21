@@ -80,7 +80,8 @@ export const claudeEntry = (e: Entry) => ({ type: 'http', url: e.url, oauth: { s
  */
 export const claudeBridgeEntry = (e: Entry, command: string) => ({
   type: 'stdio', command, args: [],
-  env: { KONJIR_URL: e.url, KONJIR_AGENT: e.agent, KONJIR_SCOPE: entryScope(e.kolab, e.role, e.agent) },
+  // KONJIR_TOKEN empty: a token in Claude Code's own environment, which would override the agent's sign-in, isn't passed on.
+  env: { KONJIR_URL: e.url, KONJIR_TOKEN: '', KONJIR_AGENT: e.agent, KONJIR_SCOPE: entryScope(e.kolab, e.role, e.agent) },
 });
 
 /** The name the bridge registers under at Kolab, which its consent page shows: the bridge's own CLIENT_NAME. */
