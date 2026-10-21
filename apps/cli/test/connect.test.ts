@@ -307,10 +307,11 @@ async function local() {
 
 /**
  * konjir connect's world: a terminal that says yes (or `answer`), the harnesses as `run`, and Ann's
- * sign-in as herself, in memory, the page submitted as it arrives (Ann, new here, makes her first
- * kolab on the way). `logins` gets each of those consent pages.
+ * sign-in as herself, in memory: on the page she chooses Yourself by hand, as the terminal tells
+ * her (no client preselects it, D60), or `as` if given (Ann, new here, makes her first kolab on the
+ * way). `logins` gets each of those consent pages, as they arrived.
  */
-function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run'], o: { answer?: boolean; interactive?: boolean; asked?: string[]; logins?: string[] } = {}): ConnectIO & { lines: string[] } {
+function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run'], o: { answer?: boolean; interactive?: boolean; asked?: string[]; logins?: string[]; as?: Record<string, string> } = {}): ConnectIO & { lines: string[] } {
   const lines: string[] = [];
   return {
     lines,
@@ -322,7 +323,7 @@ function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run']
       log: (l) => lines.push(l),
       open: (u) => {
         idp.next({ subject: '41', login: 'ann' });
-        void consentAt(u, (html): Record<string, string> => { o.logins?.push(html); return html.includes('value="kolab:anns"') ? {} : { kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' }; }, true);
+        void consentAt(u, (html): Record<string, string> => { o.logins?.push(html); return { ...(o.as ?? { as: 'self' }), ...(html.includes('value="kolab:anns"') ? {} : { kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' }) }; }, true);
       },
     }),
   };
@@ -349,12 +350,14 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
     return signIn(cwd, args[2]);
   }, { asked, logins });
 
-  // konjir connect opencode: Ann signs in as herself, in memory only; the page arrives with Yourself
-  // chosen (the konjir CLI's redirect is loopback) and says plainly what that means.
+  // konjir connect opencode: Ann signs in as herself, in memory only. The page arrives with a new
+  // agent chosen, never Yourself (D60): the terminal tells her to choose Yourself, and she does.
   const entries = await connectHarness(options(server, project), io);
   expect(logins).toHaveLength(1);
-  expect(logins[0]).toMatch(/name="as" value="self" checked/);
-  expect(logins[0]).toContain('This app asks to act as you, with all your access, not as one of your agents.');
+  expect(logins[0]).toMatch(/name="as" value="new-agent" checked/);
+  expect(logins[0]).not.toMatch(/name="as" value="self" checked/);
+  expect(logins[0]).not.toContain('asks to act as you');
+  expect(io.lines.join('\n')).toContain('under "Work as", choose "Yourself" by hand');
   expect(entries.map((e) => [e.name, e.agent, e.role, e.kolab])).toStrictEqual([['konjir-product', 'ann-product', 'product', 'anns'], ['konjir-engineer', 'ann-engineer', 'engineer', 'anns']]);
   // It showed the diff and asked before writing.
   expect(asked).toStrictEqual([`Make these agents and write ${join(project, 'opencode.json')}?`]);
@@ -471,6 +474,18 @@ test('a kept konjir login is never made the person: one that works as an agent s
   const still = await connect(server.url, new StoredLogin(server.url));
   closeAtEnd(still);
   expect(await call(still, 'whoami')).toMatchObject({ actor: 'ann', kind: 'person' });
+});
+
+test('konjir connect\'s own sign-in must be Yourself: if the person chooses an agent instead, it is revoked at once and connect stops, saying to choose Yourself; nothing is written (D60)', async () => {
+  const { kolab, idp, server } = await local();
+  await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
+  await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
+  const project = scratch();
+  const io = world(server, idp, async () => 0, { as: { as: 'new-agent', agent_label: 'oops' } });
+  await expect(connectHarness(options(server, project, { yes: true, auth: false }), io)).rejects.toThrow('on Kolab\'s page you chose ann-oops, not Yourself, and konjir connect makes your agents as you. Run it again, and under "Work as" choose "Yourself"');
+  expect(io.lines).toContain('Revoked the sign-in as you.');
+  expect((await kolab.db.query(`select 1 from oauth_grant where actor_id = 'ann-oops' and revoked_at is null`)).rows).toStrictEqual([]);
+  expect(existsSync(join(project, 'opencode.json'))).toBe(false);
 });
 
 test('konjir connect makes agents as the person only: an agent\'s token is refused; so is the admin token, at the verb', async () => {

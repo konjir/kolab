@@ -170,7 +170,7 @@ test('a person signs up with the identity provider, consents, and their client g
   for (const secret of [code, t.body.access_token, t.body.refresh_token, r.body.access_token, r.body.refresh_token, c.csrf]) expect(dump).not.toContain(secret);
 });
 
-test('the scope preselects the agent, kolab and role on the consent page, only among the person\'s own choices; an agent not theirs is ignored, and the form is still the authority (D59)', async () => {
+test('the scope preselects the agent, kolab and role on the consent page, only among the person\'s own choices; an agent not theirs is ignored, and the form is still the authority (D59); `as:self` is ignored from every client (D60)', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
   const client = (await register(base)).body.client_id;
@@ -190,15 +190,12 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'agent:zed-engineer', kolab: 'kolab:test', role: 'engineer' });
   expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
 
-  expect(c.html).not.toContain('asks to act as you');
-  // Yourself, named, by an app on the person's own machine (every redirect URI loopback): chosen, and said plainly.
-  const self = await shown('konjir as:self role:product');
-  expect(checked(self.html)).toStrictEqual(['self', 'kolab:test', 'product']);
-  expect(self.html).toContain('This app asks to act as you, with all your access, not as one of your agents.');
-  // A hosted app (an https redirect URI, or any one not loopback) asking for Yourself is ignored: an agent stays the default, with no notice.
-  for (const uris of [['https://app.example.com/cb'], [CB, 'https://app.example.com/cb']]) {
-    const hosted = (await register(base, uris)).body.client_id;
-    const h = await toConsent(base, idp, hosted, { subject: '601', login: 'zed' }, { scope: 'konjir as:self', redirect: uris.at(-1) });
+  // `as:self` preselects nothing, from any client (D60): not from an app on the person's own machine
+  // (every redirect URI loopback, as the konjir CLI's), nor a hosted one. An agent stays the default;
+  // the person chooses Yourself by hand.
+  for (const uris of [[CB], ['https://app.example.com/cb'], [CB, 'https://app.example.com/cb']]) {
+    const other = (await register(base, uris)).body.client_id;
+    const h = await toConsent(base, idp, other, { subject: '601', login: 'zed' }, { scope: 'konjir as:self role:product', redirect: uris.at(-1) });
     expect(checked(h.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
     expect(h.html).not.toContain('asks to act as you');
   }
@@ -221,6 +218,11 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(await kolab.actor('zed-bare')).toMatchObject({ kind: 'agent', owner: zed });
   // A kolab the person can't reach isn't preselected either.
   expect(checked((await shown('konjir kolab:elsewhere agent:zed-product')).html)).toStrictEqual(['agent:zed-product', 'kolab:test', 'product']);
+  // Yourself, chosen by hand, is still the person's to choose.
+  const byHand = await shown('konjir as:self kolab:test');
+  expect(checked(byHand.html)).not.toContain('self');
+  const mine = await byHand.browser.consent({ csrf: byHand.csrf, decision: 'allow', as: 'self', kolab: 'kolab:test', role: 'product' });
+  expect(mine.left?.searchParams.get('code')).toMatch(/^kjc_/);
 });
 
 test('PKCE is required, S256 only, and the verifier must match; a refused request is a page, never a redirect', async () => {
