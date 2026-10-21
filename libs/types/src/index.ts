@@ -68,6 +68,7 @@ export interface AccessSource {
  * cut takes something away.
  */
 export interface AccessHolder {
+  /** `owner` is an agent's owner, or null for a person, and for an agent whose owner holds nothing here. */
   actor: string; kind: ActorKind; owner: string | null;
   access: Access; sources: AccessSource[];
   /** Their direct grant, the one access the People page changes or removes; null without one. */

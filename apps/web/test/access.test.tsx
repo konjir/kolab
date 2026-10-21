@@ -21,6 +21,8 @@ const view: KolabAccessView = {
     holder({ actor: 'ben', access: { level: 'write', layers: ['technical'] }, sources: [{ kind: 'team', level: 'write', layers: ['technical'], team: 'acme/eng' }] }),
     holder({ actor: 'ben-claude', kind: 'agent', owner: 'ben', access: { level: 'read', layers: [] }, sources: [{ kind: 'grant', level: 'write', layers: ['technical'] }],
       grant: { level: 'write', layers: ['technical'] }, cap: { level: 'read', layers: [] }, capped: true }),
+    holder({ actor: 'old-bot', kind: 'agent', owner: null, access: { level: null, layers: [] }, sources: [{ kind: 'grant', level: 'read', layers: [] }],
+      grant: { level: 'read', layers: [] }, cap: { level: null, layers: [] }, capped: true }),
     holder({ actor: 'otto', sources: [{ kind: 'grant', level: 'read', layers: [] }], grant: { level: 'read', layers: [] }, outside: true }),
   ],
   teams: [{ team: 'acme/eng', level: 'write', layers: ['technical'], members: 3 }],
@@ -55,6 +57,7 @@ test('the list shows each holder\'s access and its sources; only a direct grant 
   const agent = screen.getByRole('listitem', { name: 'ben-claude' });
   expect(within(agent).getByText('agent of ben, capped at Read by what its owner holds')).toBeTruthy();
   expect((within(agent).getByLabelText('Grant for ben-claude') as HTMLSelectElement).value).toBe('write-technical');
+  expect(within(screen.getByRole('listitem', { name: 'old-bot' })).getByText('an agent whose owner holds nothing here')).toBeTruthy();
   expect(within(screen.getByRole('listitem', { name: 'otto' })).getByText('outside collaborator, granted Read')).toBeTruthy();
   const teams = screen.getByRole('list', { name: 'Teams granted access' });
   expect(within(teams).getByText('3 people, its sub-teams\' members included')).toBeTruthy();

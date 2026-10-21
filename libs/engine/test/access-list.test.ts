@@ -82,11 +82,15 @@ test('in an organization\'s kolab: its owners, the base permission, an internal 
   expect(by.otto).toMatchObject({ access: { level: 'read', layers: [] }, grant: { level: 'read', layers: [] }, outside: true, sources: [{ kind: 'grant', level: 'read', layers: [] }] });
   expect(by['acme-bot']).toMatchObject({ kind: 'agent', owner: 'acme', access: { level: 'write', layers: ['functional', 'technical'] }, cap: { level: 'admin', layers: ['functional', 'technical'] }, capped: false });
 
-  // Access from a team, the base permission or owning the organization isn't changed here.
-  expect(await rejection(kolab.removeGrant(olga, 'ben'))).toMatch(/TenancyError: ben holds no direct grant in kolab shop; access from owning it, its organization, the base permission or a team is changed where those are kept/);
-  expect(await rejection(kolab.changeGrant(olga, 'mia', 'write'))).toMatch(/mia holds no direct grant/);
+
+  // Access from a team, the base permission or owning the organization isn't changed here; and
+  // someone unknown is refused exactly as someone known with no grant here, so nobody learns who signed up.
+  const none = (who: string) => `TenancyError: ${who} holds no direct grant in kolab shop; access from owning it, its organization, the base permission or a team is changed where those are kept`;
+  expect(await rejection(kolab.removeGrant(olga, 'ben'))).toBe(none('ben'));
+  expect(await rejection(kolab.changeGrant(olga, 'mia', 'write'))).toBe(none('mia'));
+  expect(await rejection(kolab.removeGrant(olga, 'nobody'))).toBe(none('nobody'));
+  expect(await rejection(kolab.changeGrant(olga, 'nobody', 'read'))).toBe(none('nobody'));
   expect(await rejection(kolab.removeGrant(olga, 'acme/eng'))).toMatch(/a team's access is its grant to the team, kept with the organization's teams, not changed here/);
-  expect(await rejection(kolab.removeGrant(olga, 'nobody'))).toMatch(/no person or agent nobody holds a grant in kolab shop/);
   expect((await kolab.listAccess(olga)).holders).toStrictEqual(view.holders);
 });
 
@@ -101,7 +105,7 @@ test('only a person with Admin lists or changes access: Maintain, Write and agen
   expect(await rejection(kolab.changeGrant(eli, 'eli', 'admin'))).toMatch(/for those with Admin there; you hold Maintain/);
 });
 
-test('an admin changes a direct grant\'s level and layers; Admin is given only by the kolab\'s owners, and an agent never above its owner', async () => {
+test('an admin changes a person\'s direct grant; Admin is given, and a granted Admin lowered, only by the kolab\'s owners', async () => {
   const { kolab, ann, fay } = await anns();
   expect(await kolab.changeGrant(fay, 'eli', 'write', { layers: ['functional', 'technical'] })).toStrictEqual({ ended: 0 });
   expect(await kolab.access('eli', 'anns')).toStrictEqual({ level: 'write', layers: ['functional', 'technical'] });
@@ -114,15 +118,64 @@ test('an admin changes a direct grant\'s level and layers; Admin is given only b
   expect(await rejection(kolab.changeGrant(fay, 'eli', 'admin'))).toMatch(/AccessError: Admin in kolab anns is given by its owners/);
   await kolab.changeGrant(ann, 'eli', 'admin');
   expect((await kolab.access('eli', 'anns')).level).toBe('admin');
-  // An agent: up to what its owner lends it, and no further.
+  // Eli now holds Admin the owners gave: Fay can neither lower nor remove it, since she couldn't restore it. Ann can.
+  expect(await rejection(kolab.changeGrant(fay, 'eli', 'write'))).toMatch(/AccessError: eli holds Admin in kolab anns by a grant its owners gave: only they lower or remove it/);
+  expect(await rejection(kolab.removeGrant(fay, 'eli'))).toMatch(/only they lower or remove it/);
+  expect((await kolab.access('eli', 'anns')).level).toBe('admin');
   await kolab.changeGrant(ann, 'eli', 'write', { layers: ['technical'] });
-  expect(await rejection(kolab.changeGrant(fay, 'eli-claude', 'write', { layers: ['functional'] })))
-    .toMatch(/AccessError: eli-claude's owner eli holds Write on the technical layer in kolab anns, so eli-claude can't be granted Write on the functional layer: an agent never holds more access than its owner/);
-  await kolab.changeGrant(fay, 'eli-claude', 'read');
-  expect(await kolab.access('eli-claude', 'anns')).toStrictEqual({ level: 'read', layers: [] });
+  expect(await kolab.access('eli', 'anns')).toStrictEqual({ level: 'write', layers: ['technical'] });
+  // Anyone may step down from their own Admin, while someone else holds it.
+  await kolab.changeGrant(fay, 'fay', 'maintain');
+  expect((await kolab.access('fay', 'anns')).level).toBe('maintain');
 });
 
-test('an admin can\'t remove or lower the last Admin, but may another\'s, or their own while someone else holds Admin', async () => {
+test('an agent\'s grant is only lowered or removed here: raising one is its owner\'s, at most Write, even for the kolab\'s owner (D56)', async () => {
+  const { kolab, ann, fay } = await anns();
+  for (const [agent, owner] of [['fay-claude', 'fay'], ['ann-claude', 'ann']]) {
+    await kolab.addActor(agent, { owner });
+    await kolab.grant('anns', agent, 'read');
+  }
+  await kolab.changeGrant(ann, 'eli-claude', 'read');
+  const refused = /AccessError: an agent's grant is only lowered or removed here: raising (\S+)'s is for its owner, who lends their own agents up to their access, at most Write \(D56\)/;
+  // Fay, an Admin by grant, raising her own agent to Maintain.
+  expect(await rejection(kolab.changeGrant(fay, 'fay-claude', 'maintain'))).toMatch(refused);
+  // Ann, the kolab's owner, raising hers to Admin.
+  expect(await rejection(kolab.changeGrant(ann, 'ann-claude', 'admin'))).toMatch(refused);
+  // Fay raising Eli's agent, without Eli.
+  expect(await rejection(kolab.changeGrant(fay, 'eli-claude', 'write', { layers: ['technical'] }))).toMatch(refused);
+  for (const agent of ['fay-claude', 'ann-claude', 'eli-claude']) expect(await kolab.access(agent, 'anns')).toStrictEqual({ level: 'read', layers: [] });
+
+  // Lowering is allowed: a level down, or a layer fewer at Write; and so is removing.
+  await kolab.grant('anns', 'ann-claude', 'write');
+  expect(await kolab.changeGrant(fay, 'ann-claude', 'write', { layers: ['functional'] })).toStrictEqual({ ended: 0 });
+  expect(await rejection(kolab.changeGrant(fay, 'ann-claude', 'write', { layers: ['technical'] }))).toMatch(refused);
+  await kolab.changeGrant(fay, 'ann-claude', 'triage');
+  expect(await kolab.access('ann-claude', 'anns')).toStrictEqual({ level: 'triage', layers: [] });
+  expect(await kolab.removeGrant(fay, 'ann-claude')).toStrictEqual({ ended: 0 });
+});
+
+test('an archived person\'s or agent\'s grant isn\'t changed, only removed (D52)', async () => {
+  const { kolab, ann } = await anns();
+  await kolab.archive({ actor: 'eli' });
+  expect(await rejection(kolab.changeGrant(ann, 'eli', 'maintain'))).toMatch(/TenancyError: eli is archived, so its grant isn't changed; remove it, or unarchive eli first/);
+  expect(await rejection(kolab.changeGrant(ann, 'eli-claude', 'read'))).toMatch(/eli-claude is archived/);
+  expect((await kolab.db.query(`select level from kolab_grant where kolab_id = 'anns' and user_id = 'eli'`)).rows).toStrictEqual([{ level: 'write' }]);
+  expect(await kolab.removeGrant(ann, 'eli')).toStrictEqual({ ended: 0 });
+  expect((await kolab.db.query(`select 1 from kolab_grant where kolab_id = 'anns' and user_id = 'eli'`)).rows).toHaveLength(0);
+});
+
+test('the caller\'s session is checked again under the lock: one that ended after the first check changes nothing', async () => {
+  const { kolab, ann } = await anns();
+  // Ann's session ends between the first check and the lock (a sign-out, a switch, a revoked token).
+  const k = kolab as unknown as { requireLiveKolab(...a: unknown[]): Promise<unknown> };
+  const live = k.requireLiveKolab.bind(kolab);
+  k.requireLiveKolab = async (...a: unknown[]) => { await kolab.endSession(ann); return live(...a); };
+  expect(await rejection(kolab.removeGrant(ann, 'eli'))).toMatch(/RoleError: no open session for that token/);
+  k.requireLiveKolab = live;
+  expect((await kolab.access('eli', 'anns')).level).toBe('write');
+});
+
+test('an admin can\'t remove or lower the last Admin; one may step down while someone else holds Admin', async () => {
   const kolab = await openKolab();
   await kolab.addOrganization('acme');
   for (const id of ['olga', 'fay', 'gus']) await kolab.addActor(id);
@@ -132,11 +185,11 @@ test('an admin can\'t remove or lower the last Admin, but may another\'s, or the
   await kolab.grant('shop', 'gus', 'admin');
   const fay = await kolab.openSession('fay', 'product', { kolab: 'shop' });
   const gus = await kolab.openSession('gus', 'product', { kolab: 'shop' });
-  // Fay removes Gus's Admin: he keeps Write, so his session narrows and stays open.
-  expect(await kolab.changeGrant(fay, 'gus', 'write')).toStrictEqual({ ended: 0 });
+  // Gus steps down to Write: his session narrows and stays open.
+  expect(await kolab.changeGrant(gus, 'gus', 'write')).toStrictEqual({ ended: 0 });
   expect(await kolab.sessionOpen(gus)).toBe(true);
   expect((await kolab.sessionInfo(gus)).access.level).toBe('write');
-  // Now she is the last Admin: neither lowering nor removing her own grant is allowed.
+  // Now Fay is the last Admin: neither lowering nor removing her own grant is allowed.
   expect(await rejection(kolab.changeGrant(fay, 'fay', 'maintain'))).toMatch(/AccessError: that would leave kolab shop with nobody holding Admin: give someone else Admin first/);
   expect(await rejection(kolab.removeGrant(fay, 'fay'))).toMatch(/nobody holding Admin/);
   expect((await kolab.access('fay', 'shop')).level).toBe('admin');
@@ -150,9 +203,9 @@ test('an admin can\'t remove or lower the last Admin, but may another\'s, or the
   expect((await kolab.sessionInfo(fay)).access.level).toBe('read');
   expect(await rejection(kolab.listAccess(fay))).toMatch(/you hold Read/);
 
-  // In a person's kolab its owner is always Admin, so every granted Admin may go.
-  const { kolab: k2, fay: fay2 } = await anns();
-  expect(await k2.removeGrant(fay2, 'fay')).toStrictEqual({ ended: 1 });
+  // In a person's kolab its owner is always Admin, so a granted Admin may go.
+  const { kolab: k2, ann: ann2, fay: fay2 } = await anns();
+  expect(await k2.removeGrant(ann2, 'fay')).toStrictEqual({ ended: 1 });
   expect(await k2.sessionOpen(fay2)).toBe(false);
 });
 
@@ -166,12 +219,13 @@ test('removing a person\'s grant caps their agents and ends the sessions that ca
   expect(await kolab.sessionOpen(eli)).toBe(false);
   expect(await kolab.sessionOpen(agent)).toBe(false);
   expect(ended).toHaveLength(2);
-  // The agent's own grant stays, but gives nothing while its owner holds nothing; it is listed, to be removed.
+  // The agent's own grant stays, but gives nothing while its owner holds nothing; it is listed, to be
+  // removed, without naming its owner, who holds nothing here now.
   expect(await kolab.access('eli-claude', 'anns')).toStrictEqual({ level: null, layers: [] });
   expect(await rejection(kolab.openSession('eli-claude', 'engineer', { kolab: 'anns' }))).toMatch(/no access|can't reach|holds nothing|no kolab/i);
   const view = await kolab.listAccess(ann);
   expect(view.holders.map((h) => h.actor)).toStrictEqual(['ann', 'fay', 'eli-claude']);
-  expect(view.holders[2]).toMatchObject({ access: { level: null, layers: [] }, cap: { level: null, layers: [] }, capped: true });
+  expect(view.holders[2]).toMatchObject({ owner: null, access: { level: null, layers: [] }, cap: { level: null, layers: [] }, capped: true });
   expect(await kolab.removeGrant(ann, 'eli-claude')).toStrictEqual({ ended: 0 });
   expect((await kolab.listAccess(ann)).holders.map((h) => h.actor)).toStrictEqual(['ann', 'fay']);
 
@@ -212,27 +266,31 @@ test('an archived kolab refuses every change, and its admins\' sessions are gone
   expect(await kolab.removeGrant(again, 'eli')).toStrictEqual({ ended: 0 });
 });
 
-test('two admins removing each other at once: the access lock serializes them, and one Admin always remains', async () => {
+test('at once: an owner removing an Admin while that Admin changes a grant, and two Admins stepping down; the lock serializes them, and one Admin always remains', async () => {
   const kolab = await openKolab();
   await kolab.addOrganization('acme');
-  for (const id of ['fay', 'gus']) await kolab.addActor(id);
+  for (const id of ['olga', 'fay', 'gus', 'eli']) await kolab.addActor(id);
   await kolab.createKolab('shop', { owner: 'acme' });
   for (let round = 0; round < 3; round++) {
+    // Olga, an owner of acme, removes Fay while Fay lowers Eli: Fay's change counts only if it ran first.
+    await kolab.addMember('acme', 'olga', 'owner');
     await kolab.grant('shop', 'fay', 'admin');
-    await kolab.grant('shop', 'gus', 'admin');
+    await kolab.grant('shop', 'eli', 'write');
+    const olga = await kolab.openSession('olga', 'product', { kolab: 'shop' });
     const fay = await kolab.openSession('fay', 'product', { kolab: 'shop' });
-    const gus = await kolab.openSession('gus', 'product', { kolab: 'shop' });
-    // Each removes the other: whichever runs second no longer holds Admin, in its own transaction.
-    const crossed = await Promise.allSettled([kolab.removeGrant(fay, 'gus'), kolab.removeGrant(gus, 'fay')]);
-    expect(crossed.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    const refused = crossed.find((r) => r.status === 'rejected') as PromiseRejectedResult;
-    expect(String(refused.reason)).toMatch(/ended|needs Admin there|no open session/);
-    const left = (await Promise.all(['fay', 'gus'].map(async (a) => (await kolab.access(a, 'shop')).level))).filter((l) => l === 'admin');
-    expect(left).toHaveLength(1);
-    await kolab.endSession({ actor: 'fay' }).catch(() => undefined);
-    await kolab.endSession({ actor: 'gus' }).catch(() => undefined);
+    const [removed, lowered] = await Promise.allSettled([kolab.removeGrant(olga, 'fay'), kolab.changeGrant(fay, 'eli', 'read')]);
+    expect(removed.status).toBe('fulfilled');
+    expect((await kolab.access('fay', 'shop')).level).toBeNull();
+    const eliLevel = (await kolab.access('eli', 'shop')).level;
+    if (lowered.status === 'fulfilled') expect(eliLevel).toBe('read');
+    else {
+      expect(String(lowered.reason)).toMatch(/ended|needs Admin there|no open session|can no longer reach/);
+      expect(eliLevel).toBe('write');
+    }
+    await kolab.endSession({ actor: 'olga' }).catch(() => undefined);
+    await kolab.removeMember('acme', 'olga');
 
-    // Each steps down at once: the second finds itself the last Admin.
+    // Fay and Gus step down at once, with no owner of acme: the second finds itself the last Admin.
     await kolab.grant('shop', 'fay', 'admin');
     await kolab.grant('shop', 'gus', 'admin');
     const f2 = await kolab.openSession('fay', 'product', { kolab: 'shop' });
@@ -241,8 +299,8 @@ test('two admins removing each other at once: the access lock serializes them, a
     expect(stepped.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(String((stepped.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason)).toMatch(/nobody holding Admin/);
     expect((await Promise.all(['fay', 'gus'].map(async (a) => (await kolab.access(a, 'shop')).level))).sort()).toStrictEqual(['admin', 'write']);
-    await kolab.endSession({ actor: 'fay' }).catch(() => undefined);
-    await kolab.endSession({ actor: 'gus' }).catch(() => undefined);
+    for (const a of ['fay', 'gus']) await kolab.endSession({ actor: a }).catch(() => undefined);
+    await kolab.revoke('shop', 'gus');
   }
 });
 
