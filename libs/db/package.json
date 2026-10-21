@@ -3,6 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "description": "The Kolab database: its versioned migrations and the connection through Kysely",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": {

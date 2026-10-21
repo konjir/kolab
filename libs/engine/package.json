@@ -3,6 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "description": "The Kolab engine: versions, links, marks, the cascade, rebases and roles",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": {

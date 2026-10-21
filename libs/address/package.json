@@ -3,6 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "description": "Parses and prints kj: addresses, fingerprints elements and re-anchors quotes",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": {

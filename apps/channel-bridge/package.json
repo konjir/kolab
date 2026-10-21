@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "The Konjir channel for Claude Code: serves Kolab's tools on one sign-in, and forwards Kolab inbox changes into a session as channel messages",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": {
