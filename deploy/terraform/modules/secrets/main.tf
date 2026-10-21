@@ -12,6 +12,13 @@ variable "github_client_id" {
   default = ""
 }
 
+# The published konjir CLI's npm spec, pinned to an exact version (W3.7). The release's start.sh
+# reads it as KONJIR_CLI_NPM_SPEC, so the web page shows npx commands for it. Empty: no parameter.
+variable "cli_npm_spec" {
+  type    = string
+  default = ""
+}
+
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
@@ -53,3 +60,16 @@ output "github_param_arns" {
 }
 
 output "github_client_secret_param_name" { value = local.github_client_secret_name }
+
+resource "aws_ssm_parameter" "cli_npm_spec" {
+  count       = var.cli_npm_spec == "" ? 0 : 1
+  name        = "/konjir/${var.name}/cli-npm-spec"
+  description = "The published konjir CLI's npm spec, pinned to an exact version, that Kolab's web page shows (W3.7)"
+  type        = "String"
+  value       = var.cli_npm_spec
+}
+
+# Read by name, like the GitHub app's secret, whether or not the parameter exists.
+output "cli_npm_spec_param_arn" {
+  value = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/konjir/${var.name}/cli-npm-spec"
+}

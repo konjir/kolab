@@ -87,3 +87,15 @@ variable "github_oauth_client_id" {
   type        = string
   default     = "Ov23licO2Gy9ngM4tgPE"
 }
+
+variable "cli_npm_spec" {
+  description = "The published konjir CLI's npm spec, pinned to an exact version (konjir@X.Y.Z), that Kolab's web page shows in its npx commands (W3.7). Kept as the SSM parameter /konjir/<name>/cli-npm-spec, which start.sh reads when Kolab starts. Bump it after each CLI release (README). Empty: no parameter, and the page shows no npx commands."
+  type        = string
+  default     = "konjir@0.5.0"
+
+  # The server's rule, isPinnedNpmSpec in apps/server/src/kolab-server.module.ts: Kolab refuses to start on anything else.
+  validation {
+    condition     = var.cli_npm_spec == "" || can(regex("^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*@(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$", var.cli_npm_spec))
+    error_message = "cli_npm_spec is a package pinned to an exact version, such as konjir@1.2.3, or empty."
+  }
+}

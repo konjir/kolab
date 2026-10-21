@@ -13,6 +13,11 @@ variable "github_param_arns" {
   default = []
 }
 
+variable "cli_npm_spec_param_arn" {
+  type    = string
+  default = ""
+}
+
 data "aws_partition" "current" {}
 
 data "aws_iam_policy_document" "assume" {
@@ -49,7 +54,7 @@ data "aws_iam_policy_document" "kolab" {
   statement {
     sid       = "ReadAdminTokenAndDatabaseUrl"
     actions   = ["ssm:GetParameter"]
-    resources = concat([var.admin_token_param_arn, var.database_url_param_arn], var.github_param_arns)
+    resources = concat([var.admin_token_param_arn, var.database_url_param_arn], var.github_param_arns, compact([var.cli_npm_spec_param_arn]))
   }
 }
 
