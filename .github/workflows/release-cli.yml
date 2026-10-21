@@ -256,7 +256,7 @@ jobs:
             printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$RUNNER_TEMP/.npmrc"
             export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
           fi
-          npm publish "release/konjir-$VERSION.tgz" --provenance --access public --tag latest
+          npm publish "./release/konjir-$VERSION.tgz" --provenance --access public --tag latest
 
   release:
     name: Publish GitHub release
