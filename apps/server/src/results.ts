@@ -6,6 +6,8 @@ import type { McpToolContext } from '@onivoro/server-mcp';
 export const thread = (q: Query) => ({
   id: q.id, kind: q.kind, state: q.state, on: q.address, question: q.question, raised_by: q.raised_by, from: q.from,
   ...(q.state === 'answered' ? { answer: q.answer, answered_by: q.answered_by } : {}),
+  ...(q.state === 'withdrawn' ? { answer: q.answer } : {}),
+  ...(q.asked_of ? { asked_of: q.asked_of } : {}),
 });
 
 export function ok(data: unknown) {

@@ -5,7 +5,7 @@
  */
 import type {
   Access, AccessLevel, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
-  ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
+  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
 } from './index.js';
 
 /** How a person may sign in to this Kolab (D55): with its identity provider, named for the button, and with a pasted token (development). */
@@ -72,7 +72,7 @@ export interface WebLink {
 }
 
 export interface WebQuery {
-  id: string; kind: QueryKind; state: 'open' | 'answered';
+  id: string; kind: QueryKind; state: QueryState;
   address: string; node: string; seq: number; element: string | null; quote: string | null;
   /** The layer that owns the answer. */
   layer: Layer;

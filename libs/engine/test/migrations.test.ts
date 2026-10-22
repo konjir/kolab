@@ -12,7 +12,7 @@ import {
 import { Kolab, sessionKey } from '@konjir/engine';
 import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
 import { ARCHIVABLE,
-  ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS,
+  ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
 } from '@konjir/types';
 
@@ -91,7 +91,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS and ARCHIVABLE", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS and ARCHIVABLE", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -101,6 +101,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, A
     };
     expect(await check('invalidation_reason_check')).toStrictEqual([...MARK_REASONS].sort());
     expect(await check('query_kind_check')).toStrictEqual([...QUERY_KINDS].sort());
+    expect(await check('query_state_check')).toStrictEqual([...QUERY_STATES].sort());
     expect(await check('actor_kind_check')).toStrictEqual([...ACTOR_KINDS].sort());
     expect(await check('account_kind_check')).toStrictEqual([...ACCOUNT_KINDS].sort());
     expect(await check('org_member_role_check')).toStrictEqual([...ORG_ROLES].sort());

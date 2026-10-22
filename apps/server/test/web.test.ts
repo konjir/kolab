@@ -13,6 +13,7 @@ import type {
   WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebMark, WebNodeView, WebOutcome, WebOverview, WebQuery, WebRuling,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
+import { nobodyCanReview } from '@konjir/types';
 
 const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
@@ -535,4 +536,30 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   expect((await alice.call('queries', { node: 'other/secret', element: 'S1', kind: 'question', text: 'Why?' })).status).toBe(400);
   expect((await alice.call('cases', { node: 'other/secret', element: 'S1', question: 'q', claim: 'c', evidence: ['kj:orders#R1'], seeks: 'keep_intent' })).status).toBe(400);
   expect((await alice.call('nodes/other%2Fsecret/submit', { base: 2, changes: [{ kind: 'override', element: 'S1', text: 'mine' }] })).status).toBe(403);
+});
+
+test('in the page: with nobody else able to review yet it says so; an engineer asks about the version in review; abandoned, the question is withdrawn (D65)', async () => {
+  const { kolab, product, engineer } = await specAndBinding();
+  // Alice's only other writer on the functional layer is her own agent, signed in as engineer.
+  await people(kolab, 'alice-agent', { owner: 'alice', layers: ['functional'] });
+  await kolab.openSession('alice-agent', 'engineer');
+  const base = await serve(kolab);
+  const alice = await signIn(base, product);
+  const bob = await signIn(base, engineer);
+
+  const submitted = (await alice.call<WebOutcome>('nodes/orders/submit', { base: 1, changes: [{ kind: 'add', element: 'R3', text: 'A cancellation is confirmed by email.' }] })).body;
+  expect(submitted).toMatchObject({ ok: false, in_review: true, seq: 2, reviewers: [], note: expect.stringContaining(nobodyCanReview('functional')) });
+  expect((await alice.call<WebNodeView>('nodes/orders')).body.in_review).toStrictEqual([expect.objectContaining({ seq: 2, reviewers: [], for_me: false })]);
+
+  // The engineer reads the version in review and asks about its new element, from the page.
+  expect((await bob.call<WebNodeView>('nodes/orders?version=2')).body.reading).toMatchObject({ seq: 2, state: 'in_review' });
+  const asked = await bob.call<{ query: string }>('queries', { node: 'orders', seq: 2, element: 'R3', kind: 'question', text: 'Which email?' });
+  expect(asked.body.query).toEqual(expect.any(String));
+  const onR3 = (await alice.call<WebNodeView>('nodes/orders?version=2')).body.elements.find((e) => e.id === 'R3')!;
+  expect(onR3.queries.map((q) => [q.id, q.state, q.address])).toStrictEqual([[asked.body.query, 'open', 'kj:orders@2#R3']]);
+
+  // Abandoned, the version takes R3 with it: the question is withdrawn, saying why.
+  expect((await alice.call('nodes/orders/versions/2/abandon', {})).body).toStrictEqual({ state: 'rejected' });
+  const q = (await alice.call<{ queries: WebQuery[] }>('queries')).body.queries.find((x) => x.id === asked.body.query)!;
+  expect(q).toMatchObject({ state: 'withdrawn', answer: "withdrawn: orders@2, which it was asked of, was abandoned, and R3 isn't in orders's latest committed version" });
 });

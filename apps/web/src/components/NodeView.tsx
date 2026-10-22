@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { QueryKind, WebElement, WebLink, WebMe, WebNodeView, WebOutcome } from '@konjir/types';
+import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
@@ -143,7 +143,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const rows = reading ? [...view.elements, ...(isLatest || latest === null ? draft.added.map(asElement(name)) : [])] : draft.added.map(asElement(name));
   return (
     <>
-      {notice && <Notice outcome={notice} onDismiss={() => setNotice(undefined)} />}
+      {notice && <Notice outcome={notice} layer={view.node.layer} onDismiss={() => setNotice(undefined)} />}
       <section aria-labelledby="doc-title">
         <div className="doc-head">
           <span className="kind">{KIND_WORD[view.node.kind] ?? view.node.kind}</span>
@@ -216,7 +216,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
         </div>
       ))}
 
-      {inReview && <ReviewBar name={name} review={inReview} mine={inReview.author === me.actor} reading={reading?.seq} committed={latest}
+      {inReview && <ReviewBar name={name} layer={view.node.layer} review={inReview} mine={inReview.author === me.actor} reading={reading?.seq} committed={latest}
         read={read} onVerdict={verdict} onAbandon={() => versionVerb(inReview.seq, 'abandon', `Abandoned ${addr(name, inReview.seq)}`)} />}
       {!inReview && changes > 0 && (
         <div className="draftbar" role="region" aria-label="Draft">
@@ -349,21 +349,23 @@ function AskForm({ name, seq, element, act, onDone }: { name: string; seq?: numb
   );
 }
 
-function ReviewBar({ name, review, mine, reading, committed, read, onVerdict, onAbandon }: {
-  name: string; review: WebNodeView['in_review'][number]; mine: boolean; reading?: number;
+function ReviewBar({ name, layer, review, mine, reading, committed, read, onVerdict, onAbandon }: {
+  name: string; layer: Layer; review: WebNodeView['in_review'][number]; mine: boolean; reading?: number;
   /** The latest committed version, which the page shows unless asked for another. */
   committed: number | null;
   read(v?: number): void; onVerdict(seq: number, v: 'approve' | 'request_changes', note?: string): void; onAbandon(): void;
 }) {
   const [note, setNote] = useState('');
   const [asking, setAsking] = useState(false);
-  const who = review.reviewers.length ? review.reviewers.join(', ') : 'its reviewers';
+  // Who can review it now (D65); when nobody else can yet, how to get a reviewer.
+  const who = review.reviewers.join(', ');
+  const nobody = nobodyCanReview(layer);
   return (
     <div className="draftbar" role="region" aria-label="In review">
       <span className="what"><span className="drafted">In review</span> · {committed !== null && reading === committed && reading !== review.seq ? (
-        <>The changes are in <a href={`#/node/${name}@${review.seq}`} onClick={(e) => { e.preventDefault(); read(review.seq); }}>v{review.seq}</a>, submitted by {review.author} {ago(review.at)}. This page shows v{committed}, the committed version. v{review.seq} waits for {who}; nothing changes for anyone until one approves.</>
+        <>The changes are in <a href={`#/node/${name}@${review.seq}`} onClick={(e) => { e.preventDefault(); read(review.seq); }}>v{review.seq}</a>, submitted by {review.author} {ago(review.at)}. This page shows v{committed}, the committed version. v{review.seq} {who ? <>waits for {who}; nothing changes for anyone until one approves.</> : <>waits. {nobody}</>}</>
       ) : (
-        <>Version {review.seq} of {addr(name)}, submitted by {review.author} {ago(review.at)}, waits for {who}. Nothing changes for anyone until one approves.</>
+        <>Version {review.seq} of {addr(name)}, submitted by {review.author} {ago(review.at)}, {who ? <>waits for {who}. Nothing changes for anyone until one approves.</> : <>waits. {nobody}</>}</>
       )}</span>
       {reading !== review.seq && <button type="button" className="btn quiet" onClick={() => read(review.seq)}>Read v{review.seq}</button>}
       {mine && <button type="button" className="btn quiet" onClick={onAbandon}>Abandon</button>}
@@ -384,7 +386,7 @@ function ReviewBar({ name, review, mine, reading, committed, read, onVerdict, on
   );
 }
 
-function Notice({ outcome: o, onDismiss }: { outcome: WebOutcome & { node: string }; onDismiss(): void }) {
+function Notice({ outcome: o, layer, onDismiss }: { outcome: WebOutcome & { node: string }; layer: Layer; onDismiss(): void }) {
   const at = <Addr>{addr(o.node, o.seq)}</Addr>;
   const [tone, word, head] = o.committed ? ['clean', 'committed', <>Committed {at}</>] as const
     : o.in_review ? ['question', 'in review', <>Submitted {at} for review</>] as const
@@ -396,7 +398,9 @@ function Notice({ outcome: o, onDismiss }: { outcome: WebOutcome & { node: strin
       <h2><Pill tone={tone}>{word}</Pill> {head}</h2>
       <p>
         {o.committed ? (o.unreviewed ? 'No one else holds Write on this layer, so Kolab’s structural checks alone committed it.' : 'Approved.') + (o.cascade_queued ? ' Its cascade waits behind an earlier one of this node.' : ' Whatever relied on what changed is marked stale.')
-          : o.in_review ? `Structural checks passed. ${o.reviewers.length ? `${o.reviewers.join(', ')} ${o.reviewers.length > 1 ? 'have each' : 'has'} been asked to review it.` : ''} Until one approves, nothing downstream changes.`
+          : o.in_review ? (o.reviewers.length
+            ? `Structural checks passed. ${o.reviewers.join(', ')} ${o.reviewers.length > 1 ? 'have each' : 'has'} been asked to review it. Until one approves, nothing downstream changes.`
+            : `Structural checks passed. ${nobodyCanReview(layer)} Until then, nothing downstream changes.`)
           : o.stale ? 'Someone else committed to it after this was drafted. Nothing was wrong with your edits: they are still here, on the new version.'
           : o.note ?? ''}
         {o.abandoned && o.note ? ` ${o.note} Your edits are still here: fix them and submit again.` : ''}

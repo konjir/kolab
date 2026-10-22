@@ -7,7 +7,7 @@ import {
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
 import {
-  ACCESS_LEVELS, FINDING_KINDS, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, RULING_EFFECTS, VISIBILITIES,
+  ACCESS_LEVELS, FINDING_KINDS, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -252,8 +252,6 @@ class OriginalSettled extends GateError {
 /** How many approvals a version needs to commit: one, from another actor with Write on its layer (D19, D25). */
 export const REQUIRED_APPROVALS = 1;
 
-/** The role that writes a layer. */
-const ROLE_OF_LAYER = Object.fromEntries(ROLES.map((r) => [LAYER_OF_ROLE[r], r])) as Record<Layer, Role>;
 /** Thrown by review when Kolab's checks themselves fail (throw), rather than refuse the version. The draft stays drafted. */
 export class ChecksError extends Error { name = 'ChecksError'; }
 /**
@@ -3170,10 +3168,12 @@ export class Kolab {
     } else if (human && plan) {
       note = `${note ?? ''} A plan version commits after structural checks, without review (PLN2).`.trim();
     } else if (human) {
-      const reviewers = await this.reviewersFor(v);
-      if (reviewers.length) {
-        const inReview = `${note ?? 'Kolab\'s checks passed.'} Waiting for one approval from ${reviewers.join(', ')}.`;
-        const late = await this.enterReview(v, reviewers, inReview);
+      // VER11 counts who holds Write on the layer; who is told counts who can review it now (D65).
+      const writers = await this.reviewersFor(v);
+      if (writers.length) {
+        const reviewers = await this.ableToReview(v, writers);
+        const inReview = `${note ?? 'Kolab\'s checks passed.'} ${waitingFor(v.layer, reviewers)}`;
+        const late = await this.enterReview(v, writers, inReview);
         if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
         if (late) return this.settle(v, late);
         return { ok: false, note: inReview, version: versionId, in_review: true, reviewers };
@@ -3198,20 +3198,21 @@ export class Kolab {
    * Kolab's structural checks commit it, unreviewed, as they would have at submission (VER11).
    */
   private async resubmit(v: VersionRow): Promise<GateResult> {
-    const reviewers = await this.reviewersFor(v);
-    if (reviewers.length) {
+    const writers = await this.reviewersFor(v);
+    if (writers.length) {
       await this.asSystem(async (tx, signal) => {
         const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
         if (now !== 'in_review') throw new GateError(`${await nameIn(tx, v.node_id)}@${v.seq} is ${now}, no longer in review`);
-        await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' and reviewer_id <> all($2)`, [v.id, reviewers]);
+        await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' and reviewer_id <> all($2)`, [v.id, writers]);
         const open = new Set((await tx.query<{ reviewer_id: string }>(`select reviewer_id from review_request where version_id = $1 and state = 'open'`, [v.id])).rows.map((r) => r.reviewer_id));
-        for (const reviewer of reviewers.filter((x) => !open.has(x))) {
+        for (const reviewer of writers.filter((x) => !open.has(x))) {
           await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
         }
         await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
         await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
       }, v.node_id);
-      return { ok: false, note: `Still in review: waiting for one approval from ${reviewers.join(', ')}.`, version: v.id, in_review: true, reviewers };
+      const reviewers = await this.ableToReview(v, writers);
+      return { ok: false, note: `Still in review. ${waitingFor(v.layer, reviewers)}`, version: v.id, in_review: true, reviewers };
     }
     const verdict = await this.checks(await this.checkContext(v));
     if (!verdict.ok) return { ...verdict, version: v.id, in_review: true };
@@ -3245,6 +3246,8 @@ export class Kolab {
     }
     await tx.query(`update version set state = 'rejected', review_note = $2 where id = $1`, [v.folded_from, `folded into ${v.id}`]);
     await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.folded_from]);
+    // Its questions go with its edit, onto the fold, which commits in this transaction (D65).
+    await this.settleQuestionsIn(tx, signal, v.folded_from, v.id);
     await signal({ inbox: 'layer', kolab: o.kolab_id, layer: o.layer });
     await signal({ inbox: 'actor', kolab: o.kolab_id, actor: o.actor_id });
     return true;
@@ -3264,6 +3267,35 @@ export class Kolab {
         order by a.id`,
       [v.kolab_id, v.actor_id, v.layer]);
     return r.rows.map((x) => x.id);
+  }
+
+  /**
+   * Which of `actors` can review a version of `v`'s layer in its kolab now, in the role they work
+   * in there (D65), in their order: who a review request is told to. Each holds Write on the layer
+   * (reviewersFor); this adds the role. A person can always, since they choose their role as they
+   * sign in. So can an agent with no open session in the kolab: it chooses its role when it next
+   * signs in there. An agent signed in there (an admin's session, or an OAuth grant's, whose role
+   * was chosen at consent) can only in the role that writes the layer (CAN_REVIEW).
+   */
+  async ableToReview(v: Pick<VersionRow, 'layer' | 'kolab_id'>, actors: string[]): Promise<string[]> {
+    if (!actors.length) return [];
+    const able = new Set((await this.db.query<{ id: string }>(
+      `select a.id from unnest($1::text[]) as a(id) where ${CAN_REVIEW('a.id', '$2', '$3')}`, [actors, v.kolab_id, v.layer])).rows.map((r) => r.id));
+    return actors.filter((a) => able.has(a));
+  }
+
+  /**
+   * The review requests among `rows` whose reviewer can review now (ableToReview): the ones that
+   * are shown. A request to an agent signed in with the other role stays open but unseen, and shows
+   * again once it signs in with the role that writes the layer (D65).
+   */
+  async shownRequests<T extends { reviewer: string; layer: Layer }>(kolab: string, rows: T[]): Promise<T[]> {
+    const able = new Map<Layer, Set<string>>();
+    for (const layer of LAYERS) {
+      const on = [...new Set(rows.filter((r) => r.layer === layer).map((r) => r.reviewer))];
+      able.set(layer, new Set(await this.ableToReview({ layer, kolab_id: kolab }, on)));
+    }
+    return rows.filter((r) => able.get(r.layer)!.has(r.reviewer));
   }
 
   /**
@@ -3339,6 +3371,7 @@ export class Kolab {
         await record(tx, 'changes_requested');
         await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.id]);
         await tx.query(`update version set state = 'drafted', review_note = $2 where id = $1`, [v.id, `Changes requested by ${s.actor_id}${said}`]);
+        await this.settleQuestionsIn(tx, signal, v.id);
         await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
         await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
       }, v.node_id);
@@ -3765,6 +3798,7 @@ export class Kolab {
       `update version set state = 'rejected', review_note = $2 where id = $1 and state in ('drafted', 'in_review') returning layer, actor_id, kolab_id`,
       [versionId, note]);
     const withdrawn = await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open' returning id`, [versionId]);
+    if (r.rows.length) await this.settleQuestionsIn(tx, signal, versionId);
     if (r.rows[0] && withdrawn.rows.length) {
       await signal({ inbox: 'layer', kolab: r.rows[0].kolab_id, layer: r.rows[0].layer });
       await signal({ inbox: 'actor', kolab: r.rows[0].kolab_id, actor: r.rows[0].actor_id });
@@ -4933,6 +4967,10 @@ export class Kolab {
   /**
    * Ask a question, or leave a note, against an address. It lands on the layer
    * that owns the answer: the version the address resolves to. Anyone may ask.
+   * The version is a committed one, or one in review (D65), never a draft: a version in
+   * review is read by every session in its kolab, and by none outside it (D49, D58), and
+   * only those can ask about it, since questions stay in their kolab. Such a question
+   * follows its version as it settles (settleQuestionsIn).
    *
    * `from` names the asker's own element that waits on the answer (drafts
    * allowed). When a question is answered, that element gets a
@@ -4947,8 +4985,9 @@ export class Kolab {
     // Anyone with access may ask (Q1), about what is in the kolab they work in: questions stay in
     // their kolab, whose layers answer them (TEN12); a link or a fork may cross (LNK8, KON9).
     await this.nodeIn(sessionId, a, 'asking');
+    const said = typeof address === 'string' ? address : formatAddress(a);
     const r = await this.resolve(a, { session: sessionId });
-    if (!r.versionId || r.status === 'orphan') throw new Error(`cannot ask about ${typeof address === 'string' ? address : JSON.stringify(address)}: it does not resolve`);
+    if (!r.versionId || r.status === 'orphan') throw new Error(`cannot ask about ${said}: it does not resolve${await this.inReviewHint(sessionId, a)}`);
     let from: { version: string; element: string | null } | undefined;
     if (opts.from) {
       const f = typeof opts.from === 'string' ? parseAddress(opts.from) : opts.from;
@@ -4962,9 +5001,17 @@ export class Kolab {
     }
     const id = ulid();
     await this.asSystem(async (tx, signal) => {
+      // Locked against a change of its state (abandon, a request for changes, a commit), which waits
+      // for this question and then settles it with the rest (settleQuestionsIn); or, if that came
+      // first, read as it left the version.
+      const v = (await tx.query<{ state: VersionState; seq: number; node_id: string }>(
+        `select state, seq, node_id from version where id = $1 for share`, [r.versionId])).rows[0];
+      if (v.state !== 'committed' && v.state !== 'in_review') {
+        throw new GateError(`cannot ask about ${said}: ${await nameIn(tx, v.node_id)}@${v.seq} is ${v.state === 'drafted' ? 'a draft, which no one but its author works on' : 'rejected'}; ask about a committed version, or one in review`);
+      }
       await tx.query(
-        `insert into query(id, version_id, element_id, selector, kind, question, raised_by, from_version_id, from_element_id)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `insert into query(id, version_id, asked_version_id, element_id, selector, kind, question, raised_by, from_version_id, from_element_id)
+         values ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [id, r.versionId, a.element ?? null, a.selector ? JSON.stringify(a.selector) : null, opts.kind ?? 'question',
           question, s.actor_id, from?.version ?? null, from?.element ?? null]);
       await this.signalLayerOf(tx, signal, r.versionId!);
@@ -4983,7 +5030,7 @@ export class Kolab {
     const v = q ? await this.version(q.version_id) : undefined;
     if (!q || !v || v.kolab_id !== await this.sessionKolab(sessionId)) throw new Error(`no query ${queryId}`);
     const s = await this.requireLayer(sessionId, v.layer, v.kolab_id);
-    if (q.state !== 'open') throw new GateError(`query ${queryId} is already answered`);
+    if (q.state !== 'open') throw new GateError(`query ${queryId} is already ${q.state}`);
     const mark = q.invalidation_id ? await this.markRow(q.invalidation_id) : undefined;
     if (mark?.reason === 'ruled') {
       throw new GateError(`query ${queryId} asks for the element a ruling changed to be amended: commit a version that amends it, and that settles the question (D51)`);
@@ -4997,7 +5044,10 @@ export class Kolab {
     await this.asSystem(async (tx, signal) => {
       const r = await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3 where id = $1 and state = 'open' returning id`,
         [queryId, answer, s.actor_id]);
-      if (!r.rows.length) throw new GateError(`query ${queryId} is already answered`);
+      if (!r.rows.length) {
+        const now = (await tx.query<{ state: QueryState }>(`select state from query where id = $1`, [queryId])).rows[0].state;
+        throw new GateError(`query ${queryId} is already ${now}`);
+      }
       await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
       if (q.raised_by) await signal({ inbox: 'actor', kolab: v.kolab_id, actor: q.raised_by });
       // A boundary question is settled by the layer that owns the answer; its mark goes with it.
@@ -5008,14 +5058,71 @@ export class Kolab {
   }
 
   /**
+   * Why an address without @version that doesn't resolve might be meant for a version in review:
+   * such an address names its node's latest committed version (ADR2), so a question about a new
+   * element of a version in review names that version. Read as the session. Empty if there is none.
+   */
+  private async inReviewHint(sessionId: string, a: Address): Promise<string> {
+    if (a.version !== undefined) return '';
+    const node = await this.locateNode({ session: sessionId }, a);
+    const seqs = await this.read({ session: sessionId }, async (q) => (await q.query<{ seq: number }>(
+      `select v.seq from version v where v.node_id = $1 and v.state = 'in_review'
+          and ($2::text is null or exists (select 1 from element e where e.version_id = v.id and e.element_id = $2))
+        order by v.seq desc`, [node.id, a.element ?? null])).rows.map((x) => x.seq));
+    if (!seqs.length) return '';
+    const at = seqs.map((seq) => formatAddress({ ...a, version: seq }));
+    return `. Without @version an address names the latest committed version; ${node.name}@${seqs.join(', @')} ${seqs.length > 1 ? 'are' : 'is'} in review: ask about ${at.join(' or ')}`;
+  }
+
+  /**
+   * The questions and notes on a version that has just left review without committing, in its
+   * transaction (D65): abandoned, rejected as stale, folded into another version, or returned to its
+   * author as a draft. A question about a version in review carries over when it commits, since it
+   * is on that version already. Otherwise each moves to `into`, the version it was folded into, or
+   * else its node's latest committed version, if the element it asked about is there; one that
+   * can't move and is still open is settled as withdrawn, its answer saying why, and the element
+   * that waited on it is told as an answer would tell it (markAsker). One already answered whose
+   * element is gone stays where it was, as the record of what was asked. Nothing is left open on a
+   * version no one can ask about. Questions marks raised are left alone: no mark is on a version
+   * that never committed. Each asker, and the layer's inbox, is told.
+   */
+  private async settleQuestionsIn(tx: Q, signal: Signal, versionId: string, into?: string) {
+    const v = (await tx.query<VersionRow & { review_note: string | null }>(`select * from version where id = $1`, [versionId])).rows[0];
+    if (!v || v.state === 'committed' || v.state === 'in_review') return;
+    const qs = (await tx.query<{ id: string; element_id: string | null; state: QueryState; kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null }>(
+      `select id, element_id, state, kind, question, raised_by, from_version_id, from_element_id from query
+        where version_id = $1 and invalidation_id is null order by id for update`, [versionId])).rows;
+    if (!qs.length) return;
+    const target = into ?? (await tx.query<{ id: string }>(
+      `select id from version where folded_from = $1 and node_id = $2 and state in ('in_review', 'committed') order by seq desc limit 1`, [v.id, v.node_id])).rows[0]?.id
+      ?? (await tx.query<{ id: string }>(`select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [v.node_id])).rows[0]?.id;
+    const name = await nameIn(tx, v.node_id);
+    const left = v.state === 'drafted' ? 'was returned to its author as a draft' : v.review_note?.startsWith('abandoned') ? 'was abandoned' : 'was rejected';
+    for (const q of qs) {
+      const there = target !== undefined && (q.element_id === null
+        || (await tx.query(`select 1 from element where version_id = $1 and element_id = $2`, [target, q.element_id])).rows.length > 0);
+      if (there) {
+        await tx.query(`update query set version_id = $2, asked_version_id = coalesce(asked_version_id, $3) where id = $1`, [q.id, target, v.id]);
+      } else if (q.state === 'open') {
+        const why = `withdrawn: ${name}@${v.seq}, which it was asked of, ${left}, and ${target ? `${q.element_id} isn't in ${name}'s latest committed version` : `${name} has no committed version`}`;
+        await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`, [q.id, why]);
+        if (q.kind === 'question' && q.from_version_id) await this.markAsker(tx, signal, q, v, why, 'withdrawn');
+      } else continue;
+      if (q.raised_by) await signal({ inbox: 'actor', kolab: v.kolab_id, actor: q.raised_by });
+    }
+    await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+  }
+
+  /**
    * The element that asked now has its answer: mark it on its node's live
    * version (the draft it was asked from may have committed, or been
    * superseded since). If the element is gone, the asker still sees the
    * answer through list_queries mine=true. In the answer's transaction.
+   * `outcome` says what came of it: answered, or withdrawn (D65).
    */
   private async markAsker(tx: Q, signal: Signal,
     q: { element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
-    asked: VersionRow, answer: string) {
+    asked: VersionRow, answer: string, outcome: 'answered' | 'withdrawn' = 'answered') {
     const latest = async (node: string) => (await tx.query<{ id: string }>(
       `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [node])).rows[0]?.id;
     const fromNode = (await tx.query<{ node_id: string }>(`select node_id from version where id = $1`, [q.from_version_id])).rows[0].node_id;
@@ -5026,7 +5133,7 @@ export class Kolab {
     await this.markIn(tx, signal, {
       version_id: live, element_id: q.from_element_id, reason: 'query_answered',
       triggered_by: await latest(asked.node_id) ?? asked.id,
-      note: `${on}: you asked "${q.question}"; answered: "${answer}"`,
+      note: outcome === 'answered' ? `${on}: you asked "${q.question}"; answered: "${answer}"` : `${on}: you asked "${q.question}"; ${answer}`,
     });
   }
 
@@ -5479,13 +5586,16 @@ export class Kolab {
       id: string; kind: QueryKind; node: string; seq: number; element_id: string | null; kolab_id: string;
       selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
       raised_by: string | null; mark: string | null; from_node: string | null; from_kolab: string | null; from_seq: number | null; from_element_id: string | null;
+      asked_seq: number | null;
     }>(
       `select q.id, q.kind, n.name as node, v.seq, q.element_id, q.kolab_id, q.selector, q.question, q.state, q.answer, q.answered_by,
-              q.raised_by, q.invalidation_id as mark, fn.name as from_node, fn.kolab_id as from_kolab, fv.seq as from_seq, q.from_element_id
+              q.raised_by, q.invalidation_id as mark, fn.name as from_node, fn.kolab_id as from_kolab, fv.seq as from_seq, q.from_element_id,
+              av.seq as asked_seq
          from query q join version v on v.id = q.version_id
          join node n on n.id = v.node_id
          left join version fv on fv.id = q.from_version_id
          left join node fn on fn.id = fv.node_id
+         left join version av on av.id = q.asked_version_id and av.id <> q.version_id
         where ($1::text is null or v.layer = $1) and ($2::text is null or q.state = $2)
           and ($3::text is null or q.raised_by = $3) and ($4::text is null or v.node_id = $4)
           and ($5::text is null or q.kind = $5) and ($6::text is null or q.kolab_id = $6)
@@ -5503,12 +5613,15 @@ export class Kolab {
       question: r.question, state: r.state, answer: r.answer, answered_by: r.answered_by, raised_by: r.raised_by,
       from: r.from_node && !outside(r) ? formatAddress({ kolab: r.from_kolab!, node: r.from_node, version: r.from_seq!, element: r.from_element_id ?? undefined }, { from: filter.from ?? r.kolab_id }) : null,
       mark: r.mark,
+      // The version in review it was asked of, if it has moved since (D65): never told outside its kolab.
+      ...(r.asked_seq !== null && !outside(r) ? { asked_of: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.asked_seq }, { from: filter.from ?? r.kolab_id }) } : {}),
     }));
   }
 
   /**
    * Open review requests, each waiting in its reviewer's inbox (REV2, VER17), oldest first. With
-   * `reviewer`, only theirs; with `layer`, only on versions of that layer.
+   * `reviewer`, only theirs; with `layer`, only on versions of that layer. Only those whose
+   * reviewer can review now, in the role it works in (D65, shownRequests).
    */
   async reviewRequests(filter: { reviewer?: string; layer?: Layer; kolab?: string } = {}): Promise<ReviewRequestView[]> {
     const rows = (await this.db.query<{ id: string; node_id: string; seq: number; author: string; reviewer: string; created_at: Date | string }>(
@@ -5516,6 +5629,7 @@ export class Kolab {
          from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
         where r.state = 'open' and v.state = 'in_review'
           and ($1::text is null or r.reviewer_id = $1) and ($2::text is null or v.layer = $2) and ($3::text is null or r.kolab_id = $3)
+          and ${CAN_REVIEW('r.reviewer_id', 'v.kolab_id', 'v.layer')}
         order by r.created_at, r.reviewer_id, r.id`, [filter.reviewer ?? null, filter.layer ?? null, filter.kolab ?? null])).rows;
     return rows.map((r) => ({
       request: r.id, subject: `kj:${r.node_id}@${r.seq}`, subject_kind: 'version' as const, author: r.author, reviewer: r.reviewer,
@@ -5537,7 +5651,9 @@ export class Kolab {
     const out: SubmissionView[] = [];
     for (const v of versions) {
       const verdicts = (await this.db.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; findings: Finding[] | null }>(
-        `select reviewer_id, state, note, findings from review_request where version_id = $1 order by created_at, reviewer_id, id`, [v.id])).rows;
+        `select r.reviewer_id, r.state, r.note, r.findings from review_request r
+          where r.version_id = $1 and (r.state <> 'open' or ${CAN_REVIEW('r.reviewer_id', '$2', '$3')})
+          order by r.created_at, r.reviewer_id, r.id`, [v.id, v.kolab_id, v.layer])).rows;
       const name = await this.nameOf(v.node_id);
       const subject = `kj:${name}@${v.seq}`;
       const fold = v.state === 'rejected' ? (await this.db.query<{ node_id: string; seq: number }>(
@@ -5729,6 +5845,24 @@ export const structuralChecks: Checks = ({ elements }) => {
     ? { ok: false, note: `Structural review failed: ${problems.join('; ')}.` }
     : { ok: true, note: 'Structural review passed (non-empty, no duplicates, well-formed tree). Kolab checks structure only: contradictions and layer leaks are for its reviewers.' };
 };
+
+/**
+ * Whether the actor `actor` can review a version of layer `layer` in kolab `kolab` in the role it
+ * works in there (D65), as SQL over three expressions: unless it is an agent whose open session in
+ * that kolab is in the other role. An open session is one not ended whose grant, if it has one,
+ * is neither revoked nor lapsed (liveSessions): an OAuth grant's session keeps the role chosen at
+ * consent, whether or not its access token has expired. One open session per actor (ENF4), so
+ * there is at most one. It says nothing of access: who holds Write is reviewersFor's to say.
+ */
+const CAN_REVIEW = (actor: string, kolab: string, layer: string) => `not exists (
+  select 1 from actor ra join session rs on rs.actor_id = ra.id left join oauth_grant rg on rg.id = rs.grant_id
+   where ra.id = ${actor} and ra.kind = 'agent' and rs.kolab_id = ${kolab} and rs.ended_at is null
+     and (rg.id is null or (rg.revoked_at is null and rg.expires_at > now()))
+     and rs.active_role <> (case ${layer} when 'functional' then 'product' else 'engineer' end))`;
+
+/** What a version in review says of who can review it (D65): those told, or that nobody can yet. */
+const waitingFor = (layer: Layer, reviewers: string[]) =>
+  reviewers.length ? `Waiting for one approval from ${reviewers.join(', ')}.` : nobodyCanReview(layer);
 
 /** What a commit with no reviewer says (VER11). */
 const NO_REVIEWER = (layer: Layer) =>
