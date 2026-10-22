@@ -179,11 +179,44 @@ test('a question that quoted words moves only if the words are in the target as 
   const gone = await kolab.raiseQuery(agent, 'kj:checkout@2#R2~q({"exact":"twice by the customer"})', 'Not the shop?');
   await kolab.abandon(product, v2);
   const byId = Object.fromEntries((await kolab.listQueries({ layer: 'functional' })).map((x) => [x.id, x]));
-  expect(byId[kept]).toMatchObject({ state: 'open', address: 'kj:checkout@1#R2~q({"exact":"A failed payment"})', asked_of: 'kj:checkout@2' });
+  expect(byId[kept]).toMatchObject({ state: 'open', asked_of: 'kj:checkout@2' });
+  expect(byId[kept].address).toMatch(/^kj:checkout@1#R2~q\(\{"exact":"A failed payment"/);
   expect(byId[gone]).toMatchObject({
     state: 'withdrawn', address: 'kj:checkout@2#R2~q({"exact":"twice by the customer"})',
     answer: "withdrawn: checkout@2, which it was asked of, was abandoned, and the words it quoted aren't in kj:checkout@1#R2",
   });
+});
+
+test('a moved quote takes its prefix and suffix from the committed text, carrying no word only the version in review had', async () => {
+  const { kolab, product, dave, agent, spec, v1 } = await specInReview();
+  await kolab.recordReview(dave, v1, { verdict: 'approve' });
+  const v2 = await kolab.draft(product, spec, { deltas: [
+    { kind: 'override', element: 'R2', text: 'A failed payment can be retried twice by the secret fraud rule.' },
+    { kind: 'add', element: 'R1a', text: 'Measured at the server.', parent: 'R1' },
+  ] });
+  await kolab.review(v2);
+  const q = await kolab.raiseQuery(agent, 'kj:checkout@2#R2~q({"exact":"A failed payment","suffix":"can be retried twice by the secret fraud rule"})', 'Which payments?');
+  const onR1 = await kolab.raiseQuery(agent, 'kj:checkout@2#R1', 'From the click?');   // R1's own text is the same; v2 added R1a under it
+  await kolab.abandon(product, v2);
+  const byId = Object.fromEntries((await kolab.listQueries({ layer: 'functional' })).map((x) => [x.id, x]));
+  expect(byId[q]).toMatchObject({ state: 'open', asked_of: 'kj:checkout@2', element_changed: true });
+  expect(byId[q].address).toMatch(/^kj:checkout@1#R2~q\(\{"exact":"A failed payment"/);
+  expect(byId[q].address).not.toMatch(/secret|fraud/);
+  const stored = (await kolab.db.query<{ selector: object }>(`select selector from query where id = $1`, [q])).rows[0].selector;
+  expect(JSON.stringify(stored)).not.toMatch(/secret|fraud/);
+  expect(byId[onR1]).toMatchObject({ state: 'open', address: 'kj:checkout@1#R1', element_changed: true });
+});
+
+test('a moved quote the committed text has more than once is withdrawn: it can\'t be placed', async () => {
+  const { kolab, product, dave, agent, spec, v1 } = await specInReview();
+  await kolab.recordReview(dave, v1, { verdict: 'approve' });
+  await commitReviewed(kolab, dave, product, spec, { deltas: [{ kind: 'override', element: 'R2', text: 'A failed payment is retried. A failed payment is logged.' }] });
+  const v3 = await kolab.draft(product, spec, { deltas: [{ kind: 'override', element: 'R2', text: 'A failed payment is retried twice.' }] });
+  await kolab.review(v3);
+  const q = await kolab.raiseQuery(agent, 'kj:checkout@3#R2~q({"exact":"A failed payment"})', 'Card or wallet?');
+  await kolab.abandon(product, v3);
+  expect((await kolab.listQueries({ layer: 'functional' })).find((x) => x.id === q))
+    .toMatchObject({ state: 'withdrawn', answer: expect.stringMatching(/the words it quoted aren't in kj:checkout@2#R2 just once$/) });
 });
 
 test('withdrawn with no committed version on its node, a question marks nothing: a mark\'s trigger is always committed', async () => {
