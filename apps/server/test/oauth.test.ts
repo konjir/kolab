@@ -225,7 +225,7 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(mine.left?.searchParams.get('code')).toMatch(/^kjc_/);
 });
 
-test('an agent signed in now is marked on the consent page, since choosing it ends that session; a client new to the person preselects a new agent, one signing in again its own agent, and the scope still names one (ENF4, D59)', async () => {
+test('an agent signed in now is marked on the consent page, since choosing it ends that session; a client new to the person preselects a new agent, one signing in again its own agent unless the person revoked it or it is signed in through another client, and the scope still names one (ENF4, D59)', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
   const { actor: zed } = await kolab.signInWith({ provider: 'stub', subject: '611', login: 'zed' });
@@ -252,18 +252,29 @@ test('an agent signed in now is marked on the consent page, since choosing it en
   expect(checked(c.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);
   expect(option(c.html, 'zed-agent')).toContain(ENDS);
   expect(option(c.html, 'zed-spare')).not.toContain(ENDS);
-  // The scope naming it still preselects it (D59), marked all the same.
-  const named = await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test agent:zed-agent' });
-  expect(checked(named.html)).toStrictEqual(['agent:zed-agent', 'kolab:test', 'product']);
-  expect(option(named.html, 'zed-agent')).toContain(ENDS);
-  // OpenCode signing in again gets the agent it was granted before.
+  // OpenCode signing in again gets the agent it was granted before: its own session, which it renews.
   const again = await toConsent(base, idp, opencode, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' });
   expect(checked(again.html)).toStrictEqual(['agent:zed-agent', 'kolab:test', 'product']);
-
-  // Its grant revoked, the session is over: nothing is marked.
-  const rv = await fetch(`${base}/oauth/revoke`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: t.body.refresh_token, client_id: opencode }).toString() });
+  // The scope naming it still preselects it (D59), marked all the same; chosen, it signs zed-agent in through the CLI.
+  const cliVerifier = randomBytes(32).toString('base64url');
+  const named = await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { verifier: cliVerifier, scope: 'konjir kolab:test agent:zed-agent' });
+  expect(checked(named.html)).toStrictEqual(['agent:zed-agent', 'kolab:test', 'product']);
+  expect(option(named.html, 'zed-agent')).toContain(ENDS);
+  const moved = await named.browser.consent({ csrf: named.csrf, decision: 'allow', as: 'agent:zed-agent', kolab: 'kolab:test', role: 'product' });
+  const ct = await token(base, { grant_type: 'authorization_code', client_id: cli, code: moved.left!.searchParams.get('code')!, redirect_uri: CB, code_verifier: cliVerifier, resource: `${base}/mcp` });
+  expect(ct.status).toBe(200);
+  // Now zed-agent is signed in through the CLI: OpenCode, signing in again, gets a new agent, not the one it would take back.
+  const taken = await toConsent(base, idp, opencode, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' });
+  expect(checked(taken.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);
+  expect(option(taken.html, 'zed-agent')).toContain(ENDS);
+  // The CLI's grant revoked by the person: its session is over, nothing is marked, and the CLI's next sign-in doesn't take zed-agent back.
+  const rv = await fetch(`${base}/oauth/revoke`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: ct.body.refresh_token, client_id: cli }).toString() });
   expect(rv.status).toBe(200);
-  expect((await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' })).html).not.toContain(ENDS);
+  const after = await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' });
+  expect(after.html).not.toContain(ENDS);
+  expect(checked(after.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);
+  // OpenCode's grant still stands, and zed-agent is signed in nowhere now: OpenCode gets it back.
+  expect(checked((await toConsent(base, idp, opencode, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' })).html)).toStrictEqual(['agent:zed-agent', 'kolab:test', 'product']);
 });
 
 test('PKCE is required, S256 only, and the verifier must match; a refused request is a page, never a redirect', async () => {

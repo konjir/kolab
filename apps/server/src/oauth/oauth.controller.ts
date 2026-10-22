@@ -440,8 +440,9 @@ export class OAuthController {
       // Who the client works as, only among the person's own choices: an agent the scope names that
       // isn't a live agent of theirs is ignored, never shown and never honoured (D59). Never
       // Yourself: no client preselects the person, who chooses that by hand (D60). Without one named,
-      // the agent this client was last granted, signing in again; a client new to the person gets a
-      // new agent, never one of theirs that may be signed in elsewhere, whose session it would end (ENF4).
+      // the agent this client was last granted, signing in again, unless the person revoked that
+      // grant or the agent is signed in through another client now; otherwise a new agent, never
+      // one of theirs signed in elsewhere, whose session choosing it would end (ENF4).
       as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : lastAgent ? `agent:${lastAgent}` : 'new-agent',
       newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
     };

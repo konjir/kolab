@@ -128,11 +128,22 @@ export class WebService {
       compared_with: compared,
       in_review: inReview,
       drafts: shown.filter((v) => v.state === 'drafted').map((v) => version(v, me.actor)),
+      folded: await this.folds(history.filter((v) => v.actor === me.actor)),
       can_write: me.layer === n.layer && me.access.layers.includes(n.layer),
       rulings: nodeRulings,
       kolab: me.kolab,
       foreign: false,
     };
+  }
+
+  /** Which of these versions were folded onto a newer one, and into which: Kolab notes "folded into <version id>". */
+  private async folds(rows: VersionHistoryRow[]): Promise<{ seq: number; into: number }[]> {
+    const out: { seq: number; into: number }[] = [];
+    for (const r of rows) {
+      const id = r.state === 'rejected' ? /^folded into (\S+)$/.exec(r.note ?? '')?.[1] : undefined;
+      if (id) out.push({ seq: r.seq, into: (await this.kolab.version(id)).seq });
+    }
+    return out;
   }
 
   /**
@@ -383,8 +394,14 @@ export class WebService {
    * page keeps the edits to fix; `replaces`, the session's own earlier draft, is abandoned once the
    * new one is in review or committed. That is how a draft that came back with changes requested is
    * edited: the page sends its changes again, edited, and the new draft carries the rest of it, the
-   * links it drops and the links it declared, so nothing of it is lost. A version's elements never
-   * change once written, so the edit is a new version, as konjir_draft and konjir_abandon make it.
+   * links it drops and the links it declared (each pinned to its target's live version, as a fresh
+   * link is), so nothing of it is lost. A version's elements never change once written, so the edit
+   * is a new version, as konjir_draft and konjir_abandon make it.
+   *
+   * One version of an author's in review per node, on this path: a replacement is refused while
+   * another of theirs waits in review, and the abandon of the draft it replaces is its claim. Kolab
+   * makes that abandon under the node's lock, so of two replacements of one draft (a double click,
+   * two tabs) only one can make it; the other withdraws its own version and is refused.
    */
   async submit(s: string, name: string, b: WebSubmit): Promise<WebOutcome> {
     const k = this.kolab;
@@ -413,21 +430,25 @@ export class WebService {
       } else throw bad('a change is add, override or remove');
     }
     const replaced = b.replaces === undefined ? undefined : await this.ownDraft(s, n.name, b.replaces);
+    if (replaced) {
+      const author = (await k.version(replaced)).actor_id;
+      const mine = (await versionHistory(k, s, n.id)).find((v) => v.state === 'in_review' && v.actor === author);
+      if (mine) throw conflict(`${n.name}@${mine.seq} of yours is in review already: abandon it, or wait until it is decided, before resubmitting ${n.name}@${b.replaces}`);
+    }
     const carried = replaced ? await this.carriedFrom(s, n.name, replaced, live?.id ?? null) : undefined;
+    const kept = new Set(elements.map((e) => e.id));
+    // Its own links, from elements still there, each pinned to its target's live version (refused if the target element is gone).
+    const links = carried ? await this.repinned(n.name, b.replaces!, carried.links.filter((l) => l.source_element_id === null || kept.has(l.source_element_id))) : [];
     const drops = [...new Set([...unlink, ...(carried?.unlink ?? [])])];
     const id = await k.draft(s, n.id, { elements, ...(drops.length ? { unlink: drops.map((link) => ({ link })) } : {}) });
-    if (carried?.links.length) {
-      const kept = new Set(elements.map((e) => e.id));
-      try {
-        for (const l of carried.links) {
-          if (l.source_element_id !== null && !kept.has(l.source_element_id)) continue;   // its element was removed: its link goes with it
-          await k.link(s, { kind: l.kind, source: id, sourceElement: l.source_element_id ?? undefined, target: l.target_version_id,
-            targetElement: l.target_element_id ?? undefined, selector: l.target_selector ?? undefined });
-        }
-      } catch (e) {
-        await k.abandon(s, id);
-        throw bad(`a link ${n.name}@${b.replaces} declared can't be carried over: ${(e as Error).message}. Resubmit it as it is, or abandon it.`);
+    try {
+      for (const l of links) {
+        await k.link(s, { kind: l.kind, source: id, sourceElement: l.source_element_id ?? undefined, target: l.target_version_id,
+          targetElement: l.target_element_id ?? undefined, selector: l.target_selector ?? undefined });
       }
+    } catch (e) {
+      await k.abandon(s, id);
+      throw bad(`a link ${n.name}@${b.replaces} declared can't be carried over: ${(e as Error).message}. Resubmit it as it is, or abandon it.`);
     }
     // A commit between the check above and the draft: the draft was built on a newer version than
     // the edits were, so it is abandoned, and the page keeps them.
@@ -447,7 +468,40 @@ export class WebService {
       await k.abandon(s, id);
       out.abandoned = true;
     }
-    if (replaced && (out.committed || out.in_review)) await k.abandon(s, replaced).catch(() => undefined);
+    if (replaced && (out.committed || out.in_review)) {
+      try {
+        await k.abandon(s, replaced);
+      } catch (e) {
+        if (!(e instanceof GateError)) throw e;
+        // Settled meanwhile: another replacement of it, or it resubmitted as it is, got there first.
+        // In review, this one withdraws, so two of the author's versions never wait at once; one
+        // that committed stands, and the draft it replaced is settled already.
+        if (out.in_review) {
+          await k.abandon(s, id);
+          throw conflict(`${n.name}@${b.replaces} was resubmitted or replaced meanwhile, so this submission is withdrawn: read the node again`);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * A replaced draft's own links, each pinned to its target's live version, as a fresh link is:
+   * where the target committed since, to the same element in its new version. Refused, naming it,
+   * when that element is gone, since the link would no longer say what it relied on.
+   */
+  private async repinned<L extends { target_version_id: string; target_element_id: string | null }>(name: string, seq: number, links: L[]): Promise<L[]> {
+    const out: L[] = [];
+    for (const l of links) {
+      const pinned = await this.kolab.version(l.target_version_id);
+      const live = await this.kolab.latestCommitted(pinned.node_id);
+      if (!live || live.id === pinned.id) { out.push(l); continue; }
+      if (l.target_element_id !== null && !(await this.kolab.elements(live.id)).some((e) => e.element_id === l.target_element_id)) {
+        throw bad(`${name}@${seq} links to ${formatAddress({ node: (await this.kolab.node(pinned.node_id)).name, version: pinned.seq, element: l.target_element_id })}, `
+          + `which version ${live.seq} no longer has, so the link can't be carried over. Resubmit ${name}@${seq} as it is, or abandon it and draft afresh.`);
+      }
+      out.push({ ...l, target_version_id: live.id });
+    }
     return out;
   }
 
@@ -478,7 +532,9 @@ export class WebService {
   private async ownDraft(s: string, name: string, seq: number): Promise<string> {
     const v = await this.kolab.versionIn(s, { node: name, version: seq }, { allowDraft: true, what: 'replacing a draft' });
     const me = await this.kolab.sessionInfo(s);
-    if (v.actor_id !== me.actor || v.state !== 'drafted') throw bad(`${name}@${seq} isn't a draft of yours`);
+    if (v.actor_id !== me.actor) throw bad(`${name}@${seq} isn't a draft of yours`);
+    // Settled already: resubmitted or replaced in another tab, or by a click a moment ago.
+    if (v.state !== 'drafted') throw conflict(`${name}@${seq} was resubmitted or replaced meanwhile, so it can't be replaced: read the node again`);
     return v.id;
   }
 
@@ -620,6 +676,7 @@ export class WebService {
 }
 
 const bad = (message: string) => new BadRequestException({ error: 'bad_request', message });
+const conflict = (message: string) => new ConflictException({ error: 'conflict', message });
 /** The same refusal for a kolab the session can't read and a node that isn't there (TEN12, D49). */
 const notThere = (kolab: string, name: string) => new NotFoundException({ error: 'not_found', message: `no node ${name} in kolab ${kolab}` });
 /** An element's id as an address carries it: no "/", "@", "#", "~" or whitespace, which the grammar uses. */

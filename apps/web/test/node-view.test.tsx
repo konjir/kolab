@@ -272,3 +272,30 @@ test('the notice of a submission in review follows it: committed, back with chan
     cleanup();
   }
 });
+
+test('a submission folded onto the node\'s newer version is followed to the fold: still in review, then committed, never "nothing changed"', async () => {
+  const inReview = { seq: 4, state: 'in_review' as const, author: 'lee', role: 'product', at, note: null, mine: true };
+  const base = spec();
+  const page = (tick: number) => <NodeView me={lee} name="password-reset" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
+  replies['/api/nodes/password-reset'] = base;
+  const r = render(page(0));
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+  fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
+  replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Submit for review' })); });
+  replies['/api/nodes/password-reset'] = spec({ versions: [...base.versions, inReview], in_review: [{ seq: 4, author: 'lee', at, reviewers: ['pat'], for_me: false }] });
+  r.rerender(page(1));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Submitted kj:password-reset@4 for review/));
+  // v5 committed by someone else overtook it: Kolab folds v4 onto v5 as v6, which waits for review in its place.
+  const v5 = { ...inReview, seq: 5, state: 'committed' as const, author: 'pat', mine: false };
+  const v6 = { ...inReview, seq: 6 };
+  replies['/api/nodes/password-reset'] = spec({ node: { ...base.node, latest: 5 }, versions: [...base.versions, v5, v6], folded: [{ seq: 4, into: 6 }], in_review: [{ seq: 6, author: 'lee', at, reviewers: ['pat'], for_me: false }] });
+  r.rerender(page(2));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Submitted kj:password-reset@6 for review.*Your kj:password-reset@4 was folded onto the node’s newer version, as v6/));
+  // Approved, the fold commits: the notice says so, at its own version.
+  replies['/api/nodes/password-reset'] = spec({ node: { ...base.node, latest: 6 }, versions: [...base.versions, v5, { ...v6, state: 'committed' }], folded: [{ seq: 4, into: 6 }] });
+  r.rerender(page(3));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Committed kj:password-reset@6.*folded onto the node’s newer version, as v6\. Approved\./));
+  expect(screen.getByRole('status').textContent).not.toMatch(/Nothing changed for anyone/);
+});

@@ -60,13 +60,19 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
     return () => { live = false; };
   }, [kolab, name, version, tick, me.actor, revising]);
   // A submission's notice follows its version as the page re-reads it (each change Kolab signals):
-  // in review until it commits, comes back with changes requested, or is abandoned.
+  // in review until it commits, comes back with changes requested, or is abandoned. A version
+  // folded onto the node's newer version lives on as the fold, so the notice follows the fold.
   useEffect(() => {
     if (!view || view.node.name !== notice?.node || !notice.in_review) return;
-    const now = view.versions.find((v) => v.seq === notice.seq);
+    const folds = new Map((view.folded ?? []).map((f) => [f.seq, f.into]));
+    let seq = notice.seq;
+    for (let i = 0; i < 50 && folds.has(seq); i++) seq = folds.get(seq)!;
+    const followed = seq !== notice.seq;
+    const n: Outcome = followed ? { ...notice, seq, from: notice.from ?? notice.seq, seen: true } : notice;
+    const now = view.versions.find((v) => v.seq === seq);
     // Missing from a read made before the submission landed says nothing: gone only once seen in review.
-    if (now?.state === 'in_review') { if (!notice.seen) setNotice({ ...notice, seen: true }); }
-    else if (now || notice.seen) setNotice(settled(notice, now));
+    if (now?.state === 'in_review') { if (followed || !notice.seen) setNotice({ ...n, seen: true }); }
+    else if (now || n.seen) setNotice(settled(n, now));
   }, [view, notice]);
   useEffect(() => { setDraft(EMPTY); setEditing(undefined); setAsking(undefined); setNotice(undefined); setCasing(undefined); setRuling(undefined); }, [name, kolab]);
   useEffect(() => {
@@ -430,8 +436,11 @@ function ReviewBar({ name, layer, review, mine, reading, committed, read, onVerd
   );
 }
 
-/** A submission's outcome, on its node; `gone` once it left review without committing or coming back. */
-type Outcome = WebOutcome & { node: string; gone?: boolean; seen?: boolean };
+/**
+ * A submission's outcome, on its node; `gone` once it left review without committing or coming
+ * back; `from`, the version submitted, when it was folded onto a newer version as `seq`.
+ */
+type Outcome = WebOutcome & { node: string; gone?: boolean; seen?: boolean; from?: number };
 
 /** What became of a version the notice said was in review, from the version as the page now reads it. */
 function settled(o: Outcome, now: WebVersion | undefined): Outcome {
@@ -453,12 +462,13 @@ function Notice({ outcome: o, layer, onDismiss }: { outcome: Outcome; layer: Lay
     <section className="notice" role="status">
       <h2><Pill tone={tone}>{word}</Pill> {head}</h2>
       <p>
+        {o.from !== undefined && !o.gone ? `Your ${addr(o.node, o.from)} was folded onto the node’s newer version, as v${o.seq}. ` : ''}
         {o.committed ? (o.unreviewed ? 'No one else holds Write on this layer, so Kolab’s structural checks alone committed it.' : 'Approved.') + (o.cascade_queued ? ' Its cascade waits behind an earlier one of this node.' : ' Whatever relied on what changed is marked stale.')
           : o.in_review ? (o.reviewers.length
             ? `Structural checks passed. ${o.reviewers.join(', ')} ${o.reviewers.length > 1 ? 'have each' : 'has'} been asked to review it. Until one approves, nothing downstream changes.`
             : `Structural checks passed. ${nobodyCanReview(layer)} Until then, nothing downstream changes.`)
           : o.stale ? 'Someone else committed to it after this was drafted. Nothing was wrong with your edits: they are still here, on the new version.'
-          : o.gone ? 'It was abandoned, or a newer version took its place. Nothing changed for anyone.'
+          : o.gone ? 'It was abandoned or rejected. Nothing changed for anyone.'
           : o.note ?? ''}
         {o.abandoned && o.note ? ` ${o.note} Your edits are still here: fix them and submit again.` : ''}
       </p>
