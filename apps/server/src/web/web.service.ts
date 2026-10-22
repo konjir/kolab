@@ -363,6 +363,7 @@ export class WebService {
     return {
       items: (await activity(this.kolab, s)).map((r) => {
         switch (r.kind) {
+          case 'node': return { at: r.at, actor: r.actor, text: `made ${formatAddress({ node: r.node })} · ${r.title}` };
           case 'version': return {
             at: r.at, actor: r.actor,
             text: r.state === 'committed' ? `committed ${at(r.node, r.seq)}${r.note ? ` · ${r.note}` : ''}`

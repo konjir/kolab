@@ -39,8 +39,8 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   const events = heard(kolab);
 
   const failed = internals(kolab).inTransaction(async (tx, signal) => {
-    await tx.query(`insert into account(id, kind, name) values ('zed', 'user', 'zed')`);
-    await tx.query(`insert into actor(id, name, kind) values ('zed', 'zed', 'person')`);
+    await tx.query(`insert into account(id, kind, name, created_by) values ('zed', 'user', 'zed', 'admin')`);
+    await tx.query(`insert into actor(id, name, kind, created_by) values ('zed', 'zed', 'person', 'admin')`);
     await signal({ inbox: 'actor', kolab: 'test', actor: 'zed' });
     throw new Error('the change fails after signalling');
   });
@@ -48,8 +48,8 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
   expect((await kolab.listActors()).map((a) => a.id)).toStrictEqual([]);
 
   await internals(kolab).inTransaction(async (tx, signal) => {
-    await tx.query(`insert into account(id, kind, name) values ('zed', 'user', 'zed')`);
-    await tx.query(`insert into actor(id, name, kind) values ('zed', 'zed', 'person')`);
+    await tx.query(`insert into account(id, kind, name, created_by) values ('zed', 'user', 'zed', 'admin')`);
+    await tx.query(`insert into actor(id, name, kind, created_by) values ('zed', 'zed', 'person', 'admin')`);
     await signal({ inbox: 'actor', kolab: 'test', actor: 'zed' });
     await signal({ inbox: 'actor', kolab: 'test', actor: 'zed' });   // a repeat in one transaction is one event
     expect(events).toStrictEqual([]);                 // nothing before the commit

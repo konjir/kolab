@@ -224,7 +224,7 @@ test('with nothing kept, the bridge signs in with the browser by itself, for kon
 
   // The grant is revoked and its session ended (an admin, or Ann from another device): Kolab closes
   // the stream, the refresh is refused, and the bridge says so once, without opening the browser.
-  await kolab.db.query(`update oauth_grant set revoked_at = now() where actor_id = 'ann-channel'`);
+  await kolab.db.query(`update oauth_grant set revoked_at = now(), revoked_by = 'admin' where actor_id = 'ann-channel'`);
   await kolab.endSession({ actor: 'ann-channel' });
   const out = await until('the sign-out', () => messages.find((m) => m.meta.status === 'signed_out'), 20_000, () => logs.join('\n'));
   expect(out.content).toMatch(/was signed out of Kolab at .*: its sign-in ended or was revoked.* run konjir login --url .* The channel picks the sign-in up by itself, with no restart\./);

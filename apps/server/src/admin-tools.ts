@@ -3,7 +3,7 @@ import { McpGuard, McpScopeGuard, McpTool } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { GateError, Kolab, NameTakenError, SESSION_KEY, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
-import { ACCESS_LEVELS, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget } from '@konjir/types';
+import { ACCESS_LEVELS, ADMIN_DOER, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget, type Doer } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
 import { fail as toolError, ok } from './results.js';
 
@@ -23,6 +23,13 @@ function fail(e: unknown) {
   return toolError(e);
 }
 import { KOLAB } from './tokens.js';
+
+/**
+ * Who an admin verb records as having made its write (W2.20, D70): the admin token, ADMIN_DOER.
+ * When admins are people who sign in (W2.22, D69), this is where the verb names the signed-in
+ * admin instead; every verb below passes it, so none records a write as no one's.
+ */
+const admin = (): { by: Doer } => ({ by: ADMIN_DOER });
 
 const addActor = z.object({
   id: z.string(),
@@ -87,6 +94,11 @@ const applyRuling = z.object({
   parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
   unlink: z.array(linkRef).optional().describe('Links of the node\'s live version that the ruling drops, so they aren\'t carried forward, and their open marks settle: [{"source_element":"b1","target":"kj:kolab#R1"}] or [{"link":"<id>"}]; targets in the node\'s kolab'),
 });
+const auditLog = z.object({
+  kolab: z.string().optional().describe("Only this kolab's changes: its grants and its outbox jobs"),
+  subject: z.string().optional().describe('Only changes to this grantee, person or job'),
+  limit: z.number().int().min(1).max(500).optional().describe('At most this many, newest first; 100 by default'),
+});
 const outbox = z.object({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
   kolab: z.string().optional().describe('Only jobs of this kolab'),
@@ -114,7 +126,7 @@ export class AdminTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async addActor({ id, name, owner }: z.infer<typeof addActor>) {
     try {
-      await this.kolab.addActor(id, { name, owner });
+      await this.kolab.addActor(id, { name, owner, ...admin() });
       return ok({ actor: id, kind: owner === undefined ? 'person' : 'agent', owner: owner ?? null });
     } catch (e) { return fail(e); }
   }
@@ -127,7 +139,7 @@ export class AdminTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async linkIdentity({ actor, provider, subject, login }: z.infer<typeof linkIdentity>) {
     try {
-      await this.kolab.linkIdentity(actor, { provider, subject, login });
+      await this.kolab.linkIdentity(actor, { provider, subject, login }, admin());
       return ok({ actor, identities: await this.kolab.identities(actor) });
     } catch (e) { return fail(e); }
   }
@@ -146,7 +158,7 @@ export class AdminTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async openSession({ actor, role, kolab }: z.infer<typeof openSession>) {
     try {
-      const token = await this.kolab.openSession(actor, role, { kolab });
+      const token = await this.kolab.openSession(actor, role, { kolab, ...admin() });
       // The only time the token is shown: Kolab stores only its hash (P1).
       return ok({ token, session: sessionKey(token), actor, role, kolab: await this.kolab.sessionKolab(token) });
     } catch (e) { return fail(e); }
@@ -168,7 +180,7 @@ export class AdminTools {
       if (session !== undefined && !SESSION_KEY.test(session)) {
         throw new Error(session.startsWith('kjs_') ? 'that is a token, not a session key; pass it as token=' : "that is not a session key, which is 43 base64url characters (whoami's session)");
       }
-      const ended = await this.kolab.endSession(token ?? (session !== undefined ? { key: session } : { actor: actor! }));
+      const ended = await this.kolab.endSession(token ?? (session !== undefined ? { key: session } : { actor: actor! }), admin());
       if (!ended) {
         throw new Error(actor !== undefined ? `${actor} has no open session` : 'no open session matched; it has already ended, or never existed');
       }
@@ -184,9 +196,19 @@ export class AdminTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async outbox({ state, kolab, retry }: z.infer<typeof outbox>) {
     try {
-      if (retry !== undefined && !(await this.kolab.retryOutboxJob(retry))) throw new GateError(`no job ${retry} to retry: it is done, or a live process is running it`);
+      if (retry !== undefined && !(await this.kolab.retryOutboxJob(retry, admin()))) throw new GateError(`no job ${retry} to retry: it is done, or a live process is running it`);
       return ok({ ...(retry !== undefined ? { retried: retry } : {}), jobs: await this.kolab.outboxJobs({ state, kolab }) });
     } catch (e) { return fail(e); }
+  }
+
+  @McpTool({
+    name: 'konjir_admin_audit',
+    description: "Admin: the audit log (W2.20), newest first: each change that leaves no row of its own to say who made it, with who made it and when. A grant made, changed or removed (grant.set, grant.removed), a person added to or removed from an organization or a team (member.set, member.removed, team_member.added, team_member.removed), and an outbox job retried (outbox.retried). by is an actor, or admin for the admin token. Everything else Kolab writes names who made it on its own row: a node's created_by, a session's opened_by and ended_by, a version's actor and submitted_by, an archive's done_by.",
+    schema: auditLog,
+  })
+  @McpGuard(McpScopeGuard, { scopes: ['admin'] })
+  async audit({ kolab, subject, limit }: z.infer<typeof auditLog>) {
+    try { return ok({ events: await this.kolab.auditLog({ kolab, subject, limit }) }); } catch (e) { return fail(e); }
   }
 
   @McpTool({
@@ -208,7 +230,7 @@ export class AdminTools {
         if (!v || v.state !== 'committed') throw new GateError(`${a.parent} is not a committed version`);
         parent = v.id;
       }
-      const r = await this.kolab.applyRuling(node.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) }, { id: a.ruling, actor: a.actor });
+      const r = await this.kolab.applyRuling(node.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) }, { id: a.ruling, actor: a.actor, ...admin() });
       const v = await this.kolab.version(r.version);
       const at = formatAddress({ kolab: node.kolab_id, node: node.name, version: v.seq });
       return ok({ ok: r.ok, ruling: a.ruling, committed: r.ok ? at : null, state: v.state, stale: r.stale ?? false, review: r.note ?? null, ...(r.rebases ? { rebases_queued: r.rebases } : {}) });
@@ -224,44 +246,44 @@ export class TenancyTools {
   @McpTool({ name: 'konjir_admin_add_organization', description: 'Admin: register an organization, an account that owns kolabs and agents and has members and teams.', schema: addOrganization })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async addOrganization({ id, name }: z.infer<typeof addOrganization>) {
-    try { await this.kolab.addOrganization(id, { name }); return ok({ organization: id }); } catch (e) { return fail(e); }
+    try { await this.kolab.addOrganization(id, { name, ...admin() }); return ok({ organization: id }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_add_member', description: "Admin: add a person to an organization, or change their role in it (member or owner).", schema: addMember })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async addMember({ org, user, role }: z.infer<typeof addMember>) {
-    try { const { ended } = await this.kolab.addMember(org, user, role); return ok({ org, user, role: role ?? 'member', ended_sessions: ended }); } catch (e) { return fail(e); }
+    try { const { ended } = await this.kolab.addMember(org, user, role, admin()); return ok({ org, user, role: role ?? 'member', ended_sessions: ended }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_remove_member', description: "Admin: remove a person from an organization and its teams. Their sessions, and their agents', narrow, and any that can no longer reach their kolab end.", schema: removeMember })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async removeMember({ org, user }: z.infer<typeof removeMember>) {
-    try { const { ended } = await this.kolab.removeMember(org, user); return ok({ org, removed: user, ended_sessions: ended }); } catch (e) { return fail(e); }
+    try { const { ended } = await this.kolab.removeMember(org, user, admin()); return ok({ org, removed: user, ended_sessions: ended }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_add_team', description: "Admin: create a team in an organization, optionally under a parent team. Teams hold no konstructs; they are granted access.", schema: addTeam })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async addTeam({ org, name, parent }: z.infer<typeof addTeam>) {
-    try { return ok({ team: await this.kolab.addTeam(org, name, { parent }) }); } catch (e) { return fail(e); }
+    try { return ok({ team: await this.kolab.addTeam(org, name, { parent, ...admin() }) }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_add_team_member', description: "Admin: add a member of the team's organization to the team.", schema: addTeamMember })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async addTeamMember({ team, user }: z.infer<typeof addTeamMember>) {
-    try { await this.kolab.addTeamMember(team, user); return ok({ team, user }); } catch (e) { return fail(e); }
+    try { await this.kolab.addTeamMember(team, user, admin()); return ok({ team, user }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_remove_team_member', description: "Admin: remove a person from a team. Their sessions, and their agents', narrow, and any that can no longer reach their kolab end.", schema: removeTeamMember })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async removeTeamMember({ team, user }: z.infer<typeof removeTeamMember>) {
-    try { const { ended } = await this.kolab.removeTeamMember(team, user); return ok({ team, removed: user, ended_sessions: ended }); } catch (e) { return fail(e); }
+    try { const { ended } = await this.kolab.removeTeamMember(team, user, admin()); return ok({ team, removed: user, ended_sessions: ended }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_add_kolab', description: 'Admin: create a kolab owned by a person or an organization. Its name is unique across all of Konjir.', schema: addKolab })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async addKolab({ name, owner, title, visibility, base }: z.infer<typeof addKolab>) {
     try {
-      await this.kolab.createKolab(name, { owner, title, visibility, base });
+      await this.kolab.createKolab(name, { owner, title, visibility, base, ...admin() });
       return ok({ kolab: name, owner, visibility: visibility ?? 'private', base: base ?? null });
     } catch (e) { return fail(e); }
   }
@@ -280,7 +302,7 @@ export class TenancyTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async archive(a: z.infer<typeof archiveTarget>) {
     try {
-      const { archived, kolabs, agents, ended } = await this.kolab.archive(oneTarget(a), { by: 'admin' });
+      const { archived, kolabs, agents, ended } = await this.kolab.archive(oneTarget(a), admin());
       return ok({ archived, with_kolabs: kolabs, with_agents: agents, ended_sessions: ended });
     } catch (e) { return fail(e); }
   }
@@ -293,7 +315,7 @@ export class TenancyTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async unarchive(a: z.infer<typeof archiveTarget>) {
     try {
-      const { unarchived, kolabs, agents } = await this.kolab.unarchive(oneTarget(a), { by: 'admin' });
+      const { unarchived, kolabs, agents } = await this.kolab.unarchive(oneTarget(a), admin());
       return ok({ unarchived, with_kolabs: kolabs, with_agents: agents });
     } catch (e) { return fail(e); }
   }
@@ -306,7 +328,7 @@ export class TenancyTools {
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async grant({ kolab, to, level, layers }: z.infer<typeof grant>) {
     try {
-      const { ended } = await this.kolab.grant(kolab, to, level, { layers });
+      const { ended } = await this.kolab.grant(kolab, to, level, { layers, ...admin() });
       return ok({ kolab, to, level, layers: level === 'write' ? layers ?? [...LAYERS] : level === 'read' || level === 'triage' ? [] : [...LAYERS], ended_sessions: ended });
     } catch (e) { return fail(e); }
   }
@@ -314,7 +336,7 @@ export class TenancyTools {
   @McpTool({ name: 'konjir_admin_revoke', description: "Admin: remove a grant. Sessions it covered narrow, and any that can no longer reach the kolab end.", schema: revoke })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
   async revoke({ kolab, to }: z.infer<typeof revoke>) {
-    try { const { ended } = await this.kolab.revoke(kolab, to); return ok({ kolab, revoked: to, ended_sessions: ended }); } catch (e) { return fail(e); }
+    try { const { ended } = await this.kolab.revoke(kolab, to, admin()); return ok({ kolab, revoked: to, ended_sessions: ended }); } catch (e) { return fail(e); }
   }
 
   @McpTool({ name: 'konjir_admin_access', description: "Admin: an actor's access to a kolab: its level and the layers it may write. An agent's is its own grant, cut down to its owner's.", schema: access })

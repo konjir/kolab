@@ -54,6 +54,8 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   const authorOf = async (version: number) => (await call(two.client, 'read_node', { node: 'checkout', version }) as { author: unknown }).author;
   expect(await authorOf(1)).toStrictEqual({ actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product' });
   expect(await authorOf(2)).toStrictEqual({ actor: 'alice-pm-2', kind: 'agent', owner: 'alice', role: 'product' });
+  // And who made the node: the agent whose session did (W2.20).
+  expect(await call(two.client, 'read_node', { node: 'checkout', version: 2 })).toMatchObject({ node_created_by: 'alice-pm' });
 
   // Identity rides the token: an agent can't reach the admin verbs to add agents of its own.
   expect((await one.client.listTools()).tools.some((t) => t.name.startsWith('konjir_admin'))).toBe(false);

@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
 import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
-import { ARCHIVABLE,
+import { ARCHIVABLE, AUDIT_ACTIONS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
 } from '@konjir/types';
@@ -91,7 +91,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS and ARCHIVABLE", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE and AUDIT_ACTIONS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -115,6 +115,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, Q
     expect(await check('case_file_state_check')).toStrictEqual([...CASE_FILE_STATES].sort());
     expect(await check('position_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
     expect(await check('archive_event_kind_check')).toStrictEqual([...ARCHIVABLE].sort());
+    expect(await check('audit_event_action_check')).toStrictEqual([...AUDIT_ACTIONS].sort());
     expect(await check('ruling_verdict_check')).toStrictEqual([...POSITION_VERDICTS].sort());
     expect(await check('ruling_effect_check')).toStrictEqual([...RULING_EFFECTS].sort());
     expect(await check('position_seeks_check')).toStrictEqual([...RULING_EFFECTS].sort());
@@ -639,6 +640,41 @@ test('a database reaches the archiving migration: nothing is archived, open sess
     expect((await kolab.listKolabs()).map((k) => k.id)).toStrictEqual(['kolab']);
     expect(await kolab.archive({ organization: 'konjir' })).toMatchObject({ kolabs: ['kolab'], ended: 1 });
     expect(await kolab.sessionOpen(lee)).toBe(false);
+  } finally { await kolab.close(); }
+});
+
+test('a database reaches the write-actors migration: rows made before it keep no actor, nothing is guessed, and every write after names one', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'write_actors');
+  expect(at).toBe(MIGRATIONS.findIndex((x) => x.name === 'questions_in_review') + 1);
+  const lee = 'kjs_lee-token-before-write-actors';
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`
+      insert into account(id, kind, name) values ('konjir', 'organization', 'Konjir'), ('lee', 'user', 'Lee');
+      insert into actor(id, name) values ('lee', 'Lee');
+      insert into kolab(id, owner_id, title) values ('kolab', 'konjir', 'Kolab');
+      insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ('kolab', 'lee', 'write', true, true);
+      insert into node(id, name, kind, layer, title, kolab_id) values ('kolab', 'kolab', 'functional_spec', 'functional', 'Kolab', 'kolab');
+      insert into session(id, actor_id, active_role, kolab_id) values ('${sessionKey(lee)}', 'lee', 'product', 'kolab');`);
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [versions[at]] });
+    expect((await db.query(`select n.created_by as node, n.created_at, k.created_by as kolab, a.created_by as actor, o.created_by as account, s.opened_by
+                              from node n, kolab k, actor a, account o, session s where o.id = 'lee'`)).rows)
+      .toStrictEqual([{ node: null, created_at: null, kolab: null, actor: null, account: null, opened_by: null }]);
+    expect((await db.query(`select count(*)::int as n from audit_event`)).rows).toStrictEqual([{ n: 0 }]);
+    expect((await migrate(db)).applied).toStrictEqual(versions.slice(at + 1));
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await Kolab.open(store);
+  try {
+    // A session opened before it still works, and ending it records who did.
+    expect(await kolab.sessionInfo(lee)).toMatchObject({ actor: 'lee', kolab: 'kolab' });
+    await kolab.endSession(lee);
+    expect((await kolab.db.query(`select opened_by, ended_by from session where id = $1`, [sessionKey(lee)])).rows).toStrictEqual([{ opened_by: null, ended_by: 'lee' }]);
+    // Archiving an old actor or kolab still works: nothing about it is checked again.
+    await kolab.archive({ kolab: 'kolab' });
+    await kolab.unarchive({ kolab: 'kolab' });
   } finally { await kolab.close(); }
 });
 

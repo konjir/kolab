@@ -248,6 +248,7 @@ export async function queryDetails(kolab: Kolab, session: string, nodeId?: strin
 }
 
 export type ActivityRow =
+  | { at: string; actor: string; kind: 'node'; node: string; title: string }
   | { at: string; actor: string; kind: 'version'; node: string; seq: number; state: VersionState; note: string | null }
   | { at: string; actor: string; kind: 'verdict'; node: string; seq: number; state: 'approved' | 'changes_requested' }
   | { at: string; actor: string | null; kind: 'query'; node: string; seq: number; element: string | null; query_kind: QueryKind }
@@ -257,17 +258,23 @@ export type ActivityRow =
   | { at: string; actor: string; kind: 'ruling'; node: string; seq: number; element: string | null; effect: string | null };
 
 /**
- * What happened in the session's kolab, newest first, from what Kolab records: versions as they
- * were written (submitted, committed or rejected; Kolab doesn't record commit times yet, nor when
- * a question was answered), verdicts as they were given, questions and notes as they were raised,
+ * What happened in the session's kolab, newest first, from what Kolab records: nodes as they were
+ * made, by whom (W2.20; those made before Kolab recorded it are left out), versions as they were
+ * written (submitted, committed or rejected; Kolab doesn't record commit times yet, nor when a
+ * question was answered), verdicts as they were given, questions and notes as they were raised,
  * and marks as they were raised. Drafts not submitted are left out.
  */
 export async function activity(kolab: Kolab, session: string, limit = 80): Promise<ActivityRow[]> {
   const here = await kolab.sessionKolab(session);
   const rows = await kolab.readAs(session, async (q) => (await q.query<Record<string, unknown> & { at: Date | string }>(
     `select * from (
-       select v.created_at as at, v.actor_id as actor, 'version' as kind, n.name as node, v.seq, v.state, v.review_note as note,
+       select n.created_at as at, n.created_by as actor, 'node' as kind, n.name as node, null::int as seq, null::text as state, n.title as note,
               null::text as element, null::text as extra
+         from node n
+        where n.kolab_id = $1 and n.created_at is not null and n.created_by is not null
+       union all
+       select v.created_at, v.actor_id, 'version', n.name, v.seq, v.state, v.review_note,
+              null::text, null::text
          from version v join node n on n.id = v.node_id
         where v.kolab_id = $1 and v.state in ('in_review', 'committed', 'rejected')
        union all
@@ -299,6 +306,7 @@ export async function activity(kolab: Kolab, session: string, limit = 80): Promi
   return rows.map((r): ActivityRow => {
     const at = iso(r.at), node = r.node as string, seq = r.seq as number;
     switch (r.kind) {
+      case 'node': return { at, actor: r.actor as string, kind: 'node', node, title: r.note as string };
       case 'version': return { at, actor: r.actor as string, kind: 'version', node, seq, state: r.state as VersionState, note: r.note as string | null };
       case 'verdict': return { at, actor: r.actor as string, kind: 'verdict', node, seq, state: r.state as 'approved' | 'changes_requested' };
       case 'query': return { at, actor: r.actor as string | null, kind: 'query', node, seq, element: r.element as string | null, query_kind: r.extra as QueryKind };
