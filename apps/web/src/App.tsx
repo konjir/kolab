@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { InvitePreview, WebMe, WebOverview, WebSignInMethods } from '@konjir/types';
-import { ApiError, acceptInvite, api, createKolab, dropInvite, openInvite, signIn, signOut, switchTo } from './api.js';
+import { ApiError, acceptInvite, api, createKolab, dropInvite, openInvite, pageUpdated, patiently, signIn, signOut, switchTo, whoAmI } from './api.js';
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
@@ -80,22 +80,53 @@ export function App() {
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(undefined), 3600);
   }, []);
+  /** Kolab is away (restarting): the page waits for it, and says so, rather than signing out. */
+  const [away, setAway] = useState(false);
+  /** Kolab now serves a newer page than this one: it was deployed while this tab was open. */
+  const [updated, setUpdated] = useState(false);
   const signedOut = useCallback((why?: string) => { setMe(null); setOverview(undefined); setSignInError(why); }, []);
+  // How a person signs in here, asked as the page loads, so a session that ends while Kolab is away
+  // still gets this Kolab's own sign-in. Kolab away is waited out; the token form shows only when
+  // Kolab says it takes tokens, never as a guess.
   useEffect(() => {
-    if (me !== null || methods) return;
-    api<WebSignInMethods>('session/methods').then(setMethods, () => setMethods({ provider: null, token: true }));
-  }, [me, methods]);
+    if (methods) return;
+    let alive = true;
+    patiently(() => api<WebSignInMethods>('session/methods'), { alive: () => alive })
+      .then((m) => { if (alive) setMethods(m); }, () => { if (alive) setMethods({ provider: null, token: false }); });
+    return () => { alive = false; };
+  }, [methods]);
 
   useEffect(() => {
-    api<WebMe>('me').then(setMe, (e: unknown) => {
-      if (e instanceof ApiError && e.status === 401) { setMe(null); return; }
-      signedOut((e as Error).message);
-    });
+    let alive = true;
+    whoAmI({ alive: () => alive, onWait: () => { if (alive) setAway(true); } }).then(
+      (now) => { if (!alive) return; setAway(false); setMe(now); },
+      (e: unknown) => { if (!alive) return; setAway(false); signedOut((e as Error).message); },
+    );
+    return () => { alive = false; };
+  }, [signedOut]);
+
+  /**
+   * Something said the session may have ended (a 401, or the event stream closing): Kolab is asked,
+   * once however many say so, and a restart waited out. The page signs out only when Kolab says the
+   * session is gone; otherwise it re-reads what it shows. Resolves whether the session lives.
+   */
+  const checking = useRef<Promise<boolean>>(undefined);
+  const recheck = useCallback(() => {
+    checking.current ??= whoAmI({ onWait: () => setAway(true) }).then(
+      (now) => {
+        if (!now) { signedOut('Your session ended. Sign in again.'); return false; }
+        setMe((was) => (was && JSON.stringify(was) === JSON.stringify(now) ? was : now));
+        setTick((t) => t + 1);
+        return true;
+      },
+      (e: unknown) => { signedOut((e as Error).message); return false; },
+    ).finally(() => { setAway(false); checking.current = undefined; });
+    return checking.current;
   }, [signedOut]);
   useEffect(() => {
     if (!me) return;
-    api<WebOverview>('overview').then(setOverview, (e: unknown) => { if (e instanceof ApiError && e.status === 401) signedOut('Your session ended. Sign in again.'); });
-  }, [me, tick, signedOut]);
+    api<WebOverview>('overview').then(setOverview, (e: unknown) => { if (e instanceof ApiError && e.status === 401) void recheck(); });
+  }, [me, tick, recheck]);
   // An invite opened from its link: what it offers. Kolab keeps it for the sign-in, which offers to join.
   useEffect(() => {
     if (!invite || invite.preview || invite.error) return;
@@ -115,7 +146,16 @@ export function App() {
   }, [theme]);
 
   // Live: every signal re-reads what the page shows (API8).
-  useLive(!!me, () => setTick((t) => t + 1), () => signedOut('Your session ended. Sign in again.'));
+  // A stream that closes, as when Kolab restarts, is not the session's end: Kolab's `ended` is.
+  useLive(!!me, {
+    onChange: () => setTick((t) => t + 1),
+    onEnded: () => signedOut('Your session ended. Sign in again.'),
+    onDropped: recheck,
+    onResumed: () => {
+      setTick((t) => t + 1);
+      void pageUpdated().then((u) => { if (u) setUpdated(true); });
+    },
+  });
 
   const act: Act = {
     async run(what, done) {
@@ -125,8 +165,7 @@ export function App() {
         setTick((t) => t + 1);
         return true;
       } catch (e) {
-        if (e instanceof ApiError && e.status === 401) signedOut('Your session ended. Sign in again.');
-        else say((e as Error).message);
+        if (e instanceof ApiError && e.status === 401) { if (await recheck()) say('That didn’t go through while Kolab reconnected: try it again.'); } else say((e as Error).message);
         return false;
       }
     },
@@ -140,7 +179,11 @@ export function App() {
   }, '');
 
   const inviteNote = invite?.error ? <p className="notice" role="alert">{invite.error}</p> : null;
-  if (me === undefined) return <p className="empty" style={{ padding: 24 }}>Connecting to Kolab…</p>;
+  const awayNote = away ? <p className="notice live-note" role="status">Kolab is restarting: reconnecting…</p> : null;
+  const updatedNote = updated ? (
+    <p className="notice live-note" role="status">Kolab was updated. <button type="button" className="btn" onClick={() => location.reload()}>Reload</button></p>
+  ) : null;
+  if (me === undefined) return <p className="empty" style={{ padding: 24 }}>{away ? 'Kolab is restarting: reconnecting…' : 'Connecting to Kolab…'}</p>;
   if (me === null) {
     return (
       <>
@@ -188,6 +231,8 @@ export function App() {
           <div className="rail-foot"><span>{me.name} · {me.role} · {me.kolab}</span></div>
         </nav>
         <main>
+          {awayNote}
+          {updatedNote}
           {invite?.preview && <InviteCard invite={invite.preview} signedIn onDismiss={() => { setInvite(undefined); void dropInvite().catch(() => undefined); }}
             onJoin={() => act.run(async () => {
               const next = await acceptInvite(invite.token);

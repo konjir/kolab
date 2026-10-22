@@ -28,6 +28,64 @@ export async function api<T>(path: string, body?: unknown, method?: string): Pro
   return data as T;
 }
 
+/**
+ * Whether a failure is Kolab being briefly away, as while it restarts behind its proxy: no answer
+ * at all (fetch's TypeError), or a 5xx such as the proxy's 502. Never a sign the session ended.
+ */
+export function transient(e: unknown): boolean {
+  return e instanceof ApiError ? e.status >= 500 : e instanceof TypeError;
+}
+
+/** How long to wait before the next try while Kolab is away: 0.5 s, doubling, at most 15 s. */
+export const backoff = (attempt: number) => Math.min(500 * 2 ** attempt, 15_000);
+
+/** The page's clock for waiting out a restart; the tests make it instant. */
+export const clock = { wait: (ms: number) => new Promise<void>((r) => { setTimeout(r, ms); }) };
+
+/** While a call waits for Kolab to come back: `onWait` hears each retry, and `alive` going false stops it. */
+export interface Patience { onWait?(): void; alive?(): boolean }
+
+/** Runs a call, trying again with backoff while Kolab is away (transient); any other failure is thrown at once. */
+export async function patiently<T>(fn: () => Promise<T>, p: Patience = {}): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e) { if (!transient(e) || p.alive?.() === false) throw e; }
+    p.onWait?.();
+    await clock.wait(backoff(i));
+  }
+}
+
+/** How long a 401 is given to be a refresh in flight before it counts. */
+export const RECHECK_401_MS = 1000;
+
+/**
+ * Who the session is, asked so that a restart can't sign the page out: Kolab away is waited out,
+ * and a 401 is asked once more after a moment, since another of the page's calls may have just
+ * refreshed the session (D55) and its new cookie be on its way. Null only when Kolab says twice,
+ * each time after its own try at a refresh, that there is no session.
+ */
+export async function whoAmI(p: Patience = {}): Promise<WebMe | null> {
+  for (let i = 0; i < 2; i++) {
+    try { return await patiently(() => api<WebMe>('me'), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
+    if (i === 0) await clock.wait(RECHECK_401_MS);
+  }
+  return null;
+}
+
+/**
+ * Whether Kolab now serves a newer page than this one, as after a deploy: its index.html names
+ * another entry script (Vite names each by its content hash). False when that can't be told.
+ */
+export async function pageUpdated(): Promise<boolean> {
+  const mine = document.querySelector('script[type="module"][src]')?.getAttribute('src');
+  if (!mine || typeof DOMParser === 'undefined') return false;
+  try {
+    const res = await fetch('/', { headers: { accept: 'text/html' }, cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok) return false;
+    const theirs = new DOMParser().parseFromString(await res.text(), 'text/html').querySelector('script[type="module"][src]')?.getAttribute('src');
+    return !!theirs && theirs !== mine;
+  } catch { return false; }
+}
+
 export const signIn = (token: string) => api<WebMe>('session', { token });
 /** Ends the session: its token is revoked, so signing in again takes a new one. */
 export const signOut = () => api<void>('session', undefined, 'DELETE');
