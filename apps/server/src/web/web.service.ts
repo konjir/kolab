@@ -128,7 +128,7 @@ export class WebService {
       compared_with: compared,
       in_review: inReview,
       drafts: shown.filter((v) => v.state === 'drafted').map((v) => version(v, me.actor)),
-      folded: await this.folds(history.filter((v) => v.actor === me.actor)),
+      folded: await this.folds(n.id, history.filter((v) => v.actor === me.actor)),
       can_write: me.layer === n.layer && me.access.layers.includes(n.layer),
       rulings: nodeRulings,
       kolab: me.kolab,
@@ -137,11 +137,14 @@ export class WebService {
   }
 
   /** Which of these versions were folded onto a newer one, and into which: Kolab notes "folded into <version id>". */
-  private async folds(rows: VersionHistoryRow[]): Promise<{ seq: number; into: number }[]> {
+  private async folds(nodeId: string, rows: VersionHistoryRow[]): Promise<{ seq: number; into: number }[]> {
     const out: { seq: number; into: number }[] = [];
     for (const r of rows) {
       const id = r.state === 'rejected' ? /^folded into (\S+)$/.exec(r.note ?? '')?.[1] : undefined;
-      if (id) out.push({ seq: r.seq, into: (await this.kolab.version(id)).seq });
+      if (!id) continue;
+      // Only a fold of this node counts; a note naming anything else, or nothing, is skipped.
+      const fold = await this.kolab.version(id).catch(() => undefined);
+      if (fold?.node_id === nodeId) out.push({ seq: r.seq, into: fold.seq });
     }
     return out;
   }
@@ -438,7 +441,7 @@ export class WebService {
     const carried = replaced ? await this.carriedFrom(s, n.name, replaced, live?.id ?? null) : undefined;
     const kept = new Set(elements.map((e) => e.id));
     // Its own links, from elements still there, each pinned to its target's live version (refused if the target element is gone).
-    const links = carried ? await this.repinned(n.name, b.replaces!, carried.links.filter((l) => l.source_element_id === null || kept.has(l.source_element_id))) : [];
+    const links = carried ? await this.repinned(s, n.name, b.replaces!, carried.links.filter((l) => l.source_element_id === null || kept.has(l.source_element_id))) : [];
     const drops = [...new Set([...unlink, ...(carried?.unlink ?? [])])];
     const id = await k.draft(s, n.id, { elements, ...(drops.length ? { unlink: drops.map((link) => ({ link })) } : {}) });
     try {
@@ -470,14 +473,22 @@ export class WebService {
     }
     if (replaced && (out.committed || out.in_review)) {
       try {
-        await k.abandon(s, replaced);
+        // The claim: only while it is still a draft, checked and abandoned under the node's lock.
+        await k.abandon(s, replaced, { onlyDrafted: true });
       } catch (e) {
         if (!(e instanceof GateError)) throw e;
-        // Settled meanwhile: another replacement of it, or it resubmitted as it is, got there first.
-        // In review, this one withdraws, so two of the author's versions never wait at once; one
-        // that committed stands, and the draft it replaced is settled already.
+        // Settled meanwhile: another replacement of it got there first, or it was resubmitted as it
+        // is (and stays in review). In review, this one withdraws, so two of the author's versions
+        // never wait at once; one that committed stands.
         if (out.in_review) {
-          await k.abandon(s, id);
+          try {
+            await k.abandon(s, id);
+          } catch (w) {
+            if (!(w instanceof GateError)) throw w;
+            // Approved inside the window: it committed after all, so say so.
+            if ((await k.version(id)).state === 'committed') return { ...out, ok: true, committed: true, in_review: false };
+            throw w;
+          }
           throw conflict(`${n.name}@${b.replaces} was resubmitted or replaced meanwhile, so this submission is withdrawn: read the node again`);
         }
       }
@@ -487,23 +498,41 @@ export class WebService {
 
   /**
    * A replaced draft's own links, each pinned to its target's live version, as a fresh link is:
-   * where the target committed since, to the same element in its new version. Refused, naming it,
-   * when that element is gone, since the link would no longer say what it relied on.
+   * where the target committed since, to the same element in its new version. All checked before
+   * anything is written. A link into work the session no longer reads is refused first, saying
+   * nothing of that work (D49, LNK8); then one whose target element is gone, or whose quote no
+   * longer stands there, is refused, naming it, since it would no longer say what it relied on.
    */
-  private async repinned<L extends { target_version_id: string; target_element_id: string | null }>(name: string, seq: number, links: L[]): Promise<L[]> {
+  private async repinned<L extends { source_element_id: string | null; target_version_id: string; target_element_id: string | null; target_selector: QuoteSelector | null }>(
+    s: string, name: string, seq: number, links: L[]): Promise<L[]> {
     const out: L[] = [];
     for (const l of links) {
-      const pinned = await this.kolab.version(l.target_version_id);
-      const live = await this.kolab.latestCommitted(pinned.node_id);
-      if (!live || live.id === pinned.id) { out.push(l); continue; }
-      if (l.target_element_id !== null && !(await this.kolab.elements(live.id)).some((e) => e.element_id === l.target_element_id)) {
-        throw bad(`${name}@${seq} links to ${formatAddress({ node: (await this.kolab.node(pinned.node_id)).name, version: pinned.seq, element: l.target_element_id })}, `
-          + `which version ${live.seq} no longer has, so the link can't be carried over. Resubmit ${name}@${seq} as it is, or abandon it and draft afresh.`);
+      const from = l.source_element_id ? `from ${l.source_element_id}` : 'from the whole version';
+      // As the session reads, under row-level security: a version it can't read is no version at all.
+      const at = await this.kolab.readAs(s, async (q) => {
+        const reads = async (id: string) => (await q.query<{ ok: boolean }>(`select kj_session_reads_version($1) as ok`, [id])).rows[0]?.ok === true;
+        if (!(await reads(l.target_version_id))) return undefined;
+        const pinned = (await q.query<{ node_id: string; seq: number }>(`select node_id, seq from version where id = $1`, [l.target_version_id])).rows[0];
+        const live = pinned && (await q.query<{ id: string; seq: number }>(
+          `select id, seq from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [pinned.node_id])).rows[0];
+        if (!live || !(await reads(live.id))) return undefined;
+        const has = l.target_element_id === null
+          || (await q.query(`select 1 from element where version_id = $1 and element_id = $2`, [live.id, l.target_element_id])).rows.length > 0;
+        return { pinned, live, has };
+      });
+      if (!at) throw bad(`${name}@${seq}'s link ${from} points into work you no longer read, so it can't be carried over. Resubmit ${name}@${seq} as it is, or abandon it and draft afresh.`);
+      const target = formatAddress({ node: (await this.kolab.node(at.pinned.node_id)).name, version: at.pinned.seq, element: l.target_element_id ?? undefined });
+      if (!at.has) {
+        throw bad(`${name}@${seq} links to ${target}, which version ${at.live.seq} no longer has, so the link can't be carried over. Resubmit ${name}@${seq} as it is, or abandon it and draft afresh.`);
       }
-      out.push({ ...l, target_version_id: live.id });
+      if (l.target_selector && (await this.kolab.resolveIn(at.live.id, l.target_element_id, l.target_selector)).status !== 'ok') {
+        throw bad(`${name}@${seq} quotes "${l.target_selector.exact}" in ${target}, which version ${at.live.seq} no longer says as quoted, so the link can't be carried over. Resubmit ${name}@${seq} as it is, or abandon it and draft afresh.`);
+      }
+      out.push({ ...l, target_version_id: at.live.id });
     }
     return out;
   }
+
 
   /**
    * What a draft being replaced carries into its replacement besides its elements: the links of the

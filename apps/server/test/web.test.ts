@@ -334,6 +334,72 @@ test('editing a draft that came back: a carried link whose target element is gon
   expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.drafts.map((d) => d.seq)).toStrictEqual([v]);   // nothing written, the draft kept
 });
 
+test('replacing a draft claims it only while it is a draft: a "resubmit as it is" racing it stays in review, and a link into work no longer read is refused saying nothing of it', async () => {
+  const { kolab, engineer, product } = await specAndBinding();
+  await people(kolab, 'erin', { layers: ['technical'] });
+  const base = await serve(kolab);
+  const bob = await signIn(base, engineer);
+  const erin = await signIn(base, await kolab.openSession('erin', 'engineer'));
+  const returned = async (link?: { target: string; element: string; selector?: { exact: string; prefix?: string; suffix?: string } }) => {
+    const v = await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.', b2: 'Refunds go through the payments queue.', b3: 'Refunds are emailed.' }) });
+    if (link) await kolab.link(engineer, { kind: 'dependency', source: v, sourceElement: 'b3', target: link.target, targetElement: link.element, selector: link.selector });
+    expect((await kolab.submit(engineer, v)).in_review).toBe(true);
+    const seq = (await kolab.version(v)).seq;
+    expect((await erin.call(`nodes/orders-pg/versions/${seq}/review`, { verdict: 'request_changes', note: 'Not yet.' })).status).toBe(200);
+    return seq;
+  };
+  const inReview = async () => (await bob.call<WebNodeView>('nodes/orders-pg')).body.in_review.map((r) => r.seq);
+
+  // A resubmit as it is and a replacement, at once: whichever wins, only it succeeds, and exactly one version waits in review.
+  // A resubmit told "in review" is never abandoned behind its back.
+  for (let round = 0; round < 3; round++) {
+    const v = await returned();
+    const [as, replaced] = await Promise.all([
+      bob.call<WebOutcome>(`nodes/orders-pg/versions/${v}/resubmit`, {}),
+      bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 1, replaces: v, changes: [{ kind: 'add', element: 'b3', text: 'Refunds are emailed to the customer.' }] }),
+    ]);
+    expect([as.status, replaced.status].filter((x) => x === 200)).toHaveLength(1);
+    const waiting = await inReview();
+    expect(waiting).toHaveLength(1);
+    if (as.status === 200) expect(waiting).toStrictEqual([v]);
+    else expect(waiting).toStrictEqual([replaced.body.seq]);
+    expect((await bob.call(`nodes/orders-pg/versions/${waiting[0]}/abandon`, {})).status).toBe(200);
+  }
+  // Resubmitted first, then replaced: the replacement is refused, and the resubmitted version stays in review.
+  const v = await returned();
+  expect((await bob.call(`nodes/orders-pg/versions/${v}/resubmit`, {})).status).toBe(200);
+  const late = await bob.call<{ error: string }>('nodes/orders-pg/submit', { base: 1, replaces: v, changes: [{ kind: 'add', element: 'b3', text: 'x' }] });
+  expect([late.status, await inReview()]).toStrictEqual([409, [v]]);
+  expect((await bob.call(`nodes/orders-pg/versions/${v}/abandon`, {})).status).toBe(200);
+
+  // A quote that no longer stands where it pointed is refused before anything is written.
+  const orders = (await kolab.latestCommitted('orders'))!;
+  const quoted = await returned({ target: orders.id, element: 'R2', selector: { exact: 'refunded in full' } });
+  await kolab.commit(product, 'orders', { elements: els({ R1: 'Office staff can cancel an order.', R2: 'A cancelled order is refunded, less shipping.' }) });
+  const seqs = async () => (await bob.call<WebNodeView>('nodes/orders-pg')).body.versions.length;
+  const before = await seqs();
+  const quote = await bob.call<{ message: string }>('nodes/orders-pg/submit', { base: 1, replaces: quoted, changes: [{ kind: 'add', element: 'b3', text: 'y' }] });
+  expect(quote.status).toBe(400);
+  expect(quote.body.message).toMatch(new RegExp(`orders-pg@${quoted} quotes "refunded in full" in kj:orders@1#R2, which version 2 no longer says as quoted`));
+  expect(await seqs()).toBe(before);
+  expect((await bob.call(`nodes/orders-pg/versions/${quoted}/abandon`, {})).status).toBe(200);
+
+  // A link into another kolab Bob read when he drafted, and reads no longer: refused, naming nothing of that kolab's work.
+  await kolab.addActor('olga');
+  await kolab.createKolab('other', { owner: 'olga' });
+  const olga = await kolab.openSession('olga', 'product', { kolab: 'other' });
+  await kolab.createNode(olga, 'functional_spec', 'Secret', 'secret');
+  await kolab.commit(olga, 'secret', { elements: els({ S1: 'Only olga knows.' }) });
+  await kolab.grant('other', 'bob', 'read');
+  const foreign = await returned({ target: (await kolab.latestCommitted('secret'))!.id, element: 'S1' });
+  await kolab.revoke('other', 'bob');
+  await kolab.commit(olga, 'secret', { elements: els({ S2: 'Olga moved it.' }) });
+  const hidden = await bob.call<{ message: string }>('nodes/orders-pg/submit', { base: 1, replaces: foreign, changes: [{ kind: 'add', element: 'b3', text: 'z' }] });
+  expect(hidden.status).toBe(400);
+  expect(hidden.body.message).toMatch(new RegExp(`orders-pg@${foreign}'s link from b3 points into work you no longer read`));
+  expect(hidden.body.message).not.toMatch(/secret|S1|S2|other|version 2/);
+});
+
 test('a page reads and writes only its session\'s kolab', async () => {
   const { kolab, product, q } = await specAndBinding();
   await kolab.addActor('erin');

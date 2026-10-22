@@ -3498,9 +3498,11 @@ export class Kolab {
    * An author abandons their own draft, in review or not: it is rejected (VER2), and any review
    * requests for it are withdrawn. The check and the change happen under the node's lock, as a
    * commit's do, so an abandon never lands on a version an approval just committed. Returns the
-   * state it leaves, or throws when the version was already settled.
+   * state it leaves, or throws when the version was already settled. With `onlyDrafted`, only a
+   * draft: one resubmitted meanwhile, now in review, is left alone and refused, so a claim on a
+   * draft (the web page replacing one, W3.1) never ends a review someone else started.
    */
-  async abandon(sessionId: string, versionId: string): Promise<VersionState> {
+  async abandon(sessionId: string, versionId: string, opts: { onlyDrafted?: boolean } = {}): Promise<VersionState> {
     const v = await this.version(versionId);
     const s = await this.session(sessionId);
     const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
@@ -3508,6 +3510,7 @@ export class Kolab {
     await this.asSystem(async (tx, signal) => {
       const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
       if (now !== 'drafted' && now !== 'in_review') throw new GateError(`${here} is ${now}; only a draft or a version in review can be abandoned`);
+      if (opts.onlyDrafted && now !== 'drafted') throw new GateError(`${here} is ${now} now, not a draft`);
       await this.rejectIn(tx, signal, v.id, `abandoned by ${s.actor_id}`);
     }, v.node_id);
     return 'rejected';
