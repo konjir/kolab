@@ -107,6 +107,13 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop policy kolab_read on query;
+      create policy kolab_read on query for select to kj_agent
+        using ((kolab_id = (select kj_session_kolab())
+                and (invalidation_id is null or (select kj_session_belongs())))
+               or (kolab_id = any ((select kj_session_readable_kolabs())::text[])
+                   and invalidation_id is null
+                   and exists (select 1 from version v where v.id = query.version_id and v.state = 'committed')));
       alter table query drop constraint query_state_check;
       alter table query add constraint query_state_check check (state in ('open','answered'));
       alter table query drop column asked_version_id;

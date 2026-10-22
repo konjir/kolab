@@ -5,7 +5,8 @@ import { expect, test } from '@jest/globals';
 import { Kolab } from '@konjir/engine';
 import { TEST_KOLAB, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import { nobodyCanReview } from '@konjir/types';
-import { openReviewRequests, submissionsOf } from '../src/views.js';
+import { openReviewRequests, queryDetails, submissionsOf } from '../src/views.js';
+import type { KolabEvent } from '@konjir/types';
 
 /**
  * What production met: Alice, a product owner, has checkout@1 in review, Dave to review it, and an
@@ -147,6 +148,64 @@ test('a version in review that Kolab folds onto its rebase takes its questions t
   expect(await kolab.listQueries({ node: child })).toMatchObject([{ id: q, state: 'open', address: `kj:C@${fold.seq}#Y`, asked_of: `kj:C@${seq}` }]);
 });
 
+test('a question moved off an abandoned version in review never reaches a reader outside the kolab (D49, D58)', async () => {
+  const { kolab, product, dave, agent, spec, v1 } = await specInReview();
+  await kolab.recordReview(dave, v1, { verdict: 'approve' });
+  await kolab.addActor('olga');
+  await kolab.createKolab('elsewhere', { owner: 'olga' });
+  await kolab.grant(TEST_KOLAB, 'olga', 'read');
+  const olga = await kolab.openSession('olga', 'product', { kolab: 'elsewhere' });
+  const before = await kolab.raiseQuery(agent, 'kj:checkout@1#R1', 'Measured from where?');   // asked of a committed version
+
+  const v2 = await kolab.draft(product, spec, { deltas: [{ kind: 'override', element: 'R2', text: 'A failed payment can be retried twice, by the secret fraud rule.' }] });
+  await kolab.review(v2);
+  const moved = await kolab.raiseQuery(agent, 'kj:checkout@2#R2', 'Which secret fraud rule?');
+  await kolab.abandon(product, v2);
+  // It moved, inside the kolab, and says the element's text has changed since it was asked.
+  expect((await kolab.listQueries({ layer: 'functional' })).find((x) => x.id === moved))
+    .toMatchObject({ state: 'open', address: 'kj:checkout@1#R2', asked_of: 'kj:checkout@2', element_changed: true });
+  // Outside, only the question asked of a committed version shows: through the engine, the page's view, and row-level security.
+  expect((await kolab.readNode(olga, 'test/checkout', 1)).queries.map((x) => x.id)).toStrictEqual([before]);
+  expect((await queryDetails(kolab, olga, spec, TEST_KOLAB)).map((x) => x.id)).toStrictEqual([before]);
+  expect((await kolab.readAs(olga, async (x) => (await x.query<{ id: string }>(`select id from query`)).rows)).map((r) => r.id)).toStrictEqual([before]);
+});
+
+test('a question that quoted words moves only if the words are in the target as quoted; otherwise it is withdrawn, saying so', async () => {
+  const { kolab, product, dave, agent, spec, v1 } = await specInReview();
+  await kolab.recordReview(dave, v1, { verdict: 'approve' });
+  const v2 = await kolab.draft(product, spec, { deltas: [{ kind: 'override', element: 'R2', text: 'A failed payment can be retried twice by the customer.' }] });
+  await kolab.review(v2);
+  const kept = await kolab.raiseQuery(agent, 'kj:checkout@2#R2~q({"exact":"A failed payment"})', 'Any failure?');
+  const gone = await kolab.raiseQuery(agent, 'kj:checkout@2#R2~q({"exact":"twice by the customer"})', 'Not the shop?');
+  await kolab.abandon(product, v2);
+  const byId = Object.fromEntries((await kolab.listQueries({ layer: 'functional' })).map((x) => [x.id, x]));
+  expect(byId[kept]).toMatchObject({ state: 'open', address: 'kj:checkout@1#R2~q({"exact":"A failed payment"})', asked_of: 'kj:checkout@2' });
+  expect(byId[gone]).toMatchObject({
+    state: 'withdrawn', address: 'kj:checkout@2#R2~q({"exact":"twice by the customer"})',
+    answer: "withdrawn: checkout@2, which it was asked of, was abandoned, and the words it quoted aren't in kj:checkout@1#R2",
+  });
+});
+
+test('withdrawn with no committed version on its node, a question marks nothing: a mark\'s trigger is always committed', async () => {
+  const { kolab, engineer, dave, agent, v1 } = await specInReview();
+  await kolab.createNode(agent, 'technical_binding', 'Checkout on Postgres', 'checkout-pg');
+  await commitReviewed(kolab, agent, engineer, 'checkout-pg', { elements: els({ b1: 'Payments retry from a queue.' }) });
+  const q = await kolab.raiseQuery(agent, 'kj:checkout@1#R2', 'How many retries?', { from: 'kj:checkout-pg#b1' });
+  await kolab.recordReview(dave, v1, { verdict: 'request_changes', note: 'Say how many.' });
+  expect((await kolab.listQueries({ layer: 'functional' }))[0]).toMatchObject({ id: q, state: 'withdrawn' });
+  expect(await marksOn(kolab, 'checkout-pg')).toStrictEqual([]);
+  expect((await kolab.db.query(`select 1 from invalidation i join version v on v.id = i.triggered_by where v.state <> 'committed'`)).rows).toStrictEqual([]);
+});
+
+test('from must name an element the asker can write: a Read-only member asks without it', async () => {
+  const { kolab, dave, v1 } = await specInReview();
+  await kolab.recordReview(dave, v1, { verdict: 'approve' });
+  const carol = await kolab.openSession('carol', 'product');   // Read only
+  expect(await rejection(kolab.raiseQuery(carol, 'kj:checkout#R2', 'Retries?', { from: 'kj:checkout#R1' })))
+    .toMatch(/AccessError: carol holds Read in kolab test, so from can't name an element of the functional layer: ask without from/);
+  expect(await kolab.raiseQuery(carol, 'kj:checkout#R2', 'Retries?')).toEqual(expect.any(String));
+});
+
 test('a Read-only member of the kolab may ask about a version in review it can read (D58); an outsider can\'t reach it', async () => {
   const { kolab, v1 } = await specInReview();
   const carol = await kolab.openSession('carol', 'product');   // Read only, in the kolab
@@ -215,9 +274,16 @@ test('a review request skips an agent signed in as engineer but reaches a person
   await kolab.openSession('lee', 'engineer');
   expect((await kolab.reviewRequests({ reviewer: 'lee' })).map((r) => r.subject)).toStrictEqual(['kj:checkout@1']);
 
-  // The agent signs in again as product: the request it held shows now, and it may review.
+  // The agent signs in again as product: the request it held shows now, and it may review. Ending
+  // and opening its session tell the layer's inbox and the author's answers, so open pages re-read.
+  const events: KolabEvent[] = [];
+  kolab.onEvent((e) => events.push(e));
   await kolab.endSession({ actor: 'lee-agent' });
   const pm = await kolab.openSession('lee-agent', 'product');
+  expect(events.filter((e) => 'inbox' in e)).toStrictEqual([
+    { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'actor', kolab: 'test', actor: 'pat' },
+    { inbox: 'layer', kolab: 'test', layer: 'functional' }, { inbox: 'actor', kolab: 'test', actor: 'pat' },
+  ]);
   expect((await kolab.reviewRequests({ reviewer: 'lee-agent' })).map((r) => r.subject)).toStrictEqual(['kj:checkout@1']);
   expect((await kolab.recordReview(pm, v1, { verdict: 'approve' })).ok).toBe(true);
 });

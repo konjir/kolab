@@ -1247,9 +1247,10 @@ export class Kolab {
     await this.requireLiveKolab(kolab, 'opens no session');
     const id = newSessionToken();
     try {
-      await this.db.transaction(async (tx) => {
+      await this.inTransaction(async (tx, signal) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
         await insertSession(tx, id, { actor: actorId, role, kolab: kolab! });
+        await this.signalRequestsOf(tx, signal, actorId);
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
         if (!access.level) {
@@ -1278,14 +1279,15 @@ export class Kolab {
   async endSession(which: string | { key: string } | { actor: string }): Promise<string | null> {
     return this.inTransaction(async (tx, signal) => {
       const r = typeof which === 'object' && 'actor' in which
-        ? await tx.query<{ id: string }>(`update session set ended_at = now() where actor_id = $1 and ended_at is null returning id`, [which.actor])
+        ? await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now() where actor_id = $1 and ended_at is null returning id, actor_id`, [which.actor])
         : typeof which === 'string'
           // By its token: a grant's session by its current access token, expired or not, so signing out still works.
-          ? await tx.query<{ id: string }>(`update session s set ended_at = now()
-              where s.ended_at is null and (s.token_key = $1 or (s.token_key is null and s.id = $1)) returning s.id`, [sessionKey(which)])
-          : await tx.query<{ id: string }>(`update session set ended_at = now() where id = $1 and ended_at is null returning id`, [which.key]);
+          ? await tx.query<{ id: string; actor_id: string }>(`update session s set ended_at = now()
+              where s.ended_at is null and (s.token_key = $1 or (s.token_key is null and s.id = $1)) returning s.id, s.actor_id`, [sessionKey(which)])
+          : await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now() where id = $1 and ended_at is null returning id, actor_id`, [which.key]);
       const key = r.rows[0]?.id ?? null;
       if (key) await signal({ session: 'ended', id: key });
+      if (key) await this.signalRequestsOf(tx, signal, r.rows[0].actor_id);
       return key;
     });
   }
@@ -1922,6 +1924,7 @@ export class Kolab {
         [grantId, c.client_id, c.actor_id, c.person_id, c.scope, c.resource, this.oauth.refreshTtlS]);
       await tx.query(`update oauth_code set used_at = now(), grant_id = $2 where key = $1`, [key, grantId]);
       const session = await insertSession(tx, access, { actor: c.actor_id, role: c.role, kolab: c.kolab, grant: grantId, ttlS: this.oauth.accessTtlS });
+      await this.signalRequestsOf(tx, signal, c.actor_id);
       if (!(await accessIn(tx, c.actor_id, c.kolab)).level) throw new OAuthGrantError('access_denied', `${c.actor_id} can no longer reach kolab ${c.kolab}`);
       await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
         [sessionKey(refresh), grantId, this.oauth.refreshTtlS]);
@@ -1998,8 +2001,9 @@ export class Kolab {
   private async revokeGrant(grantId: string): Promise<void> {
     await this.inTransaction(async (tx, signal) => {
       await tx.query(`update oauth_grant set revoked_at = coalesce(revoked_at, now()) where id = $1`, [grantId]);
-      for (const { id } of (await tx.query<{ id: string }>(`update session set ended_at = now() where grant_id = $1 and ended_at is null returning id`, [grantId])).rows) {
+      for (const { id, actor_id } of (await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now() where grant_id = $1 and ended_at is null returning id, actor_id`, [grantId])).rows) {
         await signal({ session: 'ended', id });
+        await this.signalRequestsOf(tx, signal, actor_id);
       }
     });
   }
@@ -2719,6 +2723,7 @@ export class Kolab {
       // A grant's session moves with its grant (D55): the new one carries it, with a fresh access token, so the refresh token keeps working.
       await insertSession(tx, token, { actor: old.actor_id, role: to.role, kolab: to.kolab, grant: old.grant_id, ttlS: this.oauth.accessTtlS });
       await signal({ session: 'ended', id: old.id });
+      await this.signalRequestsOf(tx, signal, old.actor_id);
     });
     return token;
   }
@@ -3268,6 +3273,21 @@ export class Kolab {
         order by a.id`,
       [v.kolab_id, v.actor_id, v.layer]);
     return r.rows.map((x) => x.id);
+  }
+
+  /**
+   * Signals the inboxes where `actor`'s open review requests wait, and their authors' answers: a
+   * session of its that opens, ends or changes role decides which of them show (D65,
+   * shownRequests), so an open page or channel re-reads them. In the caller's transaction.
+   */
+  private async signalRequestsOf(tx: Q, signal: Signal, actor: string) {
+    const r = await tx.query<{ kolab_id: string; layer: Layer; author: string }>(
+      `select distinct v.kolab_id, v.layer, v.actor_id as author from review_request r join version v on v.id = r.version_id
+        where r.reviewer_id = $1 and r.state = 'open' and v.state = 'in_review' order by 1, 2, 3`, [actor]);
+    for (const x of r.rows) {
+      await signal({ inbox: 'layer', kolab: x.kolab_id, layer: x.layer });
+      await signal({ inbox: 'actor', kolab: x.kolab_id, actor: x.author });
+    }
   }
 
   /**
@@ -4995,8 +5015,14 @@ export class Kolab {
       await this.nodeIn(sessionId, f, 'waiting on an answer');
       const fr = await this.resolve(f, { session: sessionId });
       if (!fr.versionId || fr.status === 'orphan') throw new Error(`from ${formatAddress(f)} does not resolve`);
-      if ((await this.version(fr.versionId)).layer !== LAYER_OF_ROLE[s.active_role]) {
+      const fromLayer = (await this.version(fr.versionId)).layer;
+      if (fromLayer !== LAYER_OF_ROLE[s.active_role]) {
         throw new RoleError(`from must be an element of your own layer (${LAYER_OF_ROLE[s.active_role]})`);
+      }
+      // An element that waits on the answer is one the asker could change: Write on its layer, in
+      // its kolab. A reader can ask, but can't mark anyone's element with its words (D65).
+      if (!s.access.layers.includes(fromLayer)) {
+        throw new AccessError(`${s.actor_id} holds ${describeAccess(s.access)} in kolab ${s.kolab}, so from can't name an element of the ${fromLayer} layer: ask without from`);
       }
       from = { version: fr.versionId, element: f.element ?? null };
     }
@@ -5090,8 +5116,8 @@ export class Kolab {
   private async settleQuestionsIn(tx: Q, signal: Signal, versionId: string, into?: string) {
     const v = (await tx.query<VersionRow & { review_note: string | null }>(`select * from version where id = $1`, [versionId])).rows[0];
     if (!v || v.state === 'committed' || v.state === 'in_review') return;
-    const qs = (await tx.query<{ id: string; element_id: string | null; state: QueryState; kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null }>(
-      `select id, element_id, state, kind, question, raised_by, from_version_id, from_element_id from query
+    const qs = (await tx.query<{ id: string; element_id: string | null; selector: QuoteSelector | null; state: QueryState; kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null }>(
+      `select id, element_id, selector, state, kind, question, raised_by, from_version_id, from_element_id from query
         where version_id = $1 and invalidation_id is null order by id for update`, [versionId])).rows;
     if (!qs.length) return;
     const target = into ?? (await tx.query<{ id: string }>(
@@ -5099,15 +5125,22 @@ export class Kolab {
       ?? (await tx.query<{ id: string }>(`select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [v.node_id])).rows[0]?.id;
     const name = await nameIn(tx, v.node_id);
     const left = v.state === 'drafted' ? 'was returned to its author as a draft' : v.review_note?.startsWith('abandoned') ? 'was abandoned' : 'was rejected';
+    const els = target ? await this.elements(target, tx) : [];
+    const targetSeq = target ? (await tx.query<{ seq: number }>(`select seq from version where id = $1`, [target])).rows[0].seq : undefined;
     for (const q of qs) {
-      const there = target !== undefined && (q.element_id === null
-        || (await tx.query(`select 1 from element where version_id = $1 and element_id = $2`, [target, q.element_id])).rows.length > 0);
-      if (there) {
+      // It moves only if what it asked about is there as asked: the element, and the words it
+      // quoted word for word. A quote of words only the version in review had is never carried
+      // to a committed version (D49), so such a question is withdrawn instead.
+      const why = !target ? `${name} has no committed version`
+        : q.element_id !== null && !els.some((e) => e.element_id === q.element_id) ? `${q.element_id} isn't in ${name}'s latest committed version`
+        : resolveInElements(els, q.element_id, q.selector).status !== 'ok' ? `the words it quoted aren't in ${formatAddress({ node: name, version: targetSeq, element: q.element_id ?? undefined })}`
+        : undefined;
+      if (!why) {
         await tx.query(`update query set version_id = $2, asked_version_id = coalesce(asked_version_id, $3) where id = $1`, [q.id, target, v.id]);
       } else if (q.state === 'open') {
-        const why = `withdrawn: ${name}@${v.seq}, which it was asked of, ${left}, and ${target ? `${q.element_id} isn't in ${name}'s latest committed version` : `${name} has no committed version`}`;
-        await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`, [q.id, why]);
-        if (q.kind === 'question' && q.from_version_id) await this.markAsker(tx, signal, q, v, why, 'withdrawn');
+        const why2 = `withdrawn: ${name}@${v.seq}, which it was asked of, ${left}, and ${why}`;
+        await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`, [q.id, why2]);
+        if (q.kind === 'question' && q.from_version_id) await this.markAsker(tx, signal, q, v, why2, 'withdrawn');
       } else continue;
       if (q.raised_by) await signal({ inbox: 'actor', kolab: v.kolab_id, actor: q.raised_by });
     }
@@ -5119,7 +5152,9 @@ export class Kolab {
    * version (the draft it was asked from may have committed, or been
    * superseded since). If the element is gone, the asker still sees the
    * answer through list_queries mine=true. In the answer's transaction.
-   * `outcome` says what came of it: answered, or withdrawn (D65).
+   * `outcome` says what came of it: answered, or withdrawn (D65). A mark's trigger is always a
+   * committed version: if the node asked about has none yet (a first version, asked of in review),
+   * no mark is raised, and the asker still has the outcome in its answers.
    */
   private async markAsker(tx: Q, signal: Signal,
     q: { element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
@@ -5129,11 +5164,13 @@ export class Kolab {
     const fromNode = (await tx.query<{ node_id: string }>(`select node_id from version where id = $1`, [q.from_version_id])).rows[0].node_id;
     const live = await latest(fromNode) ?? q.from_version_id!;
     if (q.from_element_id && !(await tx.query(`select 1 from element where version_id = $1 and element_id = $2`, [live, q.from_element_id])).rows.length) return;
+    const trigger = await latest(asked.node_id);
+    if (!trigger) return;
     const askedName = (await tx.query<{ name: string }>(`select name from node where id = $1`, [asked.node_id])).rows[0].name;
     const on = formatAddress({ node: askedName, element: q.element_id ?? undefined });
     await this.markIn(tx, signal, {
       version_id: live, element_id: q.from_element_id, reason: 'query_answered',
-      triggered_by: await latest(asked.node_id) ?? asked.id,
+      triggered_by: trigger,
       note: outcome === 'answered' ? `${on}: you asked "${q.question}"; answered: "${answer}"` : `${on}: you asked "${q.question}"; ${answer}`,
     });
   }
@@ -5587,11 +5624,15 @@ export class Kolab {
       id: string; kind: QueryKind; node: string; seq: number; element_id: string | null; kolab_id: string;
       selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
       raised_by: string | null; mark: string | null; from_node: string | null; from_kolab: string | null; from_seq: number | null; from_element_id: string | null;
-      asked_seq: number | null;
+      asked_seq: number | null; changed: boolean; asked_committed: boolean;
     }>(
       `select q.id, q.kind, n.name as node, v.seq, q.element_id, q.kolab_id, q.selector, q.question, q.state, q.answer, q.answered_by,
               q.raised_by, q.invalidation_id as mark, fn.name as from_node, fn.kolab_id as from_kolab, fv.seq as from_seq, q.from_element_id,
-              av.seq as asked_seq
+              av.seq as asked_seq,
+              (q.asked_version_id is null or exists (select 1 from version a where a.id = q.asked_version_id and a.state = 'committed')) as asked_committed,
+              (av.id is not null and q.element_id is not null
+               and (select e.text from element e where e.version_id = av.id and e.element_id = q.element_id)
+                   is distinct from (select e.text from element e where e.version_id = q.version_id and e.element_id = q.element_id)) as changed
          from query q join version v on v.id = q.version_id
          join node n on n.id = v.node_id
          left join version fv on fv.id = q.from_version_id
@@ -5608,7 +5649,8 @@ export class Kolab {
     // and rulings stay private, and never which element of its asked. Row-level security holds
     // kj_agent to the first too (0016).
     const outside = (r: { kolab_id: string }) => filter.from !== undefined && r.kolab_id !== filter.from;
-    return rows.filter((r) => !(outside(r) && r.mark)).map((r) => ({
+    // Nor one asked of a version that never committed, though it has moved to one since (D65; 0023).
+    return rows.filter((r) => !(outside(r) && (r.mark || !r.asked_committed))).map((r) => ({
       id: r.id, kind: r.kind,
       address: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }, { from: filter.from ?? r.kolab_id }),
       question: r.question, state: r.state, answer: r.answer, answered_by: r.answered_by, raised_by: r.raised_by,
@@ -5616,6 +5658,7 @@ export class Kolab {
       mark: r.mark,
       // The version in review it was asked of, if it has moved since (D65): never told outside its kolab.
       ...(r.asked_seq !== null && !outside(r) ? { asked_of: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.asked_seq }, { from: filter.from ?? r.kolab_id }) } : {}),
+      ...(r.changed && !outside(r) ? { element_changed: true } : {}),
     }));
   }
 
