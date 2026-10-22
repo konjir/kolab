@@ -417,7 +417,7 @@ test('the backoff returns to its first step only after a stream that lived stead
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'pm' });
   const { token } = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string };
   // Each listen stream is cut by the "network" after its lifetime here: three short, one long, then short again.
-  const lifetimes = [50, 50, 50, 600, 50];
+  const lifetimes = [50, 50, 50, 1200, 50];
   const starts: number[] = [];
   const ends: number[] = [];
   const cut: typeof fetch = async (input, init) => {
@@ -434,17 +434,18 @@ test('the backoff returns to its first step only after a stream that lived stead
     });
     return new Response(body, { status: res.status, headers: res.headers });
   };
-  const bridge = new KolabBridge({ url: server.url, token, fetch: cut as never, forward: async () => undefined, log: () => undefined, backoff: { initialMs: 100, maxMs: 5000, steadyMs: 400 } });
+  const bridge = new KolabBridge({ url: server.url, token, fetch: cut as never, forward: async () => undefined, log: () => undefined, backoff: { initialMs: 200, maxMs: 5000, steadyMs: 800 } });
   closeAtEnd({ close: () => bridge.stop() });
   bridge.start();
   await until('five streams', () => starts.length >= 5 || undefined, 20_000);
   await bridge.stop();
-  // The gap after a stream's end is the delay plus a reconnect: 100, 200 and 400 ms after the short ones, 100 after the long one.
+  // The gap after a stream's end is the delay plus a reconnect: 200, 400 and 800 ms after the short ones, 200 after the long one.
+  // The steps are wide enough that a reconnect slowed by a busy machine (CI runs the projects in parallel) doesn't blur them.
   const gap = (i: number) => starts[i + 1] - ends[i];
-  expect(gap(1)).toBeGreaterThanOrEqual(190);
-  expect(gap(2)).toBeGreaterThanOrEqual(390);
-  expect(gap(3)).toBeLessThan(gap(2) - 150);
-  expect(gap(3)).toBeGreaterThanOrEqual(95);
+  expect(gap(1)).toBeGreaterThanOrEqual(390);
+  expect(gap(2)).toBeGreaterThanOrEqual(790);
+  expect(gap(3)).toBeLessThan(gap(2) - 300);
+  expect(gap(3)).toBeGreaterThanOrEqual(195);
   await server.close();
 }, 60_000);
 
