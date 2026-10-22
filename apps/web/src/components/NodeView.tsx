@@ -45,9 +45,14 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
     let live = true;
     const path = kolab ? `kolabs/${encodeURIComponent(kolab)}/nodes/${encodeURIComponent(name)}` : `nodes/${encodeURIComponent(name)}`;
     api<WebNodeView>(`${path}${version ? `?version=${version}` : ''}`)
+      // Nothing committed yet: read the version waiting instead, so its requirements aren't missing.
+      .then((v) => {
+        const waiting = !version && !kolab && v.reading === null ? pendingSeq(v, me.actor) : undefined;
+        return waiting === undefined ? v : api<WebNodeView>(`${path}?version=${waiting}`);
+      })
       .then((v) => { if (live) { setView(v); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
-  }, [kolab, name, version, tick]);
+  }, [kolab, name, version, tick, me.actor]);
   useEffect(() => { setDraft(EMPTY); setEditing(undefined); setAsking(undefined); setNotice(undefined); setCasing(undefined); setRuling(undefined); }, [name, kolab]);
   useEffect(() => {
     if (!focus || !view) return;
@@ -63,7 +68,9 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const inReview = view.in_review[0];
   const mineInReview = view.in_review.find((r) => r.author === me.actor);
   const foreign = view.foreign;
-  const writable = !foreign && view.can_write && (isLatest || latest === null) && !mineInReview;
+  /** A version not committed (in review, or a draft): read as asked, or because nothing is committed yet. */
+  const uncommitted = !!reading && reading.state !== 'committed';
+  const writable = !foreign && view.can_write && (isLatest || (latest === null && !uncommitted)) && !mineInReview;
   // Case files and rulings are for those who belong to the kolab's work (D49); a ruling, for a
   // person with Write on the layer, from its role (D51): Kolab decides, the page only offers.
   const committed = reading?.state === 'committed';
@@ -71,7 +78,8 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const canRule = !foreign && view.can_write && me.kind === 'person' && committed;
   const whyNot = !view.can_write
     ? (view.node.layer === 'functional' ? 'Engineers can’t change intent. Ask the spec instead.' : 'Product can’t change implementation. Ask the binding instead.')
-    : mineInReview ? `Version ${mineInReview.seq} is in review. Edits wait until it is decided.` : '';
+    : mineInReview ? `Version ${mineInReview.seq} is in review. Edits wait until it is decided.`
+    : uncommitted && latest === null ? `Version ${reading?.seq} is ${reading?.state === 'in_review' ? 'in review' : 'a draft'}. Edits wait until it is decided.` : '';
   const changes = Object.keys(draft.changes).length + draft.added.length + draft.removed.length + draft.unlinked.length;
   const compared = view.compared_with && (!isLatest || reading?.state !== 'committed')
     ? new Map(view.compared_with.elements.map((e) => [e.id, e.text])) : undefined;
@@ -146,6 +154,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
               ? <>Version {reading.seq}{reading.state === 'committed' ? `, committed by ${reading.author}` : reading.state === 'in_review' ? `, in review, by ${reading.author}` : `, your draft`} {ago(reading.at)}{reading.note ? ` · ${reading.note}` : ''}</>
               : 'Nothing committed yet.'}
             {reading && !isLatest && reading.state === 'committed' && <span className="reading-old"> · An older version. Read only.</span>}
+            {uncommitted && <span className="reading-old"> · Not committed yet{latest === null ? ': nothing is, so this is the version waiting' : ''}. Nothing changes for anyone until it’s approved.</span>}
             {view.versions.length > 0 && (
               <div className="versions" role="group" aria-label="Versions">
                 {view.versions.map((v) => (
@@ -191,7 +200,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       {writable && <div className="edit-row"><button type="button" className="btn" onClick={add}>Add {view.node.layer === 'functional' ? 'a requirement' : 'an element'}</button>
         <button type="button" className="btn quiet" onClick={() => setAsking(asking === null ? undefined : null)}>Ask about {addr(name)}</button>
         {canRule && <button type="button" className="btn quiet" onClick={() => setRuling(ruling === null ? undefined : null)}>Rule on {addr(name)}</button>}</div>}
-      {!writable && whyNot && isLatest && !foreign && <p className="why-not">{whyNot}</p>}
+      {!writable && whyNot && (isLatest || (uncommitted && latest === null)) && !foreign && <p className="why-not">{whyNot}</p>}
       {ruling === null && reading && <DirectRuleForm name={name} seq={reading.seq} act={act} onDone={() => setRuling(undefined)} />}
       {asking === null && <AskForm name={name} seq={reading?.seq} element={undefined} layer={view.node.layer} act={act} onDone={() => setAsking(undefined)} />}
 
@@ -207,7 +216,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
         </div>
       ))}
 
-      {inReview && <ReviewBar name={name} review={inReview} mine={inReview.author === me.actor} reading={reading?.seq}
+      {inReview && <ReviewBar name={name} review={inReview} mine={inReview.author === me.actor} reading={reading?.seq} committed={latest}
         read={read} onVerdict={verdict} onAbandon={() => versionVerb(inReview.seq, 'abandon', `Abandoned ${addr(name, inReview.seq)}`)} />}
       {!inReview && changes > 0 && (
         <div className="draftbar" role="region" aria-label="Draft">
@@ -218,6 +227,17 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       )}
     </>
   );
+}
+
+/**
+ * The version to show when nothing is committed yet: the session's own in review, then its own
+ * draft, then the newest in review. Undefined when there is none.
+ */
+function pendingSeq(v: WebNodeView, actor: string): number | undefined {
+  const newest = (seqs: number[]) => (seqs.length ? Math.max(...seqs) : undefined);
+  return newest(v.in_review.filter((r) => r.author === actor).map((r) => r.seq))
+    ?? newest(v.drafts.map((d) => d.seq))
+    ?? newest(v.in_review.map((r) => r.seq));
 }
 
 const asElement = (name: string) => (a: { id: string; text: string }): WebElement =>
@@ -329,8 +349,10 @@ function AskForm({ name, seq, element, act, onDone }: { name: string; seq?: numb
   );
 }
 
-function ReviewBar({ name, review, mine, reading, read, onVerdict, onAbandon }: {
+function ReviewBar({ name, review, mine, reading, committed, read, onVerdict, onAbandon }: {
   name: string; review: WebNodeView['in_review'][number]; mine: boolean; reading?: number;
+  /** The latest committed version, which the page shows unless asked for another. */
+  committed: number | null;
   read(v?: number): void; onVerdict(seq: number, v: 'approve' | 'request_changes', note?: string): void; onAbandon(): void;
 }) {
   const [note, setNote] = useState('');
@@ -338,7 +360,11 @@ function ReviewBar({ name, review, mine, reading, read, onVerdict, onAbandon }: 
   const who = review.reviewers.length ? review.reviewers.join(', ') : 'its reviewers';
   return (
     <div className="draftbar" role="region" aria-label="In review">
-      <span className="what"><span className="drafted">In review</span> · Version {review.seq} of {addr(name)}, submitted by {review.author} {ago(review.at)}, waits for {who}. Nothing changes for anyone until one approves.</span>
+      <span className="what"><span className="drafted">In review</span> · {committed !== null && reading === committed && reading !== review.seq ? (
+        <>The changes are in <a href={`#/node/${name}@${review.seq}`} onClick={(e) => { e.preventDefault(); read(review.seq); }}>v{review.seq}</a>, submitted by {review.author} {ago(review.at)}. This page shows v{committed}, the committed version. v{review.seq} waits for {who}; nothing changes for anyone until one approves.</>
+      ) : (
+        <>Version {review.seq} of {addr(name)}, submitted by {review.author} {ago(review.at)}, waits for {who}. Nothing changes for anyone until one approves.</>
+      )}</span>
       {reading !== review.seq && <button type="button" className="btn quiet" onClick={() => read(review.seq)}>Read v{review.seq}</button>}
       {mine && <button type="button" className="btn quiet" onClick={onAbandon}>Abandon</button>}
       {review.for_me && (asking ? (

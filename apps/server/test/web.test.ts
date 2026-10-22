@@ -315,12 +315,18 @@ test('the server serves the built pages at the root, with their security headers
   mkdirSync(join(root, 'assets'));
   writeFileSync(join(root, 'index.html'), '<!doctype html><title>Kolab</title>');
   writeFileSync(join(root, 'assets', 'app-abc123.js'), 'console.log(1)');
+  writeFileSync(join(root, 'assets', 'face-abc123.woff2'), 'wOF2');
   const { kolab } = await setup();
   const base = await serve(kolab, { webRoot: root });
 
   const page = await fetch(`${base}/`, { headers: { accept: 'text/html' } });
   expect([page.status, await page.text()]).toStrictEqual([200, '<!doctype html><title>Kolab</title>']);
-  expect(page.headers.get('content-security-policy')).toContain("script-src 'self'");
+  // Everything is Kolab's own: fonts are files it serves (font-src 'self', no data:), which the
+  // web build keeps so (apps/web/vite.config.ts fails a build that inlines one).
+  expect(page.headers.get('content-security-policy')).toBe([
+    "default-src 'self'", "script-src 'self'", "style-src 'self'", "font-src 'self'",
+    "img-src 'self' data:", "connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
+  ].join('; '));
   expect(page.headers.get('x-frame-options')).toBe('DENY');
   // A referrer for Kolab alone: never no-referrer, under which a browser may send the page's own
   // changes with Origin: null, which /api refuses (apps/web/e2e/sign-in.spec.ts, in Chromium).
@@ -329,6 +335,8 @@ test('the server serves the built pages at the root, with their security headers
   expect(await deep.text()).toContain('<title>Kolab</title>');
   const asset = await fetch(`${base}/assets/app-abc123.js`);
   expect([asset.status, asset.headers.get('cache-control')]).toStrictEqual([200, 'public, max-age=31536000, immutable']);
+  const font = await fetch(`${base}/assets/face-abc123.woff2`);
+  expect([font.status, font.headers.get('content-type'), font.headers.get('content-security-policy')]).toStrictEqual([200, 'font/woff2', page.headers.get('content-security-policy')]);
   expect((await fetch(`${base}/assets/missing.js`)).status).toBe(404);
   const api = await fetch(`${base}/api/nowhere`, { headers: { accept: 'text/html' } });
   expect([api.status, await api.text()]).toStrictEqual([404, expect.not.stringContaining('<title>')]);
