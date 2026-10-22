@@ -121,6 +121,37 @@ test('a reviewer asked to review a version approves it, or requests changes with
   expect(calls.find((c) => c.method === 'POST')).toStrictEqual({ url: '/api/nodes/password-reset/versions/4/review', method: 'POST', body: { verdict: 'request_changes', note: 'Split PR8.' } });
 });
 
+test('a new spec submitted for review shows its version in review, not an empty page', async () => {
+  const review = { seq: 1, author: 'lee', at, reviewers: ['pat'], for_me: false };
+  const v1 = { seq: 1, state: 'in_review' as const, author: 'lee', role: 'product', at, note: null, mine: true };
+  const node = { ...spec().node, latest: null, in_review: 1 };
+  replies['/api/nodes/password-reset?version=1'] = spec({ node, reading: v1, versions: [v1], in_review: [review] });
+  view(lee, spec({ node, reading: null, versions: [v1], elements: [], in_review: [review] }));
+  expect(await screen.findByText(/^At most 3 reset requests per hour/)).toBeTruthy();
+  expect(calls.map((c) => c.url)).toStrictEqual(['/api/nodes/password-reset', '/api/nodes/password-reset?version=1']);
+  expect(screen.queryByText(/No requirements yet/)).toBeNull();
+  expect(screen.getByText(/Version 1, in review, by lee/)).toBeTruthy();
+  expect(screen.getByText(/Not committed yet: nothing is, so this is the version waiting/)).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'In review' }).textContent).toMatch(/Version 1 of kj:password-reset, submitted by lee/);
+  // Not editable while it waits: an edit would be made on top of nothing committed.
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Add a requirement' })).toBeNull();
+});
+
+test('a committed spec with a newer version in review still reads the committed one, and says where the changes are', async () => {
+  const read = jest.fn();
+  replies['/api/nodes/password-reset'] = spec({ in_review: [{ seq: 4, author: 'pm-agent', at, reviewers: ['pat'], for_me: false }] });
+  render(<NodeView me={lee} name="password-reset" tick={0} act={runner} go={() => undefined} read={read} />);
+  expect(await screen.findByText(/^At most 3 reset requests per hour/)).toBeTruthy();
+  expect(screen.getByText(/Version 3, committed by Lee/)).toBeTruthy();
+  const bar = screen.getByRole('region', { name: 'In review' });
+  expect(bar.textContent).toMatch(/The changes are in v4, submitted by pm-agent .*This page shows v3, the committed version\. v4 waits for pat/);
+  const link = screen.getByRole('link', { name: 'v4' });
+  expect(link.getAttribute('href')).toBe('#/node/password-reset@4');
+  fireEvent.click(link);
+  expect(read).toHaveBeenCalledWith(4);
+});
+
 test('an engineer reading the spec may ask, not edit', async () => {
   view(eng, spec({ can_write: false }));
   await screen.findByText(/Engineers can’t change intent/);

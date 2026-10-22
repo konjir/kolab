@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 /**
@@ -14,10 +14,29 @@ const proxy = {
     p.on('proxyReq', (r) => r.setHeader('origin', target)),
 };
 
+/** Fonts, which the page's Content-Security-Policy (`font-src 'self'`, apps/server/src/web/static.ts) loads only as files. */
+const FONT = /\.(woff2?|ttf|otf|eot)$/i;
+
+/** Fails the build if a stylesheet still carries a font inline, which that policy would block. */
+const noInlineFonts = (): Plugin => ({
+  name: 'konjir:no-inline-fonts',
+  generateBundle(_, bundle) {
+    for (const f of Object.values(bundle)) {
+      if (f.type === 'asset' && f.fileName.endsWith('.css') && /data:(font\/|application\/(x-)?font)/.test(String(f.source))) {
+        this.error(`${f.fileName} inlines a font as a data: URI, which font-src 'self' blocks. Serve it as a file.`);
+      }
+    }
+  },
+});
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), noInlineFonts()],
   // @konjir/types is read from its TypeScript source, as the rest of the workspace reads it.
   resolve: { conditions: ['@konjir/source'] },
-  build: { outDir: 'dist', emptyOutDir: true, sourcemap: false, target: 'es2022' },
+  build: {
+    outDir: 'dist', emptyOutDir: true, sourcemap: false, target: 'es2022',
+    // Vite inlines small assets as data: URIs; a font must stay a file of Kolab's own (font-src 'self').
+    assetsInlineLimit: (file) => (FONT.test(file) ? false : undefined),
+  },
   server: { proxy: { '/api': proxy } },
 });
