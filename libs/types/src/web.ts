@@ -61,6 +61,8 @@ export interface WebVersion {
   seq: number; state: VersionState; author: string; role: string;
   /** When the version was written (drafted), ISO 8601. Kolab doesn't record commit times yet. */
   at: string; note: string | null; mine: boolean;
+  /** The committed version it was built on, null for none; absent where the read doesn't say. */
+  base?: number | null;
 }
 
 export interface WebLink {

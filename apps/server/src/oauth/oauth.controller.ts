@@ -430,7 +430,7 @@ export class OAuthController {
     if (!pending?.person) return this.stopped(res, { binding }, id);
     const client = await this.client(pending.clientId, '');
     const web = pending.clientId === WEB_CLIENT;
-    const { kolabs, agents, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null });
+    const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
     // An invite the person opened is what they came for: offered first (W3.4). Someone new, with no
@@ -439,8 +439,10 @@ export class OAuthController {
       kolab: invite ? undefined : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? `kolab:${pre.kolab}` : undefined, role: pre.role,
       // Who the client works as, only among the person's own choices: an agent the scope names that
       // isn't a live agent of theirs is ignored, never shown and never honoured (D59). Never
-      // Yourself: no client preselects the person, who chooses that by hand (D60).
-      as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : undefined,
+      // Yourself: no client preselects the person, who chooses that by hand (D60). Without one named,
+      // the agent this client was last granted, signing in again; a client new to the person gets a
+      // new agent, never one of theirs that may be signed in elsewhere, whose session it would end (ENF4).
+      as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : lastAgent ? `agent:${lastAgent}` : 'new-agent',
       newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
     };
     // The form leads on to the client's redirect URI, Allow and Deny alike, so the page's
@@ -448,7 +450,7 @@ export class OAuthController {
     const target = formActionSource(pending.redirectUri);
     sendPage(res, status, 'Sign in', consentPage({
       signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
-      kolabs, agents: web ? [] : agents, pick, error: extra.error, invite,
+      kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
     }), { formTargets: target ? [target] : [] });
   }
 

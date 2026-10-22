@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome } from '@konjir/types';
+import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebVersion } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
@@ -11,8 +11,12 @@ const KIND_WORD: Record<string, string> = {
   wbs: 'Plan', work_package: 'Work package', implementation: 'Implementation',
 };
 
-/** Edits not yet submitted: kept in the page, per node, until submitted or discarded. */
-interface Draft { changes: Record<string, string>; added: { id: string; text: string }[]; removed: string[]; unlinked: string[]; replaces?: number }
+/**
+ * Edits not yet submitted: kept in the page, per node, until submitted or discarded. `replaces` is
+ * the session's own draft that came back with changes requested, being edited: its changes are the
+ * edits, made on the version it was built on, and submitting them replaces it with a new version.
+ */
+interface Draft { changes: Record<string, string>; added: { id: string; text: string; parent?: string }[]; removed: string[]; unlinked: string[]; replaces?: number }
 const EMPTY: Draft = { changes: {}, added: [], removed: [], unlinked: [] };
 
 export interface NodeViewProps {
@@ -36,23 +40,34 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [editing, setEditing] = useState<string>();
   const [asking, setAsking] = useState<string | null>();
-  const [notice, setNotice] = useState<WebOutcome & { node: string }>();
+  const [notice, setNotice] = useState<Outcome>();
   /** The element a case file is being opened on, or a ruling given on (null: the whole node). */
   const [casing, setCasing] = useState<string>();
   const [ruling, setRuling] = useState<string | null>();
 
+  const revising = draft.replaces !== undefined;
   useEffect(() => {
     let live = true;
     const path = kolab ? `kolabs/${encodeURIComponent(kolab)}/nodes/${encodeURIComponent(name)}` : `nodes/${encodeURIComponent(name)}`;
     api<WebNodeView>(`${path}${version ? `?version=${version}` : ''}`)
       // Nothing committed yet: read the version waiting instead, so its requirements aren't missing.
+      // Not while a returned draft is being edited: its edits are made on nothing, and shown as added.
       .then((v) => {
-        const waiting = !version && !kolab && v.reading === null ? pendingSeq(v, me.actor) : undefined;
+        const waiting = !version && !kolab && !revising && v.reading === null ? pendingSeq(v, me.actor) : undefined;
         return waiting === undefined ? v : api<WebNodeView>(`${path}?version=${waiting}`);
       })
       .then((v) => { if (live) { setView(v); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
-  }, [kolab, name, version, tick, me.actor]);
+  }, [kolab, name, version, tick, me.actor, revising]);
+  // A submission's notice follows its version as the page re-reads it (each change Kolab signals):
+  // in review until it commits, comes back with changes requested, or is abandoned.
+  useEffect(() => {
+    if (!view || view.node.name !== notice?.node || !notice.in_review) return;
+    const now = view.versions.find((v) => v.seq === notice.seq);
+    // Missing from a read made before the submission landed says nothing: gone only once seen in review.
+    if (now?.state === 'in_review') { if (!notice.seen) setNotice({ ...notice, seen: true }); }
+    else if (now || notice.seen) setNotice(settled(notice, now));
+  }, [view, notice]);
   useEffect(() => { setDraft(EMPTY); setEditing(undefined); setAsking(undefined); setNotice(undefined); setCasing(undefined); setRuling(undefined); }, [name, kolab]);
   useEffect(() => {
     if (!focus || !view) return;
@@ -112,7 +127,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       base: view.node.latest,
       changes: [
         ...Object.entries(draft.changes).map(([element, text]) => ({ kind: 'override' as const, element, text })),
-        ...draft.added.map((a) => ({ kind: 'add' as const, element: a.id, text: a.text })),
+        ...draft.added.map((a) => ({ kind: 'add' as const, element: a.id, text: a.text, ...(a.parent ? { parent: a.parent } : {}) })),
         ...draft.removed.map((element) => ({ kind: 'remove' as const, element })),
       ],
       ...(draft.unlinked.length ? { unlink: draft.unlinked } : {}),
@@ -134,6 +149,26 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       read(undefined);
     }
   };
+  /**
+   * Edits a draft of the session's own that came back: its changes, against the version it was
+   * built on, become the page's edits, to change further and resubmit. Only one built on the live
+   * version: on an older one, its edits would undo what committed since.
+   */
+  const revise = (d: WebVersion) => act.run(async () => {
+    const v = await api<WebNodeView>(`nodes/${encodeURIComponent(name)}?version=${d.seq}`);
+    const on = v.compared_with?.seq ?? null;
+    if (on !== latest) throw new Error(`${addr(name, d.seq)} was drafted on ${on === null ? 'nothing committed' : `v${on}`}, and v${latest} is committed now. Resubmit it as it is, and Kolab brings it up to date, or abandon it.`);
+    const before = new Map((v.compared_with?.elements ?? []).map((e) => [e.id, e.text]));
+    const kept = new Set(v.elements.map((e) => e.id));
+    setDraft({
+      changes: Object.fromEntries(v.elements.filter((e) => before.has(e.id) && before.get(e.id) !== e.text).map((e) => [e.id, e.text])),
+      added: v.elements.filter((e) => !before.has(e.id)).map((e) => ({ id: e.id, text: e.text, ...(e.parent ? { parent: e.parent } : {}) })),
+      removed: [...before.keys()].filter((id) => !kept.has(id)),
+      unlinked: [], replaces: d.seq,
+    });
+    setEditing(undefined);
+    if (version !== undefined) read(undefined);
+  }, `Editing ${addr(name, d.seq)}. Resubmitting puts your edits in a new version in its place.`);
   const versionVerb = (seq: number, verb: 'resubmit' | 'abandon', done: string) =>
     act.run(async () => {
       const out = await api<WebOutcome | { state: string }>(`nodes/${encodeURIComponent(name)}/versions/${seq}/${verb}`, {});
@@ -204,25 +239,34 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       {ruling === null && reading && <DirectRuleForm name={name} seq={reading.seq} act={act} onDone={() => setRuling(undefined)} />}
       {asking === null && <AskForm name={name} seq={reading?.seq} element={undefined} layer={view.node.layer} act={act} onDone={() => setAsking(undefined)} />}
 
-      {view.drafts.map((d) => (
-        <div key={d.seq} className="notice" role="region" aria-label={`Your draft ${d.seq}`}>
-          <h2><span className="drafted">Your draft</span> <Addr>{addr(name, d.seq)}</Addr></h2>
-          <p>{d.note ? `It came back: ${d.note}` : 'Not submitted yet.'} Resubmit it as it is, or abandon it and edit afresh.</p>
-          <div className="edit-row">
-            <button type="button" className="btn quiet" onClick={() => read(d.seq)}>Read it</button>
-            <button type="button" className="btn" onClick={() => versionVerb(d.seq, 'abandon', `Abandoned ${addr(name, d.seq)}`)}>Abandon</button>
-            <button type="button" className="btn primary" onClick={() => versionVerb(d.seq, 'resubmit', `Resubmitted ${addr(name, d.seq)}`)}>Resubmit</button>
+      {view.drafts.map((d) => {
+        const editable = !foreign && view.can_write && !mineInReview && (d.base === undefined || d.base === latest);
+        return draft.replaces === d.seq ? (
+          <div key={d.seq} className="notice" role="region" aria-label={`Your draft ${d.seq}`}>
+            <h2><span className="drafted">Editing your draft</span> <Addr>{addr(name, d.seq)}</Addr></h2>
+            <p>{d.note ? `It came back: ${d.note}` : 'Not submitted yet.'} Its changes are marked draft above: edit, add or remove, then resubmit. Your edits go in a new version, and {addr(name, d.seq)} is abandoned in its place.</p>
           </div>
-        </div>
-      ))}
+        ) : (
+          <div key={d.seq} className="notice" role="region" aria-label={`Your draft ${d.seq}`}>
+            <h2><span className="drafted">Your draft</span> <Addr>{addr(name, d.seq)}</Addr></h2>
+            <p>{d.note ? `It came back: ${d.note}` : 'Not submitted yet.'} {editable ? 'Edit it and resubmit, resubmit it as it is, or abandon it.' : 'Resubmit it as it is, or abandon it.'}{!editable && d.base !== undefined && d.base !== latest ? ` It was drafted on ${d.base === null ? 'nothing committed' : `v${d.base}`}; v${latest} is committed now, so resubmitting brings it up to date.` : ''}</p>
+            <div className="edit-row">
+              <button type="button" className="btn quiet" onClick={() => read(d.seq)}>Read it</button>
+              <button type="button" className="btn" onClick={() => versionVerb(d.seq, 'abandon', `Abandoned ${addr(name, d.seq)}`)}>Abandon</button>
+              {editable && <button type="button" className="btn" disabled={changes > 0} title={changes > 0 ? 'Submit or discard the edits you have first' : undefined} onClick={() => revise(d)}>Edit it</button>}
+              <button type="button" className="btn primary" onClick={() => versionVerb(d.seq, 'resubmit', `Resubmitted ${addr(name, d.seq)}`)}>Resubmit{editable ? ' as it is' : ''}</button>
+            </div>
+          </div>
+        );
+      })}
 
       {inReview && <ReviewBar name={name} layer={view.node.layer} review={inReview} mine={inReview.author === me.actor} reading={reading?.seq} committed={latest}
         read={read} onVerdict={verdict} onAbandon={() => versionVerb(inReview.seq, 'abandon', `Abandoned ${addr(name, inReview.seq)}`)} />}
       {!inReview && changes > 0 && (
         <div className="draftbar" role="region" aria-label="Draft">
-          <span className="what"><span className="drafted">Draft</span> · {changes} change{changes > 1 ? 's' : ''} to {addr(name)}. Kolab checks its structure, then another writer of the {view.node.layer} layer reviews it. Nothing changes for anyone until it’s approved.</span>
-          <button type="button" className="btn quiet" onClick={() => { setDraft(EMPTY); setEditing(undefined); }}>Discard</button>
-          <button type="button" className="btn primary" onClick={submit}>Submit for review</button>
+          <span className="what"><span className="drafted">Draft</span> · {changes} change{changes > 1 ? 's' : ''} to {addr(name)}{revising ? `, in place of your ${addr(name, draft.replaces)}` : ''}. Kolab checks its structure, then another writer of the {view.node.layer} layer reviews it. Nothing changes for anyone until it’s approved.</span>
+          <button type="button" className="btn quiet" onClick={() => { setDraft(EMPTY); setEditing(undefined); }}>{revising ? 'Stop editing' : 'Discard'}</button>
+          <button type="button" className="btn primary" onClick={submit}>{revising ? 'Resubmit for review' : 'Submit for review'}</button>
         </div>
       )}
     </>
@@ -386,10 +430,22 @@ function ReviewBar({ name, layer, review, mine, reading, committed, read, onVerd
   );
 }
 
-function Notice({ outcome: o, layer, onDismiss }: { outcome: WebOutcome & { node: string }; layer: Layer; onDismiss(): void }) {
+/** A submission's outcome, on its node; `gone` once it left review without committing or coming back. */
+type Outcome = WebOutcome & { node: string; gone?: boolean; seen?: boolean };
+
+/** What became of a version the notice said was in review, from the version as the page now reads it. */
+function settled(o: Outcome, now: WebVersion | undefined): Outcome {
+  const left = { ...o, in_review: false, stale: false, abandoned: false, cascade_queued: false, reviewers: [] };
+  if (now?.state === 'committed') return { ...left, ok: true, committed: true, unreviewed: false, note: null };
+  if (now?.state === 'drafted') return { ...left, ok: false, committed: false, note: now.note };
+  return { ...left, ok: false, committed: false, note: null, gone: true };
+}
+
+function Notice({ outcome: o, layer, onDismiss }: { outcome: Outcome; layer: Layer; onDismiss(): void }) {
   const at = <Addr>{addr(o.node, o.seq)}</Addr>;
   const [tone, word, head] = o.committed ? ['clean', 'committed', <>Committed {at}</>] as const
     : o.in_review ? ['question', 'in review', <>Submitted {at} for review</>] as const
+    : o.gone ? ['boundary', 'closed', <>{at} is no longer in review</>] as const
     : o.stale ? ['boundary', 'stale', <>{at} was overtaken</>] as const
     : o.abandoned ? ['boundary', 'rejected', <>Didn’t pass the structural checks</>] as const
     : ['boundary', 'changes requested', <>Not approved</>] as const;
@@ -402,6 +458,7 @@ function Notice({ outcome: o, layer, onDismiss }: { outcome: WebOutcome & { node
             ? `Structural checks passed. ${o.reviewers.join(', ')} ${o.reviewers.length > 1 ? 'have each' : 'has'} been asked to review it. Until one approves, nothing downstream changes.`
             : `Structural checks passed. ${nobodyCanReview(layer)} Until then, nothing downstream changes.`)
           : o.stale ? 'Someone else committed to it after this was drafted. Nothing was wrong with your edits: they are still here, on the new version.'
+          : o.gone ? 'It was abandoned, or a newer version took its place. Nothing changed for anyone.'
           : o.note ?? ''}
         {o.abandoned && o.note ? ` ${o.note} Your edits are still here: fix them and submit again.` : ''}
       </p>

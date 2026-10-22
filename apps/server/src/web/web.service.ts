@@ -4,7 +4,7 @@ import {
   maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetails, readableNodes, submissionsOf, versionHistory,
   type LinkRow, type MarkDetailRow, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
-import { formatAddress, isKolabName, isNodeName, parseAddress } from '@konjir/address';
+import { formatAddress, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
 import {
   ACCESS_LEVELS, CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
   type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type KolabAccessView, type WebAccessChanged, type WebChangeGrant, type CaseFileState, type CaseFileView, type RulingView,
@@ -381,7 +381,10 @@ export class WebService {
    * konjir_submit_for_review). The draft is sent whole, so Kolab diffs it against the parent, a
    * variant's included. A draft that fails Kolab's structural checks is abandoned at once, and the
    * page keeps the edits to fix; `replaces`, the session's own earlier draft, is abandoned once the
-   * new one is in review or committed.
+   * new one is in review or committed. That is how a draft that came back with changes requested is
+   * edited: the page sends its changes again, edited, and the new draft carries the rest of it, the
+   * links it drops and the links it declared, so nothing of it is lost. A version's elements never
+   * change once written, so the edit is a new version, as konjir_draft and konjir_abandon make it.
    */
   async submit(s: string, name: string, b: WebSubmit): Promise<WebOutcome> {
     const k = this.kolab;
@@ -410,7 +413,22 @@ export class WebService {
       } else throw bad('a change is add, override or remove');
     }
     const replaced = b.replaces === undefined ? undefined : await this.ownDraft(s, n.name, b.replaces);
-    const id = await k.draft(s, n.id, { elements, ...(unlink.length ? { unlink: unlink.map((link) => ({ link })) } : {}) });
+    const carried = replaced ? await this.carriedFrom(s, n.name, replaced, live?.id ?? null) : undefined;
+    const drops = [...new Set([...unlink, ...(carried?.unlink ?? [])])];
+    const id = await k.draft(s, n.id, { elements, ...(drops.length ? { unlink: drops.map((link) => ({ link })) } : {}) });
+    if (carried?.links.length) {
+      const kept = new Set(elements.map((e) => e.id));
+      try {
+        for (const l of carried.links) {
+          if (l.source_element_id !== null && !kept.has(l.source_element_id)) continue;   // its element was removed: its link goes with it
+          await k.link(s, { kind: l.kind, source: id, sourceElement: l.source_element_id ?? undefined, target: l.target_version_id,
+            targetElement: l.target_element_id ?? undefined, selector: l.target_selector ?? undefined });
+        }
+      } catch (e) {
+        await k.abandon(s, id);
+        throw bad(`a link ${n.name}@${b.replaces} declared can't be carried over: ${(e as Error).message}. Resubmit it as it is, or abandon it.`);
+      }
+    }
     // A commit between the check above and the draft: the draft was built on a newer version than
     // the edits were, so it is abandoned, and the page keeps them.
     const drafted = await k.version(id);
@@ -431,6 +449,30 @@ export class WebService {
     }
     if (replaced && (out.committed || out.in_review)) await k.abandon(s, replaced).catch(() => undefined);
     return out;
+  }
+
+  /**
+   * What a draft being replaced carries into its replacement besides its elements: the links of the
+   * version it was built on that it drops (by edge, to drop again), and the links it declared itself.
+   * Only a draft built on the live version can be edited: one built on an older one would undo what
+   * committed since, so it is resubmitted as it is, and Kolab rebases it.
+   */
+  private async carriedFrom(s: string, name: string, draft: string, live: string | null) {
+    const v = await this.kolab.version(draft);
+    if ((v.base_version_id ?? null) !== live) {
+      throw stale(name, v.base_version_id ? (await this.kolab.version(v.base_version_id)).seq : null, live ? (await this.kolab.version(live)).seq : null);
+    }
+    return this.kolab.readAs(s, async (q) => ({
+      unlink: live ? (await q.query<{ id: string }>(
+        `select e.id from edge e join version t on t.id = e.target_version_id
+          where e.source_version_id = $1 and exists (select 1 from link_removal r where r.version_id = $2 and r.kind = e.kind
+            and r.source_element_id is not distinct from e.source_element_id and r.target_node_id = t.node_id
+            and r.target_element_id is not distinct from e.target_element_id and r.target_selector is not distinct from e.target_selector)`,
+        [live, draft])).rows.map((r) => r.id) : [],
+      links: (await q.query<{ kind: 'derivation' | 'dependency' | 'equivalence'; source_element_id: string | null; target_version_id: string; target_element_id: string | null; target_selector: QuoteSelector | null }>(
+        `select kind, source_element_id, target_version_id, target_element_id, target_selector from edge where source_version_id = $1 order by id`,
+        [draft])).rows,
+    }));
   }
 
   private async ownDraft(s: string, name: string, seq: number): Promise<string> {
@@ -624,7 +666,7 @@ export function httpError(e: unknown): HttpException {
 }
 
 const version = (v: VersionHistoryRow, me: string): WebVersion =>
-  ({ seq: v.seq, state: v.state, author: v.actor, role: v.role, at: v.at, note: v.note, mine: v.actor === me });
+  ({ seq: v.seq, state: v.state, author: v.actor, role: v.role, at: v.at, note: v.note, mine: v.actor === me, base: v.base_seq });
 
 const link = (l: LinkRow): WebLink => ({
   edge: l.edge, kind: l.kind,

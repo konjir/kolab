@@ -247,6 +247,49 @@ test('a version goes through review in the page: in review, changes requested, r
   expect((await alice.call<WebNodeView>('nodes/orders')).body.drafts).toStrictEqual([]);
 });
 
+test('a draft that came back is edited in place: the page resubmits it edited, and the new version carries the links it dropped and declared', async () => {
+  const { kolab, engineer } = await specAndBinding();
+  await people(kolab, 'erin', { layers: ['technical'] });
+  const base = await serve(kolab);
+  const bob = await signIn(base, engineer);
+  const erinSession = await kolab.openSession('erin', 'engineer');
+  const erin = await signIn(base, erinSession);
+
+  // Bob drafts v2 as an agent would: b2's link dropped, a new b3 linked to R1.
+  const b2 = (await bob.call<WebNodeView>('nodes/orders-pg')).body.elements.find((e) => e.id === 'b2')!.relies_on[0];
+  const v2 = await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.', b2: 'Refunds go through the payments queue.', b3: 'Cancelling sends an email.' }), unlink: [{ link: b2.edge }] });
+  await kolab.link(engineer, { kind: 'dependency', source: v2, sourceElement: 'b3', target: (await kolab.latestCommitted('orders'))!.id, targetElement: 'R1' });
+  expect((await kolab.submit(engineer, v2)).in_review).toBe(true);
+  expect((await erin.call<WebOutcome>('nodes/orders-pg/versions/2/review', { verdict: 'request_changes', note: 'Say which email.' })).status).toBe(200);
+  expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.drafts).toStrictEqual([expect.objectContaining({ seq: 2, state: 'drafted', base: 1 })]);
+
+  // The page sends its changes against v1, edited, in place of v2.
+  const out = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 1, replaces: 2, changes: [{ kind: 'add', element: 'b3', text: 'Cancelling sends the customer a cancellation email.' }] })).body;
+  expect(out).toMatchObject({ in_review: true, seq: 3, reviewers: ['erin'] });
+  const now = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
+  expect([now.drafts, now.versions.map((v) => [v.seq, v.state])]).toStrictEqual([[], [[1, 'committed'], [3, 'in_review']]]);
+  const v3 = await kolab.readNode(engineer, 'orders-pg', 3);
+  expect(v3.elements.map((e) => [e.element_id, e.text])).toStrictEqual([
+    ['b1', 'orders.status allows cancel from Open.'], ['b2', 'Refunds go through the payments queue.'], ['b3', 'Cancelling sends the customer a cancellation email.'],
+  ]);
+  expect(v3.removes).toStrictEqual([{ kind: 'dependency', source: 'kj:orders-pg@3#b2', target: 'kj:orders#R2' }]);
+  const own = await kolab.db.query(`select e.source_element_id, e.target_element_id from edge e join version v on v.id = e.source_version_id where v.node_id = 'orders-pg' and v.seq = 3`);
+  expect(own.rows).toStrictEqual([{ source_element_id: 'b3', target_element_id: 'R1' }]);
+
+  // Approved, it commits as v3 did: b3 linked, b2's link gone.
+  expect((await erin.call<WebOutcome>('nodes/orders-pg/versions/3/review', { verdict: 'approve' })).body).toMatchObject({ committed: true, seq: 3 });
+  const committed = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
+  expect(committed.elements.map((e) => [e.id, e.relies_on.map((l) => l.target.element)])).toStrictEqual([['b1', ['R1']], ['b2', []], ['b3', ['R1']]]);
+
+  // Only a draft built on the live version is edited: one built on an older one would undo what committed since.
+  const v4 = await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'x' }) });
+  const v5 = await kolab.draft(erinSession, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open or Assigned.' }) });
+  expect((await kolab.submit(erinSession, v5)).in_review).toBe(true);
+  expect((await bob.call<WebOutcome>(`nodes/orders-pg/versions/${(await kolab.version(v5)).seq}/review`, { verdict: 'approve' })).body).toMatchObject({ committed: true });
+  const old = await bob.call<{ error: string }>('nodes/orders-pg/submit', { base: (await kolab.latestCommitted('orders-pg'))!.seq, replaces: (await kolab.version(v4)).seq, changes: [{ kind: 'override', element: 'b1', text: 'y' }] });
+  expect([old.status, old.body.error]).toStrictEqual([409, 'stale']);
+});
+
 test('a page reads and writes only its session\'s kolab', async () => {
   const { kolab, product, q } = await specAndBinding();
   await kolab.addActor('erin');
