@@ -240,7 +240,8 @@ export async function queryDetails(kolab: Kolab, session: string, nodeId?: strin
        join version v on v.id = q.version_id join node n on n.id = v.node_id
        left join version fv on fv.id = q.from_version_id left join node fn on fn.id = fv.node_id
        left join invalidation i on i.id = q.invalidation_id
-      where q.kolab_id = $1 and ($2::text is null or v.node_id = $2) and (not $3 or (v.state = 'committed' and q.invalidation_id is null))
+      where q.kolab_id = $1 and ($2::text is null or v.node_id = $2) and (not $3 or (v.state = 'committed' and q.invalidation_id is null
+                    and (q.asked_version_id is null or exists (select 1 from version a where a.id = q.asked_version_id and a.state = 'committed'))))
       order by q.created_at desc, q.id desc`, [here, nodeId ?? null, outside])).rows.map((r) => ({
     ...r, at: iso(r.at), ...(outside ? { mark: null, mark_reason: null, from_node: null, from_seq: null, from_element: null } : {}),
   })));

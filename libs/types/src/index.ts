@@ -184,8 +184,10 @@ export const LAYER_OF_ROLE: Record<Role, Layer> = { product: 'functional', engin
 export const ROLE_OF_LAYER: Record<Layer, Role> = { functional: 'product', technical: 'engineer' };
 
 /**
- * What a submitter is told when a version waits in review and nobody else can review it yet (D65):
- * everyone else who holds Write on its layer is an agent signed in with the other role. The
+ * What a submitter is told when a version waits in review and nobody else can review it yet (D65).
+ * Another agent of the author's own person may review (VER16, D25: separation of duty is per
+ * actor), so connecting one with the role that writes the layer is a way to get a reviewer.
+ * Everyone else who holds Write on its layer is an agent signed in with the other role. The
  * version waits; it doesn't commit unreviewed (D66: VER11 counts who holds Write, not who is signed in).
  */
 export const nobodyCanReview = (layer: Layer) =>
@@ -328,6 +330,8 @@ export interface Query {
    * review that was then abandoned or returned to its author (D65). Only in the question's own kolab.
    */
   asked_of?: string;
+  /** It moved, and its element's text in the version it is on now differs from the version it was asked of. */
+  element_changed?: true;
 }
 
 /** One side of a case file: a claim and its evidence (CASE1), and, once ruled on, its verdict (CASE2). */

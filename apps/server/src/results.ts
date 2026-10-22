@@ -8,6 +8,7 @@ export const thread = (q: Query) => ({
   ...(q.state === 'answered' ? { answer: q.answer, answered_by: q.answered_by } : {}),
   ...(q.state === 'withdrawn' ? { answer: q.answer } : {}),
   ...(q.asked_of ? { asked_of: q.asked_of } : {}),
+  ...(q.element_changed ? { element_changed: true, note: `Moved here from ${q.asked_of}, where it was asked; the element's text has changed since.` } : {}),
 });
 
 export function ok(data: unknown) {
