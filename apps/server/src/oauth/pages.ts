@@ -82,6 +82,8 @@ export interface ConsentView {
   person: string; login: string; provider: string; created: boolean;
   kolabs: { id: string; title: string; access: Access }[];
   agents: string[];
+  /** Those of `agents` signed in now: choosing one ends that session (ENF4), and the page says so. */
+  signedIn?: string[];
   /**
    * What to preselect: from the client's scope, or the last choice. `kolab` is a form value:
    * `kolab:<name>`, `@new` or `@invite`, so no kolab's name can be taken for either choice.
@@ -95,16 +97,17 @@ export interface ConsentView {
 /**
  * The consent page (D55): who signed in, which client asks, and the choice of who it acts as, in
  * which kolab and role. One session per actor (ENF4): acting as yourself ends your other session,
- * so an MCP client defaults to an agent of yours (D30).
+ * so an MCP client defaults to an agent of yours (D30): a new one unless the controller picks one,
+ * and an agent signed in now is marked, since choosing it ends that session too.
  */
 export function consentPage(v: ConsentView): string {
   const checked = (on: boolean) => (on ? ' checked' : '');
   // An invite is chosen already only for someone with no kolab yet; anyone else picks, explicitly (W3.4).
   const kolab = v.pick.kolab ?? (v.invite ? (v.kolabs.length ? '' : '@invite') : v.kolabs[0] ? `kolab:${v.kolabs[0].id}` : '@new');
-  const as = v.pick.as ?? (v.web ? 'self' : v.agents[0] ? `agent:${v.agents[0]}` : 'new-agent');
+  const as = v.pick.as ?? (v.web ? 'self' : 'new-agent');
   const role = v.pick.role ?? 'product';
   const who = v.web ? '' : `<fieldset><legend>Work as</legend>
-${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>An agent of yours: its own actor and session, never more access than you (D30)</small></span></label>`).join('\n')}
+${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you (D30)'}</small></span></label>`).join('\n')}
 <label class="opt"><input type="radio" name="as" value="new-agent"${checked(as === 'new-agent')}><span>A new agent of yours, <code>${esc(v.person)}-</code><input type="text" name="agent_label" value="${esc(v.pick.label ?? 'agent')}" maxlength="24" aria-label="The new agent's name" pattern="[a-z0-9][a-z0-9\\-]*"></span></label>
 <label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>Ends any other session you hold open, such as Kolab's web page: one session per person</small></span></label>
 </fieldset>`;

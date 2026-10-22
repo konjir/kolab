@@ -184,3 +184,91 @@ test('routes, diffs and new element IDs', () => {
   expect(nextElementId(['PR1', 'PR2', 'PR10', 'X1'], 'R')).toBe('PR11');
   expect(nextElementId([], 'B')).toBe('B1');
 });
+
+test('a draft that came back is edited in place: its changes are the page\'s edits, changed further, and resubmitted in its place', async () => {
+  const back = { seq: 4, state: 'drafted' as const, author: 'lee', role: 'product', at, note: 'Changes requested by pat: say per email address.', mine: true, base: 3 };
+  const base = spec();
+  replies['/api/nodes/password-reset?version=4'] = spec({
+    reading: back, compared_with: { seq: 3, elements: base.elements.map((e) => ({ id: e.id, text: e.text })) },
+    elements: [base.elements[0], { ...base.elements[1], text: 'At most 3 reset requests an hour.' }, { ...base.elements[1], id: 'PR9', text: 'A reset is logged.', relied_on_by: [] }],
+  });
+  view(lee, spec({ versions: [...base.versions, back], drafts: [back] }));
+  const region = await screen.findByRole('region', { name: 'Your draft 4' });
+  expect(region.textContent).toMatch(/It came back: Changes requested by pat: say per email address\. Edit it and resubmit/);
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Edit it' })); });
+  // Its changes are in the page, marked as draft, to edit further.
+  expect(screen.getByText('At most 3 reset requests an hour.')).toBeTruthy();
+  expect(screen.getByText('A reset is logged.')).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Draft' }).textContent).toMatch(/2 changes to kj:password-reset, in place of your kj:password-reset@4/);
+  expect(screen.getByRole('region', { name: 'Your draft 4' }).textContent).toMatch(/Editing your draft/);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1]);
+  fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 3 reset requests per email address an hour.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
+  replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 5, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Resubmit for review' })); });
+  expect(calls.find((c) => c.url.endsWith('/submit'))!.body).toStrictEqual({
+    base: 3, replaces: 4,
+    changes: [{ kind: 'override', element: 'PR8', text: 'At most 3 reset requests per email address an hour.' }, { kind: 'add', element: 'PR9', text: 'A reset is logged.' }],
+  });
+});
+
+test('a first version that came back, with nothing committed, is edited in place, not retyped', async () => {
+  const back = { seq: 1, state: 'drafted' as const, author: 'lee', role: 'product', at, note: 'Changes requested by pat: split PR3.', mine: true, base: null };
+  const node = { ...spec().node, latest: null, drafts: 1 };
+  const draftView = spec({ node, reading: back, versions: [back], drafts: [back] });
+  replies['/api/nodes/password-reset?version=1'] = draftView;
+  view(lee, spec({ node, reading: null, versions: [back], elements: [], drafts: [back] }));
+  expect(await screen.findByText(/^At most 3 reset requests per hour/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Edit it' })); });
+  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(2));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Remove PR3' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add a requirement' }));
+  fireEvent.change(screen.getByLabelText('Edit PR9'), { target: { value: 'The page never says whether the email has an account.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
+  replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 2, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Resubmit for review' })); });
+  expect(calls.find((c) => c.url.endsWith('/submit'))!.body).toStrictEqual({
+    base: null, replaces: 1,
+    changes: [{ kind: 'add', element: 'PR8', text: 'At most 3 reset requests per hour.' }, { kind: 'add', element: 'PR9', text: 'The page never says whether the email has an account.' }],
+  });
+});
+
+test('a draft built on an older version is resubmitted as it is, not edited, and the page says why', async () => {
+  const back = { seq: 4, state: 'drafted' as const, author: 'lee', role: 'product', at, note: 'Changes requested by pat: no.', mine: true, base: 2 };
+  view(lee, spec({ drafts: [back] }));
+  const region = await screen.findByRole('region', { name: 'Your draft 4' });
+  expect(region.textContent).toMatch(/It was drafted on v2; v3 is committed now, so resubmitting brings it up to date/);
+  expect(screen.queryByRole('button', { name: 'Edit it' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Resubmit' })).toBeTruthy();
+});
+
+test('the notice of a submission in review follows it: committed, back with changes requested, or no longer in review', async () => {
+  const inReview = { seq: 4, state: 'in_review' as const, author: 'lee', role: 'product', at, note: null, mine: true };
+  for (const [then, says] of [
+    [{ ...inReview, state: 'committed' as const }, /committed\s*Committed kj:password-reset@4/],
+    [{ ...inReview, state: 'drafted' as const, note: 'Changes requested by pat: split PR8.' }, /changes requested\s*Not approved.*Changes requested by pat: split PR8\./],
+    [undefined, /closed\s*kj:password-reset@4 is no longer in review.*abandoned/],
+  ] as const) {
+    replies = {};
+    const base = spec();
+    const page = (tick: number) => <NodeView me={lee} name="password-reset" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
+    replies['/api/nodes/password-reset'] = base;
+    const r = render(page(0));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+    fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
+    replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Submit for review' })); });
+    // Kolab signals the version in review, then what became of it: the page re-reads each time.
+    replies['/api/nodes/password-reset'] = spec({ versions: [...base.versions, inReview], in_review: [{ seq: 4, author: 'lee', at, reviewers: ['pat'], for_me: false }] });
+    r.rerender(page(1));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Submitted kj:password-reset@4 for review/));
+    replies['/api/nodes/password-reset'] = spec({ versions: then ? [...base.versions, then] : base.versions, drafts: then?.state === 'drafted' ? [then] : [] });
+    r.rerender(page(2));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(says));
+    expect(screen.getByRole('status').textContent).not.toMatch(/for review/);
+    cleanup();
+  }
+});

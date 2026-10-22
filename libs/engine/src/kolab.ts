@@ -1764,16 +1764,32 @@ export class Kolab {
   /**
    * What the consent page offers a person: the kolabs they can reach, with their access there, and
    * their own agents (D30), each live; and, for a sign-in that carries one (`inviteKey`), the invite,
-   * while it is still good (W3.4).
+   * while it is still good (W3.4). `signedIn` names the agents that hold an open session now, which
+   * choosing them ends (ENF4: one each); `lastAgent`, the agent `clientId` was last granted for
+   * this person, if it is still one of theirs: none for a client signing in for the first time.
    */
-  async consentOptions(person: string, opts: { inviteKey?: string | null } = {}): Promise<{ kolabs: { id: string; title: string; access: Access }[]; agents: string[]; invite?: InvitePreview }> {
+  async consentOptions(person: string, opts: { inviteKey?: string | null; clientId?: string } = {}): Promise<{
+    kolabs: { id: string; title: string; access: Access }[]; agents: string[]; signedIn: string[]; lastAgent?: string; invite?: InvitePreview;
+  }> {
     const kolabs = [];
     for (const id of await this.reachable(person)) {
       const k = await this.requireKolab(id);
       if (!k.archived) kolabs.push({ id, title: k.title, access: await accessIn(this.db, person, id) });
     }
     const invite = opts.inviteKey ? await this.previewInviteByKey(opts.inviteKey) : undefined;
-    return { kolabs, agents: (await this.listActors({ owner: person })).map((a) => a.id), ...(invite ? { invite } : {}) };
+    const agents = (await this.listActors({ owner: person })).map((a) => a.id);
+    // Open as liveSessions counts it: not ended, and its grant, if any, neither revoked nor lapsed.
+    const signedIn = agents.length ? (await this.db.query<{ actor_id: string }>(
+      `select distinct s.actor_id from session s left join oauth_grant g on g.id = s.grant_id
+        where s.actor_id = any($1) and s.ended_at is null and (g.id is null or (g.revoked_at is null and g.expires_at > now()))`,
+      [agents])).rows.map((r) => r.actor_id) : [];
+    const last = opts.clientId ? (await this.db.query<{ actor_id: string }>(
+      `select actor_id from oauth_grant where client_id = $1 and person_id = $2 order by created_at desc, id desc limit 1`,
+      [opts.clientId, person])).rows[0]?.actor_id : undefined;
+    return {
+      kolabs, agents, signedIn: agents.filter((a) => signedIn.includes(a)),
+      ...(last && agents.includes(last) ? { lastAgent: last } : {}), ...(invite ? { invite } : {}),
+    };
   }
 
   /**

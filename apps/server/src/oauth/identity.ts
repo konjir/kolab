@@ -29,7 +29,8 @@ type Fetch = typeof fetch;
  * GitHub, through a GitHub OAuth app (D55). It asks for no scope, so Kolab sees only the public
  * profile: the user's id, login and name. The client id and secret come from configuration
  * (`KONJIR_GITHUB_CLIENT_ID`, `KONJIR_GITHUB_CLIENT_SECRET`), on the test server from SSM. The
- * GitHub token a sign-in yields is used once, to read who signed in, then revoked.
+ * GitHub token a sign-in yields is used once, to read who signed in, then dropped. It is not
+ * revoked, so GitHub remembers the authorization and doesn't ask again at the next sign-in.
  */
 export class GitHubIdentity implements IdentityProvider {
   readonly id = 'github';
@@ -73,26 +74,17 @@ export class GitHubIdentity implements IdentityProvider {
     // Never the response itself in the error: it may carry a token.
     if (!res.ok || typeof t.access_token !== 'string') throw new Error(`GitHub didn't accept the sign-in (${typeof t.error === 'string' ? t.error.slice(0, 80) : res.status})`);
     const token = t.access_token;
-    try {
-      const u = await this.fetch(new URL('/user', this.api), {
-        headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'user-agent': 'konjir-kolab', 'x-github-api-version': '2022-11-28' },
-        signal: this.signal(),
-      });
-      const me = await u.json().catch(() => ({})) as { id?: unknown; login?: unknown; name?: unknown };
-      if (!u.ok || typeof me.id !== 'number' || typeof me.login !== 'string') throw new Error(`GitHub didn't say who signed in (${u.status})`);
-      return { subject: String(me.id), login: me.login, name: typeof me.name === 'string' && me.name ? me.name : undefined };
-    } finally {
-      // Kolab needs it no longer: revoke it, best effort.
-      void this.fetch(new URL(`/applications/${encodeURIComponent(this.config.clientId)}/token`, this.api), {
-        method: 'DELETE',
-        headers: {
-          accept: 'application/vnd.github+json', 'user-agent': 'konjir-kolab', 'content-type': 'application/json',
-          authorization: `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64')}`,
-        },
-        body: JSON.stringify({ access_token: token }),
-        signal: this.signal(),
-      }).catch(() => undefined);
-    }
+    const u = await this.fetch(new URL('/user', this.api), {
+      headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'user-agent': 'konjir-kolab', 'x-github-api-version': '2022-11-28' },
+      signal: this.signal(),
+    });
+    const me = await u.json().catch(() => ({})) as { id?: unknown; login?: unknown; name?: unknown };
+    if (!u.ok || typeof me.id !== 'number' || typeof me.login !== 'string') throw new Error(`GitHub didn't say who signed in (${u.status})`);
+    // The token is dropped here, never stored or passed on (DEL4), and never revoked: GitHub keeps an
+    // OAuth app's authorization only while the person holds a token of it, so revoking the only one
+    // removes the authorization, and GitHub asks them to authorize Kolab again at every sign-in. With
+    // no scope, the token reads only the public profile, and GitHub keeps at most ten per person.
+    return { subject: String(me.id), login: me.login, name: typeof me.name === 'string' && me.name ? me.name : undefined };
   }
 }
 

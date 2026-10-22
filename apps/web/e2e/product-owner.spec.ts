@@ -68,8 +68,10 @@ test('a product owner does what the prototype simulates, against the real server
   await pm.getByRole('button', { name: 'Approve' }).click();
   await expect(pm.getByRole('heading', { name: /Committed kj:password-reset@4/ })).toBeVisible();
 
-  // Lee's page heard it: v4 is committed, without a reload.
+  // Lee's page heard it: v4 is committed, without a reload, and her notice says so, not that it is in review.
   await expect(lee.getByRole('button', { name: 'v4', exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(lee.getByRole('heading', { name: /Committed kj:password-reset@4/ })).toBeVisible({ timeout: 15_000 });
+  await expect(lee.getByText(/Submitted kj:password-reset@4 for review/)).toHaveCount(0);
   // The engineer's page heard it too: B1 relied on PR1, so it is stale now.
   const b1 = eng.locator('li.el', { has: eng.getByRole('button', { name: 'B1', exact: true }) });
   await expect(b1.locator('.markbox')).toBeVisible({ timeout: 15_000 });
@@ -136,6 +138,22 @@ test('a product owner does what the prototype simulates, against the real server
   await lee.getByLabel('Edit PR3').fill('The request page shows the same response, in the same time, whether or not the email belongs to an account.');
   await lee.getByRole('button', { name: 'Keep in draft' }).click();
   await lee.getByRole('button', { name: 'Submit for review' }).click();
+  await expect(pm.getByRole('region', { name: 'In review' })).toBeVisible({ timeout: 15_000 });
+  // Pat sends it back; Lee edits the draft that came back in place, rather than retyping it, and resubmits.
+  await pm.getByRole('button', { name: 'Request changes' }).click();
+  await pm.getByLabel('What must change').fill('Say it takes the same time, plainly.');
+  await pm.getByRole('region', { name: 'In review' }).getByRole('button', { name: 'Request changes' }).click();
+  await expect(pm.getByRole('region', { name: 'In review' })).toHaveCount(0);
+  const back = lee.getByRole('region', { name: /^Your draft/ });
+  await expect(back).toContainText('Say it takes the same time, plainly.', { timeout: 15_000 });
+  await expect(lee.getByRole('heading', { name: /Not approved/ })).toBeVisible();
+  await back.getByRole('button', { name: 'Edit it' }).click();
+  await expect(leePr3.getByText('in the same time')).toBeVisible();
+  await leePr3.getByRole('button', { name: 'Edit', exact: true }).click();
+  await lee.getByLabel('Edit PR3').fill('The request page shows the same response, and takes the same time, whether or not the email belongs to an account.');
+  await lee.getByRole('button', { name: 'Keep in draft' }).click();
+  await lee.getByRole('button', { name: 'Resubmit for review' }).click();
+  await expect(lee.getByRole('region', { name: /^Your draft/ })).toHaveCount(0);
   await expect(pm.getByRole('region', { name: 'In review' })).toBeVisible({ timeout: 15_000 });
   await pm.getByRole('button', { name: 'Approve' }).click();
   await expect(leePr3.locator('.markbox')).toHaveCount(0, { timeout: 15_000 });

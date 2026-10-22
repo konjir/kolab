@@ -191,12 +191,12 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
 
   // `as:self` preselects nothing, from any client (D60): not from an app on the person's own machine
-  // (every redirect URI loopback, as the konjir CLI's), nor a hosted one. An agent stays the default;
-  // the person chooses Yourself by hand.
+  // (every redirect URI loopback, as the konjir CLI's), nor a hosted one. A new agent is the default
+  // for a client new to the person; the person chooses Yourself by hand.
   for (const uris of [[CB], ['https://app.example.com/cb'], [CB, 'https://app.example.com/cb']]) {
     const other = (await register(base, uris)).body.client_id;
     const h = await toConsent(base, idp, other, { subject: '601', login: 'zed' }, { scope: 'konjir as:self role:product', redirect: uris.at(-1) });
-    expect(checked(h.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+    expect(checked(h.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);
     expect(h.html).not.toContain('asks to act as you');
   }
   // An agent that isn't the person's (another's, an archived one of theirs, or none at all) is ignored:
@@ -204,7 +204,7 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   for (const other of ['bob-eng', 'zed-gone', 'zed-nobody']) {
     const o = await shown(`konjir kolab:test agent:${other}`);
     expect(o.html).not.toContain(other);
-    expect(checked(o.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+    expect(checked(o.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);
     // Submitting it anyway is refused: the consent page checks whose agent it is, as before.
     const refused = await o.browser.consent({ csrf: o.csrf, decision: 'allow', as: `agent:${other}`, kolab: 'kolab:test', role: 'product' });
     expect([refused.res.status, refused.left]).toStrictEqual([400, undefined]);
@@ -223,6 +223,47 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(checked(byHand.html)).not.toContain('self');
   const mine = await byHand.browser.consent({ csrf: byHand.csrf, decision: 'allow', as: 'self', kolab: 'kolab:test', role: 'product' });
   expect(mine.left?.searchParams.get('code')).toMatch(/^kjc_/);
+});
+
+test('an agent signed in now is marked on the consent page, since choosing it ends that session; a client new to the person preselects a new agent, one signing in again its own agent, and the scope still names one (ENF4, D59)', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const { actor: zed } = await kolab.signInWith({ provider: 'stub', subject: '611', login: 'zed' });
+  await kolab.grant('test', zed, 'write');
+  await kolab.addOwnAgent(zed, 'agent');
+  await kolab.addOwnAgent(zed, 'spare');
+  const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
+  const option = (html: string, agent: string) => new RegExp(`value="agent:${agent}"[^]*?</label>`).exec(html)?.[0] ?? '';
+  const ENDS = 'Signed in elsewhere now: choosing it here ends that session.';
+
+  // OpenCode signs zed-agent in: a grant, and a session that is open now.
+  const opencode = (await register(base)).body.client_id;
+  const verifier = randomBytes(32).toString('base64url');
+  const first = await toConsent(base, idp, opencode, { subject: '611', login: 'zed' }, { verifier, scope: 'konjir kolab:test' });
+  expect(first.html).not.toContain(ENDS);
+  expect(checked(first.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);   // never an agent of theirs the client didn't name
+  const done = await first.browser.consent({ csrf: first.csrf, decision: 'allow', as: 'agent:zed-agent', kolab: 'kolab:test', role: 'product' });
+  const t = await token(base, { grant_type: 'authorization_code', client_id: opencode, code: done.left!.searchParams.get('code')!, redirect_uri: CB, code_verifier: verifier, resource: `${base}/mcp` });
+  expect(t.status).toBe(200);
+
+  // The konjir CLI, registering for the first time: a new agent is chosen, and zed-agent says choosing it ends its session.
+  const cli = (await register(base)).body.client_id;
+  const c = await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' });
+  expect(checked(c.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);
+  expect(option(c.html, 'zed-agent')).toContain(ENDS);
+  expect(option(c.html, 'zed-spare')).not.toContain(ENDS);
+  // The scope naming it still preselects it (D59), marked all the same.
+  const named = await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test agent:zed-agent' });
+  expect(checked(named.html)).toStrictEqual(['agent:zed-agent', 'kolab:test', 'product']);
+  expect(option(named.html, 'zed-agent')).toContain(ENDS);
+  // OpenCode signing in again gets the agent it was granted before.
+  const again = await toConsent(base, idp, opencode, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' });
+  expect(checked(again.html)).toStrictEqual(['agent:zed-agent', 'kolab:test', 'product']);
+
+  // Its grant revoked, the session is over: nothing is marked.
+  const rv = await fetch(`${base}/oauth/revoke`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: t.body.refresh_token, client_id: opencode }).toString() });
+  expect(rv.status).toBe(200);
+  expect((await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' })).html).not.toContain(ENDS);
 });
 
 test('PKCE is required, S256 only, and the verifier must match; a refused request is a page, never a redirect', async () => {
@@ -427,7 +468,7 @@ test('a web page\'s event stream outlives no access token: when it expires the s
   await again.body?.cancel();
 });
 
-test('GitHub: Kolab asks for no scope, sends PKCE and its state, reads who signed in by their id, and revokes the token it was given', async () => {
+test('GitHub: Kolab asks for no scope, sends PKCE and its state, reads who signed in by their id, and doesn\'t revoke the token, so GitHub doesn\'t ask the person to authorize Kolab again at every sign-in', async () => {
   const { GitHubIdentity } = await import('../src/oauth/identity.js');
   const calls: { url: string; method: string; body?: string; auth?: string }[] = [];
   const fake: typeof fetch = async (input, init) => {
@@ -445,7 +486,11 @@ test('GitHub: Kolab asks for no scope, sends PKCE and its state, reads who signe
   await new Promise((r) => setTimeout(r, 10));
   expect(new URLSearchParams(calls[0].body)).toMatchObject(new URLSearchParams({ client_id: 'Iv1.abc', client_secret: 'shh', code: 'c0de', redirect_uri: 'https://kolab.example/oauth/callback/github', code_verifier: 'ver' }));
   expect(calls[1]).toMatchObject({ url: 'https://api.github.com/user', auth: 'Bearer gho_secret' });
-  expect(calls[2]).toMatchObject({ url: 'https://api.github.com/applications/Iv1.abc/token', method: 'DELETE' });
+  // Revoking the person's only token of the OAuth app would remove its authorization, so GitHub
+  // would show its authorize screen at every sign-in: nothing else is called, and nothing is sent anywhere.
+  expect(calls.length).toBe(2);
+  // The authorize request is the same at every sign-in but for its state and PKCE: no scope and no prompt to force the screen.
+  expect([...u.searchParams.keys()].sort()).toStrictEqual(['allow_signup', 'client_id', 'code_challenge', 'code_challenge_method', 'redirect_uri', 'state']);
   // A refusal says so without the response's body.
   const refusing = new GitHubIdentity({ clientId: 'x', clientSecret: 'y', fetch: async () => Response.json({ error: 'bad_verification_code' }) });
   await expect(refusing.identify({ code: 'no', redirectUri: 'r', codeVerifier: 'v' })).rejects.toThrow(/didn't accept the sign-in \(bad_verification_code\)/);
