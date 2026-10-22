@@ -105,7 +105,7 @@ test('an archived kolab ends its sessions, refuses new ones and every write, and
   ]) expect(await rejection(kolab.db.query(sql))).toMatch(/kolab orders is archived/);
   // Row-level security follows kj_access: a session there, however it came to be open, reads and writes nothing.
   await kolab.db.exec(`alter table session disable trigger session_openable`);
-  await kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, 'ann', 'product', 'orders')`, [sessionKey('kjs_backdoor')]);
+  await kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id, opened_by) values ($1, 'ann', 'product', 'orders', 'admin')`, [sessionKey('kjs_backdoor')]);
   await kolab.db.exec(`alter table session enable trigger session_openable`);
   expect(await asAgent(kolab, 'kjs_backdoor', `select id from node`)).toStrictEqual([]);
   expect(await asAgent(kolab, 'kjs_backdoor', `select kj_session_kolab() as k, kj_session_layer() as l, kj_session_readable_kolabs() as r`))
@@ -300,9 +300,10 @@ test('an ended session in an archived kolab, or of an archived actor, never reop
 
 test('every table of kolab data refuses writes to an archived kolab: each has the statement-level kolab_writable triggers', async () => {
   const kolab = await openKolab();
+  // Not the audit log (0024): removing a grant on an archived kolab is allowed, and is still recorded.
   const tables = (await kolab.db.query<{ t: string }>(
     `select table_name as t from information_schema.columns
-      where table_schema = 'public' and column_name = 'kolab_id' and table_name not in ('session', 'outbox') order by 1`)).rows.map((r) => r.t);
+      where table_schema = 'public' and column_name = 'kolab_id' and table_name not in ('session', 'outbox', 'audit_event') order by 1`)).rows.map((r) => r.t);
   const triggers = (await kolab.db.query<{ t: string; name: string; level: string }>(
     `select event_object_table as t, trigger_name as name, action_orientation as level from information_schema.triggers
       where trigger_name like 'kolab_writable%'`)).rows;

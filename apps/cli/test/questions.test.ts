@@ -100,13 +100,29 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022) and before questions about versions in review (0023),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023) and before every write recording who made it (0024),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop table audit_event;
+      drop function kj_audit_event_fixed();
+      ${[['node', 'node_created_by'], ['account', 'account_created_by'], ['actor', 'actor_created_by'], ['kolab', 'kolab_created_by'], ['team', 'team_created_by'],
+         ['identity', 'identity_linked_by'], ['session', 'session_opened_by'], ['session', 'session_ended_by'], ['kolab_invite', 'kolab_invite_revoked_by'],
+         ['oauth_grant', 'oauth_grant_revoked_by'], ['version', 'version_submitted_by']].map(([t, n]) => `drop trigger ${n} on ${t};`).join('\n')}
+      drop function kj_doer_given();
+      alter table node drop column created_by, drop column created_at;
+      alter table account drop column created_by;
+      alter table actor drop column created_by, drop constraint actor_not_admin;
+      alter table kolab drop column created_by;
+      alter table team drop column created_by;
+      alter table identity drop column linked_by;
+      alter table session drop column opened_by, drop column ended_by;
+      alter table kolab_invite drop column revoked_by;
+      alter table oauth_grant drop column revoked_by;
+      alter table version drop column submitted_by;
       drop policy kolab_read on query;
       create policy kolab_read on query for select to kj_agent
         using ((kolab_id = (select kj_session_kolab())

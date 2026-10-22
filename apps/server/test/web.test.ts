@@ -206,7 +206,11 @@ test('a spec reads with its questions and notes beside each element, and a chang
     ['note', 'open', 'kj:orders@2#R2', 'functional'], ['question', 'answered', 'kj:orders@1#R1', 'functional'],
   ]);
   const activity = (await alice.call<{ items: { actor: string; text: string }[] }>('activity')).body.items;
-  expect(activity.map((a) => `${a.actor} ${a.text}`)).toEqual(expect.arrayContaining([expect.stringMatching(/^alice committed kj:orders@2/), 'bob left a note on kj:orders@2#R2']));
+  expect(activity.map((a) => `${a.actor} ${a.text}`)).toEqual(expect.arrayContaining([
+    expect.stringMatching(/^alice committed kj:orders@2/), 'bob left a note on kj:orders@2#R2',
+    // Who made each node (W2.20).
+    'alice made kj:orders · Orders', expect.stringMatching(/^bob made kj:orders-pg · /),
+  ]));
 });
 
 test('a version goes through review in the page: in review, changes requested, resubmitted, approved', async () => {

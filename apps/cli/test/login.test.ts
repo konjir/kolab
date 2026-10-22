@@ -188,7 +188,7 @@ test('a sign-in that was revoked elsewhere says to run konjir login; the answer 
     },
   });
   // An admin ends the agent's session; its grant goes with it on the next refresh.
-  await kolab.db.query(`update oauth_grant set revoked_at = now()`);
+  await kolab.db.query(`update oauth_grant set revoked_at = now(), revoked_by = 'admin'`);
   await kolab.endSession({ actor: 'bo-cli' });
   expect(await rejection(main(['whoami']))).toMatch(/your sign-in to .* has ended or was revoked: run konjir login/);
 });

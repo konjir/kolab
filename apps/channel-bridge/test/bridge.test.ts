@@ -111,7 +111,7 @@ test('a listen refused in-band as session_ended is the token refused, not Kolab 
   const token = await agentToken(server.url);
   // The session ends between the listen request's auth and its gate.
   const fetchStub = atListenGate(server, async (id, check) => {
-    await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(id)]);
+    await server.kolab.db.query(`update session set ended_at = now(), ended_by = 'admin' where id = $1`, [sessionKey(id)]);
     return check(id);
   });
   const logs: string[] = [];

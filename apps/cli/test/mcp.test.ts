@@ -114,6 +114,8 @@ test('tokens: no token, a wrong token, and a revoked token are all refused; agen
   await expect(connect(server.url, 'kjs_not-a-session')).rejects.toThrow();
 
   const pm = await agentFor(server.url, admin, 'pm', 'product');
+  // The admin's grant is in the audit log, as the admin's (W2.20); only the admin token reads it.
+  expect(await call(admin, 'admin_audit', { kolab: 'test' })).toMatchObject({ events: [{ action: 'grant.set', kolab: 'test', subject: 'pm', detail: { level: 'write', layers: ['functional'] }, by: 'admin' }] });
   const tools = (await pm.client.listTools()).tools.map((t) => t.name);
   expect(!tools.some((t) => t.startsWith('konjir_admin'))).toBeTruthy();
   // Calling one anyway is refused in plain words, not as an OAuth scope challenge.

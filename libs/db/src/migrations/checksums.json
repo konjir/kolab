@@ -22,5 +22,6 @@
   "0021_oauth_request_untombstoned.sql": "efaddaaef3290919d03ed877576c58db1d82d0e63f044d96c0986bf54b76e182",
   "0022_read_only_marks.sql": "671347444a46dd5c88dfe8e81efeebd216dde64b48eabbb6eb27ff23126f5ed1",
   "0023_questions_in_review.sql": "e6b7ae110bbd31687063ad2861ba83b5d7189c497e6229c9a53b44fd7c66eaf8",
+  "0024_write_actors.sql": "69578e22f5ff67976184a79871628696ac3f94a21f2d32e894ff3ac845066ce0",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

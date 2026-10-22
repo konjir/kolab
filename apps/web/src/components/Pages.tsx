@@ -82,7 +82,7 @@ export function ActivityView({ tick }: { tick: number }) {
   if (!data) return <p className="empty">Reading the activity…</p>;
   return (
     <section aria-labelledby="act-title"><h2 className="section-title" id="act-title">Activity</h2>
-      <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: versions as they were written, verdicts, questions and marks.</p>
+      <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: nodes as they were made, versions as they were written, verdicts, questions and marks, each with who made it.</p>
       <ol className="log">{data.items.map((l, i) => (
         <li key={i}><time dateTime={l.at}>{ago(l.at)}</time><span><span className="actor">{l.actor}</span> {l.text.split(/(kj:[^\s·:]+)/).map((part, j) => part.startsWith('kj:') ? <Addr key={j}>{part}</Addr> : part)}</span></li>
       ))}</ol>

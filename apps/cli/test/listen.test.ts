@@ -184,7 +184,7 @@ function endAfterAuth(server: KonjirServer) {
   kolab.liveSession = async (id) => {
     const live = await liveSession(id);
     kolab.liveSession = liveSession;
-    await kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(id)]);
+    await kolab.db.query(`update session set ended_at = now(), ended_by = 'admin' where id = $1`, [sessionKey(id)]);
     return live;
   };
 }
@@ -269,7 +269,7 @@ test('a session ended without an event hears nothing more: the next update close
   const kept = await other.client.listen({ resourceSubscriptions: [INBOX] });
 
   // Ended straight in the database, as an expiry would: no event, so the stream stays open until it would be signalled.
-  await server.kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(pm.token)]);
+  await server.kolab.db.query(`update session set ended_at = now(), ended_by = 'admin' where id = $1`, [sessionKey(pm.token)]);
   await call(eng.client, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
   expect(await settled(sub.closed, 2000)).toBe('graceful');
   await until('the other session to hear the question', () => other.updates.length === 1);

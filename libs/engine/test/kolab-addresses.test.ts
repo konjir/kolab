@@ -66,7 +66,7 @@ test('a node name is unique within its kolab: two kolabs may each have one, and 
 test('the database holds a node to one name in its kolab, and its id to that name', async () => {
   const { kolab, theirs } = await twoCheckouts();
   const insert = (id: string, name: string, kolabId: string) => kolab.db.query(
-    `insert into node(id, name, kind, layer, title, kolab_id) values ($1, $2, 'functional_spec', 'functional', 'X', $3)`, [id, name, kolabId]);
+    `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ($1, $2, 'functional_spec', 'functional', 'X', $3, 'admin')`, [id, name, kolabId]);
   expect(await rejection(insert('~01JAAAAAAAAAAAAAAAAAAAAAAA', 'checkout', 'orders'))).toMatch(/node_kolab_name_key/);
   expect(await rejection(insert('shipping', 'returns', 'orders'))).toMatch(/node_id_name_check/);
   expect(await rejection(insert('orders/returns', 'returns', 'orders'))).toMatch(/node_id_name_check/);
