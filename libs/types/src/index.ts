@@ -186,7 +186,7 @@ export const ROLE_OF_LAYER: Record<Layer, Role> = { functional: 'product', techn
 /**
  * What a submitter is told when a version waits in review and nobody else can review it yet (D65):
  * everyone else who holds Write on its layer is an agent signed in with the other role. The
- * version waits; it doesn't commit unreviewed (VER11 counts who holds Write, not who is signed in).
+ * version waits; it doesn't commit unreviewed (D66: VER11 counts who holds Write, not who is signed in).
  */
 export const nobodyCanReview = (layer: Layer) =>
   `Nobody else can review the ${layer} layer yet. Invite a ${ROLE_OF_LAYER[layer]} teammate, or connect an agent of yours with the ${ROLE_OF_LAYER[layer]} role. It waits in review until one of them approves it.`;

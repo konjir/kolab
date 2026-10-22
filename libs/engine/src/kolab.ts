@@ -3168,7 +3168,8 @@ export class Kolab {
     } else if (human && plan) {
       note = `${note ?? ''} A plan version commits after structural checks, without review (PLN2).`.trim();
     } else if (human) {
-      // VER11 counts who holds Write on the layer; who is told counts who can review it now (D65).
+      // VER11 counts who holds Write on the layer (D66), so a version whose only other writers are
+      // in the other role waits in review; who is told counts who can review it now (D65).
       const writers = await this.reviewersFor(v);
       if (writers.length) {
         const reviewers = await this.ableToReview(v, writers);

@@ -222,7 +222,7 @@ test('a review request skips an agent signed in as engineer but reaches a person
   expect((await kolab.recordReview(pm, v1, { verdict: 'approve' })).ok).toBe(true);
 });
 
-test('when nobody else can review yet, the version waits in review and says how to get a reviewer; it doesn\'t commit unreviewed (VER11)', async () => {
+test('when nobody else can review yet, the version waits in review and says how to get a reviewer; it doesn\'t commit unreviewed (D66)', async () => {
   // Pat's only other writer on the layer is Pat's own agent, signed in as engineer.
   const kolab = await openKolab();
   await people(kolab, 'pat', { layers: ['functional', 'technical'] });
