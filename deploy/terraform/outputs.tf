@@ -29,6 +29,21 @@ output "admin_token_parameter" {
   value       = module.secrets.admin_token_param_name
 }
 
+output "log_group" {
+  description = "CloudWatch Logs group holding Kolab's and Caddy's journal (streams konjir and caddy), kept 30 days."
+  value       = module.monitoring.log_group_name
+}
+
+output "alarm_topic" {
+  description = "SNS topic every alarm notifies; alarm_email subscribes to it."
+  value       = module.monitoring.alarm_topic_arn
+}
+
+output "alarms" {
+  description = "The CloudWatch alarms (README: Alarms)."
+  value       = module.monitoring.alarm_names
+}
+
 output "release" {
   description = "The release shipped to Kolab: the tree id of the commit deploy/release/pack.sh packed."
   value       = module.release.release

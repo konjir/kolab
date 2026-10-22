@@ -76,4 +76,5 @@ resource "aws_ssm_parameter" "database_url" {
 output "database_url_param_name" { value = aws_ssm_parameter.database_url.name }
 output "database_url_param_arn" { value = aws_ssm_parameter.database_url.arn }
 output "endpoint" { value = aws_db_instance.this.endpoint }
+output "identifier" { value = aws_db_instance.this.identifier }
 output "ca_path" { value = local.ca_path }

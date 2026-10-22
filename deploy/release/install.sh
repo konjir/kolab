@@ -30,3 +30,6 @@ rm -rf .nx
 #    npm ci replaces node_modules and leaves each project's dist/ in place.
 npm ci --omit=dev --no-audit --no-fund --loglevel=error
 rm -rf .npm
+# 3. Observe (P11, D68): ship Kolab's and Caddy's journal to CloudWatch Logs, where the alarms
+#    count it. On anything but a Kolab instance, it does nothing.
+/bin/bash deploy/release/observe.sh

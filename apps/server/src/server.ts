@@ -2,6 +2,7 @@ import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
+import { JsonNestLogger, serverErrors } from './json-logger.js';
 import { KolabServerModule } from './kolab-server.module.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
@@ -9,6 +10,9 @@ import { defaultWebRoot, webApp } from './web/static.js';
 export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
 export { answersUri, inboxUri, uriOf } from './uris.js';
 export { isPinnedNpmSpec } from './kolab-server.module.js';
+// Kolab's JSON log lines (P11, D68), for `konjir serve`'s own lines: the CLI loads the server, never the library.
+export { log } from '@konjir/log';
+export { JsonNestLogger, serverErrors } from './json-logger.js';
 export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
 
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
@@ -42,8 +46,11 @@ export async function startServer(opts: {
       identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
       cliNpmSpec: opts.cliNpmSpec,
     }),
-    { logger: ['error', 'warn'] },
+    // Nest's lines, and the server's own Loggers', as Kolab's JSON lines, warn and error only.
+    { logger: new JsonNestLogger() },
   );
+  // Every 5xx answer is an error line, which the deployed stack's server-error alarm counts.
+  app.use(serverErrors());
   // The web interface's pages, at the root (API8); its API is the module's, under /api.
   app.use(webApp(opts.webRoot === undefined ? defaultWebRoot() : opts.webRoot));
   const host = opts.host ?? '127.0.0.1';

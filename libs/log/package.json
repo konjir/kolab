@@ -1,0 +1,20 @@
+{
+  "name": "@konjir/log",
+  "version": "0.5.0",
+  "private": true,
+  "description": "Kolab's log lines: one JSON object per line, with every secret masked",
+  "license": "FSL-1.1-ALv2",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@konjir/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
+  }
+}

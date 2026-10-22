@@ -333,8 +333,8 @@ async function silenceableProxy(databaseUrl: string) {
   test('a bad notification on the channel is dropped, and the Kolab goes on hearing real events', async () => {
     const { a, b, url, onA } = await twoKolabs();
     const errors: string[] = [];
-    const original = console.error;
-    console.error = (m: unknown) => { errors.push(String(m)); };
+    const originals = { error: console.error, warn: console.warn };
+    console.error = console.warn = (m: unknown) => { errors.push(String(m)); };
     const admin = new pg.Client({ connectionString: url });
     await admin.connect();
     try {
@@ -351,8 +351,10 @@ async function silenceableProxy(databaseUrl: string) {
       expect(errors.filter((e) => e.includes('dropped a notification'))).toHaveLength(2 * 11);   // a and b each drop all eleven
       expect(errors.some((e) => e.includes('<script>') || e.includes('str') || e.includes('No Such'))).toBe(false);   // no payloads in the log
       expect([a.droppedNotifications, b.droppedNotifications]).toStrictEqual([11, 11]);
+      // Each is one JSON line at warn level (P11, D68).
+      expect(errors.filter((e) => e.includes('dropped a notification')).every((e) => JSON.parse(e).level === 'warn')).toBe(true);
     } finally {
-      console.error = original;
+      Object.assign(console, originals);
       await admin.end();
     }
   });

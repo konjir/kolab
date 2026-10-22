@@ -2,6 +2,8 @@
 # and the GitHub OAuth app's client id and the secret Lee puts by hand, by name (D55). Both
 # SecureStrings use the AWS-managed SSM key, whose key policy lets the account's principals decrypt
 # through SSM, so no KMS statement is needed (the admin token reads the same way).
+# The CloudWatch agent (P11, D68) may write Kolab's log group and put metrics in its one namespace,
+# and nothing more: no other log group, no namespace of anyone else's.
 # Nothing else: Kolab makes no model calls (REV5), so it has no Bedrock access.
 
 variable "name" { type = string }
@@ -17,6 +19,9 @@ variable "cli_npm_spec_param_arn" {
   type    = string
   default = ""
 }
+
+variable "log_group_arn" { type = string }
+variable "metrics_namespace" { type = string }
 
 data "aws_partition" "current" {}
 
@@ -55,6 +60,24 @@ data "aws_iam_policy_document" "kolab" {
     sid       = "ReadAdminTokenAndDatabaseUrl"
     actions   = ["ssm:GetParameter"]
     resources = concat([var.admin_token_param_arn, var.database_url_param_arn], var.github_param_arns, compact([var.cli_npm_spec_param_arn]))
+  }
+  # The CloudWatch agent ships the journal's copies into streams of Kolab's log group. Terraform
+  # creates the group and sets its retention, so the agent may neither.
+  statement {
+    sid       = "ShipLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
+    resources = [var.log_group_arn, "${var.log_group_arn}:*"]
+  }
+  # PutMetricData has no resource; its namespace condition is how it is scoped.
+  statement {
+    sid       = "PutMetrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = [var.metrics_namespace]
+    }
   }
 }
 

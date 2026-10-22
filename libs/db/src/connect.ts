@@ -4,6 +4,7 @@ import {
   type DatabaseConnection, type Dialect, type Driver, type QueryResult,
 } from 'kysely';
 import pg from 'pg';
+import { log } from '@konjir/log';
 
 /**
  * Kolab's database, reached through Kysely (DAT1): managed Postgres over pg in production,
@@ -103,15 +104,15 @@ const loadPgNotify = () => (pgNotify ??= import('@onivoro/server-pg-notify/liste
  */
 const listenerLogger = {
   log: () => undefined,
-  warn: (m: string) => console.warn(`postgres: ${m}`),
-  error: (m: string) => console.error(`postgres: ${m}`),
+  warn: (m: string) => log.warn(`postgres: ${m}`),
+  error: (m: string) => log.error(`postgres: ${m}`),
 };
 
 function pool(connectionString: string) {
   const p = new pg.Pool({ connectionString });
   // An idle connection the server drops (a restart, a failover) is replaced on next use; unhandled,
   // its error would end the process.
-  p.on('error', (e) => console.error(`postgres: idle connection lost: ${e.message}`));
+  p.on('error', (e) => log.error('postgres: idle connection lost', { error: e }));
   return p;
 }
 
