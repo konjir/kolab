@@ -5129,14 +5129,20 @@ export class Kolab {
     const targetSeq = target ? (await tx.query<{ seq: number }>(`select seq from version where id = $1`, [target])).rows[0].seq : undefined;
     for (const q of qs) {
       // It moves only if what it asked about is there as asked: the element, and the words it
-      // quoted word for word. A quote of words only the version in review had is never carried
-      // to a committed version (D49), so such a question is withdrawn instead.
+      // quoted, word for word, exactly once. Its quote's prefix and suffix are taken again from the
+      // target's text around them, so no word only the version in review had is carried to a
+      // committed version (D49); a quote that isn't there once is withdrawn instead.
+      const sub = target && q.element_id !== null ? subtreeText(els, q.element_id) : undefined;
+      const at = q.selector && sub !== undefined ? sub.indexOf(q.selector.exact) : -1;
+      const once = at >= 0 && sub!.indexOf(q.selector!.exact, at + 1) < 0;
       const why = !target ? `${name} has no committed version`
-        : q.element_id !== null && !els.some((e) => e.element_id === q.element_id) ? `${q.element_id} isn't in ${name}'s latest committed version`
-        : resolveInElements(els, q.element_id, q.selector).status !== 'ok' ? `the words it quoted aren't in ${formatAddress({ node: name, version: targetSeq, element: q.element_id ?? undefined })}`
+        : q.element_id !== null && sub === undefined ? `${q.element_id} isn't in ${name}'s latest committed version`
+        : q.selector && !once ? `the words it quoted aren't in ${formatAddress({ node: name, version: targetSeq, element: q.element_id ?? undefined })}${at >= 0 ? ' just once' : ''}`
         : undefined;
       if (!why) {
-        await tx.query(`update query set version_id = $2, asked_version_id = coalesce(asked_version_id, $3) where id = $1`, [q.id, target, v.id]);
+        const selector = q.selector ? { exact: q.selector.exact, ...spanContext(sub!, at, at + q.selector.exact.length) } : null;
+        await tx.query(`update query set version_id = $2, asked_version_id = coalesce(asked_version_id, $3), selector = $4 where id = $1`,
+          [q.id, target, v.id, selector ? JSON.stringify(selector) : null]);
       } else if (q.state === 'open') {
         const why2 = `withdrawn: ${name}@${v.seq}, which it was asked of, ${left}, and ${why}`;
         await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`, [q.id, why2]);
@@ -5624,15 +5630,13 @@ export class Kolab {
       id: string; kind: QueryKind; node: string; seq: number; element_id: string | null; kolab_id: string;
       selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
       raised_by: string | null; mark: string | null; from_node: string | null; from_kolab: string | null; from_seq: number | null; from_element_id: string | null;
-      asked_seq: number | null; changed: boolean; asked_committed: boolean;
+      asked_seq: number | null; asked_id: string | null; version_id: string; asked_committed: boolean;
     }>(
       `select q.id, q.kind, n.name as node, v.seq, q.element_id, q.kolab_id, q.selector, q.question, q.state, q.answer, q.answered_by,
               q.raised_by, q.invalidation_id as mark, fn.name as from_node, fn.kolab_id as from_kolab, fv.seq as from_seq, q.from_element_id,
               av.seq as asked_seq,
               (q.asked_version_id is null or exists (select 1 from version a where a.id = q.asked_version_id and a.state = 'committed')) as asked_committed,
-              (av.id is not null and q.element_id is not null
-               and (select e.text from element e where e.version_id = av.id and e.element_id = q.element_id)
-                   is distinct from (select e.text from element e where e.version_id = q.version_id and e.element_id = q.element_id)) as changed
+              av.id as asked_id, q.version_id
          from query q join version v on v.id = q.version_id
          join node n on n.id = v.node_id
          left join version fv on fv.id = q.from_version_id
@@ -5650,7 +5654,15 @@ export class Kolab {
     // kj_agent to the first too (0016).
     const outside = (r: { kolab_id: string }) => filter.from !== undefined && r.kolab_id !== filter.from;
     // Nor one asked of a version that never committed, though it has moved to one since (D65; 0023).
-    return rows.filter((r) => !(outside(r) && (r.mark || !r.asked_committed))).map((r) => ({
+    const shown = rows.filter((r) => !(outside(r) && (r.mark || !r.asked_committed)));
+    // A moved question whose element, or anything under it, reads otherwise where it is now (D65).
+    const changed = new Set<string>();
+    for (const r of shown) {
+      if (!r.asked_id || !r.element_id || outside(r)) continue;
+      const [was, now] = [await this.elements(r.asked_id, q), await this.elements(r.version_id, q)];
+      if (subtreeText(was, r.element_id) !== subtreeText(now, r.element_id)) changed.add(r.id);
+    }
+    return shown.map((r) => ({
       id: r.id, kind: r.kind,
       address: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }, { from: filter.from ?? r.kolab_id }),
       question: r.question, state: r.state, answer: r.answer, answered_by: r.answered_by, raised_by: r.raised_by,
@@ -5658,7 +5670,7 @@ export class Kolab {
       mark: r.mark,
       // The version in review it was asked of, if it has moved since (D65): never told outside its kolab.
       ...(r.asked_seq !== null && !outside(r) ? { asked_of: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.asked_seq }, { from: filter.from ?? r.kolab_id }) } : {}),
-      ...(r.changed && !outside(r) ? { element_changed: true } : {}),
+      ...(changed.has(r.id) ? { element_changed: true } : {}),
     }));
   }
 
