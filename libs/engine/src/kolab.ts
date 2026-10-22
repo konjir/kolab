@@ -6,6 +6,7 @@ import {
   parseNodeRef, resolveSpan,
 } from '@konjir/address';
 import { migrate, openDb, type Db, type Listening } from '@konjir/db';
+import { log, maskTokens } from '@konjir/log';
 import {
   ACCESS_LEVELS, FINDING_KINDS, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -322,16 +323,8 @@ export type ListenerState =
   | { state: 'restored' }
   | { state: 'resync_failed'; retryInMs: number; error: string };
 
-/**
- * The patterns of Kolab's secrets: a session's bearer token (an OAuth access token is one too),
- * a refresh token and an authorization code (D55), and an invite (W3.4).
- */
-const SECRETS = /(kj[srci])_[A-Za-z0-9_-]+/g;
-
-/** An error's message, fit to log: any session token, refresh token or code in it is masked. */
-export function maskTokens(e: unknown): string {
-  return String((e as { message?: unknown })?.message ?? e).replace(SECRETS, '$1_***');
-}
+// An error's message, fit to log or return, with Kolab's tokens masked; and Kolab's JSON log lines (P11, D68).
+export { maskTokens };
 
 /**
  * The open session a bearer token reaches now, as the database's kj_session_id finds it (0018),
@@ -655,14 +648,14 @@ export class Kolab {
     this.resyncPending = setTimeout(() => {
       this.resyncPending = undefined;
       if (this.closed) return;
-      void this.resync().catch((e) => console.error(`kolab: could not resync after a resync notice: ${maskTokens(e)}`));
+      void this.resync().catch((e) => log.error('could not resync after a resync notice', { error: e }));
     }, RESYNC_DEBOUNCE_MS);
     this.resyncPending.unref();
   }
 
   private dropped(why: string) {
     this.dropCount++;
-    console.error(`kolab: dropped a notification on ${EVENT_CHANNEL} that ${why} (${this.dropCount} so far)`);
+    log.warn(`dropped a notification on ${EVENT_CHANNEL} that ${why} (${this.dropCount} so far)`, { event: 'notification_dropped', dropped: this.dropCount });
   }
 
   /**
@@ -823,7 +816,7 @@ export class Kolab {
         return { state: 'done' as const, result };
       } catch (error) {
         if (claim.lost || error instanceof ClaimLost) {
-          console.error(`kolab: lost the claim on outbox job ${job.kind} for version ${job.versionId} while running it; another process runs it again`);
+          log.warn(`lost the claim on outbox job ${job.kind} for version ${job.versionId} while running it; another process runs it again`, { job: job.kind, version: job.versionId });
           return { state: 'lost' as const };
         }
         if (error instanceof Deferred) {
@@ -873,14 +866,14 @@ export class Kolab {
       if (claim.lost) return;
       claim.lost = true;
       claim.stop();
-      if (!this.closed) console.error(`kolab: outbox job ${job.kind} for version ${job.versionId}: ${why}; its work stops at its next step`);
+      if (!this.closed) log.warn(`outbox job ${job.kind} for version ${job.versionId}: ${why}; its work stops at its next step`, { job: job.kind, version: job.versionId });
     };
     const timer = setInterval(() => {
       this.db.query(`update outbox set claimed_until = ${this.leaseUntil} where claim = $1 returning id`, [job.token]).then(
         (r) => { if (r.rows.length) lastRenewed = Date.now(); else lose('its claim was taken by another process'); },
         (e) => {
           if (this.closed) return;
-          console.error(`kolab: could not renew the claim on outbox job ${job.kind} for version ${job.versionId}: ${maskTokens(e)}`);
+          log.warn(`could not renew the claim on outbox job ${job.kind} for version ${job.versionId}`, { job: job.kind, version: job.versionId, error: e });
           if (Date.now() - lastRenewed > this.leaseMs) lose('its claim could not be renewed for a whole lease');
         });
     }, Math.max(10, Math.floor(this.leaseMs / 3)));
@@ -895,7 +888,7 @@ export class Kolab {
    */
   private async finish(job: { token: string; kind: OutboxKind; versionId: string }) {
     const r = job.kind === 'rebase' ? await this.finishRebase(job) : await this.db.query(`delete from outbox where claim = $1 returning id`, [job.token]);
-    if (!r.rows.length) console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} was done, but another process had taken it meanwhile; it does it again, once more`);
+    if (!r.rows.length) log.warn(`outbox job ${job.kind} for version ${job.versionId} was done, but another process had taken it meanwhile; it does it again, once more`, { job: job.kind, version: job.versionId });
     if (job.kind !== 'after_commit') return;
     const node = (await this.db.query<{ node_id: string }>(`select node_id from version where id = $1`, [job.versionId])).rows[0]?.node_id;
     if (node) await this.drainNode(node);
@@ -942,27 +935,30 @@ export class Kolab {
       `update outbox o set claim = null, claimed_by = null, claimed_until = null, attempts = greatest(o.attempts - 1, 0)
         where o.claim = $1 and ${archivedKolabSql('o.kolab_id')} returning o.id`, [job.token]);
     if (paused.rows.length) {
-      console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} waits: its kolab was archived while it ran`);
+      log.info(`outbox job ${job.kind} for version ${job.versionId} waits: its kolab was archived while it ran`, { job: job.kind, version: job.versionId });
       return;
     }
     const r = await this.inTransaction(async (tx) => {
-      const freed = await tx.query<{ state: OutboxState; attempts: number }>(
+      const freed = await tx.query<{ id: string; kolab_id: string; state: OutboxState; attempts: number }>(
         `update outbox set claim = null, claimed_by = null, claimed_until = null, last_error = $2,
                 state = case when attempts >= $4 then 'dead' else 'pending' end,
                 run_after = clock_timestamp() + least(power(2, greatest(attempts - 1, 0)), $3) * interval '1 second'
-          where claim = $1 returning state, attempts`,
+          where claim = $1 returning id, kolab_id, state, attempts`,
         [job.token, maskTokens(error).slice(0, 2000), OUTBOX_MAX_BACKOFF_S, OUTBOX_MAX_ATTEMPTS]);
       if (freed.rows[0]?.state === 'pending') await this.notifyWork(tx);
       return freed.rows[0];
     });
     if (r?.state === 'dead') {
-      console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} is dead after ${r.attempts} failed attempts: ${maskTokens(error)}. `
-        + 'No worker runs it, or any later cascade of its node, until an admin retries it (konjir_admin_outbox retry=<id>).');
+      // One line, at error level, with event outbox_job_dead: the deployed stack's metric filter
+      // counts these, and its alarm emails the operator (P11, D68; README: Alarms).
+      log.error(`outbox job ${job.kind} for version ${job.versionId} is dead after ${r.attempts} failed attempts. `
+        + 'No worker runs it, or any later cascade of its node, until an admin retries it (konjir_admin_outbox retry=<id>).',
+      { event: 'outbox_job_dead', id: r.id, job: job.kind, version: job.versionId, kolab: r.kolab_id, attempts: r.attempts, error });
       // A variant whose rebase job died is behind its parent: it says so, with a rebase_failed mark
       // and question (D44), until the parent's next commit or the variant's own tries again.
-      if (job.kind === 'rebase') await this.rebaseDied(job.versionId, error).catch((e) => console.error(`kolab: could not mark the variant whose rebase job died: ${maskTokens(e)}`));
+      if (job.kind === 'rebase') await this.rebaseDied(job.versionId, error).catch((e) => log.error('could not mark the variant whose rebase job died', { version: job.versionId, error: e }));
     } else if (r && !this.closed) {
-      console.error(`kolab: outbox job ${job.kind} for version ${job.versionId} failed (attempt ${r.attempts}); it will be tried again: ${maskTokens(error)}`);
+      log.warn(`outbox job ${job.kind} for version ${job.versionId} failed (attempt ${r.attempts}); it will be tried again`, { job: job.kind, version: job.versionId, kolab: r.kolab_id, attempts: r.attempts, error });
     }
   }
 
@@ -1010,7 +1006,7 @@ export class Kolab {
         try {
           await this.drainOutbox();
         } catch (e) {
-          if (!this.closed) console.error(`kolab: the outbox worker could not read the outbox: ${maskTokens(e)}`);
+          if (!this.closed) log.error('the outbox worker could not read the outbox', { error: e });
         }
       } while (w.again && !this.closed && !this.stopping);
     })().finally(() => { w.running = undefined; void this.scheduleWorker(); });
@@ -1130,14 +1126,14 @@ export class Kolab {
    */
   async retryOutboxJob(id: string): Promise<boolean> {
     const r = await this.inTransaction(async (tx) => {
-      const freed = await tx.query<{ kind: string; version_id: string }>(
+      const freed = await tx.query<{ kind: string; version_id: string; kolab_id: string }>(
         `update outbox set state = 'pending', attempts = 0, run_after = clock_timestamp()
-          where id = $1 and (claimed_until is null or claimed_until < clock_timestamp()) returning kind, version_id`, [id]);
+          where id = $1 and (claimed_until is null or claimed_until < clock_timestamp()) returning kind, version_id, kolab_id`, [id]);
       if (freed.rows.length) await this.notifyWork(tx);
       return freed.rows[0];
     });
     if (!r) return false;
-    console.error(`kolab: outbox job ${r.kind} for version ${r.version_id} retried by an admin`);
+    log.info(`outbox job ${r.kind} for version ${r.version_id} retried by an admin`, { event: 'outbox_job_retried', id, job: r.kind, version: r.version_id, kolab: r.kolab_id });
     this.wake();
     return true;
   }
@@ -2656,9 +2652,10 @@ export class Kolab {
       return { kolabs, agents, ended: await endUnreachableIn(tx, signal), catchUps };
     });
     if (r.catchUps.length) this.wake();
-    console.error(`kolab: ${kind} ${name} ${archive ? 'archived' : 'unarchived'} by ${by}`
+    log.info(`${kind} ${name} ${archive ? 'archived' : 'unarchived'} by ${by}`
       + (r.kolabs.length ? `, with kolabs ${r.kolabs.join(', ')}` : '') + (r.agents.length ? `, with agents ${r.agents.join(', ')}` : '')
-      + (r.ended ? `; ${r.ended} session${r.ended === 1 ? '' : 's'} ended` : ''));
+      + (r.ended ? `; ${r.ended} session${r.ended === 1 ? '' : 's'} ended` : ''),
+    { event: archive ? 'archived' : 'unarchived', target: kind, name, actor: by, ...(kind === 'kolab' ? { kolab: name } : {}) });
     const { catchUps: _c, ...out } = r;
     return { archived: target, ...out };
   }

@@ -60,6 +60,17 @@ module "iam" {
   database_url_param_arn = module.database.database_url_param_arn
   github_param_arns      = module.secrets.github_param_arns
   cli_npm_spec_param_arn = module.secrets.cli_npm_spec_param_arn
+  log_group_arn          = module.monitoring.log_group_arn
+  metrics_namespace      = module.monitoring.metrics_namespace
+}
+
+# Logs and alarms (P11, D68): failures are noticed before users report them.
+module "monitoring" {
+  source                 = "./modules/monitoring"
+  name                   = var.name
+  domain_name            = var.domain_name
+  db_instance_identifier = module.database.identifier
+  alarm_email            = var.alarm_email
 }
 
 module "kolab" {
@@ -93,6 +104,8 @@ module "release" {
   instance_id     = module.kolab.instance_id
   domain_name     = var.domain_name
 
-  # The instance must be attached to its data volume and reachable before a release installs.
-  depends_on = [module.kolab]
+  # The instance must be attached to its data volume and reachable before a release installs,
+  # and the log group and the role's right to write it there before the release's observe.sh
+  # starts the CloudWatch agent.
+  depends_on = [module.kolab, module.iam, module.monitoring]
 }

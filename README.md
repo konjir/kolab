@@ -23,7 +23,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 578 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push, web and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 589 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push, web, log and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -50,6 +50,7 @@ The repository is an [Nx](https://nx.dev) workspace of npm workspaces. Run one p
 | `@konjir/engine` | `libs/engine` | Versions, links, marks, the cascade, rebases and roles. `@konjir/engine/testing` has the test helpers. |
 | `@konjir/address` | `libs/address` | `kj:` addresses, fingerprints and quote re-anchoring, on [diff-match-patch](https://github.com/antfu/diff-match-patch-es) |
 | `@konjir/db` | `libs/db` | The schema, as versioned SQL migrations, and the connection |
+| `@konjir/log` | `libs/log` | Kolab's log lines: one JSON object per line, with every token masked (P11, D68; see *Logs and alarms*) |
 | `@konjir/login` | `libs/login` | `konjir login`'s OAuth client and its lock-file credentials store, shared by the CLI and the channel bridge (W3.4, W3.5) |
 | `@konjir/types` | `libs/types` | Types and constants shared by the server, CLI, engine and web interface, including the web API's (`web.ts`) |
 
@@ -374,6 +375,7 @@ You need:
 - Terraform 1.15 or later
 - For sign-in with GitHub (D55), the GitHub OAuth app (GitHub › Settings › Developer settings › OAuth Apps): homepage `https://kolab.konjir.com`, authorization callback URL `https://kolab.konjir.com/oauth/callback/github`. Its client id is public and committed, as `github_oauth_client_id`'s default; Terraform keeps it as the SSM parameter `/konjir/<name>/github-client-id`. Its client secret is never Terraform's, so it is in no variable, file or state: put it yourself, once, as a SecureString (below). The instance may read both, the secret by its name, and the release's `start.sh` reads them when Kolab starts, so adding them changes neither the boot script nor the instance. If the secret isn't there, Kolab says so in one line of its log and runs without GitHub sign-in.
 - For the web page's `npx` commands (W3.7), the published CLI's version: `cli_npm_spec`, `konjir@0.5.0` by default, pinned to an exact version as the server requires (Terraform refuses anything else). Terraform keeps it as the SSM parameter `/konjir/<name>/cli-npm-spec`, which `start.sh` reads as `KONJIR_CLI_NPM_SPEC` when Kolab starts, so changing it replaces nothing. Set it to `""` and there is no parameter, and the page shows no `npx` commands.
+- For alarms (P11, D68), optionally, the operator's email address: `alarm_email`, empty by default (see *Logs and alarms*)
 - AWS CLI v2 with a profile named `icedlee337` for the account that owns the `konjir.com` hosted zone
 - `npm install` run once in this folder (the `konjir` CLI runs locally)
 
@@ -406,22 +408,56 @@ The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terrafo
 | `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days |
 | `database` | Postgres 18 on RDS (`db.t4g.micro`, 20 GB, encrypted, 7 days of backups), reachable only from Kolab over verified TLS. Its URL is an SSM SecureString |
 | `secrets` | A generated admin token, stored as an SSM SecureString, the GitHub OAuth app's client id (D55) and the published CLI's npm spec (W3.7); the app's secret is put by hand, never by Terraform |
-| `iam` | The instance role: Session Manager access, read its releases, token, database URL, the GitHub OAuth app's client id and secret, and the CLI's npm spec (the last two by name). No Bedrock or other model access (REV5) |
+| `iam` | The instance role: Session Manager access, read its releases, token, database URL, the GitHub OAuth app's client id and secret, and the CLI's npm spec (the last two by name); write log streams in its own log group, and metrics in its own namespace only, for the CloudWatch agent. No Bedrock or other model access (REV5) |
 | `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `kolab.konjir.com` |
 | `release` | Packs the checkout's commit (`deploy/release/pack.sh`), uploads it, and installs it on Kolab through Systems Manager. `terraform apply` is the deploy |
+| `monitoring` | The log group `/konjir/<name>` (30 days), the alarm topic and its email subscription, a Route 53 health check of `/healthz`, the log metric filters and six alarms (P11, D68; see *Logs and alarms*) |
 
-Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart from the instance, so replacing the instance is safe. A change to the boot script replaces it automatically. The boot script still writes `KONJIR_REVIEW=structural` and `KONJIR_REVIEW_MODEL` into `/etc/konjir/env`, which Kolab ignores since W1.7: `modules/kolab` passes them as constants so that the script renders unchanged and W1.7 doesn't replace the instance. They go with the next boot-script change. The data volume still holds the PGlite database Kolab used before RDS. The rough cost is $30–35 a month at list price.
+Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart from the instance, so replacing the instance is safe. A change to the boot script replaces it automatically. The boot script still writes `KONJIR_REVIEW=structural` and `KONJIR_REVIEW_MODEL` into `/etc/konjir/env`, which Kolab ignores since W1.7: `modules/kolab` passes them as constants so that the script renders unchanged and W1.7 doesn't replace the instance. They go with the next boot-script change. The data volume still holds the PGlite database Kolab used before RDS. The rough cost is $30–35 a month at list price, plus about $5 for logs and alarms (see *Logs and alarms*).
 
 Day to day:
 
 - **Ship code:** commit, then `terraform apply`. `deploy/release/pack.sh` packs the release with `git archive` of `HEAD`, so only tracked files ship: never an untracked or ignored one, such as `.env`, a `.claude/` worktree, a nested `.konjir` or a `*.tfvars` file. It refuses a checkout with uncommitted tracked changes, so a deploy is always exactly a commit, and refuses one that tracks a file that must never ship. The release id is the commit's tree id, so it changes only when tracked content does; a new one makes Terraform reinstall and wait for success. Terraform needs `git` and `bash` where it runs (`hashicorp/external`).
 - **Bump the CLI on the web page:** after each CLI release (see [Releasing the CLI](#releasing-the-cli)), set `cli_npm_spec`'s default in `deploy/terraform/variables.tf` to the version npm now has, `konjir@<version>`, commit, and `terraform apply`. The release workflow doesn't bump it. The apply updates the parameter, and, since the commit is a new release, reinstalls and restarts Kolab, whose `start.sh` reads it. Until then the page keeps showing the version before.
-- **Inspect:** `deploy/konjir-ops.sh status`, `logs` or `bootstrap-log`. `shell` opens a session; it needs the Session Manager plugin.
+- **Inspect:** `deploy/konjir-ops.sh status`, `logs` or `bootstrap-log`; `cloudwatch-logs [since]` follows the same lines in CloudWatch Logs, and `alarms` lists each alarm's state. `shell` opens a session; it needs the Session Manager plugin.
 - **One-way migrations:** a release that applies a migration can't be rolled back by deploying the release before it, which refuses a database migrated past it. 0011 (hashed session tokens) is also irreversible in the data: the hashes can't be turned back into tokens, so there is no down migration. Before applying a release with 0011, take an RDS snapshot (`aws rds create-db-snapshot`). Rolling back means restoring that snapshot and deploying the earlier release; every session opened since the snapshot is lost, so reissue those tokens with `deploy/konjir-ops.sh connect`.
 - **OS refresh:** `terraform apply -replace=module.kolab.aws_instance.kolab`. The AMI is pinned when the instance is created.
 - **Tear down:** `terraform destroy`. Final snapshots of the data volume and the database are kept by default. For a teardown that leaves nothing, run `terraform apply -var final_snapshot_on_destroy=false` first, then `terraform destroy -var final_snapshot_on_destroy=false`. The apply is needed because destroy reads the database's snapshot setting from state. Daily volume snapshots made before the teardown remain until you delete them. The state bucket stays until you remove it.
 
 The admin token is generated by Terraform, so it is also in the state file. That is why the state bucket is private, encrypted and TLS-only.
+
+### Logs and alarms
+
+Failures are noticed before users report them (P11, D68): alarms email the operator.
+
+**Logs.** Kolab's own log lines are JSON, one object per line: `time`, `level` (`info`, `warn` or `error`), `message`, then fields where Kolab knows them, such as `kolab`, `actor`, `event`, `job`, `version` or `error`. `@konjir/log` writes them, NestJS's lines go through it (`JsonNestLogger`, with `context` and `stack`), and so does `konjir serve`'s startup. No token reaches a line: every string in it has Kolab's tokens masked (`kjs_***`, as `maskTokens` does), a URL's password and a bearer credential too, and a field whose name says it holds a secret (`token`, `secret`, `password`, `authorization`, `cookie`, …) is written as `***`. Kolab logs every 5xx answer at error level (`event: http_5xx`, with method, path and status, never the query), and a dead outbox job as one error line with `event: outbox_job_dead`, its `id`, `kolab`, `job`, `version`, `attempts` and `error`. The one line that isn't JSON is the admin token a local `konjir serve` prints when it generated one, which a deployed Kolab never does.
+
+The release ships them: `deploy/release/install.sh` runs `deploy/release/observe.sh` as root, which installs the CloudWatch agent and logrotate from Amazon Linux's repository if they're missing, and copies the journal of `konjir.service` and `caddy.service` (`konjir-journal@<unit>`, since the agent reads files, not the journal) to `/var/log/konjir/<unit>.log`, from where the agent sends them to the log group `/konjir/<name>`, as the streams `konjir` and `caddy`, kept 30 days. Beside Kolab's JSON, the `konjir` stream holds systemd's plain lines about the unit (`konjir.service: Main process exited, …`). The agent also puts memory and root-disk use in the namespace `Konjir/<name>`. So none of it changes the boot script or replaces the instance: the first `terraform apply` with it installs it. If it fails, the release fails, Kolab keeps the release before it, and the apply says so.
+
+**Alarms.** Each is named `<name>-…`, emails the topic `<name>-alarms` when it fires and again when it recovers, and says in its description what to do.
+
+| Alarm | Fires when | What to do |
+| --- | --- | --- |
+| `healthz-failing` | A Route 53 health check of `https://kolab.konjir.com/healthz`, from three regions every 30 s, has failed for 2 minutes (3 failed checks first, then 2 minutes of failure) | `deploy/konjir-ops.sh status`, then `logs`. A 503 means Kolab can't reach its database; no answer means Kolab, Caddy, DNS or the instance is down. `sudo systemctl restart konjir` in a `shell` for a stuck Kolab |
+| `service-exited` | systemd logged `konjir.service: Main process exited` or `caddy.service: Main process exited` (a crash, a kill, a failed start; a deploy's restart exits cleanly and logs no such line) | The lines before it in the `konjir` or `caddy` stream say why. systemd restarts it 3 s later; if it keeps exiting, `healthz-failing` follows: deploy a fix, or the release before |
+| `outbox-job-dead` | Kolab logged `event: outbox_job_dead`: a cascade, settle or rebase failed ten times | `konjir admin_outbox state=dead` with the admin token lists them with `last_error`; fix the cause, then `konjir admin_outbox retry=<id>` (see *Durable waits: the outbox*) |
+| `server-errors` | At least 10 error-level lines (`server_error_threshold`) in 5 minutes, Kolab's and Caddy's: 5xx answers, unhandled exceptions, a lost LISTEN connection, a dead job, Caddy's 502s | In CloudWatch Logs Insights, or `cloudwatch-logs`, filter `{ $.level = "error" }` for which |
+| `rds-cpu-high` | The database averaged over 80% CPU for 15 minutes | Look for a rebase storm or a runaway cascade in the logs. A `db.t4g.micro` that ran out of CPU credits (`CPUCreditBalance`) is throttled; raise `db_instance_class` |
+| `rds-storage-low` | The database has under 2 GiB free | Raise `db_allocated_gib` and `terraform apply`; RDS grows storage in place |
+
+**The email.** Set `alarm_email` (in a `*.tfvars` file, which never ships, or `-var alarm_email=…`) and `terraform apply`: Terraform subscribes it to the topic, and AWS emails it a link, which must be followed once before any alarm is delivered. Until then, and with `alarm_email` empty, the alarms still change state (`deploy/konjir-ops.sh alarms`) but email no one. Changing the address subscribes the new one; destroying a subscription still pending confirmation only drops it from Terraform's state, and AWS deletes it after 3 days.
+
+**Checking each alarm after a deploy** (the done-when): `deploy/konjir-ops.sh inject <what>` sets off one alarm on purpose, and each email should arrive within about 5 minutes, then its recovery.
+
+| `inject` | What it does | Alarm |
+| --- | --- | --- |
+| `crash` | Kills Kolab (`SIGKILL`) on the instance; systemd restarts it in 3 s | `service-exited`, through the real journal, agent and filter |
+| `down [minutes]` | Stops Kolab for 4 minutes (1 to 15), then starts it | `healthz-failing`, and usually `server-errors` too, from Caddy's 502s to the health checks |
+| `dead-job` | Puts one `outbox_job_dead` line in the log group's `inject` stream (no real job dies; the unit tests cover Kolab writing the line) | `outbox-job-dead`, and an error line toward `server-errors` |
+| `errors` | Puts 12 error lines in the `inject` stream | `server-errors` |
+| `rds-cpu`, `rds-storage` | Sets the alarm to ALARM by hand (`aws cloudwatch set-alarm-state`); it returns to its real state at its next evaluation | `rds-cpu-high`, `rds-storage-low` |
+
+**Cost**, roughly, at us-east-1 list prices: the HTTPS health check about $1.50–2.75 a month, six alarms $0.60, five custom metrics (three from log filters, the agent's memory and disk) $1.50, and logs $0.50 a GB ingested and $0.03 a GB stored, well under a GB a month for a test server: about $4–5 a month. Email through SNS is free at this volume. A CloudWatch Synthetics canary would cost about $10 a month for the same check, which is why `/healthz` uses Route 53.
 
 **Testing only.** This is one instance with no failover. With the GitHub OAuth app set up, people sign in with GitHub, and their tokens last 15 minutes and refresh (D55). Hand-issued tokens are bearer tokens with no expiry: hand them out privately, and revoke them with `admin_end_session` (by `token`, `session` key or `actor`; Kolab stores only their hashes, so it can't show a token again). Turn them off with `KONJIR_HAND_ISSUED_TOKENS=off` once nothing needs them.
 
@@ -602,7 +638,7 @@ Every wait in review and the question tier is a row: a version in review and its
 
 **Claims.** The process that writes a job claims it as it writes it, runs the work at once, in the caller's call, and deletes the job when the work is done, so a commit's caller still sees its cascade finish or fail with a `CascadeError`. Each claim carries a token, fresh for each claim, and the claimant renews, deletes and releases the job only by that token, so a process whose claim lapsed and was taken by another touches nothing of it. A claim lasts 30 s and is renewed every 10 s while its work runs, on PGlite too. A renewal that finds the claim gone, or that fails for a whole lease, marks it lost and logs it: the work stops at its next step (before each variant's catch-up, and before the layer leaks), and the process that took the job does it, once more. A process never takes over a job it is running itself, even if a busy event loop let its lease lapse. A job a stopped process held is free when its claim lapses; on PGlite, the first Kolab in a process to open a data directory frees every claim in it at once.
 
-**Failures.** A job whose work fails is freed with its error (`last_error`), to be tried again after a backoff that doubles from 1 s to 5 minutes. After ten attempts it is `dead`: no worker takes it again, an error is logged, and `konjir_admin_outbox` lists it (`state=dead` for those alone) until `konjir_admin_outbox retry=<id>` makes it due again.
+**Failures.** A job whose work fails is freed with its error (`last_error`), to be tried again after a backoff that doubles from 1 s to 5 minutes. After ten attempts it is `dead`: no worker takes it again, an error is logged (one JSON line with `event: outbox_job_dead`, which the `outbox-job-dead` alarm counts; see *Logs and alarms*), and `konjir_admin_outbox` lists it (`state=dead` for those alone) until `konjir_admin_outbox retry=<id>` makes it due again.
 
 **Order.** A node's cascades run in the order its versions committed, each carrying the one before it forward. Before a version's cascade, an earlier one its node still owes runs first, if it is free and due. If it is held by another live process, waiting out a backoff, or dead, the later cascade waits instead: the commit returns with `cascade: 'queued'`, its job is released with a `work` notice, and it runs once the earlier one is done (the process that finishes a cascade runs the next of its node; one that releases a waiting job after the earlier one finished runs it itself), never ahead of it. A cascade run late re-checks only the links pinned to versions older than its own, so it never touches a link that a newer version, or a dependent's catch-up, has re-pinned.
 

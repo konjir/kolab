@@ -82,6 +82,17 @@ variable "db_allocated_gib" {
   default     = 20
 }
 
+variable "alarm_email" {
+  description = "The operator's email address for alarms (P11, D68). Set: Terraform subscribes it to the alarm topic, and AWS emails it a link to confirm, once. Empty: no subscriber, and alarms email no one."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alarm_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alarm_email))
+    error_message = "alarm_email is an email address, or empty."
+  }
+}
+
 variable "github_oauth_client_id" {
   description = "Client id of the GitHub OAuth app people sign in with (D55); it is public. Its callback URL is https://<domain_name>/oauth/callback/github. Its secret is never Terraform's: put it with aws ssm put-parameter (README). Empty: no GitHub sign-in."
   type        = string

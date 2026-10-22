@@ -497,17 +497,32 @@ test('a job that keeps failing is dead after ten attempts: no worker runs it unt
   const query = proto.query;
   let failing = true;
   proto.query = async function (sql: string, params?: unknown[]) {
-    if (failing && supersedeRead(sql, params)) throw new Error('Connection terminated unexpectedly');
+    // The error carries a session token, which no log line may show.
+    if (failing && supersedeRead(sql, params)) throw new Error('Connection terminated unexpectedly (session kjs_SECRETtoken)');
     return query.call(this, sql, params);
   };
+  const lines: string[] = [];
+  const originals = { error: console.error, warn: console.warn };
+  console.error = console.warn = (m: unknown) => { lines.push(String(m)); };
   try {
     expect(await rejection(k.commit(bob, 'B', { deltas: [{ kind: 'add', element: 'b2', text: 'A refund endpoint.' }] }))).toMatch(/^CascadeError/);
     // Nine attempts on, its backoff over, it fails a tenth time.
     await k.db.query(`update outbox set attempts = 9, run_after = clock_timestamp()`);
     expect(await k.drainOutbox()).toBe(0);
-  } finally { proto.query = query; }
+  } finally { proto.query = query; Object.assign(console, originals); }
   const [dead] = await k.outboxJobs({ state: 'dead' });
   expect(dead).toMatchObject({ kind: 'after_commit', state: 'dead', subject: 'kj:test/B@2', attempts: 10, last_error: expect.stringMatching(/Connection terminated unexpectedly/) });
+  // Its death is one JSON line at error level, event outbox_job_dead, which the deployed stack's
+  // metric filter counts (P11, D68); the failure before it is a warning. No line shows the token.
+  const logged = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+  const died = logged.filter((l) => l.event === 'outbox_job_dead');
+  expect(died).toStrictEqual([{
+    time: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), level: 'error', message: expect.stringMatching(/is dead after 10 failed attempts/),
+    event: 'outbox_job_dead', id: dead.id, job: 'after_commit', version: expect.any(String), kolab: 'test', attempts: 10,
+    error: expect.stringMatching(/Connection terminated unexpectedly \(session kjs_\*\*\*\)$/),
+  }]);
+  expect(logged.filter((l) => l.level === 'warn' && String(l.message).includes('it will be tried again'))).toMatchObject([{ kolab: 'test', attempts: 1 }]);
+  expect(lines.some((l) => l.includes('SECRETtoken'))).toBe(false);
   // An admin can look at one kolab's jobs: this one's, none of another's, and a kolab that isn't there is refused.
   await k.createKolab('elsewhere', { owner: 'alice' });
   expect((await k.outboxJobs({ kolab: 'test' })).map((j) => j.id)).toStrictEqual([dead.id]);

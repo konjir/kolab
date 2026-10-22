@@ -237,12 +237,16 @@ test('a listen stream whose session can\'t be checked is refused as gate_failed,
   const capture = (chunk: unknown) => { warned.push(String(chunk)); return true; };
   process.stdout.write = capture as typeof process.stdout.write;
   process.stderr.write = capture as typeof process.stderr.write;
+  // Kolab's JSON log lines go through the console (P11, D68), which Jest buffers apart from the streams.
+  const consoles = { warn: console.warn, error: console.error };
+  console.warn = console.error = (m: unknown) => { capture(`${String(m)}\n`); };
   let refused: unknown;
   try {
     refused = await pm.client.listen({ resourceSubscriptions: [INBOX] }).then(() => undefined, (e: unknown) => e);
   } finally {
     process.stdout.write = original;
     process.stderr.write = originalErr;
+    Object.assign(console, consoles);
   }
   expect(refused).toMatchObject({ code: -32003, data: { reason: 'gate_failed' } });
   expect(listenRefusal(refused)).toBe('gate_failed');

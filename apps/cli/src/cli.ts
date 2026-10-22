@@ -249,15 +249,17 @@ export async function main(argv: string[]) {
   }
 
   if (cmd === 'serve') {
-    const { startServer } = await server();
+    // Kolab's own lines are JSON, one object per line (P11, D68), from the server's logger: the
+    // CLI bundle never inlines the server's code (D63), so it reaches it through the server it loads.
+    const { startServer, log } = await server();
     const port = Number(flag(rest, 'port') ?? 7420);
     const dataDir = flag(rest, 'data') ?? '.konjir';
     const adminToken = flag(rest, 'admin-token') ?? process.env.KONJIR_ADMIN_TOKEN ?? randomBytes(18).toString('base64url');
     // Kolab makes no model calls (REV5): its checks are structural, and reviewing agents review.
     const retired = retiredReviewSettings(process.env, flag(rest, 'review'));
     if (retired.refuse) throw new Error(retired.refuse);
-    if (retired.warn) console.error(`warning: ${retired.warn}`);
-    console.log('review: Kolab\'s structural checks, then reviewing agents (konjir_review); Kolab makes no model calls');
+    if (retired.warn) log.warn(retired.warn);
+    log.info('review: Kolab\'s structural checks, then reviewing agents (konjir_review); Kolab makes no model calls');
     const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
     const databaseUrl = flag(rest, 'database-url') ?? process.env.KONJIR_DATABASE_URL;
     // How many kolabs a person may own when they make their own in the web interface (D54).
@@ -268,9 +270,11 @@ export async function main(argv: string[]) {
     // The published konjir CLI, pinned (W3.7): the web page shows `npx <spec>` only when this is set.
     const cliNpmSpec = process.env.KONJIR_CLI_NPM_SPEC?.trim() || undefined;
     const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec });
-    console.log(`sign-in: ${sign.describe}`);
-    console.log(`Kolab listening on ${s.url}`);
-    console.log(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
+    log.info(`sign-in: ${sign.describe}`);
+    log.info(`Kolab listening on ${s.url}`, { event: 'listening', url: s.url });
+    log.info(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
+    // Not a log line: the generated admin token, shown once to whoever started a local Kolab by
+    // hand. A deployed Kolab is given its token (KONJIR_ADMIN_TOKEN) and runs with --quiet.
     if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);
     const stop = async () => { await s.close(); process.exit(0); };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);

@@ -18,7 +18,9 @@ if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJI
         --with-decryption --query Parameter.Value --output text 2>/dev/null) && [ -n "$GITHUB_SECRET" ]; then
       export KONJIR_GITHUB_CLIENT_ID="$GITHUB_ID" KONJIR_GITHUB_CLIENT_SECRET="$GITHUB_SECRET"
     else
-      echo "konjir: the GitHub OAuth app's client id is set but $PARAMS/github-client-secret can't be read; running without GitHub sign-in" >&2
+      # One of Kolab's JSON log lines (P11, D68).
+      printf '{"time":"%s","level":"warn","message":"the GitHub OAuth app client id is set but %s/github-client-secret cannot be read; running without GitHub sign-in"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$PARAMS" >&2
     fi
     unset GITHUB_SECRET
   fi
