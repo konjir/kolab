@@ -1765,8 +1765,11 @@ export class Kolab {
    * What the consent page offers a person: the kolabs they can reach, with their access there, and
    * their own agents (D30), each live; and, for a sign-in that carries one (`inviteKey`), the invite,
    * while it is still good (W3.4). `signedIn` names the agents that hold an open session now, which
-   * choosing them ends (ENF4: one each); `lastAgent`, the agent `clientId` was last granted for
-   * this person, if it is still one of theirs: none for a client signing in for the first time.
+   * choosing them ends (ENF4: one each). `lastAgent` is the agent `clientId` was last granted for
+   * this person, if it is still one of theirs, and only while that grant stands and the agent holds
+   * no open session through another client: none for a client signing in for the first time, none
+   * after the person revoked it (they disconnected it on purpose), and none where choosing it would
+   * end a session elsewhere.
    */
   async consentOptions(person: string, opts: { inviteKey?: string | null; clientId?: string } = {}): Promise<{
     kolabs: { id: string; title: string; access: Access }[]; agents: string[]; signedIn: string[]; lastAgent?: string; invite?: InvitePreview;
@@ -1779,16 +1782,18 @@ export class Kolab {
     const invite = opts.inviteKey ? await this.previewInviteByKey(opts.inviteKey) : undefined;
     const agents = (await this.listActors({ owner: person })).map((a) => a.id);
     // Open as liveSessions counts it: not ended, and its grant, if any, neither revoked nor lapsed.
-    const signedIn = agents.length ? (await this.db.query<{ actor_id: string }>(
-      `select distinct s.actor_id from session s left join oauth_grant g on g.id = s.grant_id
+    const open = agents.length ? (await this.db.query<{ actor_id: string; client_id: string | null }>(
+      `select s.actor_id, g.client_id from session s left join oauth_grant g on g.id = s.grant_id
         where s.actor_id = any($1) and s.ended_at is null and (g.id is null or (g.revoked_at is null and g.expires_at > now()))`,
-      [agents])).rows.map((r) => r.actor_id) : [];
-    const last = opts.clientId ? (await this.db.query<{ actor_id: string }>(
-      `select actor_id from oauth_grant where client_id = $1 and person_id = $2 order by created_at desc, id desc limit 1`,
-      [opts.clientId, person])).rows[0]?.actor_id : undefined;
+      [agents])).rows : [];
+    const last = opts.clientId ? (await this.db.query<{ actor_id: string; revoked: boolean }>(
+      `select actor_id, revoked_at is not null as revoked from oauth_grant where client_id = $1 and person_id = $2 order by created_at desc, id desc limit 1`,
+      [opts.clientId, person])).rows[0] : undefined;
+    const elsewhere = (a: string) => open.some((o) => o.actor_id === a && o.client_id !== opts.clientId);
     return {
-      kolabs, agents, signedIn: agents.filter((a) => signedIn.includes(a)),
-      ...(last && agents.includes(last) ? { lastAgent: last } : {}), ...(invite ? { invite } : {}),
+      kolabs, agents, signedIn: agents.filter((a) => open.some((o) => o.actor_id === a)),
+      ...(last && !last.revoked && agents.includes(last.actor_id) && !elsewhere(last.actor_id) ? { lastAgent: last.actor_id } : {}),
+      ...(invite ? { invite } : {}),
     };
   }
 

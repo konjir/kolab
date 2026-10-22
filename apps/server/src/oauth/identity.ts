@@ -26,11 +26,16 @@ export interface IdentityProvider {
 type Fetch = typeof fetch;
 
 /**
- * GitHub, through a GitHub OAuth app (D55). It asks for no scope, so Kolab sees only the public
- * profile: the user's id, login and name. The client id and secret come from configuration
- * (`KONJIR_GITHUB_CLIENT_ID`, `KONJIR_GITHUB_CLIENT_SECRET`), on the test server from SSM. The
- * GitHub token a sign-in yields is used once, to read who signed in, then dropped. It is not
- * revoked, so GitHub remembers the authorization and doesn't ask again at the next sign-in.
+ * GitHub, through a GitHub OAuth app (D55). It requests no scope, so the token reads public data
+ * only, as long as the app only ever requests no scope; Kolab reads the user's id, login and name.
+ * The client id and secret come from configuration (`KONJIR_GITHUB_CLIENT_ID`,
+ * `KONJIR_GITHUB_CLIENT_SECRET`), on the test server from SSM. The GitHub token a sign-in yields is
+ * used once, to read who signed in, then dropped. It is not revoked, so GitHub remembers the
+ * authorization and doesn't ask again at the next sign-in.
+ *
+ * This OAuth app must stay dedicated to signing in to Kolab, with no scope. GitHub gives a request
+ * without `scope` the scopes the person already granted the app, so if anything ever used it to
+ * request a scope, Kolab's sign-ins would silently mint tokens with that scope.
  */
 export class GitHubIdentity implements IdentityProvider {
   readonly id = 'github';
@@ -80,10 +85,12 @@ export class GitHubIdentity implements IdentityProvider {
     });
     const me = await u.json().catch(() => ({})) as { id?: unknown; login?: unknown; name?: unknown };
     if (!u.ok || typeof me.id !== 'number' || typeof me.login !== 'string') throw new Error(`GitHub didn't say who signed in (${u.status})`);
-    // The token is dropped here, never stored or passed on (DEL4), and never revoked: GitHub keeps an
-    // OAuth app's authorization only while the person holds a token of it, so revoking the only one
-    // removes the authorization, and GitHub asks them to authorize Kolab again at every sign-in. With
-    // no scope, the token reads only the public profile, and GitHub keeps at most ten per person.
+    // The token is dropped here, never stored, logged or passed on (DEL4), and never revoked: GitHub
+    // keeps an OAuth app's authorization only while the person holds a token of it, so revoking the
+    // only one removes the authorization, and GitHub asks them to authorize Kolab again at every
+    // sign-in. With no scope requested, it reads public data only, as long as the app only ever
+    // requests no scope. An OAuth app's tokens don't expire on a timer: GitHub keeps at most 10 per
+    // user and app, revoking the oldest past that, and drops one unused for a year.
     return { subject: String(me.id), login: me.login, name: typeof me.name === 'string' && me.name ? me.name : undefined };
   }
 }

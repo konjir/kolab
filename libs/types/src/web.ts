@@ -158,6 +158,12 @@ export interface WebNodeView {
   in_review: WebReview[];
   /** The session's own drafts of this node, such as one returned with changes requested. */
   drafts: WebVersion[];
+  /**
+   * The session's own versions of this node that were folded onto a newer version (Kolab settles
+   * the original as rejected, "folded into" the fold): each `seq` with the fold's `into`. A fold may
+   * be folded again, so a reader follows the chain.
+   */
+  folded?: { seq: number; into: number }[];
   /** Whether the session may write this node: its layer is the session's, and its access covers it. */
   can_write: boolean;
   /** Rulings on the node as a whole, newest first. */

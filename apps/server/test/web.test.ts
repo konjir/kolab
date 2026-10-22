@@ -248,7 +248,7 @@ test('a version goes through review in the page: in review, changes requested, r
 });
 
 test('a draft that came back is edited in place: the page resubmits it edited, and the new version carries the links it dropped and declared', async () => {
-  const { kolab, engineer } = await specAndBinding();
+  const { kolab, engineer, product } = await specAndBinding();
   await people(kolab, 'erin', { layers: ['technical'] });
   const base = await serve(kolab);
   const bob = await signIn(base, engineer);
@@ -262,6 +262,8 @@ test('a draft that came back is edited in place: the page resubmits it edited, a
   expect((await kolab.submit(engineer, v2)).in_review).toBe(true);
   expect((await erin.call<WebOutcome>('nodes/orders-pg/versions/2/review', { verdict: 'request_changes', note: 'Say which email.' })).status).toBe(200);
   expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.drafts).toStrictEqual([expect.objectContaining({ seq: 2, state: 'drafted', base: 1 })]);
+  // Meanwhile the spec b3 links to commits again, R1 still there: the carried link is pinned to orders@2, as a fresh link would be.
+  await kolab.commit(product, 'orders', { elements: els({ R1: 'Office staff can cancel an order.', R2: 'A cancelled order is refunded in full, shipping included.' }) });
 
   // The page sends its changes against v1, edited, in place of v2.
   const out = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 1, replaces: 2, changes: [{ kind: 'add', element: 'b3', text: 'Cancelling sends the customer a cancellation email.' }] })).body;
@@ -273,8 +275,9 @@ test('a draft that came back is edited in place: the page resubmits it edited, a
     ['b1', 'orders.status allows cancel from Open.'], ['b2', 'Refunds go through the payments queue.'], ['b3', 'Cancelling sends the customer a cancellation email.'],
   ]);
   expect(v3.removes).toStrictEqual([{ kind: 'dependency', source: 'kj:orders-pg@3#b2', target: 'kj:orders#R2' }]);
-  const own = await kolab.db.query(`select e.source_element_id, e.target_element_id from edge e join version v on v.id = e.source_version_id where v.node_id = 'orders-pg' and v.seq = 3`);
-  expect(own.rows).toStrictEqual([{ source_element_id: 'b3', target_element_id: 'R1' }]);
+  const own = await kolab.db.query(`select e.source_element_id, e.target_element_id, t.seq as target_seq from edge e join version v on v.id = e.source_version_id
+    join version t on t.id = e.target_version_id where v.node_id = 'orders-pg' and v.seq = 3`);
+  expect(own.rows).toStrictEqual([{ source_element_id: 'b3', target_element_id: 'R1', target_seq: 2 }]);
 
   // Approved, it commits as v3 did: b3 linked, b2's link gone.
   expect((await erin.call<WebOutcome>('nodes/orders-pg/versions/3/review', { verdict: 'approve' })).body).toMatchObject({ committed: true, seq: 3 });
@@ -288,6 +291,47 @@ test('a draft that came back is edited in place: the page resubmits it edited, a
   expect((await bob.call<WebOutcome>(`nodes/orders-pg/versions/${(await kolab.version(v5)).seq}/review`, { verdict: 'approve' })).body).toMatchObject({ committed: true });
   const old = await bob.call<{ error: string }>('nodes/orders-pg/submit', { base: (await kolab.latestCommitted('orders-pg'))!.seq, replaces: (await kolab.version(v4)).seq, changes: [{ kind: 'override', element: 'b1', text: 'y' }] });
   expect([old.status, old.body.error]).toStrictEqual([409, 'stale']);
+});
+
+test('editing a draft that came back: a carried link whose target element is gone is refused by name; two resubmits at once leave one version in review', async () => {
+  const { kolab, engineer, product } = await specAndBinding();
+  await people(kolab, 'erin', { layers: ['technical'] });
+  const base = await serve(kolab);
+  const bob = await signIn(base, engineer);
+  const erin = await signIn(base, await kolab.openSession('erin', 'engineer'));
+  const returned = async (text: string) => {
+    const v = await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.', b2: 'Refunds go through the payments queue.', b3: text }) });
+    await kolab.link(engineer, { kind: 'dependency', source: v, sourceElement: 'b3', target: (await kolab.latestCommitted('orders'))!.id, targetElement: 'R2' });
+    expect((await kolab.submit(engineer, v)).in_review).toBe(true);
+    const seq = (await kolab.version(v)).seq;
+    expect((await erin.call(`nodes/orders-pg/versions/${seq}/review`, { verdict: 'request_changes', note: 'Not yet.' })).status).toBe(200);
+    return seq;
+  };
+
+  // Two resubmits of one returned draft at once (a double click, two tabs): one goes into review, the other is refused, and the draft is abandoned once.
+  const v2 = await returned('Refunds are emailed.');
+  const edit = { base: 1, replaces: v2, changes: [{ kind: 'add', element: 'b3', text: 'Refunds are emailed to the customer.' }] };
+  const both = await Promise.all([bob.call<WebOutcome>('nodes/orders-pg/submit', edit), bob.call<WebOutcome>('nodes/orders-pg/submit', edit)]);
+  expect(both.map((r) => r.status).sort()).toStrictEqual([200, 409]);
+  const after = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
+  expect([after.drafts, after.in_review.map((r) => r.author)]).toStrictEqual([[], ['bob']]);
+  // While it waits, replacing another returned draft is refused: one version of Bob's in review per node.
+  const waiting = after.in_review[0].seq;
+  const v5 = await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.', b2: 'Refunds go through the payments queue.' }) });
+  await kolab.db.query(`update version set state = 'drafted' where id = $1`, [v5]);   // as if returned
+  const second = await bob.call<{ error: string; message: string }>('nodes/orders-pg/submit', { base: 1, replaces: (await kolab.version(v5)).seq, changes: [{ kind: 'override', element: 'b2', text: 'Refunds go through the queue.' }] });
+  expect([second.status, second.body.error]).toStrictEqual([409, 'conflict']);
+  expect(second.body.message).toMatch(new RegExp(`orders-pg@${waiting} of yours is in review already`));
+  expect((await bob.call(`nodes/orders-pg/versions/${waiting}/abandon`, {})).status).toBe(200);
+  expect((await bob.call(`nodes/orders-pg/versions/${(await kolab.version(v5)).seq}/abandon`, {})).status).toBe(200);
+
+  // A returned draft links b3 to R2; the spec then commits without R2: the link can't be carried, and the refusal names it.
+  const v = await returned('Refunds are emailed again.');
+  await kolab.commit(product, 'orders', { elements: els({ R1: 'Office staff can cancel an order.' }) });
+  const gone = await bob.call<{ error: string; message: string }>('nodes/orders-pg/submit', { base: 1, replaces: v, changes: [{ kind: 'add', element: 'b3', text: 'Refunds are emailed, always.' }] });
+  expect(gone.status).toBe(400);
+  expect(gone.body.message).toMatch(new RegExp(`orders-pg@${v} links to kj:orders@1#R2, which version 2 no longer has`));
+  expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.drafts.map((d) => d.seq)).toStrictEqual([v]);   // nothing written, the draft kept
 });
 
 test('a page reads and writes only its session\'s kolab', async () => {
