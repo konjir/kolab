@@ -3,7 +3,7 @@
 // to Kolab's web API. Kolab's own behavior is apps/server/test/web.test.ts's.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { WebMark, WebMe, WebNodeView, WebQuery } from '@konjir/types';
+import { nobodyCanReview, type WebMark, type WebMe, type WebNodeView, type WebQuery } from '@konjir/types';
 import { NodeView } from '../src/components/NodeView.js';
 import type { Act } from '../src/components/Marks.js';
 import { parseRoute } from '../src/App.js';
@@ -150,6 +150,19 @@ test('a committed spec with a newer version in review still reads the committed 
   expect(link.getAttribute('href')).toBe('#/node/password-reset@4');
   fireEvent.click(link);
   expect(read).toHaveBeenCalledWith(4);
+});
+
+test('when nobody else can review a version yet, the page says so and how to get a reviewer, in the bar and on submitting (D65)', async () => {
+  view(lee, spec({ in_review: [{ seq: 4, author: 'lee', at, reviewers: [], for_me: false }] }));
+  expect(await screen.findByText(new RegExp(nobodyCanReview('functional').replace(/[.]/g, '\\.')))).toBeTruthy();
+  cleanup();
+  view(lee, spec());
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+  fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
+  replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: [], note: null, cascade_queued: false, abandoned: false };
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Submit for review' })); });
+  await waitFor(() => expect(screen.getByText(/Structural checks passed\. Nobody else can review the functional layer yet\. Invite a product teammate, or connect an agent of yours with the product role\./)).toBeTruthy());
 });
 
 test('an engineer reading the spec may ask, not edit', async () => {

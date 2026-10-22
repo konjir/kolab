@@ -86,13 +86,15 @@ export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me:
   return (
     <div className="qbox" data-query={q.id}>
       <div className="by">
-        {q.state === 'answered' ? <Pill tone="clean">answered</Pill> : q.mark_reason === 'role_boundary' ? <Pill tone="boundary">boundary</Pill> : <Pill tone="question">{q.kind === 'note' ? 'note' : 'asks'}</Pill>}
+        {q.state === 'answered' ? <Pill tone="clean">answered</Pill> : q.state === 'withdrawn' ? <Pill tone="boundary">withdrawn</Pill> : q.mark_reason === 'role_boundary' ? <Pill tone="boundary">boundary</Pill> : <Pill tone="question">{q.kind === 'note' ? 'note' : 'asks'}</Pill>}
         {' '}{q.raised_by ?? 'Kolab'} {q.kind === 'note' ? 'noted' : 'asked'} {ago(q.at)} on <Addr>{q.address}</Addr>
       </div>
       {q.quote && <div className="why-not">“{q.quote}”</div>}
       <blockquote>{q.question}</blockquote>
       {q.state === 'answered' ? (
         <div className="a"><span className="why-not">{q.answered_by} answered</span><br />{q.answer}</div>
+      ) : q.state === 'withdrawn' ? (
+        <div className="a"><span className="why-not">Kolab withdrew it</span><br />{q.answer}</div>
       ) : settledByMark ? (
         <span className="why-not">{q.mark_reason === 'ruled' ? 'It settles when a version amends the element.' : 'It settles with its mark.'}</span>
       ) : readOnly ? (

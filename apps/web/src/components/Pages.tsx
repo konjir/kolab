@@ -25,7 +25,7 @@ export function QuestionsView({ me, tick, act, go }: { me: WebMe; tick: number; 
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!data) return <p className="empty">Reading the questions…</p>;
   const open = data.queries.filter((q) => q.state === 'open');
-  const done = data.queries.filter((q) => q.state === 'answered');
+  const done = data.queries.filter((q) => q.state !== 'open');
   const item = (q: WebQuery) => (
     <li key={q.id} className="qitem">
       <div className="row">

@@ -6,6 +6,7 @@ import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, REVIEW_VERDICTS,
   RULING_EFFECTS, type EdgeKind, type GateResult,
+  nobodyCanReview,
 } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
 import { asAgent, thread } from './results.js';
@@ -290,7 +291,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_submit_for_review',
-    description: 'Submit a draft. Kolab runs its structural checks; if they fail, the draft stays drafted, with the reason. If they pass, the version goes into review, with a review request in the inbox of each other actor who holds Write on its layer, and commits once one approves (konjir_review). If no one else holds Write on the layer, the checks alone commit it, and it is recorded as unreviewed; a plan or work-package version always commits on the checks alone. The result names the version that committed or waits (a stale draft may be folded into a rebase). Resubmit a draft that came back with changes requested the same way; resubmitting a version still in review asks whoever can review it now, and commits it unreviewed if no one can.',
+    description: 'Submit a draft. Kolab runs its structural checks; if they fail, the draft stays drafted, with the reason. If they pass, the version goes into review, and commits once another actor who holds Write on its layer approves (konjir_review). The review request reaches only those who can review that layer in the role they work in: a person, or an agent signed in with the role that writes the layer (or not signed in there); reviewers lists them, and if it is empty, review says who to bring in. If no one else holds Write on the layer, the checks alone commit it, and it is recorded as unreviewed; a plan or work-package version always commits on the checks alone. The result names the version that committed or waits (a stale draft may be folded into a rebase). Resubmit a draft that came back with changes requested the same way; resubmitting a version still in review asks whoever can review it now, and commits it unreviewed if no one else holds Write on its layer any more.',
     schema: submit,
   })
   submitForReview({ node, version }: z.infer<typeof submit>, context?: McpToolContext) {
@@ -358,7 +359,9 @@ export class AgentTools {
       ...(r.rebases ? { rebases_queued: r.rebases } : {}),
       stale_after_commit: r.ok ? await kolab.marksFor(session, { node: n.id }) : [],
       next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
-        : r.in_review ? `In review: ${r.reviewers?.length ? `${r.reviewers.join(', ')} each have a review request in their inbox, and ` : ''}one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
+        : r.in_review ? (r.reviewers?.length
+          ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request in their inbox, and one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
+          : `In review. ${nobodyCanReview(v.layer)} The verdict comes back in your answers (konjir_list_reviews).`)
         : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
         : `Not committed: the checks found what the review names. The draft stays yours, drafted: draft a new version that fixes it (and konjir_abandon node=${node} version=${submitted ?? v.seq}), or resubmit it if the finding was wrong.`,
     };
@@ -414,7 +417,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_ask',
-    description: 'Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer.',
+    description: 'Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer.',
     schema: ask,
   })
   ask(a: z.infer<typeof ask>, context?: McpToolContext) {

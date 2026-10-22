@@ -3,7 +3,7 @@
 // and every inbox change is pushed to subscribed agents.
 import { expect, test } from '@jest/globals';
 import { Kolab, RoleError, sessionKey } from '@konjir/engine';
-import type { KolabEvent } from '@konjir/types';
+import { nobodyCanReview, type KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
 import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
@@ -100,13 +100,16 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request) and before Read-only sessions' marks and mark-raised questions (0022),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022) and before questions about versions in review (0023),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      alter table query drop constraint query_state_check;
+      alter table query add constraint query_state_check check (state in ('open','answered'));
+      alter table query drop column asked_version_id;
       drop policy kolab_read on query;
       create policy kolab_read on query for select to kj_agent
         using (kolab_id = (select kj_session_kolab())
@@ -334,4 +337,47 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
 
   // Nobody reads someone else's answers.
   expect(await rejection(pm.readResource({ uri: 'konjir://answers/test/eng' }))).toMatch(/your own answers/);
+});
+
+test('over MCP: an engineer agent asks about a version in review, and konjir_submit_for_review says who can review, or that nobody can yet (D65)', async () => {
+  const server = await startServer({ adminToken: 'admin', ...(await testStore()) });
+  closeAtEnd(server);
+  const admin = await connect(server.url, 'admin');
+  closeAtEnd(admin);
+  // Pat, a product owner, works in an organization's kolab with an agent of Pat's that holds Write
+  // on both layers and is signed in as engineer: the one other writer on the functional layer.
+  await call(admin, 'admin_add_organization', { id: 'shop' });
+  await call(admin, 'admin_add_kolab', { name: 'checkout', owner: 'shop' });
+  await call(admin, 'admin_add_actor', { id: 'pat' });
+  await call(admin, 'admin_add_actor', { id: 'pat-eng', owner: 'pat' });
+  for (const to of ['pat', 'pat-eng']) await call(admin, 'admin_grant', { kolab: 'checkout', to, level: 'write' });
+  const open = async (actor: string, role: 'product' | 'engineer') => {
+    const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
+    const c = await connect(server.url, token);
+    closeAtEnd(c);
+    return c;
+  };
+  const pat = await open('pat', 'product');
+  const eng = await open('pat-eng', 'engineer');
+
+  await call(pat, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(pat, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }, { id: 'R2', text: 'A failed payment can be retried.' }] });
+  const submitted = await call(pat, 'submit_for_review', { node: 'checkout', version: 1 }) as { in_review: string; reviewers: string[]; review: string; next: string };
+  expect(submitted).toMatchObject({ ok: false, in_review: 'kj:checkout@1', reviewers: [] });
+  expect(submitted.review).toContain(nobodyCanReview('functional'));
+  expect(submitted.next).toBe(`In review. ${nobodyCanReview('functional')} The verdict comes back in your answers (konjir_list_reviews).`);
+  // The engineer agent is not asked to review a layer its role can't write.
+  expect(await call(eng, 'list_reviews', {})).toMatchObject({ for_you: [] });
+
+  // It asks about R2 of the version in review; without @version it is told which address to use.
+  expect(await rejection(call(eng, 'ask', { address: 'kj:checkout#R2', question: 'How many retries?' }))).toMatch(/checkout@1 is in review: ask about kj:checkout@1#R2/);
+  const { query } = await call(eng, 'ask', { address: 'kj:checkout@1#R2', question: 'How many retries?' }) as { query: string };
+  expect(await call(pat, 'answer_query', { query, answer: 'Three times.' })).toStrictEqual({ answered: query });
+
+  // A second product writer: resubmitted, the version names them.
+  await call(admin, 'admin_add_actor', { id: 'quinn' });
+  await call(admin, 'admin_grant', { kolab: 'checkout', to: 'quinn', level: 'write', layers: ['functional'] });
+  expect(await call(pat, 'submit_for_review', { node: 'checkout', version: 1 })).toMatchObject({
+    in_review: 'kj:checkout@1', reviewers: ['quinn'], next: expect.stringMatching(/^In review: quinn has a review request in their inbox/),
+  });
 });

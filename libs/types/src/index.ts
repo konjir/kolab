@@ -112,7 +112,12 @@ export const EDGE_KINDS = ['dependency', 'derivation', 'equivalence'] as const;
 export type EdgeKind = typeof EDGE_KINDS[number];
 export const QUERY_KINDS = ['question', 'note'] as const;
 export type QueryKind = typeof QUERY_KINDS[number];
-export const QUERY_STATES = ['open', 'answered'] as const;
+/**
+ * A question waits (open) until the layer that owns it answers it. One asked of a version in review
+ * is withdrawn when that version is abandoned or returned to its author and the element it asked
+ * about isn't in its node's latest committed version (D65); its answer then says why.
+ */
+export const QUERY_STATES = ['open', 'answered', 'withdrawn'] as const;
 export type QueryState = typeof QUERY_STATES[number];
 /**
  * A version moves from drafted, to in review, to committed (VER2). A request for changes, or a
@@ -175,6 +180,16 @@ export const LAYER_OF_KIND: Record<Kind, Layer> = {
   implementation: 'technical',
 };
 export const LAYER_OF_ROLE: Record<Role, Layer> = { product: 'functional', engineer: 'technical' };
+/** The role that writes a layer. */
+export const ROLE_OF_LAYER: Record<Layer, Role> = { functional: 'product', technical: 'engineer' };
+
+/**
+ * What a submitter is told when a version waits in review and nobody else can review it yet (D65):
+ * everyone else who holds Write on its layer is an agent signed in with the other role. The
+ * version waits; it doesn't commit unreviewed (VER11 counts who holds Write, not who is signed in).
+ */
+export const nobodyCanReview = (layer: Layer) =>
+  `Nobody else can review the ${layer} layer yet. Invite a ${ROLE_OF_LAYER[layer]} teammate, or connect an agent of yours with the ${ROLE_OF_LAYER[layer]} role. It waits in review until one of them approves it.`;
 
 export interface ElementInput { id?: string; text: string; parent?: string }
 export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string }
@@ -308,6 +323,11 @@ export interface Query {
   id: string; kind: QueryKind; address: string; question: string; state: string;
   answer: string | null; answered_by: string | null; raised_by: string | null;
   from: string | null; mark: string | null;
+  /**
+   * The version it was asked of, when the question has moved since: it was asked of a version in
+   * review that was then abandoned or returned to its author (D65). Only in the question's own kolab.
+   */
+  asked_of?: string;
 }
 
 /** One side of a case file: a claim and its evidence (CASE1), and, once ruled on, its verdict (CASE2). */

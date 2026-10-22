@@ -6,7 +6,7 @@
  */
 import type { QuoteSelector } from '@konjir/address';
 import { formatAddress } from '@konjir/address';
-import type { Kind, Layer, MarkReason, QueryKind, ReviewRequestState, VersionState } from '@konjir/types';
+import type { Kind, Layer, MarkReason, QueryKind, QueryState, ReviewRequestState, VersionState } from '@konjir/types';
 import { markBecause, NEXT_STEP, type Kolab } from './kolab.js';
 
 export interface VersionHistoryRow {
@@ -165,14 +165,18 @@ export async function ownSide(kolab: Kolab, person: string, actors: string[]): P
 
 export interface ReviewRequestRow { node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }
 
-/** The open review requests in the session's kolab, on versions still in review, oldest first. */
+/**
+ * The open review requests in the session's kolab, on versions still in review, oldest first: only
+ * those whose reviewer can review now, in the role it works in (D65, Kolab.shownRequests).
+ */
 export async function openReviewRequests(kolab: Kolab, session: string): Promise<ReviewRequestRow[]> {
   const here = await kolab.sessionKolab(session);
-  return kolab.readAs(session, async (q) => (await q.query<ReviewRequestRow & { at: Date | string }>(
+  const rows = await kolab.readAs(session, async (q) => (await q.query<ReviewRequestRow & { at: Date | string }>(
     `select n.name as node, v.seq, v.layer, v.actor_id as author, r.reviewer_id as reviewer, r.created_at as at
        from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
       where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1
       order by r.created_at, r.reviewer_id, r.id`, [here])).rows.map((r) => ({ ...r, at: iso(r.at) })));
+  return kolab.shownRequests(here, rows);
 }
 
 export interface SubmissionRow {
@@ -180,26 +184,36 @@ export interface SubmissionRow {
   verdicts: { reviewer: string; state: ReviewRequestState; note: string | null }[];
 }
 
-/** What `actor` submitted for review in the session's kolab, newest first, with the verdicts. */
+/**
+ * What `actor` submitted for review in the session's kolab, newest first, with the verdicts. An
+ * open request shows only while its reviewer can review now (D65), as openReviewRequests.
+ */
 export async function submissionsOf(kolab: Kolab, session: string, actor: string, limit = 20): Promise<SubmissionRow[]> {
   const here = await kolab.sessionKolab(session);
-  return kolab.readAs(session, async (q) => {
-    const versions = (await q.query<{ id: string; node: string; seq: number; state: VersionState; note: string | null }>(
-      `select v.id, n.name as node, v.seq, v.state, v.review_note as note
+  const rows = await kolab.readAs(session, async (q) => {
+    const versions = (await q.query<{ id: string; node: string; seq: number; state: VersionState; note: string | null; layer: Layer }>(
+      `select v.id, n.name as node, v.seq, v.state, v.review_note as note, v.layer
          from version v join node n on n.id = v.node_id
         where v.actor_id = $1 and v.kolab_id = $2 and exists (select 1 from review_request r where r.version_id = v.id)
         order by v.created_at desc, v.id desc limit $3`, [actor, here, limit])).rows;
-    const out: SubmissionRow[] = [];
+    const out: (SubmissionRow & { layer: Layer })[] = [];
     for (const { id, ...v } of versions) {
       out.push({ ...v, verdicts: (await q.query<{ reviewer: string; state: ReviewRequestState; note: string | null }>(
         `select reviewer_id as reviewer, state, note from review_request where version_id = $1 order by created_at, reviewer_id, id`, [id])).rows });
     }
     return out;
   });
+  const out: SubmissionRow[] = [];
+  for (const { layer, ...v } of rows) {
+    const open = v.verdicts.filter((x) => x.state === 'open').map((x) => ({ reviewer: x.reviewer, layer }));
+    const shown = new Set((await kolab.shownRequests(here, open)).map((x) => x.reviewer));
+    out.push({ ...v, verdicts: v.verdicts.filter((x) => x.state !== 'open' || shown.has(x.reviewer)) });
+  }
+  return out;
 }
 
 export interface QueryDetailRow {
-  id: string; kind: QueryKind; state: 'open' | 'answered'; node: string; seq: number; layer: Layer;
+  id: string; kind: QueryKind; state: QueryState; node: string; seq: number; layer: Layer;
   element: string | null; selector: QuoteSelector | null; question: string; raised_by: string | null; at: string;
   answer: string | null; answered_by: string | null;
   from_node: string | null; from_seq: number | null; from_element: string | null;
