@@ -16,9 +16,9 @@ export class JsonNestLogger implements LoggerService {
   error(message: unknown, ...params: unknown[]) { this.logger.error(message, fieldsOf(params, true)); }
   warn(message: unknown, ...params: unknown[]) { this.logger.warn(message, fieldsOf(params, false)); }
   fatal(message: unknown, ...params: unknown[]) { this.logger.error(message, { ...fieldsOf(params, true), fatal: true }); }
-  log() { /* info: not logged, as before (warn and error only) */ }
-  debug() { /* not logged */ }
-  verbose() { /* not logged */ }
+  log(..._args: unknown[]) { /* info: not logged, as before (warn and error only) */ }
+  debug(..._args: unknown[]) { /* not logged */ }
+  verbose(..._args: unknown[]) { /* not logged */ }
 }
 
 function fieldsOf(params: unknown[], withStack: boolean): LogFields {
