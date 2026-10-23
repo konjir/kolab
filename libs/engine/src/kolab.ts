@@ -5,7 +5,7 @@ import {
   type Address, type QuoteSelector, fingerprint, formatAddress, isKolabName, isNodeName, MAX_QUOTE, normalize, parseAddress,
   parseNodeRef, resolveSpan,
 } from '@konjir/address';
-import { migrate, openDb, type Db, type Listening } from '@konjir/db';
+import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konjir/db';
 import { log, maskTokens } from '@konjir/log';
 import {
   ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, VISIBILITIES,
@@ -490,14 +490,20 @@ export class Kolab {
     outboxLeaseMs?: number;
     /** How long close() waits for outbox work this process is running (10 s by default). */
     closeWaitMs?: number;
+    /**
+     * False: apply no migration, only check that the database is at this release's (checkMigrations),
+     * and write nothing on opening. For a restore's smoke check (W2.24). True by default.
+     */
+    migrate?: boolean;
   } = {}): Promise<Kolab> {
     const db = openDb(opts);
     const dataDir = !opts.databaseUrl && opts.dataDir ? resolvePath(opts.dataDir) : undefined;
     try {
-      await migrate(db);
+      if (opts.migrate === false) await checkMigrations(db);
+      else await migrate(db);
       // A PGlite directory is one process's: when no Kolab in this process holds it, any claim on
       // a job is a stopped process's, and is freed now rather than when its lease lapses.
-      if (dataDir && !openDataDirs.get(dataDir)) {
+      if (opts.migrate !== false && dataDir && !openDataDirs.get(dataDir)) {
         await db.query(`update outbox set claim = null, claimed_by = null, claimed_until = null where claim is not null`);
       }
     } catch (e) {

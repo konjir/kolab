@@ -19,7 +19,11 @@ variable "final_snapshot" { type = bool }
 variable "deletion_protection" { type = bool }
 
 # Where the instance keeps the RDS certificate bundle; the kolab module's bootstrap downloads it.
-locals { ca_path = "/etc/konjir/rds-ca.pem" }
+locals {
+  ca_path               = "/etc/konjir/rds-ca.pem"
+  storage_type          = "gp3"
+  backup_retention_days = 7
+}
 
 resource "aws_db_subnet_group" "this" {
   name       = "${var.name}-db"
@@ -48,7 +52,7 @@ resource "aws_db_instance" "this" {
   engine_version             = var.postgres_version
   instance_class             = var.instance_class
   allocated_storage          = var.allocated_gib
-  storage_type               = "gp3"
+  storage_type               = local.storage_type
   storage_encrypted          = true
   db_name                    = "kolab"
   username                   = "kolab"
@@ -57,7 +61,7 @@ resource "aws_db_instance" "this" {
   vpc_security_group_ids     = [var.security_group_id]
   publicly_accessible        = false
   multi_az                   = false
-  backup_retention_period    = 7
+  backup_retention_period    = local.backup_retention_days
   copy_tags_to_snapshot      = true
   auto_minor_version_upgrade = true
   # Deletion protection is on unless db_deletion_protection is off, which a teardown applies
@@ -87,3 +91,17 @@ output "database_url_param_arn" { value = aws_ssm_parameter.database_url.arn }
 output "endpoint" { value = aws_db_instance.this.endpoint }
 output "identifier" { value = aws_db_instance.this.identifier }
 output "ca_path" { value = local.ca_path }
+
+# What a restore into a new instance needs (deploy/RECOVERY.md), from state, so it works when the
+# instance itself is gone.
+output "recovery" {
+  value = {
+    identifier            = aws_db_instance.this.identifier
+    url_parameter         = aws_ssm_parameter.database_url.name
+    subnet_group          = aws_db_subnet_group.this.name
+    security_group        = var.security_group_id
+    instance_class        = var.instance_class
+    storage_type          = local.storage_type
+    backup_retention_days = local.backup_retention_days
+  }
+}

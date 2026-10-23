@@ -239,6 +239,37 @@ export async function migrate(
   });
 }
 
+/**
+ * Checks, writing nothing, that the database is at exactly this release's migrations: each one
+ * recorded with its file's checksum, and none this release doesn't have. It is for a Kolab
+ * started without migrating (`konjir serve --no-migrate`: a restore's smoke check, W2.24), which
+ * must never change the database it opens, so it refuses any database that `migrate` would change.
+ */
+export async function checkMigrations(
+  db: Db, { migrations: given = MIGRATIONS }: { migrations?: readonly Migration[] } = {},
+): Promise<void> {
+  const migrations = [...given].sort((a, b) => a.version - b.version);
+  const table = await db.query<{ migrations: string | null }>(`select to_regclass('public.kj_migration')::text as migrations`);
+  if (!table.rows[0].migrations) {
+    throw new Error('the database has no migration record (kj_migration), so migrating would change it; Kolab started without migrating refuses it');
+  }
+  const rows = (await db.query<{ version: number; name: string; checksum: string }>(
+    `select version, name, checksum from kj_migration order by version`)).rows;
+  for (const r of rows) {
+    const m = migrations.find((x) => x.version === r.version);
+    if (!m) throw new Error(`the database has migration ${fileOf(r)}, which this release of Kolab doesn't know; run a newer release`);
+    if (checksum(m.sql) !== r.checksum) {
+      throw new Error(`migration ${fileOf(m)} has changed since it was applied to this database; ` +
+        'restore the file as it shipped, and make the change in a new migration');
+    }
+  }
+  const pending = migrations.filter((m) => !rows.some((r) => r.version === m.version));
+  if (pending.length) {
+    throw new Error(`the database lacks ${pending.map(fileOf).join(', ')}, which this release would apply; ` +
+      'Kolab started without migrating refuses it');
+  }
+}
+
 /** Runs one file, so that its failure names it. */
 async function run(tx: Db, file: string, sql: string) {
   try {

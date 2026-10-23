@@ -3,7 +3,7 @@
  * It is an MCP client of Kolab, so there is exactly one backend.
  *
  *   konjir serve [--port 7420] [--data .konjir] [--admin-token T]
- *                [--database-url postgres://…]
+ *                [--database-url postgres://…] [--no-migrate] [--no-worker]
  *   konjir tools
  *   konjir instructions [reviewer]
  *   konjir resolve <address>
@@ -157,6 +157,8 @@ Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or 
 Version:   konjir --version
 ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--public-host kolab.example.com]
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
+        --no-migrate applies no migration (a database that needs one is refused) and --no-worker runs no
+        outbox jobs, so a restored database can be checked without changing it (deploy/RECOVERY.md).
         Sign-in with GitHub (D55): KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET, a GitHub OAuth app's,
         whose callback is <origin>/oauth/callback/github. KONJIR_WEB_TOKEN_SIGN_IN=on keeps pasting a token in the
         web page (on by default without GitHub); KONJIR_HAND_ISSUED_TOKENS=off turns admin-issued session tokens off.
@@ -269,7 +271,13 @@ export async function main(argv: string[]) {
     const sign = signInSettings(process.env);
     // The published konjir CLI, pinned (W3.7): the web page shows `npx <spec>` only when this is set.
     const cliNpmSpec = process.env.KONJIR_CLI_NPM_SPEC?.trim() || undefined;
-    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec });
+    // A restore's smoke check (W2.24) opens the restored database without changing it: no
+    // migration (a database that needs one is refused) and no outbox worker.
+    const migrate = !rest.includes('--no-migrate');
+    const worker = !rest.includes('--no-worker');
+    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
+    if (!migrate) log.info('migrations: checked, none applied (--no-migrate)');
+    if (!worker) log.info('outbox: no worker (--no-worker); no job is claimed or run');
     log.info(`sign-in: ${sign.describe}`);
     log.info(`Kolab listening on ${s.url}`, { event: 'listening', url: s.url });
     log.info(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
