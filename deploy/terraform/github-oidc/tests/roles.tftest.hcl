@@ -10,6 +10,9 @@ mock_provider "aws" {
   mock_data "aws_caller_identity" {
     defaults = { account_id = "747533038441" }
   }
+  mock_data "aws_vpc" {
+    defaults = { arn = "arn:aws:ec2:us-east-1:747533038441:vpc/vpc-0ce63124e64459538" }
+  }
   mock_data "aws_kms_alias" {
     defaults = { target_key_arn = "arn:aws:kms:us-east-1:747533038441:key/00000000-0000-0000-0000-000000000000" }
   }
@@ -69,7 +72,7 @@ run "role" {
   # the network interfaces and rules a launch or a rule makes, and Amazon's images.
   assert {
     condition = alltrue([for s in jsondecode(aws_iam_policy.ec2.policy).Statement :
-      try(s.Condition.StringEquals["aws:ResourceTag/Stack"], s.Condition.StringEquals["aws:RequestTag/Stack"], s.Condition.StringEquals["ec2:Owner"], "") != "" || s.Sid == "LaunchParts" || s.Sid == "SnapshotOfOwnVolume" || try(length(s.Condition.StringEquals["ec2:CreateAction"]) > 0, false)
+      try(s.Condition.StringEquals["aws:ResourceTag/Stack"], s.Condition.StringEquals["aws:RequestTag/Stack"], s.Condition.StringEquals["ec2:Owner"], s.Condition.StringEquals["ec2:Vpc"], "") != "" || s.Sid == "LaunchParts" || s.Sid == "SnapshotOfOwnVolume" || try(length(s.Condition.StringEquals["ec2:CreateAction"]) > 0, false)
     if s.Effect == "Allow"])
     error_message = "an EC2 allow isn't tied to production's tag"
   }
@@ -85,7 +88,7 @@ run "role" {
   }
   # The install runs only the fixed document, never AWS-RunShellScript.
   assert {
-    condition     = !strcontains(aws_iam_policy.write.policy, "AWS-RunShellScript") && strcontains(jsonencode(one([for s in jsondecode(aws_iam_policy.write.policy).Statement : s.Resource if s.Sid == "InstallAssociation"])), "document/konjir-test-install-release")
+    condition     = !strcontains(aws_iam_policy.write.policy, "AWS-RunShellScript") && strcontains(jsonencode(one([for s in jsondecode(aws_iam_policy.write.policy).Statement : s.Resource if s.Sid == "InstallDocument"])), "document/konjir-test-install-release")
     error_message = "the role may associate only the install document"
   }
   assert {
@@ -105,10 +108,34 @@ run "role" {
     condition     = alltrue([for s in jsondecode(aws_iam_policy.site.policy).Statement : s.Resource != "*" || can(s.Condition) || s.Sid == "OriginAccessAndHeaders" if s.Effect == "Allow"])
     error_message = "a CloudFront or ACM allow on every resource needs a tag condition"
   }
-  # DNS: the konjir.com zone, and only the record types production uses.
+  # Associations are changed or deleted only while tagged as production's.
   assert {
-    condition     = one([for s in jsondecode(aws_iam_policy.write.policy).Statement : s if s.Sid == "OwnDnsRecords"]).Resource == "arn:aws:route53:::hostedzone/Z0507288XMQWHJUJUA0O" && one([for s in jsondecode(aws_iam_policy.write.policy).Statement : s if s.Sid == "OwnDnsRecords"]).Condition["ForAllValues:StringEquals"]["route53:ChangeResourceRecordSetsRecordTypes"] == ["A", "AAAA", "CNAME", "TXT"]
-    error_message = "DNS changes are limited to the konjir.com zone, as A, AAAA, CNAME or TXT"
+    condition     = one([for s in jsondecode(aws_iam_policy.write.policy).Statement : s.Condition if s.Sid == "OwnAssociation"]) == { StringEquals = { "aws:ResourceTag/Stack" = "konjir-test" } } && !anytrue([for s in jsondecode(aws_iam_policy.write.policy).Statement : contains(flatten([s.Action]), "ssm:DeleteAssociation") && !can(s.Condition) if s.Effect == "Allow"])
+    error_message = "an association may be changed or deleted only while tagged Stack=konjir-test"
+  }
+  # An Elastic IP goes only to a network interface in production's VPC.
+  assert {
+    condition     = alltrue([for s in jsondecode(aws_iam_policy.ec2.policy).Statement : s.Sid == "AddressToOwnInterface" || s.Sid == "OwnResources" if s.Effect == "Allow" && contains(flatten([s.Action]), "ec2:AssociateAddress")]) && one([for s in jsondecode(aws_iam_policy.ec2.policy).Statement : s.Condition if s.Sid == "AddressToOwnInterface"]) == { StringEquals = { "ec2:Vpc" = "arn:aws:ec2:us-east-1:747533038441:vpc/vpc-0ce63124e64459538" } }
+    error_message = "AssociateAddress must reach only production's instances, addresses and network interfaces"
+  }
+  # DeleteTags with no keys (every tag) is refused.
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_policy.ec2.policy).Statement : s.Condition if s.Sid == "NeverDeleteAllTags" && s.Effect == "Deny"]) == { Null = { "aws:TagKeys" = "true" } }
+    error_message = "DeleteTags without keys must be denied"
+  }
+  # DNS: the konjir.com zone, each name only with its types, and no other names.
+  assert {
+    condition = alltrue([for s in jsondecode(aws_iam_policy.write.policy).Statement : s.Resource == "arn:aws:route53:::hostedzone/Z0507288XMQWHJUJUA0O" if contains(flatten([s.Action]), "route53:ChangeResourceRecordSets")]) && [for s in jsondecode(aws_iam_policy.write.policy).Statement : s.Condition if contains(flatten([s.Action]), "route53:ChangeResourceRecordSets")] == [
+      { "ForAllValues:StringEquals" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["kolab.konjir.com", "konjir.com", "www.konjir.com"], "route53:ChangeResourceRecordSetsRecordTypes" = ["A", "AAAA"] } },
+      { "ForAllValues:StringLike" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["_????????????????????????????????.konjir.com", "_????????????????????????????????.www.konjir.com"] }, "ForAllValues:StringEquals" = { "route53:ChangeResourceRecordSetsRecordTypes" = ["CNAME"] } },
+      { "ForAllValues:StringEquals" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["konjir.com", "_dmarc.konjir.com"], "route53:ChangeResourceRecordSetsRecordTypes" = ["TXT"] } },
+    ]
+    error_message = "DNS changes: A/AAAA for kolab, the apex and www; CNAME for ACM's validation names; TXT for the apex and _dmarc; in the konjir.com zone only"
+  }
+  # Only Amazon and Let's Encrypt may issue for konjir.com, and no one a wildcard.
+  assert {
+    condition     = aws_route53_record.caa.type == "CAA" && aws_route53_record.caa.name == "konjir.com" && toset(aws_route53_record.caa.records) == toset(["0 issue \"amazon.com\"", "0 issue \"letsencrypt.org\"", "0 issuewild \";\""])
+    error_message = "konjir.com's CAA names Amazon and Let's Encrypt only, and forbids wildcards"
   }
   # A trust is never set or changed from CI, and no role made or deleted.
   assert {
