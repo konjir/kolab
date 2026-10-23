@@ -16,5 +16,18 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
+  },
+  "nx": {
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "jest",
+          "{workspaceRoot}/deploy/release/journal-copy.py",
+          "{workspaceRoot}/deploy/release/test_journal_copy.py"
+        ]
+      }
+    }
   }
 }

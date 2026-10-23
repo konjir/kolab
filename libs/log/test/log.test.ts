@@ -1,5 +1,10 @@
 import { expect, test } from '@jest/globals';
+import { readFileSync } from 'node:fs';
 import { createLogger, logLine, maskSecrets, maskTokens, type LogLevel } from '../src/index.js';
+
+const VECTORS = JSON.parse(readFileSync(new URL('./mask-vectors.json', import.meta.url), 'utf8')) as {
+  text: [string, string][]; secretFields: string[]; plainFields: string[];
+};
 
 const NOW = new Date('2026-10-22T12:00:00.000Z');
 
@@ -33,46 +38,22 @@ test('every token in the message and in the fields is masked, however deep', () 
   });
 });
 
-test('a password in a URL and a bearer or basic credential are masked', () => {
-  expect(maskSecrets('connect postgres://kolab:s3cr3t@db.internal:5432/kolab?sslmode=verify-full failed'))
-    .toBe('connect postgres://kolab:***@db.internal:5432/kolab?sslmode=verify-full failed');
-  expect(maskSecrets('Authorization: Bearer abc.def-ghi.jkl')).toBe('Authorization: Bearer ***');
-  expect(maskSecrets('Authorization: Basic dXNlcjpwYXNzd29yZA==')).toBe('Authorization: Basic ***');
-  expect(maskSecrets('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl')).toBe('Authorization: Bearer ***');
-  expect(maskSecrets('https://kolab.konjir.com/healthz')).toBe('https://kolab.konjir.com/healthz');
+test.each(VECTORS.text)('maskSecrets(%j) is %j (test/mask-vectors.json, shared with journal-copy.py)', (input, masked) => {
+  expect(maskSecrets(input)).toBe(masked);
 });
 
-test('Bearer and Basic are matched as HTTP spells them, and only before a credential-like word', () => {
-  for (const plain of ['a basic check failed', 'Basic check failed', 'Bearer of bad news', 'the Bearer token was missing', 'bearer abcdefgh12345678', 'Basic authentication failed'])
-    expect(maskSecrets(plain)).toBe(plain);
-  expect(maskSecrets('Bearer abcdefghijklmnopqrstuvwxyz')).toBe('Bearer ***');
+test('a field named in test/mask-vectors.json as secret is written as ***, and a plain one is kept', () => {
+  const fields = Object.fromEntries([...VECTORS.secretFields, ...VECTORS.plainFields].map((k) => [k, 'value']));
+  const parsed = JSON.parse(logLine('info', 'm', fields, NOW));
+  for (const k of VECTORS.secretFields) expect([k, parsed[k]]).toStrictEqual([k, '***']);
+  for (const k of VECTORS.plainFields) expect([k, parsed[k]]).toStrictEqual([k, 'value']);
 });
 
-test('every kj<letter>_ token is masked, the admin token (kja_) among them', () => {
+test('the admin token (kja_) and GitHub\'s tokens are masked by maskTokens too, and in fields', () => {
   const admin = 'kja_Q2xIb3dTZWNyZXRBZG1pblRva2VuMTIzNDU2';
   expect(maskTokens(new Error(`admin ${admin} rejected`))).toBe('admin kja_*** rejected');
-  expect(maskSecrets(`admin ${admin} rejected`)).toBe('admin kja_*** rejected');
-  expect(maskTokens('kjs_a kjr_b kjc_c kji_d kjz_e')).toBe('kjs_*** kjr_*** kjc_*** kji_*** kjz_***');
-  expect(logLine('error', `admin ${admin} rejected`, { detail: [admin] }, NOW)).not.toContain('Q2xIb3dT');
-});
-
-test('GitHub\'s tokens are masked', () => {
-  const tokens = ['gho_16C7e42F292c6912E7710c838347Ae178B4a', 'ghu_16C7e42F292c6912E7710c838347Ae178B4a', 'ghs_16C7e42F292c6912E7710c838347Ae178B4a',
-    'ghr_1B4a2e77838347a7E420ce178F2E7c6912E169246c34E1ccbF66C46812d16D5B1A9Dc86A1498', 'ghp_16C7e42F292c6912E7710c838347Ae178B4a',
-    'github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
-  for (const t of tokens) {
-    const prefix = t.startsWith('github_pat_') ? 'github_pat' : t.slice(0, 3);
-    expect(maskTokens(new Error(`GitHub refused ${t}`))).toBe(`GitHub refused ${prefix}_***`);
-    expect(logLine('warn', `GitHub refused ${t}`, { error: new Error(t) }, NOW)).not.toContain(t.slice(-12));
-  }
-  expect(maskSecrets('the ghost_town and a ghoul stay')).toBe('the ghost_town and a ghoul stay');
-});
-
-test('an OAuth code or state in a query string is masked', () => {
-  expect(maskSecrets('GET /api/session/oauth/callback?code=kjc_abc&state=xyz123 answered 502'))
-    .toBe('GET /api/session/oauth/callback?code=***&state=*** answered 502');
-  expect(maskSecrets('/oauth/callback/github?state=s1&code=3584d83530557fdd1f46')).toBe('/oauth/callback/github?state=***&code=***');
-  expect(maskSecrets('/path?other=1&encode=x')).toBe('/path?other=1&encode=x');
+  expect(maskTokens(new Error('GitHub refused gho_16C7e42F292c6912E7710c838347Ae178B4a'))).toBe('GitHub refused gho_***');
+  expect(logLine('error', 'm', { detail: [admin], error: new Error('ghs_16C7e42F292c6912E7710c838347Ae178B4a') }, NOW)).not.toMatch(/Q2xIb3dT|C7e42F/);
 });
 
 test('a field whose name says it holds a secret is never written, whatever it holds', () => {

@@ -3,12 +3,14 @@
 #
 # - Logs: the log group /konjir/<name>, kept 30 days. The release's deploy/release/observe.sh
 #   installs the CloudWatch agent on the instance and ships the journal of konjir.service and
-#   caddy.service into it, as the streams `konjir` and `caddy`: Kolab's own lines are JSON, one
-#   object per line, and systemd's lines about each unit are beside them as plain text. Nothing here
+#   caddy.service into it, as the streams `konjir` and `caddy`, through its journal copy
+#   (deploy/release/journal-copy.py): every line masked and at most 16 KiB; Kolab's and Caddy's JSON
+#   lines with the journal's _SYSTEMD_UNIT added; systemd's own lines about each unit as JSON with
+#   the journal's _PID 1 and UNIT; and a heartbeat from each copy every 5 minutes. Nothing here
 #   touches the boot script, so nothing replaces the instance.
 # - Alarms: /healthz (a Route 53 health check), Kolab or Caddy exiting, a dead outbox job, a spike
-#   in Kolab's error lines, no lines shipped for 30 minutes, the instance's root disk filling, and
-#   RDS CPU and free storage. Each emails the SNS topic when it fires and when it
+#   in Kolab's error lines, no fresh heartbeat from a journal copy for 30 minutes, a flood of log
+#   lines (cost), the instance's root disk filling, and RDS CPU and free storage. Each emails the SNS topic when it fires and when it
 #   recovers. README: "Alarms" says what each means and what to do.
 
 variable "name" { type = string }
@@ -30,6 +32,12 @@ variable "server_error_threshold" {
   description = "Kolab's error-level lines in 5 minutes that count as a spike, in 2 of 3 such periods."
   type        = number
   default     = 10
+}
+
+variable "log_flood_gib_per_hour" {
+  description = "GiB ingested into the log group in an hour above which the flood alarm fires: at $0.50 a GB, a flood costs money before it fills anything."
+  type        = number
+  default     = 1
 }
 
 variable "disk_used_percent" {
@@ -225,24 +233,72 @@ resource "aws_cloudwatch_metric_alarm" "errors" {
 
 # ---- The shipping itself, and the instance
 
-# Each journal copy writes a heartbeat line every 5 minutes, so the log group hears something even
-# from an idle Kolab. Nothing for 30 minutes: the copies, the agent or observe.sh have stopped (or
-# the instance is gone), and the alarms above that count lines are blind.
+# Each journal copy writes a probe into its unit's journal every 5 minutes, reads it back through
+# journalctl, and writes a heartbeat line with how long ago it last read a journal line
+# (journal_age_s). A fresh heartbeat (under 15 minutes) proves the whole path: journald,
+# journalctl, the copy, the agent and the log group. Each filter emits 0 for every other line the
+# group receives (default_value), so a copy that goes quiet or stale while the other still ships
+# reads as 0, not as missing; and nothing at all, from both, is missing data, which breaches.
+resource "aws_cloudwatch_log_metric_filter" "heartbeats" {
+  for_each       = toset(["konjir", "caddy"])
+  name           = "${var.name}-${each.key}-heartbeat"
+  log_group_name = aws_cloudwatch_log_group.kolab.name
+  pattern        = "{ $.event = \"heartbeat\" && $.unit = \"${each.key}.service\" && $.journal_age_s < 900 }"
+  metric_transformation {
+    name          = "FreshHeartbeats-${each.key}"
+    namespace     = local.namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "no_logs" {
   alarm_name          = "${var.name}-no-logs"
-  alarm_description   = "CloudWatch Logs ${local.log_group} has received no lines for 30 minutes, so the log alarms are blind. In a shell: systemctl status konjir-journal@konjir konjir-journal@caddy amazon-cloudwatch-agent; a release's observe_failed line says why observe.sh failed; see README, Alarms."
-  namespace           = "AWS/Logs"
-  metric_name         = "IncomingLogEvents"
-  dimensions          = { LogGroupName = aws_cloudwatch_log_group.kolab.name }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 6
+  alarm_description   = "No fresh heartbeat from the journal copy of konjir.service or caddy.service for 30 minutes: the copy, journalctl, the CloudWatch agent or observe.sh has stopped, so the log alarms are blind. In a shell: systemctl status konjir-journal@konjir konjir-journal@caddy amazon-cloudwatch-agent, and journalctl -t konjir-observe for an observe_failed line; see README, Alarms."
   comparison_operator = "LessThanThreshold"
   threshold           = 1
-  # No data is what this alarm is for.
+  evaluation_periods  = 3
+  # No data at all is what this alarm is for.
   treat_missing_data = "breaching"
   alarm_actions      = local.topic
   ok_actions         = local.topic
+  depends_on         = [aws_cloudwatch_log_metric_filter.heartbeats]
+
+  metric_query {
+    id          = "fresh"
+    expression  = "MIN([konjir, caddy])"
+    label       = "Fresh heartbeats from the quieter copy"
+    return_data = true
+  }
+  dynamic "metric_query" {
+    for_each = toset(["konjir", "caddy"])
+    content {
+      id = metric_query.key
+      metric {
+        namespace   = local.namespace
+        metric_name = "FreshHeartbeats-${metric_query.key}"
+        stat        = "Sum"
+        period      = 600
+      }
+    }
+  }
+}
+
+# A log flood is rotated on the instance, but every line shipped is paid for ($0.50 a GB).
+resource "aws_cloudwatch_metric_alarm" "log_flood" {
+  alarm_name          = "${var.name}-log-flood"
+  alarm_description   = "Over ${var.log_flood_gib_per_hour} GiB of log lines in an hour into ${local.log_group}, at $0.50 a GB. Find the line that repeats (CloudWatch Logs Insights: stats count(*) by message), then fix or restart what writes it; see README, Alarms."
+  namespace           = "AWS/Logs"
+  metric_name         = "IncomingBytes"
+  dimensions          = { LogGroupName = aws_cloudwatch_log_group.kolab.name }
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.log_flood_gib_per_hour * 1024 * 1024 * 1024
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.topic
+  ok_actions          = local.topic
 }
 
 # The agent's root-disk use (observe.sh), whatever its dimensions (the instance, the device's file
@@ -308,7 +364,7 @@ output "alarm_names" {
   value = concat(
     [aws_cloudwatch_metric_alarm.healthz.alarm_name, aws_cloudwatch_metric_alarm.service_exits.alarm_name],
     [aws_cloudwatch_metric_alarm.outbox_dead.alarm_name, aws_cloudwatch_metric_alarm.errors.alarm_name],
-    [aws_cloudwatch_metric_alarm.no_logs.alarm_name, aws_cloudwatch_metric_alarm.disk.alarm_name],
+    [aws_cloudwatch_metric_alarm.no_logs.alarm_name, aws_cloudwatch_metric_alarm.log_flood.alarm_name, aws_cloudwatch_metric_alarm.disk.alarm_name],
     [aws_cloudwatch_metric_alarm.db_cpu.alarm_name, aws_cloudwatch_metric_alarm.db_storage.alarm_name],
   )
 }
