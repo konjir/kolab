@@ -2,7 +2,7 @@
 # Checks that a deployed Kolab answers (W2.23): .github/workflows/deploy.yml runs it after each
 # apply, and anyone can run it by hand. It needs no token and sends none.
 #
-#   deploy/smoke.sh https://staging.kolab.konjir.com
+#   deploy/smoke.sh https://kolab.konjir.com
 #
 # - /healthz answers 200 "ok", which needs Kolab, its database and Caddy. A fresh environment waits
 #   for DNS and its first certificate, so it retries for up to SMOKE_WAIT seconds (default 600).

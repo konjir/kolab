@@ -1,5 +1,5 @@
 variable "aws_profile" {
-  description = "AWS CLI profile used for every resource. Null: the environment's credentials, AWS_PROFILE on Lee's machine (deploy/konjir-ops.sh sets icedlee337) and the OIDC role's in CI."
+  description = "AWS CLI profile used for every resource. Null: the environment's credentials, AWS_PROFILE on Lee's machine (deploy/konjir-ops.sh sets icedlee337) and the OIDC role in CI."
   type        = string
   default     = null
 }
@@ -10,10 +10,22 @@ variable "region" {
   default     = "us-east-1"
 }
 
+variable "name" {
+  description = "Name prefix for every resource; also the tag that groups them."
+  type        = string
+  default     = "konjir-test"
+}
+
 variable "zone_name" {
   description = "Route 53 hosted zone that already exists in the account."
   type        = string
   default     = "konjir.com"
+}
+
+variable "domain_name" {
+  description = "Public hostname for Kolab. Must be inside zone_name."
+  type        = string
+  default     = "kolab.konjir.com"
 }
 
 variable "availability_zone" {
@@ -23,21 +35,21 @@ variable "availability_zone" {
 }
 
 variable "instance_type" {
-  description = "Graviton instance for Kolab. Null: the environment's (environments.tf)."
+  description = "Graviton instance for Kolab."
   type        = string
-  default     = null
+  default     = "t4g.small"
 }
 
 variable "data_volume_gib" {
-  description = "Size of Kolab's data volume. Null: the environment's."
+  description = "Size of Kolab's data volume."
   type        = number
-  default     = null
+  default     = 20
 }
 
 variable "final_snapshot_on_destroy" {
-  description = "Snapshot the data volume and the database when they are destroyed. Set false for a teardown that leaves nothing behind. Null: the environment's (true for production, false for staging)."
+  description = "Snapshot the data volume and the database when they are destroyed. Set false for a teardown that leaves nothing behind."
   type        = bool
-  default     = null
+  default     = true
 }
 
 variable "letsencrypt_email" {
@@ -59,15 +71,15 @@ variable "postgres_version" {
 }
 
 variable "db_instance_class" {
-  description = "RDS instance class for Kolab's database. Null: the environment's."
+  description = "RDS instance class for Kolab's database."
   type        = string
-  default     = null
+  default     = "db.t4g.micro"
 }
 
 variable "db_allocated_gib" {
-  description = "Storage for Kolab's database. Null: the environment's."
+  description = "Storage for Kolab's database."
   type        = number
-  default     = null
+  default     = 20
 }
 
 variable "db_deletion_protection" {
@@ -85,6 +97,12 @@ variable "alarm_email" {
     condition     = var.alarm_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alarm_email))
     error_message = "alarm_email is an email address, or empty."
   }
+}
+
+variable "github_oauth_client_id" {
+  description = "Client id of the GitHub OAuth app people sign in with (D55); it is public. Its callback URL is https://<domain_name>/oauth/callback/github. Its secret is never Terraform's: put it with aws ssm put-parameter (README). Empty: no GitHub sign-in."
+  type        = string
+  default     = "Ov23licO2Gy9ngM4tgPE"
 }
 
 variable "cli_npm_spec" {
@@ -106,8 +124,8 @@ variable "site_enabled" {
 }
 
 # A release built before Terraform runs (W2.23, D76): .github/workflows/deploy.yml packs the commit
-# once with deploy/release/pack.sh and hands both environments the same zip. Both null: Terraform
-# runs pack.sh on app_source_dir itself, as a local apply always has.
+# once with deploy/release/pack.sh and applies that zip. Both null: Terraform runs pack.sh on
+# app_source_dir itself, as a local apply always has.
 variable "release_zip" {
   description = "Path to a release zip deploy/release/pack.sh wrote. Set with release_id, or neither."
   type        = string
@@ -115,13 +133,13 @@ variable "release_zip" {
 }
 
 variable "release_id" {
-  description = "The release id pack.sh printed for release_zip: the commit's tree id."
+  description = "The release id pack.sh printed for release_zip: the commit's tree id without site/."
   type        = string
   default     = null
 
   validation {
     condition     = var.release_id == null || can(regex("^[0-9a-f]{40}([0-9a-f]{24})?$", var.release_id))
-    error_message = "release_id is a git tree id (40 or 64 hex characters)."
+    error_message = "release_id is a tree id (40 or 64 hex characters)."
   }
   validation {
     condition     = (var.release_id == null) == (var.release_zip == null)

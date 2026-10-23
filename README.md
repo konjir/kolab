@@ -370,96 +370,99 @@ npx nx run @konjir/web:e2e         # the demo Kolab and Chromium: Lee answers, e
 
 ## Deploying to AWS
 
-Two Kolabs run from one Terraform configuration, `deploy/terraform` (D73, W2.23), each with its own state, server, database and domain. CI deploys both: every merge to main goes to staging on its own, then to production once Lee approves it. Lee approves applies; he doesn't run them. The one apply he runs from his machine is the one-time setup of the roles CI deploys with (below).
-
-| | Production | Staging |
-| --- | --- | --- |
-| Site | `https://kolab.konjir.com` | `https://staging.kolab.konjir.com` |
-| Name prefix (every resource, the `Stack` tag, `/konjir/<name>/…` in SSM) | `konjir-test` (named before staging existed; a new name would replace everything) | `konjir-staging` |
-| State | `s3://konjir-terraform/konjir/test/terraform.tfstate` | `s3://konjir-terraform/konjir/staging/terraform.tfstate` |
-| Instance, database | `t4g.small`, `db.t4g.micro` with 20 GB | the same sizes (a release builds on the instance, which a `t4g.micro` can't hold), and a 1 GiB data volume |
-| GitHub OAuth app (D55) | its own, client id `Ov23licO2Gy9ngM4tgPE` | its own, client id empty until Lee creates it |
-| Teardown | keeps final snapshots | leaves nothing |
-| Deployed | after Lee approves the run | on every merge to main |
-
-`deploy/terraform/modules/environments` lists both; nothing in it is a secret. `terraform` takes the environment as `-var environment=<production|staging>` (or `TF_VAR_environment`), and `init` takes its state key from `environments/<environment>.s3.tfbackend`. A variable set by hand, such as `instance_type`, still wins over the environment's. `terraform test` in `deploy/terraform` applies both environments to mocked providers, offline, and checks that production keeps its names and state key and that staging has its own; CI runs it.
-
-Staging costs about the same as production, roughly $30–35 a month at list price plus about $5 for logs and alarms: the instance and the database are already the smallest that work. `terraform destroy` on staging (below) stops it costing anything.
+Terraform, in `deploy/terraform`, provisions production: `https://kolab.konjir.com`, every resource named with the prefix `konjir-test` (named while it was the test server; a new name would replace everything), its state at `s3://konjir-terraform/konjir/test/terraform.tfstate`. CI applies it, after Lee approves (D73): Lee approves applies; he doesn't run them. There is no staging for now (D83). `terraform test` in `deploy/terraform` applies the configuration to mocked providers, offline, and checks that production keeps its names and state key; CI runs it.
 
 ### Deploying from CI
 
-`.github/workflows/deploy.yml` runs on every push to main, and by hand (**Actions › Deploy › Run workflow**):
+`.github/workflows/deploy.yml` runs on every push to main, and by hand (**Actions › Deploy › Run workflow**, on main):
 
-1. **Build release** packs the commit with `deploy/release/pack.sh` (below) and uploads the zip with its checksum. Both environments install those same bytes: Terraform takes the zip as `release_zip` and `release_id` and runs nothing itself.
-2. **Deploy staging** plans and applies staging, then runs `deploy/smoke.sh https://staging.kolab.konjir.com`: `/healthz` answers `ok`, and `/mcp`, asked with no token, answers 401 naming its protected-resource metadata.
-3. **Plan production** plans production with a role that can read but change nothing, and lists the changes in the run's summary, with a warning for any replaced instance, volume or database.
-4. **Deploy production** waits in the `production` GitHub environment until Lee approves it. Then it plans again and refuses to go on if the changes differ from the ones he approved, or if main has moved past the run's commit (approving an older run would roll production back; approve the newest). It applies, and smoke-tests `https://kolab.konjir.com`.
+1. **Build release** packs the commit with `deploy/release/pack.sh` (below) and uploads the zip with its checksum. Terraform installs exactly those bytes (`release_zip`, `release_id`) and packs nothing itself.
+2. **Plan production** waits in the `production` GitHub environment for Lee's first approval, then plans. The run's summary lists each change, with the names of the attributes an update changes, and the plan's digest: a sha256 of every change in full, with sensitive values redacted. A plan that would replace the instance, its data volume or the database fails, unless the run was started by hand with **allow_replacement**.
+3. **Deploy production** waits in the same environment for Lee's second approval: to apply what he read. It stops if `DEPLOY_FROM_CI` is no longer `true`, if main has moved past the run's commit (approving an older run would roll production back; approve the newest), or if a new plan's digest differs from the approved one. Then it applies, and runs `deploy/smoke.sh https://kolab.konjir.com`: `/healthz` answers `ok`, and `/mcp`, asked with no token, answers 401 naming its protected-resource metadata.
 
-Staging deploys one at a time, and so does production; a run waiting for approval doesn't hold up staging. If a run fails, fix the cause and run the workflow again.
+Deploys run one at a time. If a run fails, fix the cause and run the workflow again. Setting the repository variable `DEPLOY_FROM_CI` to anything but `true` pauses deploys: every job checks it, the deploy job again after approval (`deploy/RECOVERY.md` relies on this).
 
-AWS credentials come through GitHub's OIDC token, so no AWS key exists anywhere. `deploy/terraform/github-oidc` makes three roles: `konjir-deploy-staging`, which only a job on main of `konjir/kolab` may assume; `konjir-plan-production`, read-only, also only on main; and `konjir-deploy-production`, which only a job in the `production` environment may assume. Each deploy role reaches its own environment only: its own state key, and its own resources by name (`konjir-staging-*` or `konjir-test-*`) wherever AWS allows, and by `Stack` tag for EC2 instances, volumes and snapshots. EC2 networking, Route 53 health checks and SSM associations are the parts AWS can't separate this way. A deploy role may create or change an IAM role only with its environment's permissions boundary attached, `konjir-<name>-boundary`, and attach only the two AWS-managed policies the modules use, so no role made from CI can hold more than the boundary allows: the instance's and the snapshot schedule's needs, without IAM, STS, the other environment's parameters, or running commands anywhere. Every role `deploy/terraform` makes carries that boundary. If an apply is refused an action it needs (`AccessDenied` names it), add it to `github-oidc/main.tf` and re-apply that, by hand.
+AWS credentials come through GitHub's OIDC token, so no AWS key exists anywhere. `deploy/terraform/github-oidc` makes one role, `konjir-deploy-production`. Only a job of `deploy.yml` on main, in the `production` environment, may assume it: the repository's OIDC subject is customised (below) to carry the workflow, so the role trusts `repo:konjir/kolab:environment:production:job_workflow_ref:konjir/kolab/.github/workflows/deploy.yml@refs/heads/main` exactly. What it may do is what production's plan and apply need:
 
-The logs are public, so no step prints a value from a plan: `deploy/plan.sh` prints each change's actions and address only, and keeps Terraform's own output in `deploy/terraform/.build/plan.log`, which never leaves the runner. A saved plan holds secrets, so none is uploaded; the production job plans again instead. `deploy/plan.sh` works the same locally, after `init`.
+- its own state key, and nothing else in the state bucket;
+- EC2 by an allowlist of the actions the modules call, in us-east-1, and never on an instance or volume not tagged `Stack=konjir-test`; no account-wide setting, root-volume replacement, image or snapshot sharing;
+- RDS, S3, SSM parameters, logs, alarms, the alarm topic and DNS records (`kolab.konjir.com`, the marketing site's apex, `www` and validation records) by production's names; the health check, CloudFront and the certificate, which have no names to scope by;
+- IAM only for the instance role (`konjir-test-kolab-*`) and the snapshot role (`konjir-test-dlm-*`): each only with its permissions boundary attached (`konjir-test-instance-boundary`, `konjir-test-dlm-boundary`), each only with the one AWS-managed policy the modules attach to it, and never a trust changed after creation. IAM has no condition key on a trust policy's contents, so the boundaries are what limit a role made with another trust: the instance boundary refuses every call not made with an EC2 instance's credentials (or by a service for it), and the snapshot boundary allows snapshots of production's own volumes only, which it can't copy or share.
+
+Two approvals cost a click more than one, and spare a second, read-only role: the plan job needs the same credentials as the apply, so it waits for approval too. Production's secrets (the admin token and the database password, in its state and in SSM) are therefore reachable only by a job Lee has approved. What runs in that job is what is on main, so main's branch protection (a reviewed pull request for every change, no bypass) is part of what keeps production safe; so are the `production` environment's settings, which the setup below checks.
+
+The logs are public, so no step prints a value from a plan: `deploy/plan.sh` prints addresses and attribute names, and keeps Terraform's own output in `deploy/terraform/.build/plan.log`, which never leaves the runner. A saved plan holds secrets, so none is uploaded; the deploy job plans again and compares digests. `deploy/plan.sh` works the same locally, after `init`.
+
+If an apply is refused an action it needs (`AccessDenied` names it), add it to `deploy/terraform/github-oidc/main.tf` and apply that from Lee's machine.
 
 #### Setting it up, once
 
 Lee does these, in this order. Until the last step, merges to main deploy nothing.
 
-1. **The `production` GitHub environment** (Settings › Environments › New environment): required reviewer Lee, with "Prevent self-review" off (he approves runs of his own merges), and deployment branches and tags limited to `main`. It must exist with its reviewer before the roles do, or the first run's job would create it unprotected.
-2. **Staging's GitHub OAuth app** (GitHub › Settings › Developer settings › OAuth Apps › New): homepage `https://staging.kolab.konjir.com`, authorization callback URL `https://staging.kolab.konjir.com/oauth/callback/github`. Commit its client id as staging's `github_oauth_client_id` in `deploy/terraform/modules/environments/main.tf`, and put its client secret as `/konjir/konjir-staging/github-client-secret` (below). Without them staging runs, without GitHub sign-in.
-3. **The roles**, from his machine, once:
+1. **The `production` GitHub environment** (Settings › Environments › New environment): required reviewer Lee, with "Prevent self-review" off (he approves runs of his own merges), and deployment branches limited to `main`. Check it:
+   ```
+   gh api repos/konjir/kolab/environments/production --jq '{reviewers: [.protection_rules[] | select(.type == "required_reviewers") | .reviewers[].reviewer.login], branches: .deployment_branch_policy}'
+   gh api repos/konjir/kolab/environments/production/deployment-branch-policies --jq '[.branch_policies[].name]'   # ["main"]
+   ```
+2. **Branch protection on main**, if it isn't already: pull requests with review required, the CI checks required, no bypass for anyone.
+3. **The repository's OIDC subject**, customised to carry the workflow. This changes the `sub` of every OIDC token the repository's workflows get. The only other user is npm's trusted publishing in `release-cli.yml`; confirm at the next CLI release that npm still accepts it.
+   ```
+   gh api -X PUT repos/konjir/kolab/actions/oidc/customization/sub \
+     -F use_default=false -f 'include_claim_keys[]=repo' -f 'include_claim_keys[]=context' -f 'include_claim_keys[]=job_workflow_ref'
+   gh api repos/konjir/kolab/actions/oidc/customization/sub    # {"use_default":false,"include_claim_keys":["repo","context","job_workflow_ref"]}
+   ```
+4. **The deploy role**, from his machine:
    ```
    aws iam list-open-id-connect-providers --profile icedlee337   # does the account already have token.actions.githubusercontent.com?
    cd deploy/terraform/github-oidc
    AWS_PROFILE=icedlee337 terraform init
    AWS_PROFILE=icedlee337 terraform apply      # add -var oidc_provider_exists=true if it did
    ```
-   It creates GitHub's OIDC provider, the three roles, their policies and each environment's permissions boundary, with its state at `s3://konjir-terraform/konjir/github-oidc/terraform.tfstate`, which no deploy role can read. Its outputs list the role ARNs, which `deploy.yml` names. Run it again only to change them.
-4. **Alarm emails**, optional: repository secrets `PRODUCTION_ALARM_EMAIL` and `STAGING_ALARM_EMAIL` (Settings › Secrets and variables › Actions). If production's alarms email someone today, set `PRODUCTION_ALARM_EMAIL` to that address first, or the first production plan removes the subscription.
-5. **Turn it on:** the repository variable `DEPLOY_FROM_CI` set to `true` (Settings › Secrets and variables › Actions › Variables). Then run **Actions › Deploy › Run workflow** on main, or merge.
+   It creates GitHub's OIDC provider, the role, its policies and the two permissions boundaries, with its state at `s3://konjir-terraform/konjir/github-oidc/terraform.tfstate`, which the role can't read. Apply it again, the same way, whenever the role or its policies change.
+5. **The alarm email**, if production's alarms email someone: the repository secret `PRODUCTION_ALARM_EMAIL` (Settings › Secrets and variables › Actions), set to that address, or the first plan removes the subscription.
+6. **A local look first:** `deploy/konjir-ops.sh terraform plan` from a clean checkout of main, with no `*.tfvars` and `TF_VAR_alarm_email` set as in step 5, shows what CI will plan. A value Lee used to pass by hand, such as `letsencrypt_email`, would replace the instance if CI planned without it: put it in `variables.tf` first.
+7. **Turn it on:** the repository variable `DEPLOY_FROM_CI` set to `true` (Settings › Secrets and variables › Actions › Variables). Then run **Actions › Deploy › Run workflow** on main, or merge.
 
-The first run creates staging (about 15–20 minutes, mostly the database and the first install). Its production plan adds the permissions boundary to production's two roles in place, and deploys the release; read the list before approving. Nothing in production should be replaced.
+The first plan adds a permissions boundary to production's two roles, in place, deploys the release, and creates the marketing site if it isn't there yet; nothing should be replaced.
 
-The GitHub OAuth app's client secret for an environment, put once, read without echo so it never reaches a command line or the shell's history (a GitHub client secret is 40 hex characters, so it needs no JSON escaping; anything else is refused):
+The GitHub OAuth app's client secret (D55; the app's callback is `https://kolab.konjir.com/oauth/callback/github`) is never Terraform's, so it is in no variable, file or state. Put it once, read without echo so it never reaches a command line or the shell's history (a GitHub client secret is 40 hex characters, so it needs no JSON escaping; anything else is refused):
 
 ```
-NAME=konjir-staging     # or konjir-test for production
 printf 'GitHub client secret: '; read -rs SECRET; echo      # works in bash and zsh
 case "$SECRET" in (*[!0-9a-f]*|'') echo 'not a GitHub client secret (hex)';; (*)
-  printf '{"Name":"/konjir/%s/github-client-secret","Type":"SecureString","Overwrite":true,"Value":"%s"}' "$NAME" "$SECRET" \
+  printf '{"Name":"/konjir/konjir-test/github-client-secret","Type":"SecureString","Overwrite":true,"Value":"%s"}' "$SECRET" \
     | aws ssm put-parameter --profile icedlee337 --region us-east-1 --cli-input-json file:///dev/stdin;; esac
 unset SECRET
 ```
 
-Each environment's client id is public and committed (`modules/environments`); Terraform keeps it as the SSM parameter `/konjir/<name>/github-client-id`. Its client secret is never Terraform's, so it is in no variable, file or state. The instance may read both, the secret by its name, and the release's `start.sh` reads them when Kolab starts, so adding them changes neither the boot script nor the instance; the next deploy, or a restart, picks them up. If the secret isn't there, Kolab says so in one line of its log and runs without GitHub sign-in.
+Its client id is public and committed, as `github_oauth_client_id`'s default; Terraform keeps it as the SSM parameter `/konjir/konjir-test/github-client-id`. The instance may read both, the secret by its name, and the release's `start.sh` reads them when Kolab starts, so adding them changes neither the boot script nor the instance. If the secret isn't there, Kolab says so in one line of its log and runs without GitHub sign-in.
 
-### Working with an environment by hand
+### Working with production by hand
 
-You need Terraform 1.15 or later, AWS CLI v2 with the profile `icedlee337` for the account that owns the `konjir.com` hosted zone, and `npm install` run once in this folder (the `konjir` CLI runs locally). `deploy/konjir-ops.sh` takes `--env production` (the default, or `$KONJIR_ENV`) or `--env staging`, reads that environment's Terraform outputs and talks to its Kolab:
+You need Terraform 1.15 or later, AWS CLI v2 with the profile `icedlee337` for the account that owns the `konjir.com` hosted zone, and `npm install` run once in this folder (the `konjir` CLI runs locally). `deploy/konjir-ops.sh` reads production's Terraform outputs and talks to its Kolab. It takes `--env production`, the only environment, so that scripts that name it keep working.
 
 ```
-deploy/konjir-ops.sh --env staging status
-deploy/konjir-ops.sh connect lee product              # production: prints Lee's token and the Claude Code command
+deploy/konjir-ops.sh status
+deploy/konjir-ops.sh connect lee product              # prints Lee's token and the Claude Code command
 deploy/konjir-ops.sh connect eng-1 engineer
 deploy/konjir-ops.sh connect lee-pm product lee       # an agent of Lee's, with its own token
-deploy/konjir-ops.sh --env staging connect lee product
-deploy/konjir-ops.sh --env staging terraform plan     # terraform on staging's state; nothing is applied
+deploy/konjir-ops.sh terraform plan                   # terraform on production's state; nothing is applied
 ```
 
 `connect` works in the kolab `kolab` unless `KONJIR_KOLAB` names another. An actor it adds is granted Write on both layers there; one that exists keeps the access it has. An agent's grant is refused if its owner holds less.
 
-`konjir-ops.sh … terraform <args>` runs Terraform in `deploy/terraform` with `environment` set and the environment's own working directory, `deploy/terraform/.terraform-<env>`, which it initialises on first use; switching environments needs no re-init. A plan this way packs the checkout's commit itself, as Terraform did before CI (below). Applies run from CI; one by hand is for the setup above, and for an emergency Lee chooses.
+`konjir-ops.sh terraform <args>` runs Terraform in `deploy/terraform`, with its working data in `deploy/terraform/.terraform-production`, which it initialises on first use with `-backend-config=environments/production.s3.tfbackend`. A plan this way packs the checkout's commit itself. Applies run from CI; Lee's own, with his credentials, are for `github-oidc` and for recovery (`deploy/RECOVERY.md`).
 
-The state bucket was created once by `deploy/bootstrap-state.sh` (versioned, encrypted, TLS-only). State locks with S3's native lock file, so no DynamoDB table is needed. Credentials come from the environment: `AWS_PROFILE` on Lee's machine (`konjir-ops.sh` sets `icedlee337`), the OIDC role in CI. A checkout initialised before W2.23 has a `deploy/terraform/.terraform` with production's backend and the profile in it; `konjir-ops.sh` doesn't use it, and it can be deleted.
+The state bucket was created once by `deploy/bootstrap-state.sh` (versioned, encrypted, TLS-only). State locks with S3's native lock file, so no DynamoDB table is needed. Credentials come from the environment: `AWS_PROFILE` on Lee's machine (`konjir-ops.sh` sets `icedlee337`), the OIDC role in CI. A checkout initialised before W2.23 has a `deploy/terraform/.terraform` whose backend names the profile; `konjir-ops.sh` doesn't use it, and it can be deleted.
 
 | Module | What it creates |
 | --- | --- |
 | `network` | A VPC with one public subnet, and two private subnets for the database. Inbound is 443, plus 80 for certificate issuance; there is no SSH. |
-| `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days |
+| `storage` | The release bucket (emptied on destroy), the encrypted data volume, and daily snapshots kept 7 days by a snapshot role with its permissions boundary |
 | `database` | Postgres 18 on RDS (`db.t4g.micro`, 20 GB, encrypted), reachable only from Kolab over verified TLS. Its URL is an SSM SecureString. 7 days of automated backups give point-in-time recovery up to the latest restorable time, which AWS keeps within about 5 minutes; deletion protection is on, and deleting it keeps a final snapshot and the backups (see *Recovering the database*) |
 | `secrets` | A generated admin token, stored as an SSM SecureString, the GitHub OAuth app's client id (D55) and the published CLI's npm spec (W3.7); the app's secret is put by hand, never by Terraform |
-| `iam` | The instance role, with the environment's permissions boundary: Session Manager access, read its releases, token, database URL, the GitHub OAuth app's client id and secret, and the CLI's npm spec (the last two by name); write log streams in its own log group, and metrics in its own namespace only, for the CloudWatch agent. No Bedrock or other model access (REV5) |
-| `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for the environment's domain |
+| `iam` | The instance role, with its permissions boundary: Session Manager access, read its releases, token, database URL, the GitHub OAuth app's client id and secret, and the CLI's npm spec (the last two by name); write log streams in its own log group, and metrics in its own namespace only, for the CloudWatch agent. No Bedrock or other model access (REV5) |
+| `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `kolab.konjir.com` |
 | `release` | Uploads the release and installs it on Kolab through Systems Manager: the zip CI built, or else the checkout's commit, packed by `deploy/release/pack.sh` |
 | `monitoring` | The log group `/konjir/<name>` (30 days), the alarm topic and its email subscription, a Route 53 health check of `/healthz`, the log metric filters and nine alarms (P11, D68; see *Logs and alarms*) |
 | `site` | The marketing site at `https://konjir.com` (D81): `site/` in a private S3 bucket behind CloudFront, its certificate, records and security headers (see *Marketing site*). Only while `site_enabled` is true |
@@ -469,15 +472,15 @@ Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart fro
 
 Day to day:
 
-- **Ship code:** merge to main. Staging deploys; approve the run's **Deploy production** for production. `deploy/release/pack.sh` packs the release with `git archive` of the commit, so only tracked files ship: never an untracked or ignored one, such as `.env`, a `.claude/` worktree, a nested `.konjir` or a `*.tfvars` file. It refuses a checkout with uncommitted tracked changes, so a deploy is always exactly a commit, and refuses one that tracks a file that must never ship. The release id is the commit's tree id, so it changes only when tracked content does; a new one makes Terraform reinstall and wait for success.
+- **Ship code:** merge to main, then approve the run's **Plan production**, read its summary, and approve **Deploy production**. `deploy/release/pack.sh` packs the release with `git archive` of the commit, so only tracked files ship: never an untracked or ignored one, such as `.env`, a `.claude/` worktree, a nested `.konjir` or a `*.tfvars` file. It refuses a checkout with uncommitted tracked changes, so a deploy is always exactly a commit, and refuses one that tracks a file that must never ship. The release id is the commit's tree id without `site/` (the marketing site, which isn't in the zip either), so it changes only when Kolab's tracked content does; a new one makes Terraform reinstall and wait for success.
 - **Bump the CLI on the web page:** after each CLI release (see [Releasing the CLI](#releasing-the-cli)), set `cli_npm_spec`'s default in `deploy/terraform/variables.tf` to the version npm now has, `konjir@<version>`, and merge. The release workflow doesn't bump it. The deploy updates the parameter, and, since the commit is a new release, reinstalls and restarts Kolab, whose `start.sh` reads it. Until then the page keeps showing the version before.
-- **Inspect:** `deploy/konjir-ops.sh [--env staging] status`, `logs` or `bootstrap-log`; `cloudwatch-logs [since]` follows the same lines in CloudWatch Logs, and `alarms` lists each alarm's state. `shell` opens a session; it needs the Session Manager plugin. `deploy/smoke.sh <site>` checks `/healthz` and `/mcp` from anywhere.
-- **One-way migrations:** a release that applies a migration can't be rolled back by deploying the release before it, which refuses a database migrated past it. Staging applies each migration first. 0011 (hashed session tokens) is also irreversible in the data: the hashes can't be turned back into tokens, so there is no down migration. Before approving a production release with such a migration, take an RDS snapshot (`aws rds create-db-snapshot`). Rolling back means restoring that snapshot and deploying the earlier release; every session opened since the snapshot is lost, so reissue those tokens with `deploy/konjir-ops.sh connect`.
+- **Inspect:** `deploy/konjir-ops.sh status`, `logs` or `bootstrap-log`; `cloudwatch-logs [since]` follows the same lines in CloudWatch Logs, and `alarms` lists each alarm's state. `shell` opens a session; it needs the Session Manager plugin. `deploy/smoke.sh <site>` checks `/healthz` and `/mcp` from anywhere.
+- **One-way migrations:** a release that applies a migration can't be rolled back by deploying the release before it, which refuses a database migrated past it. 0011 (hashed session tokens) is also irreversible in the data: the hashes can't be turned back into tokens, so there is no down migration. Before approving a production release with such a migration, take an RDS snapshot (`aws rds create-db-snapshot`). Rolling back means restoring that snapshot and deploying the earlier release; every session opened since the snapshot is lost, so reissue those tokens with `deploy/konjir-ops.sh connect`.
 - **Recover the database:** [`deploy/RECOVERY.md`](deploy/RECOVERY.md) is the runbook: restore to a point in time into a new instance, verify it, cut over, roll back. `deploy/recovery-drill.sh` is the drill (see *Recovering the database*).
-- **OS refresh:** `deploy/konjir-ops.sh --env <env> terraform apply -replace=module.kolab.aws_instance.kolab`, by hand, since CI applies only plans of its own. The AMI is pinned when the instance is created.
-- **Tear down:** `deploy/konjir-ops.sh --env <env> terraform destroy`. Production keeps final snapshots of the data volume and the database; staging keeps none. To override either, pass `-var final_snapshot_on_destroy=…` to an apply first, then to the destroy: destroy reads the database's snapshot setting from state. Daily volume snapshots made before the teardown remain until you delete them. The state bucket stays until you remove it. Tear staging down only with `DEPLOY_FROM_CI` off, or the next merge creates it again.
+- **OS refresh:** the AMI is pinned when the instance is created. Run the workflow by hand with **refresh_os**: both plans then replace the instance (`-replace=module.kolab.aws_instance.kolab`), and that one replacement is allowed.
+- **Tear down:** set `DEPLOY_FROM_CI` off, then, by hand: the database has deletion protection, so turn it off first, `deploy/konjir-ops.sh terraform apply -var db_deletion_protection=false`, then `deploy/konjir-ops.sh terraform destroy -var db_deletion_protection=false`. Final snapshots of the data volume and the database, and the database's automated backups, are kept by default. For a teardown that leaves nothing, add `-var final_snapshot_on_destroy=false` to both. The apply is needed because destroy reads the database's deletion protection and snapshot settings from state. Daily volume snapshots made before the teardown remain until you delete them. The state bucket stays until you remove it.
 
-The admin token and the database password are generated by Terraform, so they are also in each environment's state. That is why the state bucket is private, encrypted and TLS-only, and why each deploy role reads only its own environment's state.
+The admin token and the database password are generated by Terraform, so they are also in the state. That is why the state bucket is private, encrypted and TLS-only, and why the deploy role reads only production's state.
 
 ### Recovering the database
 
@@ -536,13 +539,13 @@ The copy (`deploy/release/journal-copy.py`) runs sandboxed (`ProtectSystem=stric
 | `log-flood` | Over 1 GiB of lines (`log_flood_gib_per_hour`) reached the log group in an hour, which costs $0.50 a GB; the disk is safe, as rotation bounds it | CloudWatch Logs Insights on the group, `stats count(*) by message`, finds the line that repeats; fix or restart what writes it |
 | `disk-high` | The instance's root disk is over 80% full (`disk_used_percent`, from the agent) | In a `shell`: `sudo du -xh -d1 / \| sort -h`. Look at `/var/log/konjir`, `/var/log/journal` and `/opt/konjir/releases` (three releases are kept) |
 | `rds-cpu-high` | The database averaged over 80% CPU for 15 minutes | Look for a rebase storm or a runaway cascade in the logs. A `db.t4g.micro` that ran out of CPU credits (`CPUCreditBalance`) is throttled; raise `db_instance_class` |
-| `rds-storage-low` | The database has under 2 GiB free | Raise the environment's `db_allocated_gib` (`modules/environments`) and deploy; RDS grows storage in place |
+| `rds-storage-low` | The database has under 2 GiB free | Raise `db_allocated_gib` in `deploy/terraform/variables.tf` and deploy; RDS grows storage in place |
 
-**The email.** Each environment's `alarm_email` comes from a repository secret, `PRODUCTION_ALARM_EMAIL` or `STAGING_ALARM_EMAIL`, which the deploy workflow passes as `TF_VAR_alarm_email`; set it and deploy. Terraform subscribes it to the topic, and AWS emails it a link, which must be followed once before any alarm is delivered. Until then, and with `alarm_email` empty, the alarms still change state (`deploy/konjir-ops.sh alarms`) but email no one. Changing the address subscribes the new one; destroying a subscription still pending confirmation only drops it from Terraform's state, and AWS deletes it after 3 days.
+**The email.** `alarm_email` comes from the repository secret `PRODUCTION_ALARM_EMAIL`, which the deploy workflow passes as `TF_VAR_alarm_email`; set it and deploy. Terraform subscribes it to the topic, and AWS emails it a link, which must be followed once before any alarm is delivered. Until then, and with `alarm_email` empty, the alarms still change state (`deploy/konjir-ops.sh alarms`) but email no one. Changing the address subscribes the new one; destroying a subscription still pending confirmation only drops it from Terraform's state, and AWS deletes it after 3 days.
 
 The first apply may send one ALARM email, then its OK, that is not an outage: `healthz-failing` and `no-logs` treat missing data as failing, and they have none until Route 53 publishes its first status and the agent ships its first lines.
 
-**Checking each alarm after a deploy** (the done-when): `deploy/konjir-ops.sh [--env staging] inject <what>` sets off one alarm on purpose, and each email should arrive within about 5 minutes, then its recovery. `crash` and `down` break the live Kolab, so they say what they will do, and on production run only with `--yes-production`; staging is the place to try them. A routine deploy shouldn't fire any alarm; check that on the first apply with `alarms`.
+**Checking each alarm after a deploy** (the done-when): `deploy/konjir-ops.sh inject <what>` sets off one alarm on purpose, and each email should arrive within about 5 minutes, then its recovery. `crash` and `down` break the live Kolab, so they say what they will do and run only with `--yes-production`. A routine deploy shouldn't fire any alarm; check that on the first apply with `alarms`.
 
 | `inject` | What it does | Alarm |
 | --- | --- | --- |
@@ -558,7 +561,7 @@ The first apply may send one ALARM email, then its OK, that is not an outage: `h
 
 ### Marketing site
 
-`https://konjir.com` is the marketing site (D81). Its content is the `konjir-site` kolab, today the "Konjir Marketing Page" artifact; `site/` holds the deployable copy, built from the artifact by `deploy/site/from-artifact.mjs` (`site/README.md` says how). `terraform apply` publishes it with everything else, through the `site` module:
+`https://konjir.com` is the marketing site (D81). Its content is the `konjir-site` kolab, today the "Konjir Marketing Page" artifact; `site/` holds the deployable copy, built from the artifact by `deploy/site/from-artifact.mjs` (`site/README.md` says how). Each deploy publishes it with everything else, through the `site` module:
 
 - a private bucket (all public access blocked, SSE-S3, versioned) that only the CloudFront distribution reads, through Origin Access Control
 - CloudFront for `konjir.com` and `www.konjir.com`, with an ACM certificate in us-east-1 validated through the `konjir.com` zone, and A and AAAA alias records for both names; a CloudFront Function answers `www` with a 301 to the apex

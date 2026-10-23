@@ -1,26 +1,6 @@
-output "environment" {
-  description = "Which Kolab this state is (D73)."
-  value       = var.environment
-}
-
-output "name" {
-  description = "The name prefix of every resource, and the Stack tag."
-  value       = local.name
-}
-
-output "state_key" {
-  description = "Where this environment's state lives in s3://konjir-terraform; environments/<environment>.s3.tfbackend gives init the same key."
-  value       = local.env.state_key
-}
-
-output "site" {
-  description = "Kolab's web interface; /healthz and /mcp are under it."
-  value       = "https://${local.env.domain_name}"
-}
-
 output "url" {
   description = "MCP endpoint collaborators connect their harnesses to."
-  value       = "https://${local.env.domain_name}/mcp"
+  value       = "https://${var.domain_name}/mcp"
 }
 
 output "instance_id" {

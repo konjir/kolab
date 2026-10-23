@@ -1,9 +1,14 @@
-output "role_arns" {
-  description = "The roles .github/workflows/deploy.yml assumes, by name. Its env block names the same ARNs."
-  value       = { for name, role in aws_iam_role.ci : name => role.arn }
+output "role_arn" {
+  description = "The role .github/workflows/deploy.yml assumes; its jobs name the same ARN."
+  value       = aws_iam_role.deploy.arn
+}
+
+output "subject" {
+  description = "The OIDC subject the role trusts. It needs the repository's subject customised to repo, context and job_workflow_ref (README: Deploying from CI)."
+  value       = local.subject
 }
 
 output "boundary_arns" {
-  description = "Each environment's permissions boundary; deploy/terraform attaches it to every role it creates."
-  value       = { for env, policy in aws_iam_policy.boundary : env => policy.arn }
+  description = "The permissions boundaries deploy/terraform attaches to the instance role and the snapshot role."
+  value       = { instance = aws_iam_policy.instance_boundary.arn, dlm = aws_iam_policy.dlm_boundary.arn }
 }

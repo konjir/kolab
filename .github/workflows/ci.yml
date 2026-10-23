@@ -5,7 +5,7 @@ name: CI
 # - "Test on PGlite": typecheck, build and the Jest suite, on embedded Postgres (PGlite)
 # - "Test on Postgres": the Jest suite again, on Postgres 18 through Testcontainers, as a
 #   non-superuser like RDS's (jest.global-setup.js). The runner's Docker hosts the container.
-# - "Check Terraform": terraform fmt -check, validate and test (each environment, offline) on
+# - "Check Terraform": terraform fmt -check, validate and test (offline, mocked) on
 #   deploy/terraform and deploy/terraform/github-oidc. It runs on
 #   every change, not only ones under deploy/, so it can be required: a required check that a path
 #   filter skips never reports, and the pull request waits for it forever.
@@ -185,13 +185,14 @@ jobs:
       - name: terraform validate
         run: terraform validate
 
-      # Each environment (D73, W2.23), applied offline to mocked providers: production keeps its
-      # names and state key, staging has its own (tests/environments.tftest.hcl). No AWS.
+      # The configuration applied offline to mocked providers: production keeps its names and its
+      # state key (tests/production.tftest.hcl, W2.23). No AWS.
       - name: terraform test
         run: terraform test
 
-      # The CI roles' root module, deploy/terraform/github-oidc, the same way: who may assume each
-      # role, and that each policy fits IAM's limit. Its lock file pins the same aws provider.
+      # The deploy role's root module, deploy/terraform/github-oidc, the same way: who may assume the
+      # role, what it may never do, and that each policy fits IAM's limit. Its lock file pins the
+      # same aws provider.
       - name: Check deploy/terraform/github-oidc
         working-directory: deploy/terraform/github-oidc
         run: |
