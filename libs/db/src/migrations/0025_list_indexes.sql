@@ -60,40 +60,84 @@ drop index node_kolab;
 drop index version_kolab;
 drop index ruling_kolab;
 
--- The per-person rates (MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR), taken in the transaction that
--- writes the question or the version: a person and their agents share one budget, so an agent's
--- ask or draft counts against its owner. A lock per owner and kind, held until the transaction
--- ends, makes calls at once wait their turn, so the count each reads includes those committed
--- before it, and the limit holds. A draft counts only versions the budget's actors made: not
+-- The per-person rates (MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR): a person and their agents share
+-- one budget, so an agent's ask or draft counts against its owner. A call takes its place in the
+-- budget in a short transaction of its own, before it writes: kj_rate_take locks the owner's
+-- budget for that kind, counts what the budget wrote in the window plus the places held for writes
+-- still under way (rate_hold), and, under the limit, holds one more. The lock is held for that
+-- count and insert only, never for the write, so a burst of one person's calls waits its turn for
+-- milliseconds and never holds the connections everyone else needs; a wait past lock_timeout is
+-- refused as busy. The write then releases its hold (kj_rate_release) in the transaction that
+-- writes the question or the version, so the hold becomes the row in one commit and the limit holds
+-- exactly; a write that fails releases it after, and a hold its process never released (a crash)
+-- stops counting after ten minutes. A draft counts only versions the budget's actors made: not
 -- Kolab's folds, nor a ruling an admin applied as them (submitted_by, 0024). Returns the owner,
--- the count before this write, and the seconds until the oldest of them leaves the window.
-create function kj_rate_take(p_actor text, p_kind text, p_window_ms bigint)
-returns table (r_owner text, r_count int, r_wait_s int)
+-- the count before this call, the seconds until the oldest of them leaves the window, and the
+-- hold, or null when the count is at `p_max` already and nothing was held.
+create table rate_hold (
+  id         text primary key,
+  owner_id   text not null,
+  kind       text not null check (kind in ('ask', 'draft')),
+  created_at timestamptz not null default now()
+);
+create index rate_hold_owner on rate_hold(owner_id, kind, created_at);
+-- Only these functions read or write it: no session's role is granted it.
+alter table rate_hold enable row level security;
+
+create function kj_rate_take(p_actor text, p_kind text, p_window_ms bigint, p_max int)
+returns table (r_owner text, r_count int, r_wait_s int, r_hold text)
 language plpgsql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
   v_owner text;
   v_budget text[];
   v_since timestamptz := now() - p_window_ms * interval '1 millisecond';
+  v_stale timestamptz := now() - interval '10 minutes';
+  v_count int;
+  v_oldest timestamptz;
+  v_hold text;
 begin
   select case when a.kind = 'agent' and a.owner_id is not null then a.owner_id else a.id end into v_owner
     from public.actor a where a.id = p_actor;
   v_owner := coalesce(v_owner, p_actor);
+  perform set_config('lock_timeout', '5s', true);
   perform pg_advisory_xact_lock(hashtextextended('kj_rate:' || p_kind || ':' || v_owner, 0));
+  delete from public.rate_hold h where h.owner_id = v_owner and h.kind = p_kind and h.created_at <= v_stale;
   v_budget := array(select v_owner union select a.id from public.actor a where a.owner_id = v_owner);
-  if p_kind = 'ask' then
-    return query select v_owner, count(*)::int,
-        ceil(extract(epoch from min(q.created_at) + p_window_ms * interval '1 millisecond' - now()))::int
-      from public.query q where q.raised_by = any(v_budget) and q.created_at > v_since;
-  else
-    return query select v_owner, count(*)::int,
-        ceil(extract(epoch from min(v.created_at) + p_window_ms * interval '1 millisecond' - now()))::int
-      from public.version v
-     where v.actor_id = any(v_budget) and v.created_at > v_since
-       and (v.submitted_by is null or v.submitted_by = any(v_budget));
+  -- What was written and what is held, in one statement, so one snapshot: a write that commits
+  -- (its row in, its hold gone) is counted once, whenever it commits.
+  select count(*)::int, min(w.at) into v_count, v_oldest from (
+    select q.created_at as at from public.query q
+     where p_kind = 'ask' and q.raised_by = any(v_budget) and q.created_at > v_since
+    union all
+    select v.created_at from public.version v
+     where p_kind = 'draft' and v.actor_id = any(v_budget) and v.created_at > v_since
+       and (v.submitted_by is null or v.submitted_by = any(v_budget))
+    union all
+    select h.created_at from public.rate_hold h where h.owner_id = v_owner and h.kind = p_kind
+  ) w;
+  if v_count < p_max then
+    v_hold := p_kind || ':' || v_owner || ':' || md5(random()::text || clock_timestamp()::text);
+    insert into public.rate_hold(id, owner_id, kind) values (v_hold, v_owner, p_kind);
   end if;
+  return query select v_owner, v_count,
+    ceil(extract(epoch from v_oldest + p_window_ms * interval '1 millisecond' - now()))::int, v_hold;
 end $$;
-revoke execute on function kj_rate_take(text, text, bigint) from public;
-grant execute on function kj_rate_take(text, text, bigint) to kj_agent, kj_system;
+revoke execute on function kj_rate_take(text, text, bigint, int) from public;
+grant execute on function kj_rate_take(text, text, bigint, int) to kj_agent, kj_system;
+
+-- Releases a hold kj_rate_take gave: in the transaction that writes what it was held for, or
+-- after that transaction failed.
+create function kj_rate_release(p_hold text) returns void
+language sql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
+  delete from public.rate_hold where id = p_hold;
+$$;
+revoke execute on function kj_rate_release(text) from public;
+grant execute on function kj_rate_release(text) to kj_agent, kj_system;
+
+-- A version's changes, by element: deltas() reads a version's, and a commit's cascade matches an
+-- override mark to the new version's change of the same element (P7). Neither had an index, so
+-- each read the whole table.
+create index delta_version on delta(version_id, element_id);
 
 -- A kolab's invites, newest first: the web interface's People page, a page at a time.
 create index kolab_invite_kolab_created on kolab_invite(kolab_id, created_at, id);

@@ -113,7 +113,8 @@ test('a person and their agents ask and draft at most so many times an hour, tog
   expect(await versions()).toBe(written);
   // A ruling the admin applies, written as Alice, isn't her draft: it isn't limited, and doesn't count.
   await kolab.applyRuling('orders', { elements: els({ R1: 'Orders can be cancelled within a week.' }) }, { id: 'D71', actor: 'alice' });
-  const counted = async (actor: string) => (await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take($1, 'draft', $2)`, [actor, RATE_WINDOW_MS])).rows[0].r_count;
+  // Asked with a limit of 0, kj_rate_take only counts: it holds nothing.
+  const counted = async (actor: string) => (await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take($1, 'draft', $2, 0)`, [actor, RATE_WINDOW_MS])).rows[0].r_count;
   expect(await counted('alice')).toBe(2);
   // Bob, with one version, still drafts.
   await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'Cancelling sets a flag and a time.' }) });
@@ -136,12 +137,66 @@ test('the limit holds when many ask and draft at once: each takes its turn in th
   expect(tries.filter((t) => t.status === 'fulfilled')).toHaveLength(5);
   expect(tries.filter((t) => t.status === 'rejected').map((t) => String((t as PromiseRejectedResult).reason).split(':')[0])).toStrictEqual(Array(35).fill('LimitError'));
   expect((await kolab.db.query(`select 1 from query where raised_by = 'bob'`)).rows).toHaveLength(5);
+  // Drafts on twenty different nodes, so no node's lock puts them in turn: only the budget's does.
+  for (let i = 0; i < 20; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
   Object.assign(kolab.rates, { drafts: 3 });
-  const drafts = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => kolab.draft(engineer, 'orders-pg', { elements: els({ b1: `Take ${i}.` }) })));
+  const drafts = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => kolab.draft(engineer, `part-${i}`, { elements: els({ b1: `Take ${i}.` }) })));
   // Bob wrote orders-pg's first version: two more.
   expect(drafts.filter((t) => t.status === 'fulfilled')).toHaveLength(2);
   expect((await kolab.db.query(`select 1 from version where actor_id = 'bob'`)).rows).toHaveLength(3);
+  // Every hold became a row or was given back.
+  expect((await kolab.db.query(`select 1 from rate_hold`)).rows).toStrictEqual([]);
 }, 120_000);
+
+test('a call that fails after taking its place in the budget gives it back, and a hold its process never gave back stops counting', async () => {
+  const { kolab, product, engineer } = await orders();
+  Object.assign(kolab.rates, { asks: 2 });
+  const draft = await kolab.draft(product, 'orders', { elements: els({ R1: 'Orders can be cancelled within a day.' }) });
+  const seq = (await kolab.version(draft)).seq;
+  // Asking about a draft is refused after the place was taken: the place is given back, so Bob still asks twice.
+  for (let i = 0; i < 3; i++) expect(await rejection(kolab.raiseQuery(engineer, `kj:orders@${seq}#R1`, 'Within a day?'))).toMatch(/GateError: cannot ask about/);
+  await kolab.raiseQuery(engineer, 'kj:orders#R1', 'Within a day of what?');
+  await kolab.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
+  expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?'))).toMatch(/LimitError: bob and bob's agents raised 2 questions/);
+  expect((await kolab.db.query(`select 1 from rate_hold`)).rows).toStrictEqual([]);
+  // A hold left by a process that stopped mid-write counts for ten minutes, then not at all.
+  Object.assign(kolab.rates, { asks: 3 });
+  await kolab.db.query(`insert into rate_hold(id, owner_id, kind) values ('ask:bob:lost', 'bob', 'ask')`);
+  expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?'))).toMatch(/LimitError: bob and bob's agents raised 3 questions/);
+  await kolab.db.query(`update rate_hold set created_at = now() - interval '11 minutes'`);
+  await kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?');
+  expect((await kolab.db.query(`select 1 from rate_hold`)).rows).toStrictEqual([]);
+});
+
+// On Postgres, each call takes a pooled connection (10 by default). The budget's lock is held only
+// while a call counts and takes its place, never through its write, so one person's burst of big
+// drafts costs everyone else no more than the same burst would with no rate at all. (With the lock
+// held through each write, the burst took four times as long and another person's read waited
+// four or five times as long as with no rate.) PGlite is one connection, which a burst holds in
+// turn whatever the lock does, so this is Postgres's alone.
+(process.env.KONJIR_TEST_DATABASE_URL ? test : test.skip)('one person\'s burst of big drafts doesn\'t starve another person\'s read', async () => {
+  const { kolab, product, engineer } = await orders();
+  const parts = 20;
+  for (let i = 0; i < 2 * parts; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  const big = Array.from({ length: MAX_ELEMENTS }, (_, i) => ({ id: `b${i}`, text: `Element ${i}: ${long(150)}` }));
+  const read = async () => { const t = Date.now(); await kolab.queriesPage(product, {}); return Date.now() - t; };
+  /** Bob drafts on `parts` nodes at once, from node `from`; Alice reads once the burst has the pool. */
+  const burst = async (from: number) => {
+    const started = Date.now();
+    const drafts = Promise.all(Array.from({ length: parts }, (_, i) => kolab.draft(engineer, `part-${from + i}`, { elements: big })));
+    await new Promise((r) => setTimeout(r, 300));
+    const alice = await read();
+    await drafts;
+    return { alice, total: Date.now() - started };
+  };
+  Object.assign(kolab.rates, { drafts: Infinity });
+  const unrated = await burst(0);
+  Object.assign(kolab.rates, { drafts: MAX_DRAFTS_PER_HOUR });
+  const rated = await burst(parts);
+  expect((await kolab.db.query(`select 1 from version where actor_id = 'bob'`)).rows).toHaveLength(2 * parts + 1);
+  expect({ alice: rated.alice < 3 * unrated.alice + 1_000, total: rated.total < 2 * unrated.total + 2_000, unrated, rated })
+    .toMatchObject({ alice: true, total: true });
+}, 300_000);
 
 test('kolab titles count characters, and the admin\'s names and titles are capped too', async () => {
   const { kolab } = await orders();
