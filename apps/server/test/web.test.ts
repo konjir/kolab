@@ -759,13 +759,24 @@ test('every list the web API returns comes a page at a time: ?cursor= reads the 
   expect(await call(`nodes?cursor=${encodeURIComponent(first.body.next)}`)).toMatchObject({ status: 400, body: { message: expect.stringMatching(/invalid cursor: that isn't one this list gave/) } });
   expect(await call('queries?limit=many')).toMatchObject({ status: 400, body: { message: 'limit is a whole number' } });
   // A cursor of the right list whose key isn't a time, or is out of range, is a 400 too: never a 500, nor the database's words.
-  for (const key of [['not a time', 'x'], ['2026-13-40 99:00:00+00', 'x'], [{ $gt: '' }, 'x']]) {
+  for (const key of [['not a time', 'x'], ['2026-13-40 99:00:00+00', 'x'], [{ $gt: '' }, 'x'], ['2026-01-01 00:00:00+00:99', 'x'], ['2026-01-01 00:00:00+1599', 'x'], ['2026-01-01 00:00:00+00', 'x\u0000']]) {
     const bad = cursorFor(scoped('web:marks', { here: TEST_KOLAB }), key);
     const r = await call<{ message: string }>(`marks?cursor=${encodeURIComponent(bad)}`);
     expect(r).toMatchObject({ status: 400, body: { message: expect.stringMatching(/^invalid cursor/) } });
     expect(r.body.message).not.toMatch(/syntax|timestamp|type/);
   }
   expect((await call(`activity?cursor=${encodeURIComponent(cursorFor(scoped('web:activity', { here: TEST_KOLAB }), ['soon', 'node', 'x']))}`)).status).toBe(400);
+  // A NUL in a text key part is a 400, not the database's "invalid byte sequence".
+  const nul = await call<{ message: string }>(`nodes?cursor=${encodeURIComponent(cursorFor(scoped('web:nodes', { here: TEST_KOLAB }), ['functional_spec', 'a\u0000']))}`);
+  expect(nul).toMatchObject({ status: 400, body: { message: expect.stringMatching(/^invalid cursor/) } });
+  // Lineage reads each node's elements, so however many are asked for, a page holds at most 20.
+  for (let i = 0; i < 21; i++) {
+    await kolab.createNode(product, 'functional_spec', `Part ${i}`, `part-${i}`);
+    await kolab.commit(product, `part-${i}`, { elements: els({ R1: `Part ${i}.` }) });
+  }
+  const lineage = await call<{ nodes: unknown[]; next: string | null }>('lineage?limit=200');
+  expect([lineage.status, lineage.body.nodes.length, typeof lineage.body.next]).toStrictEqual([200, 20, 'string']);
+  expect((await call('lineage?limit=-1')).status).toBe(400);
 });
 
 test('a node\'s page lists its newest versions and each element\'s newest questions, with a cursor to the rest; invites and who holds access page too (W2.21)', async () => {
@@ -793,6 +804,10 @@ test('a node\'s page lists its newest versions and each element\'s newest questi
   const v2 = await call<WebVersionsView>(`nodes/orders/versions?limit=3&cursor=${encodeURIComponent(v1.body.next!)}`);
   expect([v2.body.versions.map((v) => v.seq), v2.body.next]).toStrictEqual([[1], null]);
   expect((await call(`nodes/orders/versions?cursor=${encodeURIComponent(r2.queries_next!)}`)).status).toBe(400);
+  // A seq past Postgres's int is a 400 that says the cursor is invalid, not a 500.
+  const versionsList = JSON.parse(Buffer.from(v1.body.next!, 'base64url').toString())[0] as string;
+  const past = await call<{ message: string }>(`nodes/orders/versions?cursor=${encodeURIComponent(cursorFor(versionsList, [2 ** 31]))}`);
+  expect(past).toMatchObject({ status: 400, body: { message: expect.stringMatching(/^invalid cursor/) } });
 
   // Invites and who holds access: Ann administers her own kolab, with three readers.
   for (const id of ['ann', 'eli', 'fay', 'gus']) await kolab.addActor(id);

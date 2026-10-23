@@ -4,7 +4,8 @@ import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
 import { JsonNestLogger, serverErrors } from './json-logger.js';
 import { MAX_REQUEST_BYTES, MAX_SMALL_REQUEST_BYTES } from '@konjir/types';
-import { json, urlencoded } from 'express';
+import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
+import { KonjirAuth } from './auth.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { KolabServerModule } from './kolab-server.module.js';
 import type { IdentityProvider } from './oauth/identity.js';
@@ -59,15 +60,23 @@ export async function startServer(opts: {
   // Every 5xx answer is an error line, which the deployed stack's server-error alarm counts.
   app.use(serverErrors());
   // The MCP endpoint and the web API take bodies of up to MAX_REQUEST_BYTES (W2.21): room for the
-  // largest version Kolab takes (MAX_VERSION_BYTES). Everything else, the OAuth routes and anything
-  // else a stranger reaches, keeps the small limit (MAX_SMALL_REQUEST_BYTES). Past either, a clear
-  // refusal. A body a parser has read isn't read again.
-  for (const path of ['/mcp', '/api']) {
-    app.use(path, json({ limit: MAX_REQUEST_BYTES }));
-    app.use(path, urlencoded({ limit: MAX_REQUEST_BYTES, extended: true }));
-  }
-  app.use(json({ limit: MAX_SMALL_REQUEST_BYTES }));
-  app.use(urlencoded({ limit: MAX_SMALL_REQUEST_BYTES, extended: true }));
+  // largest version Kolab takes (MAX_VERSION_BYTES). Everything a caller reaches before signing in
+  // keeps the small limit (MAX_SMALL_REQUEST_BYTES): the OAuth routes, the web sign-in and invites
+  // (/api/session), and /mcp unless the request carries a token that verifies, which is checked
+  // before its body is read, and only for a body that may be over the small limit. Past either, a
+  // clear refusal. A body a parser has read isn't read again.
+  const small = [json({ limit: MAX_SMALL_REQUEST_BYTES }), urlencoded({ limit: MAX_SMALL_REQUEST_BYTES, extended: true })];
+  const large = [json({ limit: MAX_REQUEST_BYTES }), urlencoded({ limit: MAX_REQUEST_BYTES, extended: true })];
+  app.use('/api/session', ...small);
+  app.use('/api', ...large);
+  const auth = app.get(KonjirAuth);
+  app.use('/mcp', (req: Request, res: Response, next: NextFunction) => {
+    signedIn(auth, req).then((ok) => {
+      if (!ok) return next();
+      large[0](req, res, (e?: unknown) => (e ? next(e) : large[1](req, res, next)));
+    }, next);
+  });
+  app.use(...small);
   app.use(tooLarge);
   // The web interface's pages, at the root (API8); its API is the module's, under /api.
   app.use(webApp(opts.webRoot === undefined ? defaultWebRoot() : opts.webRoot));
@@ -97,16 +106,36 @@ export async function startServer(opts: {
 }
 
 /**
- * A request body over MAX_REQUEST_BYTES, refused with a message that names the limit: as a JSON-RPC
- * error on the MCP endpoint, so a client shows it, and as the web API's error elsewhere.
+ * Whether a request to /mcp may send a body over MAX_SMALL_REQUEST_BYTES: only one whose bearer
+ * token verifies, as the transport will verify it after (KonjirAuth). A body declared within the
+ * small limit needs no check, so most calls cost no extra lookup.
+ */
+async function signedIn(auth: KonjirAuth, req: Request): Promise<boolean> {
+  const declared = req.headers['content-length'];
+  if (declared !== undefined && Number(declared) <= MAX_SMALL_REQUEST_BYTES) return false;
+  const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization ?? '')?.[1];
+  if (!token) return false;
+  try {
+    await auth.verifyAccessToken(token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A request body over its limit, refused with a message that names the limit the parser applied
+ * (MAX_REQUEST_BYTES or MAX_SMALL_REQUEST_BYTES): as a JSON-RPC error on the MCP endpoint, so a
+ * client shows it, and as the web API's error elsewhere. Paths match as Express mounts them,
+ * whatever their case.
  */
 function tooLarge(err: unknown, req: { path?: string }, res: { status(n: number): { json(b: unknown): void }; headersSent?: boolean }, next: (e?: unknown) => void) {
-  const e = err as { type?: string; status?: number } | undefined;
+  const e = err as { type?: string; status?: number; limit?: number } | undefined;
   if (e?.type !== 'entity.too.large' || res.headersSent) return next(err);
-  const large = /^\/(mcp|api)(\/|$)/.test(req.path ?? '');
-  const message = large
+  const mcp = /^\/mcp(\/|$)/i.test(req.path ?? '');
+  const message = e.limit === MAX_REQUEST_BYTES
     ? `the request is over ${MAX_REQUEST_BYTES / (1024 * 1024)} MiB, the most Kolab takes in one call: send less at once (a version holds at most 512 KiB of text)`
-    : `the request is over ${MAX_SMALL_REQUEST_BYTES / 1024} KiB, the most Kolab takes here`;
-  if (req.path?.startsWith('/mcp')) res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message } });
+    : `the request is over ${MAX_SMALL_REQUEST_BYTES / 1024} KiB, the most Kolab takes here${mcp ? ' from a caller that hasn\'t signed in' : ''}`;
+  if (mcp) res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message } });
   else res.status(413).json({ error: 'too_large', message });
 }
