@@ -57,14 +57,15 @@ module "secrets" {
 }
 
 module "database" {
-  source            = "./modules/database"
-  name              = var.name
-  subnet_ids        = module.network.db_subnet_ids
-  security_group_id = module.network.db_security_group_id
-  postgres_version  = var.postgres_version
-  instance_class    = var.db_instance_class
-  allocated_gib     = var.db_allocated_gib
-  final_snapshot    = var.final_snapshot_on_destroy
+  source              = "./modules/database"
+  name                = var.name
+  subnet_ids          = module.network.db_subnet_ids
+  security_group_id   = module.network.db_security_group_id
+  postgres_version    = var.postgres_version
+  instance_class      = var.db_instance_class
+  allocated_gib       = var.db_allocated_gib
+  final_snapshot      = var.final_snapshot_on_destroy
+  deletion_protection = var.db_deletion_protection
 }
 
 module "iam" {

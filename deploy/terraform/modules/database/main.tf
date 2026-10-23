@@ -2,6 +2,12 @@
 # subnets, encrypted, with 7 days of automated backups. Kolab connects with TLS, verified
 # against the RDS certificate bundle. Its URL, password included, is an SSM SecureString;
 # it is also in Terraform state, like the admin token.
+#
+# Recovery (P12, D75; W2.24): the automated backups give point-in-time recovery to any second
+# from the last 7 days up to the latest restorable time, which RDS keeps about 5 minutes behind
+# now. Deletion protection is on, and deleting the instance keeps those backups (and a final
+# snapshot) unless the teardown asks to leave nothing. deploy/RECOVERY.md is the runbook, and
+# deploy/recovery-drill.sh the drill.
 
 variable "name" { type = string }
 variable "subnet_ids" { type = list(string) }
@@ -10,6 +16,7 @@ variable "postgres_version" { type = string }
 variable "instance_class" { type = string }
 variable "allocated_gib" { type = number }
 variable "final_snapshot" { type = bool }
+variable "deletion_protection" { type = bool }
 
 # Where the instance keeps the RDS certificate bundle; the kolab module's bootstrap downloads it.
 locals { ca_path = "/etc/konjir/rds-ca.pem" }
@@ -36,7 +43,6 @@ resource "aws_db_instance" "this" {
   #checkov:skip=CKV_AWS_129:Log exports to CloudWatch are a production step (P11)
   #checkov:skip=CKV2_AWS_30:Query logging is a production step (P11)
   #checkov:skip=CKV_AWS_161:Kolab logs in with a password from SSM; IAM auth is a production step
-  #checkov:skip=CKV_AWS_293:Test environment; deletion protection is a production step
   identifier                 = "${var.name}-db"
   engine                     = "postgres"
   engine_version             = var.postgres_version
@@ -54,9 +60,12 @@ resource "aws_db_instance" "this" {
   backup_retention_period    = 7
   copy_tags_to_snapshot      = true
   auto_minor_version_upgrade = true
-  # A test stack: terraform destroy may delete it, keeping a final snapshot unless final_snapshot is off.
-  # Destroy reads this from state, so turning the snapshot off takes an apply first (README).
-  deletion_protection       = false
+  # Deletion protection is on unless db_deletion_protection is off, which a teardown applies
+  # first (README). terraform destroy then keeps a final snapshot and the automated backups, so
+  # the database can still be restored to a point in time, unless final_snapshot is off. Destroy
+  # reads both from state, so turning them off takes an apply first too.
+  deletion_protection       = var.deletion_protection
+  delete_automated_backups  = !var.final_snapshot
   skip_final_snapshot       = !var.final_snapshot
   final_snapshot_identifier = "${var.name}-db-final-${random_id.final_snapshot.hex}"
   apply_immediately         = false
