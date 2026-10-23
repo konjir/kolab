@@ -22,7 +22,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, extname, join, relative, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -46,8 +46,8 @@ if (!existsSync(srcPath)) fail(`no artboard at ${srcPath}`);
 // The build writes only these in site/; site/src/ (the source) and site/README.md are never its.
 const outputs = new Set(['index.html', '404.html', 'robots.txt', 'favicon.svg', 'assets']);
 const outPath = (rel) => {
-  const top = rel.split('/')[0];
-  if (!outputs.has(top)) fail(`refusing to write site/${rel}, which the build doesn't own`);
+  const parts = rel.split(/[\\/]/);
+  if (isAbsolute(rel) || parts.includes('..') || !outputs.has(parts[0])) fail(`refusing to write site/${rel}, which the build doesn't own`);
   return join(out, rel);
 };
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
@@ -78,19 +78,28 @@ const rest = helmet
 if (rest) fail(`unexpected <helmet> content: ${rest.slice(0, 120)}`);
 if (/url\(|@import/i.test(baseCss)) fail('the helmet <style> loads something (url() or @import); extend the converter');
 
-// The previous build's hashed assets, kept one more build (see the header): the ones site/ uses at
-// HEAD, the last commit, so rebuilding before a commit never drops what the last deploy serves.
-// Outside a git checkout, the ones site/ uses now.
+// The previous build's hashed assets, kept one more build (see the header): the ones site/'s pages
+// use at the merge base with origin/main, which is what main and so the last deploy serves, and at
+// every commit since it up to HEAD. So a rebuild on a branch, even after the branch's own builds
+// are committed, never drops what production serves, and rebuilding a committed build changes
+// nothing. On main itself that is HEAD alone, so the builds before the last one are pruned there.
+// Without an origin/main, HEAD alone; outside a git checkout, the ones site/ uses now.
+const git = (...a) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' });
+const revs = [];
+if (git('rev-parse', '--verify', '-q', 'HEAD').status === 0) {
+  revs.push('HEAD');
+  const base = git('merge-base', 'HEAD', 'origin/main');
+  if (base.status === 0) {
+    const b = base.stdout.trim();
+    revs.push(b, ...git('rev-list', `${b}..HEAD`, '--', 'site/index.html', 'site/404.html').stdout.split('\n').filter(Boolean));
+  }
+}
 const previous = new Set();
-const committed = (rel) => {
-  const r = spawnSync('git', ['show', `HEAD:${rel}`], { cwd: repo, encoding: 'utf8' });
-  if (r.status === 0) return r.stdout;
-  const inGit = spawnSync('git', ['rev-parse', '--verify', '-q', 'HEAD'], { cwd: repo }).status === 0;
-  return inGit ? null : existsSync(join(repo, rel)) ? readFileSync(join(repo, rel), 'utf8') : null;
-};
 const refsIn = (rel) => {
-  const text = committed(rel);
-  if (text) for (const m of text.matchAll(/\/assets\/([^"')\s]+)/g)) previous.add(m[1]);
+  const texts = revs.length
+    ? revs.map((rev) => git('show', `${rev}:${rel}`)).filter((r) => r.status === 0).map((r) => r.stdout)
+    : existsSync(join(repo, rel)) ? [readFileSync(join(repo, rel), 'utf8')] : [];
+  for (const text of texts) for (const m of text.matchAll(/\/assets\/([^"')\s]+)/g)) previous.add(m[1]);
 };
 refsIn('site/index.html');
 refsIn('site/404.html');

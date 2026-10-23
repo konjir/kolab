@@ -2,7 +2,8 @@ name: CI
 
 # Checks every pull request into main, and main after each merge (W2.4, W2.9, binding element TST3).
 # Three jobs, so a pull request shows three checks, all of which main requires (D45):
-# - "Test on PGlite": typecheck, build and the Jest suite, on embedded Postgres (PGlite)
+# - "Test on PGlite": that site/ is built from site/src/ (D92), then typecheck, build and the
+#   Jest suite, on embedded Postgres (PGlite)
 # - "Test on Postgres": the Jest suite again, on Postgres 18 through Testcontainers, as a
 #   non-superuser like RDS's (jest.global-setup.js). The runner's Docker hosts the container.
 # - "Check Terraform": terraform fmt -check, validate and test (offline, mocked) on
@@ -69,6 +70,24 @@ jobs:
         with:
           node-version: ${{ steps.node.outputs.version }}
           cache: npm
+
+      # site/ must be what deploy/site/build.mjs builds from site/src/ (D92), or the deploy
+      # publishes a stale page. The build needs only Node and the vendored fonts, and reads no
+      # network. It keeps what origin/main's pages use (the full fetch above has origin/main), so on
+      # a pull request it changes nothing; on main it may prune the builds before the last, which
+      # is its job, so a deletion isn't a failure. Anything changed or added is.
+      - name: Check site/ is built from site/src/
+        run: |
+          node deploy/site/build.mjs
+          if ! git diff --exit-code --diff-filter=d --stat -- site; then
+            echo "::error file=site/src/project/Main.dc.html::site/ isn't built from site/src/: run node deploy/site/build.mjs and commit the result"
+            exit 1
+          fi
+          untracked=$(git ls-files --others --exclude-standard -- site)
+          if [ -n "$untracked" ]; then
+            echo "::error file=site/src/project/Main.dc.html::the build wrote files that aren't committed: $untracked"
+            exit 1
+          fi
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
