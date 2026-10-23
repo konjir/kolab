@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, test } from '@jest/globals';
 import {
-  BASELINE, MIGRATIONS, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
+  BASELINE, MIGRATIONS, checkMigrations, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
 import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
@@ -728,6 +728,38 @@ test('Kolab refuses a database that a newer release has migrated', async () => {
     await migrate(db, { migrations: [m1, m2] });
     expect(await rejection(migrate(db, { migrations: [m1] }))).toMatch(/has migration 0002_m2\.sql, which this release of Kolab doesn't know/);
   });
+});
+
+test('checkMigrations passes a database at exactly these migrations, and refuses one migrate would change, writing nothing', async () => {
+  await withDb(async (db) => {
+    expect(await rejection(checkMigrations(db, { migrations: [m1] }))).toMatch(/no migration record \(kj_migration\)/);
+    expect((await db.query<{ t: string | null }>(`select to_regclass('public.kj_migration')::text as t`)).rows[0].t).toBeNull();
+    await migrate(db, { migrations: [m1] });
+    await checkMigrations(db, { migrations: [m1] });
+    expect(await rejection(checkMigrations(db, { migrations: [m1, m2] }))).toMatch(/lacks 0002_m2\.sql, which this release would apply/);
+    expect((await db.query(`select n from t`)).rows).toStrictEqual([]);
+    expect((await recorded(db)).map((r) => r.version)).toStrictEqual([1]);
+    await migrate(db, { migrations: [m1, m2] });
+    expect(await rejection(checkMigrations(db, { migrations: [m1] }))).toMatch(/has migration 0002_m2\.sql, which this release of Kolab doesn't know/);
+    expect(await rejection(checkMigrations(db, { migrations: [m1, m(2, `insert into t values (3)`)] }))).toMatch(/migration 0002_m2\.sql has changed/);
+  });
+});
+
+test('Kolab opened without migrating refuses a database that needs a migration, and opens a current one unchanged', async () => {
+  const fresh = await persistentStore();
+  expect(await rejection(Kolab.open({ ...fresh, migrate: false }))).toMatch(/no migration record/);
+  await withDb(async (db) => {
+    expect((await db.query<{ t: string | null }>(`select to_regclass('public.kj_migration')::text as t`)).rows[0].t).toBeNull();
+  }, fresh);
+
+  const store = await persistentStore();
+  await withDb((db) => migrate(db), store);
+  const kolab = await Kolab.open({ ...store, migrate: false });
+  try {
+    expect((await recorded(kolab.db)).map((r) => r.version)).toStrictEqual(versions);
+  } finally {
+    await kolab.close();
+  }
 });
 
 test('the baseline runs only on a database that has Kolab tables', async () => {

@@ -24,6 +24,11 @@ output "database_endpoint" {
   value       = module.database.endpoint
 }
 
+output "database_recovery" {
+  description = "What a restore needs (deploy/RECOVERY.md, deploy/recovery-drill.sh): the database's identifier, its URL's SSM parameter, its subnet group, security group, class, storage type and backup retention."
+  value       = module.database.recovery
+}
+
 output "admin_token_parameter" {
   description = "SSM SecureString holding the admin token. Read it with deploy/konjir-ops.sh admin-token."
   value       = module.secrets.admin_token_param_name

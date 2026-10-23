@@ -37,8 +37,12 @@ export async function startServer(opts: {
   handIssuedTokens?: boolean;
   /** The published konjir CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
   cliNpmSpec?: string;
+  /** False: apply no migration to its own Kolab's database, and refuse one that needs any (W2.24). True by default. */
+  migrate?: boolean;
+  /** False: its own Kolab runs no outbox worker, so it never claims or runs a job (W2.24). True by default. */
+  worker?: boolean;
 }): Promise<KonjirServer> {
-  const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl });
+  const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
   const app = await NestFactory.create(
     KolabServerModule.register({
@@ -57,7 +61,7 @@ export async function startServer(opts: {
   await app.listen(opts.port ?? 0, host);
   // Its own Kolab runs the outbox (REV3, W1.8): at once, for work a stopped process left, then as
   // jobs fall due. A Kolab given to it is its owner's to start.
-  if (!opts.kolab) kolab.startWorker();
+  if (!opts.kolab && opts.worker !== false) kolab.startWorker();
   const http = app.getHttpServer() as HttpServer;
   const { port } = http.address() as AddressInfo;
   let closing: Promise<void> | undefined;
