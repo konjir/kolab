@@ -11,6 +11,21 @@ provider "aws" {
   }
 }
 
+# CloudFront takes certificates only from us-east-1, whatever var.region is.
+provider "aws" {
+  alias   = "us_east_1"
+  region  = "us-east-1"
+  profile = var.aws_profile
+
+  default_tags {
+    tags = {
+      Project   = "konjir"
+      Stack     = var.name
+      ManagedBy = "terraform"
+    }
+  }
+}
+
 data "aws_route53_zone" "this" {
   name         = var.zone_name
   private_zone = false
@@ -108,4 +123,21 @@ module "release" {
   # and the log group and the role's right to write it there before the release's observe.sh
   # starts the CloudWatch agent.
   depends_on = [module.kolab, module.iam, module.monitoring]
+}
+
+# konjir.com, the marketing site (D81): the files in site/, on S3 behind CloudFront.
+# Production only; W2.23 (PR #69) should gate it on the environment instead of site_enabled.
+module "site" {
+  source = "./modules/site"
+  count  = var.site_enabled ? 1 : 0
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  name        = var.name
+  zone_id     = data.aws_route53_zone.this.zone_id
+  domain_name = var.zone_name
+  site_dir    = abspath("${path.root}/../../site")
 }
