@@ -406,8 +406,10 @@ export class WebService {
   async lineage(s: string, page: PageOpts = {}): Promise<WebLineageView> {
     const nodes: WebLineageView['nodes'] = [];
     // Each node's elements come with it, so a page holds fewer nodes than a list's: at most a
-    // tenth of PAGE_DEFAULT unless asked, each of at most MAX_ELEMENTS elements.
-    const shown = await this.nodes(s, { cursor: page.cursor, limit: page.limit ?? Math.max(1, PAGE_DEFAULT / 10) }, { committed: true });
+    // tenth of PAGE_DEFAULT unless asked, and never more than LINEAGE_MAX however many are asked
+    // for, each of at most MAX_ELEMENTS elements.
+    const limit = page.limit === undefined || page.limit === null ? Math.max(1, PAGE_DEFAULT / 10) : Math.min(page.limit, LINEAGE_MAX);
+    const shown = await this.nodes(s, { cursor: page.cursor, limit }, { committed: true });
     for (const n of shown.nodes) {
       const read = await this.kolab.readNode(s, n.name, n.latest!, { threads: false });
       nodes.push({ name: n.name, title: n.title, kind: n.kind, layer: n.layer, seq: n.latest!, elements: read.elements.slice(0, MAX_ELEMENTS).map((e) => ({ id: e.element_id, text: e.text })) });
@@ -766,6 +768,12 @@ export class WebService {
     };
   }
 }
+
+/**
+ * The most nodes a page of lineage holds, whatever ?limit= asks (W2.21): each comes with up to
+ * MAX_ELEMENTS elements, read one node after another.
+ */
+const LINEAGE_MAX = 20;
 
 const bad = (message: string) => new BadRequestException({ error: 'bad_request', message });
 const conflict = (message: string) => new ConflictException({ error: 'conflict', message });

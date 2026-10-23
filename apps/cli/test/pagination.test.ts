@@ -156,6 +156,25 @@ test('a draft over the limits, an over-long question, and a body over the reques
   const oauth = await fetch(new URL('/oauth/register', server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'x'.repeat(MAX_SMALL_REQUEST_BYTES) }) });
   expect(oauth.status).toBe(413);
   expect(await oauth.json()).toMatchObject({ error: 'too_large', message: expect.stringMatching(/over 100 KiB/) });
+  // Signing in and invites, before any session, keep the small limit too; and /mcp does unless the
+  // token verifies, which is checked before the body is read.
+  const medium = JSON.stringify({ token: 'x'.repeat(MAX_SMALL_REQUEST_BYTES + 1) });
+  for (const path of ['/api/session', '/api/session/invite', '/API/Session']) {
+    const r = await fetch(new URL(path, server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: medium });
+    expect([path, r.status, await r.json()]).toMatchObject([path, 413, { error: 'too_large', message: expect.stringMatching(/over 100 KiB/) }]);
+  }
+  const mcpHeaders = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+  for (const authorization of [undefined, 'Bearer not-a-token']) {
+    const r = await fetch(server.url, { method: 'POST', headers: { ...mcpHeaders, ...(authorization ? { authorization } : {}) }, body: huge });
+    expect([r.status, await r.json()]).toMatchObject([413, { jsonrpc: '2.0', error: { message: expect.stringMatching(/over 100 KiB, the most Kolab takes here from a caller that hasn't signed in/) } }]);
+  }
+  // A small body without a token still gets the transport's 401, which leads a client to sign in.
+  expect((await fetch(server.url, { method: 'POST', headers: mcpHeaders, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })).status).toBe(401);
+  // Express mounts paths whatever their case, and the message names the limit the parser applied.
+  const upper = await fetch(new URL('/API/queries', server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: huge });
+  expect([upper.status, await upper.json()]).toMatchObject([413, { error: 'too_large', message: expect.stringMatching(/over 2 MiB/) }]);
+  const upperMcp = await fetch(new URL('/MCP', server.url), { method: 'POST', headers: { ...mcpHeaders, authorization: `Bearer ${ADMIN}` }, body: huge });
+  expect([upperMcp.status, await upperMcp.json()]).toMatchObject([413, { jsonrpc: '2.0', error: { message: expect.stringMatching(/over 2 MiB/) } }]);
   // A cursor whose key isn't the shape its list's is: an MCP error that says so, not the database's words.
   await expect(call(dev, 'list_stale', { cursor: cursorFor(scoped('marks', { layer: 'technical', kolab: 'test' }), ['not a time', 'x']) }))
     .rejects.toThrow(/LimitError: invalid cursor: that isn't one this list gave/);
