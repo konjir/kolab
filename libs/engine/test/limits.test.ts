@@ -3,7 +3,7 @@
 // and their agents ask and draft at most so many times an hour, together.
 import { expect, test } from '@jest/globals';
 import {
-  MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_TEXT, MAX_TITLE,
+  MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_TEXT, MAX_TITLE,
   MAX_KOLAB_TITLE, MAX_NAME, MAX_VERSION_BYTES, RATE_WINDOW_MS,
 } from '@konjir/types';
 import { els, people, rejection, setup, TEST_KOLAB } from '@konjir/engine/testing';
@@ -80,7 +80,11 @@ test('a case file\'s question, a claim, its evidence and a ruling over their lim
 
 test('a person and their agents ask and draft at most so many times an hour, together; the refusal names the limit and the wait, writes nothing, and holds no one else back', async () => {
   const { kolab, product, engineer } = await orders();
-  expect(kolab.rates).toStrictEqual({ asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, windowMs: RATE_WINDOW_MS });
+  expect(kolab.rates).toStrictEqual({
+    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR, windowMs: RATE_WINDOW_MS,
+  });
+  // An organization's budget is five times a person's.
+  expect([MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR]).toStrictEqual([5 * MAX_ASKS_PER_HOUR, 5 * MAX_DRAFTS_PER_HOUR]);
   Object.assign(kolab.rates, { asks: 4, drafts: 2 });
   const asked = async () => (await kolab.db.query(`select 1 from query`)).rows.length;
   // Bob's agent shares Bob's budget: questions and notes, his and his agent's, count alike.
@@ -109,23 +113,22 @@ test('a person and their agents ask and draft at most so many times an hour, tog
   const versions = async () => (await kolab.db.query(`select 1 from version`)).rows.length;
   const written = await versions();
   expect(await rejection(kolab.draft(product, 'orders', { elements: els({ R1: 'Orders can be cancelled within two days.' }) })))
-    .toBe('LimitError: alice and alice\'s agents drafted 2 versions in the last hour; the limit is 2 in an hour, shared by a person and their agents. Wait 60 minutes before drafting again, or put several changes in one draft');
+    .toBe('LimitError: alice and alice\'s agents drafted 2 versions in the last hour; the limit is 2 in an hour, shared by a person and their agents, and a draft counts when it is made, whatever becomes of it. Wait 60 minutes before drafting again, or put several changes in one draft');
   expect(await versions()).toBe(written);
   // A ruling the admin applies, written as Alice, isn't her draft: it isn't limited, and doesn't count.
   await kolab.applyRuling('orders', { elements: els({ R1: 'Orders can be cancelled within a week.' }) }, { id: 'D71', actor: 'alice' });
   // Asked with a limit of 0, kj_rate_take only counts: it holds nothing.
-  const counted = async (actor: string) => (await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take($1, 'draft', $2, 0)`, [actor, RATE_WINDOW_MS])).rows[0].r_count;
+  const counted = async (actor: string) => (await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take($1, 'draft', $2, 0, 0)`, [actor, RATE_WINDOW_MS])).rows[0].r_count;
   expect(await counted('alice')).toBe(2);
   // Bob, with one version, still drafts.
   await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'Cancelling sets a flag and a time.' }) });
 
   // The window slides: once the oldest is more than an hour old, the next is let through.
-  await kolab.db.query(`update query set created_at = created_at - interval '61 minutes' where raised_by in ('bob', 'bob-claude')`);
-  await kolab.db.query(`update version set created_at = created_at - interval '61 minutes' where actor_id = 'alice'`);
+  await kolab.db.query(`update rate_event set created_at = created_at - interval '61 minutes' where owner_id in ('bob', 'alice')`);
   await kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?');
   await expect(kolab.draft(product, 'orders', { elements: els({ R1: 'Orders can be cancelled within two days.' }) })).resolves.toEqual(expect.any(String));
   // The wait the refusal names is how long until the oldest in the window leaves it.
-  await kolab.db.query(`update query set created_at = now() - interval '50 minutes' where raised_by = 'bob' and question = 'And refunds?'`);
+  await kolab.db.query(`update rate_event set created_at = now() - interval '50 minutes' where owner_id = 'bob' and kind = 'ask' and created_at > now() - interval '1 minute'`);
   for (const q of ['Partial refunds?', 'Store credit?', 'Vouchers?']) await kolab.raiseQuery(agent, 'kj:orders#R1', q);
   expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R1', 'Gift cards?'))).toMatch(/Wait 10 minutes before asking again/);
 });
@@ -144,8 +147,10 @@ test('the limit holds when many ask and draft at once: each takes its turn in th
   // Bob wrote orders-pg's first version: two more.
   expect(drafts.filter((t) => t.status === 'fulfilled')).toHaveLength(2);
   expect((await kolab.db.query(`select 1 from version where actor_id = 'bob'`)).rows).toHaveLength(3);
-  // Every hold became a row or was given back.
-  expect((await kolab.db.query(`select 1 from rate_hold`)).rows).toStrictEqual([]);
+  // Every hold was used or given back: Bob's budget holds the 5 asks and the 3 drafts, and nothing is held.
+  expect((await kolab.db.query(`select kind, count(*)::int as n from rate_event where not held and owner_id = 'bob' group by kind order by kind`)).rows)
+    .toStrictEqual([{ kind: 'ask', n: 5 }, { kind: 'draft', n: 3 }]);
+  expect((await kolab.db.query(`select 1 from rate_event where held`)).rows).toStrictEqual([]);
 }, 120_000);
 
 test('a call that fails after taking its place in the budget gives it back, and a hold its process never gave back stops counting', async () => {
@@ -158,14 +163,75 @@ test('a call that fails after taking its place in the budget gives it back, and 
   await kolab.raiseQuery(engineer, 'kj:orders#R1', 'Within a day of what?');
   await kolab.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
   expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?'))).toMatch(/LimitError: bob and bob's agents raised 2 questions/);
-  expect((await kolab.db.query(`select 1 from rate_hold`)).rows).toStrictEqual([]);
+  expect((await kolab.db.query(`select 1 from rate_event where held`)).rows).toStrictEqual([]);
   // A hold left by a process that stopped mid-write counts for ten minutes, then not at all.
   Object.assign(kolab.rates, { asks: 3 });
-  await kolab.db.query(`insert into rate_hold(id, owner_id, kind) values ('ask:bob:lost', 'bob', 'ask')`);
+  await kolab.db.query(`insert into rate_event(id, owner_id, kind) values ('ask:bob:lost', 'bob', 'ask')`);
   expect(await rejection(kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?'))).toMatch(/LimitError: bob and bob's agents raised 3 questions/);
-  await kolab.db.query(`update rate_hold set created_at = now() - interval '11 minutes'`);
+  await kolab.db.query(`update rate_event set created_at = now() - interval '11 minutes' where id = 'ask:bob:lost'`);
   await kolab.raiseQuery(engineer, 'kj:orders#R1', 'And refunds?');
-  expect((await kolab.db.query(`select 1 from rate_hold`)).rows).toStrictEqual([]);
+  expect((await kolab.db.query(`select id from rate_event where held or id = 'ask:bob:lost'`)).rows).toStrictEqual([]);
+});
+
+test('a draft counts against its author when it is made, whatever becomes of it: another writer submitting it frees nothing', async () => {
+  const { kolab, engineer } = await orders();
+  // Dave is a second writer on the technical layer: the colluding second account of the review's L1.
+  await people(kolab, 'dave', { layers: ['technical'] });
+  const dave = await kolab.openSession('dave', 'engineer', { by: ADMIN_DOER });
+  for (let i = 0; i < 4; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  // Bob wrote orders-pg's first version; with a limit of 4, three more.
+  Object.assign(kolab.rates, { drafts: 4 });
+  const counted = async () => (await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take('bob', 'draft', $1, 0, 0)`, [RATE_WINDOW_MS])).rows[0].r_count;
+  const a = await kolab.draft(engineer, 'part-0', { elements: els({ b1: 'First.' }) });
+  const b = await kolab.draft(engineer, 'part-1', { elements: els({ b1: 'Second.' }) });
+  const c = await kolab.draft(engineer, 'part-2', { elements: els({ b1: 'Third.' }) });
+  expect(await counted()).toBe(4);
+  // Dave submits two of Bob's drafts, and approves neither: they wait in review. Bob abandons the third.
+  expect((await kolab.submit(dave, a)).in_review).toBe(true);
+  expect((await kolab.submit(dave, b)).in_review).toBe(true);
+  await kolab.abandon(engineer, c);
+  expect(await counted()).toBe(4);
+  // Bob's budget is spent: a draft submitted by someone else, or abandoned, still counts.
+  expect(await rejection(kolab.draft(engineer, 'part-3', { elements: els({ b1: 'Fourth.' }) })))
+    .toMatch(/^LimitError: bob and bob's agents drafted 4 versions in the last hour; the limit is 4 in an hour/);
+  // Approved or sent back, they still count.
+  await kolab.recordReview(dave, a, { verdict: 'approve' });
+  expect((await kolab.version(a)).state).toBe('committed');
+  await kolab.recordReview(dave, b, { verdict: 'request_changes', note: 'Say which flag.' });
+  expect(await counted()).toBe(4);
+  // Dave's own budget is his: his submits took none of it, and he still drafts.
+  await expect(kolab.draft(dave, 'part-3', { elements: els({ b1: 'Dave\'s.' }) })).resolves.toEqual(expect.any(String));
+  expect((await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take('dave', 'draft', $1, 0, 0)`, [RATE_WINDOW_MS])).rows[0].r_count).toBe(1);
+});
+
+test('an organization\'s agents share one budget of the organization\'s, with its own limit, apart from each person\'s', async () => {
+  const { kolab, engineer } = await orders();
+  // Two agents of the organization that owns the test kolab, and one of Bob's.
+  await people(kolab, ['org-a', 'org-b'], { owner: 'test-org', layers: ['technical'] });
+  await people(kolab, 'bob-claude', { owner: 'bob', layers: ['technical'] });
+  const [orgA, orgB, bobs] = await Promise.all(['org-a', 'org-b', 'bob-claude'].map((id) => kolab.openSession(id, 'engineer', { by: ADMIN_DOER })));
+  Object.assign(kolab.rates, { asks: 2, orgAsks: 5, drafts: 1, orgDrafts: 3 });
+  // Past a person's limit of 2, the organization's agents go on, to the organization's 5, together.
+  for (let i = 0; i < 3; i++) await kolab.raiseQuery(orgA, 'kj:orders#R1', `From a, ${i}?`);
+  for (let i = 0; i < 2; i++) await kolab.raiseQuery(orgB, 'kj:orders#R1', `From b, ${i}?`);
+  expect(await rejection(kolab.raiseQuery(orgB, 'kj:orders#R1', 'One more?')))
+    .toBe('LimitError: org-b, with the rest of organization test-org\'s agents, raised 5 questions and notes in the last hour; the limit is 5 in an hour, shared by an organization\'s agents. Wait 60 minutes before asking again, or put several points in one question');
+  expect(await rejection(kolab.raiseQuery(orgA, 'kj:orders#R1', 'One more?'))).toMatch(/^LimitError: org-a, with the rest of organization test-org's agents, raised 5/);
+  // A person's budget is apart from it, and still a person's: Bob and his agent ask twice.
+  await kolab.raiseQuery(engineer, 'kj:orders#R1', 'From Bob?');
+  await kolab.raiseQuery(bobs, 'kj:orders#R1', 'From Bob\'s agent?');
+  expect(await rejection(kolab.raiseQuery(bobs, 'kj:orders#R1', 'Again?'))).toMatch(/^LimitError: bob-claude, with the rest of bob's agents and bob, raised 2 .* the limit is 2 in an hour, shared by a person and their agents/);
+  // Drafts the same way: the organization's 3, across its agents, counted when made.
+  for (let i = 0; i < 3; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  await kolab.draft(orgA, 'part-0', { elements: els({ b1: 'A.' }) });
+  await kolab.draft(orgB, 'part-1', { elements: els({ b1: 'B.' }) });
+  await kolab.draft(orgA, 'part-2', { elements: els({ b1: 'C.' }) });
+  expect(await rejection(kolab.draft(orgB, 'part-0', { elements: els({ b1: 'D.' }) })))
+    .toMatch(/^LimitError: org-b, with the rest of organization test-org's agents, drafted 3 versions in the last hour; the limit is 3 in an hour, shared by an organization's agents/);
+  // Lifting the organization's limit lifts only the organization's.
+  Object.assign(kolab.rates, { orgDrafts: Infinity });
+  await expect(kolab.draft(orgB, 'part-0', { elements: els({ b1: 'D.' }) })).resolves.toEqual(expect.any(String));
+  expect(await rejection(kolab.draft(engineer, 'part-1', { elements: els({ b1: 'Bob.' }) }))).toMatch(/^LimitError: bob and bob's agents drafted 1 versions/);
 });
 
 // On Postgres, each call takes a pooled connection (10 by default). The budget's lock is held only
