@@ -40,8 +40,10 @@ const note = (what) => console.log(`note ${what}`);
 const ident = (t) => `"${t.replace(/"/g, '""')}"`;
 const fileOf = (m) => `${String(m.version).padStart(4, '0')}_${m.name}.sql`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// An error's text, with any URL masked; a failed connection to both addresses of a host is an AggregateError.
-const why = (e) => (e && Array.isArray(e.errors) && e.errors.length ? e.errors.map(why).join('; ') : String(e && e.message ? e.message : e))
+// An error's text, with any URL masked; a failed connection to both addresses of a host is an
+// AggregateError, and Postgres's 57014 is the 60 s statement timeout.
+const why = (e) => (e && e.code === '57014' ? 'a query ran past the 60 s statement timeout'
+  : e && Array.isArray(e.errors) && e.errors.length ? e.errors.map(why).join('; ') : String(e && e.message ? e.message : e))
   .replace(/postgres(ql)?:\/\/[^\s]*/g, 'postgres://***');
 
 /** The URL with every session read-only, as Postgres's startup options. */
@@ -172,8 +174,8 @@ async function compare(prodUrl, copy) {
   try {
     prod = await snapshot(await open(prodUrl, clients));
   } catch (e) {
-    result.production = 'unreachable';
-    return note(`production: unreachable (${why(e)}); comparison skipped. The copy's own checks above stand`);
+    result.production = e && e.code === '57014' ? 'timed out' : 'unreachable';
+    return note(`production: ${result.production} (${why(e)}); comparison skipped. The copy's own checks above stand`);
   } finally {
     await Promise.all(clients.map((c) => c.end().catch(() => {})));
   }
@@ -191,7 +193,8 @@ async function compare(prodUrl, copy) {
     console.log(`     ${t.padEnd(width)}  ${String(copy.counts[t] ?? '-').padStart(8)}  ${String(prod.counts[t] ?? '-').padStart(10)}`);
   }
   result.rowsProduction = Object.values(prod.counts).reduce((n, c) => n + c, 0);
-  note(`production: ${result.rowsProduction} rows now, the copy ${result.rowsRestored}; production has moved on since the recovery point`);
+  if (result.rowsProduction === result.rowsRestored) note(`production: ${result.rowsProduction} rows now, the same as the copy`);
+  else note(`production: ${result.rowsProduction} rows now, the copy ${result.rowsRestored}; production has moved on since the recovery point`);
 }
 
 async function main() {

@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # The restore drill (P12, D75, D81; W2.24), and the restore runbook's verify step (deploy/RECOVERY.md).
 #
-#   deploy/recovery-drill.sh --env production|staging
+#   deploy/recovery-drill.sh --env production
 #        restore the stack's latest restorable time into a scratch RDS instance, <db>-drill-<UTC date-time>;
 #        wait for it; verify it through Kolab's instance (deploy/recovery-verify.cjs, over SSM) and compare
 #        it with the stack's database; log the timings to deploy/drills/<scratch>.log; then delete it, with
 #        no final snapshot. It asks before creating anything and before deleting.
-#   deploy/recovery-drill.sh --env production|staging verify <id> [--compare-production]
+#   deploy/recovery-drill.sh --env production verify <id> [--compare-production]
 #        verify a restored instance, changing nothing (runbook step 3); with --compare-production, also
 #        compare it with the stack's database, if that is reachable
-#   deploy/recovery-drill.sh --env production|staging delete <id>
+#   deploy/recovery-drill.sh --env production delete <id>
 #        delete a scratch instance a drill left behind (only one this script made, from this stack)
-#   deploy/recovery-drill.sh --env production|staging vars
+#   deploy/recovery-drill.sh --env production vars
 #        print the environment's database settings as shell assignments, checked, for the runbook
 #
-# --env names the environment (D73). Its state is read as deploy/konjir-ops.sh reads it: with W2.23's
-# environments/<env>.s3.tfbackend in its own TF_DATA_DIR, or, before W2.23, production's one state.
+# --env names the environment. Only production exists: staging was dropped (D83), and its return is
+# a line in stack_of. Its state is read as deploy/konjir-ops.sh reads it: with W2.23's
+# environments/<env>.s3.tfbackend in its own TF_DATA_DIR, if that file exists, or production's one state.
 # The state's database and the SSM parameter holding its URL must both have that environment's
 # names, or it refuses; `vars` prints them, for the runbook (deploy/RECOVERY.md). It never
 # modifies, restarts or deletes the stack's database, and never changes a parameter: the database is
@@ -37,12 +38,11 @@ WAIT_CAP_S=5400       # give up waiting for the scratch instance after 90 minute
 LOG=/dev/null
 DB="" PARAM="" SUBNETS="" SGS="" CLASS="" STORAGE="" RETENTION=""
 
-# Each environment's Terraform name: deploy/terraform/modules/environments (W2.23, D73).
+# Each environment's Terraform name. Only production: staging was dropped (D83).
 stack_of() {
   case "$1" in
     production) echo konjir-test ;;
-    staging) echo konjir-staging ;;
-    *) die "--env is production or staging, not '$1'" ;;
+    *) die "--env is production, the only environment (D83), not '$1'" ;;
   esac
 }
 
@@ -54,8 +54,8 @@ tf() {
       terraform -chdir="$TF" init -input=false -backend-config="environments/$ENV.s3.tfbackend" >&2 || die "terraform init failed for $ENV"
     fi
   else
-    # Before W2.23 there is one state, production's.
-    [ "$ENV" = production ] || die "there is no $ENV environment before W2.23"
+    # Without W2.23's backend files there is one state, production's.
+    [ "$ENV" = production ] || die "there is no $ENV environment"
   fi
   terraform -chdir="$TF" "$@"
 }
@@ -144,9 +144,14 @@ on_kolab() {
     --query Command.CommandId --output text)" || return 1
   [ -n "$cmd_id" ] || return 1
   t0="$(date +%s)"
+  local err
   while :; do
-    status="$(aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$instance" \
-      --query Status --output text 2>/dev/null || echo Pending)"
+    # Not found yet is Pending; credentials or anything else stops the wait at once.
+    if ! status="$(aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$instance" \
+        --query Status --output text 2>&1)"; then
+      err="$status"; status=Pending
+      [[ "$err" == *InvocationDoesNotExist* ]] || { echo "SSM: could not read command $cmd_id: $err"; return 1; }
+    fi
     case "$status" in Pending|InProgress|Delayed) ;; *) break ;; esac
     [ $(($(date +%s) - t0)) -lt 1200 ] || { echo "SSM command $cmd_id still $status after 20 minutes"; return 1; }
     sleep 3
@@ -321,14 +326,15 @@ ENV="$2"; shift 2
 STACK="$(stack_of "$ENV")"
 load_stack "$STACK"
 case "${1:-drill}" in
-  drill)  [ $# -le 1 ] || die "usage: recovery-drill.sh --env production|staging [drill | verify <id> [--compare-production] | delete <id>]"; drill ;;
-  verify) [ $# -ge 2 ] && [ $# -le 3 ] || die "usage: recovery-drill.sh --env production|staging verify <id> [--compare-production]"
+  drill)  [ $# -le 1 ] || die "usage: recovery-drill.sh --env production [drill | verify <id> [--compare-production] | delete <id>]"; drill ;;
+  verify) [ $# -ge 2 ] && [ $# -le 3 ] || die "usage: recovery-drill.sh --env production verify <id> [--compare-production]"
           mode=""; [ $# -eq 3 ] && { [ "$3" = --compare-production ] || die "unknown option $3"; mode=compare; }
           not_production "$2"; exists "$2" || die "$2 not found"
           mkdir -p "$LOG_DIR"; LOG="$LOG_DIR/verify-$2-$(date -u +%Y%m%d-%H%M).log"; verify "$2" "$mode" ;;
-  delete) [ $# -eq 2 ] || die "usage: recovery-drill.sh --env production|staging delete <id>"
+  delete) [ $# -eq 2 ] || die "usage: recovery-drill.sh --env production delete <id>"
           not_production "$2"; exists "$2" || die "$2 not found"; delete_scratch "$2" ;;
-  vars)   printf 'DB=%q PARAM=%q SUBNETS=%q SGS=%q CLASS=%q STORAGE=%q RETENTION=%q INSTANCE=%q\n' \
-            "$DB" "$PARAM" "$SUBNETS" "$SGS" "$CLASS" "$STORAGE" "$RETENTION" "$(out instance_id)" ;;
+  vars)   instance="$(out instance_id)"
+          printf 'DB=%q PARAM=%q SUBNETS=%q SGS=%q CLASS=%q STORAGE=%q RETENTION=%q INSTANCE=%q CHECKED_ENV=%q\n' \
+            "$DB" "$PARAM" "$SUBNETS" "$SGS" "$CLASS" "$STORAGE" "$RETENTION" "$instance" "$ENV" ;;
   *)      sed -n '2,25p' "$0"; exit 1 ;;
 esac

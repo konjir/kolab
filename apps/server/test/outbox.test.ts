@@ -33,3 +33,33 @@ test('a server that boots finishes the cascade a stopped process owed, without b
   expect(await owed(server.kolab)).toBe(0);
   expect(await textOf(server.kolab, 'V')).toStrictEqual({ E1: 'Parent one, revised.', A: 'V adds A.' });
 });
+
+test('a server started with worker: false and migrate: false leaves the job a stopped process owed untouched (W2.24)', async () => {
+  const store = await persistentStore();
+  let reached!: () => void;
+  const stopped = new Promise<void>((r) => { reached = r; });
+  const checks: Checks = async (ctx) => {
+    if (ctx.version.node_id !== 'V' || ctx.version.active_role !== 'system') return structuralChecks(ctx);
+    reached();
+    return new Promise(() => undefined);
+  };
+  const a = await openKolab({ ...store, checks, outboxLeaseMs: 300, closeWaitMs: 0 });
+  await people(a, 'alice', { layers: ['functional'] });
+  const alice = await a.openSession('alice', 'product');
+  await a.createNode(alice, 'functional_spec', 'P', 'P');
+  const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
+  await a.createNode(alice, 'functional_spec', 'V', 'V');
+  await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
+  void a.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) }).catch(() => undefined);
+  await stopped;
+  await a.db.close();
+  await new Promise((r) => setTimeout(r, 400));   // the stopped process's claim lapses
+
+  const server = await startServer({ adminToken: 'admin', ...store, migrate: false, worker: false });
+  closeAtEnd(server);
+  const jobs = async () => (await server.kolab.db.query(`select * from outbox order by 1`)).rows;
+  const before = await jobs();
+  expect(before.length).toBeGreaterThan(0);
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(await jobs()).toStrictEqual(before);
+});

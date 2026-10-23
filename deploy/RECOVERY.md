@@ -16,14 +16,16 @@ A restore brings back only the database. The rest stays as it is: the admin toke
 
 ## Runbook
 
-Set these once per shell. Name the environment explicitly, `production` or `staging`. `vars` reads that environment's Terraform state, refuses unless the database and its URL's SSM parameter both carry that environment's names, and prints them. They come from state, so this works when the database itself is gone.
+Set these once per shell. Name the environment explicitly: `production`, the only one since D83. `vars` reads that environment's Terraform state, refuses unless the database and its URL's SSM parameter both carry that environment's names, and prints them, with `CHECKED_ENV`. They come from state, so this works when the database itself is gone. If `vars` fails, the old values are cleared first and the last line says to stop, so values from an earlier run can't be reused.
 
 ```
 cd ~/github.com/konjir/kolab
 export AWS_PROFILE=icedlee337 AWS_REGION=us-east-1 AWS_PAGER="" TFENV_TERRAFORM_VERSION=1.16.5
 ENV=production
-eval "$(deploy/recovery-drill.sh --env $ENV vars)"   # DB, PARAM, SUBNETS, SGS, CLASS, STORAGE, RETENTION, INSTANCE
-echo "$ENV: $DB, $PARAM"                               # check them: konjir-test-db and /konjir/konjir-test/database-url for production
+unset DB PARAM SUBNETS SGS CLASS STORAGE RETENTION INSTANCE CHECKED_ENV
+V="$(deploy/recovery-drill.sh --env $ENV vars)" && eval "$V"
+[ "${CHECKED_ENV:-}" = "$ENV" ] && echo "$ENV: $DB, $PARAM" || echo "STOP: vars failed; nothing is set"
+# check them: konjir-test-db and /konjir/konjir-test/database-url for production
 NEW=$DB-restore-$(date -u +%Y%m%d-%H%M)
 avail() { until [ "$(aws rds describe-db-instances --db-instance-identifier "$1" --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null)" = available ]; do sleep 20; done; }
 ```
@@ -38,7 +40,7 @@ avail() { until [ "$(aws rds describe-db-instances --db-instance-identifier "$1"
 | 3. Verify the new instance | Lee, with `deploy/recovery-drill.sh verify` | 5 minutes |
 | 4. Cut over | Lee | 5 minutes, about 1 of them with Kolab down |
 | 5. Roll back (only before step 6) | Lee | 5 minutes |
-| 6. Bring Terraform into line, then resume deploys | Lee; the apply is approved in CI after W2.23 | 20 minutes, a few with Kolab down |
+| 6. Bring Terraform into line, then resume deploys | Lee; after W2.23, Lee approves the apply in CI | 20 minutes, a few with Kolab down |
 | 7. Clean up, a week later | Lee | 5 minutes |
 
 Steps 1 to 4 make the hour, measured from the start of step 2. If a release caused the damage, follow [If a release caused it](#if-a-release-caused-it) instead of steps 4 to 6.
@@ -54,15 +56,17 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
 Pause deploys until step 6 is done. A Terraform apply between steps 4 and 6 would point the database URL back at the old instance, and any release would restart Kolab on it.
 
 - **Before W2.23:** applies run only from Lee's laptop. Don't run one.
-- **After W2.23:** `.github/workflows/deploy.yml` deploys staging on every merge, and production once Lee approves it in the `production` environment. It runs only while the repository variable `DEPLOY_FROM_CI` is `true`. During a restore, pause it by setting `DEPLOY_FROM_CI=false`, or by disabling the `production` environment (Settings, then Environments, then `production`). Also cancel any run that is already waiting:
+- **After W2.23:** `.github/workflows/deploy.yml` deploys production once Lee approves it in the `production` environment, and only while the repository variable `DEPLOY_FROM_CI` is `true`. The pause is `DEPLOY_FROM_CI=false`, plus cancelling every run that is pending or waiting: the variable stops new runs from building a release, but a run already past that point would still apply once approved. Don't touch the `production` environment. GitHub has no way to disable one, and deleting it removes its required reviewers: the next run would recreate it without them.
 
   ```
-  gh variable set DEPLOY_FROM_CI --body false          # the workflow builds and deploys nothing while it isn't true
+  gh variable set DEPLOY_FROM_CI --body false
   gh run list --workflow deploy.yml --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId' \
-    | xargs -n1 gh run cancel
+    | xargs -r -n1 gh run cancel
   ```
 
   Never approve a production deploy while a recovery is under way.
+
+  **Resuming,** at the end of step 6 or of the release path: `gh variable set DEPLOY_FROM_CI --body true`, then `gh workflow run deploy.yml --ref main`. Setting the variable starts nothing. The run ships whatever is on main, including anything merged during the pause, so check `git log` on main since the last production deploy first.
 
 ### 1. Choose the point to restore to
 
@@ -70,32 +74,40 @@ Pause deploys until step 6 is done. A Terraform apply between steps 4 and 6 woul
 
   ```
   POINT=$(aws rds describe-db-instances --db-instance-identifier $DB --query 'DBInstances[0].LatestRestorableTime' --output text)
-  # if the instance is gone, from its retained backups:
-  # POINT=$(aws rds describe-db-instance-automated-backups --db-instance-identifier $DB --query 'DBInstanceAutomatedBackups[0].RestoreWindow.LatestTime' --output text)
+  ```
+
+  If the instance is gone, restore from its retained backups. Earlier instances with the same name, say from a teardown and re-create, may have retained backups too, so list them all, newest first, and choose by resource id and window:
+
+  ```
+  aws rds describe-db-instance-automated-backups --db-instance-identifier $DB \
+    --query "reverse(sort_by(DBInstanceAutomatedBackups[?Status=='retained'], &RestoreWindow.LatestTime))[].[DbiResourceId,InstanceCreateTime,RestoreWindow.EarliestTime,RestoreWindow.LatestTime]" --output table
+  DBI=db-…            # the resource id of the instance that was lost
+  POINT=…             # its LatestTime, or an earlier time inside its window
   ```
 
 - If the data is wrong, because of a bad admin call, a runaway cascade or a release, restore to just before it. Find that moment in the logs (`deploy/konjir-ops.sh cloudwatch-logs 24h`), or, for a migration, in `kj_migration.applied_at`. Set it in UTC, for example `POINT=2026-10-22T18:04:00Z`.
 
-`echo $POINT` before going on.
+`echo $POINT` before going on: it must be a time, not empty or `None`.
 
 ### 2. Restore into a new instance
 
 The new instance takes the environment's subnet group, security group, class and storage type, from Terraform's state, so only Kolab's instance can reach it. A restore never writes over the old instance: it always makes a new one.
 
 ```
+case "${POINT:-None}" in None) echo "STOP: set POINT in step 1" ;; *)
 aws rds restore-db-instance-to-point-in-time \
   --source-db-instance-identifier $DB --target-db-instance-identifier $NEW \
-  --restore-time "${POINT:?set POINT in step 1}" \
+  --restore-time "$POINT" \
   --db-instance-class $CLASS --storage-type $STORAGE \
   --db-subnet-group-name $SUBNETS --vpc-security-group-ids $SGS \
   --no-publicly-accessible --no-multi-az --deletion-protection --copy-tags-to-snapshot --auto-minor-version-upgrade \
-  --tags Key=Project,Value=konjir Key=Purpose,Value=recovery Key=Source,Value=$DB
+  --tags Key=Project,Value=konjir Key=Purpose,Value=recovery Key=Source,Value=$DB ;; esac
 avail $NEW
 # a restore can't set the backup retention, so set it to Terraform's at once
 aws rds modify-db-instance --db-instance-identifier $NEW --backup-retention-period $RETENTION --apply-immediately
 ```
 
-If the instance is gone, restore from its retained backups. In place of `--source-db-instance-identifier $DB`, pass `--source-dbi-resource-id $(aws rds describe-db-instance-automated-backups --db-instance-identifier $DB --query 'DBInstanceAutomatedBackups[0].DbiResourceId' --output text)`. To use the final snapshot instead, run `aws rds restore-db-instance-from-db-snapshot --db-snapshot-identifier <name>` with the same placement flags.
+If the instance is gone, pass `--source-dbi-resource-id $DBI`, the resource id chosen in step 1, in place of `--source-db-instance-identifier $DB`. To use the final snapshot instead, run `aws rds restore-db-instance-from-db-snapshot --db-snapshot-identifier <name>` with the same placement flags.
 
 ### 3. Verify the new instance
 
@@ -166,7 +178,7 @@ The plan must change the instance in place, never replace it. Expect it to set t
 Then apply:
 
 - **Before W2.23:** Lee applies from the laptop.
-- **After W2.23:** Lee resumes deploys (`gh variable set DEPLOY_FROM_CI --body true`, or re-enables the `production` environment) and approves the production run, which applies the same plan. The `state rm` and `import` still need write access to the state bucket from Lee's laptop. If W2.23 narrows the laptop's access, they need a way of their own: a break-glass role with write access to the state, assumed with Lee's MFA, or a `workflow_dispatch` job that runs exactly these three commands. That choice belongs to W2.23, and the binding's Today column records it.
+- **After W2.23:** Lee resumes deploys as step 0 says (`DEPLOY_FROM_CI=true`, then `gh workflow run deploy.yml --ref main`) and approves the production run, which applies the same plan. The `state rm` and `import` still need write access to the state bucket from Lee's laptop. If W2.23 narrows the laptop's access, they need a way of their own: a break-glass role with write access to the state, assumed with Lee's MFA, or a `workflow_dispatch` job that runs exactly these three commands. That choice belongs to W2.23, and the binding's Today column records it.
 
 ### 7. Clean up
 
@@ -179,14 +191,37 @@ aws rds delete-db-instance --db-instance-identifier $OLD --final-db-snapshot-ide
 
 ### If a release caused it
 
-Suppose a release did the damage, for example with a migration. Then the live release can't run on the restored copy: it would apply the same migration again. The earlier release can't run on the damaged database either, because it refuses a database migrated past it. The order that works keeps Kolab stopped until the restored copy and the earlier release are both in place:
+Suppose a release did the damage, for example with a migration. Then the live release can't run on the restored copy: it would apply the same migration again. The earlier release can't run on the damaged database either, because it refuses a database migrated past it. So Kolab stays down, even across a reboot, until the restored copy and the earlier release are both in place. Don't use step 6's block here: it restarts Kolab.
 
-1. **Stop and pause.** Do step 0: stop Kolab and pause deploys.
+1. **Disable Kolab, and pause deploys.** `disable --now` stops it and keeps it stopped if the instance reboots, for example for EC2 maintenance. Don't replace the instance meanwhile: a new one's first boot would start it. Then pause deploys as step 0 says.
+
+   ```
+   aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript --parameters 'commands=["systemctl disable --now konjir"]'
+   ```
+
 2. **Choose and restore.** Choose a point before the release's apply (step 1, using `kj_migration.applied_at`), then restore (step 2).
 3. **Verify.** Run step 3 without `--compare-production`. Expect one failure: the copy lacks the bad release's migrations, which the message names, and the smoke check is skipped. Anything else failing is a real problem: stop.
-4. **Swap the instances and fix the state** (step 6, but without restarting Kolab). Rename the old instance to `$OLD` and the new one to `$DB`, and run `state rm` and `import`. The parameter then needs no change: the renamed instance has the original address. Kolab stays stopped.
-5. **Roll the release back.** On main, revert the release's commits, and deploy the result: before W2.23, Lee applies from the laptop; after it, Lee resumes deploys for this run and approves it. The install starts the earlier release, which finds the copy at exactly its migrations.
-6. **Check.** Run `deploy/konjir-ops.sh status`, then `deploy/konjir-ops.sh connect` or a read such as `admin_list_actors`. Keep deploys paused until the fix for the release is ready.
+4. **Swap the instances and fix the state, with Kolab still down.** No `point_at` is needed: the renamed instance takes the original address, which the parameter already holds.
+
+   ```
+   OLD=$DB-old-$(date -u +%Y%m%d)
+   aws rds modify-db-instance --db-instance-identifier $DB --new-db-instance-identifier $OLD --apply-immediately
+   avail $OLD
+   aws rds modify-db-instance --db-instance-identifier $NEW --new-db-instance-identifier $DB --apply-immediately
+   avail $DB
+   terraform state rm module.database.aws_db_instance.this          # as in step 6: through konjir-ops.sh after W2.23
+   terraform import module.database.aws_db_instance.this $DB
+   terraform plan                                                     # in place only, as step 6 says
+   ```
+
+5. **Re-enable Kolab, then deploy the earlier release.** On main, revert the release's commits. Re-enable the unit without starting it, so the deploy's install starts the earlier release:
+
+   ```
+   aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript --parameters 'commands=["systemctl enable konjir"]'
+   ```
+
+   Then deploy: before W2.23, Lee applies from the laptop. After it, Lee resumes deploys as step 0 says, and approves that run. The install starts the earlier release, which finds the copy at exactly its migrations. Pause deploys again as soon as the run is done.
+6. **Check.** Run `deploy/konjir-ops.sh status`, then a read such as `admin_list_actors`. Keep deploys paused until the release's fix is ready.
 
 Steps 1 to 3 fit in the hour. The revert's deploy adds its own time.
 
