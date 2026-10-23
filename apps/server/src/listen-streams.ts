@@ -6,11 +6,11 @@ import { KOLAB } from './tokens.js';
 
 /**
  * An agent's stream, with the token KonjirAuth verified for it, and its session's id as the
- * client (which an OAuth session keeps as its access token rotates). The admin token's streams are
- * never closed here.
+ * client (which an OAuth session keeps as its access token rotates). The break-glass token's
+ * streams are never closed here; a raised admin's, a session's, are.
  */
 type AgentStream = McpListenStream & { authInfo: NonNullable<McpListenStream['authInfo']> };
-const isAgent = (s: McpListenStream): s is AgentStream => !!s.authInfo && !s.authInfo.scopes.includes('admin');
+const isAgent = (s: McpListenStream): s is AgentStream => !!s.authInfo && s.authInfo.scopes.includes('agent');
 
 /**
  * Ending an agent session closes its subscriptions/listen streams, and nothing more is

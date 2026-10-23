@@ -133,3 +133,59 @@ ${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value
 <div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
 }
+
+/** A time as the raise pages show it: to the second, in UTC. */
+const utc = (iso: string) => iso.replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC');
+
+export interface RaiseView {
+  /** The raise's sign-in id, which names its binding cookie: not secret. */
+  signIn: string;
+  csrf: string;
+  person: string; login: string; provider: string;
+  /** The session the raise is for: its key (whoami's `session`) and when it started. */
+  session: string; sessionStarted: string;
+  /**
+   * The client that session signed in through, by what Kolab knows: Kolab's own web page, or a
+   * registered client's id and the origins it receives codes at, beside the name it gave itself,
+   * which anyone registering can choose.
+   */
+  client: { id: string; firstParty: boolean; name: string | null; redirectOrigins: string[] };
+  /** When the request lapses, and how long a raise lasts, in minutes. */
+  expiresAt: string; minutes: number;
+}
+
+/** The client a raise's session signed in through, by facts Kolab controls; a self-chosen name only marked as such. */
+function clientShown(c: RaiseView['client']): string {
+  if (c.firstParty) return 'Kolab\'s own web page';
+  const where = c.redirectOrigins.length ? `, which receives its sign-ins at ${c.redirectOrigins.map((o) => `<code>${esc(o)}</code>`).join(', ')}` : '';
+  const named = c.name ? `. It calls itself “${esc(c.name)}”, a name it chose when it registered: <strong>unverified</strong>, so don't go by it` : '';
+  return `an app registered with Kolab as <code>${esc(c.id)}</code>${where}${named}`;
+}
+
+/**
+ * The page that completes an admin raise (W2.22, Lee's ruling of 2026-10-23): reached only through
+ * a sign-in with the identity provider in a browser, as the session's own person (GitHub's account
+ * picker: GitHub has no forced re-authentication, so this is not a password or 2FA check). Nothing
+ * else raises a session, so the page says plainly what raising gives, to which session, and how the
+ * request was made, naming the session by what Kolab itself knows of it.
+ */
+export function raisePage(v: RaiseView): string {
+  return `<h1>Raise your session to run Konjir's admin verbs</h1>
+<p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. You are <code>${esc(v.person)}</code> here, a Konjir admin.</p>
+<form class="card" method="post" action="/oauth/consent">
+<p>This request was made over MCP by a session of yours: <code>${esc(v.person)}</code>'s session <code>${esc(v.session)}</code> (whoami's <code>session</code>), signed in at ${esc(utc(v.sessionStarted))} through ${clientShown(v.client)}.</p>
+<p>Raised, for ${v.minutes} minutes, whatever drives that session runs every admin verb as you: applying rulings without review, granting access, making admins and opening sessions, each recorded as yours.</p>
+<p><strong>Raise it only if you asked for this yourself, just now, from that session.</strong> If an agent, a message or anyone else sent you here, choose Don't raise. This link lasts until ${esc(utc(v.expiresAt))} and works once: raised or not, it is used up.</p>
+<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
+<input type="hidden" name="csrf" value="${esc(v.csrf)}">
+<div class="row"><button class="primary" type="submit" name="decision" value="allow">Raise for ${v.minutes} minutes</button><button type="submit" name="decision" value="deny">Don't raise</button></div>
+</form>`;
+}
+
+/** What the person sees once a raise is done, or declined. */
+export function raisedPage(v: { person: string; until?: string }): string {
+  return v.until
+    ? `<h1>Raised</h1><div class="card"><p>Your session runs Konjir's admin verbs, as <code>${esc(v.person)}</code>, until ${esc(utc(v.until))}.</p>
+<p class="muted">Go back to your app. Lower it sooner with <code>konjir admin_elevate lower=true</code>. You can close this tab.</p></div>`
+    : `<h1>Not raised</h1><div class="card"><p>Your session wasn't raised, and the link is used up.</p><p class="muted">You can close this tab.</p></div>`;
+}

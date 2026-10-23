@@ -824,3 +824,14 @@ test('a node\'s page lists its newest versions and each element\'s newest questi
   const a2 = await ann.call<KolabAccessView>(`access?limit=3&cursor=${encodeURIComponent(a1.body.next!)}`);
   expect([a2.body.holders.map((h) => h.actor), a2.body.next, a2.body.kolab.id]).toStrictEqual([['gus'], null, 'anns']);
 });
+
+test('the web page says when the person signed in is a Konjir admin, and says nothing for anyone else (W2.22)', async () => {
+  const { kolab, product, engineer } = await setup();
+  await kolab.makeAdmin('alice');
+  const base = await serve(kolab);
+  const alice = await signIn(base, product);
+  expect(alice.me).toMatchObject({ actor: 'alice', konjirAdmin: true });
+  expect((await alice.call('me')).body).toMatchObject({ konjirAdmin: true });
+  const bob = await signIn(base, engineer);
+  expect(bob.me).not.toHaveProperty('konjirAdmin');
+});

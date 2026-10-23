@@ -99,19 +99,29 @@ export type Archivable = typeof ARCHIVABLE[number];
 export type ArchiveTarget = { [K in Archivable]: { [P in K]: string } }[Archivable];
 /**
  * Who made a write (W2.20, D70), as Kolab records it: an actor's id; `kolab`, for Kolab's own
- * work; or ADMIN_DOER, for the admin token. When admins are people who sign in (W2.22, D69), an
- * admin verb records that person's id instead, and ADMIN_DOER stays only on what the break-glass
- * token does.
+ * work; or ADMIN_DOER, for the break-glass admin token. Admins are people who sign in (W2.22,
+ * D69): an admin verb run from an admin's own sign-in records that person's id, and ADMIN_DOER
+ * stays only on what the break-glass token does.
  */
 export type Doer = string;
-/** The admin token, as a write records it (W2.20). No actor may take the name (migration 0024). */
+/** The break-glass admin token, as a write records it (W2.20, W2.22). No actor may take the name (migration 0024). */
 export const ADMIN_DOER = 'admin';
 /**
  * The changes Kolab records in its audit log because they leave no row of their own (W2.20): a
  * grant made, replaced or removed, a person added to or removed from an organization or a team,
- * and an outbox job retried.
+ * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
+ * a Konjir admin, an admin raising their session to run admin verbs and lowering it, and each admin
+ * verb the break-glass token runs.
  */
-export const AUDIT_ACTIONS = ['grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried'] as const;
+export const AUDIT_ACTIONS = [
+  'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
+  'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
+] as const;
+/**
+ * How long an admin's session may run admin verbs once they raise it (konjir_admin_elevate, W2.22),
+ * in seconds: 15 minutes, which raising it again renews.
+ */
+export const ADMIN_ELEVATION_S = 15 * 60;
 export type AuditAction = typeof AUDIT_ACTIONS[number];
 /** One row of the audit log: what was done, in which kolab if any, to whom, by whom and when. */
 export interface AuditEvent { id: number; action: AuditAction; kolab: string | null; subject: string; detail: Record<string, unknown> | null; by: Doer; at: string }

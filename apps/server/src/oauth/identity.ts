@@ -12,9 +12,11 @@ export interface IdentityProvider {
   /**
    * Where to send the browser to sign in. Kolab is the provider's OAuth client: `redirectUri` is
    * Kolab's callback, `state` binds the answer to this sign-in (CSRF), and `codeChallenge` is the
-   * S256 PKCE challenge of the verifier `identify` will be given.
+   * S256 PKCE challenge of the verifier `identify` will be given. `fresh` asks the provider to have
+   * the person pick their account again, never passing them through on its own (an admin raise,
+   * W2.22), where the provider can. For GitHub that is the account picker, prompt=select_account: GitHub has no forced re-authentication, so it is no password or 2FA check.
    */
-  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string;
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; fresh?: boolean }): string;
   /**
    * Who signed in, from the code the provider sent to Kolab's callback. `subject` is the
    * provider's own id for the person, which never changes hands (GitHub's numeric user id);
@@ -54,14 +56,16 @@ export class GitHubIdentity implements IdentityProvider {
   private get fetch(): Fetch { return this.config.fetch ?? fetch; }
   private signal() { return AbortSignal.timeout(this.config.timeoutMs ?? 10_000); }
 
-  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string {
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; fresh?: boolean }): string {
     const u = new URL('/login/oauth/authorize', this.web);
     u.searchParams.set('client_id', this.config.clientId);
     u.searchParams.set('redirect_uri', p.redirectUri);
     u.searchParams.set('state', p.state);
     u.searchParams.set('code_challenge', p.codeChallenge);
     u.searchParams.set('code_challenge_method', 'S256');
-    u.searchParams.set('allow_signup', 'true');
+    u.searchParams.set('allow_signup', p.fresh ? 'false' : 'true');
+    // GitHub's account picker, every time: the person chooses who they are, by hand (W2.22).
+    if (p.fresh) u.searchParams.set('prompt', 'select_account');
     return u.toString();
   }
 
@@ -113,7 +117,11 @@ export class StubIdentity implements IdentityProvider {
   /** The next sign-in is this person. */
   next(who: { subject: string; login: string; name?: string }) { this.queue.push(who); return this; }
 
-  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string {
+  /** The URLs authorizationUrl was asked for, with whether each asked for the account picker (an admin raise). */
+  readonly asked: { redirectUri: string; fresh: boolean }[] = [];
+
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; fresh?: boolean }): string {
+    this.asked.push({ redirectUri: p.redirectUri, fresh: !!p.fresh });
     const who = this.queue.shift() ?? this.as;
     const u = new URL(p.redirectUri);
     u.searchParams.set('state', p.state);

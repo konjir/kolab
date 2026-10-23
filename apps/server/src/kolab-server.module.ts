@@ -1,7 +1,7 @@
 import { Module, RequestMethod, type DynamicModule, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { McpHttpModule } from '@onivoro/server-mcp';
 import type { Kolab } from '@konjir/engine';
-import { AdminTools, TenancyTools } from './admin-tools.js';
+import { AdminTools, BreakGlassAudit, TenancyTools } from './admin-tools.js';
 import { AgentTools } from './agent-tools.js';
 import { KonjirAuth } from './auth.js';
 import { HealthController } from './health.controller.js';
@@ -73,7 +73,7 @@ export class KolabServerModule implements NestModule {
           requireBearerAuth: publicHost
             ? { resourceMetadataUrl: `https://${publicHost}/.well-known/oauth-protected-resource/${MCP_ROUTE}` }
             : true,
-          // Agents don't see the admin verbs; the admin token sees everything.
+          // Only a Konjir admin's raised session and the break-glass token see the admin verbs (W2.22).
           toolVisibility: 'authorized',
           exposeErrorMessages: false,
           // DNS-rebinding guard. Locally, a loopback host name on any port, whatever forwarding headers
@@ -103,6 +103,7 @@ export class KolabServerModule implements NestModule {
         KonjirAuth,
         AgentTools,
         AdminTools,
+        BreakGlassAudit,
         TenancyTools,
         Inboxes,
         ListenStreams,

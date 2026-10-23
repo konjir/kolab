@@ -22,6 +22,8 @@ export interface WebCli { npm: string | null }
 export interface WebMe {
   actor: string; name: string; kind: ActorKind; owner: string | null;
   role: Role; layer: Layer; kolab: string; access: Access;
+  /** Present, and true, only for a Konjir admin (W2.22, D69), who runs admin verbs from the CLI or MCP once they raise their session. */
+  konjirAdmin?: true;
 }
 
 /** A kolab the actor can reach. Only the session's own is open for work. */

@@ -502,6 +502,9 @@ test('GitHub: Kolab asks for no scope, sends PKCE and its state, reads who signe
   expect(calls.length).toBe(2);
   // The authorize request is the same at every sign-in but for its state and PKCE: no scope and no prompt to force the screen.
   expect([...u.searchParams.keys()].sort()).toStrictEqual(['allow_signup', 'client_id', 'code_challenge', 'code_challenge_method', 'redirect_uri', 'state']);
+  // An admin raise's sign-in (W2.22) asks for the account picker, and signs no one up.
+  const fresh = new URL(gh.authorizationUrl({ redirectUri: 'https://kolab.example/oauth/callback/github', state: 'st', codeChallenge: 'ch', fresh: true }));
+  expect([fresh.searchParams.get('prompt'), fresh.searchParams.get('allow_signup'), fresh.searchParams.get('scope')]).toStrictEqual(['select_account', 'false', null]);
   // A refusal says so without the response's body.
   const refusing = new GitHubIdentity({ clientId: 'x', clientSecret: 'y', fetch: async () => Response.json({ error: 'bad_verification_code' }) });
   await expect(refusing.identify({ code: 'no', redirectUri: 'r', codeVerifier: 'v' })).rejects.toThrow(/didn't accept the sign-in \(bad_verification_code\)/);

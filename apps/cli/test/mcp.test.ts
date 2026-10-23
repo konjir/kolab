@@ -119,8 +119,8 @@ test('tokens: no token, a wrong token, and a revoked token are all refused; agen
   const tools = (await pm.client.listTools()).tools.map((t) => t.name);
   expect(!tools.some((t) => t.startsWith('konjir_admin'))).toBeTruthy();
   // Calling one anyway is refused in plain words, not as an OAuth scope challenge.
-  await expect(call(pm.client, 'admin_list_kolabs')).rejects.toThrow(/^konjir_admin_list_kolabs is an admin verb: only the admin token may call it, and this token is an agent session's/);
-  await expect(call(pm.client, 'konjir_admin_apply_ruling', { ruling: 'D1', actor: 'pm', node: 'test/x', deltas: [] })).rejects.toThrow(/only the admin token may call it/);
+  await expect(call(pm.client, 'admin_list_kolabs')).rejects.toThrow(/^konjir_admin_list_kolabs is an admin verb: only a Konjir admin's own session, raised in their browser \(konjir admin_elevate\), or the break-glass token may call it, and this session isn't raised/);
+  await expect(call(pm.client, 'konjir_admin_apply_ruling', { ruling: 'D1', actor: 'pm', node: 'test/x', deltas: [] })).rejects.toThrow(/or the break-glass token may call it/);
   await pm.client.close();
 
   await call(admin, 'admin_end_session', { token: pm.token });

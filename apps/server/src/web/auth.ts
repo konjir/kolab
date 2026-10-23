@@ -122,7 +122,13 @@ export class WebPeople {
       throw new ForbiddenException({ error: 'forbidden', message: `that is ${i.actor}'s session, an agent's: the web interface is for people, and an agent works through MCP or the konjir CLI. Sign in as yourself` });
     }
     const a = await this.kolab.actor(i.actor);
-    return { session: i.session, me: { actor: i.actor, name: a.name, kind: i.kind, owner: i.owner, role: i.role as WebMe['role'], layer: i.layer, kolab: i.kolab, access: i.access } };
+    return {
+      session: i.session,
+      me: {
+        actor: i.actor, name: a.name, kind: i.kind, owner: i.owner, role: i.role as WebMe['role'], layer: i.layer, kolab: i.kolab, access: i.access,
+        ...(await this.kolab.isAdmin(i.actor) ? { konjirAdmin: true as const } : {}),
+      },
+    };
   }
 }
 
