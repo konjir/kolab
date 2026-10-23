@@ -38,16 +38,24 @@ export type UnsignedReason = keyof typeof NO_ACTOR_REASONS.unsigned;
  *
  * What write-actors.test.ts checks, and nothing more:
  * - the methods listed are exactly the public methods of Kolab, in kolab.ts, that write: whose own
- *   SQL inserts, updates or deletes, or that call (as `this.<method>(`, or a function of the
- *   module) something that does, other than SYSTEM_WRITES
+ *   SQL inserts, updates (of a table named plainly, schema-qualified, quoted or by a template),
+ *   deletes, merges or truncates, or that reach something that does: a method called or passed by
+ *   reference (`this.<method>`), or a function or arrow function of the module, called or passed as
+ *   an argument; other than SYSTEM_WRITES. A test adds a probe of each of those shapes to a copy of
+ *   kolab.ts and checks the scan finds it
  * - each `table.column` place is a column of the schema, and the SQL reachable from the method
  *   that way names the column in an insert of a row of that table, or sets it in an update of
  *   that table; each `audit_event:<action>` place is an action of the audit log, and that SQL
  *   includes a call of audit() with that action
  * - the methods with `system` or `unsigned` are exactly the ones the test lists, so adding one is
  *   a change to the test as well
- * - no other source file of the engine or the apps writes SQL, and Kolab has no method written as
- *   an arrow-function property, which the scan would miss
+ * - no other production source file of the engine or the apps writes SQL, imports
+ *   @konjir/engine/testing (whose TestKolab acts as the admin token) or subclasses Kolab, and Kolab
+ *   has no method written as an arrow-function property
+ * What it can't see, being a reading of the source's shape and not its meaning: SQL assembled from
+ *   pieces it doesn't spell out, a unit reached through a variable, a computed name or another
+ *   module, and writes a database function makes when Kolab calls it. The database's own triggers
+ *   back up the actor columns and the access tables (migration 0024); review covers the rest.
  * Whether the right person is recorded is checked by its scenario tests, and the database refuses
  * a row that names no one (migration 0024).
  */

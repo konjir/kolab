@@ -27,8 +27,8 @@
 --                                             ruling (D47), or Kolab, for its own rebases and folds
 -- A change with no row of its own, because it replaces or deletes one, is a row of audit_event:
 -- grants, organization memberships, team memberships and outbox retries. The database refuses a
--- change to kolab_grant, org_member or team_member whose transaction doesn't add its audit_event
--- row (kj_access_audited).
+-- change to kolab_grant, org_member or team_member whose transaction doesn't add the audit_event
+-- row of that change (kj_access_audited).
 --
 -- Rows made before this migration keep null in every new column: who made them was never
 -- recorded, and nothing guesses. Every row written from now on names someone: the database
@@ -135,7 +135,7 @@ create table audit_event (
 );
 create index audit_event_kolab on audit_event(kolab_id, id) where kolab_id is not null;
 create index audit_event_subject on audit_event(subject, id);
-create index audit_event_tx on audit_event(tx);
+create index audit_event_tx on audit_event(tx, subject);   -- kj_access_recorded's one probe per changed row
 alter table audit_event enable row level security;
 revoke all on audit_event from public;
 revoke all on audit_event from kj_agent, kj_system;
@@ -150,27 +150,53 @@ create trigger audit_event_fixed before update or delete on audit_event for each
 create trigger audit_event_kept before truncate on audit_event for each statement execute function kj_audit_event_fixed();
 
 -- A change of access has no row of its own to say who made it, so its audit_event row is the
--- record, and the database requires it: a grant made, changed or removed, and a membership of an
--- organization or a team added, changed or removed, is refused as its transaction commits unless
--- that transaction added an audit_event row for the same grantee or person (and, for a grant, the
--- same kolab) with one of the actions the trigger names. Removing a person from an organization
--- removes their team memberships under its one member.removed. Like kj_doer_given, it is deferred,
--- so the change and its record may be written in either order, and the migration runner is exempt.
--- Security definer: audit_event is Kolab's own login's alone.
+-- record, and the database requires it. As a transaction commits, each row it inserted, updated or
+-- deleted in kolab_grant, org_member or team_member must have an audit_event row added by that
+-- same transaction (tx) for the same grantee or person (subject) and the same place, with the
+-- action of that operation:
+--   kolab_grant   insert or update: grant.set, delete: grant.removed; the same kolab_id
+--   org_member    insert or update: member.set, delete: member.removed; detail's org is org_id
+--   team_member   insert or update: team_member.added, delete: team_member.removed with detail's
+--                 team, or member.removed whose detail's teams holds the team (a person removed
+--                 from an organization leaves its teams under that one row)
+-- An update is checked for its old row as well as its new one, so moving a grant or membership to
+-- another kolab, grantee, organization or team needs a record of both. Like kj_doer_given it is
+-- deferred, so the change and its record may be written in either order, and the migration runner
+-- is exempt. Security definer: audit_event is Kolab's own login's alone. Each check is one probe
+-- of audit_event_tx, by transaction and subject.
+create function kj_access_recorded(tbl text, r jsonb, removed boolean) returns boolean
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+  select exists (
+    select 1 from public.audit_event a
+     where a.tx = pg_current_xact_id()
+       and a.subject = coalesce(r ->> 'user_id', r ->> 'agent_id', r ->> 'team_id')
+       and case tbl
+         when 'kolab_grant' then a.kolab_id = r ->> 'kolab_id'
+                                 and a.action = case when removed then 'grant.removed' else 'grant.set' end
+         when 'org_member' then a.detail ->> 'org' = r ->> 'org_id'
+                                and a.action = case when removed then 'member.removed' else 'member.set' end
+         when 'team_member' then case when removed
+                                   then (a.action = 'team_member.removed' and a.detail ->> 'team' = r ->> 'team_id')
+                                     or (a.action = 'member.removed' and coalesce(a.detail -> 'teams', '[]'::jsonb) ? (r ->> 'team_id'))
+                                   else a.action = 'team_member.added' and a.detail ->> 'team' = r ->> 'team_id' end
+         else false
+       end)
+$$;
+revoke execute on function kj_access_recorded(text, jsonb, boolean) from public;
 create function kj_access_audited() returns trigger
 language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
   r jsonb;
-  who text;
 begin
   if kj_migrating() then return null; end if;
-  if tg_op = 'DELETE' then r := to_jsonb(old); else r := to_jsonb(new); end if;
-  who := coalesce(r ->> 'user_id', r ->> 'agent_id', r ->> 'team_id');
-  if not exists (
-    select 1 from public.audit_event a
-     where a.tx = pg_current_xact_id() and a.subject = who and a.action = any(tg_argv)
-       and (tg_table_name <> 'kolab_grant' or a.kolab_id = r ->> 'kolab_id')) then
-    raise exception '%: a change of access to % must be recorded in the audit log, with who made it (W2.20)', tg_table_name, who
+  if tg_op in ('INSERT', 'UPDATE') and not public.kj_access_recorded(tg_table_name, to_jsonb(new), false) then
+    r := to_jsonb(new);
+  elsif tg_op in ('UPDATE', 'DELETE') and not public.kj_access_recorded(tg_table_name, to_jsonb(old), tg_op = 'DELETE') then
+    r := to_jsonb(old);
+  end if;
+  if r is not null then
+    raise exception '%: a change of access to % must be recorded in the audit log, with who made it (W2.20)',
+      tg_table_name, coalesce(r ->> 'user_id', r ->> 'agent_id', r ->> 'team_id')
       using errcode = 'check_violation';
   end if;
   return null;
@@ -178,11 +204,11 @@ end
 $$;
 revoke execute on function kj_access_audited() from public;
 create constraint trigger kolab_grant_audited after insert or update or delete on kolab_grant deferrable initially deferred for each row
-  execute function kj_access_audited('grant.set', 'grant.removed');
+  execute function kj_access_audited();
 create constraint trigger org_member_audited after insert or update or delete on org_member deferrable initially deferred for each row
-  execute function kj_access_audited('member.set', 'member.removed');
+  execute function kj_access_audited();
 create constraint trigger team_member_audited after insert or update or delete on team_member deferrable initially deferred for each row
-  execute function kj_access_audited('team_member.added', 'team_member.removed', 'member.removed');
+  execute function kj_access_audited();
 
 -- Who made a node is shown only to readers in the node's own kolab (D49, D58): a reader from
 -- another kolab sees its committed versions and their authors, but not who made the node, who

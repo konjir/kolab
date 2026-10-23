@@ -2335,8 +2335,10 @@ export class Kolab {
       const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
         `select level, functional, technical from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person])).rows[0];
       const merged = g ? mergeAccess({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, want) : { level: inv.level, layers: want.layers };
-      await tx.query(`delete from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person]);
-      await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)`,
+      // Made or replaced in place, so the audit row it needs is grant.set (kj_access_audited).
+      await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)
+                      on conflict (kolab_id, user_id) where user_id is not null
+                      do update set level = excluded.level, functional = excluded.functional, technical = excluded.technical`,
         [inv.kolab_id, person, merged.level, merged.layers.includes('functional'), merged.layers.includes('technical')]);
       await audit(tx, person, 'grant.set', { kolab: inv.kolab_id, subject: person, detail: { level: merged.level, layers: merged.layers, invite: inv.id } });
       await tx.query(`update kolab_invite set accepted_by = $2, accepted_at = now() where id = $1`, [inv.id, person]);
@@ -2954,8 +2956,10 @@ export class Kolab {
     return this.changeAccess(granted(grantee), by, async (tx) => {
       // Against what its owner holds now, in this transaction.
       if (grantee.column === 'agent_id') await requireWithinCap(tx, grantee, kolab, { level, layers });
-      await tx.query(`delete from kolab_grant where kolab_id = $1 and ${grantee.column} = $2`, [kolab, grantee.id]);
-      await tx.query(`insert into kolab_grant(kolab_id, ${grantee.column}, level, functional, technical) values ($1, $2, $3, $4, $5)`,
+      // Made or replaced in place, so the audit row it needs is grant.set (kj_access_audited).
+      await tx.query(`insert into kolab_grant(kolab_id, ${grantee.column}, level, functional, technical) values ($1, $2, $3, $4, $5)
+                      on conflict (kolab_id, ${grantee.column}) where ${grantee.column} is not null
+                      do update set level = excluded.level, functional = excluded.functional, technical = excluded.technical`,
         [kolab, grantee.id, level, layers.includes('functional'), layers.includes('technical')]);
       await audit(tx, by, 'grant.set', { kolab, subject: grantee.id, detail: { level, layers } });
     });
