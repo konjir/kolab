@@ -12,16 +12,26 @@ import { ADMIN_DOER, AUDIT_ACTIONS } from '@konjir/types';
 import { Kolab, NO_ACTOR_REASONS, SYSTEM_ACTOR, SYSTEM_WRITES, WRITE_ACTORS, activity, sessionKey } from '../src/index.js';
 import { els, openKolab, people, rejection, TEST_KOLAB, TestKolab } from '../src/testing.js';
 
-/** A write in SQL: an insert, an update or a delete, of any table. */
-const WRITE = /\b(insert\s+into|delete\s+from|update\s+[a-z_]+(\s+[a-z]+)?\s+set)\b/i;
+/**
+ * A write in SQL: an insert, an update (of a table named plainly, schema-qualified, quoted or by a
+ * template), a delete, a merge or a truncate. What it can't see: SQL built from pieces it doesn't
+ * spell out, and writes made inside a database function that Kolab calls (the database's own
+ * triggers back those up for the actor columns and the access tables).
+ */
+const WRITE = /\b(insert\s+into|delete\s+from|update\s+(?:only\s+)?(?:[\w."]+|\$\{[^}]+\})(?:\s+(?:as\s+)?\w+)?\s+set|merge\s+into\s+(?:[\w."]+|\$\{[^}]+\})(?:\s+(?:as\s+)?\w+)?\s+using|truncate\s+(?:table\s+)?(?:only\s+)?(?:[\w."]+|\$\{[^}]+\}))\b/i;
+
+const KOLAB_TS = new URL('../src/kolab.ts', import.meta.url);
 
 /**
- * kolab.ts, read as units: Kolab's methods, by their header two spaces in, in the class Kolab, as
- * `this.<name>`; and the module's functions, at the top level, by their name. Each with its body,
- * and the units it calls (as this.<method>, or a function of the module), other than SYSTEM_WRITES.
+ * kolab.ts (or `src`, a variant of it), read as units: Kolab's methods, by their header two spaces
+ * in, in the class Kolab, as `this.<name>`; and the module's functions and arrow functions
+ * (`const name = (async)? (...) =>`), at the top level, by their name. Each with its body, and the
+ * units it calls or passes by reference (`this.<method>` with or without a call, or a top-level
+ * unit's name called or passed as an argument), other than SYSTEM_WRITES. It reads the source's shape, not its meaning: a unit
+ * reached only through a variable, a computed name or another module is not followed.
  */
-function units() {
-  const lines = readFileSync(new URL('../src/kolab.ts', import.meta.url), 'utf8').split('\n');
+function units(src = readFileSync(KOLAB_TS, 'utf8')) {
+  const lines = src.split('\n');
   const start = lines.findIndex((l) => /^export class Kolab\b/.test(l));
   let end = start + 1;
   while (!/^}/.test(lines[end])) end++;
@@ -37,16 +47,21 @@ function units() {
   cur = undefined;
   for (let i = 0; i < lines.length; i++) {
     if (i >= start && i <= end) { cur = undefined; continue; }
-    const m = lines[i].match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)/);
-    if (m) { all.set(m[1], cur = { name: m[1], method: false, private: false, body: [] }); continue; }
+    const m = lines[i].match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)/)
+      ?? lines[i].match(/^(?:export\s+)?const\s+([A-Za-z_]\w*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_]\w*\s*=>)/);
+    if (m) { all.set(m[1], cur = { name: m[1], method: false, private: false, body: [lines[i]] }); continue; }
     if (/^(export |const |let |interface |type |class |\/\*\*)/.test(lines[i])) cur = undefined;
     cur?.body.push(lines[i]);
   }
   const stop = new Set(SYSTEM_WRITES.map((n) => `this.${n}`));
   const calls = new Map([...all].map(([k, u]) => {
-    const b = u.body.join('\n');
-    const named = [...b.matchAll(/this\.(\w+)\s*[(<]/g)].map((m) => `this.${m[1]}`).concat([...b.matchAll(/(?<![.\w])(\w+)\s*\(/g)].map((m) => m[1]));
-    return [k, named.filter((c) => all.has(c) && c !== k && !stop.has(c))];
+    // Comments name units too; only code calls or passes them.
+    const b = u.body.filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).map((l) => l.replace(/\s\/\/\s.*$/, '')).join('\n');
+    // A method, called or passed (`this.x(...)`, `this.x`); a top-level unit, called (`x(`) or passed as an argument (`(x,` `, x)`).
+    const named = [...b.matchAll(/this\.(\w+)\b/g)].map((m) => `this.${m[1]}`)
+      .concat([...b.matchAll(/(?<![.\w])([A-Za-z_]\w*)\s*\(/g)].map((m) => m[1]))
+      .concat([...b.matchAll(/[(,]\s*([A-Za-z_]\w*)\s*(?=[,)])/g)].map((m) => m[1]));
+    return [k, [...new Set(named)].filter((c) => all.has(c) && c !== k && !stop.has(c))];
   }));
   /** The SQL, and the rest of the bodies, of `k` and of every unit it reaches. */
   const reach = (k: string, seen = new Set<string>()): string[] => {
@@ -54,13 +69,13 @@ function units() {
     seen.add(k);
     return [all.get(k)!.body.join('\n'), ...calls.get(k)!.flatMap((c) => reach(c, seen))];
   };
-  expect(all.has('this.createNode') && all.has('insertSession') && all.has('audit')).toBe(true);   // the reading works
   return { all, reach, lines: lines.slice(start, end) };
 }
 
-/** Kolab's public methods that write: whose reachable bodies (units().reach) write SQL. */
-function writingMethods(): string[] {
-  const { all, reach } = units();
+/** Kolab's public methods that write, in `src` (kolab.ts by default): whose reachable bodies (units().reach) write SQL. */
+function writingMethods(src?: string): string[] {
+  const { all, reach } = units(src);
+  if (src === undefined) expect(all.has('this.createNode') && all.has('insertSession') && all.has('audit')).toBe(true);   // the reading works
   return [...all].filter(([k, u]) => u.method && !u.private && u.name !== 'constructor' && reach(k).some((b) => WRITE.test(b))).map(([, u]) => u.name).sort();
 }
 
@@ -72,8 +87,9 @@ function writesPlace(bodies: string[], place: string): boolean {
     return new RegExp(`(?<![.\\w])audit\\([^;]*?'${action}'`).test(text);
   }
   const [table, column] = place.split('.');
-  const inserts = [...text.matchAll(new RegExp(`insert\\s+into\\s+${table}\\s*\\(([^)]*)\\)`, 'gi'))].some((m) => new RegExp(`\\b${column}\\b`).test(m[1]));
-  const updates = [...text.matchAll(new RegExp(`update\\s+${table}(?:\\s+[a-z]+)?\\s+set\\b([\\s\\S]*?)(?:\\bwhere\\b|\\breturning\\b|\\bfrom\\b|\`)`, 'gi'))]
+  const named = `(?:only\\s+)?(?:"?public"?\\.)?"?${table}"?`;
+  const inserts = [...text.matchAll(new RegExp(`insert\\s+into\\s+${named}\\s*\\(([^)]*)\\)`, 'gi'))].some((m) => new RegExp(`\\b${column}\\b`).test(m[1]));
+  const updates = [...text.matchAll(new RegExp(`update\\s+${named}(?:\\s+(?:as\\s+)?[a-z]+)?\\s+set\\b([\\s\\S]*?)(?:\\bwhere\\b|\\breturning\\b|\\bfrom\\b|\`)`, 'gi'))]
     .some((m) => new RegExp(`(?:^|[\\s,.])${column}\\s*=`).test(m[1]));
   return inserts || updates;
 }
@@ -121,19 +137,45 @@ test('each place WRITE_ACTORS names is a column of the schema, or an action of t
   expect(writesPlace(reach('this.linkIdentity'), 'session.opened_by')).toBe(false);
 });
 
-test('no SQL write is outside kolab.ts, where the scan reads it, and Kolab has no method it would miss', () => {
+test('no SQL write is outside kolab.ts, where the scan reads it; no production code uses TestKolab or subclasses Kolab; and Kolab has no method the scan would miss', () => {
   const repo = fileURLToPath(new URL('../../../', import.meta.url));
+  // Each project's own tests, end-to-end tests and dev scripts, at its root, and the migrations.
+  const skipped = /^(apps|libs)\/[^/]+\/(test|e2e|scripts)$|^libs\/db\/src\/migrations$/;
   const sources = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
     const p = join(dir, f);
-    if (['node_modules', 'dist', 'test', 'e2e', 'migrations'].includes(f)) return [];
-    return statSync(p).isDirectory() ? sources(p) : /\.(ts|tsx|mts|js|mjs)$/.test(f) ? [p] : [];
+    const rel = p.slice(repo.length);
+    if (['node_modules', 'dist'].includes(f) || skipped.test(rel)) return [];
+    return statSync(p).isDirectory() ? sources(p) : /\.(ts|tsx|mts|cts|js|mjs|cjs)$/.test(f) ? [p] : [];
   });
-  const writers = ['apps', 'libs'].flatMap((d) => sources(join(repo, d))).filter((p) => WRITE.test(readFileSync(p, 'utf8')))
-    .map((p) => p.slice(repo.length)).sort();
-  // The migration runner writes only its own bookkeeping, and the demo seed only through Kolab.
-  expect(writers.filter((p) => !/\/scripts\//.test(p))).toStrictEqual(['libs/db/src/migrate.ts', 'libs/engine/src/kolab.ts']);
+  const files = ['apps', 'libs'].flatMap((d) => sources(join(repo, d))).map((p) => ({ path: p.slice(repo.length), text: readFileSync(p, 'utf8') }));
+  // The migration runner writes only its own bookkeeping.
+  expect(files.filter((f) => WRITE.test(f.text)).map((f) => f.path).sort()).toStrictEqual(['libs/db/src/migrate.ts', 'libs/engine/src/kolab.ts']);
+  // TestKolab acts as the admin token when a write names no one: only tests and scripts may use it,
+  // and nothing else may give Kolab defaults of its own by extending it.
+  expect(files.filter((f) => /['"]@konjir\/engine\/testing['"]|['"][./]*testing(\.js)?['"]/.test(f.text)).map((f) => f.path)
+    .filter((p) => p !== 'libs/engine/src/testing.ts')).toStrictEqual([]);
+  expect(files.filter((f) => /\bextends\s+Kolab\b/.test(f.text)).map((f) => f.path)).toStrictEqual(['libs/engine/src/testing.ts']);
   // A method written as a property, `name = async (...) =>`, has no header the scan finds.
   expect(units().lines.filter((l) => /^ {2}(?:(?:private|protected|public|readonly|static)\s+)*\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>/.test(l))).toStrictEqual([]);
+});
+
+test('the scan finds a write through a top-level helper, a schema-qualified or template table, a merge or truncate, or a method passed by reference', () => {
+  const src = readFileSync(KOLAB_TS, 'utf8');
+  const probes: Record<string, { method: string; helper?: string }> = {
+    probeHelper: { method: `  async probeHelper() { await sneaky(this.db); }`, helper: `const sneaky = async (q: Q) => q.query(\`delete from node where id = 'x'\`);` },
+    probeQualified: { method: `  async probeQualified() { await this.db.query(\`update public.node set title = 'x' where id = 'x'\`); }` },
+    probeTemplate: { method: `  async probeTemplate(t: string) { await this.db.query(\`update \${t} set title = 'x'\`); }` },
+    probeMerge: { method: `  async probeMerge() { await this.db.query(\`merge into node n using node m on n.id = m.id when matched then do nothing\`); }` },
+    probeTruncate: { method: `  async probeTruncate() { await this.db.query(\`truncate outbox\`); }` },
+    probeReference: { method: `  async probeReference() { await this.inTransaction(this.probeWrites); }\n  private async probeWrites(tx: Q) { await tx.query(\`delete from node where id = 'x'\`); }` },
+  };
+  const base = writingMethods();
+  for (const [name, p] of Object.entries(probes)) {
+    const at = src.indexOf('\n  // ---- actors and sessions');
+    expect(at).toBeGreaterThan(0);
+    const probed = (p.helper ? `${p.helper}\n` : '') + src.slice(0, at) + `\n${p.method}\n` + src.slice(at);
+    expect([name, writingMethods(probed)]).toStrictEqual([name, [...base, name].sort()]);
+  }
 });
 
 test('the database refuses a row that names no one, and a session ended, an invite or grant revoked, or a version submitted without saying by whom', async () => {
@@ -210,6 +252,23 @@ test('the database refuses a change of access whose transaction adds no audit ro
       await tx.query(`update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`);
     }))).toMatch(unaudited);
   }
+  // The record must be of that operation, in that organization or team, and an update needs one for its old row too.
+  const recorded = async (audits: [string, string | null, string, Record<string, unknown> | null][], sql: string) => rejection(kolab.db.transaction(async (tx) => {
+    for (const [action, k, subject, detail] of audits) {
+      await tx.query(`insert into audit_event(action, kolab_id, subject, detail, done_by) values ($1, $2, $3, $4, 'ada')`, [action, k, subject, detail && JSON.stringify(detail)]);
+    }
+    await tx.query(sql);
+  }));
+  await kolab.addOrganization('orgb');
+  await kolab.addTeam('orgb', 'ops');
+  await kolab.addMember('orgb', 'alice');
+  expect(await recorded([['grant.set', TEST_KOLAB, 'bob', null]], `delete from kolab_grant where user_id = 'bob'`)).toMatch(unaudited);
+  expect(await recorded([['grant.removed', TEST_KOLAB, 'bob', null]], `update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`)).toMatch(unaudited);
+  expect(await recorded([['member.removed', null, 'bob', { org: 'test-org' }]], `insert into org_member(org_id, user_id) values ('test-org', 'bob')`)).toMatch(unaudited);
+  expect(await recorded([['member.set', null, 'bob', { org: 'test-org' }]], `insert into org_member(org_id, user_id) values ('orgb', 'bob')`)).toMatch(unaudited);
+  expect(await recorded([['team_member.added', null, 'alice', { team: 'test-org/ops' }]], `insert into team_member(team_id, user_id) values ('orgb/ops', 'alice')`)).toMatch(unaudited);
+  await kolab.addActor('cy');
+  expect(await recorded([['grant.set', TEST_KOLAB, 'cy', null]], `update kolab_grant set user_id = 'cy' where user_id = 'bob'`)).toMatch(unaudited);
   // The change and its record, in one transaction, in either order, commit.
   await kolab.db.transaction(async (tx) => {
     await tx.query(`update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`);
@@ -344,6 +403,10 @@ test('nodes, invites, versions and grants record who made, revoked or submitted 
   // A node with only a draft not yet submitted isn't in the feed, as its draft isn't.
   const quiet = await kolab.createNode(s, 'functional_spec', 'Quiet', 'quiet');
   await kolab.draft(s, quiet, { elements: els({ Q1: 'Not yet.' }) });
+  expect((await activity(kolab, s)).filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
+  // Nor one whose only draft was abandoned before it was ever submitted.
+  const dropped = await kolab.createNode(s, 'functional_spec', 'Dropped', 'dropped');
+  await kolab.abandon(s, await kolab.draft(s, dropped, { elements: els({ D1: 'Never mind.' }) }));
   expect((await activity(kolab, s)).filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
 
   // A ruling the admin applies is written as the actor given, and submitted by the admin.

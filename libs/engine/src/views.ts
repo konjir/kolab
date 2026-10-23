@@ -260,7 +260,8 @@ export type ActivityRow =
 /**
  * What happened in the session's kolab, newest first, from what Kolab records: nodes as they were
  * made, by whom, once one of their versions has been submitted (W2.20; nodes made before Kolab
- * recorded it are left out, and so is a node with only drafts not submitted), versions as they were
+ * recorded it are left out, and so is a node whose only versions are drafts never submitted, still
+ * drafted or abandoned), versions as they were
  * written (submitted, committed or rejected; Kolab doesn't record commit times yet, nor when a
  * question was answered), verdicts as they were given, questions and notes as they were raised,
  * and marks as they were raised. Drafts not submitted are left out.
@@ -269,11 +270,14 @@ export async function activity(kolab: Kolab, session: string, limit = 80): Promi
   const here = await kolab.sessionKolab(session);
   const rows = await kolab.readAs(session, async (q) => (await q.query<Record<string, unknown> & { at: Date | string }>(
     `select * from (
-       select n.created_at as at, n.creator as actor, 'node' as kind, n.name as node, null::int as seq, null::text as state, n.title as note,
+       select n.created_at as at, kj_node_creator(n.id) as actor, 'node' as kind, n.name as node, null::int as seq, null::text as state, n.title as note,
               null::text as element, null::text as extra
-         from (select n.id, n.name, n.title, n.created_at, kj_node_creator(n.id) as creator from node n where n.kolab_id = $1) n
-        where n.created_at is not null and n.creator is not null
-          and exists (select 1 from version v where v.node_id = n.id and v.state <> 'drafted')
+         -- At most the newest $2 such nodes, before kj_node_creator is asked about each.
+         from (select n.id, n.name, n.title, n.created_at from node n
+                where n.kolab_id = $1 and n.created_at is not null
+                  and exists (select 1 from version v where v.node_id = n.id
+                                and (v.state in ('in_review', 'committed') or v.submitted_by is not null))
+                order by n.created_at desc limit $2) n
        union all
        select v.created_at, v.actor_id, 'version', n.name, v.seq, v.state, v.review_note,
               null::text, null::text

@@ -111,6 +111,7 @@ test('a database from the previous release is migrated on open', async () => {
       drop trigger org_member_audited on org_member;
       drop trigger team_member_audited on team_member;
       drop function kj_access_audited();
+      drop function kj_access_recorded(text, jsonb, boolean);
       drop table audit_event;
       drop function kj_audit_event_fixed();
       drop function kj_node_creator(text);
