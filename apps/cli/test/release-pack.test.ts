@@ -49,7 +49,7 @@ test('only tracked files ship: untracked and ignored .env, .claude, .konjir and 
 });
 
 test('site/ (konjir.com, D81) is no part of a release: not in the zip, and a site-only change is the same release', () => {
-  const r = repo('site', { '.gitattributes': '/site export-ignore\n', 'apps/a.ts': 'x', 'site/index.html': '<p>one</p>', 'site/assets/site.0123456789.css': 'p{}', 'deploy/site/site.js': '1' });
+  const r = repo('site', { '.gitattributes': '/site export-ignore\n', 'apps/a.ts': 'x', 'site/index.html': '<p>one</p>', 'site/assets/site.0123456789.css': 'p{}', 'site/src/project/Main.dc.html': '<x-dc></x-dc>', 'site/src/images/0123.jpg': 'jpg', 'deploy/site/site.js': '1' });
   const out = join(dir, 'site.zip');
   const p = pack(r, out);
   expect([p.status, p.stderr]).toStrictEqual([0, '']);
@@ -65,6 +65,7 @@ test('site/ (konjir.com, D81) is no part of a release: not in the zip, and a sit
   // object and install association don't change and Kolab isn't reinstalled.
   writeFileSync(join(r, 'site/index.html'), '<p>two</p>');
   writeFileSync(join(r, 'site/new.txt'), 'x');
+  writeFileSync(join(r, 'site/src/project/Main.dc.html'), '<x-dc><p>two</p></x-dc>'); // the page's source (D92)
   git(r, 'add', '-A');
   git(r, 'commit', '-qm', 'site only');
   expect(JSON.parse(pack(r, out).stdout).release).toBe(release);

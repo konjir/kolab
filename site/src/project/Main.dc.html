@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Konjir: name it true</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..600&amp;family=Instrument+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+.kj{--surface:#16140f;--raised:#211e18;--sunken:#0e0d09;--line:#3a352c;--line-strong:#776f5f;--ink:#f2ebd3;--ink-muted:#aeadb3;--secondary:#9ea4ba;--accent:#e9ba7b;--on-accent:#16140f;--accent-soft:#2e2618;--focus:#fef6bf;--clean:#8fb7c9;--question:#b9b3d6;--ins:#24321f;--del:#3a2219;--sun:#e9ba7b;--moon:#fef6bf;--sky-zenith:#656c82;--sky-veil:#aeadb3;--sky-glow:#fef6bf;--sky-horizon:#e9ba7b;--sky-field:#77695d;--wire:#16140f;color-scheme:dark}
+.kj[data-theme="light"]{--surface:#f8f2d6;--raised:#fdf9e8;--sunken:#efe8cc;--line:#d9d1b4;--line-strong:#8c8470;--ink:#1e1b15;--ink-muted:#57586a;--secondary:#4a5166;--accent:#8a5410;--on-accent:#fff8e6;--accent-soft:#f3e3bf;--focus:#8a5410;--clean:#2c6378;--question:#5a4f8c;--ins:#dfe9cf;--del:#f3d6c8;--sun:#b5741f;--moon:#3a3f52;--sky-glow:#f0d79b;--sky-horizon:#d9a15c;--sky-field:#16140f;--wire:#1e1b15;color-scheme:light}
+body{margin:0;background:#16140f}
+body:has(.kj[data-theme="light"]){background:#f8f2d6}
+.tt{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:0;background:transparent;border-radius:999px;cursor:pointer}
+.tt svg{display:block;transition:opacity .4s ease-out}
+.tt[aria-checked="false"] svg{opacity:.38}
+.tt:hover svg{opacity:1}
+a{color:var(--ink);text-decoration:none}
+a:hover{color:var(--accent)}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+::selection{background:var(--accent-soft)}
+.kb{--kb-h:44px;--kb-fill:transparent;--kb-line:var(--line-strong);display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:var(--kb-h);padding:0 22px;border-radius:calc(var(--kb-h) / 2) calc(var(--kb-h) * 0.14) calc(var(--kb-h) * 0.4) calc(var(--kb-h) / 2);background:var(--kb-fill);border:1px solid var(--kb-hover-line,var(--kb-line));font:inherit;white-space:nowrap;cursor:pointer;text-decoration:none}
+.kb.line:hover{--kb-hover-line:var(--ink-muted)}
+.kb:focus-visible,.kb:has(:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
+.tt:focus-visible{outline:none}
+.kb.fill:hover{filter:brightness(1.07)}
+</style>
+</helmet>
+<div class="kj" data-theme="{{theme}}" style="background: var(--surface); color: var(--ink); font-family: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 26px; min-width: 0;">
+
+<header style="border-bottom: 1px solid var(--line);">
+<nav aria-label="Main" style="max-width: 1200px; margin: 0 auto; padding: 16px clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 32px;">
+<a href="#top" aria-label="Konjir home" style="display: flex; align-items: center;">
+<svg viewBox="0 0 122 56" width="88" height="40" role="img" aria-label="Konjir">
+<g fill="none" style="stroke: var(--ink)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" style="fill: var(--sun)"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" style="fill: var(--moon); stroke: var(--moon)" stroke-width="0.6" stroke-linejoin="round"></path>
+</svg>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 4px 28px; flex: 1 1 auto; font-size: 15px;">
+<a href="#how">How it works</a>
+<a href="#circle">Roles</a>
+<a href="#agents">For agents</a>
+<a href="#kolabs">Kolabs</a>
+</div>
+<div role="radiogroup" aria-label="Theme" class="kb line" style="--kb-h: 44px; --kb-line: var(--line-strong); padding: 0 4px; gap: 0; cursor: default;">
+<button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="{{isLight}}" tabIndex="{{lightTab}}" onClick="{{setLight}}" onKeyDown="{{onKey}}"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" style="fill: var(--sun)"></circle></svg></button>
+<button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="{{isDark}}" tabIndex="{{darkTab}}" onClick="{{setDark}}" onKeyDown="{{onKey}}"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" style="fill: var(--moon); stroke: var(--moon)"></path></svg></button>
+</div>
+<a href="https://kolab.konjir.com/" style="font-size: 15px;">Sign in</a>
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 44px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 22px; color: var(--on-accent); font-weight: 600; font-size: 15px;">Sign up with GitHub</a>
+</nav>
+</header>
+
+<main>
+<section id="top" aria-labelledby="hero-title" style="max-width: 1200px; margin: 0 auto; padding: clamp(48px, 8vw, 104px) clamp(16px, 4vw, 48px) clamp(56px, 7vw, 88px); box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 56px;">
+<div style="flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 28px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Specs and agents, kept in step</p>
+<h1 id="hero-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(60px, 8.4vw, 112px); line-height: 0.94; letter-spacing: -0.02em; font-variation-settings: 'opsz' 144;">Name it true.</h1>
+<p style="margin: 0; font-size: clamp(18px, 1.7vw, 21px); line-height: 1.55; max-width: 32em;">Konjir is where product people and developers say what software should do, once and precisely. Agents work from that statement. When one can’t tell what you meant, it asks instead of guessing.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 12px;">
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
+<a href="#how" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">See how it works</a>
+</div>
+</div>
+<figure style="flex: 1 1 420px; min-width: 0; margin: 0; display: flex; flex-direction: column;">
+<img src="/_blob/be70444e23bcfba75529fcc386e03b83" alt="A field at first light: fog over the grass, power lines crossing toward an amber horizon, a thin moon above." style="width: 100%; aspect-ratio: 5 / 4; object-fit: cover; border-radius: 6px; display: block;">
+<div style="margin: -76px 16px 0; padding: 16px 18px; background: var(--raised); border: 1px solid var(--accent); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; position: relative;">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;">
+<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--accent); color: var(--accent); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 500; color: var(--secondary);">kj:password-reset-pg@2#B9</span>
+</div>
+<p style="margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-muted);">PR8 changed in version 3. This element was written against the old text.</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; background: var(--sunken); border-radius: 2px; padding: 8px 10px;">At most <del style="background: var(--del); text-decoration-thickness: 1px;">5</del> <ins style="background: var(--ins); text-decoration: none;">3</ins> reset requests per email address per hour.</p>
+</div>
+</figure>
+</section>
+
+<div aria-hidden="true" style="display: flex; flex-direction: column;">
+<div style="height: 12px; background: var(--sky-zenith);"></div>
+<div style="height: 8px; background: var(--sky-veil);"></div>
+<div style="height: 3px; background: var(--sky-glow);"></div>
+<div style="height: 6px; background: var(--sky-horizon);"></div>
+<div style="height: 12px; background: var(--sky-field);"></div>
+</div>
+
+<section aria-labelledby="fog-title" style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-direction: column; gap: 48px;">
+<div style="display: flex; flex-direction: column; gap: 16px; max-width: 760px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">The fog</p>
+<h2 id="fog-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Most specs are out of date by the time anyone builds from them.</h2>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 40px;">
+<div style="display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 20px;">
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Intent lives in too many places</h3>
+<p style="margin: 0; color: var(--ink-muted);">A wiki page says one thing, a ticket another, the code a third. Nobody can say which one is true.</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 20px;">
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Changes don’t reach what depends on them</h3>
+<p style="margin: 0; color: var(--ink-muted);">A requirement changes in a document. The code written against it never hears.</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 20px;">
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Agents fill gaps with guesses</h3>
+<p style="margin: 0; color: var(--ink-muted);">Hand an agent an ambiguous ticket and it picks an answer and keeps going. You find out in review, or in production.</p>
+</div>
+</div>
+</section>
+
+<section id="how" aria-labelledby="how-title" style="border-top: 1px solid var(--line); background: var(--raised);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-direction: column; gap: 56px;">
+<div style="display: flex; flex-direction: column; gap: 16px; max-width: 760px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">How it works</p>
+<h2 id="how-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Say it once. Everything that depends on it hears.</h2>
+</div>
+<ol style="list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 40px 32px;">
+<li style="display: flex; flex-direction: column; gap: 12px;">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent);">01</span>
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Write the intent</h3>
+<p style="margin: 0; color: var(--ink-muted);">A functional spec in plain words. Every requirement gets a true name that keeps pointing at it, through every edit.</p>
+<span style="align-self: flex-start; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); background: var(--sunken); border: 1px solid var(--line); border-radius: 2px; padding: 1px 8px;">kj:checkout@3#R1</span>
+</li>
+<li style="display: flex; flex-direction: column; gap: 12px;">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent);">02</span>
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Bind it</h3>
+<p style="margin: 0; color: var(--ink-muted);">Engineers, or their agents, write the technical binding. Each element links to the requirement it serves, pinned to the exact text it was checked against.</p>
+<span style="align-self: flex-start; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); background: var(--sunken); border: 1px solid var(--line); border-radius: 2px; padding: 1px 8px;">kj:checkout-stripe@1#C2</span>
+</li>
+<li style="display: flex; flex-direction: column; gap: 12px;">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent);">03</span>
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Change it</h3>
+<p style="margin: 0; color: var(--ink-muted);">Edit a requirement and only what was written against that line is marked stale, with a word-by-word diff of what changed.</p>
+</li>
+<li style="display: flex; flex-direction: column; gap: 12px;">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent);">04</span>
+<h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Settle it</h3>
+<p style="margin: 0; color: var(--ink-muted);">Whoever owns the binding checks the change. It still holds, or it gets revised. Nothing stays quietly out of date.</p>
+</li>
+</ol>
+
+<div style="display: flex; flex-wrap: wrap; gap: 40px; align-items: center; border-top: 1px solid var(--line); padding-top: 56px;">
+<div style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 14px;">
+<h3 style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 28px; line-height: 34px;">A change lands exactly where it matters</h3>
+<p style="margin: 0; color: var(--ink-muted); max-width: 30em;">Lee tightened a rate limit from 5 to 3 requests an hour. One binding element relied on it, so that one element was marked. Twelve others weren’t touched.</p>
+</div>
+<div style="flex: 1 1 480px; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 20px;">
+<div style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; padding: 14px 0; border-bottom: 1px solid var(--line);">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); width: 32px;">B8</span>
+<span style="flex: 1 1 260px; min-width: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">Revoke sessions from before the reset: delete them and set sessions_valid_after.</span>
+<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--clean); color: var(--clean); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line);">
+<div style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline;">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); width: 32px;">B9</span>
+<span style="flex: 1 1 260px; min-width: 0; font-size: 14px; line-height: 22px;">Rate limit: a sliding window allowing 5 requests per normalized email per hour.</span>
+<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--accent); color: var(--accent); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>
+</div>
+<div style="margin-left: 48px; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--accent); border-radius: 6px; padding: 12px 14px; background: var(--raised);">
+<p style="margin: 0; font-size: 14px; line-height: 20px;"><span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary);">kj:password-reset#PR8</span> changed in version 3.</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; background: var(--sunken); border-radius: 2px; padding: 8px 10px;">At most <del style="background: var(--del); text-decoration-thickness: 1px;">5</del> <ins style="background: var(--ins); text-decoration: none;">3</ins> reset requests per email address per hour. Requests over the limit get the same response as PR3.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 8px;">
+<button type="button" class="kb line" style="--kb-h: 36px; --kb-line: var(--line-strong); padding: 0 18px; font-size: 13px; color: var(--ink);">Still holds</button>
+<button type="button" class="kb line" style="--kb-h: 36px; --kb-line: var(--line-strong); padding: 0 18px; font-size: 13px; color: var(--ink);">Revise B9</button>
+</div>
+</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; padding: 14px 0;">
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); width: 32px;">B10</span>
+<span style="flex: 1 1 260px; min-width: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">The request always returns 202 with the same body.</span>
+<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--clean); color: var(--clean); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<section id="circle" aria-labelledby="circle-title" style="border-top: 1px solid var(--line);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 56px; align-items: center;">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 18px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Roles</p>
+<h2 id="circle-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Every agent works inside its circle.</h2>
+<p style="margin: 0; max-width: 32em;">Product writes intent. Engineering writes the binding. An agent in one layer can’t edit the other, so when it needs something across that line, it asks.</p>
+<p style="margin: 0; color: var(--ink-muted); max-width: 32em;">Every commit passes a review gate first. If a requirement starts to read like implementation, the gate raises a question instead of letting it slide. Answers are kept as precedent, so a settled question isn’t asked twice.</p>
+</div>
+<div style="flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--question); border-radius: 6px; padding: 20px 22px; background: var(--raised);">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; font-size: 14px; color: var(--ink-muted);">
+<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--question); color: var(--question); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>
+<span>eng-agent asked about</span>
+<span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 500; color: var(--secondary);">kj:password-reset@3#PR3</span>
+</div>
+<blockquote style="margin: 0; font-size: 16px; line-height: 26px;">PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.</blockquote>
+<p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted); border-top: 1px solid var(--line); padding-top: 12px;">Waiting on the product layer. The engineer agent keeps working on everything else.</p>
+</div>
+</div>
+</section>
+
+<section id="agents" aria-labelledby="agents-title" style="border-top: 1px solid var(--line); background: var(--raised);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 56px; align-items: center;">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 18px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Bring your own harness</p>
+<h2 id="agents-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Your agents connect with the subscriptions you already have.</h2>
+<p style="margin: 0; max-width: 32em;">Konjir runs as Kolab, an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions as you.</p>
+<p style="margin: 0; color: var(--ink-muted); max-width: 32em;">Kolab never runs a model. Review and the heavy thinking happen in your harness, on your plan, under its terms. The rules come down the connection, so there is nothing to configure per agent.</p>
+</div>
+<div style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
+<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># connect an agent once</span>
+claude mcp add --transport http konjir \
+  https://kolab.konjir.com/mcp \
+  --header "Authorization: Bearer $KONJIR_TOKEN"
+
+<span style="color: var(--secondary);"># or work from any shell</span>
+konjir resolve kj:checkout@3#R1
+konjir stale
+konjir queries</pre>
+</div>
+</div>
+</section>
+
+<section id="kolabs" aria-labelledby="kolabs-title" style="border-top: 1px solid var(--line);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-direction: column; gap: 48px;">
+<div style="display: flex; flex-direction: column; gap: 16px; max-width: 760px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Kolabs</p>
+<h2 id="kolabs-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">One project, one hard edge.</h2>
+<p style="margin: 0; color: var(--ink-muted); max-width: 36em;">A kolab holds one project: its spec, the bindings built on it, their links and questions. Agents that connect to it see only what is inside it, so the one working on checkout never wanders into accounts.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px;">
+<div style="display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--accent); border-radius: 6px; padding: 20px 22px; background: var(--raised);">
+<div style="display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline;"><h3 style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: 24px; line-height: 30px;">Accounts</h3><span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--secondary);">accounts</span></div>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">Sign-in, sign-up and account recovery.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary);"><span>kj:password-reset@3</span><span>kj:password-reset-pg@2</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; align-items: center;">
+<span style="display: inline-flex; gap: 6px; align-items: center;"><span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--accent); color: var(--accent); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>1 binding element</span>
+<span style="display: inline-flex; gap: 6px; align-items: center;"><span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--question); color: var(--question); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>1 waiting on you</span>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 20px 22px; background: var(--raised);">
+<div style="display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline;"><h3 style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: 24px; line-height: 30px;">Checkout</h3><span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--secondary);">checkout</span></div>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">Cart to receipt: pricing, payment and the confirmation email.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary);"><span>kj:checkout@2</span><span>kj:checkout-stripe@1</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; align-items: center;">
+<span style="display: inline-flex; gap: 6px; align-items: center;"><span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--clean); color: var(--clean); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>Everything holds</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<section aria-labelledby="replace-title" style="border-top: 1px solid var(--line); background: var(--raised);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-direction: column; gap: 40px;">
+<div style="display: flex; flex-direction: column; gap: 16px; max-width: 760px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">What it replaces</p>
+<h2 id="replace-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">One place for intent, implementation and the questions between them.</h2>
+</div>
+<dl style="margin: 0; display: flex; flex-direction: column;">
+<div style="display: flex; flex-wrap: wrap; gap: 6px 32px; padding: 22px 0; border-top: 1px solid var(--line);">
+<dt style="flex: 0 1 260px; font-size: 20px; line-height: 28px; color: var(--ink-muted);">The wiki page</dt>
+<dd style="margin: 0; flex: 1 1 380px; min-width: 0; font-size: 18px; line-height: 28px;">A spec where every line has an address and a version, and knows what was built from it.</dd>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px 32px; padding: 22px 0; border-top: 1px solid var(--line);">
+<dt style="flex: 0 1 260px; font-size: 20px; line-height: 28px; color: var(--ink-muted);">The ticket</dt>
+<dd style="margin: 0; flex: 1 1 380px; min-width: 0; font-size: 18px; line-height: 28px;">A stale mark that names exactly what changed, shows the diff, and clears when someone settles it.</dd>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px 32px; padding: 22px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);">
+<dt style="flex: 0 1 260px; font-size: 20px; line-height: 28px; color: var(--ink-muted);">The comment thread</dt>
+<dd style="margin: 0; flex: 1 1 380px; min-width: 0; font-size: 18px; line-height: 28px;">A question routed to whoever owns the answer, kept as precedent for every agent that comes after.</dd>
+</div>
+</dl>
+</div>
+</section>
+
+<section id="signup" aria-labelledby="signup-title" style="border-top: 1px solid var(--line);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px; align-items: stretch;">
+<div style="flex: 1 1 440px; min-width: 0; display: flex; flex-direction: column; gap: 18px; justify-content: center;">
+<h2 id="signup-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Konjir is in early testing.</h2>
+<p style="margin: 0; color: var(--ink-muted); max-width: 30em;">We’re working with teams who build with agents every day. Sign up with your GitHub account, then connect your agents.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px;">
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
+<a href="https://kolab.konjir.com/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">Sign in</a>
+</div>
+</div>
+<div aria-hidden="true" style="flex: 1 1 400px; min-width: 0; min-height: 280px; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; position: relative;">
+<div style="flex: 4 1 0; background: var(--sky-zenith);"></div>
+<div style="flex: 3 1 0; background: var(--sky-veil);"></div>
+<div style="flex: 1 1 0; background: var(--sky-glow);"></div>
+<div style="flex: 1.4 1 0; background: var(--sky-horizon);"></div>
+<div style="flex: 3 1 0; background: var(--sky-field);"></div>
+<svg viewBox="0 0 400 280" preserveAspectRatio="none" style="position: absolute; inset: 0; width: 100%; height: 100%;"><g fill="none" style="stroke: var(--wire)" stroke-width="1.5" vector-effect="non-scaling-stroke"><line x1="0" y1="54" x2="400" y2="104" vector-effect="non-scaling-stroke"></line><line x1="0" y1="66" x2="400" y2="118" vector-effect="non-scaling-stroke"></line><line x1="0" y1="82" x2="400" y2="136" vector-effect="non-scaling-stroke"></line></g></svg>
+</div>
+</div>
+</section>
+</main>
+
+<footer style="border-top: 1px solid var(--line);">
+<div style="max-width: 1200px; margin: 0 auto; padding: 40px clamp(16px, 4vw, 48px) 48px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 24px 48px; align-items: flex-start; justify-content: space-between;">
+<div style="display: flex; flex-direction: column; gap: 10px;">
+<svg viewBox="0 0 122 56" width="72" height="33" role="img" aria-label="Konjir">
+<g fill="none" style="stroke: var(--ink)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" style="fill: var(--sun)"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" style="fill: var(--moon); stroke: var(--moon)" stroke-width="0.6" stroke-linejoin="round"></path>
+</svg>
+<p style="margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-muted);">Where intent is spoken once, and agents answer.</p>
+</div>
+<nav aria-label="Footer" style="display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 14px;">
+<a href="#how">How it works</a>
+<a href="#circle">Roles</a>
+<a href="#agents">For agents</a>
+<a href="#kolabs">Kolabs</a>
+<a href="#signup">Sign up</a>
+</nav>
+<p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted); flex-basis: 100%;">© 2026 Konjir · konjir.com</p>
+</div>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":5000}}'>
+class Component extends DCLogic {
+componentDidMount() {
+let t = null;
+try { t = window.localStorage.getItem('konjir.theme'); } catch (e) { t = null; }
+if (t !== 'light' && t !== 'dark') {
+try { t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; } catch (e) { t = 'dark'; }
+}
+if (t === 'light') this.setState({ theme: 'light' });
+}
+pick(t) {
+this.setState({ theme: t });
+try { window.localStorage.setItem('konjir.theme', t); } catch (e) { /* storage unavailable */ }
+}
+renderVals() {
+const theme = (this.state && this.state.theme) || 'dark';
+return {
+theme,
+isLight: theme === 'light',
+isDark: theme === 'dark',
+lightTab: theme === 'light' ? 0 : -1,
+darkTab: theme === 'dark' ? 0 : -1,
+onKey: (e) => {
+if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) < 0) return;
+e.preventDefault();
+const group = e.currentTarget.parentElement;
+this.pick(theme === 'light' ? 'dark' : 'light');
+setTimeout(() => { const on = group.querySelector('[aria-checked="true"]'); if (on) on.focus(); }, 0);
+},
+setLight: () => this.pick('light'),
+setDark: () => this.pick('dark'),
+};
+}
+}
+</script>
+</body>
+</html>
