@@ -407,6 +407,8 @@ async function apply(ctx: Ctx, run: Run, m: Model, o: Op | QueuedOp, marks: Map<
 
 test('generated edit sequences never leave a mark uncleared or a link pointing at the wrong element', async () => {
   const ctx = await setup(reviewer);
+  // Many generated runs share these people: their drafts aren't a runaway agent's.
+  Object.assign(ctx.kolab.rates, { asks: Infinity, drafts: Infinity });
   await fc.assert(
     fc.asyncProperty(start, fc.array(op, { minLength: 1, maxLength: 12 }), async (s, ops) => {
       const { run, m } = await build(ctx, s);
@@ -423,6 +425,8 @@ test('generated edit sequences never leave a mark uncleared or a link pointing a
 
 test('with rebases queued and run later, generated edit sequences agree with the model, and every variant ends on its parent (D43, P6)', async () => {
   const ctx = await setup(reviewer, undefined, { queued: true });
+  // Many generated runs share these people: their drafts aren't a runaway agent's.
+  Object.assign(ctx.kolab.rates, { asks: Infinity, drafts: Infinity });
   await fc.assert(
     fc.asyncProperty(start, fc.array(queuedOp, { minLength: 1, maxLength: 14 }), async (s, ops) => {
       const { run, m } = await build(ctx, s);

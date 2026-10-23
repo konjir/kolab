@@ -73,7 +73,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://inbox/{kolab}/{layer}',
     isTemplate: true,
     title: 'A layer\'s work queue in your kolab',
-    description: `Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, the review requests waiting for you on it, and the open case files about its elements, waiting for a position or a ruling: the first ${PAGE_DEFAULT} of each, oldest first (case files most recently changed first). more names each list that has more, and the verb that pages through it. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.`,
+    description: `Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, the review requests waiting for you on it, and the open case files about its elements, waiting for a position or a ruling: the first ${PAGE_DEFAULT} of each, oldest first (case files newest opened first). more names each list that has more, and the verb that pages through it. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.`,
     mimeType: 'application/json',
   })
   async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -92,11 +92,14 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     // Case files about the layer's elements, waiting for their other position or a ruling (CASE1, CASE2).
     // Read as the session, so one that holds only Read sees none (D49).
     const cases = await this.kolab.casesPage(session, { layer, state: 'open' });
+    // A cursor is bound to its list's filters (W2.21): the verbs list the session's own layer, so
+    // another layer's inbox names the verb that lists every layer, from its first page.
+    const own = layer === me.layer;
     const more = {
-      ...(queries.next ? { queries: `konjir_list_queries cursor=${queries.next}` } : {}),
-      ...(marks.next ? { marks: `konjir_list_stale cursor=${marks.next}` } : {}),
+      ...(queries.next ? { queries: own ? `konjir_list_queries cursor=${queries.next}` : 'konjir_list_queries all_layers=true, paging with its next' } : {}),
+      ...(marks.next ? { marks: own ? `konjir_list_stale cursor=${marks.next}` : 'konjir_list_stale all_layers=true, paging with its next' } : {}),
       ...(reviews.next ? { reviews: 'konjir_list_reviews, paging with its next' } : {}),
-      ...(cases.next ? { cases: `konjir_list_cases cursor=${cases.next}` } : {}),
+      ...(cases.next ? { cases: own ? `konjir_list_cases cursor=${cases.next}` : 'konjir_list_cases all_layers=true, paging with its next' } : {}),
     };
     const body = {
       kolab, layer, queries: queries.items, marks: marks.items, reviews: reviews.items, cases: cases.items,
@@ -123,7 +126,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     // The newest of each, so whatever was just answered, reviewed or ruled on is among them.
     const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.queriesFor(session, { raisedBy: me.actor, newest: PAGE_DEFAULT }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
       // Most recently changed first, so a case file just argued or ruled on is always among them.
-      cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20 }),
+      cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20, touched: true }),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }

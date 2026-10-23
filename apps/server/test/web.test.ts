@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { closeAtEnd, els, people, setup } from '@konjir/engine/testing';
+import { closeAtEnd, els, people, setup, TEST_KOLAB } from '@konjir/engine/testing';
+import { cursorFor, scoped } from '@konjir/engine';
 import type {
   KolabAccessView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
   WebQueriesView, WebQuery, WebRuling, WebVersionsView,
@@ -755,8 +756,16 @@ test('every list the web API returns comes a page at a time: ?cursor= reads the 
   expect([overview.nodes.length, overview.nodes_next, overview.counts.open]).toStrictEqual([5, null, 5]);
   // A cursor from another list, or a limit that isn't a number, is a 400 that says why.
   const first = await call<{ next: string }>('queries?limit=1');
-  expect(await call(`nodes?cursor=${encodeURIComponent(first.body.next)}`)).toMatchObject({ status: 400, body: { message: expect.stringMatching(/that cursor isn't one this list gave/) } });
+  expect(await call(`nodes?cursor=${encodeURIComponent(first.body.next)}`)).toMatchObject({ status: 400, body: { message: expect.stringMatching(/invalid cursor: that isn't one this list gave/) } });
   expect(await call('queries?limit=many')).toMatchObject({ status: 400, body: { message: 'limit is a whole number' } });
+  // A cursor of the right list whose key isn't a time, or is out of range, is a 400 too: never a 500, nor the database's words.
+  for (const key of [['not a time', 'x'], ['2026-13-40 99:00:00+00', 'x'], [{ $gt: '' }, 'x']]) {
+    const bad = cursorFor(scoped('web:marks', { here: TEST_KOLAB }), key);
+    const r = await call<{ message: string }>(`marks?cursor=${encodeURIComponent(bad)}`);
+    expect(r).toMatchObject({ status: 400, body: { message: expect.stringMatching(/^invalid cursor/) } });
+    expect(r.body.message).not.toMatch(/syntax|timestamp|type/);
+  }
+  expect((await call(`activity?cursor=${encodeURIComponent(cursorFor(scoped('web:activity', { here: TEST_KOLAB }), ['soon', 'node', 'x']))}`)).status).toBe(400);
 });
 
 test('a node\'s page lists its newest versions and each element\'s newest questions, with a cursor to the rest; invites and who holds access page too (W2.21)', async () => {
