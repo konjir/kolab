@@ -1,0 +1,2 @@
+# Production's state, at the key it has had since the first apply.
+key = "konjir/test/terraform.tfstate"

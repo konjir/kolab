@@ -6,6 +6,8 @@ node_modules/
 
 # Terraform: anything that can hold secret values, anywhere in the tree
 **/.terraform/
+# deploy/konjir-ops.sh keeps each environment's Terraform working data apart
+**/.terraform-*/
 deploy/terraform/.build/
 *.tfstate
 *.tfstate.*

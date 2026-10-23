@@ -1,0 +1,221 @@
+name: Deploy
+
+# Deploys Kolab from CI (W2.23, P9, D73, D76): every merge to main goes to staging on its own, then
+# to production once Lee approves it. The laptop is out of the deploy path; Lee approves applies.
+#
+# 1. "Build release" packs the commit with deploy/release/pack.sh (git archive of the commit; its id
+#    is the commit's tree id) and uploads the zip with its checksum. Both environments install
+#    these same bytes; Terraform never packs anything in CI.
+# 2. "Deploy staging" plans and applies staging (konjir-staging, staging.kolab.konjir.com) as the
+#    role konjir-deploy-staging, which only a job on main may assume, then smoke-tests it
+#    (deploy/smoke.sh: /healthz and /mcp).
+# 3. "Plan production" plans production as konjir-plan-production, which can read but change
+#    nothing, and lists the changes in the run's summary.
+# 4. "Deploy production" runs in the production GitHub environment, so it waits for Lee's approval.
+#    Then it assumes konjir-deploy-production, which only a job in that environment may assume,
+#    plans again, refuses to go on if the changes differ from the ones Lee approved or if main has
+#    moved past this commit (approving an older run would roll production back), applies, and
+#    smoke-tests production.
+#
+# The logs are public, so no step prints a value from a plan: deploy/plan.sh prints only each
+# change's actions and address. A saved plan holds secrets, so none is uploaded; the production
+# job plans again instead. The alarm emails, if set, come from repository secrets.
+#
+# Set up once (README, "Deploying from CI"): deploy/terraform/github-oidc applied by Lee, the
+# production environment with Lee as required reviewer and main as its only branch, and for
+# staging its own GitHub OAuth app and SSM secret.
+#
+# Hardening as ci.yml: actions pinned to commit SHAs, each job with only the permissions it needs.
+# No AWS key exists: each job gets short-lived credentials through GitHub's OIDC token.
+
+on:
+  push:
+    branches: [main]
+  # Deploy main again by hand (Actions › Deploy › Run workflow), as after a failed run.
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  release:
+    name: Build release
+    # A copy of this workflow on another branch can't assume any role anyway (github-oidc).
+    # DEPLOY_FROM_CI is a repository variable Lee sets to true once the setup is done, so no deploy
+    # runs before the production environment has its reviewer.
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_FROM_CI == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.pack.outputs.release }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pack the commit
+        id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          packed=$(deploy/release/pack.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/release/konjir-release.zip" < /dev/null)
+          release=$(jq -r .release <<< "$packed")
+          if [ "$release" != "$(git rev-parse "$GITHUB_SHA^{tree}")" ]; then
+            echo "::error::pack.sh packed $release, not the tree of $GITHUB_SHA"
+            exit 1
+          fi
+          echo "$release" > "$RUNNER_TEMP/release/release-id"
+          cd "$RUNNER_TEMP/release" && sha256sum konjir-release.zip > SHA256SUMS && cat SHA256SUMS
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "Release $release, the tree of $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: konjir-release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  staging:
+    name: Deploy staging
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    # A first apply creates the database (about 10 minutes) and installs the release (up to 30).
+    timeout-minutes: 75
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # the OIDC token konjir-deploy-staging is assumed with
+    env:
+      TF_VAR_alarm_email: ${{ secrets.STAGING_ALARM_EMAIL }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          environment: staging
+          role: arn:aws:iam::747533038441:role/konjir/konjir-deploy-staging
+          release: ${{ needs.release.outputs.release }}
+
+      - name: Plan staging
+        run: |
+          deploy/plan.sh
+          { echo "### Staging"; echo; echo '```'; cat deploy/terraform/.build/changes.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply staging
+        working-directory: deploy/terraform
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Smoke-test staging
+        run: deploy/smoke.sh https://staging.kolab.konjir.com
+
+  plan-production:
+    name: Plan production
+    needs: [release, staging]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # the OIDC token konjir-plan-production is assumed with
+    env:
+      TF_VAR_alarm_email: ${{ secrets.PRODUCTION_ALARM_EMAIL }}
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          environment: production
+          role: arn:aws:iam::747533038441:role/konjir/konjir-plan-production
+          release: ${{ needs.release.outputs.release }}
+
+      # Read-only: the role can't take the state lock, and this plan is never applied.
+      - name: Plan production
+        id: plan
+        env:
+          RELEASE: ${{ needs.release.outputs.release }}
+        run: |
+          deploy/plan.sh -lock=false
+          changes=deploy/terraform/.build/changes.txt
+          echo "changes=$(sha256sum < "$changes" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Production: what approving applies"
+            echo
+            echo "Release \`$RELEASE\`. Approve **Deploy production** to apply exactly these changes:"
+            echo
+            echo '```'
+            cat "$changes"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # A replaced instance or database is worth a second look before approving.
+          grep -E '(delete\+create|create\+delete) .*(aws_instance|aws_db_instance|aws_ebs_volume)' "$changes" \
+            | sed 's/^/::warning::production plan replaces /' || true
+
+  production:
+    name: Deploy production
+    needs: [release, plan-production]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    # Lee is its required reviewer, and main its only branch (README, "Deploying from CI"). The
+    # role konjir-deploy-production trusts only jobs in this environment.
+    environment:
+      name: production
+      url: https://kolab.konjir.com
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # the OIDC token konjir-deploy-production is assumed with
+    env:
+      TF_VAR_alarm_email: ${{ secrets.PRODUCTION_ALARM_EMAIL }}
+
+    steps:
+      # Approving an older run after a newer commit reached main would roll production back.
+      - name: Refuse a commit main has moved past
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::error::main is at $head now, past this run's $GITHUB_SHA: approve the newest Deploy run instead"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          environment: production
+          role: arn:aws:iam::747533038441:role/konjir/konjir-deploy-production
+          release: ${{ needs.release.outputs.release }}
+
+      - name: Plan production again, and check it is what Lee approved
+        env:
+          APPROVED: ${{ needs.plan-production.outputs.changes }}
+        run: |
+          deploy/plan.sh
+          now=$(sha256sum < deploy/terraform/.build/changes.txt | cut -d' ' -f1)
+          if [ "$now" != "$APPROVED" ]; then
+            echo "::error::production's changes differ from the ones approved (something changed in AWS or its state since Plan production): run the workflow again"
+            exit 1
+          fi
+
+      - name: Apply production
+        working-directory: deploy/terraform
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Smoke-test production
+        run: deploy/smoke.sh https://kolab.konjir.com

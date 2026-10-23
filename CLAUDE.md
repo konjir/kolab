@@ -38,4 +38,4 @@
 - Work in `~/github.com/konjir/kolab`, the checkout of `github.com/konjir/kolab` (D10).
 - It's an Nx workspace (D23): apps in `apps/`, libraries in `libs/`, with the layout in `README.md`. `npm test`, `npm run typecheck` and `npm run build` run that target for every project; `npx nx run <project>:<target>` runs one.
 - Terraform needs 1.15 or later. On this machine, run it as `TFENV_TERRAFORM_VERSION=1.16.5 terraform …` from `deploy/terraform`, which also covers `deploy/konjir-ops.sh`.
-- `terraform apply` is the deploy, to AWS account 747533038441 (profile `icedlee337`). Lee runs applies.
+- Deploys are `terraform apply`s that run from CI (`.github/workflows/deploy.yml`, D73), to AWS account 747533038441: staging on every merge to main, production after Lee approves the run in the `production` GitHub environment. Lee approves applies; nobody runs them from a laptop, except Lee's one-time apply of `deploy/terraform/github-oidc` (profile `icedlee337`) that sets up the roles CI deploys with.

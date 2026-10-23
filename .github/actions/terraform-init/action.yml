@@ -1,0 +1,81 @@
+name: Terraform for one environment
+description: >
+  For .github/workflows/deploy.yml (W2.23). Sets up Terraform, fetches the release the run built and
+  checks it, assumes the given AWS role through GitHub's OIDC token, and runs terraform init on the
+  environment's state. Expects the repository checked out, and the job to allow id-token: write.
+
+inputs:
+  environment:
+    description: production or staging
+    required: true
+  role:
+    description: The ARN of the AWS role to assume (deploy/terraform/github-oidc)
+    required: true
+  release:
+    description: The release id the release job built (the commit's tree id)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        RELEASE: ${{ inputs.release }}
+      run: |
+        [[ "$ENVIRONMENT" =~ ^(production|staging)$ ]] || { echo "::error::environment is production or staging"; exit 1; }
+        [[ "$RELEASE" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "::error::release is a git tree id"; exit 1; }
+
+    # The version Lee runs locally (CLAUDE.md); versions.tf requires 1.15 or later.
+    - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        terraform_version: 1.16.5
+        terraform_wrapper: false
+
+    - name: Make the provider cache directory
+      shell: bash
+      run: |
+        echo "TF_PLUGIN_CACHE_DIR=$RUNNER_TEMP/terraform-plugin-cache" >> "$GITHUB_ENV"
+        mkdir -p "$RUNNER_TEMP/terraform-plugin-cache"
+
+    - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ runner.temp }}/terraform-plugin-cache
+        key: terraform-providers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deploy/terraform/.terraform.lock.hcl') }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: konjir-release
+        path: ${{ runner.temp }}/release
+
+    # The zip is the one the release job packed: its checksum, and the release id it was packed as.
+    - name: Check the release
+      shell: bash
+      working-directory: ${{ runner.temp }}/release
+      env:
+        RELEASE: ${{ inputs.release }}
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        sha256sum -c SHA256SUMS
+        [ "$(cat release-id)" = "$RELEASE" ] || { echo "::error::the downloaded release isn't $RELEASE"; exit 1; }
+        {
+          echo "TF_VAR_environment=$ENVIRONMENT"
+          echo "TF_VAR_release_zip=$PWD/konjir-release.zip"
+          echo "TF_VAR_release_id=$RELEASE"
+        } >> "$GITHUB_ENV"
+
+    - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ inputs.role }}
+        role-session-name: konjir-${{ inputs.environment }}-${{ github.run_id }}
+        role-duration-seconds: 7200
+        aws-region: us-east-1
+        allowed-account-ids: '747533038441'
+
+    - name: terraform init
+      shell: bash
+      working-directory: deploy/terraform
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: terraform init -input=false -lockfile=readonly -backend-config="environments/$ENVIRONMENT.s3.tfbackend"
