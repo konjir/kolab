@@ -64,6 +64,15 @@ run "production_keeps_its_names" {
     condition     = output.release == "0123456789abcdef0123456789abcdef01234567"
     error_message = "the release is the one CI built"
   }
+  # The install runs github-oidc's fixed document, which the deploy role may associate, and no other.
+  assert {
+    condition     = module.release.install.document == "konjir-test-install-release" && module.release.install.parameters == tomap({ release = "0123456789abcdef0123456789abcdef01234567" })
+    error_message = "the install is the konjir-test-install-release document, given only the release id"
+  }
+  assert {
+    condition     = module.database.deletion_protection
+    error_message = "production's database keeps deletion protection on"
+  }
   # The state key and the names it holds resources under go together.
   assert {
     condition     = output.admin_token_parameter != null && strcontains(file("environments/production.s3.tfbackend"), "key = \"konjir/test/terraform.tfstate\"")

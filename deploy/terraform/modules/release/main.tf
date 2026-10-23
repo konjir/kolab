@@ -41,8 +41,12 @@ resource "aws_s3_object" "release" {
   source_hash = local.release.release
 }
 
+# The install runs the SSM document deploy/terraform/github-oidc makes, <name>-install-release
+# (W2.23): cloud-init's wait, then the boot script's konjir-update, with the release id as its one
+# parameter, hex only. The deploy role may associate no other document, so it can run nothing else
+# on the instance. Lee applies github-oidc before this (README: Setting it up, once).
 resource "aws_ssm_association" "install" {
-  name             = "AWS-RunShellScript"
+  name             = "${var.name}-install-release"
   association_name = "${var.name}-install-release"
 
   targets {
@@ -51,9 +55,8 @@ resource "aws_ssm_association" "install" {
   }
 
   parameters = {
-    # The release hash in the comment is what makes a code change re-run this association.
-    commands         = "cloud-init status --wait >/dev/null || true; /usr/local/bin/konjir-update  # release ${local.release.release}"
-    executionTimeout = "1800"
+    # A new release id is what makes a code change re-run this association.
+    release = local.release.release
   }
 
   # Block the apply until the install has succeeded on the instance (first boot included).
@@ -80,3 +83,6 @@ check "kolab_is_live" {
 }
 
 output "release" { value = local.release.release }
+output "install" {
+  value = { document = aws_ssm_association.install.name, parameters = aws_ssm_association.install.parameters }
+}

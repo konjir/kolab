@@ -4,12 +4,13 @@ name: Deploy
 # is out of the deploy path. There is no staging for now (D83).
 #
 # 1. "Build release" packs the commit with deploy/release/pack.sh (git archive of the commit; its id
-#    is the commit's tree id) and uploads the zip with its checksum. Terraform installs exactly
+#    is the commit's tree id without site/) and uploads the zip with its checksum. Terraform installs exactly
 #    these bytes and packs nothing itself in CI.
 # 2. "Plan production" runs in the production GitHub environment, so it waits for Lee's first
 #    approval: to plan. It assumes konjir-deploy-production and plans (deploy/plan.sh). The run's
 #    summary lists each change, with the attributes an update changes, and the plan's digest. A
-#    plan that replaces the instance, its data volume or the database fails unless the run was
+#    plan that deletes or replaces a protected resource (the instance, its data volume, the
+#    database, a bucket, the snapshot schedule or a role: deploy/plan.sh) fails unless the run was
 #    started by hand with allow_replacement (or, for the instance alone, refresh_os, which replaces
 #    it onto the latest Amazon Linux).
 # 3. "Deploy production" runs in the same environment, so it waits for Lee's second approval: to
@@ -18,9 +19,11 @@ name: Deploy
 #    digest differs from the one he read. Then it applies and smoke-tests production
 #    (deploy/smoke.sh: /healthz and /mcp).
 #
-# Only these two jobs can assume the role: it trusts the OIDC subject of deploy.yml on main in the
-# production environment (deploy/terraform/github-oidc), with the repository's subject customised to
-# carry job_workflow_ref (README, "Deploying from CI").
+# Only these two jobs can assume the role (deploy/terraform/github-oidc): it trusts the production
+# environment's OIDC subject, GitHub's default for this repository with its immutable ids
+# (repo:konjir@340888484/kolab@1414997919:environment:production), and only for deploy.yml on main
+# (the job_workflow_ref and ref claims). The repository's subject isn't customised (README,
+# "Deploying from CI").
 #
 # The logs are public, so no step prints a value from a plan: deploy/plan.sh prints addresses and
 # attribute names, and a digest of the full plan with sensitive values redacted. A saved plan holds
@@ -40,7 +43,7 @@ on:
   workflow_dispatch:
     inputs:
       allow_replacement:
-        description: 'Allow the plan to replace the instance, its data volume or the database'
+        description: 'Allow the plan to delete or replace the instance, its data volume, the database, a bucket, the snapshot schedule or a role'
         type: boolean
         default: false
       refresh_os:
@@ -52,7 +55,8 @@ permissions: {}
 
 env:
   ROLE: arn:aws:iam::747533038441:role/konjir/konjir-deploy-production
-  # refresh_os: both plans replace the instance, and that replacement alone is allowed.
+  # refresh_os: both plans replace the instance, and that replacement alone (with its data volume's
+  # attachment, which goes with it) is allowed.
   REFRESH_OS: ${{ inputs.refresh_os || false }}
 
 jobs:
@@ -77,14 +81,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release"
           packed=$(deploy/release/pack.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/release/konjir-release.zip" < /dev/null)
           release=$(jq -r .release <<< "$packed")
-          if [ "$release" != "$(git rev-parse "$GITHUB_SHA^{tree}")" ]; then
-            echo "::error::pack.sh packed $release, not the tree of $GITHUB_SHA"
+          # The commit's tree without site/, as pack.sh makes it (the marketing site isn't Kolab's).
+          tree=$(git ls-tree "$GITHUB_SHA" | awk -F '\t' '$2 != "site"' | git mktree)
+          if [ "$release" != "$tree" ]; then
+            echo "::error::pack.sh packed $release, not the tree of $GITHUB_SHA without site/ ($tree)"
             exit 1
           fi
           echo "$release" > "$RUNNER_TEMP/release/release-id"
           cd "$RUNNER_TEMP/release" && sha256sum konjir-release.zip > SHA256SUMS && cat SHA256SUMS
           echo "release=$release" >> "$GITHUB_OUTPUT"
-          echo "Release $release, the tree of $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release $release, the tree of $GITHUB_SHA without site/" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -154,15 +160,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           unexpected="$build/replacements.txt"
           if [ "$REFRESH_OS" = true ]; then
-            grep -vx 'module.kolab.aws_instance.kolab' "$build/replacements.txt" > "$build/unexpected.txt" || true
+            grep -vx -e 'module.kolab.aws_instance.kolab' -e 'module.kolab.aws_volume_attachment.data' "$build/replacements.txt" > "$build/unexpected.txt" || true
             unexpected="$build/unexpected.txt"
           fi
           if [ -s "$build/replacements.txt" ]; then
-            sed 's/^/::warning::the plan replaces /' "$build/replacements.txt"
+            sed 's/^/::warning::the plan deletes or replaces /' "$build/replacements.txt"
           fi
           if [ -s "$unexpected" ]; then
             if [ "$ALLOW_REPLACEMENT" != true ]; then
-              echo "::error::the plan replaces the instance, its data volume or the database. If that is meant, run the workflow by hand with allow_replacement"
+              echo "::error::the plan deletes or replaces a protected resource (listed above). If that is meant, run the workflow by hand with allow_replacement; a role, only Lee can make again, from his machine"
               exit 1
             fi
           fi

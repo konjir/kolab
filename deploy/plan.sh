@@ -10,9 +10,14 @@
 #   .build/plan.log         terraform plan's own output, values and all; printed only in part
 #   .build/changes.txt      one line per changed resource: its actions, its address, and the names
 #                           of the attributes that change. Printed, and put in the run's summary.
-#   .build/plan-digest      the sha256 of every change in full, before and after, with each sensitive
-#                           value replaced by "(sensitive)": what the apply job checks it is applying
-#   .build/replacements.txt the instance, data volume or database the plan would replace, if any
+#   .build/plan-digest      the sha256 of every change: its address, its actions, the new value of
+#                           each attribute that changes (each sensitive one replaced by "(sensitive)")
+#                           and the names of those unknown until apply. What the apply job checks it
+#                           is applying. Old values aren't in it: the plan is of the same state.
+#   .build/replacements.txt each protected resource the plan would delete, alone or to replace it:
+#                           the instance and its data volume's attachment, the data volume, the
+#                           database, the release and site buckets, the snapshot schedule, a hosted
+#                           zone, and the instance and snapshot roles (which only Lee may create)
 set -euo pipefail
 TF="$(cd "$(dirname "${BASH_SOURCE[0]}")/terraform" && pwd)"
 cd "$TF"
@@ -58,8 +63,11 @@ rm -f .build/plan.json
 sha256sum < .build/changes.json | cut -d' ' -f1 > .build/plan-digest
 jq -r '.[] | "\(.actions | join("+")) \(.address)\(([.changed | keys[]] + .unknown | unique) as $k | if ($k | length) > 0 and .actions == ["update"] then ": " + ($k | join(", ")) else "" end)"' \
   .build/changes.json | sort > .build/changes.txt
-jq -r '.[] | select((.actions | index("delete")) and (.actions | index("create")))
-  | .address | select(test("aws_instance\\.|aws_db_instance\\.|aws_ebs_volume\\."))' .build/changes.json > .build/replacements.txt
+# Any delete counts, alone or with a create: removing a resource from the configuration, or a count
+# of 0, deletes it as surely as a replacement does.
+jq -r '.[] | select(.actions | index("delete")) | .address
+  | select(test("(^|\\.)(aws_instance|aws_volume_attachment|aws_ebs_volume|aws_db_instance|aws_s3_bucket|aws_dlm_lifecycle_policy|aws_route53_zone|aws_iam_role)\\."))' \
+  .build/changes.json > .build/replacements.txt
 
 if [ -s .build/changes.txt ]; then
   echo "Changes (actions, address, and for an update the attributes that change):"
