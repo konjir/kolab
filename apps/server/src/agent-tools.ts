@@ -174,7 +174,8 @@ export class AgentTools {
       const kolab = this.kolab;
       // As kj_agent: row-level security bounds the read as well as Kolab (0008). Only who wrote
       // the version comes from Kolab's login, since kj_agent reads no actors.
-      const { node: n, version: row, from: here, elements: els, queries, removes, rulings, cases, rebase } = await kolab.readNode(s, node, version);
+      const read = await kolab.readNode(s, node, version);
+      const { node: n, version: row, from: here, elements: els, queries, removes, rulings, cases, rebase } = read;
       const threads = new Map<string | null, ReturnType<typeof thread>[]>();
       for (const q of queries) {
         const el = parseAddress(q.address).element ?? null;
@@ -191,8 +192,9 @@ export class AgentTools {
       const at = (element?: string) => formatAddress({ kolab: n.kolab_id, node: n.name, version: row.seq, element }, { from: here });
       return {
         node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
-        // Who made the node (W2.20); null for one made before Kolab recorded it.
-        node_created_by: n.created_by ?? null,
+        // Who made the node (W2.20), for a reader in its own kolab only (D49, D58); null for one
+        // made before Kolab recorded it.
+        ...('createdBy' in read ? { node_created_by: read.createdBy ?? null } : {}),
         ...(removes.length ? { removes_links: removes } : {}),
         ...(rebase ? { rebase: { ...rebase, ...(rebase.after ? { after: formatAddress(parseAddress(rebase.after), { from: here }) } : {}) } } : {}),
         ...(threads.get(null) ? { questions: threads.get(null) } : {}),

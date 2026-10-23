@@ -6,7 +6,7 @@ import { Kolab, RoleError, sessionKey } from '@konjir/engine';
 import { nobodyCanReview, type KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testStore } from '@konjir/engine/testing';
+import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testStore, TestKolab } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -88,7 +88,7 @@ test('an answer to an element the binding has since removed still reaches the as
 test('a database from the previous release is migrated on open', async () => {
   const store = await persistentStore();
   {
-    let kolab = await Kolab.open(store);
+    let kolab = await TestKolab.open(store);
     await people(kolab, 'alice', { layers: ['functional'] });
     await people(kolab, 'bob', { layers: ['technical'] });
     const product = await kolab.openSession('alice', 'product');
@@ -107,15 +107,23 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger kolab_grant_audited on kolab_grant;
+      drop trigger org_member_audited on org_member;
+      drop trigger team_member_audited on team_member;
+      drop function kj_access_audited();
       drop table audit_event;
       drop function kj_audit_event_fixed();
+      drop function kj_node_creator(text);
+      revoke select (id, kind, layer, title, kolab_id, name, created_at) on node from kj_agent;
+      grant select on node to kj_agent;
       ${[['node', 'node_created_by'], ['account', 'account_created_by'], ['actor', 'actor_created_by'], ['kolab', 'kolab_created_by'], ['team', 'team_created_by'],
          ['identity', 'identity_linked_by'], ['session', 'session_opened_by'], ['session', 'session_ended_by'], ['kolab_invite', 'kolab_invite_revoked_by'],
          ['oauth_grant', 'oauth_grant_revoked_by'], ['version', 'version_submitted_by']].map(([t, n]) => `drop trigger ${n} on ${t};`).join('\n')}
       drop function kj_doer_given();
       alter table node drop column created_by, drop column created_at;
       alter table account drop column created_by;
-      alter table actor drop column created_by, drop constraint actor_not_admin;
+      alter table actor drop column created_by, drop constraint actor_not_doer;
+      alter table account drop constraint account_not_doer;
       alter table kolab drop column created_by;
       alter table team drop column created_by;
       alter table identity drop column linked_by;
@@ -276,7 +284,7 @@ test('a database from the previous release is migrated on open', async () => {
       alter table ruling alter column case_file_id set not null, alter column verdict set not null;`);
     await kolab.close();
 
-    kolab = await Kolab.open(store);
+    kolab = await TestKolab.open(store);
     // 0006 gave both of them Write on both layers of the kolab `kolab`; with alice back to the
     // functional one, bob is alone on his and commits without review (W1.6).
     await kolab.grant('kolab', 'alice', 'write', { layers: ['functional'] });
@@ -290,7 +298,7 @@ test('a database from the previous release is migrated on open', async () => {
     expect((await marksOn(kolab, 'b')).map((m) => m.reason)).toStrictEqual(['query_answered']);
     await kolab.close();
     // Opening again is a no-op.
-    await (await Kolab.open(store)).close();
+    await (await TestKolab.open(store)).close();
   }
 });
 

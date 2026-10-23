@@ -20,8 +20,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { Kolab } from '@konjir/engine';
+import { ADMIN_DOER } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import type { ElementInput, GateResult } from '@konjir/types';
+
+/** The seed is the admin's setup: every write it makes names the admin token (W2.20). */
+const admin = { by: ADMIN_DOER };
 
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 7421);
@@ -75,35 +79,35 @@ const checkoutV2: Record<string, string> = {
 const checkoutV1 = { ...checkoutV2, R3: 'A payment is never taken twice.' };
 
 export async function seed(kolab: Kolab) {
-  await kolab.addActor('lee', { name: 'Lee' });
-  await kolab.createKolab('accounts', { owner: 'lee', title: 'Accounts' });
+  await kolab.addActor('lee', { name: 'Lee', ...admin });
+  await kolab.createKolab('accounts', { owner: 'lee', title: 'Accounts', ...admin });
   for (const [agent, layer] of [['pm-agent', 'functional'], ['eng-agent', 'technical'], ['qa-agent', 'technical']] as const) {
-    await kolab.addActor(agent, { owner: 'lee' });
-    await kolab.grant('accounts', agent, 'write', { layers: [layer] });
+    await kolab.addActor(agent, { owner: 'lee', ...admin });
+    await kolab.grant('accounts', agent, 'write', { layers: [layer], ...admin });
   }
   for (const [person, name, layer] of [['pat', 'Pat', 'functional'], ['eli', 'Eli', 'technical']] as const) {
-    await kolab.addActor(person, { name });
-    await kolab.grant('accounts', person, 'write', { layers: [layer] });
+    await kolab.addActor(person, { name, ...admin });
+    await kolab.grant('accounts', person, 'write', { layers: [layer], ...admin });
   }
   // Checkout, Lee's other kolab: its spec at version 2, a question from eng-agent, and Lee's draft of
   // version 3, which a reader from another kolab never sees. Each actor holds one open session at a
   // time (ENF4), so these end before the accounts sessions open.
-  await kolab.createKolab('checkout', { owner: 'lee', title: 'Checkout' });
-  await kolab.grant('checkout', 'eng-agent', 'write', { layers: ['technical'] });
-  const leeThere = await kolab.openSession('lee', 'product', { kolab: 'checkout' });
+  await kolab.createKolab('checkout', { owner: 'lee', title: 'Checkout', ...admin });
+  await kolab.grant('checkout', 'eng-agent', 'write', { layers: ['technical'], ...admin });
+  const leeThere = await kolab.openSession('lee', 'product', { kolab: 'checkout', ...admin });
   await kolab.createNode(leeThere, 'functional_spec', 'Checkout', 'checkout');
   await kolab.commit(leeThere, 'checkout', { elements: els(checkoutV1) });
   await kolab.commit(leeThere, 'checkout', { elements: els(checkoutV2) });
-  const engThere = await kolab.openSession('eng-agent', 'engineer', { kolab: 'checkout' });
+  const engThere = await kolab.openSession('eng-agent', 'engineer', { kolab: 'checkout', ...admin });
   await kolab.raiseQuery(engThere, 'kj:checkout#R5', 'R5 says within a minute. If the email provider is down, should the receipt be retried until it sends, or is a late receipt a failure someone should hear about?');
   await kolab.draft(leeThere, 'checkout', { elements: els({ ...checkoutV2, R5: 'A receipt email is sent within five minutes of a successful payment.' }) });
-  await kolab.endSession(engThere);
-  await kolab.endSession(leeThere);
+  await kolab.endSession(engThere, { signingOut: true });
+  await kolab.endSession(leeThere, { signingOut: true });
 
-  const pm = await kolab.openSession('pm-agent', 'product', { kolab: 'accounts' });
-  const eng = await kolab.openSession('eng-agent', 'engineer', { kolab: 'accounts' });
-  const qa = await kolab.openSession('qa-agent', 'engineer', { kolab: 'accounts' });
-  const lee = await kolab.openSession('lee', 'product', { kolab: 'accounts' });
+  const pm = await kolab.openSession('pm-agent', 'product', { kolab: 'accounts', ...admin });
+  const eng = await kolab.openSession('eng-agent', 'engineer', { kolab: 'accounts', ...admin });
+  const qa = await kolab.openSession('qa-agent', 'engineer', { kolab: 'accounts', ...admin });
+  const lee = await kolab.openSession('lee', 'product', { kolab: 'accounts', ...admin });
 
   /** Draft and submit as `author`, and approve as `reviewer` if it waits in review. */
   const commit = async (author: string, reviewer: string, node: string, elements: ElementInput[]) => {
@@ -138,7 +142,7 @@ export async function seed(kolab: Kolab) {
   await kolab.raiseQuery(eng, 'kj:password-reset#PR3', 'PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.');
   // The people's sessions, for the web interface; the agents' stay with the agents.
   return {
-    lee, pat: await kolab.openSession('pat', 'product', { kolab: 'accounts' }), eli: await kolab.openSession('eli', 'engineer', { kolab: 'accounts' }),
+    lee, pat: await kolab.openSession('pat', 'product', { kolab: 'accounts', ...admin }), eli: await kolab.openSession('eli', 'engineer', { kolab: 'accounts', ...admin }),
   };
 }
 

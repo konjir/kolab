@@ -5,14 +5,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import { INVITE_TOKEN, Kolab, maskTokens, sessionKey } from '../src/index.js';
-import { openKolab, persistentStore, rejection } from '../src/testing.js';
+import { openKolab, persistentStore, rejection, TestKolab } from '../src/testing.js';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
 const github = (subject: string, login: string) => ({ provider: 'github', subject, login });
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 
 /** Ann, signed up, owns `anns`, and works there as product. */
-async function anns(kolab?: Kolab) {
+async function anns(kolab?: TestKolab) {
   const k = kolab ?? await openKolab();
   const { actor: ann } = await k.signInWith(github('11', 'ann'));
   await k.makeOwnKolab(ann, 'anns', 'Ann\'s');

@@ -10,7 +10,7 @@ import {
   BASELINE, MIGRATIONS, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
-import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store } from '@konjir/engine/testing';
+import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
@@ -82,7 +82,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
     expect((await schemaOf(db)).filter((l) => l.startsWith('grant') && l.includes(' kj_migration '))).toStrictEqual([]);
   }, store);
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     await people(kolab, 'alice');
     const product = await kolab.openSession('alice', 'product');
@@ -179,7 +179,7 @@ test('a database at 0001 reaches 0002: its actors become persons, their sessions
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     expect(await kolab.sessionInfo('kjs_old')).toStrictEqual({
       session: sessionKey('kjs_old'), actor: 'lee', kind: 'person', owner: null, role: 'product', layer: 'functional',
@@ -226,7 +226,7 @@ test('a database at 0002 reaches 0003: settled versions get the base the old che
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     // Each open draft is rejected as stale, to be redrafted, rather than risk committing over an
     // edit it never saw: d5 may have been drafted before v3 committed.
@@ -306,7 +306,7 @@ test('a database at 0003 reaches 0004: marks from failed rebases become rebase_f
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     expect((await kolab.openQueries()).find((q) => q.id === 'q0004_m3')?.question).toMatch(/^Rebasing onto the new parent failed; the reason was not recorded\./);
     // P's next commit rebases the variants, and each rebase that passes settles its mark.
@@ -428,7 +428,7 @@ test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     // Open sessions keep working, in kolab, with the access everyone had before.
     expect(await kolab.sessionInfo('kjs_pm')).toMatchObject({ actor: 'lee-pm', owner: 'lee', kolab: 'kolab', access: { level: 'write', layers: ['functional', 'technical'] } });
@@ -508,7 +508,7 @@ test('a database at 0007 reaches 0008: each node keeps its id, which becomes its
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     // kj:kolab/kolab, the spec's own address (D15), resolves from anywhere.
     expect(await kolab.resolve('kj:kolab/kolab@1#TEN1', { system: 'shop' })).toMatchObject({ status: 'ok', content: 'Konjir is one hosted service.' });
@@ -549,7 +549,7 @@ test('a database at 0010 reaches 0011: each session is stored by the hash of its
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     // Both open tokens still work, the agent's included; whoami names each by its key, never its token.
     expect(await kolab.sessionOpen(lee)).toBe(true);
@@ -634,7 +634,7 @@ test('a database reaches the archiving migration: nothing is archived, open sess
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     expect(await kolab.sessionInfo(lee)).toMatchObject({ actor: 'lee', kolab: 'kolab', access: { level: 'write' } });
     expect((await kolab.listKolabs()).map((k) => k.id)).toStrictEqual(['kolab']);
@@ -666,7 +666,7 @@ test('a database reaches the write-actors migration: rows made before it keep no
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
 
-  const kolab = await Kolab.open(store);
+  const kolab = await TestKolab.open(store);
   try {
     // A session opened before it still works, and ending it records who did.
     expect(await kolab.sessionInfo(lee)).toMatchObject({ actor: 'lee', kolab: 'kolab' });
@@ -676,6 +676,17 @@ test('a database reaches the write-actors migration: rows made before it keep no
     await kolab.archive({ kolab: 'kolab' });
     await kolab.unarchive({ kolab: 'kolab' });
   } finally { await kolab.close(); }
+});
+
+test("0024 refuses a database where an actor or account is named admin or kolab in any case, naming it", async () => {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'write_actors');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`insert into account(id, kind, name) values ('Admin', 'user', 'A'), ('KOLAB', 'organization', 'K');
+                   insert into actor(id, name) values ('Admin', 'A');`);
+    expect(await rejection(migrate(db))).toMatch(/0024_write_actors\.sql failed: .*Admin, KOLAB names an actor or account, but 'admin' and 'kolab' are reserved/);
+    expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
+  });
 });
 
 // ---- the runner, with migrations of the test's own ---------------------------------
@@ -731,7 +742,7 @@ test('Kolab processes opening one database at once migrate it once', async () =>
   const store = await persistentStore();
   if (store.databaseUrl) {
     // Separate pools, as separate processes would have: the advisory lock makes the others wait.
-    const opened = await Promise.all([1, 2, 3, 4].map(() => Kolab.open(store)));
+    const opened = await Promise.all([1, 2, 3, 4].map(() => TestKolab.open(store)));
     try {
       expect((await recorded(opened[0].db)).map((r) => r.version)).toStrictEqual(versions);
       await opened[1].addActor('alice');

@@ -98,6 +98,7 @@ const auditLog = z.object({
   kolab: z.string().optional().describe("Only this kolab's changes: its grants and its outbox jobs"),
   subject: z.string().optional().describe('Only changes to this grantee, person or job'),
   limit: z.number().int().min(1).max(500).optional().describe('At most this many, newest first; 100 by default'),
+  before: z.number().int().min(1).optional().describe('Only events older than this one: the id of the last event of the previous page, to page back'),
 });
 const outbox = z.object({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
@@ -203,12 +204,16 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_audit',
-    description: "Admin: the audit log (W2.20), newest first: each change that leaves no row of its own to say who made it, with who made it and when. A grant made, changed or removed (grant.set, grant.removed), a person added to or removed from an organization or a team (member.set, member.removed, team_member.added, team_member.removed), and an outbox job retried (outbox.retried). by is an actor, or admin for the admin token. Everything else Kolab writes names who made it on its own row: a node's created_by, a session's opened_by and ended_by, a version's actor and submitted_by, an archive's done_by.",
+    description: "Admin: the audit log (W2.20), newest first, a page at a time (next_before, when given, is the before for the next page): each change that leaves no row of its own to say who made it, with who made it and when. A grant made, changed or removed (grant.set, grant.removed), a person added to or removed from an organization or a team (member.set, member.removed, team_member.added, team_member.removed), and an outbox job retried (outbox.retried). by is an actor, or admin for the admin token. Everything else Kolab writes names who made it on its own row: a node's created_by, a session's opened_by and ended_by, a version's actor and submitted_by, an archive's done_by.",
     schema: auditLog,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async audit({ kolab, subject, limit }: z.infer<typeof auditLog>) {
-    try { return ok({ events: await this.kolab.auditLog({ kolab, subject, limit }) }); } catch (e) { return fail(e); }
+  async audit({ kolab, subject, limit, before }: z.infer<typeof auditLog>) {
+    try {
+      const events = await this.kolab.auditLog({ kolab, subject, limit, before });
+      // A full page may have more behind it: pass its last id as before.
+      return ok({ events, ...(events.length === (limit ?? 100) ? { next_before: events[events.length - 1].id } : {}) });
+    } catch (e) { return fail(e); }
   }
 
   @McpTool({

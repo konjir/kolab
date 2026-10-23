@@ -9,15 +9,15 @@ import pg from 'pg';
 import { listenerConnection, openDb, type Db } from '@konjir/db';
 import { EVENT_CHANNEL, isKolabEvent, maskTokens, sessionKey, type Kolab, type ListenerState } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
-import { els, marksOn, openKolab, people, rejection, setup, testStore } from '@konjir/engine/testing';
+import { els, marksOn, openKolab, people, rejection, setup, testStore, TestKolab } from '@konjir/engine/testing';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
 
 /** The engine's own transaction helper, which the verbs use; here to write and signal directly. */
 type Internals = { inTransaction<T>(fn: (tx: Db, signal: (e: KolabEvent) => Promise<void>) => Promise<T>): Promise<T> };
-const internals = (k: Kolab) => k as unknown as Internals;
+const internals = (k: TestKolab) => k as unknown as Internals;
 
-function heard(k: Kolab) {
+function heard(k: TestKolab) {
   const events: KolabEvent[] = [];
   k.onEvent((e) => events.push(e));
   return events;
@@ -84,7 +84,7 @@ test('clearing a mark signals every layer whose inbox it empties, the cascade\'s
  * Two kolabs: the test kolab, where alice writes the spec and bob the binding, and `other`,
  * where dana and erin do the same, each knowing nothing of the first.
  */
-async function twoKolabsIn(kolab: Kolab) {
+async function twoKolabsIn(kolab: TestKolab) {
   await people(kolab, 'alice', { layers: ['functional'] }); await people(kolab, 'bob', { layers: ['technical'] });
   await kolab.createKolab('other', { owner: 'test-org' });
   for (const [id, layer] of [['dana', 'functional'], ['erin', 'technical']] as const) {

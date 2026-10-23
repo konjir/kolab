@@ -1,58 +1,88 @@
 // Every write records who made it (W2.20, D70). Kolab's public methods that write are read from
-// its source and held to WRITE_ACTORS, which says where each records its actor; the database
-// refuses a row that names no one (migration 0024); and each new place is filled, by the session's
-// actor, the person signing in, the admin, or Kolab, as the write was made.
-import { readFileSync } from 'node:fs';
+// its source and held to WRITE_ACTORS, which says where each records its actor, and the SQL each
+// can reach is checked to write that place; the database refuses a row, or a change of access,
+// that names no one (migration 0024); and each new place is filled, by the session's actor, the
+// person signing in, the admin, or Kolab, as the write was made.
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import { ADMIN_DOER, AUDIT_ACTIONS } from '@konjir/types';
-import { Kolab, SYSTEM_ACTOR, SYSTEM_WRITES, WRITE_ACTORS, activity, sessionKey } from '../src/index.js';
-import { els, openKolab, people, rejection, TEST_KOLAB } from '../src/testing.js';
+import { Kolab, NO_ACTOR_REASONS, SYSTEM_ACTOR, SYSTEM_WRITES, WRITE_ACTORS, activity, sessionKey } from '../src/index.js';
+import { els, openKolab, people, rejection, TEST_KOLAB, TestKolab } from '../src/testing.js';
 
 /** A write in SQL: an insert, an update or a delete, of any table. */
 const WRITE = /\b(insert\s+into|delete\s+from|update\s+[a-z_]+(\s+[a-z]+)?\s+set)\b/i;
 
 /**
- * Kolab's public methods that write, from kolab.ts: those whose own SQL writes, or that call (as
- * this.<method>, or a function of the module) something that does, other than SYSTEM_WRITES.
- * Methods are found by their header, two spaces in, in the class Kolab; functions at the top level.
+ * kolab.ts, read as units: Kolab's methods, by their header two spaces in, in the class Kolab, as
+ * `this.<name>`; and the module's functions, at the top level, by their name. Each with its body,
+ * and the units it calls (as this.<method>, or a function of the module), other than SYSTEM_WRITES.
  */
-function writingMethods(): string[] {
+function units() {
   const lines = readFileSync(new URL('../src/kolab.ts', import.meta.url), 'utf8').split('\n');
   const start = lines.findIndex((l) => /^export class Kolab\b/.test(l));
   let end = start + 1;
   while (!/^}/.test(lines[end])) end++;
   type Unit = { name: string; method: boolean; private: boolean; body: string[] };
-  const units = new Map<string, Unit>();
+  const all = new Map<string, Unit>();
   const header = /^ {2}(?:(?:private|protected|public|static|readonly|async|override)\s+)*([A-Za-z_]\w*)\s*(?:<[^(]*>)?\(/;
   let cur: Unit | undefined;
   for (let i = start + 1; i < end; i++) {
     const m = lines[i].match(header);
-    if (m) units.set(`this.${m[1]}`, cur = { name: m[1], method: true, private: /^\s+(private|protected)\b/.test(lines[i]), body: [] });
+    if (m) all.set(`this.${m[1]}`, cur = { name: m[1], method: true, private: /^\s+(private|protected)\b/.test(lines[i]), body: [] });
     cur?.body.push(lines[i]);
   }
   cur = undefined;
   for (let i = 0; i < lines.length; i++) {
     if (i >= start && i <= end) { cur = undefined; continue; }
     const m = lines[i].match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)/);
-    if (m) { units.set(m[1], cur = { name: m[1], method: false, private: false, body: [] }); continue; }
+    if (m) { all.set(m[1], cur = { name: m[1], method: false, private: false, body: [] }); continue; }
     if (/^(export |const |let |interface |type |class |\/\*\*)/.test(lines[i])) cur = undefined;
     cur?.body.push(lines[i]);
   }
   const stop = new Set(SYSTEM_WRITES.map((n) => `this.${n}`));
-  const calls = new Map([...units].map(([k, u]) => {
+  const calls = new Map([...all].map(([k, u]) => {
     const b = u.body.join('\n');
     const named = [...b.matchAll(/this\.(\w+)\s*[(<]/g)].map((m) => `this.${m[1]}`).concat([...b.matchAll(/(?<![.\w])(\w+)\s*\(/g)].map((m) => m[1]));
-    return [k, named.filter((c) => units.has(c) && c !== k && !stop.has(c))];
+    return [k, named.filter((c) => all.has(c) && c !== k && !stop.has(c))];
   }));
-  const writes = (k: string, seen = new Set<string>()): boolean => {
-    if (seen.has(k)) return false;
+  /** The SQL, and the rest of the bodies, of `k` and of every unit it reaches. */
+  const reach = (k: string, seen = new Set<string>()): string[] => {
+    if (seen.has(k)) return [];
     seen.add(k);
-    return WRITE.test(units.get(k)!.body.join('\n')) || calls.get(k)!.some((c) => writes(c, seen));
+    return [all.get(k)!.body.join('\n'), ...calls.get(k)!.flatMap((c) => reach(c, seen))];
   };
-  expect(units.has('this.createNode') && units.has('insertSession')).toBe(true);   // the reading works
-  return [...units].filter(([k, u]) => u.method && !u.private && u.name !== 'constructor' && writes(k)).map(([, u]) => u.name).sort();
+  expect(all.has('this.createNode') && all.has('insertSession') && all.has('audit')).toBe(true);   // the reading works
+  return { all, reach, lines: lines.slice(start, end) };
 }
+
+/** Kolab's public methods that write: whose reachable bodies (units().reach) write SQL. */
+function writingMethods(): string[] {
+  const { all, reach } = units();
+  return [...all].filter(([k, u]) => u.method && !u.private && u.name !== 'constructor' && reach(k).some((b) => WRITE.test(b))).map(([, u]) => u.name).sort();
+}
+
+/** Whether SQL in `bodies` writes `place`: inserts into its table naming the column, sets it in an update, or audits the action. */
+function writesPlace(bodies: string[], place: string): boolean {
+  const text = bodies.join('\n');
+  if (place.startsWith('audit_event:')) {
+    const action = place.slice('audit_event:'.length).replace('.', '\\.');
+    return new RegExp(`(?<![.\\w])audit\\([^;]*?'${action}'`).test(text);
+  }
+  const [table, column] = place.split('.');
+  const inserts = [...text.matchAll(new RegExp(`insert\\s+into\\s+${table}\\s*\\(([^)]*)\\)`, 'gi'))].some((m) => new RegExp(`\\b${column}\\b`).test(m[1]));
+  const updates = [...text.matchAll(new RegExp(`update\\s+${table}(?:\\s+[a-z]+)?\\s+set\\b([\\s\\S]*?)(?:\\bwhere\\b|\\breturning\\b|\\bfrom\\b|\`)`, 'gi'))]
+    .some((m) => new RegExp(`(?:^|[\\s,.])${column}\\s*=`).test(m[1]));
+  return inserts || updates;
+}
+
+/** The methods allowed to record no one, and why: a new one is a change here too (W2.20). */
+const NO_ACTOR = {
+  system: ['drainOutbox', 'listen', 'open', 'startWorker'],
+  unsigned: ['abandonAuthorization', 'beginAuthorization', 'declineAuthorization', 'oauthClient', 'pruneClients', 'registerClient'],
+};
 
 test('every public method of Kolab that writes says where it records who made the write, and none is listed that no longer writes', () => {
   expect(writingMethods()).toStrictEqual(Object.keys(WRITE_ACTORS).sort());
@@ -61,18 +91,49 @@ test('every public method of Kolab that writes says where it records who made th
   for (const name of SYSTEM_WRITES) expect([name, new RegExp(`private async ${name}\\(`).test(src)]).toStrictEqual([name, true]);
 });
 
-test('each place WRITE_ACTORS names is a column of the schema, or an action of the audit log', async () => {
+test('only the methods listed here record no one, each for one of the reasons NO_ACTOR_REASONS names', () => {
+  for (const kind of ['system', 'unsigned'] as const) {
+    const listed = Object.entries(WRITE_ACTORS).filter(([, how]) => kind in how);
+    expect(listed.map(([m]) => m).sort()).toStrictEqual(NO_ACTOR[kind]);
+    for (const [method, how] of listed) {
+      const reason = (how as Record<string, string>)[kind];
+      expect([method, reason, reason in NO_ACTOR_REASONS[kind]]).toStrictEqual([method, reason, true]);
+    }
+  }
+});
+
+test('each place WRITE_ACTORS names is a column of the schema, or an action of the audit log, and the SQL its method reaches writes it', async () => {
   const kolab = await openKolab();
   const columns = new Set((await kolab.db.query<{ c: string }>(
     `select table_name || '.' || column_name as c from information_schema.columns where table_schema = 'public'`)).rows.map((r) => r.c));
+  const { reach } = units();
   for (const [method, how] of Object.entries(WRITE_ACTORS)) {
     if (!('recorded' in how)) continue;
     expect([method, how.recorded.length > 0]).toStrictEqual([method, true]);
+    const bodies = reach(`this.${method}`);
     for (const place of how.recorded) {
-      const ok = place.startsWith('audit_event:') ? (AUDIT_ACTIONS as readonly string[]).includes(place.slice('audit_event:'.length)) : columns.has(place);
-      expect([method, place, ok]).toStrictEqual([method, place, true]);
+      const known = place.startsWith('audit_event:') ? (AUDIT_ACTIONS as readonly string[]).includes(place.slice('audit_event:'.length)) : columns.has(place);
+      expect([method, place, known, writesPlace(bodies, place)]).toStrictEqual([method, place, true, true]);
     }
   }
+  // The check can fail: a method that writes none of a place isn't taken as writing it.
+  expect(writesPlace(reach('this.createNode'), 'audit_event:grant.set')).toBe(false);
+  expect(writesPlace(reach('this.linkIdentity'), 'session.opened_by')).toBe(false);
+});
+
+test('no SQL write is outside kolab.ts, where the scan reads it, and Kolab has no method it would miss', () => {
+  const repo = fileURLToPath(new URL('../../../', import.meta.url));
+  const sources = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+    const p = join(dir, f);
+    if (['node_modules', 'dist', 'test', 'e2e', 'migrations'].includes(f)) return [];
+    return statSync(p).isDirectory() ? sources(p) : /\.(ts|tsx|mts|js|mjs)$/.test(f) ? [p] : [];
+  });
+  const writers = ['apps', 'libs'].flatMap((d) => sources(join(repo, d))).filter((p) => WRITE.test(readFileSync(p, 'utf8')))
+    .map((p) => p.slice(repo.length)).sort();
+  // The migration runner writes only its own bookkeeping, and the demo seed only through Kolab.
+  expect(writers.filter((p) => !/\/scripts\//.test(p))).toStrictEqual(['libs/db/src/migrate.ts', 'libs/engine/src/kolab.ts']);
+  // A method written as a property, `name = async (...) =>`, has no header the scan finds.
+  expect(units().lines.filter((l) => /^ {2}(?:(?:private|protected|public|readonly|static)\s+)*\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>/.test(l))).toStrictEqual([]);
 });
 
 test('the database refuses a row that names no one, and a session ended, an invite or grant revoked, or a version submitted without saying by whom', async () => {
@@ -90,13 +151,75 @@ test('the database refuses a row that names no one, and a session ended, an invi
   expect(await rejection(kolab.db.query(`update version set state = 'committed' where id = $1`, [draft]))).toMatch(nobody);
   const { invite } = await kolab.createInvite(await adminSession(kolab), { level: 'read' });
   expect(await rejection(kolab.db.query(`update kolab_invite set revoked_at = now() where id = $1`, [invite.id]))).toMatch(nobody);
-  // No actor may be called admin: it names the admin token.
+  // Nor one that names someone blank.
+  expect(await rejection(kolab.db.query(`insert into team(id, org_id, name, created_by) values ('test-org/t', 'test-org', 't', '  ')`))).toMatch(nobody);
+  // No actor or account may be called admin or kolab, in any case: they name the admin token and Kolab.
   expect(await rejection(kolab.addActor('Admin'))).toMatch(/"admin" is reserved/);
-  expect(await rejection(kolab.db.query(`insert into actor(id, name, kind, created_by) values ('admin', 'x', 'person', 'admin')`))).toMatch(/actor_not_admin/);
+  expect(await rejection(kolab.addActor('KOLAB'))).toMatch(/"kolab" is reserved/);
+  expect(await rejection(kolab.addOrganization('Admin'))).toMatch(/TenancyError: "admin" is reserved/);
+  expect(await rejection(kolab.addOrganization('Kolab'))).toMatch(/TenancyError: "kolab" is reserved/);
+  expect(await rejection(kolab.db.query(`insert into actor(id, name, kind, created_by) values ('admin', 'x', 'person', 'admin')`))).toMatch(/actor_not_doer/);
+  expect(await rejection(kolab.db.query(`insert into account(id, kind, name, created_by) values ('Kolab', 'organization', 'x', 'admin')`))).toMatch(/account_not_doer/);
+});
+
+test('Kolab makes every caller name who made its write: none is taken as the admin or as Kolab, and a blank name is no one', async () => {
+  const kolab = await openKolab();
+  await people(kolab, ['alice', 'bob']);
+  const s = await kolab.openSession('alice', 'product');
+  const v = await kolab.draft(s, await kolab.createNode(s, 'functional_spec', 'Orders', 'orders'), { elements: els({ R1: 'Orders can be cancelled.' }) });
+  const audited = async () => (await kolab.db.query<{ n: number }>(`select count(*)::int as n from audit_event`)).rows[0].n;
+  const before = await audited();
+  // Kolab itself, as a server or a script calls it, with no `by` (TestKolab fills one in for tests).
+  const bare = Kolab.prototype as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+  const nobody = /a write must name who made it/;
+  for (const [name, args] of [
+    ['addActor', ['cy', {}]], ['addOrganization', ['acme', {}]], ['createKolab', ['k2', { owner: 'test-org' }]], ['openSession', ['bob', 'engineer', {}]],
+    ['endSession', [{ actor: 'alice' }, {}]], ['linkIdentity', ['bob', { provider: 'github', subject: '9' }, {}]], ['addMember', ['test-org', 'bob', 'member', {}]],
+    ['removeMember', ['test-org', 'bob', {}]], ['addTeam', ['test-org', 'ops', {}]], ['addTeamMember', ['test-org/ops', 'bob', {}]],
+    ['removeTeamMember', ['test-org/ops', 'bob', {}]], ['grant', [TEST_KOLAB, 'bob', 'read', {}]], ['revoke', [TEST_KOLAB, 'bob', {}]],
+    ['archive', [{ actor: 'bob' }, {}]], ['unarchive', [{ actor: 'bob' }, {}]], ['retryOutboxJob', ['01JOB', {}]],
+    ['applyRuling', ['orders', { elements: els({ R1: 'x' }) }, { id: 'D70', actor: 'alice' }]], ['review', [v, {}]],
+  ] as const) {
+    expect([name, await rejection(bare[name].call(kolab, ...args))]).toStrictEqual([name, expect.stringMatching(nobody)]);
+    expect([name, await rejection(bare[name].call(kolab, ...(args as readonly unknown[]).slice(0, -1), name === 'applyRuling' ? { id: 'D70', actor: 'alice', by: ' ' } : { by: ' ' }))])
+      .toStrictEqual([name, expect.stringMatching(nobody)]);
+  }
+  // Nothing was written.
+  expect(await audited()).toBe(before);
+  expect(await kolab.version(v)).toMatchObject({ state: 'drafted', submitted_by: null });
+});
+
+test('the database refuses a change of access whose transaction adds no audit row for it', async () => {
+  const kolab = await openKolab();
+  await people(kolab, ['alice', 'bob']);
+  await kolab.addMember('test-org', 'alice');
+  await kolab.addTeam('test-org', 'ops');
+  const unaudited = /a change of access to \S+ must be recorded in the audit log/;
+  for (const sql of [
+    `update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`,
+    `delete from kolab_grant where user_id = 'bob'`,
+    `insert into kolab_grant(kolab_id, team_id, level, functional, technical) values ('${TEST_KOLAB}', 'test-org/ops', 'read', false, false)`,
+    `update org_member set role = 'owner' where user_id = 'alice'`,
+    `delete from org_member where user_id = 'alice'`,
+    `insert into team_member(team_id, user_id) values ('test-org/ops', 'alice')`,
+  ]) expect([sql, await rejection(kolab.db.query(sql))]).toStrictEqual([sql, expect.stringMatching(unaudited)]);
+  // An audit row for someone else, or another kolab, or another kind of change, doesn't do.
+  for (const [action, kolabId, subject] of [['grant.set', TEST_KOLAB, 'alice'], ['member.set', null, 'bob'], ['grant.set', null, 'bob']] as const) {
+    expect(await rejection(kolab.db.transaction(async (tx) => {
+      await tx.query(`insert into audit_event(action, kolab_id, subject, done_by) values ($1, $2, $3, 'ada')`, [action, kolabId, subject]);
+      await tx.query(`update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`);
+    }))).toMatch(unaudited);
+  }
+  // The change and its record, in one transaction, in either order, commit.
+  await kolab.db.transaction(async (tx) => {
+    await tx.query(`update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`);
+    await tx.query(`insert into audit_event(action, kolab_id, subject, done_by) values ('grant.set', $1, 'bob', 'ada')`, [TEST_KOLAB]);
+  });
+  expect((await kolab.access('bob', TEST_KOLAB)).level).toBe('read');
 });
 
 /** A person holding Admin in the test kolab, with a session there. */
-async function adminSession(kolab: Kolab) {
+async function adminSession(kolab: TestKolab) {
   if (!(await kolab.listActors()).some((a) => a.id === 'ada')) {
     await kolab.addActor('ada');
     await kolab.grant(TEST_KOLAB, 'ada', 'admin');
@@ -104,7 +227,15 @@ async function adminSession(kolab: Kolab) {
   return kolab.openSession('ada', 'product');
 }
 
-const row = async (kolab: Kolab, sql: string, params: unknown[] = []) => (await kolab.db.query<Record<string, unknown>>(sql, params)).rows[0];
+const row = async (kolab: TestKolab, sql: string, params: unknown[] = []) => (await kolab.db.query<Record<string, unknown>>(sql, params)).rows[0];
+
+/** A grant removed by hand, as if by someone with the database's own login: recorded, since the database requires it. */
+async function outsideKolabsVerbs(kolab: TestKolab, sql: string, subject: string) {
+  await kolab.db.transaction(async (tx) => {
+    await tx.query(sql);
+    await tx.query(`insert into audit_event(action, kolab_id, subject, done_by) values ('grant.removed', $1, $2, 'test')`, [TEST_KOLAB, subject]);
+  });
+}
 
 test('accounts, actors, kolabs, teams, identities and sessions record who made them: the admin, the person signing up, or the owner', async () => {
   const kolab = await openKolab();
@@ -145,7 +276,7 @@ test('accounts, actors, kolabs, teams, identities and sessions record who made t
   expect(await row(kolab, `select ended_by from session where id = $1`, [sessionKey(d)])).toStrictEqual({ ended_by: 'ada' });
   await kolab.grant(TEST_KOLAB, 'alice', 'write');
   const e = await kolab.openSession('alice', 'product');
-  await kolab.db.query(`delete from kolab_grant where user_id = 'alice'`);   // outside Kolab's verbs
+  await outsideKolabsVerbs(kolab, `delete from kolab_grant where user_id = 'alice'`, 'alice');
   await rejection(kolab.sessionInfo(e));
   expect(await row(kolab, `select ended_by from session where id = $1`, [sessionKey(e)])).toStrictEqual({ ended_by: SYSTEM_ACTOR });
 });
@@ -207,9 +338,13 @@ test('nodes, invites, versions and grants record who made, revoked or submitted 
   expect((await kolab.readNode(s, 'orders').catch(() => undefined))).toBeUndefined();   // no committed version yet
   const v = await kolab.commit(s, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
   expect(await row(kolab, `select actor_id, submitted_by from version where id = $1`, [v])).toStrictEqual({ actor_id: 'alice', submitted_by: 'alice' });
-  expect((await kolab.readNode(s, 'orders')).node.created_by).toBe('alice');
+  expect((await kolab.readNode(s, 'orders')).createdBy).toBe('alice');
   const feed = await activity(kolab, s);
   expect(feed.find((r) => r.kind === 'node')).toMatchObject({ kind: 'node', node: 'orders', actor: 'alice', title: 'Orders' });
+  // A node with only a draft not yet submitted isn't in the feed, as its draft isn't.
+  const quiet = await kolab.createNode(s, 'functional_spec', 'Quiet', 'quiet');
+  await kolab.draft(s, quiet, { elements: els({ Q1: 'Not yet.' }) });
+  expect((await activity(kolab, s)).filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
 
   // A ruling the admin applies is written as the actor given, and submitted by the admin.
   const r = await kolab.applyRuling(node, { deltas: [{ kind: 'override', element: 'R1', text: 'Orders can be cancelled before they ship.' }] }, { id: 'D70', actor: 'alice' });
@@ -248,4 +383,53 @@ test('an OAuth grant records who opened and ended its sessions, and who revoked 
   await rejection(third.exchange());
   expect(await row(kolab, `select g.revoked_by, s.ended_by from session s join oauth_grant g on g.id = s.grant_id where s.id = $1`, [third.tokens.session]))
     .toStrictEqual({ revoked_by: SYSTEM_ACTOR, ended_by: SYSTEM_ACTOR });
+});
+
+test('a version returned to its author and submitted again names whoever submitted it last', async () => {
+  const kolab = await openKolab();
+  await people(kolab, ['alice', 'dave', 'eve'], { layers: ['functional'] });
+  const alice = await kolab.openSession('alice', 'product');
+  const dave = await kolab.openSession('dave', 'product');
+  const eve = await kolab.openSession('eve', 'product');
+  const node = await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders');
+  const v = await kolab.draft(alice, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
+  expect(await kolab.submit(alice, v)).toMatchObject({ in_review: true });
+  expect(await row(kolab, `select state, submitted_by from version where id = $1`, [v])).toStrictEqual({ state: 'in_review', submitted_by: 'alice' });
+  await kolab.recordReview(dave, v, { verdict: 'request_changes', note: 'Say when.' });
+  expect(await row(kolab, `select state from version where id = $1`, [v])).toStrictEqual({ state: 'drafted' });
+  // Another writer of the layer puts it back to review: they are its submitter now.
+  expect(await kolab.submit(eve, v)).toMatchObject({ in_review: true });
+  expect(await row(kolab, `select state, submitted_by from version where id = $1`, [v])).toStrictEqual({ state: 'in_review', submitted_by: 'eve' });
+});
+
+test("who made a node is told only to readers in its own kolab: not through read_node, and not to kj_agent's reads of node", async () => {
+  const kolab = await openKolab();
+  await people(kolab, 'alice', { layers: ['functional'] });
+  await kolab.createKolab('other', { owner: 'test-org' });
+  await kolab.addActor('olga');
+  await kolab.grant('other', 'olga', 'write');
+  const olga = await kolab.openSession('olga', 'product', { kolab: 'other' });
+  const node = await kolab.createNode(olga, 'functional_spec', 'Theirs', 'theirs');
+  await kolab.commit(olga, node, { elements: els({ T1: 'Theirs.' }) });
+  expect((await kolab.readNode(olga, 'theirs')).createdBy).toBe('olga');
+  // alice reads other, but works in the test kolab: she sees the version and its author, not who made the node.
+  await kolab.grant('other', 'alice', 'read');
+  const alice = await kolab.openSession('alice', 'product', { kolab: TEST_KOLAB });
+  const read = await kolab.readNode(alice, 'other/theirs');
+  expect(read.version.actor_id).toBe('olga');
+  expect('createdBy' in read).toBe(false);
+  expect(await rejection(kolab.readAs(alice, (q) => q.query(`select created_by from node`)))).toMatch(/permission denied/);
+  expect((await kolab.readAs(alice, (q) => q.query(`select kj_node_creator($1) as c`, [node]))).rows).toStrictEqual([{ c: null }]);
+  expect((await kolab.readAs(olga, (q) => q.query(`select kj_node_creator($1) as c`, [node]))).rows).toStrictEqual([{ c: 'olga' }]);
+});
+
+test('the audit log pages back with before', async () => {
+  const kolab = await openKolab();
+  await people(kolab, ['alice', 'bob', 'cy']);
+  const all = await kolab.auditLog({ kolab: TEST_KOLAB });
+  expect(all.length).toBe(3);
+  const first = await kolab.auditLog({ kolab: TEST_KOLAB, limit: 2 });
+  const rest = await kolab.auditLog({ kolab: TEST_KOLAB, limit: 2, before: first[1].id });
+  expect([...first, ...rest]).toStrictEqual(all);
+  expect(await rejection(kolab.auditLog({ before: -1 }))).toMatch(/before is the id of an audit event/);
 });

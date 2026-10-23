@@ -11,7 +11,7 @@ import { expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { fingerprint } from '@konjir/address';
 import { sessionKey, type Kolab } from '@konjir/engine';
-import { els, openKolab } from '@konjir/engine/testing';
+import { els, openKolab, TestKolab } from '@konjir/engine/testing';
 
 const SEED = Number(process.env.KONJIR_PROPERTY_SEED ?? 0x5eed);
 const RUNS = Number(process.env.KONJIR_PROPERTY_RUNS ?? (process.env.KONJIR_TEST_DATABASE_URL ? 20 : 12));
@@ -27,7 +27,7 @@ type Op = typeof op extends fc.Arbitrary<infer T> ? T : never;
 
 let runs = 0;
 
-async function build(kolab: Kolab) {
+async function build(kolab: TestKolab) {
   const r = `r${++runs}`;
   const [alice, bob, carol, down, up] = ['alice', 'bob', 'carol', 'down', 'up'].map((x) => `${x}-${r}`);
   for (const a of [alice, bob, carol]) await kolab.addActor(a);
@@ -55,7 +55,7 @@ async function build(kolab: Kolab) {
 
 type World = Awaited<ReturnType<typeof build>>;
 
-async function step(kolab: Kolab, w: World, o: Op) {
+async function step(kolab: TestKolab, w: World, o: Op) {
   const who = o.t === 'commit' ? '' : w.ids[o.who as 'alice' | 'carol'];
   if (o.t === 'grant') await kolab.grant(w.up, who, 'read');
   else if (o.t === 'revoke') await kolab.revoke(w.up, who);
@@ -75,7 +75,7 @@ async function step(kolab: Kolab, w: World, o: Op) {
   }
 }
 
-async function check(kolab: Kolab, w: World, where: string) {
+async function check(kolab: TestKolab, w: World, where: string) {
   const fail = (what: string) => { throw new Error(`${where}: ${what}`); };
   const reads = async (actor: string | null) => !!actor && !!(await kolab.access(actor, w.up)).level;
   const latestUp = (await kolab.latestCommitted(w.spec))!;
