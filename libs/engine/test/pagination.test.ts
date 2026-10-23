@@ -317,11 +317,13 @@ test('many nodes, questions and marks list in pages quickly, on the indexes the 
     expect(p).toMatch(/Index (Only )?Scan|Bitmap Index Scan/);
     expect(p).not.toMatch(/Seq Scan/);
   }
-  // The per-actor rates, counted before each ask and draft, have an index of their own: the
-  // versions here are too few for the planner to choose it, so it is asked to avoid a scan.
+  // The rates, counted before each ask and draft, have an index of their own: the events here
+  // are too few for the planner to choose it, so it is asked to avoid a scan. An actor's own
+  // questions (mine=true, the answers resource) have theirs.
   for (const [sql, index] of [
-    [`select count(*) from query where raised_by = $1 and created_at > now() - interval '1 hour'`, /query_raised_(at|by)/],
-    [`select count(*) from version where actor_id = $1 and created_at > now() - interval '1 hour'`, /version_actor_(at|created)/],
+    [`select count(*) from rate_event where owner_id = $1 and kind = 'ask' and (created_at > now() - interval '1 hour' or held)`, /rate_event_owner/],
+    [`select count(*) from rate_event where owner_id = $1 and kind = 'draft' and (created_at > now() - interval '1 hour' or held)`, /rate_event_owner/],
+    [`select count(*) from query where raised_by = $1 and created_at > now() - interval '1 hour'`, /query_raised_at/],
   ] as const) {
     const p = await kolab.db.transaction(async (tx) => {
       await tx.exec('set local enable_seqscan = off');

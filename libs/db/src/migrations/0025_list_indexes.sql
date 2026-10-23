@@ -13,9 +13,9 @@ drop index query_kolab;
 -- Questions on a version: konjir_read_node's threads, a node's questions (node filters join
 -- through its versions), settling a version's questions as it commits or is withdrawn.
 create index query_version on query(version_id, state);
--- The questions an actor raised, by when: the ask rate (an actor's, and its owner's agents', in
--- the last hour), and konjir_list_queries mine=true and the answers resource, which then keep
--- the session's kolab's and sort them; an actor's own questions are few, held so by the rate.
+-- The questions an actor raised, by when: konjir_list_queries mine=true and the answers resource,
+-- which then keep the session's kolab's and sort them; an actor's own questions are few, held so by
+-- the ask rate (counted in rate_event, below).
 create index query_raised_at on query(raised_by, created_at) where raised_by is not null;
 -- The question a mark raised: every mark the web interface shows looks it up.
 create index query_invalidation on query(invalidation_id) where invalidation_id is not null;
@@ -50,46 +50,50 @@ create index ruling_kolab_ruled on ruling(kolab_id, ruled_at, id);
 -- A kolab's nodes by kind, then name: konjir_list_nodes and the web interface's documents.
 create index node_kolab_kind_name on node(kolab_id, kind, name);
 
--- The draft rate (MAX_DRAFTS_PER_HOUR): the versions an actor and its owner's agents wrote in the
--- last hour, across every kolab.
-create index version_actor_at on version(actor_id, created_at);
-
 -- Indexes the ones above now lead with, which go: node_kolab_kind_name, version_kolab_created and
 -- ruling_kolab_ruled start with the kolab, as query_kolab_state does (dropped above).
 drop index node_kolab;
 drop index version_kolab;
 drop index ruling_kolab;
 
--- The per-person rates (MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR): a person and their agents share
--- one budget, so an agent's ask or draft counts against its owner. A call takes its place in the
--- budget in a short transaction of its own, before it writes: kj_rate_take locks the owner's
--- budget for that kind, counts what the budget wrote in the window plus the places held for writes
--- still under way (rate_hold), and, under the limit, holds one more. The lock is held for that
--- count and insert only, never for the write, so a burst of one person's calls waits its turn for
--- milliseconds and never holds the connections everyone else needs; a wait past lock_timeout is
--- refused as busy. The write then releases its hold (kj_rate_release) in the transaction that
--- writes the question or the version, so the hold becomes the row in one commit and the limit holds
--- exactly; a write that fails releases it after, and a hold its process never released (a crash)
--- stops counting after ten minutes. A draft counts only versions the budget's actors made: not
--- Kolab's folds, nor a ruling an admin applied as them (submitted_by, 0024). Returns the owner,
--- the count before this call, the seconds until the oldest of them leaves the window, and the
--- hold, or null when the count is at `p_max` already and nothing was held.
-create table rate_hold (
+-- The rates (MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR; MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR): a
+-- person and their agents share one budget, so an agent's ask or draft counts against its owner; an
+-- organization's agents share the organization's, which has a limit of its own. The budget counts
+-- events: each question or note raised, and each draft made, is a row here from the moment the call
+-- takes its place, whatever then happens to what it wrote. A draft counts when it is made, whoever
+-- submits it, and whether it is approved, rejected, folded or abandoned. Only the calls that take a
+-- place are counted: an admin's applied ruling and Kolab's rebases and folds take none.
+-- A call takes its place in a short transaction of its own, before it writes: kj_rate_take locks the
+-- owner's budget for that kind, counts the budget's events in the window, held ones included, and,
+-- under the limit, holds one more. The lock is held for that count and insert only, never for the
+-- write, so a burst of one person's calls waits its turn for milliseconds and never holds the
+-- connections everyone else needs; a wait past lock_timeout is refused as busy. The write then marks
+-- its event used (kj_rate_use) in the transaction that writes the question or the version, so the
+-- event stays counted from its take to the end of the window and the limit holds exactly; a write
+-- that fails gives its place back (kj_rate_release), and a hold its process never gave back (a
+-- crash) stops counting after ten minutes. Returns the owner, whether it is an organization, the
+-- limit applied, the count before this call, the seconds until the oldest of them leaves the window,
+-- and the hold, or null when the count is at the limit already and nothing was held.
+create table rate_event (
   id         text primary key,
   owner_id   text not null,
   kind       text not null check (kind in ('ask', 'draft')),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- True from the take until the write commits; a held event that is never used stops counting
+  -- after ten minutes.
+  held       boolean not null default true
 );
-create index rate_hold_owner on rate_hold(owner_id, kind, created_at);
+create index rate_event_owner on rate_event(owner_id, kind, created_at);
 -- Only these functions read or write it: no session's role is granted it.
-alter table rate_hold enable row level security;
+alter table rate_event enable row level security;
 
-create function kj_rate_take(p_actor text, p_kind text, p_window_ms bigint, p_max int)
-returns table (r_owner text, r_count int, r_wait_s int, r_hold text)
+create function kj_rate_take(p_actor text, p_kind text, p_window_ms bigint, p_max int, p_org_max int)
+returns table (r_owner text, r_org boolean, r_max int, r_count int, r_wait_s int, r_hold text)
 language plpgsql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
   v_owner text;
-  v_budget text[];
+  v_org boolean;
+  v_max int;
   v_since timestamptz := now() - p_window_ms * interval '1 millisecond';
   v_stale timestamptz := now() - interval '10 minutes';
   v_count int;
@@ -99,37 +103,40 @@ begin
   select case when a.kind = 'agent' and a.owner_id is not null then a.owner_id else a.id end into v_owner
     from public.actor a where a.id = p_actor;
   v_owner := coalesce(v_owner, p_actor);
+  v_org := exists (select 1 from public.account o where o.id = v_owner and o.kind = 'organization');
+  v_max := case when v_org then p_org_max else p_max end;
   perform set_config('lock_timeout', '5s', true);
   perform pg_advisory_xact_lock(hashtextextended('kj_rate:' || p_kind || ':' || v_owner, 0));
-  delete from public.rate_hold h where h.owner_id = v_owner and h.kind = p_kind and h.created_at <= v_stale;
-  v_budget := array(select v_owner union select a.id from public.actor a where a.owner_id = v_owner);
-  -- What was written and what is held, in one statement, so one snapshot: a write that commits
-  -- (its row in, its hold gone) is counted once, whenever it commits.
-  select count(*)::int, min(w.at) into v_count, v_oldest from (
-    select q.created_at as at from public.query q
-     where p_kind = 'ask' and q.raised_by = any(v_budget) and q.created_at > v_since
-    union all
-    select v.created_at from public.version v
-     where p_kind = 'draft' and v.actor_id = any(v_budget) and v.created_at > v_since
-       and (v.submitted_by is null or v.submitted_by = any(v_budget))
-    union all
-    select h.created_at from public.rate_hold h where h.owner_id = v_owner and h.kind = p_kind
-  ) w;
-  if v_count < p_max then
+  -- Holds never used, and events long out of any window, go.
+  delete from public.rate_event e where e.owner_id = v_owner and e.kind = p_kind
+     and ((e.held and e.created_at <= v_stale) or e.created_at <= least(v_since, now() - interval '1 day'));
+  -- One statement, so one snapshot: an event is one row from its take to the end of the window,
+  -- held or used, so a write that commits as this counts is counted once.
+  select count(*)::int, min(e.created_at) into v_count, v_oldest from public.rate_event e
+   where e.owner_id = v_owner and e.kind = p_kind and (e.created_at > v_since or e.held);
+  if v_count < v_max then
     v_hold := p_kind || ':' || v_owner || ':' || md5(random()::text || clock_timestamp()::text);
-    insert into public.rate_hold(id, owner_id, kind) values (v_hold, v_owner, p_kind);
+    insert into public.rate_event(id, owner_id, kind) values (v_hold, v_owner, p_kind);
   end if;
-  return query select v_owner, v_count,
+  return query select v_owner, v_org, v_max, v_count,
     ceil(extract(epoch from v_oldest + p_window_ms * interval '1 millisecond' - now()))::int, v_hold;
 end $$;
-revoke execute on function kj_rate_take(text, text, bigint, int) from public;
-grant execute on function kj_rate_take(text, text, bigint, int) to kj_agent, kj_system;
+revoke execute on function kj_rate_take(text, text, bigint, int, int) from public;
+grant execute on function kj_rate_take(text, text, bigint, int, int) to kj_agent, kj_system;
 
--- Releases a hold kj_rate_take gave: in the transaction that writes what it was held for, or
--- after that transaction failed.
+-- Marks the event kj_rate_take held as used, in the transaction that writes what it was held for:
+-- it counts to the end of the window, whatever happens to what was written.
+create function kj_rate_use(p_hold text) returns void
+language sql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
+  update public.rate_event set held = false where id = p_hold;
+$$;
+revoke execute on function kj_rate_use(text) from public;
+grant execute on function kj_rate_use(text) to kj_agent, kj_system;
+
+-- Gives back the place kj_rate_take held, after the transaction that was to write it failed.
 create function kj_rate_release(p_hold text) returns void
 language sql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
-  delete from public.rate_hold where id = p_hold;
+  delete from public.rate_event where id = p_hold and held;
 $$;
 revoke execute on function kj_rate_release(text) from public;
 grant execute on function kj_rate_release(text) to kj_agent, kj_system;

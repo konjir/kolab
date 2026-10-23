@@ -74,11 +74,14 @@ export const textLength = (s: string) => [...s].length;
  * The window the rates below are counted over, in milliseconds: the last hour, sliding, counted in
  * the database (as a person's new kolabs are, D54), so every server process sees the same count and
  * a restart doesn't reset it. Each rate is a budget a person shares with their agents: an agent's
- * questions and drafts count against its owner (an organization's agents share the organization's),
- * so making agents, or archiving and making them again, doesn't raise it. A call takes its place in
- * the budget under a lock per owner, held only while it counts and holds that place, and its write
- * releases the hold as it commits (kj_rate_take, rate_hold, 0025), so calls at once take turns, the
- * limit holds, and no burst holds the lock through its writes.
+ * questions and drafts count against its owner, so making agents, or archiving and making them
+ * again, doesn't raise it. An organization's agents share one budget of the organization's, with
+ * limits of its own (MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR). A budget counts events: each
+ * ask and each draft counts from the moment its call takes its place, whatever then becomes of what
+ * it wrote (ruled 2026-10-23). A call takes its place under a lock per owner, held only while it
+ * counts and holds that place, and its write marks the place used as it commits (kj_rate_take,
+ * rate_event, 0025), so calls at once take turns, the limit holds, and no burst holds the lock
+ * through its writes.
  */
 export const RATE_WINDOW_MS = 60 * 60_000;
 /**
@@ -90,12 +93,26 @@ export const RATE_WINDOW_MS = 60 * 60_000;
 export const MAX_ASKS_PER_HOUR = 60;
 /**
  * Drafts a person and their agents make in RATE_WINDOW_MS, across every kolab: konjir_draft and
- * the web interface's submit, each refused once they have made this many versions in the window.
- * Only versions they made count: not Kolab's folds of their drafts, nor a ruling an admin applied as
- * them (`version.submitted_by` names someone else).
+ * the web interface's submit, each refused once they have made this many drafts in the window.
+ * A draft counts when it is made, whatever happens to it after: submitted by its author or by
+ * anyone else, approved, rejected, folded or abandoned (ruled 2026-10-23). So another writer
+ * submitting someone's drafts frees none of their budget, and a second account can't launder it.
  * Two a minute, sustained, covers an agent that drafts, is refused by the structural checks and
  * drafts again, and a person editing quickly; a runaway loop is stopped within the hour, at 120
- * versions rather than thousands. Kolab's own rebases are written as Kolab, and an admin's applied
- * ruling isn't a draft, so neither is limited.
+ * versions rather than thousands. Kolab's own rebases and folds, and an admin's applied ruling,
+ * aren't drafts anyone made, so they neither count nor are limited.
  */
 export const MAX_DRAFTS_PER_HOUR = 120;
+/**
+ * How many times a person's budget an organization's is: its agents, however many members drive
+ * them, share one budget of the organization's. Five, because an organization's agents work for
+ * several people at once, and five members' worth of agents at the per-person rate is a small team
+ * working flat out, while a harness looping across every agent of the organization is still
+ * stopped within the hour at hundreds of writes, not thousands. A larger organization that needs
+ * more is a reason to raise these, not to give each agent a budget of its own.
+ */
+export const ORG_RATE_MULTIPLE = 5;
+/** Questions and notes an organization's agents raise together in RATE_WINDOW_MS, across every kolab: 300. */
+export const MAX_ORG_ASKS_PER_HOUR = ORG_RATE_MULTIPLE * MAX_ASKS_PER_HOUR;
+/** Drafts an organization's agents make together in RATE_WINDOW_MS, across every kolab, counted as MAX_DRAFTS_PER_HOUR's are: 600. */
+export const MAX_ORG_DRAFTS_PER_HOUR = ORG_RATE_MULTIPLE * MAX_DRAFTS_PER_HOUR;

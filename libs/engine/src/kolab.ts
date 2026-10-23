@@ -9,7 +9,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -2817,28 +2817,37 @@ export class Kolab {
    * together, in a window of `windowMs`, across every kolab (W2.21, D71): counted in the database,
    * as ownKolabs' rate is, so every process sees the same count. The values are MAX_ASKS_PER_HOUR
    * and MAX_DRAFTS_PER_HOUR. An agent's count against its owner's budget, so making more agents
-   * doesn't raise it.
+   * doesn't raise it. An organization's agents share the organization's budget, whose limits are
+   * `orgAsks` and `orgDrafts` (MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR).
    */
-  readonly rates = { asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, windowMs: RATE_WINDOW_MS };
+  readonly rates = {
+    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR,
+    orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR,
+    windowMs: RATE_WINDOW_MS,
+  };
 
   /**
    * Takes one question or note (`ask`), or one draft, from the budget of `actor`'s owner (itself,
-   * for a person), before the call writes it: kj_rate_take, in a short transaction of its own,
-   * locks the owner's budget, counts what the budget wrote in the window and the places held for
-   * writes under way, and holds one more. Past the limit, refused, saying when the oldest leaves
+   * for a person; the organization, for an organization's agent), before the call writes it:
+   * kj_rate_take, in a short transaction of its own, locks the owner's budget, counts the budget's
+   * events in the window (each ask or draft from its take, whatever became of what it wrote),
+   * and holds one more. Past the limit, refused, saying when the oldest leaves
    * the window, and nothing is held. The lock is never held through the write, so one person's
    * burst can't keep everyone else waiting for a connection (W2.21). Returns the hold, which the
-   * write releases in its own transaction (releaseRate), so the hold becomes the row in one commit;
+   * write marks used in its own transaction (useRate), so it counts from then to the end of the window;
    * if the write fails, the hold is released after (rated). Null when nothing is limited.
    */
   private async takeRate(actor: string, what: 'ask' | 'draft'): Promise<string | null> {
     const max = what === 'ask' ? this.rates.asks : this.rates.drafts;
-    if (max === Infinity) return null;
-    type Taken = { r_owner: string; r_count: number; r_wait_s: number | null; r_hold: string | null };
+    const orgMax = what === 'ask' ? this.rates.orgAsks : this.rates.orgDrafts;
+    if (max === Infinity && orgMax === Infinity) return null;
+    // Postgres's int: a limit lifted to Infinity on one budget only is as good as none.
+    const asInt = (n: number) => Math.min(n, 2_147_483_647);
+    type Taken = { r_owner: string; r_org: boolean; r_max: number; r_count: number; r_wait_s: number | null; r_hold: string | null };
     let c: Taken;
     try {
       c = await this.asSystem(async (tx) => (await tx.query<Taken>(
-        `select * from kj_rate_take($1, $2, $3, $4)`, [actor, what, this.rates.windowMs, max])).rows[0]);
+        `select * from kj_rate_take($1, $2, $3, $4, $5)`, [actor, what, this.rates.windowMs, asInt(max), asInt(orgMax)])).rows[0]);
     } catch (e) {
       // Waited past lock_timeout behind others in the same budget: refused, nothing held.
       if ((e as { code?: string }).code === '55P03') {
@@ -2850,20 +2859,22 @@ export class Kolab {
     const window = this.rates.windowMs === 3_600_000 ? 'an hour' : `${Math.round(this.rates.windowMs / 60_000)} minutes`;
     const last = window === 'an hour' ? 'hour' : window;
     const minutes = Math.max(1, Math.ceil((c.r_wait_s ?? 60) / 60));
-    const who = c.r_owner === actor ? `${actor} and ${actor}'s agents` : `${actor}, with the rest of ${c.r_owner}'s agents and ${c.r_owner},`;
+    const who = c.r_org ? `${actor}, with the rest of organization ${c.r_owner}'s agents,`
+      : c.r_owner === actor ? `${actor} and ${actor}'s agents` : `${actor}, with the rest of ${c.r_owner}'s agents and ${c.r_owner},`;
+    const shared = c.r_org ? 'shared by an organization\'s agents' : 'shared by a person and their agents';
     throw new LimitError(what === 'ask'
-      ? `${who} raised ${c.r_count} questions and notes in the last ${last}; the limit is ${max} in ${window}, shared by a person and their agents. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before asking again, or put several points in one question`
-      : `${who} drafted ${c.r_count} versions in the last ${last}; the limit is ${max} in ${window}, shared by a person and their agents. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before drafting again, or put several changes in one draft`);
+      ? `${who} raised ${c.r_count} questions and notes in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before asking again, or put several points in one question`
+      : `${who} drafted ${c.r_count} versions in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}, and a draft counts when it is made, whatever becomes of it. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before drafting again, or put several changes in one draft`);
   }
 
-  /** Releases a rate hold in `tx`, the transaction that writes what it was held for. */
-  private async releaseRate(tx: Q, hold: string | null) {
-    if (hold) await tx.query(`select kj_rate_release($1)`, [hold]);
+  /** Marks a rate hold used in `tx`, the transaction that writes what it was held for: it counts to the end of the window. */
+  private async useRate(tx: Q, hold: string | null) {
+    if (hold) await tx.query(`select kj_rate_use($1)`, [hold]);
   }
 
   /**
-   * Runs `write` with one from `actor`'s budget held for it (takeRate), which `write` releases as
-   * it commits; if `write` fails, the hold is released after, so a refused or failed call costs
+   * Runs `write` with one from `actor`'s budget held for it (takeRate), which `write` marks used as
+   * it commits; if `write` fails, the hold is given back after, so a refused or failed call costs
    * nothing.
    */
   private async rated<T>(actor: string, what: 'ask' | 'draft', write: (hold: string | null) => Promise<T>): Promise<T> {
@@ -2872,7 +2883,7 @@ export class Kolab {
       return await write(hold);
     } catch (e) {
       if (hold) {
-        await this.asSystem((tx) => this.releaseRate(tx, hold))
+        await this.asSystem(async (tx) => { await tx.query(`select kj_rate_release($1)`, [hold]); })
           .catch((err: unknown) => log.error('rate: a hold was not released; it stops counting after ten minutes', { error: err }));
       }
       throw e;
@@ -3386,8 +3397,8 @@ export class Kolab {
         layer, actor_id: s.actor_id, active_role: s.active_role, parent_held_by: heldBy,
       }, els, deltaRows);
       await applyRemovals(tx, id, removals);
-      // The version and the end of its hold on the budget commit together (takeRate).
-      await this.releaseRate(tx, hold);
+      // The version and its use of the budget commit together (takeRate).
+      await this.useRate(tx, hold);
     }, heldBy !== null);
     if (rated) await this.rated(s.actor_id, 'draft', write);
     else await write(null);
@@ -5337,9 +5348,9 @@ export class Kolab {
       from = { version: fr.versionId, element: f.element ?? null };
     }
     const id = ulid();
-    // One from the asker's owner's budget, held for this write and released as it commits (W2.21).
+    // One from the asker's owner's budget, held for this write and marked used as it commits (W2.21).
     await this.rated(s.actor_id, 'ask', (hold) => this.asSystem(async (tx, signal) => {
-      await this.releaseRate(tx, hold);
+      await this.useRate(tx, hold);
       // Locked against a change of its state (abandon, a request for changes, a commit), which waits
       // for this question and then settles it with the rest (settleQuestionsIn); or, if that came
       // first, read as it left the version.

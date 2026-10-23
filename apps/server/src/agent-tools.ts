@@ -4,7 +4,7 @@ import * as z from 'zod/v4';
 import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, type EdgeKind, type GateResult,
   nobodyCanReview,
 } from '@konjir/types';
@@ -302,7 +302,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you: put several changes in one draft.`,
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {
@@ -464,7 +464,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_ask',
-    description: `Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer. You and your owner's other agents (or, for a person, you and your agents) raise at most ${MAX_ASKS_PER_HOUR} questions and notes an hour between you: put several points in one question.`,
+    description: `Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer. You and your owner's other agents (or, for a person, you and your agents) raise at most ${MAX_ASKS_PER_HOUR} questions and notes an hour between you; an organization's agents share ${MAX_ORG_ASKS_PER_HOUR}: put several points in one question.`,
     schema: ask,
   })
   ask(a: z.infer<typeof ask>, context?: McpToolContext) {
