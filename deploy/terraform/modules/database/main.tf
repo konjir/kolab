@@ -3,9 +3,9 @@
 # against the RDS certificate bundle. Its URL, password included, is an SSM SecureString;
 # it is also in Terraform state, like the admin token.
 #
-# Recovery (P12, D75; W2.24): the automated backups give point-in-time recovery to any second
-# from the last 7 days up to the latest restorable time, which RDS keeps about 5 minutes behind
-# now. Deletion protection is on, and deleting the instance keeps those backups (and a final
+# Recovery (P12, D75, D81; W2.24): the automated backups give point-in-time recovery to any second
+# from the last 7 days up to the latest restorable time. RDS uploads the log every 5 minutes, so a
+# restore can lose up to about 5 to 6 minutes of writes. Deletion protection is on, and deleting the instance keeps those backups (and a final
 # snapshot) unless the teardown asks to leave nothing. deploy/RECOVERY.md is the runbook, and
 # deploy/recovery-drill.sh the drill.
 

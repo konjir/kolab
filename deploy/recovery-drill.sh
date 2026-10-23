@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The restore drill (P12, D75; W2.24), and the restore runbook's verify step (deploy/RECOVERY.md).
+# The restore drill (P12, D75, D81; W2.24), and the restore runbook's verify step (deploy/RECOVERY.md).
 #
 #   deploy/recovery-drill.sh --env production|staging
 #        restore the stack's latest restorable time into a scratch RDS instance, <db>-drill-<UTC date-time>;
@@ -31,7 +31,7 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_PAGER=""
 LOG_DIR="${KONJIR_DRILL_LOG_DIR:-$HERE/drills}"
 TAG_PURPOSE=recovery-drill
-RPO_TARGET_S=300      # recovery point: under 5 minutes (D75)
+RPO_TARGET_S=360      # recovery point: RDS's guarantee, up to about 5 to 6 minutes; the drill records the real figure (D81)
 RTO_TARGET_S=3600     # restore: under 1 hour (D75)
 WAIT_CAP_S=5400       # give up waiting for the scratch instance after 90 minutes
 LOG=/dev/null
@@ -275,7 +275,7 @@ EOF
   t_start="$(date +%s)"
   lag=$((t_start - $(epoch_of "$latest")))
   log "drill: $ENV, database $DB, scratch $scratch, by ${USER:-?} from $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo '?')"
-  log "recovery point: $latest, $lag s behind now (D75: under $RPO_TARGET_S s)"
+  log "recovery point: $latest, $lag s behind now (D81: up to about 5 to 6 minutes)"
   # Set before the call: if RDS takes the request and the call is interrupted, the exit still offers cleanup.
   DRILL_CREATED=1
   aws rds restore-db-instance-to-point-in-time \
@@ -307,7 +307,7 @@ EOF
   local rpo_ok=no rto_ok=no
   [ "$lag" -lt "$RPO_TARGET_S" ] && rpo_ok=yes
   [ "$verified" = 1 ] && [ $((t_verified - t_start)) -lt "$RTO_TARGET_S" ] && rto_ok=yes
-  log "summary: recovery point $lag s behind (under $RPO_TARGET_S s: $rpo_ok); restored in $(mins $((t_avail - t_start))), verified in $(mins $((t_verified - t_start))) (under $(mins "$RTO_TARGET_S"): $rto_ok); verification $([ "$verified" = 1 ] && echo passed || echo FAILED)"
+  log "summary: recovery point $lag s behind (within 6 minutes: $rpo_ok); restored in $(mins $((t_avail - t_start))), verified in $(mins $((t_verified - t_start))) (under $(mins "$RTO_TARGET_S"): $rto_ok); verification $([ "$verified" = 1 ] && echo passed || echo FAILED)"
 
   delete_scratch "$scratch" || true
   trap - EXIT INT TERM HUP
