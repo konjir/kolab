@@ -105,3 +105,5 @@ output "recovery" {
     backup_retention_days = local.backup_retention_days
   }
 }
+
+output "deletion_protection" { value = aws_db_instance.this.deletion_protection }

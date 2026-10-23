@@ -4,8 +4,13 @@ output "role_arn" {
 }
 
 output "subject" {
-  description = "The OIDC subject the role trusts. It needs the repository's subject customised to repo, context and job_workflow_ref (README: Deploying from CI)."
+  description = "The OIDC subject the role trusts: GitHub's default for the production environment of a repository with immutable subjects. The repository's subject must not be customised (README: Deploying from CI)."
   value       = local.subject
+}
+
+output "install_document" {
+  description = "The SSM document deploy/terraform's release module installs with (its install_document variable)."
+  value       = aws_ssm_document.install.name
 }
 
 output "boundary_arns" {
