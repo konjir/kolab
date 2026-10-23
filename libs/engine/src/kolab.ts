@@ -2823,17 +2823,30 @@ export class Kolab {
 
   /**
    * Takes one question or note (`ask`), or one draft, from the budget of `actor`'s owner (itself,
-   * for a person), in `tx`, the transaction that then writes it: kj_rate_take locks the owner's
-   * budget until `tx` ends and counts what the budget wrote in the window, so calls at once take
-   * their turn and the limit holds. Past it, refused, saying when the oldest leaves the window;
-   * `tx` rolls back and nothing is written.
+   * for a person), before the call writes it: kj_rate_take, in a short transaction of its own,
+   * locks the owner's budget, counts what the budget wrote in the window and the places held for
+   * writes under way, and holds one more. Past the limit, refused, saying when the oldest leaves
+   * the window, and nothing is held. The lock is never held through the write, so one person's
+   * burst can't keep everyone else waiting for a connection (W2.21). Returns the hold, which the
+   * write releases in its own transaction (releaseRate), so the hold becomes the row in one commit;
+   * if the write fails, the hold is released after (rated). Null when nothing is limited.
    */
-  private async takeRate(tx: Q, actor: string, what: 'ask' | 'draft') {
+  private async takeRate(actor: string, what: 'ask' | 'draft'): Promise<string | null> {
     const max = what === 'ask' ? this.rates.asks : this.rates.drafts;
-    if (max === Infinity) return;
-    const c = (await tx.query<{ r_owner: string; r_count: number; r_wait_s: number | null }>(
-      `select * from kj_rate_take($1, $2, $3)`, [actor, what, this.rates.windowMs])).rows[0];
-    if (c.r_count < max) return;
+    if (max === Infinity) return null;
+    type Taken = { r_owner: string; r_count: number; r_wait_s: number | null; r_hold: string | null };
+    let c: Taken;
+    try {
+      c = await this.asSystem(async (tx) => (await tx.query<Taken>(
+        `select * from kj_rate_take($1, $2, $3, $4)`, [actor, what, this.rates.windowMs, max])).rows[0]);
+    } catch (e) {
+      // Waited past lock_timeout behind others in the same budget: refused, nothing held.
+      if ((e as { code?: string }).code === '55P03') {
+        throw new LimitError(`${actor}'s ${what === 'ask' ? 'questions and notes' : 'drafts'} are arriving faster than Kolab can count them, so this one wasn't written. Try again in a few seconds, one at a time`);
+      }
+      throw e;
+    }
+    if (c.r_hold) return c.r_hold;
     const window = this.rates.windowMs === 3_600_000 ? 'an hour' : `${Math.round(this.rates.windowMs / 60_000)} minutes`;
     const last = window === 'an hour' ? 'hour' : window;
     const minutes = Math.max(1, Math.ceil((c.r_wait_s ?? 60) / 60));
@@ -2841,6 +2854,29 @@ export class Kolab {
     throw new LimitError(what === 'ask'
       ? `${who} raised ${c.r_count} questions and notes in the last ${last}; the limit is ${max} in ${window}, shared by a person and their agents. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before asking again, or put several points in one question`
       : `${who} drafted ${c.r_count} versions in the last ${last}; the limit is ${max} in ${window}, shared by a person and their agents. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before drafting again, or put several changes in one draft`);
+  }
+
+  /** Releases a rate hold in `tx`, the transaction that writes what it was held for. */
+  private async releaseRate(tx: Q, hold: string | null) {
+    if (hold) await tx.query(`select kj_rate_release($1)`, [hold]);
+  }
+
+  /**
+   * Runs `write` with one from `actor`'s budget held for it (takeRate), which `write` releases as
+   * it commits; if `write` fails, the hold is released after, so a refused or failed call costs
+   * nothing.
+   */
+  private async rated<T>(actor: string, what: 'ask' | 'draft', write: (hold: string | null) => Promise<T>): Promise<T> {
+    const hold = await this.takeRate(actor, what);
+    try {
+      return await write(hold);
+    } catch (e) {
+      if (hold) {
+        await this.asSystem((tx) => this.releaseRate(tx, hold))
+          .catch((err: unknown) => log.error('rate: a hold was not released; it stops counting after ten minutes', { error: err }));
+      }
+      throw e;
+    }
   }
 
   /**
@@ -3344,14 +3380,17 @@ export class Kolab {
     // Built on the live version read above: if the node moves on before this commits, review sees it.
     // A fork is written under a shared hold on the access lock, so the Read it rests on can't be
     // revoked between the check (row-level security's, as it inserts) and its commit (LNK8).
-    await as(async (tx) => {
-      if (rated) await this.takeRate(tx, s.actor_id, 'draft');
+    const write = (hold: string | null) => as(async (tx) => {
       await writeVersion(tx, {
         id, node_id: nodeId, seq: await nextSeq(tx, nodeId), parent_version_id: parentId, base_version_id: latest?.id ?? null,
         layer, actor_id: s.actor_id, active_role: s.active_role, parent_held_by: heldBy,
       }, els, deltaRows);
       await applyRemovals(tx, id, removals);
+      // The version and the end of its hold on the budget commit together (takeRate).
+      await this.releaseRate(tx, hold);
     }, heldBy !== null);
+    if (rated) await this.rated(s.actor_id, 'draft', write);
+    else await write(null);
     return id;
   }
 
@@ -5298,9 +5337,9 @@ export class Kolab {
       from = { version: fr.versionId, element: f.element ?? null };
     }
     const id = ulid();
-    await this.asSystem(async (tx, signal) => {
-      // One from the asker's owner's budget, held until this commits (W2.21).
-      await this.takeRate(tx, s.actor_id, 'ask');
+    // One from the asker's owner's budget, held for this write and released as it commits (W2.21).
+    await this.rated(s.actor_id, 'ask', (hold) => this.asSystem(async (tx, signal) => {
+      await this.releaseRate(tx, hold);
       // Locked against a change of its state (abandon, a request for changes, a commit), which waits
       // for this question and then settles it with the rest (settleQuestionsIn); or, if that came
       // first, read as it left the version.
@@ -5315,7 +5354,7 @@ export class Kolab {
         [id, r.versionId, a.element ?? null, a.selector ? JSON.stringify(a.selector) : null, opts.kind ?? 'question',
           question, s.actor_id, from?.version ?? null, from?.element ?? null]);
       await this.signalLayerOf(tx, signal, r.versionId!);
-    });
+    }));
     return id;
   }
 

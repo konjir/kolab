@@ -75,9 +75,10 @@ export const textLength = (s: string) => [...s].length;
  * the database (as a person's new kolabs are, D54), so every server process sees the same count and
  * a restart doesn't reset it. Each rate is a budget a person shares with their agents: an agent's
  * questions and drafts count against its owner (an organization's agents share the organization's),
- * so making agents, or archiving and making them again, doesn't raise it. The count and the write
- * run in one transaction under a lock per owner (kj_rate_take, 0025), so calls at once take turns
- * and the limit holds.
+ * so making agents, or archiving and making them again, doesn't raise it. A call takes its place in
+ * the budget under a lock per owner, held only while it counts and holds that place, and its write
+ * releases the hold as it commits (kj_rate_take, rate_hold, 0025), so calls at once take turns, the
+ * limit holds, and no burst holds the lock through its writes.
  */
 export const RATE_WINDOW_MS = 60 * 60_000;
 /**
