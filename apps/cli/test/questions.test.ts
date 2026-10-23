@@ -100,13 +100,18 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023) and before every write recording who made it (0024),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024) and before the paged lists' indexes (0025),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop index query_kolab_state, query_kolab_created, query_version, query_raised_by, query_invalidation,
+        version_node_state, version_actor_created, version_kolab_created, review_request_reviewer_created, review_request_version,
+        review_request_kolab_decided, invalidation_open_kolab, case_file_version, ruling_kolab_ruled, node_kolab_kind_name,
+        query_raised_at, version_actor_at, kolab_invite_kolab_created;
+      create index review_request_reviewer on review_request(reviewer_id) where state = 'open';
       drop trigger kolab_grant_audited on kolab_grant;
       drop trigger org_member_audited on org_member;
       drop trigger team_member_audited on team_member;

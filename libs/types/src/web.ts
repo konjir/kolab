@@ -37,12 +37,21 @@ export interface WebNodeSummary {
   latest: number | null; drafts: number; in_review: number;
 }
 
+/**
+ * Every list the API returns comes a page at a time (W2.21): `next` is the cursor for the page
+ * after it, passed back as `?cursor=`, or null on the last page. `?limit=` sets the page's size
+ * (PAGE_DEFAULT by default, at most PAGE_MAX).
+ */
+export interface WebPaged { next: string | null }
+
 /** The kolab the session works in, at a glance. */
 export interface WebOverview {
   me: WebMe;
   kolab: WebKolab;
   kolabs: WebKolab[];
+  /** The first page of its nodes, by kind then name; `nodes_next` is the cursor to the rest (GET /api/nodes). */
   nodes: WebNodeSummary[];
+  nodes_next: string | null;
   counts: {
     /** Open marks on the session's layer. */
     stale: number;
@@ -100,8 +109,10 @@ export interface WebMark {
 
 export interface WebElement {
   id: string; parent: string | null; text: string; address: string;
-  /** Questions and notes on this element, open and answered, from any version (Q5). */
+  /** Questions and notes on this element, open and answered, from any version (Q5): the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
+  /** The cursor to the older ones (GET /api/nodes/:name/queries?element=), or null when that is all (W2.21). */
+  queries_next?: string | null;
   /** Links from this element to what it relies on. */
   relies_on: WebLink[];
   /** Links from other elements that rely on this one. */
@@ -148,10 +159,15 @@ export interface WebNodeView {
   node: WebNodeSummary;
   /** The version read: the latest committed by default. Null for a node with nothing to read yet. */
   reading: WebVersion | null;
+  /** The newest of its versions the page lists, newest first (W2.21): a page of them. */
   versions: WebVersion[];
+  /** The cursor to older versions (GET /api/nodes/:name/versions), or null when that is all. */
+  versions_next: string | null;
   elements: WebElement[];
-  /** Questions and notes on the node as a whole. */
+  /** Questions and notes on the node as a whole: the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
+  /** The cursor to the older ones (GET /api/nodes/:name/queries), or null when that is all. */
+  queries_next: string | null;
   /** The version the one read is compared with: the committed version before it, or for a version in review, the one it was built on. */
   compared_with: { seq: number; elements: { id: string; text: string }[] } | null;
   /** Versions of this node waiting in review. */
@@ -179,34 +195,39 @@ export interface WebNodeView {
 }
 
 /** Another kolab's nodes, as the session reads them in place (D49): committed work only. */
-export interface WebForeignKolab {
+export interface WebForeignKolab extends WebPaged {
   kolab: { id: string; title: string; owner: string; visibility: Visibility; access: Access };
   nodes: WebNodeSummary[];
 }
 
-export interface WebCasesView {
+/** A page of the session's kolab's nodes, by kind then name (GET /api/nodes). */
+export interface WebNodesView extends WebPaged { nodes: WebNodeSummary[] }
+
+export interface WebCasesView extends WebPaged {
   cases: WebCase[];
   /** Whether the session belongs to its kolab's work (Write on a layer of it): only then does it see case files (D49). */
   belongs: boolean;
 }
-export interface WebRulingsView { rulings: WebRuling[] }
+export interface WebRulingsView extends WebPaged { rulings: WebRuling[] }
 
-export interface WebQueriesView { queries: WebQuery[] }
-export interface WebMarksView { marks: WebMark[] }
+export interface WebQueriesView extends WebPaged { queries: WebQuery[] }
+export interface WebMarksView extends WebPaged { marks: WebMark[] }
 
-export interface WebReviewsView {
+/** Both lists come a page at a time, and one `next` pages both: a list that has shown its last returns none after it. */
+export interface WebReviewsView extends WebPaged {
   for_me: { subject: string; node: string; seq: number; author: string; at: string }[];
   mine: { subject: string; node: string; seq: number; state: VersionState; note: string | null;
     verdicts: { reviewer: string; state: string; note: string | null }[] }[];
 }
 
-export interface WebLineageView {
+/** A page of the nodes with a committed version, each with its elements, and the live links from them. */
+export interface WebLineageView extends WebPaged {
   nodes: { name: string; title: string; kind: Kind; layer: Layer; seq: number; elements: { id: string; text: string }[] }[];
   links: WebLink[];
 }
 
 export interface WebActivityItem { at: string; actor: string; text: string }
-export interface WebActivityView { items: WebActivityItem[] }
+export interface WebActivityView extends WebPaged { items: WebActivityItem[] }
 
 /** What a submission, a resubmission or a verdict came to. */
 export interface WebOutcome {
@@ -269,7 +290,9 @@ export interface WebCreateKolab { name: string; title: string }
 export interface WebCreateInvite { level: InviteLevel; layers?: Layer[] }
 /** A new invite: its secret, shown this once, from which the page makes the link `<origin>/#/invite/<token>`. */
 export interface WebInviteMade { token: string; invite: InviteView }
-export interface WebInvitesView { invites: InviteView[] }
+export interface WebInvitesView extends WebPaged { invites: InviteView[] }
+/** A page of a node's versions, newest first (GET /api/nodes/:name/versions). */
+export interface WebVersionsView extends WebPaged { versions: WebVersion[] }
 /** An invite's secret, from its link. */
 export interface WebInviteToken { token: string }
 

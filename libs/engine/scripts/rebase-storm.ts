@@ -114,6 +114,7 @@ async function family(kolab: Kolab, s: Shape) {
 
 async function storm(backend: Backend, s: Shape) {
   const kolab = await Kolab.open(backend.url ? { databaseUrl: await backend.url() } : {});
+  Object.assign(kolab.rates, { asks: Infinity, drafts: Infinity }); // a benchmark's writes, not a runaway agent's
   instrument(kolab);
   try {
     const setup0 = performance.now();
@@ -210,6 +211,7 @@ async function counts(kolab: Kolab) {
  */
 async function probe(backend: Backend, s: Shape) {
   const kolab = await Kolab.open(backend.url ? { databaseUrl: await backend.url() } : {});
+  Object.assign(kolab.rates, { asks: Infinity, drafts: Infinity }); // a benchmark's writes, not a runaway agent's
   instrument(kolab);
   try {
     const { product, P, next, depth } = await family(kolab, s);
@@ -312,6 +314,7 @@ async function raceKolab(backend: Backend) {
   const checks: Checks = async (ctx) => { await hook?.(ctx); return structuralChecks(ctx); };
   // The hook runs before people's reviews and before the structural checks of Kolab's own rebases (W1.6).
   const kolab = await Kolab.open({ submissionChecks: checks, checks, ...(backend.url ? { databaseUrl: await backend.url() } : {}) });
+  Object.assign(kolab.rates, { asks: Infinity, drafts: Infinity }); // a benchmark's writes, not a runaway agent's
   return { kolab, setHook: (h: Hook | undefined) => { hook = h; } };
 }
 

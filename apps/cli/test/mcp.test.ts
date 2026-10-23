@@ -171,7 +171,7 @@ test('a token is shown once, when its session opens: whoami and the database hol
 test('admin_outbox lists one kolab\'s jobs with kolab=, and refuses a kolab that isn\'t there', async () => {
   const { server, admin } = await boot();
   await agentFor(server.url, admin, 'pm', 'product');   // makes the kolab test
-  expect(await call(admin, 'admin_outbox', { kolab: 'test' })).toStrictEqual({ jobs: [] });
+  expect(await call(admin, 'admin_outbox', { kolab: 'test' })).toStrictEqual({ jobs: [], next: null });
   await expect(call(admin, 'admin_outbox', { kolab: 'nowhere' })).rejects.toThrow(/TenancyError: no kolab nowhere/);
 });
 

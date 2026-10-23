@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import type {
-  AccessHolder, AccessLevel, AccessSource, InvitePreview, InviteView, KolabAccessView, Layer, WebAccessChanged, WebCli, WebInviteMade, WebInvitesView, WebMe, WebOverview,
+  AccessHolder, AccessLevel, AccessSource, InvitePreview, InviteView, KolabAccessView, Layer, WebAccessChanged, WebCli, WebInviteMade, WebInvitesView, WebMe, WebOverview, WebPaged,
 } from '@konjir/types';
 import { api } from '../api.js';
 import { ago } from '../util.js';
 import { Pill } from './bits.js';
-import { useRead } from './Pages.js';
+import { More, usePaged, useRead } from './Pages.js';
 import type { Act } from './Marks.js';
 
 /**
@@ -162,7 +162,8 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
   const [choice, setChoice] = useState('write-technical');
   const [made, setMade] = useState<{ link: string; invite: InviteView }>();
   const [again, setAgain] = useState(0);
-  const { data, error } = useRead<WebInvitesView>('invites', tick + again);
+  const read = usePaged<WebInvitesView>('invites', tick + again);
+  const error = read.error;
   const make = async (e: FormEvent) => {
     e.preventDefault();
     const c = LEVELS.find((l) => l.value === choice)!;
@@ -172,7 +173,7 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
       setAgain((n) => n + 1);
     }
   };
-  const invites = data?.invites ?? [];
+  const invites = read.pages?.flatMap((p) => p.invites) ?? [];
   return (
     <>
       <section className="summary" aria-label="People">
@@ -205,6 +206,7 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
             {i.state === 'open' && <button type="button" className="btn quiet" onClick={() => act.run(() => api(`invites/${encodeURIComponent(i.id)}/revoke`, {}), 'Invite revoked')}>Revoke</button>}
           </div></li>
         ))}</ul> : <p className="empty">No invites yet.</p>}
+        <More more={read.more} busy={read.busy} what="invites" />
       </section>
     </>
   );
@@ -278,7 +280,10 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
   const [again, setAgain] = useState(0);
   const [chosen, setChosen] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<Pending>();
-  const { data, error } = useRead<KolabAccessView>('access', tick + again);
+  // A page of holders at a time (W2.21); the kolab and its teams come with each page.
+  const read = usePaged<KolabAccessView & WebPaged>('access', tick + again);
+  const error = read.error;
+  const data = read.pages && { ...read.pages[0], holders: read.pages.flatMap((p) => p.holders) };
   const kolab = data?.kolab.id ?? me.kolab;
   const confirm = async () => {
     const p = pending!;
@@ -339,6 +344,7 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
           </li>
         );
       })}</ul> : <p className="empty">Nobody holds access yet.</p>)}
+      <More more={read.more} busy={read.busy} what="people and agents" />
       {data && data.teams.length > 0 && (
         <>
           <h3 id="p-teams">Teams granted access</h3>

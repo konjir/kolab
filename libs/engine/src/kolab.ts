@@ -7,8 +7,9 @@ import {
 } from '@konjir/address';
 import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konjir/db';
 import { log, maskTokens } from '@konjir/log';
+import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, type PageOpts } from './page.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_FINDINGS, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -1125,6 +1126,13 @@ export class Kolab {
 
   /** The outbox's jobs, oldest first, or only those in `state`: for an admin (konjir_admin_outbox). */
   async outboxJobs(opts: { state?: OutboxState; kolab?: string } = {}): Promise<OutboxJobView[]> {
+    return (await this.outboxPage(opts, { limit: null }, true)).items;
+  }
+
+  /** One page of the outbox's jobs, by id (W2.21). */
+  async outboxPage(opts: { state?: OutboxState; kolab?: string }, page: PageOpts = {}, all = false) {
+    const size = all ? Number.MAX_SAFE_INTEGER : pageSize(page.limit);
+    const [after] = (keyOf('outbox', page.cursor, 1) ?? [null]) as [string | null];
     if (opts.kolab !== undefined) await this.requireKolab(opts.kolab);
     const rows = (await this.db.query<{ id: string; kind: OutboxKind; state: OutboxState; kolab_id: string; name: string; seq: number;
       attempts: number; claimed_by: string | null; run_after: Date | string; last_error: string | null; created_at: Date | string;
@@ -1133,13 +1141,15 @@ export class Kolab {
               an.kolab_id as after_kolab, an.name as after_name, av.seq as after_seq
          from outbox o join version v on v.id = o.version_id join node n on n.id = v.node_id
          left join version av on av.id = o.payload->>'onto' left join node an on an.id = av.node_id
-        where ($1::text is null or o.state = $1) and ($2::text is null or o.kolab_id = $2) order by o.id`, [opts.state ?? null, opts.kolab ?? null])).rows;
-    return rows.map((r) => ({
+        where ($1::text is null or o.state = $1) and ($2::text is null or o.kolab_id = $2) and ($3::text is null or o.id > $3)
+        order by o.id limit $4`, [opts.state ?? null, opts.kolab ?? null, after, all ? null : size + 1])).rows;
+    const { rows: shown, next } = pageOf(rows, size, 'outbox', (r) => [r.id]);
+    return { next, items: shown.map((r): OutboxJobView => ({
       id: r.id, kind: r.kind, state: r.state, subject: formatAddress({ kolab: r.kolab_id, node: r.name, version: r.seq }),
       attempts: r.attempts, claimed_by: r.claimed_by, run_after: new Date(r.run_after).toISOString(), last_error: r.last_error,
       created_at: new Date(r.created_at).toISOString(),
       ...(r.after_name ? { after: formatAddress({ kolab: r.after_kolab!, node: r.after_name, version: r.after_seq! }) } : {}),
-    }));
+    })) };
   }
 
   /**
@@ -1240,10 +1250,23 @@ export class Kolab {
    * whether it is archived.
    */
   async listActors(opts: { owner?: string; archived?: boolean } = {}): Promise<Actor[]> {
+    return this.actorRows(opts);
+  }
+
+  /** One page of listActors, by id (W2.21). */
+  async actorsPage(opts: { owner?: string; archived?: boolean }, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const [after] = (keyOf('actors', page.cursor, 1) ?? [null]) as [string | null];
+    const { rows, next } = pageOf(await this.actorRows(opts, after, size + 1), size, 'actors', (r) => [r.id]);
+    return { items: rows, next };
+  }
+
+  private async actorRows(opts: { owner?: string; archived?: boolean }, after: string | null = null, limit: number | null = null): Promise<Actor[]> {
     const rows = (await this.db.query<Actor & { archived: boolean }>(
       `select id, name, kind, owner_id as owner, kj_actor_archived(id) as archived from actor
-        where $1::text is null or owner_id = $1 order by id`, [opts.owner ?? null])).rows;
-    return opts.archived ? rows : rows.filter((a) => !a.archived).map(({ archived: _, ...a }) => a);
+        where ($1::text is null or owner_id = $1) and ($2 or not kj_actor_archived(id)) and ($3::text is null or id > $3)
+        order by id limit $4`, [opts.owner ?? null, !!opts.archived, after, limit])).rows;
+    return opts.archived ? rows : rows.map(({ archived: _, ...a }) => a);
   }
 
   /**
@@ -1552,24 +1575,37 @@ export class Kolab {
    * committed versions show. Every read runs as kj_agent, so row-level security bounds it too.
    * Addresses in the questions are written to be read in the session's kolab.
    */
-  async readNode(sessionId: string, ref: string, version?: number) {
+  async readNode(sessionId: string, ref: string, version?: number, opts: {
+    /**
+     * Which questions to read beside the elements (W2.21): by default every one on the node; with
+     * `per`, only the newest `per` on each of `count` elements from position `from` (and on the node
+     * as a whole when `from` is 0), with `query_counts` counting all of them; false, none.
+     */
+    threads?: { per: number; from: number; count: number } | false;
+  } = {}) {
     const where = { session: sessionId };
     const { node, version: v } = await this.locateVersion(where, { ...parseNodeRef(ref), version });
     if (!v) throw new Error(`${ref} has no ${version === undefined ? 'committed version' : `version ${version}`}`);
     const from = await this.sessionKolab(sessionId);
-    const read = await this.read(where, async (q) => ({
-      node, version: v, from,
-      // Who made the node (W2.20), told only to a reader in its own kolab (D49, D58): null when
-      // that is the reader's kolab but the node was made before Kolab recorded it, and absent
-      // otherwise. Read as kj_agent, through kj_node_creator, which answers for that kolab alone.
-      ...(node.kolab_id === from ? { createdBy: (await q.query<{ c: string | null }>(`select kj_node_creator($1) as c`, [node.id])).rows[0]?.c ?? null } : {}),
-      elements: await this.elements(v.id, q),
-      queries: await this.listQueries({ node: node.id, from }, q),
-      // Precedent and open case files on the node: only its own kolab's ever show, since row-level
-      // security gives a session no other kolab's (TEN13).
-      rulings: await this.listRulings({ kolab: node.kolab_id, node: node.id }, q),
-      cases: await this.listCases({ kolab: node.kolab_id, node: node.id, state: 'open' }, q),
-    }));
+    const t = opts.threads;
+    const read = await this.read(where, async (q) => {
+      const elements = await this.elements(v.id, q);
+      const on = t ? [...(t.from === 0 ? [null] : []), ...elements.slice(t.from, t.from + t.count).map((e) => e.element_id)] : undefined;
+      return {
+        node, version: v, from,
+        // Who made the node (W2.20), told only to a reader in its own kolab (D49, D58): null when
+        // that is the reader's kolab but the node was made before Kolab recorded it, and absent
+        // otherwise. Read as kj_agent, through kj_node_creator, which answers for that kolab alone.
+        ...(node.kolab_id === from ? { createdBy: (await q.query<{ c: string | null }>(`select kj_node_creator($1) as c`, [node.id])).rows[0]?.c ?? null } : {}),
+        elements,
+        queries: t === false ? [] : await this.listQueries({ node: node.id, from, ...(t ? { perElement: t.per, elements: on } : {}) }, q),
+        query_counts: t ? await this.queryCounts({ node: node.id, from, elements: on }, q) : undefined,
+        // Precedent and open case files on the node: only its own kolab's ever show, since row-level
+        // security gives a session no other kolab's (TEN13).
+        rulings: await this.listRulings({ kolab: node.kolab_id, node: node.id }, q),
+        cases: await this.listCases({ kolab: node.kolab_id, node: node.id, state: 'open' }, q),
+      };
+    });
     // The links it drops (0012), for its reviewers: private to its kolab, like its links (D49).
     // Its pending rebase is told to any reader in the node's kolab, one who holds only Read too
     // (D58): a reader from another kolab doesn't learn of it.
@@ -2262,14 +2298,24 @@ export class Kolab {
          values ($1, $2, $3, $4, $5, $6, $7, now() + $8 * interval '1 second')`,
         [id, sessionKey(token), s.kolab, input.level, layers.includes('functional'), layers.includes('technical'), s.actor_id, this.invites.ttlS]);
     });
-    const invite = (await this.inviteRows(s.kolab, id))[0];
+    const { key: _, ...invite } = (await this.inviteRows(s.kolab, id))[0];
     return { token, invite };
   }
 
   /** The session's kolab's invites, newest first, open and settled, for a person with Admin there (W3.4). */
   async listInvites(sessionId: string): Promise<InviteView[]> {
     const s = await this.requireInviter(sessionId);
-    return this.inviteRows(s.kolab);
+    return (await this.inviteRows(s.kolab)).map(({ key: _, ...r }) => r);
+  }
+
+  /** One page of the session's kolab's invites, newest first (W2.21): listInvites', by a cursor. */
+  async invitesPage(sessionId: string, page: PageOpts = {}): Promise<{ items: InviteView[]; next: string | null }> {
+    const s = await this.requireInviter(sessionId);
+    const size = pageSize(page.limit);
+    const after = keyOf('invites', page.cursor, 2) as [string, string] | undefined;
+    const rows = await this.inviteRows(s.kolab, undefined, { after, limit: size + 1 });
+    const { rows: items, next } = pageOf(rows, size, 'invites', (r) => [r.key, r.id]);
+    return { items: items.map(({ key: _, ...r }) => r), next };
   }
 
   /** Revokes an open invite of the session's kolab, by its id, for a person with Admin there (W3.4). */
@@ -2362,12 +2408,16 @@ export class Kolab {
     return s;
   }
 
-  private async inviteRows(kolab: string, id?: string): Promise<InviteView[]> {
-    const rows = (await this.db.query<{ id: string; kolab_id: string; level: InviteLevel; functional: boolean; technical: boolean; created_by: string; created_at: Date; expires_at: Date; accepted_by: string | null; accepted_at: Date | null; revoked_at: Date | null; expired: boolean }>(
-      `select id, kolab_id, level, functional, technical, created_by, created_at, expires_at, accepted_by, accepted_at, revoked_at, expires_at <= now() as expired
-         from kolab_invite where kolab_id = $1 and ($2::text is null or id = $2) order by created_at desc, id limit 100`, [kolab, id ?? null])).rows;
+  private async inviteRows(kolab: string, id?: string, page?: { after?: [string, string]; limit: number }): Promise<(InviteView & { key: string })[]> {
+    const rows = (await this.db.query<{ id: string; kolab_id: string; level: InviteLevel; functional: boolean; technical: boolean; created_by: string; created_at: Date; expires_at: Date; accepted_by: string | null; accepted_at: Date | null; revoked_at: Date | null; expired: boolean; at_key: string }>(
+      `select id, kolab_id, level, functional, technical, created_by, created_at, expires_at, accepted_by, accepted_at, revoked_at, expires_at <= now() as expired,
+              created_at::text as at_key
+         from kolab_invite where kolab_id = $1 and ($2::text is null or id = $2)
+          and ($3::text is null or (created_at, id) < ($3::timestamptz, $4::text))
+        order by created_at desc, id desc limit $5`, [kolab, id ?? null, page?.after?.[0] ?? null, page?.after?.[1] ?? null, page?.limit ?? 100])).rows;
     const iso = (d: Date | null) => (d === null ? null : new Date(d).toISOString());
     return rows.map((r) => ({
+      key: r.at_key,
       id: r.id, kolab: r.kolab_id, level: r.level, layers: LAYERS.filter((l) => (l === 'functional' ? r.functional : r.technical)),
       invited_by: r.created_by, created_at: iso(r.created_at)!, expires_at: iso(r.expires_at)!,
       state: r.accepted_at ? 'accepted' as const : r.revoked_at ? 'revoked' as const : r.expired ? 'expired' as const : 'open' as const,
@@ -2386,13 +2436,23 @@ export class Kolab {
    * such an agent's owner, who holds nothing here, isn't named. A public kolab's readers are
    * everyone, and are not listed. Teams' grants are listed apart. One read-only snapshot.
    */
-  async listAccess(sessionId: string): Promise<KolabAccessView> {
+  async listAccess(sessionId: string, page?: PageOpts): Promise<KolabAccessView> {
     const s = await this.requireAccessAdmin(sessionId);
+    // A page of the holders (W2.21): highest access first, then people, then by id.
+    const size = page ? pageSize(page.limit) : undefined;
+    const after = page ? keyOf('access', page.cursor, 3) as [number, number, string] | undefined : undefined;
+    if (after && (typeof after[0] !== 'number' || (after[1] !== 0 && after[1] !== 1) || typeof after[2] !== 'string')) throw new LimitError('that cursor isn\'t one this list gave');
+    let next: string | null = null;
     return this.db.transaction(async (tx) => {
       await tx.exec('set transaction isolation level repeatable read, read only');
       const k = (await tx.query<{ owner_id: string; owner_kind: 'user' | 'organization'; visibility: Visibility; base_permission: AccessLevel | null }>(
         `select k.owner_id, o.kind as owner_kind, k.visibility, k.base_permission from kolab k join account o on o.id = k.owner_id where k.id = $1`, [s.kolab])).rows[0];
-      const holders = await holderRows(tx, s.kolab);
+      let holders = await holderRows(tx, s.kolab, size === undefined ? undefined : { after: after && [after[0], after[1] === 1, after[2]], limit: size });
+      if (size !== undefined) {
+        const p = pageOf(holders, size, 'access', (h) => [h.rank, h.kind === 'person' ? 0 : 1, h.id]);
+        holders = p.rows;
+        next = p.next;
+      }
       const org = k.owner_kind === 'organization' ? k.owner_id : null;
       const members = new Map((await tx.query<{ user_id: string; role: OrgRole }>(
         `select user_id, role from org_member where org_id = $1`, [org])).rows.map((m) => [m.user_id, m.role]));
@@ -2442,11 +2502,12 @@ export class Kolab {
         }
         out.push(holder);
       }
-      // Highest access first, then people before agents, then by name.
-      out.sort((a, b) => rankOf(b.access.level) - rankOf(a.access.level) || (a.kind === b.kind ? 0 : a.kind === 'person' ? -1 : 1) || a.actor.localeCompare(b.actor));
+      // Highest access first, then people before agents, then by name (a page is in that order already).
+      if (size === undefined) out.sort((a, b) => rankOf(b.access.level) - rankOf(a.access.level) || (a.kind === b.kind ? 0 : a.kind === 'person' ? -1 : 1) || a.actor.localeCompare(b.actor));
       return {
         kolab: { id: s.kolab, owner: k.owner_id, owner_kind: k.owner_kind, visibility: k.visibility, base_permission: k.base_permission },
         holders: out,
+        ...(size !== undefined ? { next } : {}),
         teams: teamGrants.map((t) => ({ team: t.team_id!, level: t.level, layers: layersOfRow(t), members: reach.get(t.team_id!)!.size }))
           .sort((a, b) => a.team.localeCompare(b.team)),
       };
@@ -2744,6 +2805,35 @@ export class Kolab {
   readonly ownKolabs = { max: 10, burst: 3, windowMs: 10 * 60_000 };
 
   /**
+   * How many questions and notes (`asks`) and drafts (`drafts`) one actor may make in a window of
+   * `windowMs`, across every kolab (W2.21, D71): counted in the database, as ownKolabs' rate is, so
+   * every process sees the same count. The values are MAX_ASKS_PER_HOUR and MAX_DRAFTS_PER_HOUR.
+   */
+  readonly rates = { asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, windowMs: RATE_WINDOW_MS };
+
+  /**
+   * Refuses `actor` a question or note (`ask`), or a draft, past its rate: the rows it wrote in the
+   * window, counted before anything is written. Calls at the same moment may pass together; the
+   * next is refused. The refusal says when the oldest of them leaves the window.
+   */
+  private async requireRate(actor: string, what: 'ask' | 'draft') {
+    const max = what === 'ask' ? this.rates.asks : this.rates.drafts;
+    const c = (await this.db.query<{ n: number; wait_s: number | null }>(
+      what === 'ask'
+        ? `select count(*)::int as n, ceil(extract(epoch from min(created_at) + $2 * interval '1 millisecond' - now()))::int as wait_s
+             from query where raised_by = $1 and created_at > now() - $2 * interval '1 millisecond'`
+        : `select count(*)::int as n, ceil(extract(epoch from min(created_at) + $2 * interval '1 millisecond' - now()))::int as wait_s
+             from version where actor_id = $1 and created_at > now() - $2 * interval '1 millisecond'`,
+      [actor, this.rates.windowMs])).rows[0];
+    if (c.n < max) return;
+    const window = this.rates.windowMs === 3_600_000 ? 'an hour' : `${Math.round(this.rates.windowMs / 60_000)} minutes`;
+    const minutes = Math.max(1, Math.ceil((c.wait_s ?? 60) / 60));
+    throw new LimitError(what === 'ask'
+      ? `${actor} raised ${c.n} questions and notes in the last ${window === 'an hour' ? 'hour' : window}; the limit is ${max} in ${window}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before asking again, or put several points in one question`
+      : `${actor} drafted ${c.n} versions in the last ${window === 'an hour' ? 'hour' : window}; the limit is ${max} in ${window}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before drafting again, or put several changes in one draft`);
+  }
+
+  /**
    * A person makes a private kolab of their own (D54; TEN2, TEN3), from a session that holds at
    * least Write in its kolab, so a reader invited to look can't. Its name follows the kolab
    * grammar, at most 40 characters, is unique across Konjir (TEN4) and is none of the reserved
@@ -2858,11 +2948,25 @@ export class Kolab {
       `select id, owner_id as owner, title, visibility, base_permission from kolab where id = $1 and not kj_kolab_archived(id)`, [id])).rows[0];
   }
 
-  async listKolabs(opts: { owner?: string; archived?: boolean } = {}): Promise<KolabRow[]> {
+  async listKolabs(opts: { owner?: string; archived?: boolean; ids?: string[] } = {}): Promise<KolabRow[]> {
+    return this.kolabRows(opts);
+  }
+
+  /** One page of listKolabs, by name (W2.21). */
+  async kolabsPage(opts: { owner?: string; archived?: boolean }, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const [after] = (keyOf('kolabs', page.cursor, 1) ?? [null]) as [string | null];
+    const { rows, next } = pageOf(await this.kolabRows(opts, after, size + 1), size, 'kolabs', (r) => [r.id]);
+    return { items: rows, next };
+  }
+
+  private async kolabRows(opts: { owner?: string; archived?: boolean; ids?: string[] }, after: string | null = null, limit: number | null = null): Promise<KolabRow[]> {
     const rows = (await this.db.query<KolabRow & { archived: boolean }>(
       `select id, owner_id as owner, title, visibility, base_permission, kj_kolab_archived(id) as archived from kolab
-        where $1::text is null or owner_id = $1 order by id`, [opts.owner ?? null])).rows;
-    return opts.archived ? rows : rows.filter((k) => !k.archived).map(({ archived: _, ...k }) => k);
+        where ($1::text is null or owner_id = $1) and ($2 or not kj_kolab_archived(id)) and ($3::text is null or id > $3)
+          and ($5::text[] is null or id = any($5::text[]))
+        order by id limit $4`, [opts.owner ?? null, !!opts.archived, after, limit, opts.ids ?? null])).rows;
+    return opts.archived ? rows : rows.map(({ archived: _, ...k }) => k);
   }
 
   /**
@@ -3072,6 +3176,7 @@ export class Kolab {
    */
   async createNode(sessionId: string, kind: Kind, title: string, name: string = ulid()): Promise<string> {
     if (!isNodeName(name)) throw new GateError(`"${name}" isn't a valid node name: it may not contain '/', '@', '#', '~' or whitespace`);
+    checkText('the title', title, MAX_TITLE);
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
     const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
     if (await this.findNode(this.db, s.kolab, name)) throw taken();
@@ -3123,6 +3228,8 @@ export class Kolab {
     await this.requireNodeIn(sessionId, nodeId);   // another kolab's node reads as no node at all
     const node = await this.node(nodeId);
     const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
+    checkDraftInput(input);
+    await this.requireRate(s.actor_id, 'draft');
     return this.writeDraft(nodeId, node.layer, s, input, (fn, access) => this.asAgent(sessionId, fn, nodeId, { access }));
   }
 
@@ -3160,6 +3267,8 @@ export class Kolab {
   private async writeDraft(nodeId: string, layer: Layer, s: { actor_id: string; active_role: string; kolab: string },
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
     as: (fn: (tx: Q, signal: Signal) => Promise<void>, access: boolean) => Promise<void>): Promise<string> {
+    // Its size first, before any work is done on it (W2.21).
+    checkDraftInput(input);
 
     // A variant's new version keeps its foreign parent and carries its
     // existing exceptions forward; a plain node's parent is its own last version.
@@ -3215,6 +3324,7 @@ export class Kolab {
     }
 
     const els = materialize(parentEls, deltaRows);
+    checkVersion(els);
     const removals = input.unlink?.length ? await this.linkIdentities(nodeId, latest?.id ?? null, null, input.unlink) : [];
     const id = ulid();
     // Built on the live version read above: if the node moves on before this commits, review sees it.
@@ -3490,7 +3600,10 @@ export class Kolab {
     const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
     if (s.actor_id === v.actor_id) throw new GateError(`${s.actor_id} wrote ${here}; another actor with Write on the ${v.layer} layer must review it`);
     const findings = input.findings ?? [];
+    checkText('the review note', input.note);
+    if (findings.length > MAX_FINDINGS) throw new LimitError(`that verdict has ${findings.length} findings; the limit is ${MAX_FINDINGS}. Group them, or request changes and say what must change in the note`);
     for (const f of findings) {
+      checkText('a finding\'s explanation', f.explanation);
       if (!FINDING_KINDS.includes(f.kind)) throw new GateError(`a finding is a contradiction or a layer_leak, not ${f.kind}`);
       if (!f.elements?.length || !f.explanation?.trim()) throw new GateError('each finding names the elements involved and explains itself');
     }
@@ -4963,6 +5076,7 @@ export class Kolab {
 
   /** Resolve a stale or orphaned override. Records precedent for the triple. */
   async resolveOverride(sessionId: string, markId: string, resolution: OverrideResolution, amendedText?: string) {
+    checkText('the amended text', amendedText, MAX_ELEMENT_TEXT);
     // Who may resolve comes first, so whether a mark is an open override mark is told only to the
     // layer that owns it, as answerQuery does. Another kolab's mark reads as one that isn't there.
     const m = (await this.db.query<MarkRow>(`select * from invalidation where id = $1`, [markId])).rows[0];
@@ -5142,7 +5256,9 @@ export class Kolab {
    */
   async raiseQuery(sessionId: string, address: Address | string, question: string,
     opts: { kind?: QueryKind; from?: Address | string } = {}): Promise<string> {
+    checkText(opts.kind === 'note' ? 'the note' : 'the question', question);
     const s = await this.session(sessionId);
+    await this.requireRate(s.actor_id, 'ask');
     const a = typeof address === 'string' ? parseAddress(address) : address;
     // Anyone with access may ask (Q1), about what is in the kolab they work in: questions stay in
     // their kolab, whose layers answer them (TEN12); a link or a fork may cross (LNK8, KON9).
@@ -5189,6 +5305,7 @@ export class Kolab {
 
   /** Only the layer that owns the answer may answer. Override and edge questions resolve through their own verbs. */
   async answerQuery(sessionId: string, queryId: string, answer: string) {
+    checkText('the answer', answer);
     const q = (await this.db.query<{
       version_id: string; element_id: string | null; invalidation_id: string | null; state: string;
       kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null;
@@ -5522,8 +5639,9 @@ export class Kolab {
     if (!Array.isArray(input.evidence) || !input.evidence.length) {
       throw new GateError('a position needs its evidence (CASE1): the requirement, code, commit or test run that backs the claim');
     }
-    if (input.evidence.length > MAX_EVIDENCE) throw new GateError(`a position cites at most ${MAX_EVIDENCE} pieces of evidence`);
+    if (input.evidence.length > MAX_EVIDENCE) throw new LimitError(`a position cites at most ${MAX_EVIDENCE} pieces of evidence; that is ${input.evidence.length}. Cite the strongest`);
     const evidence = input.evidence.map((e) => requireText(e, 'each piece of evidence'));
+    checkEvidence(evidence);
     for (const e of evidence) {
       if (!e.startsWith('kj:')) continue;
       const r = await this.resolve(e, { session: sessionId });
@@ -5553,21 +5671,28 @@ export class Kolab {
    * opened or holds a position on; with `node` (a node's id), those about it; with `id`, that one.
    * Run on `q`: a session's reads run as kj_agent, so row-level security bounds them too.
    */
-  async listCases(filter: { kolab: string; layer?: Layer; state?: CaseFileState; actor?: string; node?: string; id?: string; limit?: number },
-    q: Q = this.db): Promise<CaseFileView[]> {
+  async listCases(filter: { kolab: string; layer?: Layer; state?: CaseFileState; actor?: string; node?: string; id?: string; limit?: number;
+    /** A page's start (W2.21): the case after this one, by when it last changed and its id. */
+    after?: [string, string] },
+    q: Q = this.db, keys?: { touched: string; id: string }[]): Promise<CaseFileView[]> {
     const rows = (await q.query<{
       id: string; node: string; seq: number; element_id: string | null; layer: Layer; question: string | null;
-      state: CaseFileState; opened_by: string | null; opened_at: Date | string | null; superseded_by: string | null;
+      state: CaseFileState; opened_by: string | null; opened_at: Date | string | null; superseded_by: string | null; touched: string;
     }>(
-      `select c.id, n.name as node, v.seq, c.element_id, v.layer, c.question, c.state, c.opened_by, c.opened_at, c.superseded_by
-         from case_file c join version v on v.id = c.version_id join node n on n.id = v.node_id
-        where c.kolab_id = $1 and ($2::text is null or v.layer = $2) and ($3::text is null or c.state = $3)
-          and ($4::text is null or c.opened_by = $4 or exists (select 1 from position p where p.case_file_id = c.id and p.actor_id = $4))
-          and ($5::text is null or v.node_id = $5) and ($6::text is null or c.id = $6)
-        order by greatest(c.opened_at, (select max(p.created_at) from position p where p.case_file_id = c.id),
-                          (select max(r.ruled_at) from ruling r where r.case_file_id = c.id or r.id = c.superseded_by)) desc nulls last,
-                 c.id desc limit $7`,
-      [filter.kolab, filter.layer ?? null, filter.state ?? null, filter.actor ?? null, filter.node ?? null, filter.id ?? null, filter.limit ?? 50])).rows;
+      `select x.*, x.touched_at::text as touched from (
+         select c.id, n.name as node, v.seq, c.element_id, v.layer, c.question, c.state, c.opened_by, c.opened_at, c.superseded_by,
+                coalesce(greatest(c.opened_at, (select max(p.created_at) from position p where p.case_file_id = c.id),
+                                  (select max(r.ruled_at) from ruling r where r.case_file_id = c.id or r.id = c.superseded_by)),
+                         '-infinity'::timestamptz) as touched_at
+           from case_file c join version v on v.id = c.version_id join node n on n.id = v.node_id
+          where c.kolab_id = $1 and ($2::text is null or v.layer = $2) and ($3::text is null or c.state = $3)
+            and ($4::text is null or c.opened_by = $4 or exists (select 1 from position p where p.case_file_id = c.id and p.actor_id = $4))
+            and ($5::text is null or v.node_id = $5) and ($6::text is null or c.id = $6)) x
+        where ($8::text is null or (x.touched_at, x.id) < ($8::timestamptz, $9::text))
+        order by x.touched_at desc, x.id desc limit $7`,
+      [filter.kolab, filter.layer ?? null, filter.state ?? null, filter.actor ?? null, filter.node ?? null, filter.id ?? null, filter.limit ?? 50,
+        filter.after?.[0] ?? null, filter.after?.[1] ?? null])).rows;
+    keys?.push(...rows.map((r) => ({ touched: r.touched, id: r.id })));
     if (!rows.length) return [];
     const ids = rows.map((r) => r.id);
     const positions = (await q.query<{ id: string; case_file_id: string; actor_id: string; claim: string; evidence: unknown; seeks: RulingEffect | null; verdict: PositionVerdict | null; created_at: Date | string | null }>(
@@ -5596,20 +5721,24 @@ export class Kolab {
    * directly or through a case file; with `cases` and `ids`, those on these case files or with these
    * ids. Run on `q`, as listCases.
    */
-  async listRulings(filter: { kolab: string; node?: string; cases?: string[]; ids?: string[]; limit?: number }, q: Q = this.db): Promise<RulingView[]> {
+  async listRulings(filter: { kolab: string; node?: string; cases?: string[]; ids?: string[]; limit?: number;
+    /** A page's start (W2.21): the ruling after this one, by when it was given and its id. */
+    after?: [string, string] }, q: Q = this.db, keys?: { at: string; id: string }[]): Promise<RulingView[]> {
     const pick = filter.cases !== undefined || filter.ids !== undefined;
     const rows = (await q.query<{
       id: string; case_file_id: string | null; node: string; seq: number; element_id: string | null; text: string;
-      effect: RulingEffect | null; replaces: string | null; actor_id: string; ruled_at: Date | string | null;
+      effect: RulingEffect | null; replaces: string | null; actor_id: string; ruled_at: Date | string | null; at_key: string;
     }>(
       `select r.id, r.case_file_id, n.name as node, v.seq, coalesce(r.element_id, c.element_id) as element_id, r.text,
-              r.effect, r.replaces, r.actor_id, r.ruled_at
+              r.effect, r.replaces, r.actor_id, r.ruled_at, coalesce(r.ruled_at, '-infinity'::timestamptz)::text as at_key
          from ruling r left join case_file c on c.id = r.case_file_id
          join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
         where r.kolab_id = $1 and ($2::text is null or v.node_id = $2)
           and (not $3 or r.case_file_id = any($4::text[]) or r.id = any($5::text[]))
-        order by r.ruled_at desc nulls last, r.id desc limit $6`,
-      [filter.kolab, filter.node ?? null, pick, filter.cases ?? [], filter.ids ?? [], filter.limit ?? 50])).rows;
+          and ($7::text is null or (coalesce(r.ruled_at, '-infinity'::timestamptz), r.id) < ($7::timestamptz, $8::text))
+        order by coalesce(r.ruled_at, '-infinity'::timestamptz) desc, r.id desc limit $6`,
+      [filter.kolab, filter.node ?? null, pick, filter.cases ?? [], filter.ids ?? [], filter.limit ?? 50, filter.after?.[0] ?? null, filter.after?.[1] ?? null])).rows;
+    keys?.push(...rows.map((r) => ({ at: r.at_key, id: r.id })));
     return rows.map((r) => ({
       ruling: r.id, on: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }), case: r.case_file_id,
       text: r.text, effect: r.effect, replaces: r.replaces, ruled_by: r.actor_id, ruled_at: iso(r.ruled_at),
@@ -5639,6 +5768,66 @@ export class Kolab {
   }
 
   /**
+   * One page of a session's questions and notes (W2.21): queriesFor's, oldest first, by id. The
+   * session's own kolab only, so none is left out after the read and the page is whole.
+   */
+  async queriesPage(sessionId: string, filter: Omit<Parameters<Kolab['listQueries']>[0], 'kolab' | 'from' | 'newest' | 'take' | 'after'>, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const [after] = (keyOf('queries', page.cursor, 1) ?? [undefined]) as [string | undefined];
+    const kolab = await this.sessionKolab(sessionId);
+    const rows = await this.read({ session: sessionId }, (q) => this.listQueries({ ...filter, kolab, take: size + 1, after }, q));
+    const { rows: items, next } = pageOf(rows, size, 'queries', (r) => [r.id]);
+    return { items, next };
+  }
+
+  /** One page of a session's open marks (W2.21): marksFor's, oldest first. */
+  async marksPage(sessionId: string, filter: { layer?: Layer; node?: string } = {}, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const after = keyOf('marks', page.cursor, 2) as [string, string] | undefined;
+    const kolab = await this.sessionKolab(sessionId);
+    const picked = await this.pickMarks(sessionId, kolab, filter, after, size + 1);
+    const { rows, next } = pageOf(picked, size, 'marks', (r) => [r.at, r.id]);
+    const items = rows.length ? await this.describeMarks({
+      ...filter, kolab, ids: rows.map((r) => r.id), unnamed: rows.filter((r) => !r.named).map((r) => r.id),
+    }) : [];
+    return { items, next };
+  }
+
+  private async pickMarks(sessionId: string, kolab: string, filter: { layer?: Layer; node?: string }, after?: [string, string], limit?: number) {
+    return this.read({ session: sessionId }, async (q) => (await q.query<{ id: string; named: boolean; at: string }>(
+      `select i.id, tn.id is not null as named, i.created_at::text as at
+         from invalidation i join version v on v.id = i.version_id
+         left join version tv on tv.id = i.triggered_by left join node tn on tn.id = tv.node_id
+        where i.state = 'open' and i.kolab_id = $1
+          and ($2::text is null or v.layer = $2) and ($3::text is null or v.node_id = $3)
+          and ($4::text is null or (i.created_at, i.id) > ($4::timestamptz, $5::text))
+        order by i.created_at, i.id limit $6`,
+      [kolab, filter.layer ?? null, filter.node ?? null, after?.[0] ?? null, after?.[1] ?? null, limit ?? null])).rows);
+  }
+
+  /** One page of a session's case files (W2.21): casesFor's, most recently changed first. */
+  async casesPage(sessionId: string, filter: Omit<Parameters<Kolab['listCases']>[0], 'kolab' | 'limit' | 'after'>, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const after = keyOf('cases', page.cursor, 2) as [string, string] | undefined;
+    const kolab = await this.sessionKolab(sessionId);
+    const keys: { touched: string; id: string }[] = [];
+    const rows = await this.read({ session: sessionId }, (q) => this.listCases({ ...filter, kolab, limit: size + 1, after }, q, keys));
+    const { rows: items, next } = pageOf(rows, size, 'cases', (r) => { const k = keys.find((x) => x.id === r.case)!; return [k.touched, k.id]; });
+    return { items, next };
+  }
+
+  /** One page of a session's rulings (W2.21): rulingsFor's, newest first. */
+  async rulingsPage(sessionId: string, filter: { node?: string }, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const after = keyOf('rulings', page.cursor, 2) as [string, string] | undefined;
+    const kolab = await this.sessionKolab(sessionId);
+    const keys: { at: string; id: string }[] = [];
+    const rows = await this.read({ session: sessionId }, (q) => this.listRulings({ ...filter, kolab, limit: size + 1, after }, q, keys));
+    const { rows: items, next } = pageOf(rows, size, 'rulings', (r) => { const k = keys.find((x) => x.id === r.ruling)!; return [k.at, k.id]; });
+    return { items, next };
+  }
+
+  /**
    * A session's open marks, described: describeMarks in its own kolab, over the marks the session
    * reads as kj_agent. Row-level security gives a session that holds only Read none (0022; D49):
    * a mark's note can quote a ruling or the review gate's finding, private to those who belong to
@@ -5648,13 +5837,7 @@ export class Kolab {
    */
   async marksFor(sessionId: string, filter: { layer?: Layer; node?: string } = {}) {
     const kolab = await this.sessionKolab(sessionId);
-    const picked = await this.read({ session: sessionId }, async (q) => (await q.query<{ id: string; named: boolean }>(
-      `select i.id, tn.id is not null as named
-         from invalidation i join version v on v.id = i.version_id
-         left join version tv on tv.id = i.triggered_by left join node tn on tn.id = tv.node_id
-        where i.state = 'open' and i.kolab_id = $1
-          and ($2::text is null or v.layer = $2) and ($3::text is null or v.node_id = $3)`,
-      [kolab, filter.layer ?? null, filter.node ?? null])).rows);
+    const picked = await this.pickMarks(sessionId, kolab, filter);
     return picked.length ? this.describeMarks({
       ...filter, kolab, ids: picked.map((r) => r.id), unnamed: picked.filter((r) => !r.named).map((r) => r.id),
     }) : [];
@@ -5677,6 +5860,18 @@ export class Kolab {
 
   /** Nodes, of one kind if given, in one kolab if given, with the names addresses give them. */
   async listNodes(kind?: Kind, kolab?: string) {
+    return this.nodeRows(kind, kolab);
+  }
+
+  /** One page of a kolab's nodes, of one kind if given, by kind then name (W2.21). */
+  async nodesPage(kolab: string, kind: Kind | undefined, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const after = keyOf('nodes', page.cursor, 2) as [string, string] | undefined;
+    const { rows, next } = pageOf(await this.nodeRows(kind, kolab, after, size + 1), size, 'nodes', (r) => [r.kind, r.name]);
+    return { items: rows, next };
+  }
+
+  private async nodeRows(kind?: Kind, kolab?: string, after?: [string, string], limit?: number) {
     return (await this.db.query<{ id: string; name: string; kolab: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number; rebase_pending: boolean; rebase_dead: boolean }>(
       `select n.id, n.name, n.kolab_id as kolab, n.kind, n.layer, n.title,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
@@ -5687,14 +5882,22 @@ export class Kolab {
               exists (select 1 from outbox o join version v on v.id = o.version_id
                        where o.kind = 'rebase' and o.state = 'dead' and v.node_id = n.id and ${BEHIND('n.id')}) as rebase_dead
          from node n where ($1::text is null or n.kind = $1) and ($2::text is null or n.kolab_id = $2)
-        order by n.kind, n.name, n.kolab_id`, [kind ?? null, kolab ?? null])).rows;
+          and ($3::text is null or (n.kind, n.name) > ($3, $4::text))
+        order by n.kind, n.name, n.kolab_id limit $5`, [kind ?? null, kolab ?? null, after?.[0] ?? null, after?.[1] ?? null, limit ?? null])).rows;
   }
 
   /**
    * Edges into (upstream) or out of (downstream) a version, with human-readable addresses: the
    * short form in the version's own kolab.
    */
-  async lineage(versionId: string, direction: 'upstream' | 'downstream') {
+  async lineage(versionId: string, direction: 'upstream' | 'downstream', page?: PageOpts) {
+    return (await this.lineagePage(versionId, direction, page ?? { limit: Number.MAX_SAFE_INTEGER })).items;
+  }
+
+  /** One page of a version's lineage, by link id (W2.21). */
+  async lineagePage(versionId: string, direction: 'upstream' | 'downstream', page: PageOpts = {}) {
+    const size = page.limit === Number.MAX_SAFE_INTEGER ? page.limit : pageSize(page.limit);
+    const [after] = keyOf(`lineage:${direction}`, page.cursor, 1) ?? [null];
     const cols = `e.id, e.kind, e.source_element_id, sn.name as source_node, sn.kolab_id as source_kolab, sv.seq as source_seq,
                   e.target_element_id, e.target_selector, tn.name as target_node, tn.kolab_id as target_kolab, tv.seq as target_seq
              from edge e join version sv on sv.id = e.source_version_id join version tv on tv.id = e.target_version_id
@@ -5703,17 +5906,19 @@ export class Kolab {
     const sql = direction === 'upstream'
       ? `select ${cols} where e.source_version_id = $1 and $2::text is not null`
       : `select ${cols} where tv.node_id = (select node_id from version where id = $1) and e.kolab_id = $2 and ${LIVE('sv')}`;
+    const paged = `${sql} and ($3::text is null or e.id > $3) order by e.id limit $4`;
     const from = (await this.version(versionId)).kolab_id!;
     const rows = (await this.db.query<{
       id: string; kind: string; source_element_id: string | null; source_node: string; source_kolab: string; source_seq: number;
       target_element_id: string | null; target_selector: QuoteSelector | null; target_node: string; target_kolab: string; target_seq: number;
-    }>(sql, [versionId, from])).rows;
-    return rows.map((r) => ({
+    }>(paged, [versionId, from, after, size === Number.MAX_SAFE_INTEGER ? null : size + 1])).rows;
+    const { rows: shown, next } = pageOf(rows, size, `lineage:${direction}`, (r) => [r.id]);
+    return { next, items: shown.map((r) => ({
       edge: r.id,
       kind: r.kind,
       source: formatAddress({ kolab: r.source_kolab, node: r.source_node, version: r.source_seq, element: r.source_element_id ?? undefined }, { from }),
       target: formatAddress({ kolab: r.target_kolab, node: r.target_node, version: r.target_seq, element: r.target_element_id ?? undefined, selector: r.target_selector ?? undefined }, { from }),
-    }));
+    })) };
   }
 
   /**
@@ -5766,6 +5971,14 @@ export class Kolab {
     layer?: Layer; state?: QueryState; raisedBy?: string; node?: string; kind?: QueryKind; kolab?: string; from?: string;
     /** Only the newest this many, by id (ULIDs sort by time), still listed oldest first. */
     newest?: number;
+    /** A page (W2.21): at most this many, oldest first, after the query `after`. */
+    take?: number; after?: string;
+    /**
+     * Only the newest this many on each element, and on the node as a whole (W2.21, read_node's
+     * threads), still listed oldest first; with `elements`, only on those elements (null: the node
+     * as a whole). Used with `node`.
+     */
+    perElement?: number; elements?: (string | null)[];
   } = {}, q: Q = this.db): Promise<Query[]> {
     const rows = (await q.query<{
       id: string; kind: QueryKind; node: string; seq: number; element_id: string | null; kolab_id: string;
@@ -5786,9 +5999,20 @@ export class Kolab {
         where ($1::text is null or v.layer = $1) and ($2::text is null or q.state = $2)
           and ($3::text is null or q.raised_by = $3) and ($4::text is null or v.node_id = $4)
           and ($5::text is null or q.kind = $5) and ($6::text is null or q.kolab_id = $6)
-        order by q.id desc limit $7`,
+          and ($8::text is null or q.id > $8)
+          and ${SHOWN_FROM('$9')}
+          and ($10::int is null or q.id in (
+                select t.id from (
+                  select tq.id, row_number() over (partition by tq.element_id order by tq.id desc) as rn
+                    from query tq join version tv on tv.id = tq.version_id
+                   where tv.node_id = $4 and ${SHOWN_FROM('$9', 'tq')}
+                     and ($11::text[] is null or tq.element_id = any($11::text[]) or ($12 and tq.element_id is null))) t
+                 where t.rn <= $10))
+        order by ${filter.take === undefined ? 'q.id desc' : 'q.id'} limit $7`,
       [filter.layer ?? null, filter.state ?? null, filter.raisedBy ?? null, filter.node ?? null, filter.kind ?? null, filter.kolab ?? null,
-        filter.newest ?? null])).rows.reverse();
+        filter.take ?? filter.newest ?? null, filter.after ?? null, filter.from ?? null, filter.perElement ?? null,
+        filter.elements ? filter.elements.filter((e): e is string => e !== null) : null, filter.elements ? filter.elements.includes(null) : true])).rows;
+    if (filter.take === undefined) rows.reverse();
     // A reader outside a query's kolab (D49) sees only the questions and notes people raised: never
     // one a mark raised (a boundary, a ruling that changes the intent, D51), since that kolab's marks
     // and rulings stay private, and never which element of its asked. Row-level security holds
@@ -5816,19 +6040,50 @@ export class Kolab {
   }
 
   /**
+   * How many questions and notes there are on each element of node `node` (key: the element's id,
+   * or '' for the node as a whole), as listQueries shows them to a reader in kolab `from`: what
+   * read_node counts beside the newest it shows (W2.21).
+   */
+  async queryCounts(filter: { node: string; from?: string; elements?: (string | null)[] }, q: Q = this.db): Promise<Map<string, number>> {
+    const rows = (await q.query<{ element_id: string | null; n: number }>(
+      `select q.element_id, count(*)::int as n from query q join version v on v.id = q.version_id
+        where v.node_id = $1 and ${SHOWN_FROM('$2')}
+          and ($3::text[] is null or q.element_id = any($3::text[]) or ($4 and q.element_id is null))
+        group by q.element_id`,
+      [filter.node, filter.from ?? null, filter.elements ? filter.elements.filter((e): e is string => e !== null) : null,
+        filter.elements ? filter.elements.includes(null) : true])).rows;
+    return new Map(rows.map((r) => [r.element_id ?? '', r.n]));
+  }
+
+  /**
    * Open review requests, each waiting in its reviewer's inbox (REV2, VER17), oldest first. With
    * `reviewer`, only theirs; with `layer`, only on versions of that layer. Only those whose
    * reviewer can review now, in the role it works in (D65, shownRequests).
    */
   async reviewRequests(filter: { reviewer?: string; layer?: Layer; kolab?: string } = {}): Promise<ReviewRequestView[]> {
-    const rows = (await this.db.query<{ id: string; node_id: string; seq: number; author: string; reviewer: string; created_at: Date | string }>(
-      `select r.id, n.name as node_id, v.seq, v.actor_id as author, r.reviewer_id as reviewer, r.created_at
+    return (await this.reviewRequestRows(filter)).map(({ key: _, ...r }) => r);
+  }
+
+  /** One page of open review requests (W2.21): reviewRequests', oldest first. */
+  async reviewRequestsPage(filter: { reviewer?: string; layer?: Layer; kolab?: string }, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const after = keyOf('reviews', page.cursor, 3) as [string, string, string] | undefined;
+    const { rows, next } = pageOf(await this.reviewRequestRows(filter, after, size + 1), size, 'reviews', (r) => r.key);
+    return { items: rows.map(({ key: _, ...r }) => r), next };
+  }
+
+  private async reviewRequestRows(filter: { reviewer?: string; layer?: Layer; kolab?: string }, after?: [string, string, string], limit?: number) {
+    const rows = (await this.db.query<{ id: string; node_id: string; seq: number; author: string; reviewer: string; created_at: Date | string; at_key: string }>(
+      `select r.id, n.name as node_id, v.seq, v.actor_id as author, r.reviewer_id as reviewer, r.created_at, r.created_at::text as at_key
          from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
         where r.state = 'open' and v.state = 'in_review'
           and ($1::text is null or r.reviewer_id = $1) and ($2::text is null or v.layer = $2) and ($3::text is null or r.kolab_id = $3)
           and ${CAN_REVIEW('r.reviewer_id', 'v.kolab_id', 'v.layer')}
-        order by r.created_at, r.reviewer_id, r.id`, [filter.reviewer ?? null, filter.layer ?? null, filter.kolab ?? null])).rows;
+          and ($4::text is null or (r.created_at, r.reviewer_id, r.id) > ($4::timestamptz, $5::text, $6::text))
+        order by r.created_at, r.reviewer_id, r.id limit $7`,
+      [filter.reviewer ?? null, filter.layer ?? null, filter.kolab ?? null, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null, limit ?? null])).rows;
     return rows.map((r) => ({
+      key: [r.at_key, r.reviewer, r.id] as [string, string, string],
       request: r.id, subject: `kj:${r.node_id}@${r.seq}`, subject_kind: 'version' as const, author: r.author, reviewer: r.reviewer,
       requested_at: new Date(r.created_at).toISOString(),
       next: `Read it with konjir_read_node node=${r.node_id} version=${r.seq}. Check each element states one testable intent, that no two contradict each other or what they link to, and that none belongs to the other layer. Then konjir_review node=${r.node_id} version=${r.seq} verdict=approve, or verdict=request_changes with a note and findings (contradiction or layer_leak, naming the elements). The konjir_reviewer_instructions prompt says how.`,
@@ -5840,12 +6095,25 @@ export class Kolab {
    * answers show them, so a request for changes, an approval or a stale draft reaches them.
    */
   async submissions(author: string, opts: { kolab?: string; limit?: number } = {}): Promise<SubmissionView[]> {
-    const versions = (await this.db.query<VersionRow & { review_note: string | null }>(
-      `select v.* from version v
+    return (await this.submissionRows(author, opts)).map(({ key: _, ...r }) => r);
+  }
+
+  /** One page of an author's submissions (W2.21): submissions', newest first. */
+  async submissionsPage(author: string, opts: { kolab?: string }, page: PageOpts = {}) {
+    const size = pageSize(page.limit);
+    const after = keyOf('submissions', page.cursor, 2) as [string, string] | undefined;
+    const { rows, next } = pageOf(await this.submissionRows(author, { ...opts, limit: size + 1, after }), size, 'submissions', (r) => r.key);
+    return { items: rows.map(({ key: _, ...r }) => r), next };
+  }
+
+  private async submissionRows(author: string, opts: { kolab?: string; limit?: number; after?: [string, string] }) {
+    const versions = (await this.db.query<VersionRow & { review_note: string | null; at_key: string }>(
+      `select v.*, v.created_at::text as at_key from version v
         where v.actor_id = $1 and exists (select 1 from review_request r where r.version_id = v.id)
           and ($3::text is null or v.kolab_id = $3)
-        order by v.created_at desc, v.id desc limit $2`, [author, opts.limit ?? 20, opts.kolab ?? null])).rows;
-    const out: SubmissionView[] = [];
+          and ($4::text is null or (v.created_at, v.id) < ($4::timestamptz, $5::text))
+        order by v.created_at desc, v.id desc limit $2`, [author, opts.limit ?? 20, opts.kolab ?? null, opts.after?.[0] ?? null, opts.after?.[1] ?? null])).rows;
+    const out: (SubmissionView & { key: [string, string] })[] = [];
     for (const v of versions) {
       const verdicts = (await this.db.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; findings: Finding[] | null }>(
         `select r.reviewer_id, r.state, r.note, r.findings from review_request r
@@ -5857,6 +6125,7 @@ export class Kolab {
         `select n.name as node_id, f.seq from version f join node n on n.id = f.node_id where f.folded_from = $1 order by (f.state = 'committed') desc, f.seq desc limit 1`, [v.id])).rows[0] : undefined;
       const foldedInto = fold && v.review_note?.startsWith('folded into ') ? `kj:${fold.node_id}@${fold.seq}` : undefined;
       out.push({
+        key: [v.at_key, v.id],
         subject, state: v.state, note: v.review_note, ...(foldedInto ? { folded_into: foldedInto } : {}),
         verdicts: verdicts.map((r) => ({ reviewer: r.reviewer_id, state: r.state, note: r.note, findings: r.findings ?? [] })),
         next: v.state === 'in_review' ? 'Waiting for a reviewer; nothing to do.'
@@ -6395,7 +6664,20 @@ async function archiveHoldersOf(q: Q, kind: Archivable, name: string, kolabs: st
  * kolab), people and agents with a direct grant, and the members of every team granted access and
  * of the teams under it. Those with a direct grant are kept even when it gives nothing now.
  */
-async function holderRows(q: Q, kolab: string) {
+/**
+ * The questions a reader in kolab `$from` sees (D49, D65): every one in its own kolab; elsewhere,
+ * only those people raised (never one a mark raised) and asked of a version that committed. A null
+ * `$from` sees every one. `q` is the query table's alias.
+ */
+const SHOWN_FROM = (from: string, q = 'q') => `(${from}::text is null or ${q}.kolab_id = ${from}
+  or (${q}.invalidation_id is null and (${q}.asked_version_id is null
+      or exists (select 1 from version sa where sa.id = ${q}.asked_version_id and sa.state = 'committed'))))`;
+
+/**
+ * Who holds access to `kolab`, or holds a grant there that gives nothing now. With `page`, highest
+ * access first, then people before agents, then by id, `limit` + 1 of them after `after` (W2.21).
+ */
+async function holderRows(q: Q, kolab: string, page?: { after?: [number, boolean, string]; limit: number }) {
   return (await q.query<{ id: string; kind: ActorKind; owner_id: string | null; rank: number; functional: boolean; technical: boolean; granted: boolean }>(
     `with recursive k as (
        select id, owner_id, visibility, base_permission from kolab where id = $1
@@ -6409,10 +6691,14 @@ async function holderRows(q: Q, kolab: string) {
        union select coalesce(g.user_id, g.agent_id) from kolab_grant g where g.kolab_id = $1 and g.team_id is null
        union select tm.user_id from team_member tm where tm.team_id in (select id from sub)
      )
-     select a.id, a.kind, a.owner_id, x.rank, x.functional, x.technical,
-            exists (select 1 from kolab_grant g where g.kolab_id = $1 and (g.user_id = a.id or g.agent_id = a.id)) as granted
-       from cand c join actor a on a.id = c.id cross join lateral kj_access(a.id, $1) x
-      order by a.id`, [kolab])).rows.filter((h) => h.rank > 0 || h.granted);
+     select * from (
+       select a.id, a.kind, a.owner_id, x.rank, x.functional, x.technical,
+              exists (select 1 from kolab_grant g where g.kolab_id = $1 and (g.user_id = a.id or g.agent_id = a.id)) as granted
+         from cand c join actor a on a.id = c.id cross join lateral kj_access(a.id, $1) x
+     ) h where (h.rank > 0 or h.granted)
+       and ($2::int is null or (-h.rank, h.kind <> 'person', h.id collate "C") > (-$2::int, $3::boolean, $4::text collate "C"))
+      order by ${page ? `h.rank desc, h.kind <> 'person', h.id collate "C"` : 'h.id'} limit $5`,
+    [kolab, page?.after?.[0] ?? null, page?.after?.[1] ?? null, page?.after?.[2] ?? null, page ? page.limit + 1 : null])).rows;
 }
 
 /** Whether `want` gives anything `current` doesn't: a higher level, or at Write a layer more. */
@@ -6556,12 +6842,11 @@ async function partiesIn(tx: Q, caseId: string) {
     .map((p) => ({ ...p, principal: principalOf(p.actor, p) }));
 }
 /** The most pieces of evidence one position cites. */
-const MAX_EVIDENCE = 20;
-
-/** Text someone must give, trimmed; refused when empty. */
-function requireText(text: unknown, what: string): string {
+/** Text someone must give, trimmed; refused when empty, or over `max` characters (MAX_TEXT by default). */
+function requireText(text: unknown, what: string, max = MAX_TEXT): string {
   const t = typeof text === 'string' ? text.trim() : '';
   if (!t) throw new GateError(`give ${what}`);
+  checkText(what, t, max);
   return t;
 }
 

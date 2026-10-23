@@ -23,7 +23,7 @@ TypeScript on Postgres, through [Kysely](https://kysely.dev). Give `konjir serve
 
 ```
 npm install
-npm test                  # builds every project, then 589 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push, web, log and end-to-end tests on Jest through Nx
+npm test                  # builds every project, then 611 unit, scenario, property, regression, migration, concurrency, agent, tenancy, channel, review, outbox, push, web, log and end-to-end tests on Jest through Nx
 npm run test:postgres     # the same tests on Postgres 18 in a container, as a non-superuser like RDS's (needs Docker)
 npm run typecheck         # every project
 npm run build             # every project, to its dist/
@@ -329,9 +329,9 @@ With token sign-in on (no identity provider, or `KONJIR_WEB_TOKEN_SIGN_IN=on` fo
 | `POST /api/session/invite`, `DELETE /api/session/invite`, `POST /api/session/invite/accept` | What an invite's link offers, kept for the sign-in that follows (no session needed); forget it (*Not now*); join with it, signed in (W3.4) |
 | `GET /api/invites`, `POST /api/invites`, `POST /api/invites/:id/revoke` | The kolab's invites, a new one (its link's secret, shown once), revoking one: Admin only (W3.4) |
 | `GET /api/access`, `POST /api/access/:actor`, `POST /api/access/:actor/remove` | Who holds access to the kolab and from where; a direct grant to another level (`{ level, layers? }`); a direct grant removed. Each change says how many sessions it ended: Admin only (W3.6) |
-| `GET /api/me`, `/api/overview` | The session; the kolab at a glance: its nodes, the kolabs the actor can reach, and what waits |
+| `GET /api/me`, `/api/overview` | The session; the kolab at a glance: the first page of its nodes (`nodes_next` for the rest), the kolabs the actor can reach, and what waits, counted in the database |
 | `GET /api/nodes/:name[?version=N]` | A node at a version: elements with their questions, links and marks; versions; what is in review; your drafts |
-| `GET /api/queries`, `/api/marks`, `/api/reviews`, `/api/lineage`, `/api/activity` | The kolab's questions and notes, open marks, reviews, live links and what happened |
+| `GET /api/nodes`, `/api/queries[?state=open\|settled]`, `/api/marks`, `/api/reviews`, `/api/lineage`, `/api/activity` | The kolab's nodes, questions and notes, open marks, reviews, live links and what happened. Each list, here and below, takes `?cursor=` and `?limit=` and returns `next` (see *Pages and limits*); the pages show *More …* while there is more |
 | `POST /api/nodes` | `konjir_create_node` |
 | `POST /api/nodes/:name/submit` | `konjir_draft` with the page's changes, then `konjir_submit_for_review` |
 | `POST /api/nodes/:name/versions/:seq/resubmit`, `…/abandon`, `…/review` | `konjir_submit_for_review`, `konjir_abandon`, `konjir_review` |
@@ -651,6 +651,14 @@ The server is built so it can't drift across that line:
 
 In a shell, `konjir help <verb>` gives a verb's parameters, and `konjir <verb> key=value …` calls it. `konjir watch` streams your inbox (see below).
 
+### Pages and limits
+
+Every list comes a page at a time (W2.21, D71): `list_nodes`, `list_stale`, `list_queries`, `list_reviews`, `list_cases`, `list_rulings`, `lineage`, `admin_list_actors`, `admin_list_kolabs` and `admin_outbox`, and the web API's lists. Each takes `cursor` and `limit` and returns `next`. With no cursor it returns the first page; while `next` isn't null, the caller calls again with `cursor=<next>` and the same other parameters. A page holds 50 by default and at most 200 (`PAGE_DEFAULT`, `PAGE_MAX`). A cursor is opaque: the list it belongs to and the last row's sort key, base64url JSON. Each list sorts on a key that ends in a unique id and reads the rows after the cursor's (a keyset), so a row added between two pages is neither repeated nor makes another skipped. Case files sort by when they last changed, so one argued or ruled on while a caller pages moves to the first page. A cursor from another list, or a tampered one, is refused (`LimitError`). `list_reviews` pages its two lists with one cursor; a list that has shown its last page returns none after it. `list_nodes` now returns `{ nodes, next }` rather than a bare list.
+
+`read_node` returns a version's elements 250 at a time (`READ_NODE_PAGE`), with `element_count` and, for a larger version, `elements_from`, `elements_to` and `next`; a version holds at most 1,000, so most reads take one page. Beside each element it shows the newest 20 questions and notes, and `more_questions` counts the rest, which `list_queries node=<node>` lists; it reads only those questions, in SQL, never all of the node's. The web interface's document page does the same: the newest 50 versions and each element's newest 20 questions, with *More …* for the rest (`GET /api/nodes/:name/versions` and `/queries?element=`), and its People page reads invites and who holds access a page at a time. The inbox and answers resources take no cursor: each shows the first page of each list (the newest for the answers), and the inbox's `more` names each list that has more and the verb that pages it.
+
+Kolab refuses, before writing anything and naming the limit, a draft of more than 1,000 elements, an element of more than 8,000 characters, a version of more than 512 KiB of text, a question, note, answer, review note, finding, case file question, claim or ruling of more than 4,000 characters, more than 100 findings, more than 20 items of evidence or one of more than 1,000 characters, and a node title of more than 200. A quote stays at most 1,000 characters (DAT6). The server takes request bodies of up to 2 MiB, on `/mcp` and the web API alike, and refuses a larger one with a 413 that says so. One actor raises at most 60 questions and notes, and drafts at most 120 versions, an hour, across every kolab (`MAX_ASKS_PER_HOUR`, `MAX_DRAFTS_PER_HOUR`): counted in the database over the last hour, before each ask and draft, and refused with the limit and how long to wait. Kolab's own rebases and an admin's applied rulings aren't drafts. The limits are in `libs/types/src/limits.ts`, with why each is what it is.
+
 ## Questions, notes and push
 
 An engineer writing a binding talks to the spec through two verbs:
@@ -849,6 +857,7 @@ Their feedback drove these changes:
 - **Review requests are readable by every session in their kolab**, like versions and questions there: their notes and findings included. Product review of bindings (VER13), editorial commits (VER14) and reviews of work packages (VER17, PLN16) aren't built.
 - **Hand-issued session tokens are bearer tokens** with no expiry; Kolab stores only their hashes. They're fine on one machine or a trusted network, but not on the open internet. OAuth's access tokens, which GitHub sign-in issues, expire in 15 minutes (D55). The konjir CLI and the channel bridge sign in through OAuth (W3.4, W3.5), and take a hand-issued token only as an override.
 - **The web interface** works in one kolab per session: it moves between the kolabs a person reaches by ending the session and opening another, and doesn't read other kolabs' committed work in place (D49 would allow it). A person's first session still comes from an admin. It has no case files or rulings beyond resolving overrides until their verbs exist (CASE5–CASE7), no way to declare a link (agents declare them), though a draft can drop one (*unlink*, as `konjir_draft`'s `unlink`), and its activity shows when versions were written, not committed, and not when questions were answered, since Kolab doesn't record those times.
+- **A few reads aren't paged yet (W2.21).** A node's page in the web interface shows every question on the node and every version of it, and `read_node` reads all of a node's questions before it shows each element's newest 20. The access list and the invites come whole. Nothing limits how often an agent asks or drafts, so these grow with use.
 - **Identity of derivation is relaxed:** a content-identical upstream commit re-pins edges instead of minting new downstream versions.
 - **Precedent applies on a child's next rebase**, not immediately to other open marks.
 - **The cascade isn't durable.** A commit's cascade runs after it commits, in the calling process. If that process stops part way, or the cascade stops on a `CascadeError`, variants it hadn't reached stay on the old parent, with no mark, until the parent or the variant commits again.

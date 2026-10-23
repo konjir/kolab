@@ -12,7 +12,7 @@ const ann: WebMe = { actor: 'ann', name: 'Ann', kind: 'person', owner: null, rol
 const eli: WebMe = { ...ann, actor: 'eli', name: 'Eli', role: 'engineer', layer: 'technical', access: { level: 'write', layers: ['technical'] } };
 const overview = (me: WebMe): WebOverview => ({
   me, kolab: { id: 'anns', title: 'Ann’s', owner: 'ann', visibility: 'private', current: true, access: me.access },
-  kolabs: [], nodes: [], counts: { stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 },
+  kolabs: [], nodes: [], nodes_next: null, counts: { stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 },
 });
 const at = new Date(Date.now() + 7 * 86_400_000).toISOString();
 const invite = (over: Partial<InviteView> = {}): InviteView => ({

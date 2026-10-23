@@ -398,16 +398,16 @@ test('nodes, invites, versions and grants record who made, revoked or submitted 
   const v = await kolab.commit(s, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
   expect(await row(kolab, `select actor_id, submitted_by from version where id = $1`, [v])).toStrictEqual({ actor_id: 'alice', submitted_by: 'alice' });
   expect((await kolab.readNode(s, 'orders')).createdBy).toBe('alice');
-  const feed = await activity(kolab, s);
+  const feed = (await activity(kolab, s)).items;
   expect(feed.find((r) => r.kind === 'node')).toMatchObject({ kind: 'node', node: 'orders', actor: 'alice', title: 'Orders' });
   // A node with only a draft not yet submitted isn't in the feed, as its draft isn't.
   const quiet = await kolab.createNode(s, 'functional_spec', 'Quiet', 'quiet');
   await kolab.draft(s, quiet, { elements: els({ Q1: 'Not yet.' }) });
-  expect((await activity(kolab, s)).filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
+  expect((await activity(kolab, s)).items.filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
   // Nor one whose only draft was abandoned before it was ever submitted.
   const dropped = await kolab.createNode(s, 'functional_spec', 'Dropped', 'dropped');
   await kolab.abandon(s, await kolab.draft(s, dropped, { elements: els({ D1: 'Never mind.' }) }));
-  expect((await activity(kolab, s)).filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
+  expect((await activity(kolab, s)).items.filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
 
   // A ruling the admin applies is written as the actor given, and submitted by the admin.
   const r = await kolab.applyRuling(node, { deltas: [{ kind: 'override', element: 'R1', text: 'Orders can be cancelled before they ship.' }] }, { id: 'D70', actor: 'alice' });

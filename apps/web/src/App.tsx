@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { InvitePreview, WebMe, WebOverview, WebSignInMethods } from '@konjir/types';
+import type { InvitePreview, WebMe, WebNodesView, WebOverview, WebSignInMethods } from '@konjir/types';
 import { ApiError, acceptInvite, api, createKolab, dropInvite, openInvite, pageUpdated, patiently, signIn, signOut, switchTo, whoAmI } from './api.js';
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
-import { ActivityView, ForeignKolabView, KolabsView, LineageView, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
+import { ActivityView, ForeignKolabView, KolabsView, LineageView, More, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
 import { CasesView } from './components/Cases.js';
 import { ConnectPage, GettingStarted, InviteCard, PeopleView } from './components/Onboarding.js';
 import { parseKj, routeOf } from './util.js';
@@ -125,8 +125,20 @@ export function App() {
   }, [signedOut]);
   useEffect(() => {
     if (!me) return;
-    api<WebOverview>('overview').then(setOverview, (e: unknown) => { if (e instanceof ApiError && e.status === 401) void recheck(); });
+    api<WebOverview>('overview').then((o) => { setOverview(o); setMoreNodes(undefined); }, (e: unknown) => { if (e instanceof ApiError && e.status === 401) void recheck(); });
   }, [me, tick, recheck]);
+  // The rail's documents past the overview's first page (W2.21), read on asking; a new overview starts again.
+  const [moreNodes, setMoreNodes] = useState<WebNodesView>();
+  const [readingNodes, setReadingNodes] = useState(false);
+  const nodesNext = moreNodes ? moreNodes.next : overview?.nodes_next ?? null;
+  const readMoreNodes = async () => {
+    if (!nodesNext || readingNodes) return;
+    setReadingNodes(true);
+    try {
+      const p = await api<WebNodesView>(`nodes?cursor=${encodeURIComponent(nodesNext)}`);
+      setMoreNodes({ nodes: [...(moreNodes?.nodes ?? []), ...p.nodes], next: p.next });
+    } catch { /* the button stays, to try again */ } finally { setReadingNodes(false); }
+  };
   // An invite opened from its link: what it offers. Kolab keeps it for the sign-in, which offers to join.
   useEffect(() => {
     if (!invite || invite.preview || invite.error) return;
@@ -196,7 +208,7 @@ export function App() {
     );
   }
 
-  const specs = overview?.nodes ?? [];
+  const specs = [...(overview?.nodes ?? []), ...(moreNodes?.nodes ?? [])];
   const home = specs.find((n) => n.kind === 'functional_spec') ?? specs[0];
   const r: Route = route.view === 'home' ? (home ? { view: 'node', name: home.name } : { view: 'start' }) : route;
   const counts = overview?.counts;
@@ -218,6 +230,7 @@ export function App() {
               {n.title}{n.in_review > 0 && <span className="count question" title={`${n.in_review} in review`}>{n.in_review}</span>}
             </button>
           ))}
+          <More more={nodesNext ? readMoreNodes : undefined} busy={readingNodes} what="documents" />
           <div className="rail-label">Kolab</div>
           {(['lineage', 'questions', ...(belongs ? ['cases' as const] : []), 'reviews', 'activity', 'people', 'connect'] as const).map((v) => (
             <button key={v} type="button" className="place" aria-current={r.view === v ? 'page' : undefined} onClick={() => go(v)}>

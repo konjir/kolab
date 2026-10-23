@@ -65,8 +65,8 @@ test('MCP: list_stale, list_queries, read_node, the inbox and answers resources,
   // collected, and none of it quotes a ruling.
   const seen: unknown[] = [];
   const keep = <T>(x: T) => { seen.push(x); return x; };
-  expect(keep(await call(rita.client, 'list_stale', { all_layers: true }))).toStrictEqual({ marks: [] });
-  expect(keep(await call(rita.client, 'list_stale', {}))).toStrictEqual({ marks: [] });
+  expect(keep(await call(rita.client, 'list_stale', { all_layers: true }))).toStrictEqual({ marks: [], next: null });
+  expect(keep(await call(rita.client, 'list_stale', {}))).toStrictEqual({ marks: [], next: null });
   const inboxes = [keep(await json<{ queries: Q[]; marks: unknown[] }>(rita.client, 'konjir://inbox/shop/functional')),
     keep(await json<{ queries: Q[]; marks: unknown[] }>(rita.client, 'konjir://inbox/shop/technical'))];
   expect(inboxes.map((i) => [i.queries, i.marks])).toStrictEqual([[[], []], [[], []]]);
@@ -82,15 +82,15 @@ test('MCP: list_stale, list_queries, read_node, the inbox and answers resources,
   expect(await call(rita.client, 'answer_query', { query: 'nope', answer: 'no' }).then(() => 'answered', (e: unknown) => String(e))).toMatch(/no query nope/);
 
   askedOnly(keep(await call(rita.client, 'list_queries', { all_layers: true, state: 'answered' }) as { queries: Q[] }).queries);
-  expect(keep(await call(rita.client, 'list_queries', {}))).toStrictEqual({ queries: [] });
-  expect(keep(await call(rita.client, 'list_queries', { all_layers: true }))).toStrictEqual({ queries: [] });
-  expect(keep(await call(rita.client, 'list_queries', { mine: true }))).toStrictEqual({ queries: [] });
+  expect(keep(await call(rita.client, 'list_queries', {}))).toStrictEqual({ queries: [], next: null });
+  expect(keep(await call(rita.client, 'list_queries', { all_layers: true }))).toStrictEqual({ queries: [], next: null });
+  expect(keep(await call(rita.client, 'list_queries', { mine: true }))).toStrictEqual({ queries: [], next: null });
   const read = keep(await call(rita.client, 'read_node', { node: 'spec' }) as { elements: { id: string; questions?: Q[] }[] });
   askedOnly(read.elements.flatMap((e) => e.questions ?? []));
   const v1 = keep(await call(rita.client, 'read_node', { node: 'spec', version: 1 }) as { elements: { questions?: Q[] }[] });
   askedOnly(v1.elements.flatMap((e) => e.questions ?? []));
   expect((await json<{ queries: Q[] }>(rita.client, 'konjir://answers/shop/rita')).queries).toStrictEqual([]);
-  expect(keep(await call(rita.client, 'list_cases', { all_layers: true }))).toStrictEqual({ cases: [] });
+  expect(keep(await call(rita.client, 'list_cases', { all_layers: true }))).toStrictEqual({ cases: [], next: null });
   const text = ((await rita.client.callTool({ name: 'konjir_instructions', arguments: {} })).content as { text: string }[])[0].text;
   expect(text).not.toMatch(/Carts last a week|Carts are private/);
   expect(text).toMatch(/Answered questions and notes \(1\): kj:spec@1#R1: asked "A calendar day\?"/);

@@ -21,6 +21,7 @@ const MODES: Mode[] = [
 
 async function run(n: number, mode: Mode) {
   const kolab = await Kolab.open();
+  Object.assign(kolab.rates, { asks: Infinity, drafts: Infinity }); // a benchmark's writes, not a runaway agent's
   await people(kolab, 'alice'); await people(kolab, 'bob');
   const product = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
   const engineer = await kolab.openSession('bob', 'engineer', { by: ADMIN_DOER });

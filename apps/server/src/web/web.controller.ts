@@ -24,6 +24,14 @@ async function run<T>(fn: () => Promise<T>): Promise<T> {
 
 const seqOf = new ParseIntPipe({ errorHttpStatusCode: 400 });
 
+/** A list's page, from `?cursor=` and `?limit=` (W2.21): Kolab checks both, and caps the limit. */
+function page(cursor: unknown, limit: unknown) {
+  const l = one('limit', limit);
+  const n = l === undefined ? undefined : Number(l);
+  if (n !== undefined && !Number.isInteger(n)) throw new BadRequestException({ error: 'bad_request', message: 'limit is a whole number' });
+  return { cursor: one('cursor', cursor), limit: n };
+}
+
 /** A query parameter given once, as text: a repeated one (an array to Express) is refused, never passed on. */
 function one(name: string, v: unknown): string | undefined {
   if (v === undefined || v === '') return undefined;
@@ -225,15 +233,27 @@ export class WebController {
 
   @Get('me') me(@WebWho() me: WebMe) { return me; }
   @Get('overview') overview(@WebSession() s: string) { return run(() => this.web.overview(s)); }
-  @Get('queries') async queries(@WebSession() s: string) { return { queries: await run(() => this.web.queries(s)) }; }
-  @Get('marks') async marks(@WebSession() s: string) { return { marks: await run(() => this.web.marks(s)) }; }
-  @Get('reviews') reviews(@WebSession() s: string) { return run(() => this.web.reviews(s)); }
-  @Get('lineage') lineage(@WebSession() s: string) { return run(() => this.web.lineage(s)); }
-  @Get('activity') activity(@WebSession() s: string) { return run(() => this.web.activity(s)); }
+  // Every list comes a page at a time (W2.21): ?cursor= is the next a page returned, ?limit= its size.
+
+  @Get('nodes')
+  nodes(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.nodes(s, page(c, l))); }
+
+  /** ?state=open for those still open, ?state=settled for those answered or withdrawn; both by default. */
+  @Get('queries')
+  queries(@WebSession() s: string, @Query('state') state?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    const st = one('state', state);
+    if (st !== undefined && st !== 'open' && st !== 'settled') throw new BadRequestException({ error: 'bad_request', message: 'the state is open or settled' });
+    return run(() => this.web.queries(s, { open: st === undefined ? undefined : st === 'open' }, page(c, l)));
+  }
+
+  @Get('marks') marks(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.marks(s, page(c, l))); }
+  @Get('reviews') reviews(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.reviews(s, page(c, l))); }
+  @Get('lineage') lineage(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.lineage(s, page(c, l))); }
+  @Get('activity') activity(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.activity(s, page(c, l))); }
 
   // ---- invites (W3.4): for those with Admin in the session's kolab, as Kolab decides ----
 
-  @Get('invites') invites(@WebSession() s: string) { return run(() => this.web.invites(s)); }
+  @Get('invites') invites(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.invites(s, page(c, l))); }
 
   @Post('invites')
   createInvite(@WebSession() s: string, @Body() body: WebCreateInvite) { return run(() => this.web.createInvite(s, body)); }
@@ -243,7 +263,7 @@ export class WebController {
 
   // ---- who holds access (W3.6): for those with Admin in the session's kolab, as Kolab decides ----
 
-  @Get('access') access(@WebSession() s: string) { return run(() => this.web.access(s)); }
+  @Get('access') access(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.access(s, page(c, l))); }
 
   @Post('access/:actor') @HttpCode(200)
   changeGrant(@WebSession() s: string, @Param('actor') actor: string, @Body() body: WebChangeGrant) { return run(() => this.web.changeGrant(s, actor, body)); }
@@ -259,9 +279,23 @@ export class WebController {
     return run(() => this.web.node(s, name, seq));
   }
 
+  /** A node's versions, a page at a time, newest first (W2.21). */
+  @Get('nodes/:name/versions')
+  nodeVersions(@WebSession() s: string, @Param('name') name: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.nodeVersions(s, name, page(c, l)));
+  }
+
+  /** The questions and notes on one element of a node (?element=), or on the node as a whole, a page at a time, newest first (W2.21). */
+  @Get('nodes/:name/queries')
+  nodeQueries(@WebSession() s: string, @Param('name') name: string, @Query('element') e?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.nodeQueries(s, name, one('element', e) ?? null, page(c, l)));
+  }
+
   /** Another kolab's committed work, read in place (D49): its nodes, and one of them at a version. */
   @Get('kolabs/:kolab/nodes')
-  foreignKolab(@WebSession() s: string, @Param('kolab') kolab: string) { return run(() => this.web.foreignKolab(s, kolab)); }
+  foreignKolab(@WebSession() s: string, @Param('kolab') kolab: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.foreignKolab(s, kolab, page(c, l)));
+  }
 
   @Get('kolabs/:kolab/nodes/:name')
   foreignNode(@WebSession() s: string, @Param('kolab') kolab: string, @Param('name') name: string, @Query('version') v?: unknown) {
@@ -269,6 +303,17 @@ export class WebController {
     const seq = version === undefined ? undefined : Number(version);
     if (seq !== undefined && !Number.isInteger(seq)) return run(async () => { throw httpError(new Error(`no version ${version}`)); });
     return run(() => this.web.foreignNode(s, kolab, name, seq));
+  }
+
+  @Get('kolabs/:kolab/nodes/:name/versions')
+  foreignVersions(@WebSession() s: string, @Param('kolab') kolab: string, @Param('name') name: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.nodeVersions(s, name, page(c, l), kolab));
+  }
+
+  @Get('kolabs/:kolab/nodes/:name/queries')
+  foreignQueries(@WebSession() s: string, @Param('kolab') kolab: string, @Param('name') name: string, @Query('element') e?: unknown,
+    @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.nodeQueries(s, name, one('element', e) ?? null, page(c, l), kolab));
   }
 
   @Post('nodes')
@@ -303,8 +348,9 @@ export class WebController {
   // ---- case files and rulings: one route per verb (CASE1–CASE7, D49, D51) ----
 
   @Get('cases')
-  cases(@WebSession() s: string, @Query('state') state?: unknown, @Query('mine') mine?: unknown, @Query('node') node?: unknown) {
-    return run(() => this.web.cases(s, { state: one('state', state), mine: one('mine', mine) === 'true', node: one('node', node) }));
+  cases(@WebSession() s: string, @Query('state') state?: unknown, @Query('mine') mine?: unknown, @Query('node') node?: unknown,
+    @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.cases(s, { state: one('state', state), mine: one('mine', mine) === 'true', node: one('node', node) }, page(c, l)));
   }
 
   @Get('cases/:id')
@@ -320,7 +366,9 @@ export class WebController {
   ruleCase(@WebSession() s: string, @Param('id') id: string, @Body() body: WebRuleCase) { return run(() => this.web.ruleCase(s, id, body)); }
 
   @Get('rulings')
-  async rulings(@WebSession() s: string, @Query('node') node?: unknown) { return { rulings: await run(() => this.web.rulings(s, one('node', node))) }; }
+  rulings(@WebSession() s: string, @Query('node') node?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.rulings(s, one('node', node), page(c, l)));
+  }
 
   @Post('rulings')
   ruleDirect(@WebSession() s: string, @Body() body: WebRuleDirect) { return run(() => this.web.ruleDirect(s, body)); }

@@ -10,10 +10,11 @@ import { afterAll, expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
 import { closeAtEnd, els, people, setup } from '@konjir/engine/testing';
 import type {
-  WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebMark, WebNodeView, WebOutcome, WebOverview, WebQuery, WebRuling,
+  KolabAccessView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
+  WebQueriesView, WebQuery, WebRuling, WebVersionsView,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
-import { nobodyCanReview } from '@konjir/types';
+import { nobodyCanReview, THREADS_PER_ELEMENT } from '@konjir/types';
 
 const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
@@ -273,7 +274,7 @@ test('a draft that came back is edited in place: the page resubmits it edited, a
   const out = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 1, replaces: 2, changes: [{ kind: 'add', element: 'b3', text: 'Cancelling sends the customer a cancellation email.' }] })).body;
   expect(out).toMatchObject({ in_review: true, seq: 3, reviewers: ['erin'] });
   const now = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
-  expect([now.drafts, now.versions.map((v) => [v.seq, v.state])]).toStrictEqual([[], [[1, 'committed'], [3, 'in_review']]]);
+  expect([now.drafts, now.versions.map((v) => [v.seq, v.state])]).toStrictEqual([[], [[3, 'in_review'], [1, 'committed']]]);
   const v3 = await kolab.readNode(engineer, 'orders-pg', 3);
   expect(v3.elements.map((e) => [e.element_id, e.text])).toStrictEqual([
     ['b1', 'orders.status allows cancel from Open.'], ['b2', 'Refunds go through the payments queue.'], ['b3', 'Cancelling sends the customer a cancellation email.'],
@@ -538,7 +539,7 @@ test('case files and rulings in the page: open, take the other side, rule, prece
   expect((await bob.call(`cases/${c.case}/positions`, { claim: 'and also', evidence: ['kj:orders#R1'] })).status).toBe(409);
 
   // D49: a reader who holds only Read in the kolab sees no case files and can't open or argue one.
-  expect((await carol.call<WebCasesView>('cases')).body).toStrictEqual({ cases: [], belongs: false });
+  expect((await carol.call<WebCasesView>('cases')).body).toStrictEqual({ cases: [], belongs: false, next: null });
   expect((await carol.call(`cases/${c.case}`)).status).toBe(404);
   expect((await carol.call('cases', { node: 'orders', element: 'R1', question: 'q', claim: 'c', evidence: ['kj:orders#R1'], seeks: 'keep_intent' })).status).toBe(403);
   expect((await carol.call(`cases/${c.case}/positions`, { claim: 'c', evidence: ['kj:orders#R1'] })).status).toBe(403);
@@ -641,10 +642,12 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   expect(list.body).toStrictEqual({
     kolab: { id: 'other', title: 'Other', owner: 'erin', visibility: 'private', access: { level: 'read', layers: [] } },
     nodes: [{ name: 'secret', kind: 'functional_spec', layer: 'functional', title: 'Secret', latest: 2, drafts: 0, in_review: 0 }],
+    next: null,
   });
   const read = (await alice.call<WebNodeView>('kolabs/other/nodes/secret')).body;
   expect(read).toMatchObject({ kolab: 'other', foreign: true, can_write: false, in_review: [], drafts: [], rulings: [] });
-  expect(read.versions.map((v) => [v.seq, v.state])).toStrictEqual([[1, 'committed'], [2, 'committed']]);
+  // Newest first, a page at a time (W2.21).
+  expect(read.versions.map((v) => [v.seq, v.state])).toStrictEqual([[2, 'committed'], [1, 'committed']]);
   expect(read.elements.map((e) => [e.id, e.text, e.address, e.marks, e.rulings, e.cases, e.relies_on])).toStrictEqual([
     ['S1', 'Readers of other know this.', 'kj:other/secret@2#S1', [], [], [], []],
   ]);
@@ -719,4 +722,81 @@ test('in the page: with nobody else able to review yet it says so; an engineer a
   expect((await alice.call('nodes/orders/versions/2/abandon', {})).body).toStrictEqual({ state: 'rejected' });
   const q = (await alice.call<{ queries: WebQuery[] }>('queries')).body.queries.find((x) => x.id === asked.body.query)!;
   expect(q).toMatchObject({ state: 'withdrawn', answer: "withdrawn: orders@2, which it was asked of, was abandoned, and R3 isn't in orders's latest committed version" });
+});
+
+test('every list the web API returns comes a page at a time: ?cursor= reads the next, ?limit= sets the size (W2.21)', async () => {
+  const { kolab, product, engineer } = await specAndBinding();
+  for (let i = 0; i < 4; i++) await kolab.raiseQuery(engineer, 'kj:orders#R2', `Question ${i}?`);
+  for (const name of ['a', 'b', 'c']) await kolab.createNode(product, 'functional_spec', name.toUpperCase(), name);
+  const base = await serve(kolab);
+  const { call } = await signIn(base, product);
+  /** Every item of `key`, following next, and the calls it took. */
+  const all = async (path: string, key: string) => {
+    const items: unknown[] = [];
+    let next: string | null = null;
+    let calls = 0;
+    do {
+      const r: { status: number; body: Record<string, unknown> & { next: string | null } } = await call<Record<string, unknown> & { next: string | null }>(`${path}${path.includes('?') ? '&' : '?'}limit=2${next ? `&cursor=${encodeURIComponent(next)}` : ''}`);
+      expect(r.status).toBe(200);
+      items.push(...(r.body[key] as unknown[]));
+      next = r.body.next;
+      calls++;
+    } while (next);
+    return { items, calls };
+  };
+  const open = await all('queries?state=open', 'queries');
+  expect([open.items.length, open.calls]).toStrictEqual([5, 3]);
+  expect((open.items as WebQuery[]).map((q) => q.question)).toStrictEqual(['Question 3?', 'Question 2?', 'Question 1?', 'Question 0?', 'From which statuses?']);
+  expect((await all('queries?state=settled', 'queries')).items).toStrictEqual([]);
+  expect((await all('nodes', 'nodes')).items).toHaveLength(5);
+  expect((await all('activity', 'items')).items.length).toBeGreaterThan(5);
+  expect((await all('lineage', 'nodes')).items).toHaveLength(2);
+  const overview = (await call<WebOverview>('overview')).body;
+  expect([overview.nodes.length, overview.nodes_next, overview.counts.open]).toStrictEqual([5, null, 5]);
+  // A cursor from another list, or a limit that isn't a number, is a 400 that says why.
+  const first = await call<{ next: string }>('queries?limit=1');
+  expect(await call(`nodes?cursor=${encodeURIComponent(first.body.next)}`)).toMatchObject({ status: 400, body: { message: expect.stringMatching(/that cursor isn't one this list gave/) } });
+  expect(await call('queries?limit=many')).toMatchObject({ status: 400, body: { message: 'limit is a whole number' } });
+});
+
+test('a node\'s page lists its newest versions and each element\'s newest questions, with a cursor to the rest; invites and who holds access page too (W2.21)', async () => {
+  const { kolab, product, engineer } = await specAndBinding();
+  for (let i = 2; i <= 4; i++) await kolab.commit(product, 'orders', { elements: els({ R1: `Office staff can cancel an order, take ${i}.`, R2: 'A cancelled order is refunded in full.' }) });
+  for (let i = 0; i < THREADS_PER_ELEMENT + 2; i++) await kolab.raiseQuery(engineer, 'kj:orders#R2', `Question ${i}?`);
+  for (let i = 0; i < 2; i++) await kolab.raiseQuery(engineer, 'kj:orders', `About the spec ${i}?`);
+  const base = await serve(kolab);
+  const { call } = await signIn(base, product);
+  const view = (await call<WebNodeView>('nodes/orders')).body;
+  // The newest PAGE_DEFAULT versions (all four here), newest first, and no more.
+  expect([view.versions.map((v) => v.seq), view.versions_next]).toStrictEqual([[4, 3, 2, 1], null]);
+  const r2 = view.elements.find((e) => e.id === 'R2')!;
+  expect(r2.queries).toHaveLength(THREADS_PER_ELEMENT);
+  expect(r2.queries[0].question).toBe(`Question ${THREADS_PER_ELEMENT + 1}?`);
+  expect(r2.queries_next).toEqual(expect.any(String));
+  expect([view.queries.length, view.queries_next]).toStrictEqual([2, null]);
+  // The rest of R2's, older, by its cursor: two left.
+  const older = await call<WebQueriesView>(`nodes/orders/queries?element=R2&cursor=${encodeURIComponent(r2.queries_next!)}`);
+  expect(older.status).toBe(200);
+  expect([older.body.queries.map((q) => q.question), older.body.next]).toStrictEqual([['Question 1?', 'Question 0?'], null]);
+  // The node's versions, a page at a time.
+  const v1 = await call<WebVersionsView>('nodes/orders/versions?limit=3');
+  expect([v1.body.versions.map((v) => v.seq), typeof v1.body.next]).toStrictEqual([[4, 3, 2], 'string']);
+  const v2 = await call<WebVersionsView>(`nodes/orders/versions?limit=3&cursor=${encodeURIComponent(v1.body.next!)}`);
+  expect([v2.body.versions.map((v) => v.seq), v2.body.next]).toStrictEqual([[1], null]);
+  expect((await call(`nodes/orders/versions?cursor=${encodeURIComponent(r2.queries_next!)}`)).status).toBe(400);
+
+  // Invites and who holds access: Ann administers her own kolab, with three readers.
+  for (const id of ['ann', 'eli', 'fay', 'gus']) await kolab.addActor(id);
+  await kolab.createKolab('anns', { owner: 'ann' });
+  for (const id of ['eli', 'fay', 'gus']) await kolab.grant('anns', id, 'read');
+  const ann = await signIn(base, await kolab.openSession('ann', 'product', { kolab: 'anns' }));
+  for (let i = 0; i < 3; i++) expect((await ann.call('invites', { level: 'read' })).status).toBe(201);
+  const i1 = await ann.call<WebInvitesView>('invites?limit=2');
+  expect([i1.body.invites.length, typeof i1.body.next]).toStrictEqual([2, 'string']);
+  const i2 = await ann.call<WebInvitesView>(`invites?limit=2&cursor=${encodeURIComponent(i1.body.next!)}`);
+  expect([i2.body.invites.length, i2.body.next]).toStrictEqual([1, null]);
+  const a1 = await ann.call<KolabAccessView>('access?limit=3');
+  expect([a1.body.holders.map((h) => h.actor), typeof a1.body.next]).toStrictEqual([['ann', 'eli', 'fay'], 'string']);
+  const a2 = await ann.call<KolabAccessView>(`access?limit=3&cursor=${encodeURIComponent(a1.body.next!)}`);
+  expect([a2.body.holders.map((h) => h.actor), a2.body.next, a2.body.kolab.id]).toStrictEqual([['gus'], null, 'anns']);
 });

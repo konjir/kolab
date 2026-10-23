@@ -90,7 +90,7 @@ test('an MCP client signs a person in with OAuth, as their agent; its token refr
   // The access token expires; the next call refreshes it, by itself, and goes through.
   const first = harness.saved!;
   await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'rae-claude' and ended_at is null`);
-  expect(await call(agent, 'list_nodes')).toMatchObject([{ id: 'orders', title: 'Orders' }]);
+  expect(await call(agent, 'list_nodes')).toMatchObject({ nodes: [{ id: 'orders', title: 'Orders' }], next: null });
   expect(harness.saved!.access_token).not.toBe(first.access_token);
   expect(harness.saved!.refresh_token).not.toBe(first.refresh_token);
 

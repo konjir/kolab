@@ -115,7 +115,7 @@ test('removing access asks first, says what follows, and warns an admin removing
 test('the People page shows the list to an Admin, beside the invites; words for every source', async () => {
   const overview: WebOverview = {
     me: olga, kolab: { id: 'shop', title: 'Shop', owner: 'acme', visibility: 'private', current: true, access: olga.access },
-    kolabs: [], nodes: [], counts: { stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 },
+    kolabs: [], nodes: [], nodes_next: null, counts: { stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 },
   };
   render(<PeopleView me={olga} overview={overview} tick={0} act={runner} />);
   expect(await screen.findByRole('heading', { name: 'Who holds access' })).toBeTruthy();

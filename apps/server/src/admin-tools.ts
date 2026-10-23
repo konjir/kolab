@@ -5,6 +5,7 @@ import { GateError, Kolab, NameTakenError, SESSION_KEY, sessionKey } from '@konj
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, ADMIN_DOER, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget, type Doer } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
+import { PAGED, paging } from './paging.js';
 import { fail as toolError, ok } from './results.js';
 
 /**
@@ -45,6 +46,7 @@ const linkIdentity = z.object({
 const listActors = z.object({
   owner: z.string().optional().describe("Only this account's agents"),
   archived: z.boolean().optional().describe('Also list archived actors, and agents of an archived account, each with archived: true or false'),
+  ...paging,
 });
 const openSession = z.object({
   actor: z.string(), role: z.enum(ROLES),
@@ -71,6 +73,7 @@ const addKolab = z.object({
 const listKolabs = z.object({
   owner: z.string().optional(),
   archived: z.boolean().optional().describe('Also list archived kolabs, and those of an archived account, each with archived: true or false'),
+  ...paging,
 });
 const archiveTarget = z.object({
   kolab: z.string().optional().describe('A kolab, by its name'),
@@ -104,6 +107,7 @@ const outbox = z.object({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
   kolab: z.string().optional().describe('Only jobs of this kolab'),
   retry: z.string().optional().describe('The id of a dead job, or one waiting out its backoff, to run again now'),
+  ...paging,
 });
 
 /** What archive and unarchive name: exactly one of a kolab, an organization or an actor. */
@@ -145,10 +149,13 @@ export class AdminTools {
     } catch (e) { return fail(e); }
   }
 
-  @McpTool({ name: 'konjir_admin_list_actors', description: "Admin: list actors, each with its kind and owner; owner=<account> lists that account's agents.", schema: listActors })
+  @McpTool({ name: 'konjir_admin_list_actors', description: `Admin: list actors, each with its kind and owner; owner=<account> lists that account's agents. By id.${PAGED}`, schema: listActors })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async listActors({ owner, archived }: z.infer<typeof listActors>) {
-    try { return ok({ actors: await this.kolab.listActors({ owner, archived }) }); } catch (e) { return fail(e); }
+  async listActors({ owner, archived, cursor, limit }: z.infer<typeof listActors>) {
+    try {
+      const { items, next } = await this.kolab.actorsPage({ owner, archived }, { cursor, limit });
+      return ok({ actors: items, next });
+    } catch (e) { return fail(e); }
   }
 
   @McpTool({
@@ -191,14 +198,15 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_outbox',
-    description: 'Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error; kolab=<name> for one kolab\'s. A rebase job (D43) is a variant to rebase onto its parent\'s latest version, queued by the parent version named in after; it rebases whatever the variant has live when it runs. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again.',
+    description: `Admin: the outbox (REV3): the work commits and verdicts still owe, each job with its subject, attempts and last error; kolab=<name> for one kolab\'s. A rebase job (D43) is a variant to rebase onto its parent\'s latest version, queued by the parent version named in after; it rebases whatever the variant has live when it runs. A job that fails ten times is dead, and it, and any later cascade of its node, waits until retry=<id> runs it again. Oldest first.${PAGED}`,
     schema: outbox,
   })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async outbox({ state, kolab, retry }: z.infer<typeof outbox>) {
+  async outbox({ state, kolab, retry, cursor, limit }: z.infer<typeof outbox>) {
     try {
       if (retry !== undefined && !(await this.kolab.retryOutboxJob(retry, admin()))) throw new GateError(`no job ${retry} to retry: it is done, or a live process is running it`);
-      return ok({ ...(retry !== undefined ? { retried: retry } : {}), jobs: await this.kolab.outboxJobs({ state, kolab }) });
+      const { items, next } = await this.kolab.outboxPage({ state, kolab }, { cursor, limit });
+      return ok({ ...(retry !== undefined ? { retried: retry } : {}), jobs: items, next });
     } catch (e) { return fail(e); }
   }
 
@@ -293,10 +301,13 @@ export class TenancyTools {
     } catch (e) { return fail(e); }
   }
 
-  @McpTool({ name: 'konjir_admin_list_kolabs', description: "Admin: list kolabs, or with owner=<account> that account's. Archived kolabs are left out unless archived=true.", schema: listKolabs })
+  @McpTool({ name: 'konjir_admin_list_kolabs', description: `Admin: list kolabs, or with owner=<account> that account's. Archived kolabs are left out unless archived=true. By name.${PAGED}`, schema: listKolabs })
   @McpGuard(McpScopeGuard, { scopes: ['admin'] })
-  async listKolabs({ owner, archived }: z.infer<typeof listKolabs>) {
-    try { return ok({ kolabs: await this.kolab.listKolabs({ owner, archived }) }); } catch (e) { return fail(e); }
+  async listKolabs({ owner, archived, cursor, limit }: z.infer<typeof listKolabs>) {
+    try {
+      const { items, next } = await this.kolab.kolabsPage({ owner, archived }, { cursor, limit });
+      return ok({ kolabs: items, next });
+    } catch (e) { return fail(e); }
   }
 
   @McpTool({
