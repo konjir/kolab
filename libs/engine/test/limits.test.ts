@@ -276,3 +276,53 @@ test('kolab titles count characters, and the admin\'s names and titles are cappe
   expect(await rejection(kolab.addOrganization('o'.repeat(MAX_NAME + 1)))).toMatch(/LimitError: an account's id is/);
   expect(await rejection(kolab.addTeam('test-org', 't'.repeat(MAX_NAME + 1)))).toMatch(/LimitError: a team's name is/);
 });
+
+test('resolving an override mark is a draft: it takes a place in the resolver\'s budget, so a person at the limit can\'t keep resolving a mark', async () => {
+  const { kolab, product } = await setup();
+  const p1 = await kolab.commit(product, await kolab.createNode(product, 'functional_spec', 'Storefront', 'P'), { elements: els({ E1: 'Session timeout is 15 minutes.' }) });
+  const child = await kolab.createNode(product, 'functional_spec', 'Storefront for Acme', 'C');
+  await kolab.commit(product, child, { parent: p1, deltas: [{ kind: 'override', element: 'E1', text: 'Session timeout is 30 minutes.' }] });
+  await kolab.commit(product, 'P', { elements: els({ E1: 'Session timeout is 10 minutes.' }) });
+  const mark = (await kolab.openMarks()).find((m) => m.reason === 'override_stale')!;
+  // A second writer on the layer, so a resolution waits in review and the mark stays open.
+  await people(kolab, 'dana', { layers: ['functional'] });
+  const versions = async () => (await kolab.db.query(`select 1 from version where node_id = $1`, [child])).rows.length;
+  // Alice has made 3 drafts: one more is allowed.
+  Object.assign(kolab.rates, { drafts: 4 });
+  expect((await kolab.resolveOverride(product, mark.id, 'amend', 'Session timeout is 20 minutes.')).verdict.in_review).toBe(true);
+  const written = await versions();
+  expect(await rejection(kolab.resolveOverride(product, mark.id, 'amend', 'Session timeout is 25 minutes.')))
+    .toMatch(/^LimitError: alice and alice's agents drafted 4 versions in the last hour; the limit is 4 in an hour/);
+  expect(await rejection(kolab.resolveOverride(product, mark.id, 'adopt_parent'))).toMatch(/^LimitError/);
+  expect(await versions()).toBe(written);
+  expect((await kolab.db.query(`select 1 from rate_event where owner_id = 'alice' and kind = 'draft' and not held`)).rows).toHaveLength(4);
+  expect((await kolab.db.query(`select 1 from rate_event where held`)).rows).toStrictEqual([]);
+});
+
+test('a write that commits after its hold was pruned is counted all the same, and only Kolab takes or gives back a place', async () => {
+  const { kolab } = await orders();
+  const take = async () => (await kolab.db.query<{ r_hold: string }>(`select * from kj_rate_take('bob', 'ask', $1, 100, 100)`, [RATE_WINDOW_MS])).rows[0].r_hold;
+  const first = await take();
+  // The write waited past ten minutes for its locks: the next take prunes its hold.
+  await kolab.db.query(`update rate_event set created_at = now() - interval '11 minutes' where id = $1`, [first]);
+  const second = await take();
+  expect((await kolab.db.query(`select 1 from rate_event where id = $1`, [first])).rows).toStrictEqual([]);
+  // Its use puts the event back, used, from now; the other hold is used in place.
+  await kolab.db.query(`select kj_rate_use($1)`, [first]);
+  await kolab.db.query(`select kj_rate_use($1)`, [second]);
+  expect((await kolab.db.query<{ id: string; owner_id: string; kind: string; held: boolean; fresh: boolean }>(
+    `select id, owner_id, kind, held, created_at > now() - interval '1 minute' as fresh from rate_event where id = any($1) order by id = $2 desc`, [[first, second], first])).rows)
+    .toStrictEqual([
+      { id: first, owner_id: 'bob', kind: 'ask', held: false, fresh: true },
+      { id: second, owner_id: 'bob', kind: 'ask', held: false, fresh: true },
+    ]);
+  // A used event isn't given back.
+  await kolab.db.query(`select kj_rate_release($1)`, [first]);
+  expect((await kolab.db.query(`select 1 from rate_event where id = $1`, [first])).rows).toHaveLength(1);
+  expect(await rejection(kolab.db.query(`select kj_rate_use('not-a-hold')`))).toMatch(/not a rate hold/);
+  // A session's role (kj_agent) may use its own hold as its write commits, but never take or give back a place.
+  const asAgent = (sql: string, params: unknown[] = []) => kolab.db.transaction(async (tx) => { await tx.exec('set local role kj_agent'); await tx.query(sql, params); });
+  expect(await rejection(asAgent(`select * from kj_rate_take('alice', 'draft', 3600000, 100, 100)`))).toMatch(/permission denied/);
+  expect(await rejection(asAgent(`select kj_rate_release($1)`, [second]))).toMatch(/permission denied/);
+  await asAgent(`select kj_rate_use($1)`, [second]);
+});

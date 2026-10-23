@@ -448,7 +448,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_resolve_override',
-    description: 'Resolve a stale or orphaned override in a variant spec: reaffirm (keep yours), adopt_parent (take the parent text), or amend (new text). Becomes precedent for the same situation elsewhere.',
+    description: 'Resolve a stale or orphaned override in a variant spec: reaffirm (keep yours), adopt_parent (take the parent text), or amend (new text). Becomes precedent for the same situation elsewhere. The resolution is a new version, so it counts as one of your drafts in the hour.',
     schema: resolveOverride,
   })
   resolveOverride({ mark, resolution, text }: z.infer<typeof resolveOverride>, context?: McpToolContext) {

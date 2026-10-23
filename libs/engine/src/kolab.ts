@@ -5168,17 +5168,20 @@ export class Kolab {
       triple: pe ? [d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!)] : undefined,
     };
     // The version and the ruling waiting on it are written together (W1.8): the agent writes the
-    // version, then Kolab, as kj_system, the ruling, which no agent may write.
-    await this.asAgent(sessionId, async (tx) => {
+    // version, then Kolab, as kj_system, the ruling, which no agent may write. The resolution is a
+    // draft its resolver makes, so it takes a place in their draft budget like any other (D87), and
+    // the version and its use of the budget commit together.
+    await this.rated(s.actor_id, 'draft', (hold) => this.asAgent(sessionId, async (tx) => {
       await writeVersion(tx, {
         id, node_id: v.node_id, seq: await nextSeq(tx, v.node_id), parent_version_id: v.parent_version_id,
         base_version_id: v.id, layer: v.layer, actor_id: s.actor_id, active_role: s.active_role,
         // A fork's resolution stays on the parent its version is on, held as that version is.
         parent_held_by: v.parent_held_by ?? null,
       }, materialize(parentEls, next), next);
+      await this.useRate(tx, hold);
       await tx.exec('set local role none; set local role kj_system');
       await tx.query(`update version set resolves = $2 where id = $1`, [id, JSON.stringify(ruling)]);
-    }, v.node_id, { access: !!v.parent_held_by });
+    }, v.node_id, { access: !!v.parent_held_by }));
 
     // The resolution is itself a new version: it must clear the gate, and its review if it has
     // reviewers, before the mark closes, the query is answered, or precedent is set. The ruling waits

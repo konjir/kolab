@@ -70,8 +70,9 @@ drop index ruling_kolab;
 -- connections everyone else needs; a wait past lock_timeout is refused as busy. The write then marks
 -- its event used (kj_rate_use) in the transaction that writes the question or the version, so the
 -- event stays counted from its take to the end of the window and the limit holds exactly; a write
--- that fails gives its place back (kj_rate_release), and a hold its process never gave back (a
--- crash) stops counting after ten minutes. Returns the owner, whether it is an organization, the
+-- that fails gives its place back (kj_rate_release), a hold its process never gave back (a
+-- crash) stops counting after ten minutes, and a write that commits after its hold was pruned is
+-- counted all the same (kj_rate_use). Returns the owner, whether it is an organization, the
 -- limit applied, the count before this call, the seconds until the oldest of them leaves the window,
 -- and the hold, or null when the count is at the limit already and nothing was held.
 create table rate_event (
@@ -122,15 +123,26 @@ begin
     ceil(extract(epoch from v_oldest + p_window_ms * interval '1 millisecond' - now()))::int, v_hold;
 end $$;
 revoke execute on function kj_rate_take(text, text, bigint, int, int) from public;
-grant execute on function kj_rate_take(text, text, bigint, int, int) to kj_agent, kj_system;
+-- Only Kolab takes a place (asSystem): a session's role could otherwise fill another owner's budget.
+grant execute on function kj_rate_take(text, text, bigint, int, int) to kj_system;
 
 -- Marks the event kj_rate_take held as used, in the transaction that writes what it was held for:
--- it counts to the end of the window, whatever happens to what was written.
+-- it counts to the end of the window, whatever happens to what was written. A write that waited
+-- more than ten minutes for its locks finds its hold pruned (kj_rate_take): the event is put back,
+-- as used, from now, so the write still counts and isn't failed for waiting. It is put back outside
+-- the budget's lock, so the budget can overshoot by that one event; it never undercounts. The hold's
+-- id names its kind and owner (kj_rate_take's `kind:owner:md5`).
 create function kj_rate_use(p_hold text) returns void
-language sql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
-  update public.rate_event set held = false where id = p_hold;
-$$;
+language plpgsql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
+declare
+  v_parts text[] := regexp_match(p_hold, '^(ask|draft):(.+):[0-9a-f]{32}$');
+begin
+  if v_parts is null then raise exception 'not a rate hold: %', p_hold; end if;
+  insert into public.rate_event(id, owner_id, kind, held) values (p_hold, v_parts[2], v_parts[1], false)
+    on conflict (id) do update set held = false;
+end $$;
 revoke execute on function kj_rate_use(text) from public;
+-- A draft's write runs as the agent's session (kj_agent), a question's as Kolab (kj_system).
 grant execute on function kj_rate_use(text) to kj_agent, kj_system;
 
 -- Gives back the place kj_rate_take held, after the transaction that was to write it failed.
@@ -139,7 +151,7 @@ language sql volatile security definer set search_path = pg_catalog, public, pg_
   delete from public.rate_event where id = p_hold and held;
 $$;
 revoke execute on function kj_rate_release(text) from public;
-grant execute on function kj_rate_release(text) to kj_agent, kj_system;
+grant execute on function kj_rate_release(text) to kj_system;
 
 -- A version's changes, by element: deltas() reads a version's, and a commit's cascade matches an
 -- override mark to the new version's change of the same element (P7). Neither had an index, so
