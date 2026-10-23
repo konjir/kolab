@@ -81,8 +81,14 @@ export async function watch(client: Client, onUpdate: (uri: string, body: unknow
     const c = r.contents[0];
     return c && 'text' in c ? JSON.parse(c.text) : null;
   };
-  client.setNotificationHandler('notifications/resources/updated', async (n) => {
-    await onUpdate(n.params.uri, await read(n.params.uri));
+  // One notification at a time, in the order they came: each is read only after the one before it
+  // was read and handed on, so a read started early can't finish late and leave an older inbox as
+  // the last one shown. One that fails is still reported to the client, and the next goes on.
+  let queue: Promise<void> = Promise.resolve();
+  client.setNotificationHandler('notifications/resources/updated', (n) => {
+    const turn = queue.then(async () => { await onUpdate(n.params.uri, await read(n.params.uri)); });
+    queue = turn.catch(() => undefined);
+    return turn;
   });
   return { uris: me.subscribe, read, subscription: await client.listen({ resourceSubscriptions: me.subscribe }) };
 }

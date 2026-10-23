@@ -93,7 +93,7 @@ export const RATE_WINDOW_MS = 60 * 60_000;
 export const MAX_ASKS_PER_HOUR = 60;
 /**
  * Drafts a person and their agents make in RATE_WINDOW_MS, across every kolab: konjir_draft and
- * the web interface's submit, each refused once they have made this many drafts in the window.
+ * the web interface's submit, and the resolution of an override mark, each refused once they have made this many drafts in the window.
  * A draft counts when it is made, whatever happens to it after: submitted by its author or by
  * anyone else, approved, rejected, folded or abandoned (ruled 2026-10-23). So another writer
  * submitting someone's drafts frees none of their budget, and a second account can't launder it.
