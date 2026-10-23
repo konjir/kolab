@@ -544,7 +544,7 @@ test('a database at 0010 reaches 0011: each session is stored by the hash of its
       .toStrictEqual([sessionKey(lee), sessionKey(pm), sessionKey(old)].sort());
     expect((await db.query(`select 1 from session where id like 'kjs_%'`)).rows).toStrictEqual([]);
     // And none can be stored again.
-    expect(await rejection(db.query(`insert into session(id, actor_id, active_role, kolab_id) values ('kjs_plain', 'lee', 'product', 'kolab')`)))
+    expect(await rejection(db.query(`insert into session(id, actor_id, active_role, kolab_id, expires_at) values ('kjs_plain', 'lee', 'product', 'kolab', now() + interval '1 day')`)))
       .toMatch(/session_id_is_key/);
   }, store);
   expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());

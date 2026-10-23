@@ -101,11 +101,11 @@ test('an archived kolab ends its sessions, refuses new ones and every write, and
     `update version set state = 'rejected' where id = '${draft}'`,
     `insert into kolab_grant(kolab_id, agent_id, level, functional, technical) values ('orders', 'acme-bot', 'read', false, false)`,
     `update kolab_grant set level = 'admin', functional = true, technical = true where kolab_id = 'orders' and user_id = 'bob'`,
-    `insert into session(id, actor_id, active_role, kolab_id) values ('${sessionKey('kjs_sneak')}', 'ann', 'product', 'orders')`,
+    `insert into session(id, actor_id, active_role, kolab_id, expires_at) values ('${sessionKey('kjs_sneak')}', 'ann', 'product', 'orders', now() + interval '1 day')`,
   ]) expect(await rejection(kolab.db.query(sql))).toMatch(/kolab orders is archived/);
   // Row-level security follows kj_access: a session there, however it came to be open, reads and writes nothing.
   await kolab.db.exec(`alter table session disable trigger session_openable`);
-  await kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id, opened_by) values ($1, 'ann', 'product', 'orders', 'admin')`, [sessionKey('kjs_backdoor')]);
+  await kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id, opened_by, expires_at) values ($1, 'ann', 'product', 'orders', 'admin', now() + interval '1 day')`, [sessionKey('kjs_backdoor')]);
   await kolab.db.exec(`alter table session enable trigger session_openable`);
   expect(await asAgent(kolab, 'kjs_backdoor', `select id from node`)).toStrictEqual([]);
   expect(await asAgent(kolab, 'kjs_backdoor', `select kj_session_kolab() as k, kj_session_layer() as l, kj_session_readable_kolabs() as r`))
@@ -220,7 +220,7 @@ test("an archived person's sessions end, and their agents' too; their name stays
   expect(await rejection(kolab.addActor('BOB', { owner: 'acme' }))).toMatch(/the name BOB is taken: bob holds it/);
   expect(await rejection(kolab.addActor('acme', { owner: 'bob' }))).toBe('ActorError: account acme already exists');
   // The database refuses her a session too.
-  expect(await rejection(kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id) values ($1, 'ann-pm', 'product', 'orders')`, [sessionKey('kjs_x')])))
+  expect(await rejection(kolab.db.query(`insert into session(id, actor_id, active_role, kolab_id, expires_at) values ($1, 'ann-pm', 'product', 'orders', now() + interval '1 day')`, [sessionKey('kjs_x')])))
     .toMatch(/actor ann-pm is archived/);
 
   // Her agent comes back with her, and only then.

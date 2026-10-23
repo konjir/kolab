@@ -30,7 +30,7 @@ output "database_recovery" {
 }
 
 output "admin_token_parameter" {
-  description = "SSM SecureString holding the admin token. Read it with deploy/konjir-ops.sh admin-token."
+  description = "SSM SecureString holding the break-glass admin token, outside Terraform (W2.22). Read it with deploy/konjir-ops.sh admin-token; rotate it with rotate-admin-token."
   value       = module.secrets.admin_token_param_name
 }
 

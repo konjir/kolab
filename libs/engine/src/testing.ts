@@ -33,7 +33,9 @@ export class TestKolab extends Kolab {
   override removeTeamMember(team: string, user: string, opts: { by?: Doer } = {}) { return super.removeTeamMember(team, user, { by: opts.by ?? ADMIN_DOER }); }
   override grant(kolab: string, to: string, level: AccessLevel, opts: { layers?: Layer[]; by?: Doer } = {}) { return super.grant(kolab, to, level, { ...opts, by: opts.by ?? ADMIN_DOER }); }
   override revoke(kolab: string, to: string, opts: { by?: Doer } = {}) { return super.revoke(kolab, to, { by: opts.by ?? ADMIN_DOER }); }
-  override archive(target: ArchiveTarget, opts: { by?: Doer } = {}) { return super.archive(target, { by: opts.by ?? ADMIN_DOER }); }
+  override archive(target: ArchiveTarget, opts: { by?: Doer; breakGlass?: boolean } = {}) { return super.archive(target, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override makeAdmin(actor: string, opts: { by?: Doer } = {}) { return super.makeAdmin(actor, { by: opts.by ?? ADMIN_DOER }); }
+  override removeAdmin(actor: string, opts: { by?: Doer; breakGlass?: boolean } = {}) { return super.removeAdmin(actor, { by: opts.by ?? ADMIN_DOER, breakGlass: opts.breakGlass ?? true }); }
   override unarchive(target: ArchiveTarget, opts: { by?: Doer } = {}) { return super.unarchive(target, { by: opts.by ?? ADMIN_DOER }); }
   override applyRuling(nodeId: string, input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] }, ruling: { id: string; actor: string; by?: Doer }) {
     return super.applyRuling(nodeId, input, { ...ruling, by: ruling.by ?? ADMIN_DOER });

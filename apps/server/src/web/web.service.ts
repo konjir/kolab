@@ -33,7 +33,10 @@ export class WebService {
   async me(s: string): Promise<WebMe> {
     const i = await this.kolab.sessionInfo(s);
     const a = await this.kolab.actor(i.actor);
-    return { actor: i.actor, name: a.name, kind: i.kind, owner: i.owner, role: i.role as Role, layer: i.layer, kolab: i.kolab, access: i.access };
+    return {
+      actor: i.actor, name: a.name, kind: i.kind, owner: i.owner, role: i.role as Role, layer: i.layer, kolab: i.kolab, access: i.access,
+      ...(await this.kolab.isAdmin(i.actor) ? { konjirAdmin: true as const } : {}),
+    };
   }
 
   /**

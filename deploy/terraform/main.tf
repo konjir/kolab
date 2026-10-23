@@ -66,6 +66,23 @@ module "secrets" {
   cli_npm_spec     = var.cli_npm_spec
 }
 
+# The break-glass admin token is no longer Terraform's (W2.22): forget the generated value and its
+# parameter without destroying the parameter, which Kolab keeps reading until
+# deploy/konjir-ops.sh rotate-admin-token replaces its value.
+removed {
+  from = module.secrets.random_password.admin_token
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.secrets.aws_ssm_parameter.admin_token
+  lifecycle {
+    destroy = false
+  }
+}
+
 module "database" {
   source              = "./modules/database"
   name                = var.name

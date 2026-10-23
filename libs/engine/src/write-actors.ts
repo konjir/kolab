@@ -32,8 +32,7 @@ export type UnsignedReason = keyof typeof NO_ACTOR_REASONS.unsigned;
 /**
  * How each of Kolab's public methods that writes records who made the write (W2.20, D70):
  * - `recorded`: where it is recorded (ActorRecord): from the session's actor, the person signing
- *   in, or the `by` its caller must pass (an admin's, the admin token's until admins are people,
- *   W2.22, or Kolab's own)
+ *   in, or the `by` its caller must pass (an admin's, the break-glass token's, W2.22, or Kolab's own)
  * - `system` or `unsigned`: why it records no one, one of NO_ACTOR_REASONS
  *
  * What write-actors.test.ts checks, and nothing more:
@@ -67,9 +66,18 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   drainOutbox: { system: 'outbox' },
   retryOutboxJob: { recorded: ['audit_event:outbox.retried'] },
 
+  // ---- Konjir's admins (W2.22, D69) ----
+  makeAdmin: { recorded: ['audit_event:admin.granted'] },
+  removeAdmin: { recorded: ['audit_event:admin.revoked'] },
+  // A raise is asked for by the session's own person, and completed by them in a browser (Lee's ruling of 2026-10-23).
+  requestRaise: { recorded: ['admin_raise.actor_id'] },
+  completeRaise: { recorded: ['audit_event:admin.elevated'] },
+  lowerRaise: { recorded: ['audit_event:admin.lowered'] },
+  recordBreakGlass: { recorded: ['audit_event:break_glass.used'] },
+
   // ---- actors, sessions and sign-in ----
   addActor: { recorded: ['actor.created_by', 'account.created_by'] },
-  openSession: { recorded: ['session.opened_by'] },
+  openSession: { recorded: ['session.opened_by', 'session.ended_by'] },
   endSession: { recorded: ['session.ended_by'] },
   switchSession: { recorded: ['session.ended_by', 'session.opened_by'] },
   signInWith: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by'] },

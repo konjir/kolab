@@ -8,6 +8,7 @@ import { json, urlencoded, type NextFunction, type Request, type Response } from
 import { KonjirAuth } from './auth.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { KolabServerModule } from './kolab-server.module.js';
+import { SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
 
@@ -22,7 +23,9 @@ export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/ide
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
 
 export async function startServer(opts: {
-  port?: number; host?: string; dataDir?: string; adminToken: string; kolab?: Kolab;
+  port?: number; host?: string; dataDir?: string; kolab?: Kolab;
+  /** The break-glass admin token (W2.22, D69); null disables it, leaving Konjir's admins, people who sign in, alone. */
+  adminToken: string | null;
   /** Postgres to store in. Without it, PGlite in `dataDir`, or in memory. */
   databaseUrl?: string;
   /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). Accepted alongside localhost. */
@@ -33,6 +36,8 @@ export async function startServer(opts: {
   webVersionsPollMs?: number;
   /** How many kolabs a person may own when they make their own (D54; 10 by default). */
   kolabsPerPerson?: number;
+  /** How many days a hand-issued session token lasts (W2.22; 30 by default, KONJIR_HAND_ISSUED_TOKEN_DAYS). */
+  handIssuedTokenDays?: number;
   /** Who signs people in (D55): GitHubIdentity on the test server, StubIdentity in tests. Without one, no OAuth. */
   identity?: IdentityProvider;
   /** Whether the web interface still takes a pasted session token: by default, only without an identity provider. */
@@ -48,6 +53,12 @@ export async function startServer(opts: {
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
+  if (opts.handIssuedTokenDays !== undefined) {
+    if (!(Number.isFinite(opts.handIssuedTokenDays) && opts.handIssuedTokenDays > 0 && opts.handIssuedTokenDays <= 365)) {
+      throw new Error(`a hand-issued token lasts more than 0 and at most 365 days, not ${opts.handIssuedTokenDays}`);
+    }
+    kolab.sessions.handIssuedTtlS = Math.max(1, Math.round(opts.handIssuedTokenDays * 86_400));
+  }
   const app = await NestFactory.create<NestExpressApplication>(
     KolabServerModule.register({
       kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
@@ -87,9 +98,12 @@ export async function startServer(opts: {
   if (!opts.kolab && opts.worker !== false) kolab.startWorker();
   const http = app.getHttpServer() as HttpServer;
   const { port } = http.address() as AddressInfo;
+  const url = opts.publicHost ? `https://${opts.publicHost}/mcp` : `http://${host}:${port}/mcp`;
+  // Its origin, now that it is known: where an admin's raise link points (W2.22).
+  (app.get(SERVER_OPTIONS) as ServerOptions).origin = url.slice(0, -'/mcp'.length);
   let closing: Promise<void> | undefined;
   return {
-    url: opts.publicHost ? `https://${opts.publicHost}/mcp` : `http://${host}:${port}/mcp`,
+    url,
     kolab,
     // Closing again, or while it's closing, waits for the same close; after a failed close, it tries again.
     close: () => (closing ??= (async () => {

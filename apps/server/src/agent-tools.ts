@@ -137,7 +137,11 @@ export class AgentTools {
   whoami(_: unknown, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
-      return { ...me, subscribe: [inboxUri(me.kolab, me.layer), answersUri(me.kolab, me.actor)] };
+      // A Konjir admin's own session says so, and whether it is raised to run the admin verbs (W2.22).
+      const scopes = context?.authInfo?.scopes ?? [];
+      // No hint how to raise it: only its person's browser can (Lee's ruling of 2026-10-23).
+      const admin = scopes.includes('konjir-admin') ? { konjir_admin: { raised: scopes.includes('admin') } } : {};
+      return { ...me, ...admin, subscribe: [inboxUri(me.kolab, me.layer), answersUri(me.kolab, me.actor)] };
     });
   }
 

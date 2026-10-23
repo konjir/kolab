@@ -100,13 +100,27 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024) and before the paged lists' indexes and the rates' events (0025),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025) and before admins who are people (0026),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      alter table oauth_request drop column raise_id;
+      drop table admin_raise;
+      alter table session drop constraint session_grant_token;
+      update session set expires_at = null where grant_id is null;
+      alter table session add constraint session_grant_token check (
+        (grant_id is null) = (token_key is null) and (token_key is null) = (expires_at is null));
+      alter table session drop column admin_until;
+      drop trigger konjir_admin_audited on konjir_admin;
+      drop function kj_admin_audited();
+      drop table konjir_admin;
+      drop function kj_admin_is_person();
+      alter table audit_event drop constraint audit_event_action_check;
+      alter table audit_event add constraint audit_event_action_check check (action in
+        ('grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried'));
       drop function kj_rate_take(text, text, bigint, int, int);
       drop function kj_rate_use(text);
       drop function kj_rate_release(text);
@@ -300,6 +314,10 @@ test('a database from the previous release is migrated on open', async () => {
     await kolab.close();
 
     kolab = await TestKolab.open(store);
+    // 0026: alice's hand-issued session, from before tokens expired, now expires 30 days from the migration (W2.22).
+    const lapse = (await kolab.db.query<{ expires_at: Date | string }>(`select expires_at from session where actor_id = 'alice' and ended_at is null`)).rows.map((r) => new Date(r.expires_at).getTime());
+    expect(lapse).toHaveLength(1);
+    expect(Math.abs(lapse[0] - (Date.now() + 30 * 86_400_000))).toBeLessThan(10 * 60_000);
     // 0006 gave both of them Write on both layers of the kolab `kolab`; with alice back to the
     // functional one, bob is alone on his and commits without review (W1.6).
     await kolab.grant('kolab', 'alice', 'write', { layers: ['functional'] });

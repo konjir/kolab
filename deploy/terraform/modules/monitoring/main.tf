@@ -9,7 +9,7 @@
 #   the journal's _PID 1 and UNIT; and a heartbeat from each copy every 5 minutes. Nothing here
 #   touches the boot script, so nothing replaces the instance.
 # - Alarms: /healthz (a Route 53 health check), Kolab or Caddy exiting, a dead outbox job, a spike
-#   in Kolab's error lines, no fresh heartbeat from a journal copy for 30 minutes, a flood of log
+#   in Kolab's error lines, any use of the break-glass admin token, a person made a Konjir admin, an admin session raised (W2.22), no fresh heartbeat from a journal copy for 30 minutes, a flood of log
 #   lines (cost), the instance's root disk filling, and RDS CPU and free storage. Each emails the SNS topic when it fires and when it
 #   recovers. README: "Alarms" says what each means and what to do.
 
@@ -198,6 +198,96 @@ resource "aws_cloudwatch_metric_alarm" "outbox_dead" {
   depends_on          = [aws_cloudwatch_log_metric_filter.outbox_dead]
 }
 
+# Admins are people who sign in (W2.22, D69): the static admin token is only a break-glass, and
+# Kolab logs one warn line, "event":"break_glass_used", for each request made with it
+# (apps/server, KonjirAuth). Any use emails, so a day-to-day use, or a leaked token, is seen.
+resource "aws_cloudwatch_log_metric_filter" "break_glass" {
+  name           = "${var.name}-break-glass-used"
+  log_group_name = aws_cloudwatch_log_group.kolab.name
+  pattern        = "{ $.event = \"break_glass_used\" && $._SYSTEMD_UNIT = \"konjir.service\" }"
+  metric_transformation {
+    name      = "BreakGlassUses"
+    namespace = local.namespace
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "break_glass" {
+  alarm_name          = "${var.name}-break-glass-used"
+  alarm_description   = "The break-glass admin token was used. Admins run admin verbs from their own sign-in (konjir admin_elevate); the token is for bootstrapping and emergencies. If that wasn't you, rotate it now: deploy/konjir-ops.sh rotate-admin-token, then read konjir admin_audit for break_glass.used; see README, Admins."
+  namespace           = local.namespace
+  metric_name         = "BreakGlassUses"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.topic
+  ok_actions          = local.topic
+  depends_on          = [aws_cloudwatch_log_metric_filter.break_glass]
+}
+
+# A person made a Konjir admin, and an admin's session raised to run the admin verbs (W2.22, Lee's
+# ruling of 2026-10-23). Each is rare and lasts beyond the moment (a new admin stays one; a raised
+# session can open sessions and make admins for 15 minutes), so each one emails. Kolab logs one
+# warn line for each, "event":"admin_granted" (libs/engine, Kolab.makeAdmin) and
+# "event":"admin_elevated" (Kolab.completeRaise, once the person's browser confirms the raise).
+# apps/cli/test/admins.test.ts checks that each event these filters match is logged.
+resource "aws_cloudwatch_log_metric_filter" "admin_granted" {
+  name           = "${var.name}-admin-granted"
+  log_group_name = aws_cloudwatch_log_group.kolab.name
+  pattern        = "{ $.event = \"admin_granted\" && $._SYSTEMD_UNIT = \"konjir.service\" }"
+  metric_transformation {
+    name      = "AdminsGranted"
+    namespace = local.namespace
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "admin_granted" {
+  alarm_name          = "${var.name}-admin-granted"
+  alarm_description   = "A person was made a Konjir admin. If you didn't expect it, read konjir admin_audit for admin.granted (who, and by whom), remove them with konjir admin_remove_admin, and check what they did; see README, Konjir's admins."
+  namespace           = local.namespace
+  metric_name         = "AdminsGranted"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.topic
+  ok_actions          = local.topic
+  depends_on          = [aws_cloudwatch_log_metric_filter.admin_granted]
+}
+
+resource "aws_cloudwatch_log_metric_filter" "admin_elevated" {
+  name           = "${var.name}-admin-session-raised"
+  log_group_name = aws_cloudwatch_log_group.kolab.name
+  pattern        = "{ $.event = \"admin_elevated\" && $._SYSTEMD_UNIT = \"konjir.service\" }"
+  metric_transformation {
+    name      = "AdminSessionsRaised"
+    namespace = local.namespace
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "admin_elevated" {
+  alarm_name          = "${var.name}-admin-session-raised"
+  alarm_description   = "A Konjir admin raised a session to run the admin verbs for 15 minutes, confirmed in their browser. If that wasn't you, lower it (konjir admin_end_session for the session in admin_audit's admin.elevated), remove the admin if their GitHub account is compromised, and read konjir admin_audit; see README, Konjir's admins."
+  namespace           = local.namespace
+  metric_name         = "AdminSessionsRaised"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.topic
+  ok_actions          = local.topic
+  depends_on          = [aws_cloudwatch_log_metric_filter.admin_elevated]
+}
+
 # Kolab's own error-level lines (each 5xx answer is one, event http_5xx), not Caddy's: while a deploy
 # restarts Kolab, Caddy logs an error for every request it can't pass on and every stream that's
 # cut, and a Kolab that is down is healthz-failing's and service-exited's to report. Lines that
@@ -363,7 +453,8 @@ output "alarm_topic_arn" { value = aws_sns_topic.alarms.arn }
 output "alarm_names" {
   value = concat(
     [aws_cloudwatch_metric_alarm.healthz.alarm_name, aws_cloudwatch_metric_alarm.service_exits.alarm_name],
-    [aws_cloudwatch_metric_alarm.outbox_dead.alarm_name, aws_cloudwatch_metric_alarm.errors.alarm_name],
+    [aws_cloudwatch_metric_alarm.outbox_dead.alarm_name, aws_cloudwatch_metric_alarm.errors.alarm_name, aws_cloudwatch_metric_alarm.break_glass.alarm_name],
+    [aws_cloudwatch_metric_alarm.admin_granted.alarm_name, aws_cloudwatch_metric_alarm.admin_elevated.alarm_name],
     [aws_cloudwatch_metric_alarm.no_logs.alarm_name, aws_cloudwatch_metric_alarm.log_flood.alarm_name, aws_cloudwatch_metric_alarm.disk.alarm_name],
     [aws_cloudwatch_metric_alarm.db_cpu.alarm_name, aws_cloudwatch_metric_alarm.db_storage.alarm_name],
   )

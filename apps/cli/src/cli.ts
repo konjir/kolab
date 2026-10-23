@@ -115,7 +115,7 @@ const insufficientScope = (e: unknown) =>
 
 /** The refusal for an agent session calling an admin verb, said plainly. */
 const adminOnly = (verb: string) =>
-  `${toolName(verb)} is an admin verb: only the admin token may call it, and this token is an agent session's. Ask whoever runs Kolab.`;
+  `${toolName(verb)} is an admin verb: only a Konjir admin's own session, raised in their browser (konjir admin_elevate), or the break-glass token may call it, and this session isn't raised. Ask a Konjir admin.`;
 
 /** Call a tool and return its structured result, or throw with the tool's error text. */
 export async function call(client: Client, verb: string, args: Record<string, unknown> = {}) {
@@ -163,13 +163,16 @@ Harnesses: konjir connect opencode|claude [--kolab <k>] [--agent <label>[:<role>
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
            token, the sign-in konjir login keeps for that URL.
 Version:   konjir --version
-${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T] [--public-host kolab.example.com]
+${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T|off] [--public-host kolab.example.com]
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
         --no-migrate applies no migration (a database that needs one is refused) and --no-worker runs no
         outbox jobs, so a restored database can be checked without changing it (deploy/RECOVERY.md).
+        The admin token (or KONJIR_ADMIN_TOKEN) is a break-glass only: Konjir's admins are people who sign in, run
+        konjir admin_elevate and confirm the raise in their browser (W2.22). off disables it.
         Sign-in with GitHub (D55): KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET, a GitHub OAuth app's,
         whose callback is <origin>/oauth/callback/github. KONJIR_WEB_TOKEN_SIGN_IN=on keeps pasting a token in the
-        web page (on by default without GitHub); KONJIR_HAND_ISSUED_TOKENS=off turns admin-issued session tokens off.
+        web page (on by default without GitHub); KONJIR_HAND_ISSUED_TOKENS=off turns admin-issued session tokens off;
+        they last KONJIR_HAND_ISSUED_TOKEN_DAYS (30 by default).
         KONJIR_CLI_NPM_SPEC=konjir@<version> (an exact version, once published) lets the web page show npx <spec>.` : `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.`}`;
 
 function parseKv(argv: string[]): Record<string, unknown> {
@@ -218,6 +221,27 @@ function onOff(env: Record<string, string | undefined>, name: string): boolean |
   throw new Error(`${name} is on or off`);
 }
 
+/** The shortest break-glass admin token a Kolab behind a public host starts with (W2.22): rotate-admin-token writes 44 characters. */
+export const BREAK_GLASS_MIN_LENGTH = 32;
+
+/**
+ * The break-glass admin token `konjir serve` runs with (W2.22, D69), from --admin-token or
+ * KONJIR_ADMIN_TOKEN: null when it says `off`, in any case and with any surrounding whitespace,
+ * so a hand-written `Off` disables it rather than becoming a guessable token. Undefined when none
+ * was given. Refused if it holds whitespace, and, behind a public host, if it is shorter than
+ * BREAK_GLASS_MIN_LENGTH; a local Kolab (tests, the demo) may use a short one.
+ */
+export function breakGlassToken(given: string | undefined, opts: { publicHost?: string } = {}): string | null | undefined {
+  if (given === undefined) return undefined;
+  if (given.trim().toLowerCase() === 'off') return null;
+  if (!given.trim()) throw new Error('KONJIR_ADMIN_TOKEN is empty: set a break-glass token, or off to disable it');
+  if (/\s/.test(given)) throw new Error('KONJIR_ADMIN_TOKEN holds whitespace: write the token alone, or off to disable it');
+  if (opts.publicHost && given.length < BREAK_GLASS_MIN_LENGTH) {
+    throw new Error(`KONJIR_ADMIN_TOKEN is too short for a Kolab on a public host: at least ${BREAK_GLASS_MIN_LENGTH} characters (deploy/konjir-ops.sh rotate-admin-token writes one), or off to disable it`);
+  }
+  return given;
+}
+
 /**
  * How `konjir serve` signs people in (D55): with GitHub when KONJIR_GITHUB_CLIENT_ID and
  * KONJIR_GITHUB_CLIENT_SECRET are both set (one alone is refused); a pasted token in the web page
@@ -264,18 +288,25 @@ export async function main(argv: string[]) {
     const { startServer, log } = await server();
     const port = Number(flag(rest, 'port') ?? 7420);
     const dataDir = flag(rest, 'data') ?? '.konjir';
-    const adminToken = flag(rest, 'admin-token') ?? process.env.KONJIR_ADMIN_TOKEN ?? randomBytes(18).toString('base64url');
+    // The break-glass admin token (W2.22, D69): `off` disables it, leaving Konjir's admins, people
+    // who sign in, alone; unset, a local Kolab makes one and prints it.
+    const givenToken = flag(rest, 'admin-token') ?? process.env.KONJIR_ADMIN_TOKEN;
+    const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
+    const adminToken = breakGlassToken(givenToken, { publicHost }) ?? (givenToken === undefined ? randomBytes(18).toString('base64url') : null);
     // Kolab makes no model calls (REV5): its checks are structural, and reviewing agents review.
     const retired = retiredReviewSettings(process.env, flag(rest, 'review'));
     if (retired.refuse) throw new Error(retired.refuse);
     if (retired.warn) log.warn(retired.warn);
     log.info('review: Kolab\'s structural checks, then reviewing agents (konjir_review); Kolab makes no model calls');
-    const publicHost = flag(rest, 'public-host') ?? process.env.KONJIR_PUBLIC_HOST;
     const databaseUrl = flag(rest, 'database-url') ?? process.env.KONJIR_DATABASE_URL;
     // How many kolabs a person may own when they make their own in the web interface (D54).
     const perPerson = process.env.KONJIR_KOLABS_PER_PERSON;
     const kolabsPerPerson = perPerson === undefined || perPerson === '' ? undefined : Number(perPerson);
     if (kolabsPerPerson !== undefined && !(Number.isInteger(kolabsPerPerson) && kolabsPerPerson >= 0)) throw new Error('KONJIR_KOLABS_PER_PERSON is a whole number');
+    // How long a hand-issued session token lasts (W2.22): 30 days unless this says otherwise.
+    const days = process.env.KONJIR_HAND_ISSUED_TOKEN_DAYS;
+    const handIssuedTokenDays = days === undefined || days === '' ? undefined : Number(days);
+    if (handIssuedTokenDays !== undefined && !(handIssuedTokenDays > 0 && handIssuedTokenDays <= 365)) throw new Error('KONJIR_HAND_ISSUED_TOKEN_DAYS is a number of days, more than 0 and at most 365');
     const sign = signInSettings(process.env);
     // The published konjir CLI, pinned (W3.7): the web page shows `npx <spec>` only when this is set.
     const cliNpmSpec = process.env.KONJIR_CLI_NPM_SPEC?.trim() || undefined;
@@ -283,7 +314,7 @@ export async function main(argv: string[]) {
     // migration (a database that needs one is refused) and no outbox worker.
     const migrate = !rest.includes('--no-migrate');
     const worker = !rest.includes('--no-worker');
-    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
+    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
     if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
     if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
     log.info(`sign-in: ${sign.describe}`);
@@ -291,7 +322,8 @@ export async function main(argv: string[]) {
     log.info(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     // Not a log line: the generated admin token, shown once to whoever started a local Kolab by
     // hand. A deployed Kolab is given its token (KONJIR_ADMIN_TOKEN) and runs with --quiet.
-    if (!process.env.KONJIR_ADMIN_TOKEN && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);
+    if (!givenToken && !rest.includes('--quiet')) console.log(`admin token: ${adminToken}`);
+    if (!adminToken) log.warn('the break-glass admin token is disabled: only Konjir admins, signed in as themselves, run the admin verbs', { event: 'break_glass_disabled' });
     const stop = async () => { await s.close(); process.exit(0); };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
     return;
@@ -422,7 +454,7 @@ export async function main(argv: string[]) {
         const name = toolName(rest[0]);
         const tool = (await client.listTools()).tools.find((t) => t.name === name);
         // An agent session doesn't see the admin verbs (toolVisibility 'authorized').
-        if (!tool) throw new Error(`no verb ${rest[0]}${name.startsWith('konjir_admin_') ? ' for this token: the admin verbs are for the admin token only' : ''}; run konjir tools`);
+        if (!tool) throw new Error(`no verb ${rest[0]}${name.startsWith('konjir_admin_') ? ' for this token: the admin verbs are for a Konjir admin\'s own session, raised in their browser (konjir admin_elevate), or the break-glass token' : ''}; run konjir tools`);
         const schema = tool.inputSchema as { properties?: Record<string, { type?: string; enum?: string[]; description?: string }>; required?: string[] };
         const params = Object.entries(schema.properties ?? {}).map(([k, p]) =>
           `  ${k}${schema.required?.includes(k) ? '' : ' (optional)'}: ${p.enum ? p.enum.join(' | ') : p.type ?? 'json'}${p.description ? ` — ${p.description}` : ''}`);

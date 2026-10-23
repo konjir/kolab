@@ -3,14 +3,20 @@ import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, 
 import type { Request, Response } from 'express';
 import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, type ConsentChoice } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
-import { ROLES, type Role } from '@konjir/types';
+import { ADMIN_ELEVATION_S, ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
-import { consentPage, formActionSource, sendError, sendPage, type ConsentView } from './pages.js';
+import { consentPage, formActionSource, raisedPage, raisePage, sendError, sendPage, type ConsentView } from './pages.js';
 
 /** The web interface's own client: first party, never registered, and only ever a person (W3.1). */
 export const WEB_CLIENT = 'konjir-web';
 /** Where the web interface receives its code. */
 export const WEB_CALLBACK = '/api/session/oauth/callback';
+/**
+ * Kolab's own sign-in that completes an admin raise (W2.22): first party, never registered, issues
+ * no code, and /oauth/authorize never starts it; only /oauth/raise does.
+ */
+export const RAISE_CLIENT = 'konjir-raise';
+const RAISE_GONE = 'This raise link is unknown, used or expired, or the session it was for has ended. Ask for a new one from your app with konjir admin_elevate.';
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 const hostName = (host: string) => (host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]).toLowerCase();
@@ -343,7 +349,21 @@ export class OAuthController {
       return refuse(`this authorization server issues tokens for ${base}/${MCP_ROUTE} only`);
     }
     if ((state?.length ?? 0) > 1000 || (str('scope')?.length ?? 0) > 1000) return refuse('state and scope are at most 1000 characters');
-    // At the cap, the oldest sign-ins in this browser are let go, so this one has room.
+    // Only the web interface's own sign-in carries an invite (W3.4), from the cookie its page set.
+    const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
+    await this.toIdentityProvider(req, res, base, {
+      clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
+    });
+  }
+
+  /**
+   * Starts a sign-in in this browser and sends it to the identity provider: a binding cookie of its
+   * own, and the provider's state naming it (D57). At the cap, the oldest sign-ins in this browser
+   * are let go, so this one has room. `fresh` asks the provider to have the person choose their
+   * account by hand (an admin raise).
+   */
+  private async toIdentityProvider(req: Request, res: Response, base: string,
+    r: Omit<Parameters<Kolab['beginAuthorization']>[0], 'provider'>, opts: { fresh?: boolean } = {}) {
     const held = bindingsOf(req, this.options);
     const evict: string[] = [];
     if (held.length >= OPEN_SIGN_INS) {
@@ -351,16 +371,63 @@ export class OAuthController {
       const drop = new Set(oldest.slice(0, held.length - OPEN_SIGN_INS + 1));
       for (const h of held) if (drop.has(h.binding)) evict.push(h.id);
     }
-    // Only the web interface's own sign-in carries an invite (W3.4), from the cookie its page set.
-    const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
-    const { binding, state: idpState } = await this.kolab.beginAuthorization({
-      provider: this.idp.id, clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
-    });
+    const { binding, state: idpState } = await this.kolab.beginAuthorization({ provider: this.idp!.id, ...r });
     const id = randomBytes(8).toString('base64url');
     for (const old of evict) clearBinding(res, this.options, old);
     res.append('set-cookie', `${bindingCookie(this.options, id)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
     res.setHeader('referrer-policy', 'no-referrer');
-    res.redirect(302, this.idp.authorizationUrl({ redirectUri: `${base}/oauth/callback/${this.idp.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding)) }));
+    res.redirect(302, this.idp!.authorizationUrl({
+      redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding)), ...(opts.fresh ? { fresh: true } : {}),
+    }));
+  }
+
+  /**
+   * The link konjir_admin_elevate answers with (W2.22, Lee's ruling of 2026-10-23): the only way a
+   * session is raised. The person opens it in their browser and signs in with the identity provider
+   * (GitHub's account picker: GitHub has no forced re-authentication, so this is not a password or
+   * 2FA check), through a sign-in of Kolab's own with every protection of any other (its binding cookie,
+   * the provider's state, the consent form's token and Kolab's own origin, D55, D57), and, as the
+   * session's own person, confirms on Kolab's page. It is limited like an authorization.
+   */
+  @Get('oauth/raise')
+  async raise(@Req() req: Request, @Res() res: Response, @Query() q: Record<string, unknown>) {
+    const base = originOf(req, this.options);
+    if (!base) return sendError(res, 403, 'This Kolab doesn\'t serve that host.');
+    if (!this.idp) return sendError(res, 404, 'Signing in with an identity provider isn\'t set up on this Kolab.');
+    if (!this.authorizations.take(clientAddress(req, this.options))) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
+    const request = typeof q.request === 'string' ? q.request : '';
+    if (!(await this.kolab.pendingRaise(request))) return sendError(res, 400, RAISE_GONE);
+    // Kolab's own sign-in: no client's redirect URI and no client's PKCE, so neither is anyone's to use.
+    await this.toIdentityProvider(req, res, base, {
+      clientId: RAISE_CLIENT, redirectUri: `${base}/oauth/raise`, codeChallenge: s256(randomBytes(32).toString('base64url')), raise: request,
+    }, { fresh: true });
+  }
+
+  /**
+   * The identity provider's answer for a raise's sign-in: only the raise's own person goes on, to
+   * the page that confirms it. Nobody is signed up here; anyone else is stopped, and the sign-in
+   * with them, and the request is used up: a link that reached someone else is never good again.
+   */
+  private async raiseSignedIn(res: Response, id: string, binding: string, state: string, raiseKey: string, who: { subject: string; login: string }) {
+    const raise = await this.kolab.pendingRaiseByKey(raiseKey);
+    const person = await this.kolab.personOf({ provider: this.idp!.id, subject: who.subject });
+    if (!raise || !person || person !== raise.actor) {
+      await this.kolab.abandonAuthorization(binding, state);
+      clearBinding(res, this.options, id);
+      if (!raise) return sendError(res, 400, RAISE_GONE);
+      return sendError(res, 403, `This raise is for ${raise.actor}'s session, and only ${raise.actor} can confirm it. You signed in with ${this.idp!.label} as ${who.login}${person ? `, who is ${person} here` : ', who isn\'t anyone in Kolab'}. Nothing was raised, and the link is used up.`);
+    }
+    let csrf: string;
+    try {
+      ({ csrf } = await this.kolab.identifyAuthorization(binding, state, person));
+    } catch (e) {
+      if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
+      throw e;
+    }
+    sendPage(res, 200, 'Raise your session', raisePage({
+      signIn: id, csrf, person, login: who.login, provider: this.idp!.label, session: raise.session, sessionStarted: raise.sessionStarted,
+      client: raise.client, expiresAt: raise.expiresAt, minutes: ADMIN_ELEVATION_S / 60,
+    }));
   }
 
   /** The identity provider's answer: who signed in. Then the consent page. */
@@ -382,6 +449,8 @@ export class OAuthController {
       if (!r) return this.stopped(res, { binding }, id);
       // Cancelled: the sign-in is over, and its cookie goes with it.
       clearBinding(res, this.options, id);
+      // A raise's sign-in has no client to tell (W2.22): it says so here.
+      if (r.redirectUri === `${base}/oauth/raise`) return sendPage(res, 200, 'Not raised', raisedPage({ person: '' }));
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: `the sign-in with ${this.idp.label} was cancelled`, state: r.clientState ?? undefined, iss: base }));
     }
     // The binding and the state together, before the code goes anywhere (RFC 6749 §10.12).
@@ -396,6 +465,8 @@ export class OAuthController {
       this.logger.warn(`a sign-in with ${this.idp.label} failed: ${maskTokens(e)}`);
       return sendError(res, 502, `${this.idp.label} didn't confirm who signed in. Try again.`);
     }
+    // An admin raise's sign-in (W2.22) goes only to its own confirmation, never to a consent.
+    if (pending.raiseKey) return this.raiseSignedIn(res, id, binding, state, pending.raiseKey, who);
     let person: { actor: string; created: boolean };
     try {
       person = await this.kolab.signInWith({ provider: this.idp.id, ...who });
@@ -471,6 +542,8 @@ export class OAuthController {
     if (!binding) return this.stopped(res, { csrf });
     const pending = await this.kolab.pendingAuthorization(binding, { csrf });
     if (!pending?.person) return this.stopped(res, { binding }, id);
+    // An admin raise's confirmation (W2.22): checked as every consent form is, above, then completed here, by its own person only.
+    if (pending.raiseKey) return this.raiseConfirmed(res, id, binding, csrf, str('decision') === 'allow', pending.person);
     if (str('decision') !== 'allow') {
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return this.stopped(res, { binding }, id);
@@ -502,6 +575,29 @@ export class OAuthController {
       if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
       if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) {
         return this.consent(res, 400, id, binding, csrf, { error: maskTokens(e), pick });
+      }
+      throw e;
+    }
+  }
+
+  /** A raise confirmed or declined on its page: the sign-in is over either way, and its cookie goes. */
+  private async raiseConfirmed(res: Response, id: string, binding: string, csrf: string, allow: boolean, person: string) {
+    if (!allow) {
+      const r = await this.kolab.declineAuthorization(binding, csrf);
+      if (!r) return this.stopped(res, { binding }, id);
+      clearBinding(res, this.options, id);
+      return sendPage(res, 200, 'Not raised', raisedPage({ person }));
+    }
+    try {
+      const r = await this.kolab.completeRaise(binding, csrf);
+      clearBinding(res, this.options, id);
+      sendPage(res, 200, 'Raised', raisedPage({ person: r.actor, until: r.until }));
+    } catch (e) {
+      if (e instanceof OAuthGrantError || e instanceof AccessError || e instanceof RoleError) {
+        // Over: nothing was raised, and this sign-in can't raise anything now.
+        await this.kolab.declineAuthorization(binding, csrf);
+        clearBinding(res, this.options, id);
+        return sendError(res, e instanceof OAuthGrantError ? 400 : 403, `${maskTokens(e)}. Nothing was raised.`);
       }
       throw e;
     }

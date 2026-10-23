@@ -19,7 +19,10 @@
 #                                                       crash and down break the live Kolab, so they need --yes-production
 #   bootstrap-log                                       the instance's first-boot install log
 #   shell                                               interactive shell (Session Manager plugin)
-#   admin-token                                         print the admin token
+#   admin-token                                         print the break-glass admin token
+#   rotate-admin-token [--off]                          write a new break-glass admin token to SSM and restart Kolab
+#                                                       (W2.22); --off disables the break-glass instead, refused unless
+#                                                       a live admin can sign in (--off-without-an-admin-who-signs-in: anyway)
 #   terraform <args…>                                   terraform in deploy/terraform on production's state, e.g. terraform
 #                                                       plan, with its working data in deploy/terraform/.terraform-production
 set -euo pipefail
@@ -55,6 +58,62 @@ admin_token() {
   aws ssm get-parameter --name "$(out admin_token_parameter)" --with-decryption --query Parameter.Value --output text
 }
 
+# Writes a new break-glass admin token to SSM, outside Terraform (W2.22, D69), and restarts Kolab
+# so it takes the new one: the old one stops working once Kolab is back. The value is never printed
+# or put on a command line; read it with admin-token when you need it. With --off, the parameter
+# holds `off` instead, and Kolab runs with the break-glass disabled: only Konjir admins, signed in
+# as themselves, run the admin verbs, and the last of them can't be removed. A new stack's Kolab
+# starts once this has written the parameter the first time.
+cmd_rotate_admin_token() {
+  local name file value off="" force=""
+  for arg in "$@"; do
+    case "$arg" in
+      --off) off=1 ;;
+      --off-without-an-admin-who-signs-in) off=1; force=1 ;;
+      *) die "usage: konjir-ops.sh rotate-admin-token [--off | --off-without-an-admin-who-signs-in]" ;;
+    esac
+  done
+  if [ -n "$off" ]; then
+    value=off
+    # Disabling the break-glass leaves only Konjir's admins, so at least one must be live and able to
+    # sign in (a linked GitHub identity), or no one could run an admin verb again (L1). Checked with
+    # the token still in place; refused unless the long flag says to go ahead anyway.
+    [ -n "$force" ] || require_an_admin_who_signs_in
+  else
+    value="kja_$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(40)))')"
+  fi
+  name="$(out admin_token_parameter)"
+  file="$(mktemp)"
+  # shellcheck disable=SC2064 # the file's name now, on any exit
+  trap "rm -f '$file'" EXIT
+  chmod 600 "$file"
+  python3 -c 'import json, sys; print(json.dumps({"Name": sys.argv[1], "Type": "SecureString", "Overwrite": True, "Value": sys.stdin.read().strip(),
+    "Description": "Kolab break-glass admin token (W2.22): written by deploy/konjir-ops.sh rotate-admin-token, never by Terraform"}))' "$name" <<<"$value" >"$file"
+  unset value
+  aws ssm put-parameter --cli-input-json "file://$file" >/dev/null
+  echo "wrote a new value to $name; restarting Kolab so it takes it"
+  on_kolab "systemctl restart konjir.service && echo 'Kolab restarted'"
+  echo "the previous break-glass token no longer works. Read the new one with: deploy/konjir-ops.sh admin-token"
+}
+
+# Refuses unless Kolab has a live Konjir admin who can sign in, asked with the break-glass token in
+# SSM now. If that is already `off`, the break-glass is disabled already and there is nothing to
+# lose. Needs the konjir CLI locally (npm install), as connect does.
+require_an_admin_who_signs_in() {
+  local current admins
+  current="$(admin_token)"
+  if [ "$current" = off ]; then unset current; return 0; fi
+  [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first: --off checks Konjir's admins with the konjir CLI"
+  admins="$(KONJIR_URL="$(out url)" KONJIR_TOKEN="$current" "$ROOT/bin/konjir" admin_list_admins)" || { unset current; die "couldn't list Konjir's admins: $admins"; }
+  unset current
+  python3 -c '
+import json, sys
+live = [a["actor"] for a in json.load(sys.stdin)["admins"] if not a["archived"] and a.get("signs_in")]
+if not live:
+    sys.exit("no live Konjir admin can sign in with GitHub, so with the break-glass off no one could run an admin verb. Make one first (konjir admin_make_admin, then admin_link_identity if they have no GitHub identity linked), or run rotate-admin-token --off-without-an-admin-who-signs-in to disable it anyway")
+print("Konjir admins who can sign in: " + ", ".join(live))' <<<"$admins" || exit 1
+}
+
 # Run a shell command on Kolab through SSM Run Command and print its output.
 on_kolab() {
   local instance cmd_id status
@@ -73,7 +132,7 @@ on_kolab() {
 }
 
 cmd_connect() {
-  local actor="${1:-}" role="${2:-}" owner="${3:-}" kolab="${KONJIR_KOLAB:-kolab}" url admin token added granted existing
+  local actor="${1:-}" role="${2:-}" owner="${3:-}" kolab="${KONJIR_KOLAB:-kolab}" url admin token expires opened added granted existing
   [ -n "$actor" ] && [[ "$role" =~ ^(product|engineer)$ ]] || die "usage: konjir-ops.sh connect <actor> <product|engineer> [owner]"
   [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first (the konjir CLI runs locally)"
   url="$(out url)"
@@ -91,13 +150,18 @@ cmd_connect() {
       | python3 -c 'import json,sys;a=[x for x in json.load(sys.stdin)["actors"] if x["id"]==sys.argv[1]][0];print(a["owner"] or "")' "$actor")"
     [ "$existing" = "$owner" ] || die "$actor already exists as $([ -n "$existing" ] && echo "an agent of $existing" || echo "a person"), not as $([ -n "$owner" ] && echo "an agent of $owner" || echo "a person")"
   fi
-  token="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_open_session "actor=$actor" "role=$role" "kolab=$kolab" \
-    | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
+  opened="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_open_session "actor=$actor" "role=$role" "kolab=$kolab")"
+  token="$(python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' <<<"$opened")"
+  expires="$(python3 -c 'import json,sys;print(json.load(sys.stdin).get("expires_at") or "never")' <<<"$opened")"
+  unset opened
   cat <<EOF
 
 $actor ($role in kolab $kolab${owner:+, an agent of $owner}) can connect with this token. Send it privately; it works like a password.
+It expires at $expires (W2.22: hand-issued tokens last 30 days unless Kolab's KONJIR_HAND_ISSUED_TOKEN_DAYS says
+otherwise); run connect again for a new one then.
 
   Token:        $token
+  Expires:      $expires
 
   Claude Code:  claude mcp add --transport http konjir $url --header "Authorization: Bearer $token"
   Shell / CLI:  export KONJIR_URL=$url KONJIR_TOKEN=$token
@@ -169,11 +233,12 @@ case "${1:-}" in
   shell)         command -v session-manager-plugin >/dev/null || die "install the Session Manager plugin: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
                  aws ssm start-session --target "$(out instance_id)" ;;
   admin-token)   admin_token ;;
+  rotate-admin-token) shift; cmd_rotate_admin_token "$@" ;;
   cloudwatch-logs) aws logs tail "$(out log_group)" --since "${2:-1h}" --follow --format short ;;
   alarms)        # shellcheck disable=SC2046 # one alarm name per word
                  aws cloudwatch describe-alarms --alarm-names $(tf output -json alarms | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin)))') \
                    --query 'MetricAlarms[].[AlarmName,StateValue,StateReason]' --output table ;;
   inject)        shift; cmd_inject "$@" ;;
   terraform)     shift; tf "$@" ;;
-  *)             sed -n '2,24p' "$0"; exit 1 ;;
+  *)             sed -n '2,27p' "$0"; exit 1 ;;
 esac
