@@ -5,6 +5,10 @@
 # is the commit's tree id without site/ (konjir.com, D81, which the zip leaves out too), which
 # changes only when Kolab's tracked content does: a site-only change is no new release. A new id updates the
 # association and re-runs the install. `terraform apply` is the deploy.
+#
+# In CI (W2.23, D76) the release is built before Terraform runs: .github/workflows/deploy.yml runs
+# pack.sh once on the commit and passes its zip and release id here (release_zip, release_id), so
+# staging and production install the same bytes. Without them, Terraform runs pack.sh itself.
 
 variable "name" { type = string }
 variable "source_dir" { type = string }
@@ -12,15 +16,29 @@ variable "artifact_bucket" { type = string }
 variable "instance_id" { type = string }
 variable "domain_name" { type = string }
 
+variable "release_zip" {
+  type    = string
+  default = null
+}
+variable "release_id" {
+  type    = string
+  default = null
+}
+
 data "external" "app" {
+  count   = var.release_zip == null ? 1 : 0
   program = ["bash", "${path.module}/../../../release/pack.sh", var.source_dir, abspath("${path.root}/.build/konjir-release.zip")]
+}
+
+locals {
+  release = var.release_zip == null ? data.external.app[0].result : { path = var.release_zip, release = var.release_id }
 }
 
 resource "aws_s3_object" "release" {
   bucket      = var.artifact_bucket
   key         = "releases/current.zip"
-  source      = data.external.app.result.path
-  source_hash = data.external.app.result.release
+  source      = local.release.path
+  source_hash = local.release.release
 }
 
 resource "aws_ssm_association" "install" {
@@ -34,7 +52,7 @@ resource "aws_ssm_association" "install" {
 
   parameters = {
     # The release hash in the comment is what makes a code change re-run this association.
-    commands         = "cloud-init status --wait >/dev/null || true; /usr/local/bin/konjir-update  # release ${data.external.app.result.release}"
+    commands         = "cloud-init status --wait >/dev/null || true; /usr/local/bin/konjir-update  # release ${local.release.release}"
     executionTimeout = "1800"
   }
 
@@ -57,8 +75,8 @@ check "kolab_is_live" {
   }
   assert {
     condition     = data.http.health.status_code == 200
-    error_message = "https://${var.domain_name}/healthz is not answering yet. Give DNS and the certificate a few minutes, then run deploy/konjir-ops.sh status."
+    error_message = "https://${var.domain_name}/healthz is not answering yet. Give DNS and the certificate a few minutes, then run deploy/konjir-ops.sh --env <environment> status."
   }
 }
 
-output "release" { value = data.external.app.result.release }
+output "release" { value = local.release.release }

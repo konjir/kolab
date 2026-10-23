@@ -8,6 +8,9 @@ variable "az" { type = string }
 variable "data_gib" { type = number }
 variable "final_snapshot" { type = bool }
 
+# The environment's permissions boundary (modules/iam says why).
+variable "permissions_boundary_arn" { type = string }
+
 resource "aws_s3_bucket" "artifacts" {
   #checkov:skip=CKV_AWS_18:Release artifacts only; access logging not needed for a test environment
   #checkov:skip=CKV_AWS_144:Releases are rebuildable from source; no replication
@@ -102,8 +105,9 @@ data "aws_iam_policy_document" "dlm_assume" {
 }
 
 resource "aws_iam_role" "dlm" {
-  name_prefix        = "${var.name}-dlm-"
-  assume_role_policy = data.aws_iam_policy_document.dlm_assume.json
+  name_prefix          = "${var.name}-dlm-"
+  assume_role_policy   = data.aws_iam_policy_document.dlm_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role_policy_attachment" "dlm" {

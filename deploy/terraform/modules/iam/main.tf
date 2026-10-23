@@ -23,6 +23,11 @@ variable "cli_npm_spec_param_arn" {
 variable "log_group_arn" { type = string }
 variable "metrics_namespace" { type = string }
 
+# The permissions boundary deploy/terraform/github-oidc makes for this environment (W2.23). The
+# deploy roles may create or change a role only with it attached, so a role made from CI can't
+# hold more than it allows, whatever its own policy says.
+variable "permissions_boundary_arn" { type = string }
+
 data "aws_partition" "current" {}
 
 data "aws_iam_policy_document" "assume" {
@@ -36,8 +41,9 @@ data "aws_iam_policy_document" "assume" {
 }
 
 resource "aws_iam_role" "kolab" {
-  name_prefix        = "${var.name}-kolab-"
-  assume_role_policy = data.aws_iam_policy_document.assume.json
+  name_prefix          = "${var.name}-kolab-"
+  assume_role_policy   = data.aws_iam_policy_document.assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {

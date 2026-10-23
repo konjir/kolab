@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# Day-to-day operations on the Terraform-managed Kolab server. Provisioning lives in deploy/terraform;
-# this only reads its outputs and talks to the running Kolab server.
+# Day-to-day operations on a Terraform-managed Kolab: production or staging (D73). Provisioning lives
+# in deploy/terraform and runs from CI (.github/workflows/deploy.yml); this reads an environment's
+# outputs, talks to its running Kolab, and runs Terraform against it by hand.
 #
-#   deploy/konjir-ops.sh connect <actor> <product|engineer> [owner]
-#                                                              register a person, or with owner an agent of that account,
-#                                                              granted Write in kolab $KONJIR_KOLAB (default kolab); open a session
-#   deploy/konjir-ops.sh status                                health, service state
-#   deploy/konjir-ops.sh logs                                  last 200 lines from Kolab and Caddy
-#   deploy/konjir-ops.sh cloudwatch-logs [since]               Kolab's and Caddy's lines in CloudWatch Logs (default: the last 1h), following
-#   deploy/konjir-ops.sh alarms                                each alarm's state, and the reason for it
-#   deploy/konjir-ops.sh inject <crash|down [min]|dead-job|errors|rds-cpu|rds-storage> [--yes-production]
-#                                                              set off one alarm on purpose, to check it emails (README: Alarms);
-#                                                              crash and down break the live Kolab, so they need --yes-production
-#   deploy/konjir-ops.sh bootstrap-log                         the instance's first-boot install log
-#   deploy/konjir-ops.sh shell                                 interactive shell (Session Manager plugin)
-#   deploy/konjir-ops.sh admin-token                           print the admin token
+#   deploy/konjir-ops.sh [--env production|staging] <command> …     (default production, or $KONJIR_ENV)
+#
+#   connect <actor> <product|engineer> [owner]          register a person, or with owner an agent of that account,
+#                                                       granted Write in kolab $KONJIR_KOLAB (default kolab); open a session
+#   status                                              health, service state
+#   logs                                                last 200 lines from Kolab and Caddy
+#   cloudwatch-logs [since]                             Kolab's and Caddy's lines in CloudWatch Logs (default: the last 1h), following
+#   alarms                                              each alarm's state, and the reason for it
+#   inject <crash|down [min]|dead-job|errors|rds-cpu|rds-storage> [--yes-production]
+#                                                       set off one alarm on purpose, to check it emails (README: Alarms);
+#                                                       on production, crash and down break the live Kolab, so they need --yes-production
+#   bootstrap-log                                       the instance's first-boot install log
+#   shell                                               interactive shell (Session Manager plugin)
+#   admin-token                                         print the admin token
+#   terraform <args…>                                   terraform in deploy/terraform on this environment's state, e.g.
+#                                                       terraform plan; each environment keeps its own deploy/terraform/.terraform-<env>
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +29,24 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_PAGER=""
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-out() { terraform -chdir="$TF" output -raw "$1" 2>/dev/null || die "no Terraform output '$1'; run terraform apply in $TF first"; }
+
+ENV="${KONJIR_ENV:-production}"
+case "${1:-}" in
+  --env)   ENV="${2:-}"; shift 2 || die "--env takes production or staging" ;;
+  --env=*) ENV="${1#--env=}"; shift ;;
+esac
+[[ "$ENV" =~ ^(production|staging)$ ]] || die "--env is production or staging, not '$ENV'"
+# Each environment has its own Terraform working data, so switching needs no re-init.
+export TF_DATA_DIR="$TF/.terraform-$ENV" TF_VAR_environment="$ENV"
+
+tf() {
+  if [ ! -f "$TF_DATA_DIR/terraform.tfstate" ]; then
+    terraform -chdir="$TF" init -input=false -backend-config="environments/$ENV.s3.tfbackend" >&2 \
+      || die "terraform init failed for $ENV"
+  fi
+  terraform -chdir="$TF" "$@"
+}
+out() { tf output -raw "$1" 2>/dev/null || die "no Terraform output '$1' in $ENV; has it been deployed?"; }
 
 admin_token() {
   aws ssm get-parameter --name "$(out admin_token_parameter)" --with-decryption --query Parameter.Value --output text
@@ -79,12 +100,12 @@ $actor ($role in kolab $kolab${owner:+, an agent of $owner}) can connect with th
   Shell / CLI:  export KONJIR_URL=$url KONJIR_TOKEN=$token
                 konjir instructions
 
-Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh admin-token) bin/konjir admin_end_session actor=$actor
+Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh --env $ENV admin-token) bin/konjir admin_end_session actor=$actor
 EOF
 }
 
 # Sets off one alarm on purpose (README: Alarms). crash and down break the real Kolab, through the
-# journal, the agent and the metric filter, so they say what they will do and need --yes-production;
+# journal, the agent and the metric filter, so they say what they will do and, on production, need --yes-production;
 # dead-job and errors put lines into the log group's `inject` stream, which the same filters count;
 # the RDS alarms are set by hand, and go back to their real state at their next evaluation.
 cmd_inject() {
@@ -105,7 +126,7 @@ cmd_inject() {
         [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 15 ] || die "down takes 1 to 15 minutes"
         echo "inject down: stops the live Kolab at $site for $minutes minutes, then systemd starts it again; healthz-failing fires"
       fi
-      [ -n "$yes" ] || die "this breaks the production Kolab; run it again with --yes-production"
+      [ "$ENV" != production ] || [ -n "$yes" ] || die "this breaks the production Kolab; run it again with --yes-production"
       if [ "$what" = crash ]; then
         on_kolab "systemctl kill --signal=KILL konjir.service && echo 'killed Kolab; systemd restarts it in 3 s'"
       else
@@ -120,7 +141,7 @@ cmd_inject() {
       # The alarm takes 2 of 3 five-minute periods, so 12 lines go in this period and 12 in the one before.
       line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject errors: not a real error","_SYSTEMD_UNIT":"konjir.service"}'; count=12; periods=2 ;;
     rds-cpu|rds-storage)
-      alarm="$(terraform -chdir="$TF" output -json alarms | python3 -c 'import json,sys;print([a for a in json.load(sys.stdin) if "-" + sys.argv[1] + "-" in a][0])' "$what")"
+      alarm="$(tf output -json alarms | python3 -c 'import json,sys;print([a for a in json.load(sys.stdin) if "-" + sys.argv[1] + "-" in a][0])' "$what")"
       aws cloudwatch set-alarm-state --alarm-name "$alarm" --state-value ALARM --state-reason "injected by deploy/konjir-ops.sh inject $what"
       echo "$alarm set to ALARM; it returns to its real state at its next evaluation"; return ;;
     *) die "usage: konjir-ops.sh inject <crash|down [minutes]|dead-job|errors|rds-cpu|rds-storage>" ;;
@@ -147,8 +168,9 @@ case "${1:-}" in
   admin-token)   admin_token ;;
   cloudwatch-logs) aws logs tail "$(out log_group)" --since "${2:-1h}" --follow --format short ;;
   alarms)        # shellcheck disable=SC2046 # one alarm name per word
-                 aws cloudwatch describe-alarms --alarm-names $(terraform -chdir="$TF" output -json alarms | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin)))') \
+                 aws cloudwatch describe-alarms --alarm-names $(tf output -json alarms | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin)))') \
                    --query 'MetricAlarms[].[AlarmName,StateValue,StateReason]' --output table ;;
   inject)        shift; cmd_inject "$@" ;;
-  *)             sed -n '2,17p' "$0"; exit 1 ;;
+  terraform)     shift; tf "$@" ;;
+  *)             sed -n '2,24p' "$0"; exit 1 ;;
 esac
