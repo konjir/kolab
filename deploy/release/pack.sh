@@ -12,6 +12,9 @@
 #   Terraform state) is refused, should one ever be committed.
 # - The release id is the commit's tree id, so it changes only when tracked content does: two
 #   commits with the same tree are one release.
+# - site/, konjir.com's files (D81), is no part of Kolab: .gitattributes marks it export-ignore, so
+#   it isn't in the zip, and the release id is the tree id without it, so a change to the site
+#   alone is the same release and doesn't reinstall Kolab. Without a site/ the id is the tree id.
 set -euo pipefail
 fail() { echo "pack.sh: $*" >&2; exit 1; }
 [ $# -eq 2 ] || fail "usage: pack.sh <checkout> <zip>"
@@ -31,7 +34,8 @@ $dirty"
 forbidden=$(git ls-tree -r --name-only HEAD | grep -E '(^|/)(\.env(\.[^/]*)?|\.claude|\.playwright-mcp|\.konjir|\.konjir-demo)(/|$)|\.tfvars(\.json)?$|(^|/)terraform\.tfstate(\.backup)?$' || true)
 [ -z "$forbidden" ] || fail "these tracked files must never ship; remove them from git:
 $forbidden"
-tree=$(git rev-parse 'HEAD^{tree}')
+# The commit's top-level entries without site/, as a tree: with no site/, HEAD^{tree} itself.
+tree=$(git ls-tree HEAD | awk -F '\t' '$2 != "site"' | git mktree)
 mkdir -p "$(dirname "$out")"
 git archive --format=zip -o "$out.tmp" HEAD
 mv -f "$out.tmp" "$out"

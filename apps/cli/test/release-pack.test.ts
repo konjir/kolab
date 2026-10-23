@@ -1,7 +1,8 @@
 // The release Terraform ships is packed by deploy/release/pack.sh from the tracked files of one
 // commit (the D55 review): nothing untracked or ignored, such as .env, a .claude/ worktree, a
 // nested .konjir or a *.tfvars file, can be in it; uncommitted tracked changes are refused; and
-// the release id is the commit's tree, so it changes only when tracked content does.
+// the release id is the commit's tree, so it changes only when tracked content does. site/,
+// konjir.com's files (D81), is left out of both the zip and the id.
 import { afterAll, expect, test } from '@jest/globals';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,6 +46,36 @@ test('only tracked files ship: untracked and ignored .env, .claude, .konjir and 
   writeFileSync(join(r, 'apps/a.ts'), 'y');
   git(r, 'commit', '-qam', 'three');
   expect(JSON.parse(pack(r, out).stdout).release).not.toBe(result.release);
+});
+
+test('site/ (konjir.com, D81) is no part of a release: not in the zip, and a site-only change is the same release', () => {
+  const r = repo('site', { '.gitattributes': '/site export-ignore\n', 'apps/a.ts': 'x', 'site/index.html': '<p>one</p>', 'site/assets/site.0123456789.css': 'p{}', 'deploy/site/site.js': '1' });
+  const out = join(dir, 'site.zip');
+  const p = pack(r, out);
+  expect([p.status, p.stderr]).toStrictEqual([0, '']);
+  const release = (JSON.parse(p.stdout) as { release: string }).release;
+  expect(names(out)).toStrictEqual(['.gitattributes', 'apps/', 'apps/a.ts', 'deploy/', 'deploy/site/', 'deploy/site/site.js']);
+
+  // The id is the tree without site/: the tree the same commit would have had with no site/ at all.
+  const bare = repo('site-bare', { '.gitattributes': '/site export-ignore\n', 'apps/a.ts': 'x', 'deploy/site/site.js': '1' });
+  expect(release).toBe(git(bare, 'rev-parse', 'HEAD^{tree}'));
+  expect(release).not.toBe(git(r, 'rev-parse', 'HEAD^{tree}'));
+
+  // Editing, adding or removing site files alone: the same release, so Terraform's release
+  // object and install association don't change and Kolab isn't reinstalled.
+  writeFileSync(join(r, 'site/index.html'), '<p>two</p>');
+  writeFileSync(join(r, 'site/new.txt'), 'x');
+  git(r, 'add', '-A');
+  git(r, 'commit', '-qm', 'site only');
+  expect(JSON.parse(pack(r, out).stdout).release).toBe(release);
+  git(r, 'rm', '-rq', 'site');
+  git(r, 'commit', '-qm', 'no site');
+  expect(JSON.parse(pack(r, out).stdout).release).toBe(release);
+
+  // Anything else is a new release, deploy/site/ included (it is tracked deploy code, not site/).
+  writeFileSync(join(r, 'deploy/site/site.js'), '2');
+  git(r, 'commit', '-qam', 'deploy code');
+  expect(JSON.parse(pack(r, out).stdout).release).not.toBe(release);
 });
 
 test('an uncommitted tracked change is refused, so a deploy is exactly a commit', () => {

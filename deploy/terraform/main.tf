@@ -126,7 +126,7 @@ module "release" {
 }
 
 # konjir.com, the marketing site (D81): the files in site/, on S3 behind CloudFront.
-# Production only; W2.23 (PR #69) should gate it on the environment instead of site_enabled.
+# This stack, konjir-test, is production (staging was dropped, D83), so site_enabled defaults to true.
 module "site" {
   source = "./modules/site"
   count  = var.site_enabled ? 1 : 0

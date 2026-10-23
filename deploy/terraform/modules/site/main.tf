@@ -4,8 +4,10 @@
 #  - an ACM certificate in us-east-1, validated through the konjir.com zone
 #  - security headers on every response, a strict CSP among them
 #  - every file in site/ (README.md and dotfiles aside) uploaded with its content type and cache policy:
-#    hashed files under assets/ cached a year as immutable, everything else a minute, so a deploy shows
-#    within a minute and needs no invalidation
+#    content-hashed files cached a year as immutable, everything else a minute, so a deploy shows
+#    within a minute and needs no invalidation. The build keeps the previous build's hashed files in
+#    site/ for one more build, so a page cached a minute before a deploy still finds its CSS and JS.
+#  - SPF and DMARC records saying konjir.com sends no mail, so no one can send mail as it
 
 terraform {
   required_providers {
@@ -156,12 +158,13 @@ resource "aws_s3_bucket_policy" "site" {
 resource "aws_s3_object" "site" {
   for_each = local.files
 
-  bucket        = aws_s3_bucket.site.id
-  key           = each.value
-  source        = "${var.site_dir}/${each.value}"
-  etag          = filemd5("${var.site_dir}/${each.value}")
-  content_type  = lookup(local.content_types, lower(reverse(split(".", each.value))[0]), "application/octet-stream")
-  cache_control = startswith(each.value, "assets/") ? "public, max-age=31536000, immutable" : "public, max-age=60"
+  bucket       = aws_s3_bucket.site.id
+  key          = each.value
+  source       = "${var.site_dir}/${each.value}"
+  etag         = filemd5("${var.site_dir}/${each.value}")
+  content_type = lookup(local.content_types, lower(reverse(split(".", each.value))[0]), "application/octet-stream")
+  # A content-hashed name (name.0123456789.ext) never changes content; anything else may.
+  cache_control = can(regex("\\.[0-9a-f]{10}\\.[a-z0-9]+$", each.value)) ? "public, max-age=31536000, immutable" : "public, max-age=60"
 
   depends_on = [aws_s3_bucket_server_side_encryption_configuration.site]
 }
@@ -215,24 +218,7 @@ resource "aws_cloudfront_function" "www_redirect" {
   runtime = "cloudfront-js-2.0"
   comment = "301 from ${local.www} to ${var.domain_name}"
   publish = true
-  code    = <<-EOT
-    function handler(event) {
-      var request = event.request;
-      var host = request.headers.host ? request.headers.host.value : '';
-      if (host !== '${local.www}') return request;
-      var qs = [];
-      for (var key in request.querystring) {
-        var v = request.querystring[key];
-        var all = v.multiValue ? v.multiValue : [v];
-        for (var i = 0; i < all.length; i++) qs.push(all[i].value === '' ? key : key + '=' + all[i].value);
-      }
-      return {
-        statusCode: 301,
-        statusDescription: 'Moved Permanently',
-        headers: { location: { value: 'https://${var.domain_name}' + request.uri + (qs.length ? '?' + qs.join('&') : '') } }
-      };
-    }
-  EOT
+  code    = templatefile("${path.module}/www-redirect.js.tftpl", { www = local.www, apex = var.domain_name })
 }
 
 data "aws_cloudfront_cache_policy" "optimized" {
@@ -349,6 +335,24 @@ resource "aws_route53_record" "alias" {
     zone_id                = aws_cloudfront_distribution.site.hosted_zone_id
     evaluate_target_health = false
   }
+}
+
+# konjir.com sends no mail (alarms come from SNS's own domain): say so, so receivers reject mail
+# that claims to be from it.
+resource "aws_route53_record" "spf" {
+  zone_id = var.zone_id
+  name    = var.domain_name
+  type    = "TXT"
+  ttl     = 3600
+  records = ["v=spf1 -all"]
+}
+
+resource "aws_route53_record" "dmarc" {
+  zone_id = var.zone_id
+  name    = "_dmarc.${var.domain_name}"
+  type    = "TXT"
+  ttl     = 3600
+  records = ["v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s"]
 }
 
 output "url" { value = "https://${var.domain_name}" }

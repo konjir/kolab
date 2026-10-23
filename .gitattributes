@@ -1,0 +1,3 @@
+# konjir.com's files (D81) aren't Kolab's: deploy/release/pack.sh's `git archive` leaves them out
+# of the release, and its release id leaves them out too.
+/site export-ignore
