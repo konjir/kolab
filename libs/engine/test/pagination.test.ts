@@ -69,10 +69,27 @@ test('a cursor whose key parts are the wrong shape, or that another filter gave,
   const invalid = /^LimitError: invalid cursor: that isn't one this list gave/;
   // The right list and filters, a key part that isn't a timestamp, or one out of range, or not a whole number.
   const marks = scoped('marks', { layer: 'technical', kolab: TEST_KOLAB });
-  for (const key of [['not a time', 'x'], ['2026-13-01 00:00:00+00', 'x'], ['2026-02-30 00:00:00+00', 'x'], [5, 'x'], ['2026-01-01 00:00:00+00', 7]]) {
+  // An offset's minutes or seconds out of range, or a NUL, which Postgres can't hold in text, are
+  // refused here too: never the database's own words.
+  for (const key of [['not a time', 'x'], ['2026-13-01 00:00:00+00', 'x'], ['2026-02-30 00:00:00+00', 'x'], [5, 'x'], ['2026-01-01 00:00:00+00', 7],
+    ['2026-01-01 00:00:00+00:99', 'x'], ['2026-01-01 00:00:00+1599', 'x'], ['2026-01-01 00:00:00+05:30:60', 'x'], ['2026-01-01 00:00:00+16', 'x'],
+    ['2026-01-01 00:00:00+00', 'x\u0000'], ['infinite', 'x']]) {
     expect(await rejection(kolab.marksPage(engineer, { layer: 'technical' }, { cursor: cursorFor(marks, key) }))).toMatch(invalid);
   }
-  await expect(kolab.marksPage(engineer, { layer: 'technical' }, { cursor: cursorFor(marks, ['2026-01-01 00:00:00.123456+00', 'x']) })).resolves.toMatchObject({ items: [] });
+  for (const at of ['2026-01-01 00:00:00.123456+00', '2026-01-01 00:00:00+05:30', '2026-01-01 00:00:00-03:30:15', '2026-01-01 00:00:00+15:59:59', '-infinity', 'infinity']) {
+    await expect(kolab.marksPage(engineer, { layer: 'technical' }, { cursor: cursorFor(marks, [at, 'x']) })).resolves.toMatchObject({ items: [] });
+  }
+  for (const key of [['functional_spec', 'a\u0000'], ['\u0000', 'a']]) {
+    expect(await rejection(kolab.nodesPage(TEST_KOLAB, undefined, { cursor: cursorFor(scoped('nodes', { kolab: TEST_KOLAB }), key) }))).toMatch(invalid);
+    expect(await rejection(kolab.rulingsPage(product, {}, { cursor: cursorFor(scoped('rulings', { kolab: TEST_KOLAB }), ['2026-01-01 00:00:00+00', 'x\u0000']) }))).toMatch(invalid);
+    expect(await rejection(kolab.queriesPage(product, {}, { cursor: cursorFor(scoped('queries', { kolab: TEST_KOLAB }), ['x\u0000']) }))).toMatch(invalid);
+  }
+  // An int key part past Postgres's int, which the versions list casts to: refused, not cast.
+  const versions = scoped('web:versions', { nodeId: 'orders', which: 'shown', actor: 'alice' });
+  for (const seq of [2 ** 31, 2 ** 53 - 1, 1.5]) {
+    expect(await rejection(nodeVersionsPage(kolab, product, 'orders', { which: 'shown', actor: 'alice' }, { cursor: cursorFor(versions, [seq]) }))).toMatch(invalid);
+  }
+  await expect(nodeVersionsPage(kolab, product, 'orders', { which: 'shown', actor: 'alice' }, { cursor: cursorFor(versions, [2 ** 31 - 1]) })).resolves.toMatchObject({ next: null });
   const rulings = scoped('rulings', { kolab: TEST_KOLAB });
   expect(await rejection(kolab.rulingsPage(product, {}, { cursor: cursorFor(rulings, ['yesterday', 'x']) }))).toMatch(invalid);
   const reviews = scoped('reviews', { reviewer: 'bob', kolab: TEST_KOLAB });
@@ -150,6 +167,16 @@ test('case files and rulings page newest first; the activity and the web interfa
   for (const el of ['R1', 'R2', 'R3']) await kolab.rule(lee, { address: `kj:orders#${el}`, text: `${el} stands.`, effect: 'keep_intent' });
   const rulings = await all((p) => kolab.rulingsPage(product, {}, p), 2);
   expect(rulings.items.map((r) => r.text)).toStrictEqual(['R3 stands.', 'R2 stands.', 'R1 stands.']);
+  // Rulings from before 0013 have no date, and are keyed as -infinity: a page that ends on one
+  // hands out a cursor with it, which the next page takes. Made here as 0013 left them.
+  await kolab.db.exec(`alter table ruling disable trigger case_fixed;
+    alter table ruling drop constraint ruling_dated;
+    update ruling set ruled_at = null where text in ('R1 stands.', 'R2 stands.');
+    alter table ruling add constraint ruling_dated check (ruled_at is not null) not valid;
+    alter table ruling enable trigger case_fixed`);
+  const undated = await all((p) => kolab.rulingsPage(product, {}, p), 1);
+  expect([undated.items.map((r) => [r.text, r.ruled_at]), undated.sizes]).toStrictEqual([
+    [['R3 stands.', expect.any(String)], ...[...rulings.items.slice(1)].sort((a, b) => b.ruling.localeCompare(a.ruling)).map((r) => [r.text, null])], [1, 1, 1]]);
 
   for (let i = 0; i < 5; i++) await kolab.raiseQuery(engineer, 'kj:orders#R4', `Question ${i}?`);
   const open = await all((p) => queryDetailsPage(kolab, product, { open: true }, p), 2);

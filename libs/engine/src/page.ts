@@ -24,26 +24,36 @@ export function pageSize(limit?: number | null): number {
 
 /**
  * What each part of a list's sort key is, so a cursor's key is checked against it before it
- * reaches the database: `ts`, a timestamp as Postgres writes it (`2026-10-22 18:14:13.123456+00`);
- * `int`, a whole number from 0; `text`, a string of at most 2,048 characters.
+ * reaches the database: `ts`, a timestamp as Postgres writes it (`2026-10-22 18:14:13.123456+00`),
+ * or `infinity` or `-infinity`, which keys a ruling given before rulings had dates (0013); `int`,
+ * a whole number from 0 that fits Postgres's `int`; `text`, a string of at most 2,048 characters
+ * with no NUL, which Postgres can't store in text.
  */
 export type KeySlot = 'ts' | 'int' | 'text';
 
-const TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?(Z|[+-](\d{2})(:?\d{2}){0,2})?$/;
+/** The largest Postgres `int`: an `int` key part above it is refused, not sent to be cast. */
+export const MAX_INT_KEY = 2_147_483_647;
 
-/** A timestamp Postgres reads back exactly as it wrote it: its date and time, and its offset, in range. */
-function isTimestamp(v: string): boolean {
+const TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?(Z|[+-](\d{2})(?::?(\d{2}))?(?::?(\d{2}))?)?$/;
+
+/**
+ * A timestamp Postgres reads back exactly as it wrote it: its date and time in range, and its
+ * offset's hours (at most 15, as Postgres allows), minutes and seconds; or either infinity.
+ */
+export function isTimestamp(v: string): boolean {
+  if (v === 'infinity' || v === '-infinity') return true;
   const m = TIMESTAMP.exec(v);
   if (!m) return false;
-  const [y, mo, d, h, mi, s, off] = [m[1], m[2], m[3], m[4], m[5], m[6], m[9]].map((x) => (x === undefined ? 0 : Number(x)));
-  return y >= 1 && mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(Date.UTC(y, mo, 0)).getUTCDate() && h <= 23 && mi <= 59 && s <= 59 && off <= 15;
+  const [y, mo, d, h, mi, s, oh, om, os] = [m[1], m[2], m[3], m[4], m[5], m[6], m[9], m[10], m[11]].map((x) => (x === undefined ? 0 : Number(x)));
+  return y >= 1 && mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(Date.UTC(y, mo, 0)).getUTCDate() && h <= 23 && mi <= 59 && s <= 59
+    && oh <= 15 && om <= 59 && os <= 59;
 }
 
 function slotHolds(slot: KeySlot, v: unknown): boolean {
   switch (slot) {
     case 'ts': return typeof v === 'string' && isTimestamp(v);
-    case 'int': return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
-    case 'text': return typeof v === 'string' && v.length <= 2048;
+    case 'int': return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_INT_KEY;
+    case 'text': return typeof v === 'string' && v.length <= 2048 && !v.includes('\u0000');
   }
 }
 
