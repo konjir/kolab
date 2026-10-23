@@ -276,8 +276,8 @@ export async function main(argv: string[]) {
     const migrate = !rest.includes('--no-migrate');
     const worker = !rest.includes('--no-worker');
     const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
-    if (!migrate) log.info('migrations: checked, none applied (--no-migrate)');
-    if (!worker) log.info('outbox: no worker (--no-worker); no job is claimed or run');
+    if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
+    if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
     log.info(`sign-in: ${sign.describe}`);
     log.info(`Kolab listening on ${s.url}`, { event: 'listening', url: s.url });
     log.info(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
