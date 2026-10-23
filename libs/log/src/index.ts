@@ -21,28 +21,41 @@ export type LogFields = Record<string, unknown>;
 const TOKENS = /(kj[a-z])_[A-Za-z0-9_-]+/g;
 /** GitHub's tokens: OAuth (`gho_`), user-to-server (`ghu_`), server-to-server (`ghs_`), refresh (`ghr_`) and personal (`ghp_`, `github_pat_`). */
 const GITHUB_TOKENS = /\b(gh[opusr]|github_pat)_[A-Za-z0-9_]+/g;
-/** A URL's password: `postgres://kolab:<password>@host`. */
-const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^:/@\s]*):[^@/\s]*@/gi;
-/** An OAuth code or state in a query string: `?code=…&state=…`. */
-const QUERY_SECRET = /([?&](?:code|state)=)[^&#"'\s]+/g;
 /**
- * A credential in an Authorization header's words: `Bearer <token>`, `Basic <token>`, as HTTP spells
- * them (case-sensitive), and only when what follows looks like a credential, so "a basic check" and
- * "Bearer of bad news" stay as they are.
+ * A URL's password: `postgres://kolab:<password>@host`. The password runs to the last `@` before a
+ * space or quote, so one with an `@` or a `/` in it is masked whole.
  */
-const AUTH_SCHEME = /\b(Bearer|Basic) +([A-Za-z0-9_.~+/-]+=*)/g;
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^:/@\s"'<>]*):[^\s"'<>]*@/gi;
+/** libpq's keyword form, `password=hunter2` or `password='two words'`, and the like. */
+const KEYWORD_PASSWORD = /\b(password|passwd|pwd)=('[^']*'|[^\s&;"']+)/gi;
+/** A secret in a query string: an OAuth code or state, a client secret, a token, a verifier, a password. */
+const QUERY_SECRET = /([?&](?:code|state|client_secret|access_token|refresh_token|code_verifier|token|password)=)[^&#"'\s]+/gi;
+/**
+ * A credential after `Bearer` or `Basic`, in any case and after a space, a tab or a colon, but only
+ * when what follows looks like a credential (credentialLike), so "a basic check" and "Bearer of bad
+ * news" stay as they are.
+ */
+const AUTH_SCHEME = /\b(bearer|basic)([ \t:]+)([A-Za-z0-9_.~+/-]+=*)/gi;
 /** A field whose name says it holds a secret is never written, nor an OAuth `code` or `state`. */
-const SECRET_FIELD = /token|secret|passw(or)?d|authorization|cookie|credential|api[-_]?key|private[-_]?key|code_verifier|^code$|^state$/i;
+const SECRET_FIELD = /token|secret|passw(or)?d|^pass$|^pwd$|authorization|cookie|credential|api[-_]?key|private[-_]?key|code[-_]?verifier|session[-_]?id|^code$|^state$/i;
 /** The keys every line starts with, which no field may replace. */
 const RESERVED = new Set(['time', 'level', 'message']);
 const MAX_DEPTH = 4;
 
 /**
  * Whether the word after `Bearer` or `Basic` looks like a credential: at least 12 characters with a
- * digit or a symbol in them, as random tokens and base64 have, or at least 24 of anything.
+ * digit or a symbol in them, as random tokens and base64 have, or at least 24 of anything; or, after
+ * `Basic`, base64 of a `user:password`.
  */
-function credentialLike(word: string): boolean {
-  return word.length >= 24 || (word.length >= 12 && /[0-9_.~+/=-]/.test(word));
+function credentialLike(scheme: string, word: string): boolean {
+  if (word.length >= 24 || (word.length >= 12 && /[0-9_.~+/=-]/.test(word))) return true;
+  return scheme.toLowerCase() === 'basic' && isBasicPair(word);
+}
+
+/** Whether a word is base64 (in whole groups of 4) of text with a colon in it: `dXNlcjpwYXNz` is `user:pass`. */
+function isBasicPair(word: string): boolean {
+  if (word.length < 4 || word.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(word)) return false;
+  return Buffer.from(word, 'base64').toString('latin1').includes(':');
 }
 
 /** An error's message, fit to log or return: any of Kolab's tokens (session, refresh, code, invite, admin) or GitHub's in it is masked. */
@@ -50,11 +63,16 @@ export function maskTokens(e: unknown): string {
   return String((e as { message?: unknown })?.message ?? e).replace(TOKENS, '$1_***').replace(GITHUB_TOKENS, '$1_***');
 }
 
-/** Text fit for a log line: Kolab's and GitHub's tokens, a URL's password, an OAuth code or state in a query, and a bearer or basic credential masked. */
+/**
+ * Text fit for a log line: Kolab's and GitHub's tokens, a URL's or libpq's password, a secret in a
+ * query string, and a bearer or basic credential masked. deploy/release/journal-copy.py masks the
+ * same way; test/mask-vectors.json holds both to it.
+ */
 export function maskSecrets(text: string): string {
   return maskTokens(text
-    .replace(AUTH_SCHEME, (all, scheme: string, word: string) => (credentialLike(word) ? `${scheme} ***` : all))
+    .replace(AUTH_SCHEME, (all, scheme: string, sep: string, word: string) => (credentialLike(scheme, word) ? `${scheme}${sep}***` : all))
     .replace(URL_PASSWORD, '$1:***@')
+    .replace(KEYWORD_PASSWORD, '$1=***')
     .replace(QUERY_SECRET, '$1***'));
 }
 

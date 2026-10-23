@@ -8,10 +8,12 @@
 # - The agent reads files, not the journal, so konjir-journal@<unit> (journal-copy.py, beside this
 #   script) copies the journal of each of konjir.service and caddy.service, systemd's own lines
 #   about the unit included ("Main process exited", "Stopped"), to /var/log/konjir/<unit>.log. It
-#   starts from now, never replaying older lines; masks tokens, OAuth codes and states and secret
-#   fields, Caddy's lines included, before anything leaves the instance; marks each line with the
-#   journal's trusted unit and PID, which the metric filters match; and writes a heartbeat every
-#   5 minutes, which the no-logs alarm expects.
+#   starts from now, never replaying older lines, and reads lines of any length (--all); masks
+#   tokens, passwords, query secrets and secret fields, Caddy's lines included, before anything
+#   leaves the instance, and caps each line at 16 KiB; marks each line with the journal's trusted
+#   unit and PID, which the metric filters match; and every 5 minutes writes a probe into the
+#   unit's journal and a heartbeat saying how long ago it last read a journal line, which the
+#   no-logs alarm checks is fresh.
 # - konjir-journal-rotate.timer rotates the copies every 10 minutes once one passes 50 MB, so a
 #   log flood can't fill the root disk between the daily logrotate runs; the disk alarm watches it.
 # - The agent ships them to the log group /konjir/<name>, as the streams konjir and caddy, and puts
