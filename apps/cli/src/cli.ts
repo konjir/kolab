@@ -136,6 +136,8 @@ const usage = (canServe: boolean) => `konjir — Kolab from a shell. Same verbs 
   konjir <verb> --json '{...}' the same, with all arguments as one JSON object
 
 Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir stale [all] · konjir queries [all]
+Pages:     every list (and a long read) returns a page and next; while next isn't null, call it again with
+           cursor=<next>, e.g. konjir list_queries cursor=… (limit=<n> sets the page, at most 200)
 Push:      konjir watch prints your inbox, then a JSON line each time it changes (questions, notes,
            answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
            prints it and exits.

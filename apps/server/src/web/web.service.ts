@@ -1,8 +1,9 @@
 import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
-  AccessError, ActorError, ChecksError, GateError, Kolab, RoleError, TenancyError, activity, committedVersions, kolabNodes, liveLinks, markDetails,
-  maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetails, readableNodes, submissionsOf, versionHistory,
-  type LinkRow, type MarkDetailRow, type QueryDetailRow, type VersionHistoryRow,
+  AccessError, ActorError, ChecksError, GateError, Kolab, LimitError, RoleError, TenancyError, activity, cursorFor, keyOf, kolabNodes,
+  kolabNodesPage, liveLinks, markDetails, markDetailsPage, maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetailsPage,
+  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, waitingCounts,
+  type LinkRow, type MarkDetailRow, type PageOpts, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
 import { formatAddress, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
 import {
@@ -12,7 +13,8 @@ import {
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
-  type WebSubmit, type WebVerdict, type WebVersion,
+  type WebSubmit, type WebVerdict, type WebVersion, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
+  type WebVersionsView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT,
 } from '@konjir/types';
 import { KOLAB } from '../tokens.js';
 
@@ -42,56 +44,63 @@ export class WebService {
   async overview(s: string): Promise<WebOverview> {
     const k = this.kolab;
     const me = await this.me(s);
-    const reach = new Set([...(await k.reachable(me.actor)), me.kolab]);
+    const reach = [...new Set([...(await k.reachable(me.actor)), me.kolab])];
     const kolabs: WebKolab[] = [];
-    for (const x of (await k.listKolabs()).filter((x) => reach.has(x.id))) {
+    for (const x of await k.listKolabs({ ids: reach })) {
       kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current: x.id === me.kolab, access: await k.access(me.actor, x.id) });
     }
-    const [queries, marks, requests, cases] = await Promise.all([
-      queryDetails(k, s), markDetails(k, s), openReviewRequests(k, s), openCaseCount(k, s, me.layer),
-    ]);
-    const open = queries.filter((q) => q.state === 'open');
+    // Counted in the database, never by reading every question and mark (W2.21).
+    const [waiting, cases, nodes] = await Promise.all([waitingCounts(k, s, me.layer, me.actor), openCaseCount(k, s, me.layer), this.nodes(s, {})]);
     return {
       me,
       kolab: kolabs.find((x) => x.current)!,
       kolabs,
-      nodes: await this.nodes(s),
-      counts: {
-        stale: marks.filter((m) => m.layer === me.layer).length,
-        waiting: open.filter((q) => q.layer === me.layer).length,
-        reviews: requests.filter((r) => r.reviewer === me.actor && r.layer === me.layer).length,
-        open: open.length,
-        cases,
-      },
+      nodes: nodes.nodes,
+      nodes_next: nodes.next,
+      counts: { stale: waiting.stale, waiting: waiting.waiting, reviews: waiting.reviews, open: waiting.open, cases },
     };
   }
 
-  private async nodes(s: string): Promise<WebNodeSummary[]> {
-    return (await kolabNodes(this.kolab, s)).map(({ name, kind, layer, title, latest, drafts, in_review }) =>
-      ({ name, kind, layer, title, latest: latest === null ? null : Number(latest), drafts: Number(drafts), in_review: Number(in_review) }));
+  /** A page of the kolab's nodes, by kind then name; with `committed`, only those with a committed version. */
+  async nodes(s: string, page: PageOpts, only: { committed?: boolean } = {}): Promise<WebNodesView> {
+    const { items, next } = await kolabNodesPage(this.kolab, s, page, only);
+    return { nodes: items.map(summary), next };
+  }
+
+  /** One node's summary, or undefined. */
+  private async summary(s: string, name: string): Promise<WebNodeSummary | undefined> {
+    const [row] = await kolabNodes(this.kolab, s, { name });
+    return row ? summary(row) : undefined;
   }
 
   async node(s: string, name: string, seq?: number): Promise<WebNodeView> {
     const k = this.kolab;
     const me = await this.me(s);
     const n = await k.nodeIn(s, name, 'reading');
-    const summary = (await this.nodes(s)).find((x) => x.name === n.name)!;
-    const history = await versionHistory(k, s, n.id);
-    const shown = history.filter((v) => v.state === 'committed' || v.state === 'in_review' || (v.state === 'drafted' && v.actor === me.actor));
+    const summary = (await this.summary(s, n.name))!;
     const latest = summary.latest;
     const readSeq = seq ?? latest;
-    const row = readSeq === null ? undefined : shown.find((v) => v.seq === readSeq);
+    const actor = me.actor;
+    // Only what the page shows (W2.21): the version read, the newest page of versions, those in
+    // review, the session's own drafts and folds; each read in SQL, never the node's whole history.
+    const [row] = readSeq === null ? [] : await nodeVersions(k, s, n.id, { which: 'shown', actor, seq: readSeq });
     if (readSeq !== null && !row) throw new NotFoundException({ error: 'not_found', message: `${n.name} has no version ${readSeq} you can read` });
+    const [versions, inReviewRows, draftRows, foldRows] = await Promise.all([
+      nodeVersionsPage(k, s, n.id, { which: 'shown', actor }),
+      nodeVersions(k, s, n.id, { which: 'in_review', actor }),
+      nodeVersions(k, s, n.id, { which: 'own_drafts', actor }),
+      nodeVersions(k, s, n.id, { which: 'own_folded', actor, limit: PAGE_MAX }),
+    ]);
 
     const live = row !== undefined && row.seq === latest;
-    const [links, marks, queries] = await Promise.all([liveLinks(k, s), this.marks(s), queryDetails(k, s, n.id)]);
-    const ownMarks = marks.filter((m) => m.node === n.name);
+    // Only this node's: its links, either end, its marks and its questions (the newest of each element's).
+    const [links, ownMarks, threads] = await Promise.all([liveLinks(k, s, { node: n.name }), markDetails(k, s, { node: n.id }).then((m) => m.map(mark)), nodeThreads(k, s, n.id, THREADS_PER_ELEMENT)]);
     const toLink = (l: LinkRow) => link(l);
     let elements: WebElement[] = [];
     let compared: WebNodeView['compared_with'] = null;
     let nodeRulings: WebRuling[] = [];
     if (row) {
-      const read = await k.readNode(s, n.name, row.seq);
+      const read = await k.readNode(s, n.name, row.seq, { threads: false });
       // Precedent and open case files beside the element they concern, from any version (CASE4):
       // read as kj_agent, so a session that holds only Read gets none (D49).
       const rulings = read.rulings.map(ruling);
@@ -102,38 +111,67 @@ export class WebService {
         cases: cases.filter((c) => c.element === e.element_id),
         id: e.element_id, parent: e.parent_element_id, text: e.text,
         address: formatAddress({ node: n.name, version: row.seq, element: e.element_id }),
-        queries: queries.filter((q) => q.element === e.element_id).map(query),
+        queries: (threads.get(e.element_id)?.items ?? []).map(query),
+        queries_next: threads.get(e.element_id)?.next ?? null,
         relies_on: live ? links.filter((l) => l.source_node === n.name && l.source_element === e.element_id).map(toLink) : [],
         relied_on_by: live ? links.filter((l) => l.target_node === n.name && l.target_element === e.element_id).map(toLink) : [],
         marks: live ? ownMarks.filter((m) => m.element === e.element_id) : [],
       }));
       const base = row.state === 'committed'
-        ? [...shown].reverse().find((v) => v.state === 'committed' && v.seq < row.seq)?.seq
+        ? (await nodeVersions(k, s, n.id, { which: 'committed', actor, before: row.seq, limit: 1 }))[0]?.seq
         : row.base_seq ?? undefined;
       if (base !== undefined) {
-        compared = { seq: base, elements: (await k.readNode(s, n.name, base)).elements.map((e) => ({ id: e.element_id, text: e.text })) };
+        compared = { seq: base, elements: (await k.readNode(s, n.name, base, { threads: false })).elements.map((e) => ({ id: e.element_id, text: e.text })) };
       }
     }
-    const requests = await openReviewRequests(k, s);
-    const inReview = shown.filter((v) => v.state === 'in_review').map((v) => {
+    const requests = await openReviewRequests(k, s, { node: n.name });
+    const inReview = [...inReviewRows].reverse().map((v) => {
       const reviewers = requests.filter((r) => r.node === n.name && r.seq === v.seq).map((r) => r.reviewer);
       return { seq: v.seq, author: v.actor, at: v.at, reviewers, for_me: reviewers.includes(me.actor) && me.layer === n.layer };
     });
     return {
       node: summary,
       reading: row ? version(row, me.actor) : null,
-      versions: shown.map((v) => version(v, me.actor)),
+      versions: versions.items.map((v) => version(v, me.actor)),
+      versions_next: versions.next,
       elements,
-      queries: queries.filter((q) => q.element === null).map(query),
+      queries: (threads.get('')?.items ?? []).map(query),
+      queries_next: threads.get('')?.next ?? null,
       compared_with: compared,
       in_review: inReview,
-      drafts: shown.filter((v) => v.state === 'drafted').map((v) => version(v, me.actor)),
-      folded: await this.folds(n.id, history.filter((v) => v.actor === me.actor)),
+      drafts: [...draftRows].reverse().map((v) => version(v, me.actor)),
+      folded: await this.folds(n.id, foldRows),
       can_write: me.layer === n.layer && me.access.layers.includes(n.layer),
       rulings: nodeRulings,
       kolab: me.kolab,
       foreign: false,
     };
+  }
+
+  /** A page of a node's versions, newest first (W2.21): in the session's kolab, or another it reads in place (committed only). */
+  async nodeVersions(s: string, name: string, page: PageOpts, kolab?: string): Promise<WebVersionsView> {
+    const me = await this.me(s);
+    const foreign = kolab !== undefined && kolab !== me.kolab;
+    const n = foreign ? await this.foreignNodeRow(s, kolab, name) : await this.kolab.nodeIn(s, name, 'reading');
+    const { items, next } = await nodeVersionsPage(this.kolab, s, n.id, foreign ? { which: 'committed', actor: me.actor, inKolab: kolab } : { which: 'shown', actor: me.actor }, page);
+    return { versions: items.map((v) => version(v, me.actor)), next };
+  }
+
+  /** A page of the questions and notes on one element of a node, or on the node as a whole (no element), newest first (W2.21). */
+  async nodeQueries(s: string, name: string, element: string | null, page: PageOpts, kolab?: string): Promise<WebQueriesView> {
+    const me = await this.me(s);
+    const foreign = kolab !== undefined && kolab !== me.kolab;
+    const n = foreign ? await this.foreignNodeRow(s, kolab, name) : await this.kolab.nodeIn(s, name, 'reading');
+    const { items, next } = await nodeQueriesPage(this.kolab, s, n.id, element, page, foreign ? kolab : undefined);
+    return { queries: items.map((q) => (foreign ? foreignQuery(query(q), kolab) : query(q))), next };
+  }
+
+  /** Another kolab's node, read in place (D49): one with nothing committed reads as one that isn't there. */
+  private async foreignNodeRow(s: string, kolab: string, name: string) {
+    if (!isKolabName(kolab) || !isNodeName(name)) throw notThere(kolab, name);
+    const n = await this.kolab.locateNode({ session: s }, { kolab, node: name });
+    if (!(await nodeVersions(this.kolab, s, n.id, { which: 'committed', actor: '', inKolab: kolab, limit: 1 })).length) throw notThere(kolab, name);
+    return n;
   }
 
   /** Which of these versions were folded onto a newer one, and into which: Kolab notes "folded into <version id>". */
@@ -161,34 +199,37 @@ export class WebService {
     const me = await this.me(s);
     if (kolab === me.kolab) return this.node(s, name, seq);
     // Kolab checks Read first (the same refusal as a node that isn't there), then reads as kj_agent.
-    const n = await k.locateNode({ session: s }, { kolab, node: name });
-    const versions = await committedVersions(k, s, n.id);
     // A node with nothing committed reads exactly as one that isn't there (D49).
-    if (!versions.length) throw notThere(kolab, name);
-    const latest = versions.at(-1)?.seq ?? null;
+    const n = await this.foreignNodeRow(s, kolab, name);
+    const actor = me.actor;
+    const versions = await nodeVersionsPage(k, s, n.id, { which: 'committed', actor, inKolab: kolab });
+    const latest = versions.items[0]?.seq ?? null;
     const readSeq = seq ?? latest;
-    const row = readSeq === null ? undefined : versions.find((v) => v.seq === readSeq);
+    const [row] = readSeq === null ? [] : await nodeVersions(k, s, n.id, { which: 'committed', actor, inKolab: kolab, seq: readSeq });
     if (readSeq !== null && !row) throw new NotFoundException({ error: 'not_found', message: `${kolab}/${name} has no version ${readSeq} you can read` });
     const ref = `${kolab}/${n.name}`;
-    const queries = (await queryDetails(k, s, n.id, kolab)).map((q) => foreignQuery(query(q), kolab));
+    const threads = await nodeThreads(k, s, n.id, THREADS_PER_ELEMENT, kolab);
+    const shown = (el: string) => (threads.get(el)?.items ?? []).map((q) => foreignQuery(query(q), kolab));
     let elements: WebElement[] = [];
     let compared: WebNodeView['compared_with'] = null;
     if (row) {
-      elements = (await k.readNode(s, ref, row.seq)).elements.map((e) => ({
+      elements = (await k.readNode(s, ref, row.seq, { threads: false })).elements.map((e) => ({
         id: e.element_id, parent: e.parent_element_id, text: e.text,
         address: formatAddress({ kolab, node: n.name, version: row.seq, element: e.element_id }),
-        queries: queries.filter((q) => q.element === e.element_id),
+        queries: shown(e.element_id), queries_next: threads.get(e.element_id)?.next ?? null,
         relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [],
       }));
-      const before = [...versions].reverse().find((v) => v.seq < row.seq)?.seq;
-      if (before !== undefined) compared = { seq: before, elements: (await k.readNode(s, ref, before)).elements.map((e) => ({ id: e.element_id, text: e.text })) };
+      const before = (await nodeVersions(k, s, n.id, { which: 'committed', actor, inKolab: kolab, before: row.seq, limit: 1 }))[0]?.seq;
+      if (before !== undefined) compared = { seq: before, elements: (await k.readNode(s, ref, before, { threads: false })).elements.map((e) => ({ id: e.element_id, text: e.text })) };
     }
     return {
       node: { name: n.name, kind: n.kind, layer: n.layer, title: n.title, latest, drafts: 0, in_review: 0 },
       reading: row ? version(row, me.actor) : null,
-      versions: versions.map((v) => version(v, me.actor)),
+      versions: versions.items.map((v) => version(v, me.actor)),
+      versions_next: versions.next,
       elements,
-      queries: queries.filter((q) => q.element === null),
+      queries: shown(''),
+      queries_next: threads.get('')?.next ?? null,
       compared_with: compared,
       in_review: [], drafts: [], can_write: false, rulings: [],
       kolab, foreign: true,
@@ -200,25 +241,27 @@ export class WebService {
    * one the session can't read are refused alike. Its access comes from Kolab's own check
    * (kj_access), as the picker's does; the nodes are read as kj_agent, under row-level security.
    */
-  async foreignKolab(s: string, kolab: string): Promise<WebForeignKolab> {
+  async foreignKolab(s: string, kolab: string, page: PageOpts = {}): Promise<WebForeignKolab> {
     const me = await this.me(s);
     const refuse = () => new NotFoundException({ error: 'not_found', message: `no kolab ${kolab} you can read` });
     if (!isKolabName(kolab)) throw refuse();
     if (kolab === me.kolab) {
       const x = (await this.kolab.kolabRow(kolab))!;
-      return { kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access: me.access }, nodes: (await this.nodes(s)).filter((n) => n.latest !== null) };
+      const own = await this.nodes(s, page, { committed: true });
+      return { kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access: me.access }, nodes: own.nodes, next: own.next };
     }
     // The kolab's own row first (Kolab's login, by id), then Read for that kolab alone, checked in the
     // same read-only transaction as the read of its nodes (kj_agent): if Read is gone by then, nothing.
     const x = await this.kolab.kolabRow(kolab);
     if (!x) throw refuse();
-    const nodes = await readableNodes(this.kolab, s, kolab);
+    const nodes = await readableNodes(this.kolab, s, kolab, page);
     if (!nodes) throw refuse();
     const access = await this.kolab.access(me.actor, kolab);
     if (!access.level) throw refuse();
     return {
       kolab: { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, access },
-      nodes: nodes.map((r) => ({ name: r.name, kind: r.kind, layer: r.layer, title: r.title, latest: Number(r.latest), drafts: 0, in_review: 0 })),
+      nodes: nodes.items.map((r) => ({ name: r.name, kind: r.kind, layer: r.layer, title: r.title, latest: Number(r.latest), drafts: 0, in_review: 0 })),
+      next: nodes.next,
     };
   }
 
@@ -229,7 +272,7 @@ export class WebService {
    * state or all, or with `mine` those the person opened or argued. A session that holds only Read
    * there gets none: row-level security gives it no case files (D49).
    */
-  async cases(s: string, opts: { state?: string; mine?: boolean; node?: string } = {}): Promise<WebCasesView> {
+  async cases(s: string, opts: { state?: string; mine?: boolean; node?: string } = {}, page: PageOpts = {}): Promise<WebCasesView> {
     const me = await this.me(s);
     if (opts.node !== undefined && !isNodeName(opts.node)) throw bad('name a node of this kolab');
     if (opts.state !== undefined && opts.state !== 'all' && !CASE_FILE_STATES.includes(opts.state as CaseFileState)) {
@@ -237,8 +280,8 @@ export class WebService {
     }
     const state = opts.state === undefined || opts.state === 'all' ? undefined : opts.state as CaseFileState;
     const node = opts.node === undefined ? undefined : (await this.kolab.nodeIn(s, opts.node, 'listing case files')).id;
-    const rows = await this.kolab.casesFor(s, { state, node, actor: opts.mine ? me.actor : undefined, limit: 200 });
-    return { cases: await this.decorate(me, rows), belongs: me.access.layers.length > 0 };
+    const { items, next } = await this.kolab.casesPage(s, { state, node, actor: opts.mine ? me.actor : undefined }, page);
+    return { cases: await this.decorate(me, items), belongs: me.access.layers.length > 0, next };
   }
 
   /** konjir_read_case: one case file of the session's kolab, with its positions and ruling. */
@@ -294,10 +337,11 @@ export class WebService {
   }
 
   /** konjir_list_rulings: the kolab's rulings, newest first, on one node if named: precedent (CASE4). */
-  async rulings(s: string, node?: string): Promise<WebRuling[]> {
+  async rulings(s: string, node?: string, page: PageOpts = {}): Promise<WebRulingsView> {
     if (node !== undefined && !isNodeName(node)) throw bad('name a node of this kolab');
     const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
-    return (await this.kolab.rulingsFor(s, { node: id, limit: 200 })).map(ruling);
+    const { items, next } = await this.kolab.rulingsPage(s, { node: id }, page);
+    return { rulings: items.map(ruling), next };
   }
 
   private async ruling(s: string, id: string, filter: { cases?: string[]; ids?: string[] }): Promise<WebRuling> {
@@ -329,39 +373,55 @@ export class WebService {
     });
   }
 
-  async queries(s: string): Promise<WebQuery[]> {
-    return (await queryDetails(this.kolab, s)).map(query);
+  /** The questions and notes in the kolab, newest first: with `open`, those still open; with `open: false`, those settled. */
+  async queries(s: string, only: { open?: boolean } = {}, page: PageOpts = {}): Promise<WebQueriesView> {
+    const { items, next } = await queryDetailsPage(this.kolab, s, only, page);
+    return { queries: items.map(query), next };
   }
 
-  async marks(s: string): Promise<WebMark[]> {
-    return (await markDetails(this.kolab, s)).map(mark);
+  async marks(s: string, page: PageOpts = {}): Promise<WebMarksView> {
+    const { items, next } = await markDetailsPage(this.kolab, s, page);
+    return { marks: items.map(mark), next };
   }
 
-  async reviews(s: string): Promise<WebReviewsView> {
+  /** The review requests for the session, oldest first, and what it submitted, newest first: one cursor pages both. */
+  async reviews(s: string, page: PageOpts = {}): Promise<WebReviewsView> {
     const me = await this.me(s);
+    const [f, y] = (keyOf('web:reviews2', page.cursor, 2) ?? [null, null]) as [string | null, string | null];
+    const forMe = f === 'done' ? { items: [], next: null } : await reviewRequestsPage(this.kolab, s, { reviewer: me.actor, layer: me.layer }, { cursor: f, limit: page.limit });
+    const mine = y === 'done' ? { items: [], next: null } : await submissionsOf(this.kolab, s, me.actor, { cursor: y, limit: page.limit });
     return {
-      for_me: (await openReviewRequests(this.kolab, s)).filter((r) => r.reviewer === me.actor && r.layer === me.layer)
-        .map((r) => ({ subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at })),
-      mine: (await submissionsOf(this.kolab, s, me.actor)).map((x) => ({
+      for_me: forMe.items.map((r) => ({ subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at })),
+      mine: mine.items.map((x) => ({
         subject: formatAddress({ node: x.node, version: x.seq }), node: x.node, seq: x.seq, state: x.state, note: x.note, verdicts: x.verdicts,
       })),
+      next: forMe.next || mine.next ? cursorFor('web:reviews2', [forMe.next ?? 'done', mine.next ?? 'done']) : null,
     };
   }
 
-  async lineage(s: string): Promise<WebLineageView> {
+  /**
+   * A page of the nodes with a committed version, each at its latest with its elements, and the live
+   * links from them. A link to a node on a later page is drawn once that page is loaded.
+   */
+  async lineage(s: string, page: PageOpts = {}): Promise<WebLineageView> {
     const nodes: WebLineageView['nodes'] = [];
-    for (const n of await this.nodes(s)) {
-      if (n.latest === null) continue;
-      const read = await this.kolab.readNode(s, n.name, n.latest);
-      nodes.push({ name: n.name, title: n.title, kind: n.kind, layer: n.layer, seq: n.latest, elements: read.elements.map((e) => ({ id: e.element_id, text: e.text })) });
+    // Each node's elements come with it, so a page holds fewer nodes than a list's: at most a
+    // tenth of PAGE_DEFAULT unless asked, each of at most MAX_ELEMENTS elements.
+    const shown = await this.nodes(s, { cursor: page.cursor, limit: page.limit ?? Math.max(1, PAGE_DEFAULT / 10) }, { committed: true });
+    for (const n of shown.nodes) {
+      const read = await this.kolab.readNode(s, n.name, n.latest!);
+      nodes.push({ name: n.name, title: n.title, kind: n.kind, layer: n.layer, seq: n.latest!, elements: read.elements.slice(0, MAX_ELEMENTS).map((e) => ({ id: e.element_id, text: e.text })) });
     }
-    return { nodes, links: (await liveLinks(this.kolab, s)).map(link) };
+    const links = nodes.length ? await liveLinks(this.kolab, s, { sources: nodes.map((n) => n.name) }) : [];
+    return { nodes, links: links.map(link), next: shown.next };
   }
 
-  async activity(s: string): Promise<WebActivityView> {
+  async activity(s: string, page: PageOpts = {}): Promise<WebActivityView> {
     const at = (node: string, seq: number, element?: string | null) => formatAddress({ node, version: seq, element: element ?? undefined });
+    const { items, next } = await activity(this.kolab, s, page);
     return {
-      items: (await activity(this.kolab, s)).map((r) => {
+      next,
+      items: items.map((r) => {
         switch (r.kind) {
           case 'node': return { at: r.at, actor: r.actor, text: `made ${formatAddress({ node: r.node })} · ${r.title}` };
           case 'version': return {
@@ -412,6 +472,7 @@ export class WebService {
     const unlink = b?.unlink ?? [];
     if (!Array.isArray(unlink) || unlink.some((x) => typeof x !== 'string')) throw bad('unlink lists links by their edge');
     if (!Array.isArray(b?.changes) || (!b.changes.length && !unlink.length)) throw bad('nothing changed, so there is nothing to submit');
+    if (b.changes.length > MAX_ELEMENTS || unlink.length > MAX_ELEMENTS) throw bad(`that is ${Math.max(b.changes.length, unlink.length)} changes at once; a version holds at most ${MAX_ELEMENTS} elements`);
     if (b.base !== null && !Number.isInteger(b.base)) throw bad('say which version the edits were made on (base)');
     const n = await k.nodeIn(s, name, 'drafting');
     const live = await k.latestCommitted(n.id);
@@ -436,7 +497,7 @@ export class WebService {
     const replaced = b.replaces === undefined ? undefined : await this.ownDraft(s, n.name, b.replaces);
     if (replaced) {
       const author = (await k.version(replaced)).actor_id;
-      const mine = (await versionHistory(k, s, n.id)).find((v) => v.state === 'in_review' && v.actor === author);
+      const mine = (await nodeVersions(k, s, n.id, { which: 'in_review', actor: author })).find((v) => v.actor === author);
       if (mine) throw conflict(`${n.name}@${mine.seq} of yours is in review already: abandon it, or wait until it is decided, before resubmitting ${n.name}@${b.replaces}`);
     }
     const carried = replaced ? await this.carriedFrom(s, n.name, replaced, live?.id ?? null) : undefined;
@@ -647,8 +708,9 @@ export class WebService {
 
   // ---- invites (W3.4): Kolab decides who may make, list, revoke and accept one ----
 
-  async invites(s: string): Promise<WebInvitesView> {
-    return { invites: await this.kolab.listInvites(s) };
+  async invites(s: string, page: PageOpts = {}): Promise<WebInvitesView> {
+    const { items, next } = await this.kolab.invitesPage(s, page);
+    return { invites: items, next };
   }
 
   /** A new invite to the session's kolab: its secret, shown this once, for the page to make a link of. */
@@ -664,8 +726,8 @@ export class WebService {
 
   // ---- who holds access (W3.6): Kolab decides who may see and change it ----
 
-  async access(s: string): Promise<KolabAccessView> {
-    return this.kolab.listAccess(s);
+  async access(s: string, page: PageOpts = {}): Promise<KolabAccessView> {
+    return this.kolab.listAccess(s, page);
   }
 
   /** A person's or agent's direct grant on the session's kolab, to another level. */
@@ -742,7 +804,7 @@ export function httpError(e: unknown): HttpException {
   const message = maskTokens(e);
   if (e instanceof RoleError || e instanceof AccessError) return new ForbiddenException({ error: 'forbidden', message });
   if (e instanceof GateError || e instanceof ChecksError) return new ConflictException({ error: 'conflict', message });
-  if (e instanceof ActorError || e instanceof TenancyError) return new BadRequestException({ error: 'bad_request', message });
+  if (e instanceof ActorError || e instanceof TenancyError || e instanceof LimitError) return new BadRequestException({ error: 'bad_request', message });
   // Kolab's own "not there" refusals: no node, no version, no query, no mark.
   if (/^(no (node|version|query|mark|actor|case file|ruling) |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
   // A malformed address (a quote selector that isn't JSON included), or evidence that doesn't resolve: the request is wrong, not Kolab.
@@ -795,3 +857,6 @@ const mark = (m: MarkDetailRow): WebMark => ({
   override: m.override_element ? { element: m.override_element, mine: m.override_text, parent_before: m.parent_before, parent_now: m.parent_now } : null,
   question: m.question,
 });
+
+const summary = ({ name, kind, layer, title, latest, drafts, in_review }: { name: string; kind: WebNodeSummary['kind']; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }): WebNodeSummary =>
+  ({ name, kind, layer, title, latest: latest === null ? null : Number(latest), drafts: Number(drafts), in_review: Number(in_review) });

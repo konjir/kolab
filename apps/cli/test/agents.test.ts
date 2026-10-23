@@ -25,7 +25,7 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   expect(await call(admin, 'admin_list_actors', { owner: 'alice' })).toStrictEqual({ actors: [
     { id: 'alice-pm', name: 'alice-pm', kind: 'agent', owner: 'alice' },
     { id: 'alice-pm-2', name: 'alice-pm-2', kind: 'agent', owner: 'alice' },
-  ] });
+  ], next: null });
 
   const session = async (actor: string) => {
     const { token } = await call(admin, 'admin_open_session', { actor, role: 'product' }) as { token: string };
@@ -129,8 +129,8 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
   await call(pm.c, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders-spec' });
 
   // Neither sees the other's node: not in a list, not by name, not to link or ask about.
-  expect((await call(pm.c, 'list_nodes') as unknown as { id: string }[]).map((n) => n.id)).toStrictEqual(['orders-spec']);
-  expect((await call(bot.c, 'list_nodes') as unknown as { id: string }[]).map((n) => n.id)).toStrictEqual(['billing-spec']);
+  expect((await call(pm.c, 'list_nodes') as unknown as { nodes: { id: string }[] }).nodes.map((n) => n.id)).toStrictEqual(['orders-spec']);
+  expect((await call(bot.c, 'list_nodes') as unknown as { nodes: { id: string }[] }).nodes.map((n) => n.id)).toStrictEqual(['billing-spec']);
   expect(await rejection(call(pm.c, 'read_node', { node: 'billing-spec' }))).toMatch(/no node billing-spec in kolab orders/);
   expect(await rejection(call(pm.c, 'resolve', { address: 'kj:billing-spec#B1' }))).toMatch(/no node billing-spec in kolab orders/);
   expect(await rejection(call(pm.c, 'ask', { address: 'kj:billing-spec#B1', question: 'Why monthly?' }))).toMatch(/no node billing-spec in kolab orders/);
@@ -263,7 +263,7 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
     await call(client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text }] });
     expect(await call(client, 'submit_for_review', { node: 'checkout', version: 1 })).toMatchObject({ ok: true, committed: 'kj:checkout@1' });
   }
-  expect((await call(bob, 'list_nodes') as { id: string }[]).map((n) => n.id)).toStrictEqual(['checkout']);
+  expect((await call(bob, 'list_nodes') as { nodes: { id: string }[] }).nodes.map((n) => n.id)).toStrictEqual(['checkout']);
   expect(await call(bob, 'resolve', { address: 'kj:checkout#R1' })).toMatchObject({ status: 'ok', content: 'Invoices are sent monthly.' });
   expect(await call(alice, 'resolve', { address: 'kj:checkout#R1' })).toMatchObject({ status: 'ok', content: 'Orders ship within a day.' });
   // Its own kolab's full form works for writing too.

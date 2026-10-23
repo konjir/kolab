@@ -130,6 +130,16 @@ test('done when, by token: Claude Code lists Kolab\'s tools, prompts and resourc
   const asked = await until('the question', () => b.messages.find((m) => m.content.includes('"From which statuses?"')), 20_000, b.more);
   expect(asked.meta).toMatchObject({ uri: 'konjir://inbox/test/functional', kind: 'inbox' });
 
+  // A list pages through the bridge as it does direct: cursor and limit reach Kolab, and next comes back (W2.21, D71).
+  await call(b.claude, 'create_node', { kind: 'functional_spec', title: 'Invoices', id: 'invoices' });
+  const first = await call(b.claude, 'list_nodes', { limit: 1 }) as { nodes: { id: string }[]; next: string | null };
+  expect(first.nodes).toHaveLength(1);
+  expect(first.next).toEqual(expect.any(String));
+  const rest = await call(b.claude, 'list_nodes', { limit: 1, cursor: first.next }) as { nodes: { id: string }[]; next: string | null };
+  expect(rest).toStrictEqual(await call(direct, 'list_nodes', { limit: 1, cursor: first.next }));
+  expect([...first.nodes, ...rest.nodes].map((n) => n.id).sort()).toStrictEqual(['invoices', 'orders']);
+  expect(rest.next).toBeNull();
+
   // Kolab's own errors come back as Kolab gave them.
   const bad = await b.claude.callTool({ name: 'konjir_read_node', arguments: { node: 'nowhere' } });
   const kolabBad = await direct.callTool({ name: 'konjir_read_node', arguments: { node: 'nowhere' } });

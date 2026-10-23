@@ -3,6 +3,8 @@ import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
 import { JsonNestLogger, serverErrors } from './json-logger.js';
+import { MAX_REQUEST_BYTES } from '@konjir/types';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { KolabServerModule } from './kolab-server.module.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
@@ -44,17 +46,22 @@ export async function startServer(opts: {
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
-  const app = await NestFactory.create(
+  const app = await NestFactory.create<NestExpressApplication>(
     KolabServerModule.register({
       kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
       identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
       cliNpmSpec: opts.cliNpmSpec,
     }),
     // Nest's lines, and the server's own Loggers', as Kolab's JSON lines, warn and error only.
-    { logger: new JsonNestLogger() },
+    { logger: new JsonNestLogger(), bodyParser: false },
   );
   // Every 5xx answer is an error line, which the deployed stack's server-error alarm counts.
   app.use(serverErrors());
+  // One limit on every request body, the MCP endpoint's and the web API's alike (W2.21): room for
+  // the largest version Kolab takes (MAX_VERSION_BYTES), and a clear refusal past it.
+  app.useBodyParser('json', { limit: MAX_REQUEST_BYTES });
+  app.useBodyParser('urlencoded', { limit: MAX_REQUEST_BYTES, extended: true });
+  app.use(tooLarge);
   // The web interface's pages, at the root (API8); its API is the module's, under /api.
   app.use(webApp(opts.webRoot === undefined ? defaultWebRoot() : opts.webRoot));
   const host = opts.host ?? '127.0.0.1';
@@ -80,4 +87,16 @@ export async function startServer(opts: {
       }
     })().catch((e) => { closing = undefined; throw e; })),
   };
+}
+
+/**
+ * A request body over MAX_REQUEST_BYTES, refused with a message that names the limit: as a JSON-RPC
+ * error on the MCP endpoint, so a client shows it, and as the web API's error elsewhere.
+ */
+function tooLarge(err: unknown, req: { path?: string }, res: { status(n: number): { json(b: unknown): void }; headersSent?: boolean }, next: (e?: unknown) => void) {
+  const e = err as { type?: string; status?: number } | undefined;
+  if (e?.type !== 'entity.too.large' || res.headersSent) return next(err);
+  const message = `the request is over ${MAX_REQUEST_BYTES / (1024 * 1024)} MiB, the most Kolab takes in one call: send less at once (a version holds at most 512 KiB of text)`;
+  if (req.path?.startsWith('/mcp')) res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message } });
+  else res.status(413).json({ error: 'too_large', message });
 }

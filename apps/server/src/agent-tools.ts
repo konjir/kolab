@@ -1,14 +1,15 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { Kolab } from '@konjir/engine';
+import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, REVIEW_VERDICTS,
-  RULING_EFFECTS, type EdgeKind, type GateResult,
+  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, type EdgeKind, type GateResult,
   nobodyCanReview,
 } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
+import { PAGED, paging } from './paging.js';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
 import { answersUri, inboxUri } from './uris.js';
@@ -28,23 +29,26 @@ const deltaInput = z.object({
 });
 const from = address.optional().describe('Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark.');
 
-const listNodes = z.object({ kind: z.enum(KINDS).optional() });
+const listNodes = z.object({ kind: z.enum(KINDS).optional(), ...paging });
 const resolve = z.object({ address });
 const readNode = z.object({
   node: z.string().describe('A node by name: one in your kolab (checkout), or <kolab>/<node> in any kolab you can read.'),
   version: z.number().int().optional(),
+  cursor: z.string().optional().describe(`A version holds at most ${MAX_ELEMENTS} elements, read ${READ_NODE_PAGE} at a time: pass the next a read returned for the elements after them. Omit it for the first.`),
 });
 const lineage = z.object({
   node,
   direction: z.enum(['upstream', 'downstream']).describe('Required. upstream = what this node relies on; downstream = what relies on it.'),
+  ...paging,
 });
-const listStale = z.object({ all_layers: z.boolean().optional(), node: node.optional() });
+const listStale = z.object({ all_layers: z.boolean().optional(), node: node.optional(), ...paging });
 const listQueries = z.object({
   mine: z.boolean().optional().describe('Questions and notes you raised, open and answered'),
   all_layers: z.boolean().optional(),
   state: z.enum(QUERY_STATES).optional(),
   kind: z.enum(QUERY_KINDS).optional(),
   node: node.optional().describe('Only those raised on this node of your kolab'),
+  ...paging,
 });
 const createNode = z.object({ kind: z.enum(KINDS), title: z.string(), id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.') });
 const draft = z.object({
@@ -78,7 +82,7 @@ const review = z.object({
   })).optional(),
 });
 const abandon = z.object({ node, version: z.number().int() });
-const listReviews = z.object({});
+const listReviews = z.object({ ...paging });
 const link = z.object({
   kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
   source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
@@ -87,9 +91,9 @@ const link = z.object({
 });
 const clearMark = z.object({ mark: z.string() });
 const resolveOverride = z.object({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });
-const ask = z.object({ address, question: z.string(), from });
-const annotate = z.object({ address, note: z.string(), from: address.optional().describe('Your own element the note is about') });
-const answerQuery = z.object({ query: z.string(), answer: z.string() });
+const ask = z.object({ address, question: z.string().describe(`At most ${MAX_TEXT} characters`), from });
+const annotate = z.object({ address, note: z.string().describe(`At most ${MAX_TEXT} characters`), from: address.optional().describe('Your own element the note is about') });
+const answerQuery = z.object({ query: z.string(), answer: z.string().describe(`At most ${MAX_TEXT} characters`) });
 const evidence = z.array(z.string()).min(1).describe('What backs the claim: kj: addresses (each must resolve), and anything else as text, such as a commit, a file and line, or a test run. At least one.');
 const openCase = z.object({
   address: address.describe('The element in dispute, e.g. kj:checkout#R1, on a committed version in your kolab'),
@@ -112,9 +116,10 @@ const listCases = z.object({
   mine: z.boolean().optional().describe('Case files you opened or hold a position on, open and ruled'),
   all_layers: z.boolean().optional(),
   node: node.optional().describe('Only those about this node of your kolab'),
+  ...paging,
 });
 const readCase = z.object({ case: z.string() });
-const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab') });
+const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab'), ...paging });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
@@ -138,15 +143,20 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_nodes',
-    description: 'List the specs, bindings, WBS, work packages and implementations in your kolab, with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again.',
+    description: `List the specs, bindings, WBS, work packages and implementations in your kolab, with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again. By kind, then name.${PAGED}`,
     schema: listNodes,
     annotations: { readOnlyHint: true },
   })
-  listNodes({ kind }: z.infer<typeof listNodes>, context?: McpToolContext) {
-    return asAgent(context, async (s) => (await this.kolab.listNodes(kind, await this.kolab.sessionKolab(s)))
-      .map(({ name, kind: k, layer, title, latest, drafts, in_review, rebase_pending, rebase_dead }) => ({
-        id: name, kind: k, layer, title, latest, drafts, in_review, ...(rebase_pending ? { rebase_pending } : {}), ...(rebase_dead ? { rebase_dead } : {}),
-      })));
+  listNodes({ kind, cursor, limit }: z.infer<typeof listNodes>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const { items, next } = await this.kolab.nodesPage(await this.kolab.sessionKolab(s), kind, { cursor, limit });
+      return {
+        nodes: items.map(({ name, kind: k, layer, title, latest, drafts, in_review, rebase_pending, rebase_dead }) => ({
+          id: name, kind: k, layer, title, latest, drafts, in_review, ...(rebase_pending ? { rebase_pending } : {}), ...(rebase_dead ? { rebase_dead } : {}),
+        })),
+        next,
+      };
+    });
   }
 
   @McpTool({
@@ -165,22 +175,41 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: 'Read every element of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version), the rulings on it, which are precedent, and its open case files. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done.',
+    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
-  readNode({ node, version }: z.infer<typeof readNode>, context?: McpToolContext) {
+  readNode({ node, version, cursor }: z.infer<typeof readNode>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const kolab = this.kolab;
       // As kj_agent: row-level security bounds the read as well as Kolab (0008). Only who wrote
       // the version comes from Kolab's login, since kj_agent reads no actors.
-      const read = await kolab.readNode(s, node, version);
-      const { node: n, version: row, from: here, elements: els, queries, removes, rulings, cases, rebase } = read;
+      // A page of its elements (W2.21): a version never changes, so where a page starts is a count.
+      // The cursor names the version it pages, checked once the version is known.
+      let start = 0;
+      if (cursor) {
+        const parsed = (() => { try { return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown; } catch { return undefined; } })();
+        const n = Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === 'string' && parsed[0].startsWith('read_node:') ? parsed[1] : undefined;
+        if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) throw new LimitError('that cursor isn\'t one this read gave');
+        start = n;
+      }
+      // Only the page's questions, the newest THREADS_PER_ELEMENT on each of its elements, read in SQL.
+      const read = await kolab.readNode(s, node, version, { threads: { per: THREADS_PER_ELEMENT, from: start, count: READ_NODE_PAGE } });
+      const { node: n, version: row, from: here, elements: all, queries, query_counts: counts, removes, rulings, cases, rebase } = read;
+      keyOf(`read_node:${row.id}`, cursor, 1);
+      const els = all.slice(start, start + READ_NODE_PAGE);
+      const next = start + READ_NODE_PAGE < all.length ? cursorFor(`read_node:${row.id}`, [start + READ_NODE_PAGE]) : null;
       const threads = new Map<string | null, ReturnType<typeof thread>[]>();
       for (const q of queries) {
         const el = parseAddress(q.address).element ?? null;
         (threads.get(el) ?? threads.set(el, []).get(el)!).push(thread(q));
       }
+      const shown = (el: string | null) => {
+        const t = threads.get(el);
+        if (!t) return {};
+        const more = (counts?.get(el ?? '') ?? t.length) - t.length;
+        return { questions: t, ...(more > 0 ? { more_questions: more } : {}) };
+      };
       // Precedent and open case files beside the element they concern, from any version (CASE4).
       const by = <T extends { on: string }>(xs: T[]) => {
         const m = new Map<string | null, T[]>();
@@ -197,59 +226,65 @@ export class AgentTools {
         ...('createdBy' in read ? { node_created_by: read.createdBy ?? null } : {}),
         ...(removes.length ? { removes_links: removes } : {}),
         ...(rebase ? { rebase: { ...rebase, ...(rebase.after ? { after: formatAddress(parseAddress(rebase.after), { from: here }) } : {}) } } : {}),
-        ...(threads.get(null) ? { questions: threads.get(null) } : {}),
-        ...(ruled.get(null) ? { rulings: ruled.get(null) } : {}),
+        ...(start === 0 ? shown(null) : {}),
+        ...(start === 0 && ruled.get(null) ? { rulings: ruled.get(null) } : {}),
+        element_count: all.length,
+        ...(all.length > READ_NODE_PAGE ? { elements_from: start + 1, elements_to: start + els.length } : {}),
         elements: els.map((e) => ({
           address: at(e.element_id), id: e.element_id, parent: e.parent_element_id, text: e.text,
-          ...(threads.get(e.element_id) ? { questions: threads.get(e.element_id) } : {}),
+          ...shown(e.element_id),
           ...(ruled.get(e.element_id) ? { rulings: ruled.get(e.element_id) } : {}),
           ...(open.get(e.element_id) ? { open_cases: open.get(e.element_id) } : {}),
         })),
+        next,
       };
     });
   }
 
   @McpTool({
     name: 'konjir_lineage',
-    description: 'Walk lineage from a node version: upstream = what it depends on; downstream = what depends on it.',
+    description: `Walk lineage from a node version: upstream = what it depends on; downstream = what depends on it. By link id.${PAGED}`,
     schema: lineage,
     annotations: { readOnlyHint: true },
   })
-  lineage({ node, direction }: z.infer<typeof lineage>, context?: McpToolContext) {
+  lineage({ node, direction, cursor, limit }: z.infer<typeof lineage>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const n = await this.kolab.nodeIn(s, node, 'walking lineage');
       const v = await this.kolab.latestCommitted(n.id);
       if (!v) throw new Error(`${n.name} has no committed version`);
-      return { node: n.name, version: v.seq, direction, edges: await this.kolab.lineage(v.id, direction) };
+      const { items, next } = await this.kolab.lineagePage(v.id, direction, { cursor, limit });
+      return { node: n.name, version: v.seq, direction, edges: items, next };
     });
   }
 
   @McpTool({
     name: 'konjir_list_stale',
-    description: 'List open dirty marks: what is dirty, why, and the next step. Defaults to your own layer.',
+    description: `List open dirty marks: what is dirty, why, and the next step. Defaults to your own layer. Oldest first.${PAGED}`,
     schema: listStale,
     annotations: { readOnlyHint: true },
   })
-  listStale({ all_layers, node }: z.infer<typeof listStale>, context?: McpToolContext) {
+  listStale({ all_layers, node, cursor, limit }: z.infer<typeof listStale>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing marks')).id;
-      return { marks: await this.kolab.marksFor(s, { layer: all_layers ? undefined : me.layer, node: id }) };
+      const { items, next } = await this.kolab.marksPage(s, { layer: all_layers ? undefined : me.layer, node: id }, { cursor, limit });
+      return { marks: items, next };
     });
   }
 
   @McpTool({
     name: 'konjir_list_queries',
-    description: 'List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers.',
+    description: `List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers. Oldest first.${PAGED}`,
     schema: listQueries,
     annotations: { readOnlyHint: true },
   })
-  listQueries({ mine, all_layers, state, kind, node }: z.infer<typeof listQueries>, context?: McpToolContext) {
+  listQueries({ mine, all_layers, state, kind, node, cursor, limit }: z.infer<typeof listQueries>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing questions')).id;
-      if (mine) return { queries: await this.kolab.queriesFor(s, { raisedBy: me.actor, state, kind, node: id }) };
-      return { queries: await this.kolab.queriesFor(s, { layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node: id }) };
+      const filter = mine ? { raisedBy: me.actor, state, kind, node: id } : { layer: all_layers ? undefined : me.layer, state: state ?? 'open', kind, node: id };
+      const { items, next } = await this.kolab.queriesPage(s, filter, { cursor, limit });
+      return { queries: items, next };
     });
   }
 
@@ -267,7 +302,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: 'Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it.',
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {
@@ -338,15 +373,20 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_reviews',
-    description: 'Review requests waiting for you, each with its subject and how to review it; and your own submissions, with the verdicts they got.',
+    description: `Review requests waiting for you, oldest first, each with its subject and how to review it; and your own submissions, newest first, with the verdicts they got. Paged: each list returns at most limit items (50 by default, at most 200), and next pages both: while next isn't null, call again with cursor=next for the rest of whichever isn't done.`,
     schema: listReviews,
     annotations: { readOnlyHint: true },
   })
-  listReviews(_: z.infer<typeof listReviews>, context?: McpToolContext) {
+  listReviews({ cursor, limit }: z.infer<typeof listReviews>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const kolab = await this.kolab.sessionKolab(s);
-      return { for_you: await this.kolab.reviewRequests({ reviewer: me.actor, kolab }), yours: await this.kolab.submissions(me.actor, { kolab }) };
+      // One cursor for both lists: each one's own cursor, or done once it has returned its last.
+      const [f, y] = (keyOf('list_reviews', cursor, 2) ?? [null, null]) as [string | null, string | null];
+      const forYou = f === 'done' ? { items: [], next: null } : await this.kolab.reviewRequestsPage({ reviewer: me.actor, kolab }, { cursor: f, limit });
+      const yours = y === 'done' ? { items: [], next: null } : await this.kolab.submissionsPage(me.actor, { kolab }, { cursor: y, limit });
+      const next = forYou.next || yours.next ? cursorFor('list_reviews', [forYou.next ?? 'done', yours.next ?? 'done']) : null;
+      return { for_you: forYou.items, yours: yours.items, next };
     });
   }
 
@@ -361,7 +401,10 @@ export class AgentTools {
       in_review: r.in_review ? at : null, ...(r.reviewers ? { reviewers: r.reviewers } : {}), unreviewed: r.unreviewed ?? false,
       ...(r.cascade ? { cascade: r.cascade } : {}),
       ...(r.rebases ? { rebases_queued: r.rebases } : {}),
-      stale_after_commit: r.ok ? await kolab.marksFor(session, { node: n.id }) : [],
+      ...(r.ok ? await (async () => {
+        const marks = await kolab.marksPage(session, { node: n.id });
+        return { stale_after_commit: marks.items, ...(marks.next ? { stale_after_commit_more: `More marks than these: konjir_list_stale node=${node} all_layers=true lists them all.` } : {}) };
+      })() : { stale_after_commit: [] }),
       next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
         : r.in_review ? (r.reviewers?.length
           ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request in their inbox, and one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
@@ -421,7 +464,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_ask',
-    description: 'Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer.',
+    description: `Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer. You raise at most ${MAX_ASKS_PER_HOUR} questions and notes an hour: put several points in one question.`,
     schema: ask,
   })
   ask(a: z.infer<typeof ask>, context?: McpToolContext) {
@@ -492,16 +535,17 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_cases',
-    description: 'List case files in your kolab, each with its positions, its ruling once given, and the next step. Default: open ones on your layer. mine=true: those you opened or hold a position on.',
+    description: `List case files in your kolab, each with its positions, its ruling once given, and the next step. Default: open ones on your layer. mine=true: those you opened or hold a position on. Most recently changed first: one argued or ruled on while you page moves to the first page.${PAGED}`,
     schema: listCases,
     annotations: { readOnlyHint: true },
   })
-  listCases({ state, mine, all_layers, node }: z.infer<typeof listCases>, context?: McpToolContext) {
+  listCases({ state, mine, all_layers, node, cursor, limit }: z.infer<typeof listCases>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing case files')).id;
-      if (mine) return { cases: await this.kolab.casesFor(s, { actor: me.actor, state, node: id }) };
-      return { cases: await this.kolab.casesFor(s, { layer: all_layers ? undefined : me.layer, state: state ?? 'open', node: id }) };
+      const filter = mine ? { actor: me.actor, state, node: id } : { layer: all_layers ? undefined : me.layer, state: state ?? 'open', node: id };
+      const { items, next } = await this.kolab.casesPage(s, filter, { cursor, limit });
+      return { cases: items, next };
     });
   }
 
@@ -521,14 +565,15 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_rulings',
-    description: 'List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when.',
+    description: `List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when.${PAGED}`,
     schema: listRulings,
     annotations: { readOnlyHint: true },
   })
-  listRulings({ node }: z.infer<typeof listRulings>, context?: McpToolContext) {
+  listRulings({ node, cursor, limit }: z.infer<typeof listRulings>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
-      return { rulings: await this.kolab.rulingsFor(s, { node: id }) };
+      const { items, next } = await this.kolab.rulingsPage(s, { node: id }, { cursor, limit });
+      return { rulings: items, next };
     });
   }
 

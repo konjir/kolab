@@ -301,7 +301,7 @@ test('a review request skips an agent signed in as engineer but reaches a person
   expect((await kolab.reviewRequests()).map((r) => r.reviewer)).toStrictEqual(['lee']);
   expect((await kolab.submissions('pat'))[0].verdicts.map((v) => v.reviewer)).toStrictEqual(['lee']);
   expect((await openReviewRequests(kolab, pat)).map((r) => r.reviewer)).toStrictEqual(['lee']);
-  expect((await submissionsOf(kolab, pat, 'pat'))[0].verdicts.map((v) => v.reviewer)).toStrictEqual(['lee']);
+  expect((await submissionsOf(kolab, pat, 'pat')).items[0].verdicts.map((v) => v.reviewer)).toStrictEqual(['lee']);
 
   // A person signed in with the other role still gets it: they choose their role as they sign in.
   await kolab.openSession('lee', 'engineer');

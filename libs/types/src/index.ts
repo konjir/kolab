@@ -84,6 +84,8 @@ export interface AccessTeamGrant { team: string; level: AccessLevel; layers: Lay
 export interface KolabAccessView {
   kolab: { id: string; owner: string; owner_kind: AccountKind; visibility: Visibility; base_permission: AccessLevel | null };
   holders: AccessHolder[]; teams: AccessTeamGrant[];
+  /** Read a page at a time (W2.21): the cursor to the next page of holders, or null on the last. Teams come whole, on every page. */
+  next?: string | null;
 }
 /** `archived` is given only by a listing that includes archived kolabs (D52). */
 export interface KolabRow { id: string; owner: string; title: string; visibility: Visibility; base_permission: AccessLevel | null; archived?: boolean }
@@ -380,3 +382,4 @@ export interface CaseFileView {
 }
 /** The web interface's API (W3.1). */
 export type * from './web.js';
+export * from './limits.js';

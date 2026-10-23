@@ -10,7 +10,7 @@ import { clock, transient, ApiError } from '../src/api.js';
 const ann: WebMe = { actor: 'ann', name: 'Ann', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'anns', access: { level: 'admin', layers: ['functional', 'technical'] } };
 const overview: WebOverview = {
   me: ann, kolab: { id: 'anns', title: 'Ann’s', owner: 'ann', visibility: 'private', current: true, access: ann.access },
-  kolabs: [], nodes: [], counts: { stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 },
+  kolabs: [], nodes: [], nodes_next: null, counts: { stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 },
 };
 const GITHUB: WebSignInMethods = { provider: 'GitHub', token: false };
 

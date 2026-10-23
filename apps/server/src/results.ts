@@ -1,4 +1,4 @@
-import { AccessError, GateError, RoleError, TenancyError } from '@konjir/engine';
+import { AccessError, GateError, LimitError, RoleError, TenancyError } from '@konjir/engine';
 import type { Query } from '@konjir/types';
 import type { McpToolContext } from '@onivoro/server-mcp';
 
@@ -22,6 +22,7 @@ export function fail(e: unknown) {
     : err instanceof GateError ? ' The review gate or lineage rules refused this. Read the message and adjust; do not retry unchanged.'
     : err instanceof AccessError ? ' Your access to this kolab does not allow it. Access is granted by an admin of the kolab; do not retry unchanged.'
     : err instanceof TenancyError ? ' Read the message and adjust the request.'
+    : err instanceof LimitError ? ' Nothing was written. Read the message and adjust the request; do not retry unchanged.'
     : '';
   return { content: [{ type: 'text' as const, text: `${err.name ?? 'Error'}: ${err.message}.${hint}` }], isError: true };
 }

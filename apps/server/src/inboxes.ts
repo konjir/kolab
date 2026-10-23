@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { McpResource, McpToolRegistry, type McpHandlerContext } from '@onivoro/server-mcp';
 import { Kolab, RoleError, type ListenerState } from '@konjir/engine';
-import { LAYERS, isInboxEvent, type Layer } from '@konjir/types';
+import { LAYERS, PAGE_DEFAULT, isInboxEvent, type Layer } from '@konjir/types';
 import { ListenStreams } from './listen-streams.js';
 import { sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
@@ -73,7 +73,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://inbox/{kolab}/{layer}',
     isTemplate: true,
     title: 'A layer\'s work queue in your kolab',
-    description: 'Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, the review requests waiting for you on it, and the open case files about its elements, waiting for a position or a ruling. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.',
+    description: `Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, the review requests waiting for you on it, and the open case files about its elements, waiting for a position or a ruling: the first ${PAGE_DEFAULT} of each, oldest first (case files most recently changed first). more names each list that has more, and the verb that pages through it. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.`,
     mimeType: 'application/json',
   })
   async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -84,16 +84,23 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     // Only the session's own kolab (TEN12). Another kolab's inbox reads as if it didn't exist.
     if (!LAYERS.includes(layer) || decoded(vars.kolab) !== me.kolab) throw new Error(`no inbox ${uri.href}`);
     const kolab = me.kolab;
+    // A page of each (W2.21): a resource takes no cursor, so a list with more says which verb pages it.
+    const queries = await this.kolab.queriesPage(session, { layer, state: 'open' });
+    const marks = await this.kolab.marksPage(session, { layer });
+    // Each review request waits in its own reviewer's inbox (REV2).
+    const reviews = await this.kolab.reviewRequestsPage({ layer, reviewer: me.actor, kolab });
+    // Case files about the layer's elements, waiting for their other position or a ruling (CASE1, CASE2).
+    // Read as the session, so one that holds only Read sees none (D49).
+    const cases = await this.kolab.casesPage(session, { layer, state: 'open' });
+    const more = {
+      ...(queries.next ? { queries: `konjir_list_queries cursor=${queries.next}` } : {}),
+      ...(marks.next ? { marks: `konjir_list_stale cursor=${marks.next}` } : {}),
+      ...(reviews.next ? { reviews: 'konjir_list_reviews, paging with its next' } : {}),
+      ...(cases.next ? { cases: `konjir_list_cases cursor=${cases.next}` } : {}),
+    };
     const body = {
-      kolab,
-      layer,
-      queries: await this.kolab.queriesFor(session, { layer, state: 'open' }),
-      marks: await this.kolab.marksFor(session, { layer }),
-      // Each review request waits in its own reviewer's inbox (REV2).
-      reviews: await this.kolab.reviewRequests({ layer, reviewer: me.actor, kolab }),
-      // Case files about the layer's elements, waiting for their other position or a ruling (CASE1, CASE2).
-      // Read as the session, so one that holds only Read sees none (D49).
-      cases: await this.kolab.casesFor(session, { layer, state: 'open' }),
+      kolab, layer, queries: queries.items, marks: marks.items, reviews: reviews.items, cases: cases.items,
+      ...(Object.keys(more).length ? { more } : {}),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }
@@ -103,7 +110,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://answers/{kolab}/{actor}',
     isTemplate: true,
     title: 'Answers to what you raised in your kolab',
-    description: 'Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, and the case files you opened or hold a position on there, with their rulings. Updated whenever one of them is answered, reviewed, argued or ruled on. Only your own answers, in your own kolab, can be read or subscribed to.',
+    description: `Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, and the case files you opened or hold a position on there, with their rulings: the newest ${PAGE_DEFAULT} questions and notes, and the 20 most recent submissions and case files. Updated whenever one of them is answered, reviewed, argued or ruled on. konjir_list_queries mine=true, konjir_list_reviews and konjir_list_cases mine=true page through the rest. Only your own answers, in your own kolab, can be read or subscribed to.`,
     mimeType: 'application/json',
   })
   async answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -113,7 +120,8 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     if (decoded(vars.actor) !== me.actor || decoded(vars.kolab) !== me.kolab) {
       throw new RoleError('you can only read your own answers, in your session\'s kolab');
     }
-    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.queriesFor(session, { raisedBy: me.actor }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
+    // The newest of each, so whatever was just answered, reviewed or ruled on is among them.
+    const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.queriesFor(session, { raisedBy: me.actor, newest: PAGE_DEFAULT }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
       // Most recently changed first, so a case file just argued or ruled on is always among them.
       cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20 }),
     };

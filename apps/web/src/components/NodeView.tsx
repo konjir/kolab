@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebVersion } from '@konjir/types';
+import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
 import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
+import { More, useMore } from './Pages.js';
 
 const KIND_WORD: Record<string, string> = {
   functional_spec: 'Functional spec', prototype: 'Prototype', technical_binding: 'Technical binding',
@@ -46,9 +47,12 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const [ruling, setRuling] = useState<string | null>();
 
   const revising = draft.replaces !== undefined;
+  const path = kolab ? `kolabs/${encodeURIComponent(kolab)}/nodes/${encodeURIComponent(name)}` : `nodes/${encodeURIComponent(name)}`;
+  // Older versions, and older questions on the node as a whole, a page at a time (W2.21).
+  const older = useMore<WebVersionsView>(`${path}/versions`, view?.versions_next, tick);
+  const olderQueries = useMore<WebQueriesView>(`${path}/queries`, view?.queries_next, tick);
   useEffect(() => {
     let live = true;
-    const path = kolab ? `kolabs/${encodeURIComponent(kolab)}/nodes/${encodeURIComponent(name)}` : `nodes/${encodeURIComponent(name)}`;
     api<WebNodeView>(`${path}${version ? `?version=${version}` : ''}`)
       // Nothing committed yet: read the version waiting instead, so its requirements aren't missing.
       // Not while a returned draft is being edited: its edits are made on nothing, and shown as added.
@@ -58,7 +62,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       })
       .then((v) => { if (live) { setView(v); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
-  }, [kolab, name, version, tick, me.actor, revising]);
+  }, [path, version, tick, me.actor, revising]);
   // A submission's notice follows its version as the page re-reads it (each change Kolab signals):
   // in review until it commits, comes back with changes requested, or is abandoned. A version
   // folded onto the node's newer version lives on as the fold, so the notice follows the fold.
@@ -181,6 +185,8 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       if ('seq' in out) setNotice({ ...out, node: name });
     }, done);
 
+  const versions = [...view.versions, ...older.pages.flatMap((p) => p.versions)].sort((a, b) => a.seq - b.seq);
+  const nodeQueries = [...view.queries, ...olderQueries.pages.flatMap((p) => p.queries)];
   const rows = reading ? [...view.elements, ...(isLatest || latest === null ? draft.added.map(asElement(name)) : [])] : draft.added.map(asElement(name));
   return (
     <>
@@ -196,9 +202,10 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
               : 'Nothing committed yet.'}
             {reading && !isLatest && reading.state === 'committed' && <span className="reading-old"> · An older version. Read only.</span>}
             {uncommitted && <span className="reading-old"> · Not committed yet{latest === null ? ': nothing is, so this is the version waiting' : ''}. Nothing changes for anyone until it’s approved.</span>}
-            {view.versions.length > 0 && (
+            {versions.length > 0 && (
               <div className="versions" role="group" aria-label="Versions">
-                {view.versions.map((v) => (
+                {older.more && <button type="button" disabled={older.busy} onClick={older.more}>{older.busy ? 'Reading…' : 'Older …'}</button>}
+                {versions.map((v) => (
                   <button key={v.seq} type="button" aria-pressed={v.seq === reading?.seq} onClick={() => read(v.seq === latest ? undefined : v.seq)}
                     title={v.state === 'committed' ? `Committed by ${v.author}` : v.state === 'in_review' ? `In review, by ${v.author}` : 'Your draft'}>
                     v{v.seq}{v.state === 'in_review' ? ' · in review' : v.state === 'drafted' ? ' · draft' : ''}
@@ -214,14 +221,15 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
             <button type="button" className="btn quiet" onClick={() => go(`read/${view.kolab}`)}>All of {view.kolab}</button>
           </div>
         )}
-        {(view.queries.length > 0 || view.rulings.length > 0) && <div className="flags" style={{ marginTop: 12 }}>
+        {(nodeQueries.length > 0 || view.rulings.length > 0) && <div className="flags" style={{ marginTop: 12 }}>
           {view.rulings.map((r) => <RulingBox key={r.ruling} ruling={r} me={me} go={go} />)}
-          {view.queries.map((q) => <QueryBox key={q.id} query={q} me={me} act={act} readOnly={foreign} />)}</div>}
+          {nodeQueries.map((q) => <QueryBox key={q.id} query={q} me={me} act={act} readOnly={foreign} />)}
+          <More more={olderQueries.more} busy={olderQueries.busy} what={`questions on ${addr(name)}`} /></div>}
       </section>
 
       <ol className="els" aria-label="Elements">
         {rows.length ? rows.map((e) => (
-          <ElementRow key={e.id} name={name} element={e} me={me} act={act} go={go}
+          <ElementRow key={e.id} name={name} path={path} tick={tick} element={e} me={me} act={act} go={go}
             seq={reading?.seq ?? null} live={isLatest} writable={writable} focus={focus === `${name}#${e.id}`}
             text={draft.changes[e.id] ?? draft.added.find((a) => a.id === e.id)?.text ?? e.text}
             removed={draft.removed.includes(e.id)} drafted={e.id in draft.changes || draft.added.some((a) => a.id === e.id)}
@@ -294,6 +302,8 @@ const asElement = (name: string) => (a: { id: string; text: string }): WebElemen
   ({ id: a.id, parent: null, text: a.text, address: addr(name, null, a.id), queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [] });
 
 interface RowProps {
+  /** The node's API path, and the push count: an element's older questions are read from it a page at a time. */
+  path: string; tick: number;
   name: string; element: WebElement; me: WebMe; act: Act; go(route: string): void;
   seq: number | null; live: boolean; writable: boolean; focus: boolean;
   text: string; removed: boolean; drafted: boolean; before?: string; editing: boolean; asking: boolean;
@@ -311,7 +321,9 @@ function ElementRow(p: RowProps) {
   const e = p.element;
   const [value, setValue] = useState(p.text);
   useEffect(() => { if (p.editing) setValue(p.text); }, [p.editing, p.text]);
-  const open = e.queries.filter((q) => q.state === 'open');
+  const olderQueries = useMore<WebQueriesView>(`${p.path}/queries?element=${encodeURIComponent(e.id)}`, e.queries_next, p.tick);
+  const queries = [...e.queries, ...olderQueries.pages.flatMap((pg) => pg.queries)];
+  const open = queries.filter((q) => q.state === 'open');
   const status = e.marks[0] ? <Pill tone={markWord(e.marks[0]) === 'orphaned' ? 'boundary' : 'stale'}>{markWord(e.marks[0])}</Pill>
     : e.relies_on.length ? <Pill tone="clean">holds</Pill> : null;
   const chip = (l: WebLink, side: 'target' | 'source') => {
@@ -363,12 +375,13 @@ function ElementRow(p: RowProps) {
           {p.seq !== null && p.canRule && !p.drafted && <button type="button" className="btn quiet" onClick={p.onRule} title="Rule on this element directly, with no case file behind it">Rule</button>}
         </div>
       )}
-      {(e.marks.length > 0 || e.queries.length > 0 || e.cases.length > 0 || e.rulings.length > 0 || p.asking || p.casing || p.ruling) && (
+      {(e.marks.length > 0 || queries.length > 0 || e.cases.length > 0 || e.rulings.length > 0 || p.asking || p.casing || p.ruling) && (
         <div className="flags">
           {e.marks.map((m) => <MarkBox key={m.id} mark={m} me={p.me} act={p.act} onRevise={p.writable ? p.onEdit : undefined} />)}
           {e.cases.map((c) => <CaseBox key={c.case} c={c} me={p.me} act={p.act} go={p.go} />)}
           {e.rulings.map((r) => <RulingBox key={r.ruling} ruling={r} me={p.me} go={p.go} showOn={r.seq !== p.seq} />)}
-          {e.queries.map((q) => <QueryBox key={q.id} query={q} me={p.me} act={p.act} readOnly={p.foreign} />)}
+          {queries.map((q) => <QueryBox key={q.id} query={q} me={p.me} act={p.act} readOnly={p.foreign} />)}
+          <More more={olderQueries.more} busy={olderQueries.busy} what={`questions on ${e.id}`} />
           {p.asking && <AskForm name={p.name} seq={p.seq ?? undefined} element={e.id} layer={undefined} act={p.act} onDone={p.onCancel} />}
           {p.casing && p.seq !== null && <OpenCaseForm name={p.name} seq={p.seq} element={e.id} act={p.act} onDone={p.onFormDone} />}
           {p.ruling && p.seq !== null && <DirectRuleForm name={p.name} seq={p.seq} element={e.id} act={p.act} onDone={p.onFormDone} />}

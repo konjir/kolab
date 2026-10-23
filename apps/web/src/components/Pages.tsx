@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
   KINDS, LAYER_OF_KIND,
-  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebQuery, type WebReviewsView, type WebSignInMethods,
+  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods,
 } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago } from '../util.js';
@@ -20,12 +20,101 @@ export function useRead<T>(path: string, tick: number) {
   return { data, error };
 }
 
+/**
+ * Reads a list a page at a time (W2.21): the first page, then each page `more` asks for, in order.
+ * When `tick` moves, it reads again as many pages as were shown, following each page's next.
+ */
+export function usePaged<T extends WebPaged>(path: string, tick: number) {
+  const [pages, setPages] = useState<{ path: string; pages: T[] }>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const shown = useRef({ path, count: 1 });
+  if (shown.current.path !== path) shown.current = { path, count: 1 };
+  const url = (cursor: string | null) => (cursor ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : path);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const out: T[] = [];
+      let cursor: string | null = null;
+      do {
+        const p: T = await api<T>(url(cursor));
+        out.push(p);
+        cursor = p.next;
+      } while (cursor && out.length < shown.current.count);
+      return out;
+    })().then((d) => { if (live) { setPages({ path, pages: d }); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
+    return () => { live = false; };
+  }, [path, tick]);
+  const current = pages?.path === path ? pages.pages : undefined;
+  const next = current?.at(-1)?.next ?? null;
+  const more = async () => {
+    if (!current || !next || busy) return;
+    setBusy(true);
+    try {
+      const p = await api<T>(url(next));
+      shown.current.count = current.length + 1;
+      setPages({ path, pages: [...current, p] });
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  };
+  return { pages: current, error, more: next ? more : undefined, busy };
+}
+
+/**
+ * The pages of a list after one already shown (W2.21): a node's older versions, or an element's
+ * older questions, whose first page comes with the node. `first` is that page's next. `more` reads
+ * the page after the last; when `tick` moves, it reads again as many pages as were shown.
+ */
+export function useMore<T extends WebPaged>(path: string, first: string | null | undefined, tick: number) {
+  const [pages, setPages] = useState<{ key: string; pages: T[] }>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const shown = useRef({ path, count: 0 });
+  if (shown.current.path !== path) shown.current = { path, count: 0 };
+  const key = `${path} ${first ?? ''}`;
+  const url = (cursor: string) => `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}`;
+  useEffect(() => {
+    if (!first || !shown.current.count) return undefined;
+    let live = true;
+    (async () => {
+      const out: T[] = [];
+      let cursor: string | null = first;
+      while (cursor && out.length < shown.current.count) {
+        const p: T = await api<T>(url(cursor));
+        out.push(p);
+        cursor = p.next;
+      }
+      return out;
+    })().then((d) => { if (live) { setPages({ key, pages: d }); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
+    return () => { live = false; };
+  }, [key, tick]);
+  const current = pages?.key === key ? pages.pages : [];
+  const next = current.length ? current[current.length - 1].next : first ?? null;
+  const more = async () => {
+    if (!next || busy) return;
+    setBusy(true);
+    try {
+      const p = await api<T>(url(next));
+      shown.current.count = current.length + 1;
+      setPages({ key, pages: [...current, p] });
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  };
+  return { pages: current, error, more: next ? more : undefined, busy };
+}
+
+/** The button that reads a list's next page, while it has one. */
+export function More({ more, busy, what }: { more?: () => void; busy: boolean; what: string }) {
+  if (!more) return null;
+  return <div className="edit-row"><button type="button" className="btn" disabled={busy} onClick={more}>{busy ? 'Reading…' : `More ${what}`}</button></div>;
+}
+
 export function QuestionsView({ me, tick, act, go }: { me: WebMe; tick: number; act: Act; go(r: string): void }) {
-  const { data, error } = useRead<{ queries: WebQuery[] }>('queries', tick);
+  const openRead = usePaged<WebQueriesView>('queries?state=open', tick);
+  const doneRead = usePaged<WebQueriesView>('queries?state=settled', tick);
+  const error = openRead.error ?? doneRead.error;
   if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!data) return <p className="empty">Reading the questions…</p>;
-  const open = data.queries.filter((q) => q.state === 'open');
-  const done = data.queries.filter((q) => q.state !== 'open');
+  if (!openRead.pages || !doneRead.pages) return <p className="empty">Reading the questions…</p>;
+  const open = openRead.pages.flatMap((p) => p.queries);
+  const done = doneRead.pages.flatMap((p) => p.queries);
   const item = (q: WebQuery) => (
     <li key={q.id} className="qitem">
       <div className="row">
@@ -39,19 +128,22 @@ export function QuestionsView({ me, tick, act, go }: { me: WebMe; tick: number; 
     <>
       <section aria-labelledby="q-open"><h2 className="section-title" id="q-open">Open</h2>
         {open.length ? <ul className="qlist">{open.map(item)}</ul> : <p className="empty">No open questions. When an agent can’t tell what you meant, its question lands here.</p>}
+        <More more={openRead.more} busy={openRead.busy} what="open questions" />
       </section>
       <section aria-labelledby="q-done"><h2 className="section-title" id="q-done">Answered</h2>
         <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>Answers are served to every agent as precedent, so a settled question isn’t asked again.</p>
         {done.length ? <ul className="qlist">{done.map(item)}</ul> : <p className="empty">Nothing answered yet.</p>}
+        <More more={doneRead.more} busy={doneRead.busy} what="answered questions" />
       </section>
     </>
   );
 }
 
 export function ReviewsView({ tick, go }: { tick: number; go(r: string): void }) {
-  const { data, error } = useRead<WebReviewsView>('reviews', tick);
+  const { pages, error, more, busy } = usePaged<WebReviewsView>('reviews', tick);
   if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!data) return <p className="empty">Reading the reviews…</p>;
+  if (!pages) return <p className="empty">Reading the reviews…</p>;
+  const data = { for_me: pages.flatMap((p) => p.for_me), mine: pages.flatMap((p) => p.mine) };
   return (
     <>
       <section aria-labelledby="r-mine"><h2 className="section-title" id="r-mine">Waiting for your review</h2>
@@ -72,27 +164,32 @@ export function ReviewsView({ tick, go }: { tick: number; go(r: string): void })
           </li>
         ))}</ul> : <p className="empty">You haven’t submitted anything for review in this kolab.</p>}
       </section>
+      <More more={more} busy={busy} what="reviews" />
     </>
   );
 }
 
 export function ActivityView({ tick }: { tick: number }) {
-  const { data, error } = useRead<WebActivityView>('activity', tick);
+  const { pages, error, more, busy } = usePaged<WebActivityView>('activity', tick);
   if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!data) return <p className="empty">Reading the activity…</p>;
+  if (!pages) return <p className="empty">Reading the activity…</p>;
+  const data = { items: pages.flatMap((p) => p.items) };
   return (
     <section aria-labelledby="act-title"><h2 className="section-title" id="act-title">Activity</h2>
       <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: nodes as they were made, versions as they were written, verdicts, questions and marks, each with who made it.</p>
       <ol className="log">{data.items.map((l, i) => (
         <li key={i}><time dateTime={l.at}>{ago(l.at)}</time><span><span className="actor">{l.actor}</span> {l.text.split(/(kj:[^\s·:]+)/).map((part, j) => part.startsWith('kj:') ? <Addr key={j}>{part}</Addr> : part)}</span></li>
       ))}</ol>
+      <More more={more} busy={busy} what="activity" />
     </section>
   );
 }
 
 /** What depends on what: each wire a link from an element to what it relies on, pinned to the version it was checked against. */
 export function LineageView({ tick, go }: { tick: number; go(r: string): void }) {
-  const { data, error } = useRead<WebLineageView>('lineage', tick);
+  const read = usePaged<WebLineageView>('lineage', tick);
+  const { error } = read;
+  const data = read.pages && { nodes: read.pages.flatMap((p) => p.nodes), links: read.pages.flatMap((p) => p.links) };
   const [focus, setFocus] = useState<string>();
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<{ d: string; cls: string }[]>([]);
@@ -134,7 +231,7 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
     const ro = new ResizeObserver(draw);
     ro.observe(box.current);
     return () => ro.disconnect();
-  }, [data, focus]);
+  }, [read.pages, focus]);
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!data) return <p className="empty">Reading the lineage…</p>;
   const stale = new Set(data.links.filter((l) => l.mark).map((l) => key(l.source.node, l.source.element)));
@@ -167,6 +264,8 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
         <svg className="wires" aria-hidden="true" viewBox={`0 0 ${size.w || 1} ${size.h || 1}`}>{paths.map((p, i) => <path key={i} className={p.cls} d={p.d} />)}</svg>
       </div>
       <div className="lin-legend"><span><i className="swatch" />holds</span><span><i className="swatch stale" />stale: what it relies on changed since this link was checked</span></div>
+      {read.more && <p className="why-not">A few documents at a time: a wire to one not shown yet appears once it is.</p>}
+      <More more={read.more} busy={read.busy} what="documents" />
     </section>
   );
 }
@@ -246,11 +345,11 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
  * drafts, reviews, links, marks, case files and rulings stay private to its work.
  */
 export function ForeignKolabView({ kolab, tick, go, onOpen }: { kolab: string; tick: number; go(r: string): void; onOpen(kolab: string): void }) {
-  const { data, error } = useRead<WebForeignKolab>(`kolabs/${encodeURIComponent(kolab)}/nodes`, tick);
+  const { pages, error, more, busy } = usePaged<WebForeignKolab>(`kolabs/${encodeURIComponent(kolab)}/nodes`, tick);
   if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!data) return <p className="empty">Reading {kolab}…</p>;
-  const k = data.kolab;
-  const committed = data.nodes.filter((n) => n.latest !== null);
+  if (!pages) return <p className="empty">Reading {kolab}…</p>;
+  const k = pages[0].kolab;
+  const committed = pages.flatMap((p) => p.nodes).filter((n) => n.latest !== null);
   return (
     <>
       <section className="summary" aria-label={`Kolab ${k.id}`}>
@@ -267,6 +366,7 @@ export function ForeignKolabView({ kolab, tick, go, onOpen }: { kolab: string; t
             <button type="button" className="chip" onClick={() => go(`read/${k.id}/${n.name}`)}>kj:{k.id}/{n.name}@{n.latest}</button>
             <span>{n.title} · {n.kind.replace(/_/g, ' ')}</span></div></li>
         ))}</ul> : <p className="empty">Nothing committed there yet.</p>}
+        <More more={more} busy={busy} what="documents" />
       </section>
     </>
   );

@@ -26,13 +26,13 @@ const mark: WebMark = {
 const spec = (over: Partial<WebNodeView> = {}): WebNodeView => ({
   node: { name: 'password-reset', kind: 'functional_spec', layer: 'functional', title: 'Password reset', latest: 3, drafts: 0, in_review: 0 },
   reading: { seq: 3, state: 'committed', author: 'Lee', role: 'product', at, note: null, mine: true },
-  versions: [1, 2, 3].map((seq) => ({ seq, state: 'committed' as const, author: 'pm-agent', role: 'product', at, note: null, mine: false })),
+  versions: [1, 2, 3].map((seq) => ({ seq, state: 'committed' as const, author: 'pm-agent', role: 'product', at, note: null, mine: false })), versions_next: null,
   elements: [
     { id: 'PR3', parent: null, text: 'The request page shows the same response whether or not the email belongs to an account.', address: 'kj:password-reset@3#PR3', queries: [question], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [] },
     { id: 'PR8', parent: null, text: 'At most 3 reset requests per hour.', address: 'kj:password-reset@3#PR8', queries: [], relies_on: [], marks: [], rulings: [], cases: [],
       relied_on_by: [{ edge: 'e1', kind: 'dependency', source: { node: 'password-reset-pg', seq: 2, element: 'B9', layer: 'technical' }, target: { node: 'password-reset', seq: 2, element: 'PR8', quote: null, latest: 3 }, mark: { id: 'm1', reason: 'changed' } }] },
   ],
-  queries: [], compared_with: null, in_review: [], drafts: [], can_write: true, rulings: [], kolab: 'accounts', foreign: false,
+  queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true, rulings: [], kolab: 'accounts', foreign: false,
   ...over,
 });
 const binding = (): WebNodeView => ({

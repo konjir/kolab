@@ -33,7 +33,7 @@ test('over MCP: a parent\'s commit says how many rebases it queued, and read_nod
   expect([r.ok, r.rebases_queued]).toStrictEqual([true, 1]);
   expect(r.next).toMatch(/One variant's rebase is queued/);
   expect(await call(pm, 'read_node', { node: 'V' })).toMatchObject({ version: 1, rebase: { state: 'pending', attempts: 0, after: 'kj:P@2' } });
-  const nodes = await call(pm, 'list_nodes', {}) as { id: string; rebase_pending?: boolean }[];
+  const { nodes } = await call(pm, 'list_nodes', {}) as { nodes: { id: string; rebase_pending?: boolean }[] };
   expect(nodes.find((n) => n.id === 'V')).toMatchObject({ rebase_pending: true });
   expect(nodes.find((n) => n.id === 'P')).not.toHaveProperty('rebase_pending');
 
@@ -41,5 +41,5 @@ test('over MCP: a parent\'s commit says how many rebases it queued, and read_nod
   const v = await call(pm, 'read_node', { node: 'V' }) as { version: number; elements: { id: string; text: string }[] };
   expect(v).not.toHaveProperty('rebase');
   expect([v.version, v.elements.map((e) => e.text)]).toStrictEqual([2, ['Background is navy.', 'Logo sits top-center.']]);
-  expect((await call(pm, 'list_nodes', {}) as { id: string }[]).find((n) => n.id === 'V')).not.toHaveProperty('rebase_pending');
+  expect((await call(pm, 'list_nodes', {}) as { nodes: { id: string }[] }).nodes.find((n) => n.id === 'V')).not.toHaveProperty('rebase_pending');
 });

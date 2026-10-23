@@ -1,0 +1,86 @@
+/**
+ * Kolab's size limits and page sizes, in one place (W2.21, P13, D71): so one huge draft, question
+ * or list can't stall the shared server, and every refusal names the limit it hit. The engine
+ * enforces each one; the server and the web interface only describe them. A quoted span's limit
+ * stays with the quote grammar, as MAX_QUOTE in @konjir/address (1,000 characters, DAT6).
+ */
+
+/** A list's page when no limit is asked for. */
+export const PAGE_DEFAULT = 50;
+/** The most a list returns in one page, whatever limit is asked for. */
+export const PAGE_MAX = 200;
+
+/**
+ * Elements in one version. Kolab's own functional spec, its largest node, has a few hundred; a
+ * thousand leaves room for that to grow several times while a read of one version, its diff and
+ * its structural checks stay well under a second.
+ */
+export const MAX_ELEMENTS = 1000;
+/**
+ * Characters in one element's text: about 1,300 words, many times a requirement's usual length.
+ * Longer than that is a document pasted into one element, and is split into elements instead.
+ */
+export const MAX_ELEMENT_TEXT = 8000;
+/**
+ * A version's whole text, in UTF-8 bytes: every element's id, text and parent. 512 KiB is about
+ * 80,000 words, room for a thousand long elements, and well inside the 2 MiB request body the
+ * server takes (MAX_REQUEST_BYTES).
+ */
+export const MAX_VERSION_BYTES = 512 * 1024;
+/**
+ * Characters in a question, a note, an answer, a review note or a finding's explanation, and in a
+ * case file's question, a position's claim and a ruling's text: about 650 words. What needs more is
+ * a spec change, or evidence linked by address.
+ */
+export const MAX_TEXT = 4000;
+/** Items of evidence on one position: each an address or a line of text. */
+export const MAX_EVIDENCE = 20;
+/** Characters in one item of evidence. */
+export const MAX_EVIDENCE_TEXT = 1000;
+/** Findings in one review verdict. */
+export const MAX_FINDINGS = 100;
+/** Characters in a node's title. */
+export const MAX_TITLE = 200;
+/**
+ * The largest request body the server parses, in bytes, on the MCP endpoint and the web API
+ * alike: a full version at MAX_VERSION_BYTES, with JSON's quoting and the call around it.
+ */
+export const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+/**
+ * Elements konjir_read_node returns per page, with the questions, rulings and case files beside
+ * them. A version holds at most MAX_ELEMENTS, so most reads take one page; a larger one says so
+ * and gives the cursor to the rest.
+ */
+export const READ_NODE_PAGE = 250;
+/** Questions and notes shown beside one element in konjir_read_node, newest; the rest are counted, and listed by konjir_list_queries. */
+export const THREADS_PER_ELEMENT = 20;
+
+/** A list's page: its items, and the cursor to the next page, or null on the last. */
+export interface Page<T> { items: T[]; next: string | null }
+
+/** How many characters a text runs to, as the limits count them: by code point, so an emoji counts once. */
+export const textLength = (s: string) => [...s].length;
+
+/**
+ * The window the per-actor rates below are counted over, in milliseconds: the last hour, sliding,
+ * counted in the database (as a person's new kolabs are, D54), so every server process sees the
+ * same count and a restart doesn't reset it.
+ */
+export const RATE_WINDOW_MS = 60 * 60_000;
+/**
+ * Questions and notes one actor raises in RATE_WINDOW_MS, across every kolab. One a minute,
+ * sustained, is more than a person types and more than an agent's working loop asks of the spec it
+ * is working through (Kolab's own agents ask a few an hour); an agent stuck asking the same thing
+ * in a loop is stopped within the hour, before it buries the layer that must answer.
+ */
+export const MAX_ASKS_PER_HOUR = 60;
+/**
+ * Drafts one actor makes in RATE_WINDOW_MS, across every kolab: konjir_draft and the web
+ * interface's submit, each refused once the actor has written this many versions in the window
+ * (every version written as them counts, a fold of their own draft onto a newer version too).
+ * Two a minute, sustained, covers an agent that drafts, is refused by the structural checks and
+ * drafts again, and a person editing quickly; a runaway loop is stopped within the hour, at 120
+ * versions rather than thousands. Kolab's own rebases are written as Kolab, and an admin's applied
+ * ruling isn't a draft, so neither is limited.
+ */
+export const MAX_DRAFTS_PER_HOUR = 120;

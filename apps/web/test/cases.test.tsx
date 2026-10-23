@@ -43,8 +43,8 @@ const el = (id: string, text: string, over: Partial<WebNodeView['elements'][numb
 const spec = (over: Partial<WebNodeView> = {}, els: WebNodeView['elements'] = [el('PR3', 'The request page shows the same response either way.', { cases: [caseFile()] })]): WebNodeView => ({
   node: { name: 'password-reset', kind: 'functional_spec', layer: 'functional', title: 'Password reset', latest: 3, drafts: 0, in_review: 0 },
   reading: { seq: 3, state: 'committed', author: 'Lee', role: 'product', at, note: null, mine: true },
-  versions: [1, 2, 3].map((seq) => ({ seq, state: 'committed' as const, author: 'pm-agent', role: 'product', at, note: null, mine: false })),
-  elements: els, queries: [], compared_with: null, in_review: [], drafts: [], can_write: true, rulings: [], kolab: 'accounts', foreign: false, ...over,
+  versions: [1, 2, 3].map((seq) => ({ seq, state: 'committed' as const, author: 'pm-agent', role: 'product', at, note: null, mine: false })), versions_next: null,
+  elements: els, queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true, rulings: [], kolab: 'accounts', foreign: false, ...over,
 });
 
 let calls: { url: string; method: string; body: unknown }[];
