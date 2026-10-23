@@ -203,4 +203,5 @@ jobs:
       # The shell scripts the deploy workflow runs.
       - name: Check the deploy scripts
         working-directory: deploy
-        run: bash -n plan.sh smoke.sh konjir-ops.sh release/pack.sh
+        # One at a time: bash -n a b c parses only a, and takes the rest as its arguments.
+        run: for f in plan.sh smoke.sh konjir-ops.sh release/pack.sh; do bash -n "$f"; done

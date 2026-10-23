@@ -72,6 +72,12 @@ variable "other_projects_site_arns" {
 data "aws_partition" "current" {}
 data "aws_caller_identity" "current" {}
 
+# Production's VPC, found by its tags. An Elastic IP may be associated only with a network interface
+# in it. If the VPC is ever replaced, apply this again so the role names the new one.
+data "aws_vpc" "production" {
+  tags = { Stack = "konjir-test", Name = "konjir-test-vpc" }
+}
+
 # The AWS-managed keys production's volumes, database and SecureStrings are encrypted with.
 data "aws_kms_alias" "managed" {
   for_each = toset(["ebs", "rds", "ssm"])
@@ -89,6 +95,8 @@ locals {
   state_key = "konjir/test/terraform.tfstate"
   zone      = "konjir.com"
   zone_id   = "Z0507288XMQWHJUJUA0O" # konjir.com's hosted zone
+  # An ACM DNS validation label after its underscore: 32 characters (an MD5 in hex).
+  acm_label = join("", [for i in range(32) : "?"])
   domain    = "kolab.konjir.com"
 
   # The OIDC subject of a job in the production environment: GitHub's default subject, which for a
@@ -146,6 +154,20 @@ resource "aws_iam_openid_connect_provider" "github" {
 data "aws_iam_openid_connect_provider" "github" {
   count = var.oidc_provider_exists ? 1 : 0
   url   = "https://${local.issuer}"
+}
+
+# ---- Which certificate authorities may issue for konjir.com
+
+# Only Amazon (ACM: the marketing site's certificate) and Let's Encrypt (Caddy's certificate for
+# kolab.konjir.com, which Let's Encrypt issues today) may issue for konjir.com and every name under
+# it. Caddy's fallback to ZeroSSL is refused, and so is any other CA, so a TXT record CI could
+# write proves nothing to one. Here, in Lee's own stack, because the deploy role can't change CAA.
+resource "aws_route53_record" "caa" {
+  zone_id = local.zone_id
+  name    = local.zone
+  type    = "CAA"
+  ttl     = 3600
+  records = ["0 issue \"amazon.com\"", "0 issue \"letsencrypt.org\"", "0 issuewild \";\""]
 }
 
 # ---- The install's SSM document
@@ -436,13 +458,22 @@ resource "aws_iam_policy" "ec2" {
         Resource  = [local.instances, local.volumes, "${local.ec2}:elastic-ip/*"]
         Condition = local.tagged_new
       },
-      # What a launch, an address or a rule uses besides production's own: a new network interface
-      # and Amazon's own image.
+      # What a launch or a rule uses besides production's own: the new network interface a launch
+      # makes (in a subnet that must be production's), a rule, and Amazon's own image.
       {
         Sid      = "LaunchParts"
         Effect   = "Allow"
-        Action   = ["ec2:RunInstances", "ec2:AssociateAddress", "ec2:DisassociateAddress", "ec2:AuthorizeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:ModifySecurityGroupRules"]
+        Action   = ["ec2:RunInstances", "ec2:AuthorizeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:ModifySecurityGroupRules"]
         Resource = ["${local.ec2}:network-interface/*", "${local.ec2}:security-group-rule/*"]
+      },
+      # An address goes only to a network interface in production's VPC. Network interfaces aren't
+      # tagged (a launch doesn't tag the one it makes), so the VPC is what makes one production's.
+      {
+        Sid       = "AddressToOwnInterface"
+        Effect    = "Allow"
+        Action    = ["ec2:AssociateAddress", "ec2:DisassociateAddress"]
+        Resource  = "${local.ec2}:network-interface/*"
+        Condition = { StringEquals = { "ec2:Vpc" = data.aws_vpc.production.arn } }
       },
       {
         Sid       = "AmazonImages"
@@ -496,6 +527,14 @@ resource "aws_iam_policy" "ec2" {
         Resource  = "*"
         Condition = { "ForAnyValue:StringEquals" = { "aws:TagKeys" = ["Stack"] }, Null = { "ec2:CreateAction" = "true" } }
       },
+      # DeleteTags that names no keys deletes every tag, Stack included.
+      {
+        Sid       = "NeverDeleteAllTags"
+        Effect    = "Deny"
+        Action    = ["ec2:DeleteTags"]
+        Resource  = "*"
+        Condition = { Null = { "aws:TagKeys" = "true" } }
+      },
       # A backstop to OwnResources: no change to an EC2 resource that isn't tagged as production's.
       {
         Sid    = "NotOthers"
@@ -544,12 +583,27 @@ resource "aws_iam_policy" "write" {
         Resource = local.parameters
       },
       # The release's install: an association of the install document above, and no other, on
-      # production's instance.
+      # production's instance. Associations have only ids in their ARNs, so they are production's by
+      # their Stack tag: created with it, and changed or deleted only while they have it.
       {
-        Sid      = "InstallAssociation"
+        Sid      = "InstallDocument"
         Effect   = "Allow"
-        Action   = ["ssm:CreateAssociation", "ssm:UpdateAssociation", "ssm:DeleteAssociation", "ssm:AddTagsToResource", "ssm:RemoveTagsFromResource"]
-        Resource = ["arn:${local.p}:ssm:${local.r}:${local.a}:association/*", aws_ssm_document.install.arn]
+        Action   = ["ssm:CreateAssociation", "ssm:UpdateAssociation"]
+        Resource = aws_ssm_document.install.arn
+      },
+      {
+        Sid       = "CreateTaggedAssociation"
+        Effect    = "Allow"
+        Action    = ["ssm:CreateAssociation", "ssm:AddTagsToResource"]
+        Resource  = "arn:${local.p}:ssm:${local.r}:${local.a}:association/*"
+        Condition = local.tagged_new
+      },
+      {
+        Sid       = "OwnAssociation"
+        Effect    = "Allow"
+        Action    = ["ssm:UpdateAssociation", "ssm:DeleteAssociation", "ssm:AddTagsToResource", "ssm:RemoveTagsFromResource"]
+        Resource  = "arn:${local.p}:ssm:${local.r}:${local.a}:association/*"
+        Condition = local.own_stack
       },
       {
         Sid       = "InstallOnOwnInstance"
@@ -576,16 +630,44 @@ resource "aws_iam_policy" "write" {
         Action   = ["sns:*"]
         Resource = local.topic
       },
-      # In the konjir.com zone only: kolab.konjir.com, and the marketing site's apex, www, _dmarc and
-      # certificate validation records, as A, AAAA, CNAME or TXT. Never MX, NS or CAA.
+      # In the konjir.com zone only, each name only with the types production gives it. Never MX, NS
+      # or CAA (the CAA record below is Lee's), and no _acme-challenge or other proof of control:
+      # - A and AAAA: kolab.konjir.com, and the marketing site's apex and www aliases;
+      # - CNAME: ACM's validation records, _<32 hex>.konjir.com and _<32 hex>.www.konjir.com;
+      # - TXT: _dmarc, and the apex, which holds the site module's SPF record (v=spf1 -all). Moving
+      #   SPF out of the site module would free the apex of TXT; until then CI can rewrite it.
       {
-        Sid      = "OwnDnsRecords"
+        Sid      = "OwnAddressRecords"
         Effect   = "Allow"
         Action   = ["route53:ChangeResourceRecordSets"]
         Resource = "arn:${local.p}:route53:::hostedzone/${local.zone_id}"
         Condition = {
-          "ForAllValues:StringLike"   = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = [local.domain, local.zone, "www.${local.zone}", "_*.${local.zone}"] }
-          "ForAllValues:StringEquals" = { "route53:ChangeResourceRecordSetsRecordTypes" = ["A", "AAAA", "CNAME", "TXT"] }
+          "ForAllValues:StringEquals" = {
+            "route53:ChangeResourceRecordSetsNormalizedRecordNames" = [local.domain, local.zone, "www.${local.zone}"]
+            "route53:ChangeResourceRecordSetsRecordTypes"           = ["A", "AAAA"]
+          }
+        }
+      },
+      {
+        Sid      = "CertificateValidationRecords"
+        Effect   = "Allow"
+        Action   = ["route53:ChangeResourceRecordSets"]
+        Resource = "arn:${local.p}:route53:::hostedzone/${local.zone_id}"
+        Condition = {
+          "ForAllValues:StringLike"   = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["_${local.acm_label}.${local.zone}", "_${local.acm_label}.www.${local.zone}"] }
+          "ForAllValues:StringEquals" = { "route53:ChangeResourceRecordSetsRecordTypes" = ["CNAME"] }
+        }
+      },
+      {
+        Sid      = "MailPolicyRecords"
+        Effect   = "Allow"
+        Action   = ["route53:ChangeResourceRecordSets"]
+        Resource = "arn:${local.p}:route53:::hostedzone/${local.zone_id}"
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "route53:ChangeResourceRecordSetsNormalizedRecordNames" = [local.zone, "_dmarc.${local.zone}"]
+            "route53:ChangeResourceRecordSetsRecordTypes"           = ["TXT"]
+          }
         }
       },
       # Health checks have no names to scope by, so this reaches any in the account: there are none
