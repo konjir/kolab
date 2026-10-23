@@ -1,13 +1,13 @@
 # Recovering Kolab's database
 
-The targets (P12, D75): a recovery point under 5 minutes, using RDS point-in-time recovery, and a restore in under 1 hour, proven by a restore drill. This runbook is the written procedure, and `deploy/recovery-drill.sh` is the drill. Export per kolab comes later, with the FIL file format.
+The targets (P12, D75, D81): a recovery point at RDS's documented guarantee, through point-in-time recovery, and a restore in under 1 hour, proven by a restore drill. RDS uploads the log every 5 minutes, so a restore can lose up to about 5 to 6 minutes of writes, and each drill records the real figure (D81). This runbook is the written procedure, and `deploy/recovery-drill.sh` is the drill. Export per kolab comes later, with the FIL file format.
 
 **Who does what.** Lee, the operator, runs every step from a checkout with the `icedlee337` profile. The one exception is a Terraform apply: once W2.23 has landed, Lee approves it in CI (D73) rather than running it. Before W2.23, Lee runs applies from the laptop, as today. An agent may prepare commands and read their output, but it doesn't run the steps that change production, which are 4 to 7, nor step 2, which creates a billed instance.
 
 ## What protects the database
 
 - **Point-in-time recovery.** RDS keeps 7 days of automated backups (`backup_retention_period`, `deploy/terraform/modules/database`): a daily snapshot, plus Postgres's transaction log. A restore can go to any second from the start of those 7 days up to the *latest restorable time*.
-- **The recovery point.** AWS documents that RDS uploads the transaction log to S3 every 5 minutes, and that the latest restorable time is typically within the last 5 minutes. So when the database's storage is lost, the writes lost are up to about 5 minutes plus the upload's own time. That can grow if log archiving stalls, for example when storage is full. D75 asks for under 5 minutes. On RDS that isn't guaranteed at the worst moment, and Lee has been asked to rule on the gap. Each drill records the lag it measured, as one sample.
+- **The recovery point (D81).** AWS documents that RDS uploads the transaction log to S3 every 5 minutes, and that the latest restorable time is typically within the last 5 minutes. So a restore can lose up to about 5 to 6 minutes of writes. That can grow if log archiving stalls, for example when storage is full. Each drill records the real figure: the latest restorable time's lag behind now.
 - **What doesn't need a restore.** If the host fails but its storage is intact, RDS recovers the instance in place and loses nothing. Point-in-time recovery is for lost storage, or for data that is wrong.
 - **Deletion protection** is on (`db_deletion_protection`), so neither a mistaken `terraform destroy` nor a mistaken `aws rds delete-db-instance` deletes the database.
 - **Deleting it anyway keeps the backups.** Terraform keeps a final snapshot and the automated backups (`delete_automated_backups = false`), unless the teardown sets `final_snapshot_on_destroy=false`. The retained backups still allow a point-in-time restore for the rest of their 7 days.
@@ -54,11 +54,10 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
 Pause deploys until step 6 is done. A Terraform apply between steps 4 and 6 would point the database URL back at the old instance, and any release would restart Kolab on it.
 
 - **Before W2.23:** applies run only from Lee's laptop. Don't run one.
-- **After W2.23:** `.github/workflows/deploy.yml` deploys staging on every merge, and production when Lee approves. Pause it all, and cancel any run that is waiting:
+- **After W2.23:** `.github/workflows/deploy.yml` deploys staging on every merge, and production once Lee approves it in the `production` environment. It runs only while the repository variable `DEPLOY_FROM_CI` is `true`. During a restore, pause it by setting `DEPLOY_FROM_CI=false`, or by disabling the `production` environment (Settings, then Environments, then `production`). Also cancel any run that is already waiting:
 
   ```
-  gh variable set DEPLOY_FROM_CI --body false          # W2.23's switch: the workflow builds and deploys nothing while it isn't true
-  gh workflow disable deploy.yml
+  gh variable set DEPLOY_FROM_CI --body false          # the workflow builds and deploys nothing while it isn't true
   gh run list --workflow deploy.yml --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId' \
     | xargs -n1 gh run cancel
   ```
@@ -167,7 +166,7 @@ The plan must change the instance in place, never replace it. Expect it to set t
 Then apply:
 
 - **Before W2.23:** Lee applies from the laptop.
-- **After W2.23:** Lee resumes deploys (`gh workflow enable deploy.yml`, then `gh variable set DEPLOY_FROM_CI --body true`) and approves the production run, which applies the same plan. The `state rm` and `import` still need write access to the state bucket from Lee's laptop. If W2.23 narrows the laptop's access, they need a way of their own: a break-glass role with write access to the state, assumed with Lee's MFA, or a `workflow_dispatch` job that runs exactly these three commands. That choice belongs to W2.23, and the binding's Today column records it.
+- **After W2.23:** Lee resumes deploys (`gh variable set DEPLOY_FROM_CI --body true`, or re-enables the `production` environment) and approves the production run, which applies the same plan. The `state rm` and `import` still need write access to the state bucket from Lee's laptop. If W2.23 narrows the laptop's access, they need a way of their own: a break-glass role with write access to the state, assumed with Lee's MFA, or a `workflow_dispatch` job that runs exactly these three commands. That choice belongs to W2.23, and the binding's Today column records it.
 
 ### 7. Clean up
 
@@ -204,7 +203,7 @@ The drill is steps 2 and 3 against a scratch instance, followed by its deletion.
 3. shows what it will create and what that costs, about $0.02 an hour, and creates nothing until you type the scratch instance's name;
 4. restores the latest restorable time into the scratch instance, tagged `Purpose=recovery-drill` and `Source=<db>`, and waits for it, for at most 90 minutes. AWS errors, expired credentials among them, stop it at once, with the cleanup command;
 5. verifies it as step 3 does, with the comparison;
-6. logs the timings to `deploy/drills/<scratch>.log`: the recovery point's lag behind now, against D75's 5 minutes, and the time from the restore request until the copy is available and until it is verified, against the hour;
+6. logs the timings to `deploy/drills/<scratch>.log`: the recovery point's lag behind now, the real figure D81 asks for, and the time from the restore request until the copy is available and until it is verified, against the hour;
 7. deletes the scratch instance, without a final snapshot or its automated backups, after you type `delete`. It reads the tags and deletion protection again just before deleting. If the drill stops early, from an error, `^C` or a lost terminal, it prints the cleanup command and offers the same deletion. `deploy/recovery-drill.sh --env production delete <scratch>` deletes it later.
 
 It never modifies the environment's database or any parameter. It only describes the database, restores from its backups, and reads it through read-only sessions. It deletes only an instance named `<db>-drill-…` that carries both of its tags. The second Kolab it starts for the smoke check runs read-only on the Kolab server, on `127.0.0.1:7499`, for under a minute.
