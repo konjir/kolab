@@ -110,3 +110,9 @@ variable "cli_npm_spec" {
     error_message = "cli_npm_spec is a package pinned to an exact version, such as konjir@1.2.3, or empty."
   }
 }
+
+variable "site_enabled" {
+  description = "Serve the marketing site (site/) at the apex of zone_name and its www (D81). Production only: a second stack in the same zone must set it false. W2.23's environments should replace this flag."
+  type        = bool
+  default     = true
+}

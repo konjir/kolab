@@ -48,3 +48,12 @@ output "release" {
   description = "The release shipped to Kolab: the tree id of the commit deploy/release/pack.sh packed."
   value       = module.release.release
 }
+
+output "site" {
+  description = "The marketing site (D81): its URL, bucket and CloudFront distribution. Null when site_enabled is false."
+  value = var.site_enabled ? {
+    url             = module.site[0].url
+    bucket          = module.site[0].bucket
+    distribution_id = module.site[0].distribution_id
+  } : null
+}

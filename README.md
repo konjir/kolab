@@ -414,6 +414,7 @@ The backend (`deploy/terraform/backend.tf`) stores state at `s3://konjir-terrafo
 | `kolab` | A `t4g.small` running Amazon Linux 2023, with Caddy for automatic HTTPS, an Elastic IP and the Route 53 record for `kolab.konjir.com` |
 | `release` | Packs the checkout's commit (`deploy/release/pack.sh`), uploads it, and installs it on Kolab through Systems Manager. `terraform apply` is the deploy |
 | `monitoring` | The log group `/konjir/<name>` (30 days), the alarm topic and its email subscription, a Route 53 health check of `/healthz`, the log metric filters and nine alarms (P11, D68; see *Logs and alarms*) |
+| `site` | The marketing site at `https://konjir.com` (D81): `site/` in a private S3 bucket behind CloudFront, its certificate, records and security headers (see *Marketing site*). Only while `site_enabled` is true |
 
 Kolab listens on localhost only, behind Caddy. Its database is on RDS, apart from the instance, so replacing the instance is safe. A change to the boot script replaces it automatically. The boot script still writes `KONJIR_REVIEW=structural` and `KONJIR_REVIEW_MODEL` into `/etc/konjir/env`, which Kolab ignores since W1.7: `modules/kolab` passes them as constants so that the script renders unchanged and W1.7 doesn't replace the instance. They go with the next boot-script change. The data volume still holds the PGlite database Kolab used before RDS. The rough cost is $30–35 a month at list price, plus about $5 for logs and alarms (see *Logs and alarms*).
 
@@ -476,6 +477,18 @@ The first apply may send one ALARM email, then its OK, that is not an outage: `h
 **Cost**, roughly, at us-east-1 list prices: the HTTPS health check about $1.50–2.75 a month, nine alarms about $1, seven custom metrics (five from log filters, the agent's memory and disk) $2.10, and logs $0.50 a GB ingested and $0.03 a GB stored, well under a GB a month for a test server (the heartbeats are about 1 MB): about $5–6 a month. Email through SNS is free at this volume. A CloudWatch Synthetics canary would cost about $10 a month for the same check, which is why `/healthz` uses Route 53.
 
 **Testing only.** This is one instance with no failover. With the GitHub OAuth app set up, people sign in with GitHub, and their tokens last 15 minutes and refresh (D55). Hand-issued tokens are bearer tokens with no expiry: hand them out privately, and revoke them with `admin_end_session` (by `token`, `session` key or `actor`; Kolab stores only their hashes, so it can't show a token again). Turn them off with `KONJIR_HAND_ISSUED_TOKENS=off` once nothing needs them.
+
+### Marketing site
+
+`https://konjir.com` is the marketing site (D81). Its content is the `konjir-site` kolab, today the "Konjir Marketing Page" artifact; `site/` holds the deployable copy, built from the artifact by `deploy/site/from-artifact.mjs` (`site/README.md` says how). `terraform apply` publishes it with everything else, through the `site` module:
+
+- a private bucket (all public access blocked, SSE-S3, versioned) that only the CloudFront distribution reads, through Origin Access Control
+- CloudFront for `konjir.com` and `www.konjir.com`, with an ACM certificate in us-east-1 validated through the `konjir.com` zone, and A and AAAA alias records for both names; a CloudFront Function answers `www` with a 301 to the apex
+- a response headers policy on every response: HSTS (two years, subdomains included), a CSP that allows only the site's own origin, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY` and `frame-ancestors 'none'`
+- `index.html` at `/`, and `404.html` for any missing path
+- each file in `site/` (its README aside) as an object with its content type. Files under `site/assets/` have content hashes in their names and are cached a year as immutable; the rest are cached a minute, so a deploy is live within a minute and needs no invalidation.
+
+It is for production only. `site_enabled`, true by default, turns it off for any other stack in the same zone; W2.23's environments should replace that flag. It costs at most a few dollars a month: CloudFront's requests and transfer fall within its free tier at today's traffic, alias queries to CloudFront are free, and S3 storage and requests come to pennies. The certificate is free. `terraform output site` names its bucket and distribution.
 
 ## Releasing the CLI
 
