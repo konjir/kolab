@@ -1,5 +1,5 @@
 // konjir.com's only script: the static stand-in for the artifact's component logic (D81).
-// from-artifact.mjs places it, hashed, as the first child of the page's .kj root, so it runs
+// build.mjs places it, hashed, as the first child of the page's .kj root, so it runs
 // before the rest of the page is parsed and the chosen theme paints first.
 //
 // The artifact's logic, kept: the theme defaults to dark (Predawn); a stored choice

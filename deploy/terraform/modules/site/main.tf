@@ -1,12 +1,13 @@
-# konjir.com, the marketing site (D81): the konjir-site kolab's deployable copy in site/.
+# konjir.com, the marketing site (D81): the page built in site/ from its source in site/src/ (D92).
 #  - a private, versioned, encrypted bucket that only this CloudFront distribution reads (OAC)
 #  - CloudFront for konjir.com and www.konjir.com, www redirected to the apex by a CloudFront Function
 #  - an ACM certificate in us-east-1, validated through the konjir.com zone
 #  - security headers on every response, a strict CSP among them
-#  - every file in site/ (README.md and dotfiles aside) uploaded with its content type and cache policy:
-#    content-hashed files cached a year as immutable, everything else a minute, so a deploy shows
-#    within a minute and needs no invalidation. The build keeps the previous build's hashed files in
-#    site/ for one more build, so a page cached a minute before a deploy still finds its CSS and JS.
+#  - every file in site/ (README.md, dotfiles and the source in site/src/ aside) uploaded with its
+#    content type and cache policy: content-hashed files cached a year as immutable, everything
+#    else a minute, so a deploy shows within a minute and needs no invalidation. The build keeps the
+#    previous build's hashed files in site/ for one more build, so a page cached a minute before a
+#    deploy still finds its CSS and JS. tests/site_files.tftest.hcl checks what is uploaded.
 #  - SPF and DMARC records saying konjir.com sends no mail, so no one can send mail as it
 
 terraform {
@@ -34,7 +35,7 @@ variable "site_dir" {
 locals {
   www = "www.${var.domain_name}"
 
-  # The page loads nothing from another origin (deploy/site/from-artifact.mjs self-hosts fonts and
+  # The page loads nothing from another origin (deploy/site/build.mjs self-hosts fonts and
   # moves inline styles into the stylesheet), so everything is 'self'.
   csp = join("; ", [
     "default-src 'none'",
@@ -49,7 +50,8 @@ locals {
     "frame-ancestors 'none'",
   ])
 
-  files = toset([for f in fileset(var.site_dir, "**") : f if f != "README.md" && !startswith(basename(f), ".")])
+  # site/src/ is the page's source (D92), which the build reads; only what it builds is published.
+  files = toset([for f in fileset(var.site_dir, "**") : f if f != "README.md" && !startswith(f, "src/") && !startswith(basename(f), ".")])
 
   content_types = {
     css   = "text/css; charset=utf-8"
@@ -359,3 +361,7 @@ output "url" { value = "https://${var.domain_name}" }
 output "bucket" { value = aws_s3_bucket.site.id }
 output "distribution_id" { value = aws_cloudfront_distribution.site.id }
 output "distribution_domain" { value = aws_cloudfront_distribution.site.domain_name }
+output "files" {
+  description = "The site/ paths published, one object each."
+  value       = sort(keys(aws_s3_object.site))
+}

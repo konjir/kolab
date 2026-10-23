@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // Vendors the fonts the marketing page links into deploy/site/fonts/, so building site/ never
-// fetches anything (from-artifact.mjs reads only these files).
+// fetches anything (build.mjs reads only these files).
 //
 //   node deploy/site/vendor-fonts.mjs '<the artboard's fonts.googleapis.com/css2 href>'
 //
-// Run it only when the artifact's font link changes; from-artifact.mjs refuses an artboard whose
+// Run it only when the artboard's font link (site/src/project/Main.dc.html) changes; build.mjs refuses an artboard whose
 // link doesn't match source.json. It writes:
 //  - <family>-<subset>.woff2: the latin and latin-ext files Google serves a current Chrome
 //  - fonts.css: their @font-face rules, pointing at those files
 //  - <family>-OFL.txt: each family's SIL Open Font License, from github.com/google/fonts, which
 //    OFL-1.1 condition 2 requires to travel with every copy
-//  - source.json: the href, and each file's sha256, which from-artifact.mjs checks
+//  - source.json: the href, and each file's sha256, which build.mjs checks
 import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

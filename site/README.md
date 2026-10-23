@@ -1,28 +1,39 @@
 # site/: konjir.com
 
-The marketing site at `https://konjir.com` (D81). Its content is the `konjir-site` kolab (D15, D81). Until that kolab has W4.1 prototypes to publish from, it is the claude.ai artifact [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W), and the files here are its deployable copy. Change the artifact, not these files, then rebuild them.
+The marketing site at `https://konjir.com` (D81). Its source is here, in `site/src/` (D92, Lee's ruling of 2026-10-23):
 
-Everything here except this README is generated, and `terraform apply` publishes it (the `site` module; see *Marketing site* in the top-level README). None of it is in Kolab's release, so publishing the site alone doesn't reinstall Kolab.
+- `src/project/Main.dc.html`: the artboard, on the claude.ai design runtime
+- `src/images/<id>.<ext>`: each image the artboard names as `/_blob/<id>`
 
-## Updating from the artifact
+The layout mirrors the claude.ai artifact [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W), which is published from `site/src/`. The `konjir-site` kolab (D15) is still the page's future home; until it has W4.1 prototypes to publish from, this is the source.
 
-1. Save the artboard and its images. With the Artifact tool: `read` the artifact with `path: "project/Main.dc.html"`, then `read` with `path` set to each id the page names as `/_blob/<id>`. Each image is saved as `<id>.<ext>`; put them in one folder.
+Everything else here except this README is generated from `src/`, and `terraform apply` publishes it (the `site` module; see *Marketing site* in the top-level README). The module never uploads `src/` or this README. None of `site/` is in Kolab's release, so publishing the site alone doesn't reinstall Kolab.
+
+## Changing the page
+
+1. Edit `src/project/Main.dc.html`. Images live in `src/images/` as `<id>.<ext>` and the artboard names each as `/_blob/<id>`, where `<id>` is the 32 hex digits of its id in the artifact's asset store. A new image gets its id by being uploaded there (below).
 2. Build:
 
    ```
-   node deploy/site/from-artifact.mjs <path/to/Main.dc.html> <image-folder>
+   node deploy/site/build.mjs
    ```
 
-   It rewrites `index.html`, `404.html`, `robots.txt`, `favicon.svg` and the files in `assets/`. It reads nothing from the network. It keeps the hashed assets the last commit's pages use, for one more build, so a page cached just before a deploy still finds them, and removes older ones.
+   With no arguments it reads `site/src/project/Main.dc.html` and `site/src/images/`; `node deploy/site/build.mjs <Main.dc.html> <image-folder>` reads others. It rewrites `index.html`, `404.html`, `robots.txt`, `favicon.svg` and the files in `assets/`, and never touches `src/` or this README. It reads nothing from the network. It keeps the hashed assets the last commit's pages use, for one more build, so a page cached just before a deploy still finds them, and removes older ones.
 3. Look at it: serve `site/` (for example `npx http-server site`) and check the page renders, the theme switch works, and the console shows no errors.
-4. Commit and `terraform apply`.
+4. Commit the source and the build together, then `terraform apply`.
+
+## Publishing the artifact
+
+The artifact follows the repository. To publish it after a change, use the Artifact tool's `publish` with `url` the artifact (`https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W`), `root` `site/src` and `file_path` the absolute path of `site/src/project/Main.dc.html`. A new image is uploaded first, with `publish`, `url` the artifact, `asset: true` and `file_path` the image; name it in the artboard by the `url` the result gives, `/_blob/<id>`, and save it in `src/images/` as `<id>.<ext>`.
+
+If someone edits the artifact on claude.ai, read it back into `site/src/` before building, or the next publish overwrites their change: `read` the artifact with `path: "project/Main.dc.html"` and save it over `src/project/Main.dc.html`, then `read` each new `/_blob/<id>` with `path: "<id>"` and `out_dir` `site/src/images`. Then build and commit as above.
 
 ## What the build changes
 
-The artboard runs on the artifact's design runtime, which a static site can't load. `from-artifact.mjs`:
+The artboard runs on the artifact's design runtime, which a static site can't load. `build.mjs`:
 
 - drops the runtime (`support.js`, `<x-dc>`, `<helmet>`) and puts its component logic, the Daybreak/Predawn theme switch, in `deploy/site/site.js`: dark by default, then the stored choice (`localStorage` `konjir.theme`) or the system's preference, as the artifact does
-- serves the fonts the page links (Fraunces, Instrument Sans and JetBrains Mono, latin and latin-ext) from the copy vendored in `deploy/site/fonts/`, after checking each file against `source.json`, and ships each family's SIL Open Font License beside them, as `assets/fonts/<family>-OFL.txt`. If the artifact's font link changes, the build refuses until you run `node deploy/site/vendor-fonts.mjs '<the new link>'`
+- serves the fonts the page links (Fraunces, Instrument Sans and JetBrains Mono, latin and latin-ext) from the copy vendored in `deploy/site/fonts/`, after checking each file against `source.json`, and ships each family's SIL Open Font License beside them, as `assets/fonts/<family>-OFL.txt`. If the artboard's font link changes, the build refuses until you run `node deploy/site/vendor-fonts.mjs '<the new link>'`
 - moves every inline `style` into a generated class, so the CSP needs no `'unsafe-inline'`
 - names assets by content hash, so they can be cached for a year
 - adds a viewport tag, a description (the hero's lead), the favicon (`brand/konjir-mark-tile.svg`), `robots.txt`, and `404.html` with the page's header and footer
