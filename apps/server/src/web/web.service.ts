@@ -387,7 +387,7 @@ export class WebService {
   /** The review requests for the session, oldest first, and what it submitted, newest first: one cursor pages both. */
   async reviews(s: string, page: PageOpts = {}): Promise<WebReviewsView> {
     const me = await this.me(s);
-    const [f, y] = (keyOf('web:reviews2', page.cursor, 2) ?? [null, null]) as [string | null, string | null];
+    const [f, y] = (keyOf('web:reviews2', page.cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
     const forMe = f === 'done' ? { items: [], next: null } : await reviewRequestsPage(this.kolab, s, { reviewer: me.actor, layer: me.layer }, { cursor: f, limit: page.limit });
     const mine = y === 'done' ? { items: [], next: null } : await submissionsOf(this.kolab, s, me.actor, { cursor: y, limit: page.limit });
     return {
@@ -409,7 +409,7 @@ export class WebService {
     // tenth of PAGE_DEFAULT unless asked, each of at most MAX_ELEMENTS elements.
     const shown = await this.nodes(s, { cursor: page.cursor, limit: page.limit ?? Math.max(1, PAGE_DEFAULT / 10) }, { committed: true });
     for (const n of shown.nodes) {
-      const read = await this.kolab.readNode(s, n.name, n.latest!);
+      const read = await this.kolab.readNode(s, n.name, n.latest!, { threads: false });
       nodes.push({ name: n.name, title: n.title, kind: n.kind, layer: n.layer, seq: n.latest!, elements: read.elements.slice(0, MAX_ELEMENTS).map((e) => ({ id: e.element_id, text: e.text })) });
     }
     const links = nodes.length ? await liveLinks(this.kolab, s, { sources: nodes.map((n) => n.name) }) : [];
@@ -478,7 +478,7 @@ export class WebService {
     const live = await k.latestCommitted(n.id);
     // The edits apply to the version they were made on, never silently to a newer one (CAS7).
     if ((live?.seq ?? null) !== b.base) throw stale(n.name, b.base, live?.seq ?? null);
-    const elements: ElementInput[] = live ? (await k.readNode(s, n.name, live.seq)).elements.map((e) => ({ id: e.element_id, text: e.text, parent: e.parent_element_id ?? undefined })) : [];
+    const elements: ElementInput[] = live ? (await k.readNode(s, n.name, live.seq, { threads: false })).elements.map((e) => ({ id: e.element_id, text: e.text, parent: e.parent_element_id ?? undefined })) : [];
     for (const c of b.changes) {
       if (!c || typeof c.element !== 'string' || !c.element) throw bad('each change names its element');
       const i = elements.findIndex((e) => e.id === c.element);

@@ -23,6 +23,6 @@
   "0022_read_only_marks.sql": "671347444a46dd5c88dfe8e81efeebd216dde64b48eabbb6eb27ff23126f5ed1",
   "0023_questions_in_review.sql": "e6b7ae110bbd31687063ad2861ba83b5d7189c497e6229c9a53b44fd7c66eaf8",
   "0024_write_actors.sql": "8087698873975ae8001a8bfd1e9ad54bb67afae0fb397b645f07b7ff6d827c20",
-  "0025_list_indexes.sql": "0363aca9e9ff469f48a0ea7d0ab592b45ef9716f3b99c0327ec2131c1e2f05ed",
+  "0025_list_indexes.sql": "bb7d7143ff9a06689168eed1f6c62125135c52a6749e820a9e8b386312c87d0f",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

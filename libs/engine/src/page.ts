@@ -4,6 +4,7 @@
  * insert between two pages neither repeats nor skips a row that was already there. A cursor is
  * opaque to its reader: the list it belongs to and the last row's key, base64url-encoded JSON.
  */
+import { createHash } from 'node:crypto';
 import {
   MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, PAGE_DEFAULT, PAGE_MAX, textLength,
 } from '@konjir/types';
@@ -21,19 +22,61 @@ export function pageSize(limit?: number | null): number {
   return Math.min(limit, PAGE_MAX);
 }
 
+/**
+ * What each part of a list's sort key is, so a cursor's key is checked against it before it
+ * reaches the database: `ts`, a timestamp as Postgres writes it (`2026-10-22 18:14:13.123456+00`);
+ * `int`, a whole number from 0; `text`, a string of at most 2,048 characters.
+ */
+export type KeySlot = 'ts' | 'int' | 'text';
+
+const TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?(Z|[+-](\d{2})(:?\d{2}){0,2})?$/;
+
+/** A timestamp Postgres reads back exactly as it wrote it: its date and time, and its offset, in range. */
+function isTimestamp(v: string): boolean {
+  const m = TIMESTAMP.exec(v);
+  if (!m) return false;
+  const [y, mo, d, h, mi, s, off] = [m[1], m[2], m[3], m[4], m[5], m[6], m[9]].map((x) => (x === undefined ? 0 : Number(x)));
+  return y >= 1 && mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(Date.UTC(y, mo, 0)).getUTCDate() && h <= 23 && mi <= 59 && s <= 59 && off <= 15;
+}
+
+function slotHolds(slot: KeySlot, v: unknown): boolean {
+  switch (slot) {
+    case 'ts': return typeof v === 'string' && isTimestamp(v);
+    case 'int': return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+    case 'text': return typeof v === 'string' && v.length <= 2048;
+  }
+}
+
+/**
+ * A list's name for its cursors, bound to the filters it was read with (W2.21): a cursor one
+ * list gave, under some filters, is refused by the same list under others, the layer included.
+ */
+export function scoped(list: string, filters: Record<string, unknown>): string {
+  const keys = Object.keys(filters).filter((k) => filters[k] !== undefined && filters[k] !== null).sort();
+  const json = JSON.stringify(keys.map((k) => [k, filters[k]]));
+  return `${list}~${createHash('sha256').update(json).digest('base64url').slice(0, 12)}`;
+}
+
 /** A cursor for `list`, after the row whose sort key is `key`. */
 export function cursorFor(list: string, key: unknown[]): string {
   return Buffer.from(JSON.stringify([list, ...key])).toString('base64url');
 }
 
-/** The sort key a cursor for `list` carries, of `arity` parts; undefined for the first page. Anything else is refused. */
-export function keyOf(list: string, cursor: string | null | undefined, arity: number): unknown[] | undefined {
+const INVALID = 'invalid cursor: that isn\'t one this list gave. Pass the next it returned, unchanged, with the same filters, or leave cursor out to start again';
+
+/**
+ * The sort key a cursor for `list` carries, each part checked against `slots`; undefined for the
+ * first page. Anything else (another list's, one given under other filters, a tampered one, or
+ * a part of the wrong shape) is refused with "invalid cursor", before any of it is read.
+ */
+export function keyOf(list: string, cursor: string | null | undefined, slots: KeySlot[]): unknown[] | undefined {
   if (cursor === undefined || cursor === null || cursor === '') return undefined;
+  if (typeof cursor !== 'string' || cursor.length > 8192) throw new LimitError(INVALID);
   let parsed: unknown;
   try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { parsed = undefined; }
-  if (!Array.isArray(parsed) || parsed[0] !== list || parsed.length !== arity + 1
-      || parsed.slice(1).some((x) => x !== null && typeof x !== 'string' && typeof x !== 'number')) {
-    throw new LimitError(`that cursor isn't one this list gave: pass the next it returned, unchanged, with the same filters, or leave cursor out to start again`);
+  if (!Array.isArray(parsed) || parsed[0] !== list || parsed.length !== slots.length + 1
+      || slots.some((slot, i) => !slotHolds(slot, parsed[i + 1]))) {
+    throw new LimitError(INVALID);
   }
   return parsed.slice(1);
 }

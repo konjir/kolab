@@ -8,7 +8,7 @@ import type { QuoteSelector } from '@konjir/address';
 import { formatAddress } from '@konjir/address';
 import type { Kind, Layer, MarkReason, QueryKind, QueryState, ReviewRequestState, VersionState } from '@konjir/types';
 import { markBecause, NEXT_STEP, type Kolab } from './kolab.js';
-import { cursorFor, keyOf, LimitError, pageOf, pageSize, type PageOpts } from './page.js';
+import { cursorFor, keyOf, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 
 /** A page of a read model (W2.21): its rows, and the cursor to the next page, or null on the last. */
 export interface RowsPage<T> { items: T[]; next: string | null }
@@ -80,10 +80,10 @@ export async function nodeVersions(kolab: Kolab, session: string, nodeId: string
 export async function nodeVersionsPage(kolab: Kolab, session: string, nodeId: string,
   o: { which: 'shown' | 'committed'; actor: string; inKolab?: string }, page: PageOpts = {}): Promise<RowsPage<VersionHistoryRow>> {
   const size = pageSize(page.limit);
-  const [before] = (keyOf('web:versions', page.cursor, 1) ?? [null]) as [number | null];
-  if (before !== null && (typeof before !== 'number' || !Number.isInteger(before))) throw new LimitError('that cursor isn\'t one this list gave');
+  const list = scoped('web:versions', { nodeId, ...o });
+  const [before] = (keyOf(list, page.cursor, ['int']) ?? [null]) as [number | null];
   const rows = await nodeVersions(kolab, session, nodeId, { ...o, before: before ?? undefined, limit: size + 1 });
-  const { rows: items, next } = pageOf(rows, size, 'web:versions', (r) => [r.seq]);
+  const { rows: items, next } = pageOf(rows, size, list, (r) => [r.seq]);
   return { items, next };
 }
 
@@ -143,7 +143,8 @@ export async function markDetailsPage(kolab: Kolab, session: string, page: PageO
 async function markRows(kolab: Kolab, session: string, only: { node?: string }, page?: PageOpts): Promise<RowsPage<MarkDetailRow>> {
   const here = await kolab.sessionKolab(session);
   const size = page ? pageSize(page.limit) : undefined;
-  const after = page ? keyOf('web:marks', page.cursor, 2) as [string, string] | undefined : undefined;
+  const list = scoped('web:marks', { here, node: only.node });
+  const after = page ? keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined : undefined;
   const rows = await kolab.readAs(session, async (q) => (await q.query<Omit<MarkDetailRow, 'because' | 'next'> & { at: Date | string; at_key: string; note: string | null; edge_id: string | null;
     target_selector: QuoteSelector | null; trig_node: string | null; trig_kolab: string | null; trig_seq: number | null; cause_count: number }>(
     `select i.id, i.reason, n.name as node, v.seq, v.layer, i.element_id as element, i.created_at as at,
@@ -167,7 +168,7 @@ async function markRows(kolab: Kolab, session: string, only: { node?: string }, 
       where i.state = 'open' and i.kolab_id = $1 and ($2::text is null or v.node_id = $2)
         and ($3::text is null or (i.created_at, i.id) > ($3::timestamptz, $4::text))
       order by i.created_at, i.id limit $5`, [here, only.node ?? null, after?.[0] ?? null, after?.[1] ?? null, size === undefined ? null : size + 1])).rows);
-  const { rows: shown, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, 'web:marks', (r) => [r.at_key, r.id]);
+  const { rows: shown, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, list, (r) => [r.at_key, r.id]);
   return { next, items: shown.map(({ note, edge_id, target_selector, trig_node, trig_kolab, trig_seq, cause_count, at_key: _, ...r }) => {
     // What triggered it, in the short form of this kolab, named only if the session reads it: a
     // version in another kolab it no longer holds Read on (access_lost) reads as no row here.
@@ -199,7 +200,8 @@ export async function kolabNodesPage(kolab: Kolab, session: string, page: PageOp
 async function nodeRows(kolab: Kolab, session: string, only: { name?: string; committed?: boolean }, page?: PageOpts): Promise<RowsPage<NodeRowView>> {
   const here = await kolab.sessionKolab(session);
   const size = page ? pageSize(page.limit) : undefined;
-  const after = page ? keyOf('web:nodes', page.cursor, 2) as [string, string] | undefined : undefined;
+  const list = scoped('web:nodes', { here, ...only });
+  const after = page ? keyOf(list, page.cursor, ['text', 'text']) as [string, string] | undefined : undefined;
   const rows = await kolab.readAs(session, async (q) => (await q.query<NodeRowView>(
     `select * from (
        select n.name, n.kind, n.layer, n.title,
@@ -211,7 +213,7 @@ async function nodeRows(kolab: Kolab, session: string, only: { name?: string; co
         order by n.kind, n.name) x
       where not $6 or x.latest is not null order by x.kind, x.name limit $5`,
     [here, only.name ?? null, after?.[0] ?? null, after?.[1] ?? null, size === undefined ? null : size + 1, !!only.committed])).rows);
-  return size === undefined ? { items: rows, next: null } : (({ rows: items, next }) => ({ items, next }))(pageOf(rows, size, 'web:nodes', (r) => [r.kind, r.name]));
+  return size === undefined ? { items: rows, next: null } : (({ rows: items, next }) => ({ items, next }))(pageOf(rows, size, list, (r) => [r.kind, r.name]));
 }
 
 /**
@@ -242,7 +244,8 @@ export async function waitingCounts(kolab: Kolab, session: string, layer: Layer,
  */
 export async function readableNodes(kolab: Kolab, session: string, inKolab: string, page: PageOpts = {}): Promise<RowsPage<NodeRowView> | undefined> {
   const size = pageSize(page.limit);
-  const after = keyOf('web:foreign-nodes', page.cursor, 2) as [string, string] | undefined;
+  const list = scoped('web:foreign-nodes', { inKolab });
+  const after = keyOf(list, page.cursor, ['text', 'text']) as [string, string] | undefined;
   return kolab.readAs(session, async (q) => {
     const may = (await q.query<{ ok: boolean }>(`select $1 = any ((select kj_session_readable_kolabs())::text[]) as ok`, [inKolab])).rows[0]?.ok;
     if (!may) return undefined;
@@ -251,7 +254,7 @@ export async function readableNodes(kolab: Kolab, session: string, inKolab: stri
          from node n cross join lateral (select max(v.seq) as latest from version v where v.node_id = n.id and v.state = 'committed') l
         where n.kolab_id = $1 and l.latest is not null and ($2::text is null or (n.kind, n.name) > ($2, $3::text))
         order by n.kind, n.name limit $4`, [inKolab, after?.[0] ?? null, after?.[1] ?? null, size + 1])).rows;
-    const { rows: items, next } = pageOf(rows, size, 'web:foreign-nodes', (r) => [r.kind, r.name]);
+    const { rows: items, next } = pageOf(rows, size, list, (r) => [r.kind, r.name]);
     return { items, next };
   });
 }
@@ -296,7 +299,8 @@ export async function reviewRequestsPage(kolab: Kolab, session: string, only: { 
 async function requestRows(kolab: Kolab, session: string, only: { node?: string; reviewer?: string; layer?: Layer }, page?: PageOpts): Promise<RowsPage<ReviewRequestRow>> {
   const here = await kolab.sessionKolab(session);
   const size = page ? pageSize(page.limit) : undefined;
-  const after = page ? keyOf('web:reviews', page.cursor, 3) as [string, string, string] | undefined : undefined;
+  const list = scoped('web:reviews', { here, ...only });
+  const after = page ? keyOf(list, page.cursor, ['ts', 'text', 'text']) as [string, string, string] | undefined : undefined;
   const rows = await kolab.readAs(session, async (q) => (await q.query<ReviewRequestRow & { at: Date | string; at_key: string; id: string }>(
     `select n.name as node, v.seq, v.layer, v.actor_id as author, r.reviewer_id as reviewer, r.created_at as at, r.created_at::text as at_key, r.id
        from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
@@ -306,7 +310,7 @@ async function requestRows(kolab: Kolab, session: string, only: { node?: string;
       order by r.created_at, r.reviewer_id, r.id limit $8`,
     [here, only.node ?? null, only.reviewer ?? null, only.layer ?? null, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null,
       size === undefined ? null : size + 1])).rows);
-  const { rows: picked, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, 'web:reviews', (r) => [r.at_key, r.reviewer, r.id]);
+  const { rows: picked, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, list, (r) => [r.at_key, r.reviewer, r.id]);
   const shown = await kolab.shownRequests(here, picked.map(({ at_key: _k, id: _i, ...r }) => ({ ...r, at: iso(r.at) })));
   return { items: shown, next };
 }
@@ -323,7 +327,8 @@ export interface SubmissionRow {
 export async function submissionsOf(kolab: Kolab, session: string, actor: string, page: PageOpts = {}): Promise<RowsPage<SubmissionRow>> {
   const here = await kolab.sessionKolab(session);
   const size = pageSize(page.limit);
-  const after = keyOf('web:submissions', page.cursor, 2) as [string, string] | undefined;
+  const list = scoped('web:submissions', { here, actor });
+  const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
   let next: string | null = null;
   const rows = await kolab.readAs(session, async (q) => {
     const read = (await q.query<{ id: string; node: string; seq: number; state: VersionState; note: string | null; layer: Layer; at_key: string }>(
@@ -332,7 +337,7 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
         where v.actor_id = $1 and v.kolab_id = $2 and exists (select 1 from review_request r where r.version_id = v.id)
           and ($4::text is null or (v.created_at, v.id) < ($4::timestamptz, $5::text))
         order by v.created_at desc, v.id desc limit $3`, [actor, here, size + 1, after?.[0] ?? null, after?.[1] ?? null])).rows;
-    const { rows: versions, next: more } = pageOf(read, size, 'web:submissions', (r) => [r.at_key, r.id]);
+    const { rows: versions, next: more } = pageOf(read, size, list, (r) => [r.at_key, r.id]);
     next = more;
     const out: (SubmissionRow & { layer: Layer })[] = [];
     for (const { id, at_key: _, ...v } of versions) {
@@ -409,7 +414,8 @@ async function queryRows(kolab: Kolab, session: string, only: { nodeId?: string;
   const here = inKolab ?? own;
   const outside = here !== own;
   const size = page ? pageSize(page.limit) : undefined;
-  const after = page ? keyOf('web:queries', page.cursor, 2) as [string, string] | undefined : undefined;
+  const list = scoped('web:queries', { here, nodeId, open: only.open, element: only.element === undefined ? undefined : only.element ?? '' });
+  const after = page ? keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined : undefined;
   const rows = await kolab.readAs(session, async (q) => (await q.query<QueryDetailRow & { at: Date | string; at_key: string; rn: number; total: number }>(
     `select * from (
      select q.id, q.kind, q.state, n.name as node, v.seq, v.layer, q.element_id as element, q.selector, q.question,
@@ -431,11 +437,11 @@ async function queryRows(kolab: Kolab, session: string, only: { nodeId?: string;
       order by t.at desc, t.id desc limit $7`,
     [here, nodeId ?? null, outside, only.open ?? null, after?.[0] ?? null, after?.[1] ?? null, size === undefined ? null : size + 1,
       only.element === undefined ? null : only.element === null, only.element ?? null, only.per ?? null])).rows);
-  const { rows: shown, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, 'web:queries', (r) => [r.at_key, r.id]);
+  const { rows: shown, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, list, (r) => [r.at_key, r.id]);
   return { next, items: shown.map(({ at_key, rn, total, ...r }) => ({
     ...r, at: iso(r.at), ...(outside ? { mark: null, mark_reason: null, from_node: null, from_seq: null, from_element: null } : {}),
     // The last shown of an element's newest `per`, when it has more: the cursor to the rest.
-    ...(only.per !== undefined && rn === only.per && total > rn ? { cursor: cursorFor('web:queries', [at_key, r.id]) } : {}),
+    ...(only.per !== undefined && rn === only.per && total > rn ? { cursor: cursorFor(scoped('web:queries', { here, nodeId, element: r.element ?? '' }), [at_key, r.id]) } : {}),
   })) };
 }
 
@@ -461,7 +467,8 @@ export type ActivityRow =
 export async function activity(kolab: Kolab, session: string, page: PageOpts = {}): Promise<RowsPage<ActivityRow>> {
   const here = await kolab.sessionKolab(session);
   const size = pageSize(page.limit);
-  const after = keyOf('web:activity', page.cursor, 3) as [string, string, string] | undefined;
+  const list = scoped('web:activity', { here });
+  const after = keyOf(list, page.cursor, ['ts', 'text', 'text']) as [string, string, string] | undefined;
   // Each row's key is when it happened, its kind and its own id, so a page starts after the last
   // one shown, whatever happened since. The bound is in every arm, where its index can serve it.
   const before = (at: string) => `($2::text is null or ${at} <= $2::timestamptz)`;
@@ -510,7 +517,7 @@ export async function activity(kolab: Kolab, session: string, page: PageOpts = {
      where $2::text is null or a.at < $2::timestamptz or (a.at = $2::timestamptz and (a.kind, a.id) > ($3::text, $4::text))
      order by a.at desc, a.kind, a.id limit $5`,
     [here, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null, size + 1])).rows);
-  const { rows, next } = pageOf(read, size, 'web:activity', (r) => [r.at_key, r.kind as string, r.id]);
+  const { rows, next } = pageOf(read, size, list, (r) => [r.at_key, r.kind as string, r.id]);
   return { next, items: rows.map((r): ActivityRow => {
     const at = iso(r.at), node = r.node as string, seq = r.seq as number;
     switch (r.kind) {

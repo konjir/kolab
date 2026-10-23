@@ -190,13 +190,13 @@ export class AgentTools {
       if (cursor) {
         const parsed = (() => { try { return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown; } catch { return undefined; } })();
         const n = Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === 'string' && parsed[0].startsWith('read_node:') ? parsed[1] : undefined;
-        if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) throw new LimitError('that cursor isn\'t one this read gave');
+        if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) throw new LimitError('invalid cursor: that isn\'t one this read gave. Pass the next it returned, unchanged, or leave cursor out to start again');
         start = n;
       }
       // Only the page's questions, the newest THREADS_PER_ELEMENT on each of its elements, read in SQL.
       const read = await kolab.readNode(s, node, version, { threads: { per: THREADS_PER_ELEMENT, from: start, count: READ_NODE_PAGE } });
       const { node: n, version: row, from: here, elements: all, queries, query_counts: counts, removes, rulings, cases, rebase } = read;
-      keyOf(`read_node:${row.id}`, cursor, 1);
+      keyOf(`read_node:${row.id}`, cursor, ['int']);
       const els = all.slice(start, start + READ_NODE_PAGE);
       const next = start + READ_NODE_PAGE < all.length ? cursorFor(`read_node:${row.id}`, [start + READ_NODE_PAGE]) : null;
       const threads = new Map<string | null, ReturnType<typeof thread>[]>();
@@ -302,7 +302,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour: put several changes in one draft.`,
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {
@@ -382,7 +382,7 @@ export class AgentTools {
       const me = await this.kolab.sessionInfo(s);
       const kolab = await this.kolab.sessionKolab(s);
       // One cursor for both lists: each one's own cursor, or done once it has returned its last.
-      const [f, y] = (keyOf('list_reviews', cursor, 2) ?? [null, null]) as [string | null, string | null];
+      const [f, y] = (keyOf('list_reviews', cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
       const forYou = f === 'done' ? { items: [], next: null } : await this.kolab.reviewRequestsPage({ reviewer: me.actor, kolab }, { cursor: f, limit });
       const yours = y === 'done' ? { items: [], next: null } : await this.kolab.submissionsPage(me.actor, { kolab }, { cursor: y, limit });
       const next = forYou.next || yours.next ? cursorFor('list_reviews', [forYou.next ?? 'done', yours.next ?? 'done']) : null;
@@ -464,7 +464,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_ask',
-    description: `Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer. You raise at most ${MAX_ASKS_PER_HOUR} questions and notes an hour: put several points in one question.`,
+    description: `Ask a question about an address. It routes to the layer that owns the answer: ask a functional spec about intent, a binding about implementation choices. The address may name a committed version or one in review (kj:checkout@2#R4), never a draft; without @version it names the latest committed version. A question about a version in review stays on it when it commits; if it is abandoned or returned to its author instead, the question moves to the latest committed version if the element is there, or is withdrawn, saying why. Quote the words you mean with ~q(...). Set from to the element you wrote pending the answer. You and your owner's other agents (or, for a person, you and your agents) raise at most ${MAX_ASKS_PER_HOUR} questions and notes an hour between you: put several points in one question.`,
     schema: ask,
   })
   ask(a: z.infer<typeof ask>, context?: McpToolContext) {
@@ -535,7 +535,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_cases',
-    description: `List case files in your kolab, each with its positions, its ruling once given, and the next step. Default: open ones on your layer. mine=true: those you opened or hold a position on. Most recently changed first: one argued or ruled on while you page moves to the first page.${PAGED}`,
+    description: `List case files in your kolab, each with its positions, its ruling once given, and the next step. Default: open ones on your layer. mine=true: those you opened or hold a position on. Newest opened first.${PAGED}`,
     schema: listCases,
     annotations: { readOnlyHint: true },
   })

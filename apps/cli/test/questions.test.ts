@@ -107,11 +107,16 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
-      drop index query_kolab_state, query_kolab_created, query_version, query_raised_by, query_invalidation,
+      drop function kj_rate_take(text, text, bigint);
+      drop index query_kolab_state, query_kolab_created, query_version, query_invalidation,
         version_node_state, version_actor_created, version_kolab_created, review_request_reviewer_created, review_request_version,
         review_request_kolab_decided, invalidation_open_kolab, case_file_version, ruling_kolab_ruled, node_kolab_kind_name,
         query_raised_at, version_actor_at, kolab_invite_kolab_created;
       create index review_request_reviewer on review_request(reviewer_id) where state = 'open';
+      create index query_kolab on query(kolab_id);
+      create index node_kolab on node(kolab_id);
+      create index version_kolab on version(kolab_id);
+      create index ruling_kolab on ruling(kolab_id);
       drop trigger kolab_grant_audited on kolab_grant;
       drop trigger org_member_audited on org_member;
       drop trigger team_member_audited on team_member;

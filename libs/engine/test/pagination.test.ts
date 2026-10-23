@@ -4,7 +4,7 @@
 // from another list, or one tampered with, is refused; a limit over the maximum is cut to it.
 import { expect, test } from '@jest/globals';
 import {
-  activity, cursorFor, kolabNodesPage, LimitError, markDetailsPage, nodeQueriesPage, nodeThreads, nodeVersionsPage, queryDetailsPage, readableNodes,
+  activity, cursorFor, kolabNodesPage, LimitError, markDetailsPage, nodeQueriesPage, nodeThreads, nodeVersionsPage, queryDetailsPage, readableNodes, scoped,
   reviewRequestsPage, submissionsOf, type PageOpts,
 } from '@konjir/engine';
 import { PAGE_DEFAULT, PAGE_MAX, THREADS_PER_ELEMENT } from '@konjir/types';
@@ -56,12 +56,48 @@ test('questions page by cursor, oldest first; the last page says so; one asked b
 test('a cursor from another list, a tampered one, and a bad limit are refused; a limit over the maximum is cut to it', async () => {
   const { kolab, product } = await kolabWith(1);
   const other = cursorFor('marks', ['2026-01-01 00:00:00+00', 'x']);
-  expect(await rejection(kolab.queriesPage(product, {}, { cursor: other }))).toMatch(/LimitError: that cursor isn't one this list gave/);
+  expect(await rejection(kolab.queriesPage(product, {}, { cursor: other }))).toMatch(/LimitError: invalid cursor: that isn't one this list gave/);
   expect(await rejection(kolab.queriesPage(product, {}, { cursor: 'not-a-cursor' }))).toMatch(/LimitError/);
   expect(await rejection(kolab.queriesPage(product, {}, { limit: 0 }))).toMatch(new RegExp(`limit is a whole number from 1 to ${PAGE_MAX}`));
   expect(await rejection(kolab.queriesPage(product, {}, { limit: 1.5 }))).toMatch(/LimitError/);
   await expect(kolab.queriesPage(product, {}, { limit: 10_000 })).resolves.toMatchObject({ next: null });
   expect(new LimitError('x').name).toBe('LimitError');
+});
+
+test('a cursor whose key parts are the wrong shape, or that another filter gave, is refused as invalid before it reaches the database', async () => {
+  const { kolab, product, engineer } = await kolabWith(2);
+  const invalid = /^LimitError: invalid cursor: that isn't one this list gave/;
+  // The right list and filters, a key part that isn't a timestamp, or one out of range, or not a whole number.
+  const marks = scoped('marks', { layer: 'technical', kolab: TEST_KOLAB });
+  for (const key of [['not a time', 'x'], ['2026-13-01 00:00:00+00', 'x'], ['2026-02-30 00:00:00+00', 'x'], [5, 'x'], ['2026-01-01 00:00:00+00', 7]]) {
+    expect(await rejection(kolab.marksPage(engineer, { layer: 'technical' }, { cursor: cursorFor(marks, key) }))).toMatch(invalid);
+  }
+  await expect(kolab.marksPage(engineer, { layer: 'technical' }, { cursor: cursorFor(marks, ['2026-01-01 00:00:00.123456+00', 'x']) })).resolves.toMatchObject({ items: [] });
+  const rulings = scoped('rulings', { kolab: TEST_KOLAB });
+  expect(await rejection(kolab.rulingsPage(product, {}, { cursor: cursorFor(rulings, ['yesterday', 'x']) }))).toMatch(invalid);
+  const reviews = scoped('reviews', { reviewer: 'bob', kolab: TEST_KOLAB });
+  expect(await rejection(kolab.reviewRequestsPage({ reviewer: 'bob', kolab: TEST_KOLAB }, { cursor: cursorFor(reviews, ['now', 'bob', 'x']) }))).toMatch(invalid);
+  expect(await rejection(nodeVersionsPage(kolab, product, 'orders', { which: 'shown', actor: 'alice' }, { cursor: cursorFor(scoped('web:versions', { nodeId: 'orders', which: 'shown', actor: 'alice' }), [-1]) }))).toMatch(invalid);
+  // A cursor is bound to the filters it was read with, the layer included.
+  for (let i = 0; i < 3; i++) await kolab.raiseQuery(engineer, 'kj:orders#R1', `Question ${i}?`);
+  const page = await kolab.queriesPage(product, { layer: 'functional', state: 'open' }, { limit: 1 });
+  expect(await rejection(kolab.queriesPage(product, { layer: 'technical', state: 'open' }, { cursor: page.next }))).toMatch(invalid);
+  expect(await rejection(kolab.queriesPage(product, { layer: 'functional', state: 'answered' }, { cursor: page.next }))).toMatch(invalid);
+  await expect(kolab.queriesPage(product, { layer: 'functional', state: 'open' }, { cursor: page.next })).resolves.toMatchObject({ items: [expect.anything(), expect.anything()], next: null });
+});
+
+test('case files page newest opened first, on a key that doesn\'t move when a case is argued', async () => {
+  const { kolab, product, engineer } = await kolabWith(3);
+  const opened: string[] = [];
+  for (const r of ['R1', 'R2', 'R3']) {
+    opened.push(await kolab.openCase(engineer, `kj:orders#${r}`, { question: `Is ${r} right?`, claim: 'It reads two ways.', evidence: [`kj:orders#${r}`], seeks: 'change_intent' }));
+  }
+  const first = await kolab.casesPage(product, { state: 'open' }, { limit: 1 });
+  expect(first.items.map((c) => c.case)).toStrictEqual([opened[2]]);
+  // Arguing the oldest while the list is paged doesn't move it, or make another one skipped.
+  await kolab.addPosition(product, opened[0], { claim: 'It reads one way.', evidence: ['kj:orders#R1'] });
+  const rest = await all((p) => kolab.casesPage(product, { state: 'open' }, { ...p, cursor: p.cursor ?? first.next }), 1);
+  expect(rest.items.map((c) => c.case)).toStrictEqual([opened[1], opened[0]]);
 });
 
 test('marks, nodes, lineage, review requests and submissions page by cursor to their last page', async () => {

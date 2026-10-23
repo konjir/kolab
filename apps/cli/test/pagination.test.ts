@@ -3,9 +3,10 @@
 // names the lists it cut short; an oversized request or draft is refused with the limit named.
 import { expect, test } from '@jest/globals';
 import { startServer } from '@konjir/server';
-import { MAX_ELEMENTS, MAX_REQUEST_BYTES, MAX_TEXT, PAGE_DEFAULT, READ_NODE_PAGE, THREADS_PER_ELEMENT } from '@konjir/types';
+import { MAX_ELEMENTS, MAX_REQUEST_BYTES, MAX_SMALL_REQUEST_BYTES, MAX_TEXT, PAGE_DEFAULT, READ_NODE_PAGE, THREADS_PER_ELEMENT } from '@konjir/types';
 import { connect, call } from '../src/cli.js';
 import { closeAtEnd, openKolab } from '@konjir/engine/testing';
+import { cursorFor, scoped } from '@konjir/engine';
 import type { Client } from '@modelcontextprotocol/client';
 
 const ADMIN = 'test-admin-token';
@@ -77,7 +78,7 @@ test('every list verb returns a page and next; following next reads the rest, an
   expect(await call(admin, 'admin_outbox')).toMatchObject({ next: null });
 
   // A cursor from another list is refused, saying what to do.
-  await expect(call(pm, 'list_nodes', { cursor: first.next })).rejects.toThrow(/LimitError: that cursor isn't one this list gave: pass the next it returned, unchanged.*Nothing was written/);
+  await expect(call(pm, 'list_nodes', { cursor: first.next })).rejects.toThrow(/LimitError: invalid cursor: that isn't one this list gave. Pass the next it returned, unchanged.*Nothing was written/);
 });
 
 test('list_reviews pages both its lists with one cursor', async () => {
@@ -147,8 +148,15 @@ test('a draft over the limits, an over-long question, and a body over the reques
   // An actor over its rate is refused, saying the limit and how long to wait; nothing is written.
   Object.assign(server.kolab.rates, { asks: THREADS_PER_ELEMENT + 2 });
   await expect(call(dev, 'ask', { address: 'kj:orders#R1', question: 'One more?' }))
-    .rejects.toThrow(new RegExp(`LimitError: \\S+ raised ${THREADS_PER_ELEMENT + 2} questions and notes in the last hour; the limit is ${THREADS_PER_ELEMENT + 2} in an hour\\. Wait 60 minutes.*Nothing was written`));
+    .rejects.toThrow(new RegExp(`LimitError: dev and dev.s agents raised ${THREADS_PER_ELEMENT + 2} questions and notes in the last hour; the limit is ${THREADS_PER_ELEMENT + 2} in an hour, shared by a person and their agents\\. Wait 60 minutes.*Nothing was written`));
   const web = await fetch(new URL('/api/queries', server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: huge });
   expect(web.status).toBe(413);
   expect(await web.json()).toMatchObject({ error: 'too_large' });
+  // Anywhere else, the OAuth routes among them, a body keeps the small limit: a stranger can't make Kolab parse 2 MiB.
+  const oauth = await fetch(new URL('/oauth/register', server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'x'.repeat(MAX_SMALL_REQUEST_BYTES) }) });
+  expect(oauth.status).toBe(413);
+  expect(await oauth.json()).toMatchObject({ error: 'too_large', message: expect.stringMatching(/over 100 KiB/) });
+  // A cursor whose key isn't the shape its list's is: an MCP error that says so, not the database's words.
+  await expect(call(dev, 'list_stale', { cursor: cursorFor(scoped('marks', { layer: 'technical', kolab: 'test' }), ['not a time', 'x']) }))
+    .rejects.toThrow(/LimitError: invalid cursor: that isn't one this list gave/);
 });
