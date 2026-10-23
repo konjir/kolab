@@ -2,7 +2,8 @@
 # installer on Kolab through Systems Manager. deploy/release/pack.sh packs it with `git archive`,
 # so nothing untracked or ignored can ship (.env, .claude/, .konjir/, *.tfvars), it refuses a
 # checkout with uncommitted tracked changes, so a deploy is exactly a commit, and the release id
-# is the commit's tree id, which changes only when tracked content does. A new id updates the
+# is the commit's tree id without site/ (konjir.com, D81, which the zip leaves out too), which
+# changes only when Kolab's tracked content does: a site-only change is no new release. A new id updates the
 # association and re-runs the install. `terraform apply` is the deploy.
 
 variable "name" { type = string }

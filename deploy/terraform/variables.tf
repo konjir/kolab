@@ -112,7 +112,7 @@ variable "cli_npm_spec" {
 }
 
 variable "site_enabled" {
-  description = "Serve the marketing site (site/) at the apex of zone_name and its www (D81). Production only: a second stack in the same zone must set it false. W2.23's environments should replace this flag."
+  description = "Serve the marketing site (site/) at the apex of zone_name and its www (D81). On by default: this stack, konjir-test, is production (staging was dropped, D83). Set it false only for a stack that mustn't own konjir.com, such as a throwaway copy in the same zone."
   type        = bool
   default     = true
 }
