@@ -31,5 +31,7 @@ rm -rf .nx
 npm ci --omit=dev --no-audit --no-fund --loglevel=error
 rm -rf .npm
 # 3. Observe (P11, D68): ship Kolab's and Caddy's journal to CloudWatch Logs, where the alarms
-#    count it. On anything but a Kolab instance, it does nothing.
-/bin/bash deploy/release/observe.sh
+#    count it. On anything but a Kolab instance, it does nothing. A failure only warns: shipping
+#    logs never stops a release, or a new instance's first boot; the no-logs alarm says so.
+/bin/bash deploy/release/observe.sh \
+  || echo '{"level":"warn","message":"observe.sh failed, so the logs may not reach CloudWatch; the release goes on, and the no-logs alarm fires within 30 minutes","event":"observe_failed"}' >&2

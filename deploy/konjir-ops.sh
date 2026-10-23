@@ -9,8 +9,9 @@
 #   deploy/konjir-ops.sh logs                                  last 200 lines from Kolab and Caddy
 #   deploy/konjir-ops.sh cloudwatch-logs [since]               Kolab's and Caddy's lines in CloudWatch Logs (default: the last 1h), following
 #   deploy/konjir-ops.sh alarms                                each alarm's state, and the reason for it
-#   deploy/konjir-ops.sh inject <crash|down [min]|dead-job|errors|rds-cpu|rds-storage>
-#                                                              set off one alarm on purpose, to check it emails (README: Alarms)
+#   deploy/konjir-ops.sh inject <crash|down [min]|dead-job|errors|rds-cpu|rds-storage> [--yes-production]
+#                                                              set off one alarm on purpose, to check it emails (README: Alarms);
+#                                                              crash and down break the live Kolab, so they need --yes-production
 #   deploy/konjir-ops.sh bootstrap-log                         the instance's first-boot install log
 #   deploy/konjir-ops.sh shell                                 interactive shell (Session Manager plugin)
 #   deploy/konjir-ops.sh admin-token                           print the admin token
@@ -83,23 +84,41 @@ EOF
 }
 
 # Sets off one alarm on purpose (README: Alarms). crash and down break the real Kolab, through the
-# journal, the agent and the metric filter; dead-job and errors put lines into the log group's
-# `inject` stream, which the same filters count; the RDS alarms are set by hand, and go back to
-# their real state at their next evaluation.
+# journal, the agent and the metric filter, so they say what they will do and need --yes-production;
+# dead-job and errors put lines into the log group's `inject` stream, which the same filters count;
+# the RDS alarms are set by hand, and go back to their real state at their next evaluation.
 cmd_inject() {
-  local what="${1:-}" group line count=1 minutes alarm
+  local what="" minutes="" yes="" arg site group line count=1 periods=1 alarm
+  for arg in "$@"; do
+    case "$arg" in
+      --yes-production) yes=1 ;;
+      *) if [ -z "$what" ]; then what="$arg"; else minutes="$arg"; fi ;;
+    esac
+  done
   case "$what" in
-    crash)
-      on_kolab "systemctl kill --signal=KILL konjir.service && echo 'killed Kolab; systemd restarts it in 3 s'"; return ;;
-    down)
-      minutes="${2:-4}"
-      [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 15 ] || die "down takes 1 to 15 minutes"
-      echo "stopping Kolab for $minutes minutes; https://$(out url | sed 's|^https://||; s|/mcp$||') stops answering"
-      on_kolab "systemctl stop konjir && sleep $((minutes * 60)); systemctl start konjir && echo 'Kolab started again'"; return ;;
+    crash|down)
+      site="https://$(out url | sed 's|^https://||; s|/mcp$||')"
+      if [ "$what" = crash ]; then
+        echo "inject crash: kills the live Kolab at $site (SIGKILL); systemd restarts it 3 s later, and service-exited fires"
+      else
+        minutes="${minutes:-4}"
+        [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 15 ] || die "down takes 1 to 15 minutes"
+        echo "inject down: stops the live Kolab at $site for $minutes minutes, then systemd starts it again; healthz-failing fires"
+      fi
+      [ -n "$yes" ] || die "this breaks the production Kolab; run it again with --yes-production"
+      if [ "$what" = crash ]; then
+        on_kolab "systemctl kill --signal=KILL konjir.service && echo 'killed Kolab; systemd restarts it in 3 s'"
+      else
+        # systemd starts Kolab again from a timer of its own, so neither this shell nor SSM has to
+        # last the wait.
+        on_kolab "systemctl reset-failed konjir-inject-start.timer konjir-inject-start.service 2>/dev/null; systemd-run --quiet --collect --unit=konjir-inject-start --on-active=${minutes}m --timer-property=AccuracySec=1s /usr/bin/systemctl start konjir.service && systemctl stop konjir.service && echo 'stopped Kolab; systemd starts it again in $minutes minutes (konjir-inject-start.timer)'"
+      fi
+      return ;;
     dead-job)
-      line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject dead-job: not a real job","event":"outbox_job_dead","kolab":"injected"}' ;;
+      line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject dead-job: not a real job","event":"outbox_job_dead","kolab":"injected","_SYSTEMD_UNIT":"konjir.service"}' ;;
     errors)
-      line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject errors: not a real error"}'; count=12 ;;
+      # The alarm takes 2 of 3 five-minute periods, so 12 lines go in this period and 12 in the one before.
+      line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject errors: not a real error","_SYSTEMD_UNIT":"konjir.service"}'; count=12; periods=2 ;;
     rds-cpu|rds-storage)
       alarm="$(terraform -chdir="$TF" output -json alarms | python3 -c 'import json,sys;print([a for a in json.load(sys.stdin) if "-" + sys.argv[1] + "-" in a][0])' "$what")"
       aws cloudwatch set-alarm-state --alarm-name "$alarm" --state-value ALARM --state-reason "injected by deploy/konjir-ops.sh inject $what"
@@ -111,8 +130,9 @@ cmd_inject() {
   aws logs put-log-events --log-group-name "$group" --log-stream-name inject --log-events "$(python3 -c '
 import json, sys, time
 t = int(time.time() * 1000)
-print(json.dumps([{"timestamp": t + i, "message": sys.argv[2]} for i in range(int(sys.argv[1]))]))' "$count" "$line")" >/dev/null
-  echo "put $count line(s) in $group, stream inject; the alarm fires within about 5 minutes"
+count, periods = int(sys.argv[1]), int(sys.argv[2])
+print(json.dumps([{"timestamp": t - p * 300000 + i, "message": sys.argv[3]} for p in reversed(range(periods)) for i in range(count)]))' "$count" "$periods" "$line")" >/dev/null
+  echo "put $((count * periods)) line(s) in $group, stream inject; the alarm fires within about 5 minutes"
 }
 
 case "${1:-}" in
@@ -130,5 +150,5 @@ case "${1:-}" in
                  aws cloudwatch describe-alarms --alarm-names $(terraform -chdir="$TF" output -json alarms | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin)))') \
                    --query 'MetricAlarms[].[AlarmName,StateValue,StateReason]' --output table ;;
   inject)        shift; cmd_inject "$@" ;;
-  *)             sed -n '2,16p' "$0"; exit 1 ;;
+  *)             sed -n '2,17p' "$0"; exit 1 ;;
 esac
