@@ -5,7 +5,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project   = "konjir"
-      Stack     = local.name
+      Stack     = var.name
       ManagedBy = "terraform"
     }
   }
@@ -31,49 +31,56 @@ data "aws_route53_zone" "this" {
   private_zone = false
 }
 
+data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
+
 locals {
   az = var.availability_zone
+
+  # The permissions boundaries deploy/terraform/github-oidc makes (W2.23). The deploy role may create
+  # or change the instance role and the snapshot role only with these attached, so neither can hold
+  # more than they allow, whatever its own policy says.
+  boundary_prefix = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/konjir/${var.name}"
 }
 
 module "network" {
   source = "./modules/network"
-  name   = local.name
+  name   = var.name
   az     = local.az
 }
 
 module "storage" {
   source         = "./modules/storage"
-  name           = local.name
+  name           = var.name
   az             = local.az
-  data_gib       = local.data_volume_gib
-  final_snapshot = local.final_snapshot_on_destroy
+  data_gib       = var.data_volume_gib
+  final_snapshot = var.final_snapshot_on_destroy
 
-  permissions_boundary_arn = local.permissions_boundary_arn
+  permissions_boundary_arn = "${local.boundary_prefix}-dlm-boundary"
 }
 
 module "secrets" {
   source           = "./modules/secrets"
-  name             = local.name
-  github_client_id = local.env.github_oauth_client_id
+  name             = var.name
+  github_client_id = var.github_oauth_client_id
   cli_npm_spec     = var.cli_npm_spec
 }
 
 module "database" {
-  source            = "./modules/database"
-  name              = local.name
-  subnet_ids        = module.network.db_subnet_ids
-  security_group_id = module.network.db_security_group_id
-  postgres_version  = var.postgres_version
-  instance_class    = local.db_instance_class
-  allocated_gib     = local.db_allocated_gib
-  final_snapshot    = local.final_snapshot_on_destroy
-
+  source              = "./modules/database"
+  name                = var.name
+  subnet_ids          = module.network.db_subnet_ids
+  security_group_id   = module.network.db_security_group_id
+  postgres_version    = var.postgres_version
+  instance_class      = var.db_instance_class
+  allocated_gib       = var.db_allocated_gib
+  final_snapshot      = var.final_snapshot_on_destroy
   deletion_protection = var.db_deletion_protection
 }
 
 module "iam" {
   source                 = "./modules/iam"
-  name                   = local.name
+  name                   = var.name
   artifact_bucket_arn    = module.storage.artifact_bucket_arn
   admin_token_param_arn  = module.secrets.admin_token_param_arn
   database_url_param_arn = module.database.database_url_param_arn
@@ -82,22 +89,22 @@ module "iam" {
   log_group_arn          = module.monitoring.log_group_arn
   metrics_namespace      = module.monitoring.metrics_namespace
 
-  permissions_boundary_arn = local.permissions_boundary_arn
+  permissions_boundary_arn = "${local.boundary_prefix}-instance-boundary"
 }
 
 # Logs and alarms (P11, D68): failures are noticed before users report them.
 module "monitoring" {
   source                 = "./modules/monitoring"
-  name                   = local.name
-  domain_name            = local.env.domain_name
+  name                   = var.name
+  domain_name            = var.domain_name
   db_instance_identifier = module.database.identifier
   alarm_email            = var.alarm_email
 }
 
 module "kolab" {
   source                  = "./modules/kolab"
-  name                    = local.name
-  instance_type           = local.instance_type
+  name                    = var.name
+  instance_type           = var.instance_type
   subnet_id               = module.network.subnet_id
   security_group_id       = module.network.security_group_id
   instance_profile_name   = module.iam.instance_profile_name
@@ -106,7 +113,7 @@ module "kolab" {
   admin_token_param_name  = module.secrets.admin_token_param_name
   database_url_param_name = module.database.database_url_param_name
   database_ca_path        = module.database.ca_path
-  domain_name             = local.env.domain_name
+  domain_name             = var.domain_name
   zone_id                 = data.aws_route53_zone.this.zone_id
   letsencrypt_email       = var.letsencrypt_email
 }
@@ -119,11 +126,11 @@ moved {
 
 module "release" {
   source          = "./modules/release"
-  name            = local.name
+  name            = var.name
   source_dir      = coalesce(var.app_source_dir, abspath("${path.root}/../.."))
   artifact_bucket = module.storage.artifact_bucket
   instance_id     = module.kolab.instance_id
-  domain_name     = local.env.domain_name
+  domain_name     = var.domain_name
   release_zip     = var.release_zip
   release_id      = var.release_id
 

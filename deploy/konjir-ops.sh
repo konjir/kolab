@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Day-to-day operations on a Terraform-managed Kolab: production or staging (D73). Provisioning lives
-# in deploy/terraform and runs from CI (.github/workflows/deploy.yml); this reads an environment's
-# outputs, talks to its running Kolab, and runs Terraform against it by hand.
+# Day-to-day operations on the Terraform-managed Kolab. Provisioning lives in deploy/terraform and
+# runs from CI (.github/workflows/deploy.yml, D73); this reads Terraform's outputs, talks to the
+# running Kolab, and runs Terraform by hand.
 #
-#   deploy/konjir-ops.sh [--env production|staging] <command> …     (default production, or $KONJIR_ENV)
+#   deploy/konjir-ops.sh [--env production] <command> …
+#
+# --env names the environment, production, the only one there is (D83: staging dropped for now); it
+# is accepted so that scripts that name it, such as deploy/recovery-drill.sh, keep working.
 #
 #   connect <actor> <product|engineer> [owner]          register a person, or with owner an agent of that account,
 #                                                       granted Write in kolab $KONJIR_KOLAB (default kolab); open a session
@@ -13,12 +16,12 @@
 #   alarms                                              each alarm's state, and the reason for it
 #   inject <crash|down [min]|dead-job|errors|rds-cpu|rds-storage> [--yes-production]
 #                                                       set off one alarm on purpose, to check it emails (README: Alarms);
-#                                                       on production, crash and down break the live Kolab, so they need --yes-production
+#                                                       crash and down break the live Kolab, so they need --yes-production
 #   bootstrap-log                                       the instance's first-boot install log
 #   shell                                               interactive shell (Session Manager plugin)
 #   admin-token                                         print the admin token
-#   terraform <args…>                                   terraform in deploy/terraform on this environment's state, e.g.
-#                                                       terraform plan; each environment keeps its own deploy/terraform/.terraform-<env>
+#   terraform <args…>                                   terraform in deploy/terraform on production's state, e.g. terraform
+#                                                       plan, with its working data in deploy/terraform/.terraform-production
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,12 +35,12 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 ENV="${KONJIR_ENV:-production}"
 case "${1:-}" in
-  --env)   ENV="${2:-}"; shift 2 || die "--env takes production or staging" ;;
+  --env)   ENV="${2:-}"; shift 2 || die "--env takes production" ;;
   --env=*) ENV="${1#--env=}"; shift ;;
 esac
-[[ "$ENV" =~ ^(production|staging)$ ]] || die "--env is production or staging, not '$ENV'"
-# Each environment has its own Terraform working data, so switching needs no re-init.
-export TF_DATA_DIR="$TF/.terraform-$ENV" TF_VAR_environment="$ENV"
+[ "$ENV" = production ] || die "--env is production, the only environment (D83), not '$ENV'"
+# Its own Terraform working data, initialised on first use, apart from any older deploy/terraform/.terraform.
+export TF_DATA_DIR="$TF/.terraform-$ENV"
 
 tf() {
   if [ ! -f "$TF_DATA_DIR/terraform.tfstate" ]; then
@@ -105,7 +108,7 @@ EOF
 }
 
 # Sets off one alarm on purpose (README: Alarms). crash and down break the real Kolab, through the
-# journal, the agent and the metric filter, so they say what they will do and, on production, need --yes-production;
+# journal, the agent and the metric filter, so they say what they will do and need --yes-production;
 # dead-job and errors put lines into the log group's `inject` stream, which the same filters count;
 # the RDS alarms are set by hand, and go back to their real state at their next evaluation.
 cmd_inject() {
@@ -126,7 +129,7 @@ cmd_inject() {
         [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 15 ] || die "down takes 1 to 15 minutes"
         echo "inject down: stops the live Kolab at $site for $minutes minutes, then systemd starts it again; healthz-failing fires"
       fi
-      [ "$ENV" != production ] || [ -n "$yes" ] || die "this breaks the production Kolab; run it again with --yes-production"
+      [ -n "$yes" ] || die "this breaks the production Kolab; run it again with --yes-production"
       if [ "$what" = crash ]; then
         on_kolab "systemctl kill --signal=KILL konjir.service && echo 'killed Kolab; systemd restarts it in 3 s'"
       else

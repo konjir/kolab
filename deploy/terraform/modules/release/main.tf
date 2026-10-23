@@ -8,7 +8,7 @@
 #
 # In CI (W2.23, D76) the release is built before Terraform runs: .github/workflows/deploy.yml runs
 # pack.sh once on the commit and passes its zip and release id here (release_zip, release_id), so
-# staging and production install the same bytes. Without them, Terraform runs pack.sh itself.
+# what was approved is exactly what installs. Without them, Terraform runs pack.sh itself.
 
 variable "name" { type = string }
 variable "source_dir" { type = string }
@@ -75,7 +75,7 @@ check "kolab_is_live" {
   }
   assert {
     condition     = data.http.health.status_code == 200
-    error_message = "https://${var.domain_name}/healthz is not answering yet. Give DNS and the certificate a few minutes, then run deploy/konjir-ops.sh --env <environment> status."
+    error_message = "https://${var.domain_name}/healthz is not answering yet. Give DNS and the certificate a few minutes, then run deploy/konjir-ops.sh status."
   }
 }
 

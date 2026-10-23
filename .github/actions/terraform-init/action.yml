@@ -1,13 +1,10 @@
-name: Terraform for one environment
+name: Terraform for production
 description: >
   For .github/workflows/deploy.yml (W2.23). Sets up Terraform, fetches the release the run built and
-  checks it, assumes the given AWS role through GitHub's OIDC token, and runs terraform init on the
-  environment's state. Expects the repository checked out, and the job to allow id-token: write.
+  checks it, assumes the deploy role through GitHub's OIDC token, and runs terraform init on
+  production's state. Expects the repository checked out, and the job to allow id-token: write.
 
 inputs:
-  environment:
-    description: production or staging
-    required: true
   role:
     description: The ARN of the AWS role to assume (deploy/terraform/github-oidc)
     required: true
@@ -18,14 +15,12 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Check the inputs
+    - name: Check the release id
       shell: bash
       env:
-        ENVIRONMENT: ${{ inputs.environment }}
         RELEASE: ${{ inputs.release }}
       run: |
-        [[ "$ENVIRONMENT" =~ ^(production|staging)$ ]] || { echo "::error::environment is production or staging"; exit 1; }
-        [[ "$RELEASE" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "::error::release is a git tree id"; exit 1; }
+        [[ "$RELEASE" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "::error::release is a tree id"; exit 1; }
 
     # The version Lee runs locally (CLAUDE.md); versions.tf requires 1.15 or later.
     - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
@@ -55,12 +50,10 @@ runs:
       working-directory: ${{ runner.temp }}/release
       env:
         RELEASE: ${{ inputs.release }}
-        ENVIRONMENT: ${{ inputs.environment }}
       run: |
         sha256sum -c SHA256SUMS
         [ "$(cat release-id)" = "$RELEASE" ] || { echo "::error::the downloaded release isn't $RELEASE"; exit 1; }
         {
-          echo "TF_VAR_environment=$ENVIRONMENT"
           echo "TF_VAR_release_zip=$PWD/konjir-release.zip"
           echo "TF_VAR_release_id=$RELEASE"
         } >> "$GITHUB_ENV"
@@ -68,7 +61,7 @@ runs:
     - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
       with:
         role-to-assume: ${{ inputs.role }}
-        role-session-name: konjir-${{ inputs.environment }}-${{ github.run_id }}
+        role-session-name: konjir-production-${{ github.run_id }}
         role-duration-seconds: 7200
         aws-region: us-east-1
         allowed-account-ids: '747533038441'
@@ -76,6 +69,4 @@ runs:
     - name: terraform init
       shell: bash
       working-directory: deploy/terraform
-      env:
-        ENVIRONMENT: ${{ inputs.environment }}
-      run: terraform init -input=false -lockfile=readonly -backend-config="environments/$ENVIRONMENT.s3.tfbackend"
+      run: terraform init -input=false -lockfile=readonly -backend-config=environments/production.s3.tfbackend
