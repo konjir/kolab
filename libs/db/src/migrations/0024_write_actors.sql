@@ -8,8 +8,9 @@
 --                    sign in (W2.22, D69); then it is that person's id, and 'admin' stays only on
 --                    what the break-glass token did
 --   'kolab'          Kolab's own work (SYSTEM_ACTOR), such as ending a session that lost access
--- None of them is a reference to actor: 'admin' and 'kolab' are no actor's id (actor_not_admin,
--- below, and 0002's actor_id_check), and actors are archived, never deleted (D52).
+-- None of them is a reference to actor: 'admin' and 'kolab', in any case, are no actor's or
+-- account's id (actor_not_doer and account_not_doer, below), and actors are archived, never
+-- deleted (D52). A doer is never empty or blank.
 --
 -- A change with a row of its own records it in a column of that row:
 --   node.created_by, node.created_at          who made the node, and when
@@ -25,16 +26,33 @@
 --   version.submitted_by                      who put a draft to review: a session's actor, the admin applying a
 --                                             ruling (D47), or Kolab, for its own rebases and folds
 -- A change with no row of its own, because it replaces or deletes one, is a row of audit_event:
--- grants, organization memberships, team memberships and outbox retries.
+-- grants, organization memberships, team memberships and outbox retries. The database refuses a
+-- change to kolab_grant, org_member or team_member whose transaction doesn't add its audit_event
+-- row (kj_access_audited).
 --
 -- Rows made before this migration keep null in every new column: who made them was never
 -- recorded, and nothing guesses. Every row written from now on names someone: the database
 -- refuses one that doesn't (kj_doer_given), so a write path that forgets fails its tests.
 
--- 'admin' is the admin token's name in what it writes, so no actor may be called that. A person
--- never could (sign-up reserves it, D55); now no agent can either. Not checked against rows
--- already there, which Kolab never let a person take.
-alter table actor add constraint actor_not_admin check (lower(id) <> 'admin') not valid;
+-- 'admin' is the admin token's name in what Kolab records, and 'kolab' is Kolab's own, so no actor
+-- or account may be called either, in any case. A person never could (sign-up reserves both,
+-- D55), and 0002 and 0006 refused 'kolab' exactly; now nothing can take either in any case. Rows
+-- already there are checked first: if one holds such a name, this migration stops and says which,
+-- rather than leaving a row that would fail its next update.
+do $$
+declare taken text;
+begin
+  select string_agg(id, ', ' order by id) into taken from (
+    select id from actor where lower(id) in ('admin', 'kolab')
+    union select id from account where lower(id) in ('admin', 'kolab')) t;
+  if taken is not null then
+    raise exception 'migration 0024: % names an actor or account, but ''admin'' and ''kolab'' are reserved for who made a write (W2.20); rename it before applying 0024', taken
+      using errcode = 'check_violation';
+  end if;
+end
+$$;
+alter table actor add constraint actor_not_doer check (lower(id) not in ('admin', 'kolab'));
+alter table account add constraint account_not_doer check (lower(id) not in ('admin', 'kolab'));
 
 alter table node add column created_by text, add column created_at timestamptz;
 alter table node alter column created_at set default clock_timestamp();
@@ -52,12 +70,13 @@ alter table version add column submitted_by text;
 -- `when` says which writes need one: every insert, or the update that ends, revokes or submits.
 -- Each is a constraint checked as the transaction commits, so a write its other constraints and
 -- triggers refuse (an archived kolab's, 0014) is refused for that reason first, and the change
--- fails whole. The migration runner alone may write without one (kj_migrating, 0014).
+-- fails whole. An empty or blank name is no one. The migration runner alone may write without one
+-- (kj_migrating, 0014).
 create function kj_doer_given() returns trigger
 language plpgsql set search_path = pg_catalog, public, pg_temp as $$
 begin
   if kj_migrating() then return new; end if;
-  if to_jsonb(new) ->> tg_argv[0] is null then
+  if nullif(btrim(to_jsonb(new) ->> tg_argv[0]), '') is null then
     raise exception '%.% must name who made this write (W2.20)', tg_table_name, tg_argv[0] using errcode = 'not_null_violation';
   end if;
   return new;
@@ -108,11 +127,15 @@ create table audit_event (
   kolab_id text references kolab(id),
   subject  text not null,
   detail   jsonb,
-  done_by  text not null,
-  done_at  timestamptz not null default clock_timestamp()
+  done_by  text not null constraint audit_event_done_by_check check (btrim(done_by) <> ''),
+  done_at  timestamptz not null default clock_timestamp(),
+  -- The transaction that added it, so kj_access_audited can find it as that transaction commits.
+  -- The top-level transaction's id, even from inside a savepoint.
+  tx       xid8 not null default pg_current_xact_id()
 );
 create index audit_event_kolab on audit_event(kolab_id, id) where kolab_id is not null;
 create index audit_event_subject on audit_event(subject, id);
+create index audit_event_tx on audit_event(tx);
 alter table audit_event enable row level security;
 revoke all on audit_event from public;
 revoke all on audit_event from kj_agent, kj_system;
@@ -125,3 +148,52 @@ $$;
 revoke execute on function kj_audit_event_fixed() from public;
 create trigger audit_event_fixed before update or delete on audit_event for each row execute function kj_audit_event_fixed();
 create trigger audit_event_kept before truncate on audit_event for each statement execute function kj_audit_event_fixed();
+
+-- A change of access has no row of its own to say who made it, so its audit_event row is the
+-- record, and the database requires it: a grant made, changed or removed, and a membership of an
+-- organization or a team added, changed or removed, is refused as its transaction commits unless
+-- that transaction added an audit_event row for the same grantee or person (and, for a grant, the
+-- same kolab) with one of the actions the trigger names. Removing a person from an organization
+-- removes their team memberships under its one member.removed. Like kj_doer_given, it is deferred,
+-- so the change and its record may be written in either order, and the migration runner is exempt.
+-- Security definer: audit_event is Kolab's own login's alone.
+create function kj_access_audited() returns trigger
+language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
+declare
+  r jsonb;
+  who text;
+begin
+  if kj_migrating() then return null; end if;
+  if tg_op = 'DELETE' then r := to_jsonb(old); else r := to_jsonb(new); end if;
+  who := coalesce(r ->> 'user_id', r ->> 'agent_id', r ->> 'team_id');
+  if not exists (
+    select 1 from public.audit_event a
+     where a.tx = pg_current_xact_id() and a.subject = who and a.action = any(tg_argv)
+       and (tg_table_name <> 'kolab_grant' or a.kolab_id = r ->> 'kolab_id')) then
+    raise exception '%: a change of access to % must be recorded in the audit log, with who made it (W2.20)', tg_table_name, who
+      using errcode = 'check_violation';
+  end if;
+  return null;
+end
+$$;
+revoke execute on function kj_access_audited() from public;
+create constraint trigger kolab_grant_audited after insert or update or delete on kolab_grant deferrable initially deferred for each row
+  execute function kj_access_audited('grant.set', 'grant.removed');
+create constraint trigger org_member_audited after insert or update or delete on org_member deferrable initially deferred for each row
+  execute function kj_access_audited('member.set', 'member.removed');
+create constraint trigger team_member_audited after insert or update or delete on team_member deferrable initially deferred for each row
+  execute function kj_access_audited('team_member.added', 'team_member.removed', 'member.removed');
+
+-- Who made a node is shown only to readers in the node's own kolab (D49, D58): a reader from
+-- another kolab sees its committed versions and their authors, but not who made the node, who
+-- may have written nothing that reader can see. So kj_agent reads every column of node but
+-- created_by, and reads that through kj_node_creator, which answers only for a node of the
+-- session's own kolab. Kolab's own login, and kj_system, read it as before.
+revoke select on node from kj_agent;
+grant select (id, kind, layer, title, kolab_id, name, created_at) on node to kj_agent;
+create function kj_node_creator(p_node text) returns text
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+  select n.created_by from public.node n where n.id = p_node and n.kolab_id = (select public.kj_session_kolab())
+$$;
+revoke execute on function kj_node_creator(text) from public;
+grant execute on function kj_node_creator(text) to kj_agent;

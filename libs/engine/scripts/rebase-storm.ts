@@ -26,7 +26,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import type { Checks } from '@konjir/types';
+import { ADMIN_DOER, type Checks } from '@konjir/types';
 import { GateError, Kolab, structuralChecks } from '../src/index.js';
 import { people } from '../src/testing.js';
 
@@ -80,7 +80,7 @@ const text = (i: number, gen = 1) => `Element ${i} holds, as of revision ${gen}.
 
 async function family(kolab: Kolab, s: Shape) {
   await people(kolab, 'alice');
-  const product = await kolab.openSession('alice', 'product');
+  const product = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
   const range = [...Array(s.E).keys()];
   const P = await kolab.createNode(product, 'functional_spec', 'Parent', 'P');
   const p1 = await kolab.commit(product, P, { elements: range.map((i) => ({ id: `E${i}`, text: text(i) })) });
@@ -216,7 +216,7 @@ async function probe(backend: Backend, s: Shape) {
     // An engineer, so the product owner stays the only one on her layer and her edits commit
     // without waiting for review (W1.6).
     await people(kolab, 'dave', { layers: ['technical'] });
-    const other = await kolab.openSession('dave', 'engineer');
+    const other = await kolab.openSession('dave', 'engineer', { by: ADMIN_DOER });
     const U = await kolab.createNode(other, 'technical_binding', 'Unrelated', 'U');
     let u = 0;
     const unrelated = () => kolab.commit(other, U, { elements: [{ id: 'X', text: `Unrelated revision ${++u}.` }] });
@@ -318,7 +318,7 @@ async function raceKolab(backend: Backend) {
 /** P@1 and `roots` variants V0, V1, …, each with `children` variants under it (V0.0, …). */
 async function raceFamily(kolab: Kolab, roots: number, children = 0) {
   await people(kolab, 'alice');
-  const s = await kolab.openSession('alice', 'product');
+  const s = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
   await kolab.createNode(s, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(s, 'P', { elements: [0, 1, 2].map((i) => ({ id: `E${i}`, text: `Parent element ${i}, rev 1.` })) });
   const ids: string[] = [];
@@ -410,7 +410,7 @@ async function race1b(backend: Backend) {
       await kolab.commit(s, 'P', { elements: next });
       await kolab.drainOutbox();
     });
-    const r = await kolab.review(draft);
+    const r = await kolab.submit(s, draft);
     setHook(undefined);
     console.log('\n1b. Review check-then-act: P commits while a human draft of V0 is in review');
     console.log(`  human review: ok=${r.ok}${r.version === draft ? ', committed the draft' : `, folded into ${r.version}`}`);
@@ -476,10 +476,10 @@ async function race2b(backend: Backend, n = 10) {
     try {
       const { s } = await raceFamily(kolab, 1);
       await people(kolab, 'bob');
-      const s2 = await kolab.openSession('bob', 'product');
+      const s2 = await kolab.openSession('bob', 'product', { by: ADMIN_DOER });
       // Each one's version waits in review, and the other approves it (W1.6).
       const reviewed = async (author: string, reviewer: string, element: string, text: string) => {
-        const r = await kolab.review(await kolab.draft(author, 'V0', { deltas: [{ kind: 'add', element, text }] }));
+        const r = await kolab.submit(author, await kolab.draft(author, 'V0', { deltas: [{ kind: 'add', element, text }] }));
         const done = r.in_review ? await kolab.recordReview(reviewer, r.version, { verdict: 'approve' }) : r;
         if (!done.ok) throw new GateError(`review rejected: ${done.note ?? ''}`);
       };
@@ -517,7 +517,7 @@ async function race3(backend: Backend) {
   const { kolab } = await raceKolab(backend);
   try {
     const { s, ids, next } = await raceFamily(kolab, 3, 1);
-    const r = await kolab.review(await kolab.draft(s, 'P', { elements: next }));
+    const r = await kolab.submit(s, await kolab.draft(s, 'P', { elements: next }));
     await kolab.commit(s, 'V1', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V1.' }] });
     await kolab.commit(s, 'V0.0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.0.' }] });
     const queued = (await kolab.outboxJobs()).filter((j) => j.kind === 'rebase').length;

@@ -7,25 +7,56 @@ import type { AuditAction } from '@konjir/types';
 export type ActorRecord = `${string}.${string}` | `audit_event:${AuditAction}`;
 
 /**
- * How each of Kolab's public methods that writes records who made the write (W2.20, D70):
- * - `recorded`: where it is recorded (ActorRecord), from the session's actor, the person signing
- *   in, or `by`, the admin token until admins are people (W2.22)
- * - `system`: Kolab's own work, which no one asked for when it runs; what it writes is recorded
- *   as `kolab`, or belongs to a version whose author is recorded
- * - `unsigned`: a write made before anyone signs in, on a row that names no one yet (OAuth's
- *   registration and authorization in progress, RFC 7591 and 6749); why that is so
- *
- * The test write-actors.test.ts reads kolab.ts and fails when a public method of Kolab that writes,
- * itself or through anything it calls, is missing here, or when a method here no longer writes;
- * and checks each `recorded` place exists and is filled by the method's own write. A new write path
- * is added here, and records its actor, or the build fails.
+ * Why a write records no one of its own (W2.20): a closed list, so a new reason is a change here,
+ * reviewed like any other.
+ * - `system`: Kolab's own work, which no one asked for when it runs; what it writes is recorded as
+ *   by `kolab`, or belongs to a version whose author and submitter are recorded.
+ * - `unsigned`: a write before anyone signs in, on a row that names no one yet (OAuth's client
+ *   registration and authorization in progress, RFC 7591 and 6749).
  */
-export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system: string } | { unsigned: string }> = {
+export const NO_ACTOR_REASONS = {
+  system: {
+    migrations: 'applies migrations, and frees the outbox claims of a process that stopped',
+    outbox: 'runs outbox jobs: cascades, settles and rebases owed by versions whose authors and submitters are recorded; a rebase Kolab writes is by kolab',
+  },
+  unsigned: {
+    client_registration: 'a client registers itself before anyone signs in (RFC 7591); its row is the record, and one no one uses is pruned',
+    client_pruning: 'deletes clients no one used, as registration does before each one',
+    authorization_pending: 'an authorization before anyone has signed in: it names its person once the identity provider answers (identifyAuthorization)',
+    authorization_dropped: 'drops an authorization that was refused or declined before it made any grant, code or session; nothing of it is kept',
+  },
+} as const;
+export type SystemReason = keyof typeof NO_ACTOR_REASONS.system;
+export type UnsignedReason = keyof typeof NO_ACTOR_REASONS.unsigned;
+
+/**
+ * How each of Kolab's public methods that writes records who made the write (W2.20, D70):
+ * - `recorded`: where it is recorded (ActorRecord): from the session's actor, the person signing
+ *   in, or the `by` its caller must pass (an admin's, the admin token's until admins are people,
+ *   W2.22, or Kolab's own)
+ * - `system` or `unsigned`: why it records no one, one of NO_ACTOR_REASONS
+ *
+ * What write-actors.test.ts checks, and nothing more:
+ * - the methods listed are exactly the public methods of Kolab, in kolab.ts, that write: whose own
+ *   SQL inserts, updates or deletes, or that call (as `this.<method>(`, or a function of the
+ *   module) something that does, other than SYSTEM_WRITES
+ * - each `table.column` place is a column of the schema, and the SQL reachable from the method
+ *   that way names the column in an insert of a row of that table, or sets it in an update of
+ *   that table; each `audit_event:<action>` place is an action of the audit log, and that SQL
+ *   includes a call of audit() with that action
+ * - the methods with `system` or `unsigned` are exactly the ones the test lists, so adding one is
+ *   a change to the test as well
+ * - no other source file of the engine or the apps writes SQL, and Kolab has no method written as
+ *   an arrow-function property, which the scan would miss
+ * Whether the right person is recorded is checked by its scenario tests, and the database refuses
+ * a row that names no one (migration 0024).
+ */
+export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system: SystemReason } | { unsigned: UnsignedReason }> = {
   // ---- the outbox and Kolab's own processes ----
-  open: { system: 'applies migrations, and frees the outbox claims of a stopped process' },
-  listen: { system: 'hears other processes, and runs the outbox work they announce' },
-  startWorker: { system: 'runs outbox jobs: cascades, settles and rebases owed by versions whose authors are recorded; a rebase Kolab writes is by kolab' },
-  drainOutbox: { system: 'runs outbox jobs, as startWorker' },
+  open: { system: 'migrations' },
+  listen: { system: 'outbox' },
+  startWorker: { system: 'outbox' },
+  drainOutbox: { system: 'outbox' },
   retryOutboxJob: { recorded: ['audit_event:outbox.retried'] },
 
   // ---- actors, sessions and sign-in ----
@@ -35,16 +66,17 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   switchSession: { recorded: ['session.ended_by', 'session.opened_by'] },
   signInWith: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by'] },
   linkIdentity: { recorded: ['identity.linked_by'] },
-  registerClient: { unsigned: 'a client registers itself before anyone signs in (RFC 7591); its row is the record, and an unused one is pruned' },
-  pruneClients: { unsigned: 'deletes clients no one used, as registerClient does before each registration' },
-  oauthClient: { unsigned: 'marks a client used as it starts an authorization, before anyone signs in' },
-  beginAuthorization: { unsigned: 'starts an authorization before anyone signs in; it names its person once the identity provider answers (identifyAuthorization)' },
+  registerClient: { unsigned: 'client_registration' },
+  pruneClients: { unsigned: 'client_pruning' },
+  oauthClient: { unsigned: 'authorization_pending' },
+  beginAuthorization: { unsigned: 'authorization_pending' },
   identifyAuthorization: { recorded: ['oauth_request.actor_id'] },
-  abandonAuthorization: { unsigned: 'drops an authorization the identity provider refused, before anyone signed in; nothing of it is kept' },
-  declineAuthorization: { unsigned: 'drops an authorization its person declined; nothing of it is kept, and no grant, code or session was made' },
+  abandonAuthorization: { unsigned: 'authorization_dropped' },
+  declineAuthorization: { unsigned: 'authorization_dropped' },
   consent: { recorded: ['oauth_code.person_id', 'kolab.created_by', 'actor.created_by', 'audit_event:grant.set', 'kolab_invite.accepted_by'] },
   exchangeCode: { recorded: ['oauth_grant.person_id', 'session.opened_by', 'session.ended_by'] },
-  refreshGrant: { recorded: ['oauth_grant.person_id', 'session.ended_by'] },
+  // A rotation is the grant's person's: each refresh token names its grant, which names them.
+  refreshGrant: { recorded: ['oauth_refresh_token.grant_id', 'session.ended_by', 'oauth_grant.revoked_by'] },
   revokeToken: { recorded: ['oauth_grant.revoked_by', 'session.ended_by'] },
   addOwnAgent: { recorded: ['actor.created_by'] },
   createOwnAgent: { recorded: ['actor.created_by'] },
@@ -80,11 +112,11 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   review: { recorded: ['version.submitted_by'] },
   recordReview: { recorded: ['review_request.reviewer_id'] },
   // Only a version's author abandons it; its review note says so.
-  abandon: { recorded: ['version.actor_id', 'version.review_note'] },
+  abandon: { recorded: ['version.review_note'] },
   commit: { recorded: ['version.actor_id', 'version.submitted_by'] },
   link: { recorded: ['edge.held_by'] },
-  // Removals are part of the author's own draft.
-  unlink: { recorded: ['version.actor_id'] },
+  // A removal belongs to its author's own draft (only the author unlinks), which names them.
+  unlink: { recorded: ['link_removal.version_id'] },
 
   // ---- marks, questions and case files ----
   resolveOverride: { recorded: ['precedent.ruled_by', 'version.actor_id', 'version.submitted_by'] },

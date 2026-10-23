@@ -449,7 +449,11 @@ test('a reader taking over a link must qualify, and a link whose holder lost acc
   const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
   const edge = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
   // Behind Kolab's back, alice's Read goes, with no mark; carol, who can't read billing, tries to hold it.
-  await kolab.db.query(`delete from kolab_grant where kolab_id = 'billing' and user_id = 'alice'`);
+  await kolab.db.transaction(async (tx) => {
+    await tx.query(`delete from kolab_grant where kolab_id = 'billing' and user_id = 'alice'`);
+    // The database requires a change of access to be recorded (W2.20), even one made by hand.
+    await tx.query(`insert into audit_event(action, kolab_id, subject, done_by) values ('grant.removed', 'billing', 'alice', 'test')`);
+  });
   await kolab.addActor('carol');
   const k = kolab as unknown as { holdLink: (edge: string, actor: string) => Promise<boolean> };
   expect(await k.holdLink(edge, 'carol')).toBe(false);

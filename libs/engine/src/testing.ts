@@ -3,8 +3,48 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
-import type { AccessLevel, DeltaInput, ElementInput, GateResult, Layer, Checks } from '@konjir/types';
+import { ADMIN_DOER, type AccessLevel, type ArchiveTarget, type DeltaInput, type Doer, type ElementInput, type GateResult, type Layer, type LinkRef, type Checks, type OrgRole, type Role, type Visibility } from '@konjir/types';
 import { Kolab } from './kolab.js';
+
+/**
+ * Kolab as tests drive it. Kolab itself makes every write name who made it, with no default
+ * (W2.20, D70), so a caller that forgets is refused. A test is not such a caller: here, a write
+ * that names no one is made as the admin token, ADMIN_DOER, as an admin's MCP verb makes it; a
+ * version a test reviews is submitted by its author; and a session a test ends signs itself out.
+ * Each says so explicitly below. A test of who is recorded passes `by` as the real caller would.
+ */
+export class TestKolab extends Kolab {
+  static override async open(opts: Parameters<typeof Kolab.open>[0] = {}): Promise<TestKolab> {
+    return asTestKolab(await Kolab.open(opts));
+  }
+  override retryOutboxJob(id: string, opts: { by?: Doer } = {}) { return super.retryOutboxJob(id, { by: opts.by ?? ADMIN_DOER }); }
+  override addActor(id: string, opts: { name?: string; owner?: string; by?: Doer } = {}) { return super.addActor(id, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override openSession(actorId: string, role: Role, opts: { kolab?: string; by?: Doer } = {}) { return super.openSession(actorId, role, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override endSession(which: string | { key: string } | { actor: string }, opts: { by?: Doer } | { signingOut: true } = {}) {
+    return super.endSession(which, 'by' in opts && opts.by !== undefined ? { by: opts.by } : { signingOut: true });
+  }
+  override linkIdentity(actorId: string, who: { provider: string; subject: string; login?: string }, opts: { by?: Doer } = {}) { return super.linkIdentity(actorId, who, { by: opts.by ?? ADMIN_DOER }); }
+  override addOrganization(id: string, opts: { name?: string; by?: Doer } = {}) { return super.addOrganization(id, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel; by?: Doer }) { return super.createKolab(name, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override addMember(org: string, user: string, role: OrgRole = 'member', opts: { by?: Doer } = {}) { return super.addMember(org, user, role, { by: opts.by ?? ADMIN_DOER }); }
+  override removeMember(org: string, user: string, opts: { by?: Doer } = {}) { return super.removeMember(org, user, { by: opts.by ?? ADMIN_DOER }); }
+  override addTeam(org: string, name: string, opts: { parent?: string; by?: Doer } = {}) { return super.addTeam(org, name, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override addTeamMember(team: string, user: string, opts: { by?: Doer } = {}) { return super.addTeamMember(team, user, { by: opts.by ?? ADMIN_DOER }); }
+  override removeTeamMember(team: string, user: string, opts: { by?: Doer } = {}) { return super.removeTeamMember(team, user, { by: opts.by ?? ADMIN_DOER }); }
+  override grant(kolab: string, to: string, level: AccessLevel, opts: { layers?: Layer[]; by?: Doer } = {}) { return super.grant(kolab, to, level, { ...opts, by: opts.by ?? ADMIN_DOER }); }
+  override revoke(kolab: string, to: string, opts: { by?: Doer } = {}) { return super.revoke(kolab, to, { by: opts.by ?? ADMIN_DOER }); }
+  override archive(target: ArchiveTarget, opts: { by?: Doer } = {}) { return super.archive(target, { by: opts.by ?? ADMIN_DOER }); }
+  override unarchive(target: ArchiveTarget, opts: { by?: Doer } = {}) { return super.unarchive(target, { by: opts.by ?? ADMIN_DOER }); }
+  override applyRuling(nodeId: string, input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] }, ruling: { id: string; actor: string; by?: Doer }) {
+    return super.applyRuling(nodeId, input, { ...ruling, by: ruling.by ?? ADMIN_DOER });
+  }
+  override async review(versionId: string, opts: { by?: Doer } = {}) { return super.review(versionId, { by: opts.by ?? (await this.version(versionId)).actor_id }); }
+}
+
+/** `kolab`, made a TestKolab: what Kolab.open made, with TestKolab's defaults. */
+export function asTestKolab(kolab: Kolab): TestKolab {
+  return Object.setPrototypeOf(kolab, TestKolab.prototype) as TestKolab;
+}
 
 /**
  * Set by jest.global-setup.js when the suite runs on Postgres (KONJIR_TEST_POSTGRES=1), or
@@ -63,10 +103,10 @@ async function onServer(sql: string) {
  * With `queued: true` it doesn't, for tests of the asynchrony itself, which drain the outbox
  * (drainOutbox) or start the worker as they need.
  */
-export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { queued?: boolean } = {}) {
+export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { queued?: boolean } = {}): Promise<TestKolab> {
   const { queued, ...rest } = options;
   const store = rest.dataDir || rest.databaseUrl ? {} : await testStore();
-  const kolab = await Kolab.open({ ...rest, ...store });
+  const kolab = await TestKolab.open({ ...rest, ...store });
   opened.push(kolab);
   if (!queued) drainAfterWrites(kolab);
   return kolab;
@@ -144,12 +184,12 @@ export const TEST_KOLAB = 'test';
  */
 export async function people(kolab: Kolab, ids: string | string[], opts: { owner?: string; layers?: Layer[]; level?: AccessLevel } = {}) {
   if (!(await kolab.listKolabs()).some((k) => k.id === TEST_KOLAB)) {
-    await kolab.addOrganization('test-org');
-    await kolab.createKolab(TEST_KOLAB, { owner: 'test-org' });
+    await kolab.addOrganization('test-org', { by: ADMIN_DOER });
+    await kolab.createKolab(TEST_KOLAB, { owner: 'test-org', by: ADMIN_DOER });
   }
   for (const id of [ids].flat()) {
-    await kolab.addActor(id, { owner: opts.owner });
-    await kolab.grant(TEST_KOLAB, id, opts.level ?? 'write', opts.layers ? { layers: opts.layers } : {});
+    await kolab.addActor(id, { owner: opts.owner, by: ADMIN_DOER });
+    await kolab.grant(TEST_KOLAB, id, opts.level ?? 'write', { ...(opts.layers ? { layers: opts.layers } : {}), by: ADMIN_DOER });
   }
 }
 
@@ -165,8 +205,8 @@ export async function setup(submissionChecks?: Checks, checks?: Checks, opts: { 
   await people(kolab, 'alice', { layers: ['functional'] });
   await people(kolab, 'bob', { layers: ['technical'] });
   await people(kolab, 'carol', { level: 'read' });
-  const product = await kolab.openSession('alice', 'product');
-  const engineer = await kolab.openSession('bob', 'engineer');
+  const product = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
+  const engineer = await kolab.openSession('bob', 'engineer', { by: ADMIN_DOER });
   return { kolab, product, engineer };
 }
 

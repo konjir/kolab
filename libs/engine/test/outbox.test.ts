@@ -6,7 +6,7 @@
 // and on Postgres.
 import { expect, test } from '@jest/globals';
 import { Kolab, structuralChecks } from '@konjir/engine';
-import { commitReviewed, els, marksOn, openKolab, people, persistentStore, rejection, testStore, textOf, type Store } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, openKolab, people, persistentStore, rejection, testStore, textOf, type Store, TestKolab } from '@konjir/engine/testing';
 import type { CheckContext, Checks } from '@konjir/types';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -33,7 +33,7 @@ async function stoppingAt(store: Store, at: (ctx: CheckContext) => boolean) {
 }
 
 /** Stops `kolab` as a process that dies does: its connections close, and nothing it was doing finishes or cleans up. */
-const die = (kolab: Kolab) => kolab.db.close();
+const die = (kolab: TestKolab) => kolab.db.close();
 
 /** Opens the database again in a new Kolab, once any claim the dead process held has lapsed. */
 async function restart(store: Store) {
@@ -43,18 +43,18 @@ async function restart(store: Store) {
   return openKolab({ ...store, outboxLeaseMs: LEASE_MS });
 }
 
-const jobs = async (kolab: Kolab) =>
+const jobs = async (kolab: TestKolab) =>
   (await kolab.db.query<{ kind: string; version_id: string; attempts: number; claimed_by: string | null }>(
     `select kind, version_id, attempts, claimed_by from outbox order by id`)).rows;
 
 /** Every version of a node: seq, role, state, note and the version it folds, in seq order. */
-async function history(kolab: Kolab, node: string) {
+async function history(kolab: TestKolab, node: string) {
   return (await kolab.db.query<{ seq: number; active_role: string; state: string; review_note: string | null; folded: number | null }>(
     `select v.seq, v.active_role, v.state, v.review_note, f.seq as folded
        from version v left join version f on f.id = v.folded_from where v.node_id = $1 order by v.seq`, [node])).rows;
 }
 
-const verdicts = async (kolab: Kolab, versionId: string) =>
+const verdicts = async (kolab: TestKolab, versionId: string) =>
   (await kolab.db.query<{ reviewer_id: string; state: string }>(
     `select reviewer_id, state from review_request where version_id = $1 order by created_at, id`, [versionId])).rows;
 
@@ -63,7 +63,7 @@ const verdicts = async (kolab: Kolab, versionId: string) =>
  * V@2 waits in review; P@2 commits, and Kolab's rebase of V, V@3, overtakes V@2. Dave's approval
  * of V@2 now folds it onto V@3 (CAS7, D38).
  */
-async function overtakenInReview(kolab: Kolab) {
+async function overtakenInReview(kolab: TestKolab) {
   await people(kolab, ['alice', 'dave'], { layers: ['functional'] });
   const alice = await kolab.openSession('alice', 'product');
   const dave = await kolab.openSession('dave', 'product');
@@ -79,7 +79,7 @@ async function overtakenInReview(kolab: Kolab) {
 }
 
 /** What a fold of V@2 that committed once looks like, whichever process committed it. */
-async function expectFoldedOnce(kolab: Kolab, v2: string) {
+async function expectFoldedOnce(kolab: TestKolab, v2: string) {
   const h = await history(kolab, 'V');
   const committedFolds = h.filter((v) => v.folded === 2 && v.state === 'committed');
   expect(committedFolds).toHaveLength(1);
@@ -353,7 +353,7 @@ function gate() {
 }
 
 /** S@1 with R1, and Bob's binding B@1, whose b1 relies on R1; S@2 changes R1, so B@1 carries a changed mark. */
-async function bindingWithMark(k: Kolab) {
+async function bindingWithMark(k: TestKolab) {
   await people(k, 'alice', { layers: ['functional'] });
   await people(k, 'bob', { layers: ['technical'] });
   const alice = await k.openSession('alice', 'product');
@@ -370,7 +370,7 @@ async function bindingWithMark(k: Kolab) {
 }
 
 /** What a binding whose cascades all ran in order shows: its link and its mark on its latest version. */
-async function expectCarriedToLatest(k: Kolab) {
+async function expectCarriedToLatest(k: TestKolab) {
   const latest = (await k.latestCommitted('B'))!;
   expect(latest.seq).toBe(3);
   expect((await k.lineage(latest.id, 'upstream')).map((e) => [e.source, e.target])).toStrictEqual([['kj:B@3#b1', 'kj:S@1#R1']]);
@@ -539,7 +539,7 @@ test('a job that keeps failing is dead after ten attempts: no worker runs it unt
 
 test('a ruling applied through the admin token, overtaken by Kolab\'s rebase as it commits, is applied once by the next process if its own stops mid-fold (D47)', async () => {
   const store = await persistentStore();
-  let k!: Kolab;
+  let k!: TestKolab;
   let alice!: string;
   let stopped!: () => void;
   const reached = new Promise<void>((r) => { stopped = r; });
@@ -608,7 +608,7 @@ test('closing waits for the outbox work this process is running, then frees noth
 }, 90_000);
 
 /** Makes the first query matching `when` fail as a dropped connection would; returns a function that restores it. */
-function failOnce(k: Kolab, when: (sql: string, params?: unknown[]) => boolean) {
+function failOnce(k: TestKolab, when: (sql: string, params?: unknown[]) => boolean) {
   const proto = Object.getPrototypeOf(k.db);
   const query = proto.query;
   let armed = true;
@@ -698,7 +698,7 @@ async function variants(store: Store) {
 }
 
 /** The node each of Kolab's own rebases was made for, in the order they were written. */
-const rebasedOrder = async (kolab: Kolab) =>
+const rebasedOrder = async (kolab: TestKolab) =>
   (await kolab.db.query<{ node_id: string }>(`select node_id from version where active_role = 'system' order by created_at, id`)).rows.map((r) => r.node_id);
 
 test('a parent\'s commit returns once it commits, with its variants\' rebases queued; the worker rebases them level by level, each on the variant\'s live version', async () => {

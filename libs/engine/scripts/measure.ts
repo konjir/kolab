@@ -6,6 +6,7 @@
  * addressing modes, against the design notes' lockstep rule (every downstream
  * version re-mints).
  */
+import { ADMIN_DOER } from '@konjir/types';
 import { Kolab } from '../src/index.js';
 import { people } from '../src/testing.js';
 
@@ -21,8 +22,8 @@ const MODES: Mode[] = [
 async function run(n: number, mode: Mode) {
   const kolab = await Kolab.open();
   await people(kolab, 'alice'); await people(kolab, 'bob');
-  const product = await kolab.openSession('alice', 'product');
-  const engineer = await kolab.openSession('bob', 'engineer');
+  const product = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
+  const engineer = await kolab.openSession('bob', 'engineer', { by: ADMIN_DOER });
   const range = [...Array(n).keys()];
   const elems = (p: string, text: (i: number) => string) => range.map((i) => ({ id: `${p}${i}`, text: text(i) }));
 

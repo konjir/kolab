@@ -13,7 +13,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { Kolab } from '@konjir/engine';
+import { ADMIN_DOER } from '@konjir/types';
 import { StubIdentity, startServer } from '@konjir/server';
+
+/** The seed is the admin's setup: every write it makes names the admin token (W2.20). */
+const admin = { by: ADMIN_DOER };
 
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 7433);
@@ -36,11 +40,11 @@ class Newcomers extends StubIdentity {
 const kolab = await Kolab.open({});
 // A sign-in's lifetime, shortened for the test of one that expires (KONJIR_SIGNIN_TTL_S).
 if (process.env.KONJIR_SIGNIN_TTL_S) kolab.oauth.requestTtlS = Number(process.env.KONJIR_SIGNIN_TTL_S);
-await kolab.addActor('lee', { name: 'Lee' });
-await kolab.createKolab('accounts', { owner: 'lee', title: 'Accounts' });
-const lee = await kolab.openSession('lee', 'product', { kolab: 'accounts' });
+await kolab.addActor('lee', { name: 'Lee', ...admin });
+await kolab.createKolab('accounts', { owner: 'lee', title: 'Accounts', ...admin });
+const lee = await kolab.openSession('lee', 'product', { kolab: 'accounts', ...admin });
 const { token } = await kolab.createInvite(lee, { level: 'write', layers: ['technical'] });
-await kolab.endSession(lee);
+await kolab.endSession(lee, { signingOut: true });
 
 const server = await startServer({ kolab, port, adminToken: randomBytes(24).toString('base64url'), identity: new Newcomers() });
 mkdirSync(dirname(inviteFile), { recursive: true });

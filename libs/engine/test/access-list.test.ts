@@ -9,10 +9,10 @@
 // access from teams and the organization is shown, never changed here.
 import { expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { els, openKolab, rejection } from '@konjir/engine/testing';
+import { els, openKolab, rejection, TestKolab } from '@konjir/engine/testing';
 
 /** Ann owns `anns`; Eli writes its technical layer, Fay administers it, and Eli's agent works there as an engineer. */
-async function anns(kolab?: Kolab) {
+async function anns(kolab?: TestKolab) {
   const k = kolab ?? await openKolab();
   for (const id of ['ann', 'eli', 'fay']) await k.addActor(id);
   await k.addActor('eli-claude', { owner: 'eli' });

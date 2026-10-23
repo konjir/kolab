@@ -693,7 +693,7 @@ export class WebService {
 
   /** Signing out ends the session: its token is revoked everywhere (D41), not only forgotten here. */
   async signOut(s: string) {
-    await this.kolab.endSession(s);
+    await this.kolab.endSession(s, { signingOut: true });
   }
 
   private async outcome(r: GateResult): Promise<WebOutcome> {

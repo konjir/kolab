@@ -240,6 +240,21 @@ const ACCESS_LOCK = 0x4b4a0006;
 const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 /** The author of Kolab's own work, in the role 'system'. Never an actor. */
 export const SYSTEM_ACTOR = 'kolab';
+/**
+ * Whether `id`, in any case, is a name Kolab records as who made a write without its being an
+ * actor's: the admin token's (ADMIN_DOER) or Kolab's own (SYSTEM_ACTOR). No actor or account may
+ * take one (W2.20; migration 0024's actor_not_doer and account_not_doer).
+ */
+export const isDoerName = (id: string) => id.toLowerCase() === ADMIN_DOER || id.toLowerCase() === SYSTEM_ACTOR;
+/**
+ * Who made a write, as its caller names it (W2.20, D70). Every write that a caller asks for names
+ * who asked: there is no default, so a caller that forgets is refused here, and never recorded as
+ * the admin or as Kolab. An empty or blank name is no one.
+ */
+export function doer(by: Doer | undefined): Doer {
+  if (typeof by !== 'string' || !by.trim()) throw new Error('a write must name who made it (W2.20): pass `by`');
+  return by;
+}
 export class GateError extends Error { name = 'GateError'; }
 
 /**
@@ -446,7 +461,8 @@ export interface PendingRebase {
 }
 
 export class Kolab {
-  private constructor(readonly db: Db, private submissionChecks: Checks, private checks: Checks,
+  /** Protected, not private, only so that @konjir/engine/testing's TestKolab may extend it: Kolab.open makes one. */
+  protected constructor(readonly db: Db, private submissionChecks: Checks, private checks: Checks,
     private readonly leaseMs: number, private readonly closeWaitMs: number, private readonly dataDir?: string) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
@@ -1123,25 +1139,28 @@ export class Kolab {
   /**
    * The audit log (W2.20), newest first: the changes that leave no row of their own to say who made
    * them (grants, memberships, outbox retries), with who made each. With `kolab`, that kolab's;
-   * with `subject`, those done to that grantee, person or job. For an admin (konjir_admin_audit):
-   * Kolab's own login reads it, and no session can (migration 0024).
+   * with `subject`, those done to that grantee, person or job; with `before`, those older than the
+   * event of that id, to page back past the newest `limit` (at most 500). For an admin
+   * (konjir_admin_audit): Kolab's own login reads it, and no session can (migration 0024).
    */
-  async auditLog(opts: { kolab?: string; subject?: string; limit?: number } = {}): Promise<AuditEvent[]> {
+  async auditLog(opts: { kolab?: string; subject?: string; limit?: number; before?: number } = {}): Promise<AuditEvent[]> {
     const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 100)), 500);
+    if (opts.before !== undefined && !(Number.isSafeInteger(opts.before) && opts.before > 0)) throw new Error('before is the id of an audit event, a positive whole number');
     const rows = (await this.db.query<{ id: string | number; action: AuditAction; kolab_id: string | null; subject: string; detail: Record<string, unknown> | null; done_by: string; done_at: Date | string }>(
       `select id, action, kolab_id, subject, detail, done_by, done_at from audit_event
-        where ($1::text is null or kolab_id = $1) and ($2::text is null or subject = $2) order by id desc limit $3`,
-      [opts.kolab ?? null, opts.subject ?? null, limit])).rows;
+        where ($1::text is null or kolab_id = $1) and ($2::text is null or subject = $2) and ($4::bigint is null or id < $4)
+        order by id desc limit $3`,
+      [opts.kolab ?? null, opts.subject ?? null, limit, opts.before ?? null])).rows;
     return rows.map((r) => ({ id: Number(r.id), action: r.action, kolab: r.kolab_id, subject: r.subject, detail: r.detail, by: r.done_by, at: new Date(r.done_at).toISOString() }));
   }
 
   /**
    * Retries a dead job, or one waiting out its backoff: due now, with its attempts counted afresh,
-   * and every process's worker told. The audit log records who retried it (`by`, the admin token
-   * by default; W2.20). Returns whether there was such a job.
+   * and every process's worker told. The audit log records who retried it (`by`; W2.20). Returns
+   * whether there was such a job.
    */
-  async retryOutboxJob(id: string, opts: { by?: Doer } = {}): Promise<boolean> {
-    const by = opts.by ?? ADMIN_DOER;
+  async retryOutboxJob(id: string, opts: { by: Doer }): Promise<boolean> {
+    const by = doer(opts?.by);
     const r = await this.inTransaction(async (tx) => {
       const freed = await tx.query<{ kind: string; version_id: string; kolab_id: string }>(
         `update outbox set state = 'pending', attempts = 0, run_after = clock_timestamp()
@@ -1163,13 +1182,13 @@ export class Kolab {
   /**
    * Registers a person, who is also a user account by the same id, or with `owner` an agent
    * owned by that account: a user or an organization (D30). An agent is an actor of its own: it
-   * holds its own sessions and authors its own versions. `by` is who added it, the admin token
-   * by default (W2.20).
+   * holds its own sessions and authors its own versions. `by` is who added it (W2.20).
    */
-  async addActor(id: string, opts: { name?: string; owner?: string; by?: Doer } = {}) {
-    const { name = id, owner, by = ADMIN_DOER } = opts;
+  async addActor(id: string, opts: { name?: string; owner?: string; by: Doer }) {
+    const { name = id, owner } = opts ?? {};
+    const by = doer(opts?.by);
     if (!ACTOR_ID.test(id)) throw new ActorError(`"${id}" isn't a valid actor id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
-    if (id === SYSTEM_ACTOR) throw new ActorError(`"${SYSTEM_ACTOR}" is reserved for Kolab's own work`);
+    if (id.toLowerCase() === SYSTEM_ACTOR) throw new ActorError(`"${SYSTEM_ACTOR}" is reserved for Kolab's own work`);
     if (id.toLowerCase() === ADMIN_DOER) throw new ActorError(`"${ADMIN_DOER}" is reserved: it names the admin token in what Kolab records`);
     await this.requireFreeName(id, 'ActorError');
     const ownerAccount = owner === undefined ? undefined : await this.findAccount(owner);
@@ -1243,9 +1262,10 @@ export class Kolab {
    * The actor must be able to reach the kolab. Without `kolab`, it is the one kolab the actor
    * can reach. An agent's access is checked against its owner's as the session opens, and on
    * every write after: it is its own grant, never more than its owner's (D30). `by` is who opened
-   * it, the admin token by default (W2.20).
+   * it (W2.20).
    */
-  async openSession(actorId: string, role: Role, opts: { kolab?: string; by?: Doer } = {}): Promise<string> {
+  async openSession(actorId: string, role: Role, opts: { kolab?: string; by: Doer }): Promise<string> {
+    const by = doer(opts?.by);
     const actor = await this.findActor(actorId);
     if (!actor) throw new ActorError(`no actor ${actorId}; add it first`);
     if (await this.archivedActor(actorId)) {
@@ -1268,7 +1288,7 @@ export class Kolab {
     try {
       await this.inTransaction(async (tx, signal) => {
         await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-        await insertSession(tx, id, { actor: actorId, role, kolab: kolab!, by: opts.by ?? ADMIN_DOER });
+        await insertSession(tx, id, { actor: actorId, role, kolab: kolab!, by });
         await this.signalRequestsOf(tx, signal, actorId);
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
@@ -1293,11 +1313,11 @@ export class Kolab {
    * The session is named by its token, by its sessionKey (`{ key }`, as whoami and events give
    * it), or by its actor (`{ actor }`, whose one open session it is), since the token is shown
    * only once. Returns the ended session's sessionKey, or null if there was no such open session.
-   * The event names the session by sessionKey, never by its token. `by` is who ended it (W2.20):
-   * the admin, or by default the session's own actor, signing out.
+   * The event names the session by sessionKey, never by its token. Who ended it is recorded
+   * (W2.20): `by`, such as an admin, or with `signingOut` the session's own actor.
    */
-  async endSession(which: string | { key: string } | { actor: string }, opts: { by?: Doer } = {}): Promise<string | null> {
-    const by = opts.by ?? null;
+  async endSession(which: string | { key: string } | { actor: string }, opts: { by: Doer } | { signingOut: true }): Promise<string | null> {
+    const by = opts && 'signingOut' in opts && opts.signingOut === true ? null : doer((opts as { by?: Doer } | undefined)?.by);
     return this.inTransaction(async (tx, signal) => {
       const r = typeof which === 'object' && 'actor' in which
         ? await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now(), ended_by = coalesce($2, actor_id) where actor_id = $1 and ended_at is null returning id, actor_id`, [which.actor, by])
@@ -1439,9 +1459,12 @@ export class Kolab {
     });
   }
 
-  /** The node called `name` in `kolab`, if there is one. */
+  /**
+   * The node called `name` in `kolab`, if there is one. Not who made it: kj_agent can't read that
+   * column, and reads it only for its own kolab's nodes (kj_node_creator, migration 0024).
+   */
   private async findNode(q: Q, kolab: string, name: string): Promise<NodeRow | undefined> {
-    return (await q.query<NodeRow>(`select * from node where kolab_id = $1 and name = $2`, [kolab, name])).rows[0];
+    return (await q.query<NodeRow>(`select ${NODE_COLUMNS} from node where kolab_id = $1 and name = $2`, [kolab, name])).rows[0];
   }
 
   /**
@@ -1479,7 +1502,7 @@ export class Kolab {
   async nodeForAdmin(ref: string): Promise<NodeRow> {
     const r = parseNodeRef(ref);
     if (r.kolab !== undefined) return this.locateNode({ system: r.kolab }, r);
-    const all = (await this.db.query<NodeRow>(`select * from node where name = $1 order by kolab_id`, [r.node])).rows;
+    const all = (await this.db.query<NodeRow>(`select ${NODE_COLUMNS} from node where name = $1 order by kolab_id`, [r.node])).rows;
     if (all.length === 1) return all[0];
     if (!all.length) throw new Error(`no node ${r.node} in any kolab`);
     throw new GateError(`kolabs ${all.map((n) => n.kolab_id).join(', ')} each have a node ${r.node}: name it as <kolab>/${r.node}`);
@@ -1530,6 +1553,10 @@ export class Kolab {
     const from = await this.sessionKolab(sessionId);
     const read = await this.read(where, async (q) => ({
       node, version: v, from,
+      // Who made the node (W2.20), told only to a reader in its own kolab (D49, D58): null when
+      // that is the reader's kolab but the node was made before Kolab recorded it, and absent
+      // otherwise. Read as kj_agent, through kj_node_creator, which answers for that kolab alone.
+      ...(node.kolab_id === from ? { createdBy: (await q.query<{ c: string | null }>(`select kj_node_creator($1) as c`, [node.id])).rows[0]?.c ?? null } : {}),
       elements: await this.elements(v.id, q),
       queries: await this.listQueries({ node: node.id, from }, q),
       // Precedent and open case files on the node: only its own kolab's ever show, since row-level
@@ -1663,15 +1690,16 @@ export class Kolab {
 
   /**
    * Links an existing person to an identity (admin), so their first sign-in with it reaches them.
-   * `by` is who linked it, the admin token by default (W2.20).
+   * `by` is who linked it (W2.20).
    */
-  async linkIdentity(actorId: string, who: { provider: string; subject: string; login?: string }, opts: { by?: Doer } = {}) {
+  async linkIdentity(actorId: string, who: { provider: string; subject: string; login?: string }, opts: { by: Doer }) {
+    const by = doer(opts?.by);
     if (!IDP_NAME.test(who.provider) || !IDP_SUBJECT.test(who.subject)) throw new ActorError('name the provider (github) and its id for the person (GitHub\'s numeric user id)');
     const a = await this.actor(actorId);
     if (a.kind !== 'person') throw new ActorError(`${actorId} is an agent: only a person signs in`);
     try {
       await this.db.query(`insert into identity(provider, subject, actor_id, login, linked_by) values ($1, $2, $3, $4, $5)`,
-        [who.provider, who.subject, actorId, who.login ?? who.subject, opts.by ?? ADMIN_DOER]);
+        [who.provider, who.subject, actorId, who.login ?? who.subject, by]);
     } catch (e) {
       if (String(e).includes('identity_pkey')) {
         const holder = (await this.db.query<{ actor_id: string }>(`select actor_id from identity where provider = $1 and subject = $2`, [who.provider, who.subject])).rows[0]?.actor_id;
@@ -2549,12 +2577,14 @@ export class Kolab {
     throw new NameTakenError(account ? `account ${id} already exists` : `actor ${id} already exists`, archived, errorName);
   }
 
-  /** Registers an organization: an account that owns kolabs and agents, with members and teams. `by` is who, the admin token by default (W2.20). */
-  async addOrganization(id: string, opts: { name?: string; by?: Doer } = {}) {
-    if (!ACTOR_ID.test(id) || id === SYSTEM_ACTOR) throw new TenancyError(`"${id}" isn't a valid account id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
+  /** Registers an organization: an account that owns kolabs and agents, with members and teams. `by` is who (W2.20). */
+  async addOrganization(id: string, opts: { name?: string; by: Doer }) {
+    const by = doer(opts?.by);
+    if (!ACTOR_ID.test(id)) throw new TenancyError(`"${id}" isn't a valid account id: use letters, digits, '.', '_', '-' and '@', starting with a letter or digit`);
+    if (isDoerName(id)) throw new TenancyError(`"${id.toLowerCase()}" is reserved: it names ${id.toLowerCase() === ADMIN_DOER ? 'the admin token' : 'Kolab\'s own work'} in what Kolab records`);
     await this.requireFreeName(id);
     try {
-      await this.db.query(`insert into account(id, kind, name, created_by) values ($1, 'organization', $2, $3)`, [id, opts.name ?? id, opts.by ?? ADMIN_DOER]);
+      await this.db.query(`insert into account(id, kind, name, created_by) values ($1, 'organization', $2, $3)`, [id, opts.name ?? id, by]);
     } catch (e) {
       if (/account_pkey|account_id_lower/.test(String(e))) throw new NameTakenError(`account ${id} already exists`);
       throw e;
@@ -2611,8 +2641,8 @@ export class Kolab {
    * database refuses every write to an archived kolab's data, and every session for it or for an
    * archived actor, whatever role writes (0014).
    */
-  async archive(target: ArchiveTarget, opts: { by?: string } = {}): Promise<{ archived: ArchiveTarget; kolabs: string[]; agents: string[]; ended: number }> {
-    return this.setArchived(target, true, opts.by ?? 'admin');
+  async archive(target: ArchiveTarget, opts: { by: Doer }): Promise<{ archived: ArchiveTarget; kolabs: string[]; agents: string[]; ended: number }> {
+    return this.setArchived(target, true, doer(opts?.by));
   }
 
   /**
@@ -2621,8 +2651,8 @@ export class Kolab {
    * ended stay ended; open new ones. A kolab or an agent archived with its owner comes back with
    * the owner, so unarchiving it alone is refused, naming the owner.
    */
-  async unarchive(target: ArchiveTarget, opts: { by?: string } = {}): Promise<{ unarchived: ArchiveTarget; kolabs: string[]; agents: string[] }> {
-    const r = await this.setArchived(target, false, opts.by ?? 'admin');
+  async unarchive(target: ArchiveTarget, opts: { by: Doer }): Promise<{ unarchived: ArchiveTarget; kolabs: string[]; agents: string[] }> {
+    const r = await this.setArchived(target, false, doer(opts?.by));
     // Outbox jobs of the kolabs it restores waited, unclaimed (claimJob): they are due again.
     this.wake();
     return { unarchived: r.archived, kolabs: r.kolabs, agents: r.agents };
@@ -2787,9 +2817,10 @@ export class Kolab {
   /**
    * Creates a kolab owned by an account. Its name is unique across all of Konjir (TEN4), so
    * one taken by any other account, or by an archived kolab, is refused (NameTakenError). `by` is
-   * who made it, the admin token by default (W2.20).
+   * who made it (W2.20).
    */
-  async createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel; by?: Doer }) {
+  async createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel; by: Doer }) {
+    const by = doer(opts?.by);
     if (!isKolabName(name)) throw new TenancyError(`"${name}" isn't a valid kolab name: use lowercase letters, digits and '-', starting with a letter or digit`);
     if (opts.visibility !== undefined && !VISIBILITIES.includes(opts.visibility)) throw new TenancyError(`visibility is one of ${VISIBILITIES.join(', ')}`);
     if (opts.base !== undefined && !ACCESS_LEVELS.includes(opts.base)) throw new TenancyError(`a base permission is one of ${ACCESS_LEVELS.join(', ')}`);
@@ -2801,7 +2832,7 @@ export class Kolab {
     if (existing) throw taken(existing.archived);
     try {
       await this.db.query(`insert into kolab(id, owner_id, title, visibility, base_permission, created_by) values ($1, $2, $3, $4, $5, $6)`,
-        [name, opts.owner, opts.title ?? name, opts.visibility ?? 'private', opts.base ?? null, opts.by ?? ADMIN_DOER]);
+        [name, opts.owner, opts.title ?? name, opts.visibility ?? 'private', opts.base ?? null, by]);
     } catch (e) {
       if (String(e).includes('kolab_pkey')) throw taken();   // made by another call since the check
       throw e;
@@ -2828,13 +2859,13 @@ export class Kolab {
 
   /**
    * Adds a user to an organization, or changes their role in it. Owners administer every kolab it
-   * owns. The audit log records `by`, the admin token by default (W2.20).
+   * owns. The audit log records `by` (W2.20).
    */
-  async addMember(org: string, user: string, role: OrgRole = 'member', opts: { by?: Doer } = {}) {
+  async addMember(org: string, user: string, role: OrgRole = 'member', opts: { by: Doer }) {
+    const by = doer(opts?.by);
     if (!ORG_ROLES.includes(role)) throw new TenancyError(`a member's role is one of ${ORG_ROLES.join(', ')}`);
     await this.requireLiveAccount(org, 'organization', 'takes no members');
     await this.requireLiveAccount(user, 'user', 'joins no organization');
-    const by = opts.by ?? ADMIN_DOER;
     return this.changeAccess({ users: [user] }, by, async (tx) => {
       await tx.query(
         `insert into org_member(org_id, user_id, role) values ($1, $2, $3)
@@ -2844,9 +2875,9 @@ export class Kolab {
   }
 
   /** Removes a user from an organization and its teams. Their sessions narrow, or end if nothing is left. The audit log records `by` (W2.20). */
-  async removeMember(org: string, user: string, opts: { by?: Doer } = {}) {
+  async removeMember(org: string, user: string, opts: { by: Doer }) {
+    const by = doer(opts?.by);
     await this.requireAccount(org, 'organization');
-    const by = opts.by ?? ADMIN_DOER;
     return this.changeAccess({ users: [user] }, by, async (tx) => {
       const teams = (await tx.query<{ team_id: string }>(
         `delete from team_member where user_id = $2 and team_id in (select id from team where org_id = $1) returning team_id`, [org, user])).rows.map((r) => r.team_id).sort();
@@ -2855,8 +2886,9 @@ export class Kolab {
     });
   }
 
-  /** Creates a team in an organization, under `parent` (a team of the same organization) if given. Returns its id, `<org>/<name>`. `by` is who, the admin token by default (W2.20). */
-  async addTeam(org: string, name: string, opts: { parent?: string; by?: Doer } = {}): Promise<string> {
+  /** Creates a team in an organization, under `parent` (a team of the same organization) if given. Returns its id, `<org>/<name>`. `by` is who (W2.20). */
+  async addTeam(org: string, name: string, opts: { parent?: string; by: Doer }): Promise<string> {
+    const by = doer(opts?.by);
     if (!TEAM_NAME.test(name)) throw new TenancyError(`"${name}" isn't a valid team name: use lowercase letters, digits and '-', starting with a letter or digit`);
     await this.requireLiveAccount(org, 'organization', 'gets no new team');
     const id = `${org}/${name}`;
@@ -2865,12 +2897,13 @@ export class Kolab {
       throw new TenancyError(`no team ${parent} in ${org} to nest ${id} under`);
     }
     if ((await this.db.query(`select 1 from team where id = $1`, [id])).rows.length) throw new TenancyError(`team ${id} already exists`);
-    await this.db.query(`insert into team(id, org_id, name, parent_id, created_by) values ($1, $2, $3, $4, $5)`, [id, org, name, parent, opts.by ?? ADMIN_DOER]);
+    await this.db.query(`insert into team(id, org_id, name, parent_id, created_by) values ($1, $2, $3, $4, $5)`, [id, org, name, parent, by]);
     return id;
   }
 
-  /** Adds a member of the team's organization to the team. The audit log records `by`, the admin token by default (W2.20). */
-  async addTeamMember(team: string, user: string, opts: { by?: Doer } = {}) {
+  /** Adds a member of the team's organization to the team. The audit log records `by` (W2.20). */
+  async addTeamMember(team: string, user: string, opts: { by: Doer }) {
+    const by = doer(opts?.by);
     const t = (await this.db.query<{ org_id: string }>(`select org_id from team where id = $1`, [team])).rows[0];
     if (!t) throw new TenancyError(`no team ${team}`);
     await this.requireLiveAccount(t.org_id, 'organization', 'adds no team members');
@@ -2878,7 +2911,6 @@ export class Kolab {
     if (!(await this.db.query(`select 1 from org_member where org_id = $1 and user_id = $2`, [t.org_id, user])).rows.length) {
       throw new TenancyError(`${user} isn't a member of ${t.org_id}; add them to it first`);
     }
-    const by = opts.by ?? ADMIN_DOER;
     return this.changeAccess({ users: [user] }, by, async (tx) => {
       const r = await tx.query(`insert into team_member(team_id, user_id) values ($1, $2) on conflict do nothing returning team_id`, [team, user]);
       if (r.rows.length) await audit(tx, by, 'team_member.added', { subject: user, detail: { team } });
@@ -2886,9 +2918,9 @@ export class Kolab {
   }
 
   /** Removes a user from a team. Their sessions narrow, or end if nothing is left. The audit log records `by` (W2.20). */
-  async removeTeamMember(team: string, user: string, opts: { by?: Doer } = {}) {
+  async removeTeamMember(team: string, user: string, opts: { by: Doer }) {
+    const by = doer(opts?.by);
     if (!(await this.db.query(`select 1 from team where id = $1`, [team])).rows.length) throw new TenancyError(`no team ${team}`);
-    const by = opts.by ?? ADMIN_DOER;
     return this.changeAccess({ users: [user] }, by, async (tx) => {
       const r = await tx.query(`delete from team_member where team_id = $1 and user_id = $2 returning team_id`, [team, user]);
       if (r.rows.length) await audit(tx, by, 'team_member.removed', { subject: user, detail: { team } });
@@ -2901,9 +2933,10 @@ export class Kolab {
    * covers `layers`, both by default (TEN8). An agent may never be granted more than its owner
    * holds there (D30): a higher level, or a layer its owner can't write, is refused. A grant
    * that lowers access narrows the grantee's sessions (and its agents'), and ends any that can
-   * no longer reach the kolab. The audit log records `by`, the admin token by default (W2.20).
+   * no longer reach the kolab. The audit log records `by` (W2.20).
    */
-  async grant(kolab: string, to: string, level: AccessLevel, opts: { layers?: Layer[]; by?: Doer } = {}) {
+  async grant(kolab: string, to: string, level: AccessLevel, opts: { layers?: Layer[]; by: Doer }) {
+    const by = doer(opts?.by);
     if (!ACCESS_LEVELS.includes(level)) throw new TenancyError(`a level is one of ${ACCESS_LEVELS.join(', ')}`);
     const k = await this.requireLiveKolab(kolab, 'grants no access');
     let layers: Layer[];
@@ -2918,7 +2951,6 @@ export class Kolab {
     }
     const grantee = await this.grantee(to, k);
     if (grantee.column !== 'team_id' && await this.archivedActor(to)) throw new TenancyError(`${to} is archived, so it is granted nothing; unarchive it first`);
-    const by = opts.by ?? ADMIN_DOER;
     return this.changeAccess(granted(grantee), by, async (tx) => {
       // Against what its owner holds now, in this transaction.
       if (grantee.column === 'agent_id') await requireWithinCap(tx, grantee, kolab, { level, layers });
@@ -2930,9 +2962,9 @@ export class Kolab {
   }
 
   /** Removes a grantee's grant on a kolab. Sessions narrow, and any that can no longer reach it end. The audit log records `by` (W2.20). */
-  async revoke(kolab: string, to: string, opts: { by?: Doer } = {}) {
+  async revoke(kolab: string, to: string, opts: { by: Doer }) {
+    const by = doer(opts?.by);
     const grantee = await this.grantee(to, await this.requireKolab(kolab));
-    const by = opts.by ?? ADMIN_DOER;
     return this.changeAccess(granted(grantee), by, async (tx) => {
       const r = await tx.query(`delete from kolab_grant where kolab_id = $1 and ${grantee.column} = $2 returning kolab_id`, [kolab, grantee.id]);
       if (r.rows.length) await audit(tx, by, 'grant.removed', { kolab, subject: grantee.id });
@@ -3093,7 +3125,8 @@ export class Kolab {
    * records the ruling and who applied it.
    */
   async applyRuling(nodeId: string, input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
-    ruling: { id: string; actor: string; by?: Doer }): Promise<GateResult> {
+    ruling: { id: string; actor: string; by: Doer }): Promise<GateResult> {
+    const by = doer(ruling?.by);
     if (!/^D\d+$/.test(ruling.id)) throw new GateError(`a ruling is named by its Decisions Log ID, such as D47, not "${ruling.id}"`);
     const node = await this.node(nodeId);
     await this.actor(ruling.actor);
@@ -3107,7 +3140,7 @@ export class Kolab {
     const author = { actor_id: ruling.actor, active_role: ROLE_OF_LAYER[node.layer], kolab: node.kolab_id };
     const id = await this.writeDraft(nodeId, node.layer, author, input, (fn, access) => this.asSystem(fn, nodeId, { access }));
     // Written as the actor given, but submitted by whoever applied the ruling (W2.20).
-    return this.judge(id, undefined, ruling.id, ruling.by ?? ADMIN_DOER);
+    return this.judge(id, undefined, ruling.id, by);
   }
 
   /**
@@ -3214,22 +3247,22 @@ export class Kolab {
    * commit step, under the node's lock, so nothing can commit between the check and the commit
    * (W1.17). The result names the version that actually committed, or that waits in review.
    */
-  async review(versionId: string, opts: { by?: Doer } = {}): Promise<GateResult> {
-    return this.judge(versionId, undefined, undefined, opts.by);
+  async review(versionId: string, opts: { by: Doer }): Promise<GateResult> {
+    return this.judge(versionId, undefined, undefined, doer(opts?.by));
   }
 
   /**
    * `approvedBy`: this is a fold of a version already approved, which commits on structural checks,
    * carrying the approval, and only while that version is still in review (foldRecord).
    */
-  private async judge(versionId: string, approvedBy?: string, ruling?: string, by: Doer = SYSTEM_ACTOR): Promise<GateResult> {
+  private async judge(versionId: string, approvedBy: string | undefined, ruling: string | undefined, by: Doer): Promise<GateResult> {
     const v = await this.version(versionId);
     const here = `${await this.nameOf(v.node_id)}@${v.seq}`;
     if (v.state === 'in_review' && !approvedBy) return this.resubmit(v);
     if (v.state !== 'drafted') throw new GateError(`${here} is ${v.state}, not drafted`);
-    // Who put it to review, recorded before anything moves it on (W2.20; version_submitted_by). A
-    // draft the checks returned and submitted again keeps its first submitter.
-    await this.db.query(`update version set submitted_by = $2 where id = $1 and state = 'drafted' and submitted_by is null`, [v.id, by]);
+    // Who put it to review (`by`) is recorded by the statement that moves it out of drafted, in
+    // enterReview or commitStep, so a draft returned and submitted again names whoever submitted
+    // it last (W2.20; version_submitted_by).
     const newer = await overtakenBy(this.db, v);
     if (newer) return this.settle(v, newer, approvedBy, ruling);
     const human = v.active_role !== 'system';
@@ -3266,7 +3299,7 @@ export class Kolab {
       if (writers.length) {
         const reviewers = await this.ableToReview(v, writers);
         const inReview = `${note ?? 'Kolab\'s checks passed.'} ${waitingFor(v.layer, reviewers)}`;
-        const late = await this.enterReview(v, writers, inReview);
+        const late = await this.enterReview(v, writers, inReview, by);
         if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
         if (late) return this.settle(v, late);
         return { ok: false, note: inReview, version: versionId, in_review: true, reviewers };
@@ -3276,6 +3309,7 @@ export class Kolab {
     }
     // The node may have moved on while the checks ran.
     const late = await this.commitStep(v, note, {
+      submittedBy: by,
       ...(approvedBy ? { record: (tx: Q, signal: Signal, overtaken: boolean) => this.foldRecord(tx, signal, v, overtaken) } : {}),
       ...(this.settlesDurably(v) ? { settle: { ruling } } : {}),
     });
@@ -3409,16 +3443,17 @@ export class Kolab {
   /**
    * Drafted -> in_review, with an open review request for each reviewer, under the node's lock,
    * so a draft that something overtook never enters review: that returns the overtakers instead.
-   * Each request lands in its reviewer's inbox, and the author's answers show the submission.
+   * Each request lands in its reviewer's inbox, and the author's answers show the submission. The
+   * same statement records who submitted it, `by` (W2.20).
    */
-  private enterReview(v: VersionRow, reviewers: string[], note: string): Promise<Overtaker[] | { refused: string } | undefined> {
+  private enterReview(v: VersionRow, reviewers: string[], note: string, by: Doer): Promise<Overtaker[] | { refused: string } | undefined> {
     return this.asSystem(async (tx, signal) => {
       const newer = await overtakenBy(tx, v);
       if (newer) return newer;
       const refused = await this.authorRefusal(tx, signal, v);
       if (refused) return { refused };
-      const r = await tx.query(`update version set state = 'in_review', review_note = $2 where id = $1 and state = 'drafted' returning id`,
-        [v.id, note]);
+      const r = await tx.query(`update version set state = 'in_review', review_note = $2, submitted_by = $3 where id = $1 and state = 'drafted' returning id`,
+        [v.id, note, by]);
       if (!r.rows.length) throw new GateError(`${v.id} is no longer drafted: another review settled it first`);
       for (const reviewer of reviewers) {
         await tx.query(`insert into review_request(id, version_id, reviewer_id) values ($1, $2, $3)`, [ulid(), v.id, reviewer]);
@@ -3677,7 +3712,10 @@ export class Kolab {
    * rejection as stale (settle).
    */
   private async commitStep(v: VersionRow, note: string | null, opts: {
-    from?: 'drafted' | 'in_review'; record?: (tx: Q, signal: Signal, overtaken: boolean) => Promise<boolean>;
+    from?: 'drafted' | 'in_review';
+    /** Who submitted it, recorded as it commits from drafted (W2.20); one in review keeps its submitter. */
+    submittedBy?: Doer;
+    record?: (tx: Q, signal: Signal, overtaken: boolean) => Promise<boolean>;
     settle?: { approvedBy?: string; ruling?: string };
   } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> {
     const from = opts.from ?? 'drafted';
@@ -3690,8 +3728,10 @@ export class Kolab {
       }
       const refused = await this.authorRefusal(tx, signal, v);
       if (refused) return { refused };
-      const r = await tx.query(`update version set state = 'committed', review_note = $2 where id = $1 and state = $3 returning id`,
-        [v.id, note, from]);
+      const r = await tx.query(`update version set state = 'committed', review_note = $2,
+                                       submitted_by = case when $3 = 'drafted' then $4 else submitted_by end
+                                 where id = $1 and state = $3 returning id`,
+        [v.id, note, from, from === 'drafted' ? doer(opts.submittedBy) : null]);
       if (!r.rows.length) throw new GateError(`${v.id} is no longer ${from === 'drafted' ? 'drafted' : 'in review'}: another review settled it first`);
       await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where version_id = $1 and state = 'open'`, [v.id]);
       // An override resolution records its ruling as it commits, before its cascade (W2.5, OVR9).
@@ -4791,7 +4831,7 @@ export class Kolab {
     // person's edit: approved already, it does the same; otherwise it goes into review.
     let verdict: GateResult;
     try {
-      verdict = await this.judge(id, opts.approvedBy, opts.ruling);
+      verdict = await this.judge(id, opts.approvedBy, opts.ruling, SYSTEM_ACTOR);   // Kolab's own rebase or fold
     } catch (e) {
       // The checks fell over: the rebase never committed, and nothing will resubmit it.
       if (e instanceof ChecksError) await this.reject(id, e.message);
@@ -5835,7 +5875,7 @@ export class Kolab {
 
   /** A node by its id. */
   async node(id: string): Promise<NodeRow> {
-    const r = await this.db.query<NodeRow>(`select * from node where id = $1`, [id]);
+    const r = await this.db.query<NodeRow>(`select ${NODE_COLUMNS} from node where id = $1`, [id]);
     if (!r.rows[0]) throw new Error(`no node ${id}`);
     return r.rows[0];
   }
@@ -6248,9 +6288,11 @@ async function nextSeq(tx: Q, nodeId: string): Promise<number> {
 /** A node: `name` is how addresses name it, unique in its kolab; `id` is Kolab's own key for it. */
 export interface NodeRow {
   id: string; name: string; kind: Kind; layer: Layer; title: string; kolab_id: string;
-  /** Who made the node, and when (W2.20): null for a node made before migration 0024, which recorded neither. */
-  created_by: string | null; created_at: Date | string | null;
+  /** When the node was made (W2.20): null for a node made before migration 0024. Who made it is read apart (kj_node_creator). */
+  created_at: Date | string | null;
 }
+/** A node's columns as NodeRow reads them: every one kj_agent may read (migration 0024). */
+const NODE_COLUMNS = 'id, name, kind, layer, title, kolab_id, created_at';
 
 /**
  * Where an address is read: in a session, which reads its own kolab and any other it holds Read
