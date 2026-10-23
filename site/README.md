@@ -29,4 +29,4 @@ The artboard runs on the artifact's design runtime, which a static site can't lo
 
 It refuses an artboard that uses runtime features it doesn't handle (`<sc-for>`, `<sc-if>`, `<dc-import>`, unknown template holes or handlers), rather than guess.
 
-The access form has nowhere to send its address yet, in the artifact or here: `site.js` stops a submit from reloading the page, and nothing is collected.
+The page has no form. People sign up with their GitHub account: "Sign up with GitHub" links to Kolab's sign-in and sign-up, `https://kolab.konjir.com/api/session/oauth/start` (D55), and "Sign in" to `https://kolab.konjir.com/`. Both are plain links, so the CSP needs no other source.

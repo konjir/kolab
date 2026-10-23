@@ -58,11 +58,5 @@
         if (on) on.focus();
       });
     }
-
-    // The artifact's access form has no destination yet: keep a submit from reloading the page.
-    var forms = root.querySelectorAll('form:not([action])');
-    for (var j = 0; j < forms.length; j++) {
-      forms[j].addEventListener('submit', function (e) { e.preventDefault(); });
-    }
   });
 })();
