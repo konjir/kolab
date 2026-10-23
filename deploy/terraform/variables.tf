@@ -82,6 +82,12 @@ variable "db_allocated_gib" {
   default     = 20
 }
 
+variable "db_deletion_protection" {
+  description = "RDS deletion protection on Kolab's database (P12, D75). Turn it off with an apply before terraform destroy (README: Tear down)."
+  type        = bool
+  default     = true
+}
+
 variable "alarm_email" {
   description = "The operator's email address for alarms (P11, D68). Set: Terraform subscribes it to the alarm topic, and AWS emails it a link to confirm, once. Empty: no subscriber, and alarms email no one."
   type        = string

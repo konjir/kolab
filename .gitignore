@@ -33,3 +33,5 @@ dist-bin/
 # Playwright's reports
 test-results/
 playwright-report/
+# Restore drill logs (deploy/recovery-drill.sh)
+deploy/drills/
