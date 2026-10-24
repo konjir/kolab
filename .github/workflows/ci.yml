@@ -223,4 +223,4 @@ jobs:
       - name: Check the deploy scripts
         working-directory: deploy
         # One at a time: bash -n a b c parses only a, and takes the rest as its arguments.
-        run: for f in plan.sh smoke.sh konjir-ops.sh release/pack.sh; do bash -n "$f"; done
+        run: for f in plan.sh smoke.sh konjir-ops.sh release/pack.sh terraform/github-oidc/tests/simulate.sh; do bash -n "$f"; done

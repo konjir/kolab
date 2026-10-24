@@ -55,7 +55,7 @@ run "role" {
   }
   # A managed policy holds at most 6,144 characters, whitespace aside.
   assert {
-    condition     = alltrue([for p in [aws_iam_policy.instance_boundary, aws_iam_policy.dlm_boundary, aws_iam_policy.read, aws_iam_policy.ec2, aws_iam_policy.write, aws_iam_policy.site, aws_iam_policy.roles] : length(replace(p.policy, "/\\s/", "")) <= 6144])
+    condition     = alltrue([for p in [aws_iam_policy.instance_boundary, aws_iam_policy.dlm_boundary, aws_iam_policy.read, aws_iam_policy.ec2, aws_iam_policy.write, aws_iam_policy.site, aws_iam_policy.roles, aws_iam_policy.not_admin_token] : length(replace(p.policy, "/\\s/", "")) <= 6144])
     error_message = "a policy is over IAM's 6,144-character limit"
   }
   # deploy/terraform attaches the boundaries by these names (main.tf, boundary_prefix).
@@ -141,5 +141,25 @@ run "role" {
   assert {
     condition     = !anytrue([for s in jsondecode(aws_iam_policy.roles.policy).Statement : anytrue([for a in flatten([s.Action]) : contains(["iam:CreateRole", "iam:DeleteRole", "iam:UpdateAssumeRolePolicy"], a)]) if s.Effect == "Allow"])
     error_message = "the deploy role must not create or delete a role, or change a trust"
+  }
+  # The break-glass admin token (W2.23a): every SSM action on it denied, no reads by path, and no
+  # KMS call under its encryption context, in a policy attached to the role. tests/simulate.sh asks
+  # IAM's policy simulator the same of the rendered policies, with Lee's credentials.
+  assert {
+    condition = jsondecode(aws_iam_policy.not_admin_token.policy).Statement == [
+      { Sid = "NotTheAdminToken", Effect = "Deny", Action = ["ssm:*"], Resource = "arn:aws:ssm:us-east-1:747533038441:parameter/konjir/konjir-test/admin-token" },
+      { Sid = "NoReadsByPath", Effect = "Deny", Action = ["ssm:GetParametersByPath"], Resource = "*" },
+      { Sid = "NotItsEncryption", Effect = "Deny", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*"], Resource = "*", Condition = { StringEquals = { "kms:EncryptionContext:PARAMETER_ARN" = "arn:aws:ssm:us-east-1:747533038441:parameter/konjir/konjir-test/admin-token" } } },
+    ]
+    error_message = "the deploy role must be denied every SSM action on /konjir/konjir-test/admin-token, GetParametersByPath, and KMS under that parameter's encryption context"
+  }
+  assert {
+    condition     = aws_iam_role_policy_attachment.deploy["not_admin_token"].policy_arn == aws_iam_policy.not_admin_token.arn && aws_iam_role_policy_attachment.deploy["not_admin_token"].role == aws_iam_role.deploy.name
+    error_message = "the admin token's denies must be attached to the deploy role"
+  }
+  # No allow anywhere names the token or grants reads by path.
+  assert {
+    condition     = !anytrue([for p in [aws_iam_policy.read, aws_iam_policy.ec2, aws_iam_policy.write, aws_iam_policy.site, aws_iam_policy.roles] : strcontains(p.policy, "admin-token") || strcontains(p.policy, "GetParametersByPath") || strcontains(p.policy, "ssm:*") || strcontains(p.policy, "ssm:GetParameter*")])
+    error_message = "no allow may name the admin token, GetParametersByPath, ssm:* or ssm:GetParameter*"
   }
 }

@@ -13,7 +13,7 @@
 # account-wide settings; RDS, S3, SSM parameters, logs, alarms and the topic by production's names;
 # DNS records in the konjir.com zone by name and type; CloudFront and the certificate by tag; the
 # install only through the SSM document below; and IAM only on the two roles the modules make,
-# never creating or deleting one (below).
+# never creating or deleting one (below). Never the break-glass admin token's parameter (W2.23a).
 #
 # IAM: the role may change only the instance role (konjir-test-kolab-*) and the snapshot role
 # (konjir-test-dlm-*), each only with its permissions boundary attached and only the one AWS-managed
@@ -112,6 +112,7 @@ locals {
   buckets      = ["arn:${local.p}:s3:::${local.name}-artifacts-*", "arn:${local.p}:s3:::${local.name}-site-*"]
   objects      = ["arn:${local.p}:s3:::${local.name}-artifacts-*/*", "arn:${local.p}:s3:::${local.name}-site-*/*"]
   parameters   = "arn:${local.p}:ssm:${local.r}:${local.a}:parameter/konjir/${local.name}/*"
+  admin_token  = "arn:${local.p}:ssm:${local.r}:${local.a}:parameter/konjir/${local.name}/admin-token"
   public_amis  = "arn:${local.p}:ssm:${local.r}::parameter/aws/service/*"
   kolab_roles  = "arn:${local.p}:iam::${local.a}:role/${local.name}-kolab-*"
   dlm_roles    = "arn:${local.p}:iam::${local.a}:role/${local.name}-dlm-*"
@@ -878,6 +879,50 @@ resource "aws_iam_policy" "roles" {
   })
 }
 
+# ---- What it may never touch: the break-glass admin token (W2.23a)
+
+# Production's break-glass admin token, /konjir/konjir-test/admin-token (W2.22), is outside
+# Terraform: only deploy/konjir-ops.sh rotate-admin-token, from Lee's machine, writes it, and only
+# the instance role reads it, at boot. Nothing in deploy/terraform reads or writes it any more (the
+# root module's removed blocks forgot it), so the deploy role needs no access to it, and has none:
+# these denies win over the allows on /konjir/konjir-test/* (ReadOwnParameters, OwnParameters).
+# Without them the plan job could read the token with no alarm (only a use of it alarms), or set it
+# to a known value or to off, outside rotate-admin-token.
+# - Every SSM action on its ARN: GetParameter, GetParameters, GetParameterHistory, PutParameter,
+#   DeleteParameter(s), LabelParameterVersion, UnlabelParameterVersion and the tag calls.
+# - GetParametersByPath on any path, since a path's ARN isn't the token's; production needs none.
+# - KMS under the token's encryption context (Parameter Store's PARAMETER_ARN, the parameter's
+#   ARN), so neither its ciphertext, however read, nor a new value of it passes through KMS.
+resource "aws_iam_policy" "not_admin_token" {
+  name        = "konjir-deploy-production-not-admin-token"
+  path        = "/konjir/"
+  description = "Refuse every SSM and KMS use of production's break-glass admin token (W2.23a)"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "NotTheAdminToken"
+        Effect   = "Deny"
+        Action   = ["ssm:*"]
+        Resource = local.admin_token
+      },
+      {
+        Sid      = "NoReadsByPath"
+        Effect   = "Deny"
+        Action   = ["ssm:GetParametersByPath"]
+        Resource = "*"
+      },
+      {
+        Sid       = "NotItsEncryption"
+        Effect    = "Deny"
+        Action    = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*"]
+        Resource  = "*"
+        Condition = { StringEquals = { "kms:EncryptionContext:PARAMETER_ARN" = local.admin_token } }
+      },
+    ]
+  })
+}
+
 # ---- The role
 
 resource "aws_iam_role" "deploy" {
@@ -913,6 +958,8 @@ resource "aws_iam_role_policy_attachment" "deploy" {
     write = aws_iam_policy.write.arn
     site  = aws_iam_policy.site.arn
     roles = aws_iam_policy.roles.arn
+    # The admin token's denies (W2.23a).
+    not_admin_token = aws_iam_policy.not_admin_token.arn
   }
   role       = aws_iam_role.deploy.name
   policy_arn = each.value
