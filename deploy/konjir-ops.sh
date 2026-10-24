@@ -14,9 +14,10 @@
 #   logs                                                last 200 lines from Kolab and Caddy
 #   cloudwatch-logs [since]                             Kolab's and Caddy's lines in CloudWatch Logs (default: the last 1h), following
 #   alarms                                              each alarm's state, and the reason for it
-#   inject <crash|down [min]|dead-job|errors|rds-cpu|rds-storage> [--yes-production]
-#                                                       set off one alarm on purpose, to check it emails (README: Alarms);
-#                                                       crash and down break the live Kolab, so they need --yes-production
+#   inject <kind> [min] [--yes-production]              set off one alarm on purpose, to check it emails (README: Alarms):
+#                                                       crash, down [min], dead-job, errors, log-flood, disk-high [min],
+#                                                       no-logs [min], rds-cpu, rds-storage; crash, down, disk-high and
+#                                                       no-logs touch the live instance, so they need --yes-production
 #   bootstrap-log                                       the instance's first-boot install log
 #   shell                                               interactive shell (Session Manager plugin)
 #   admin-token                                         print the break-glass admin token
@@ -171,19 +172,29 @@ Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh --env $ENV 
 EOF
 }
 
+INJECT_USAGE="usage: konjir-ops.sh inject <crash|down [1-15 min]|dead-job|errors|log-flood|disk-high [12-30 min]|no-logs [35-60 min]|rds-cpu|rds-storage> [--yes-production]"
+
 # Sets off one alarm on purpose (README: Alarms). crash and down break the real Kolab, through the
 # journal, the agent and the metric filter, so they say what they will do and need --yes-production;
 # dead-job and errors put lines into the log group's `inject` stream, which the same filters count;
 # the RDS alarms are set by hand, and go back to their real state at their next evaluation.
+# log-flood, disk-high and no-logs go through the real instance, agent and alarm (below cmd_inject).
 cmd_inject() {
   local what="" minutes="" yes="" arg site group line count=1 periods=1 alarm
   for arg in "$@"; do
     case "$arg" in
       --yes-production) yes=1 ;;
-      *) if [ -z "$what" ]; then what="$arg"; else minutes="$arg"; fi ;;
+      *) if [ -z "$what" ]; then what="$arg"; elif [ -z "$minutes" ]; then minutes="$arg"; else die "$INJECT_USAGE"; fi ;;
     esac
   done
   case "$what" in
+    down|disk-high|no-logs) ;;
+    *) [ -z "$minutes" ] || die "inject $what takes no minutes; $INJECT_USAGE" ;;
+  esac
+  case "$what" in
+    log-flood) inject_log_flood; return ;;
+    disk-high) inject_disk_high "$minutes" "$yes"; return ;;
+    no-logs)   inject_no_logs "$minutes" "$yes"; return ;;
     crash|down)
       site="https://$(out url | sed 's|^https://||; s|/mcp$||')"
       if [ "$what" = crash ]; then
@@ -211,7 +222,7 @@ cmd_inject() {
       alarm="$(tf output -json alarms | python3 -c 'import json,sys;print([a for a in json.load(sys.stdin) if "-" + sys.argv[1] + "-" in a][0])' "$what")"
       aws cloudwatch set-alarm-state --alarm-name "$alarm" --state-value ALARM --state-reason "injected by deploy/konjir-ops.sh inject $what"
       echo "$alarm set to ALARM; it returns to its real state at its next evaluation"; return ;;
-    *) die "usage: konjir-ops.sh inject <crash|down [minutes]|dead-job|errors|rds-cpu|rds-storage>" ;;
+    *) die "$INJECT_USAGE" ;;
   esac
   group="$(out log_group)"
   aws logs create-log-stream --log-group-name "$group" --log-stream-name inject 2>/dev/null || true
@@ -221,6 +232,238 @@ t = int(time.time() * 1000)
 count, periods = int(sys.argv[1]), int(sys.argv[2])
 print(json.dumps([{"timestamp": t - p * 300000 + i, "message": sys.argv[3]} for p in reversed(range(periods)) for i in range(count)]))' "$count" "$periods" "$line")" >/dev/null
   echo "put $((count * periods)) line(s) in $group, stream inject; the alarm fires within about 5 minutes"
+}
+
+# ---- inject log-flood, disk-high and no-logs (W2.19: an injected failure of each kind emails)
+#
+# Each goes through the real instance, agent and alarm, not lines put in the log group. It says
+# what it will do and for how long, then which alarm to watch. What it changes on the instance runs
+# as a transient systemd unit or timer with a bound of its own, so it ends, and undoes itself, even
+# if this shell, the SSM command or the laptop goes away. disk-high and no-logs also watch the
+# alarm from here, and undo the inject as soon as it fires, or on Ctrl-C.
+
+# The alarm whose name ends with -<suffix>, from Terraform's outputs.
+alarm_named() {
+  tf output -json alarms | python3 -c 'import json,sys;print([a for a in json.load(sys.stdin) if a.endswith("-" + sys.argv[1])][0])' "$1" \
+    || die "no alarm named *-$1 in Terraform's outputs"
+}
+alarm_value() { aws cloudwatch describe-alarms --alarm-names "$1" --query "MetricAlarms[0].$2" --output text; }
+
+# An inject can't show an alarm firing that is firing already.
+refuse_if_alarm() {
+  local state; state="$(alarm_value "$1" StateValue)"
+  [ "$state" != ALARM ] || die "$1 is in ALARM already, so this inject couldn't show it firing; see deploy/konjir-ops.sh alarms"
+}
+
+# Waits up to $2 seconds for alarm $1 to be in ALARM, printing each state it sees; 1 if it never fires.
+await_alarm() {
+  local alarm="$1" deadline state last=""
+  deadline=$(( $(date +%s) + $2 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    state="$(alarm_value "$alarm" StateValue 2>/dev/null || echo unknown)"
+    [ "$state" = "$last" ] || { echo "$(date -u +%H:%M:%SZ)  $alarm: $state"; last="$state"; }
+    [ "$state" = ALARM ] && return 0
+    sleep 30
+  done
+  return 1
+}
+
+# Sends the script on stdin to Kolab as /run/konjir-inject-<name>.sh, compressed to stay well
+# inside Run Command's parameter limit, and runs it there through on_kolab, with the remaining
+# arguments (plain words). /run is a tmpfs: a reboot leaves nothing.
+on_kolab_script() {
+  local name="$1" encoded; shift
+  encoded="$(gzip -9c | base64 | tr -d '\n')"
+  on_kolab "printf '%s' '$encoded' | base64 -d | gunzip > /run/konjir-inject-$name.sh && bash /run/konjir-inject-$name.sh $*"
+}
+
+hhmm() { python3 -c 'import sys, time; print(time.strftime("%H:%MZ", time.gmtime(int(sys.argv[1]))))' "$1"; }
+
+# log-flood: lines past the alarm's threshold go into konjir.service's journal, as root with
+# OBJECT_SYSTEMD_UNIT, as the journal copy's own probe does, so they take the real path: journald,
+# journalctl, the copy, the agent, the log group. Each says what it is, is plain text (so no filter
+# but the group's IncomingBytes counts it), and is 16,000 bytes, under the copy's 16 KiB cap. They
+# are paced over 25 minutes, about 60 a second, well under journald's rate limit, from a unit at
+# the lowest CPU and I/O priority. The disk stays safe: journald compresses lines this repetitive
+# to almost nothing; the flood rotates the copy itself every 64 MB (its timer only runs every 10
+# minutes), so /var/log/konjir holds a few hundred MB at most; and it stops if / has under 2 GiB free.
+log_flood_script() {
+  cat <<'EOF'
+set -euo pipefail
+unit=konjir-inject-log-flood
+target=$1 seconds=$2 delay=$3
+if systemctl is-active -q "$unit.service" || systemctl is-active -q "$unit.timer"; then
+  echo "refused: an inject log-flood is running already"; exit 1
+fi
+for u in konjir-journal@konjir amazon-cloudwatch-agent; do
+  systemctl is-active -q "$u" || { echo "refused: $u isn't running, so the lines wouldn't ship"; exit 1; }
+done
+avail=$(df -B1 --output=avail / | tail -n 1 | tr -d ' ')
+[ "$avail" -ge $((3 << 30)) ] || { echo "refused: / has under 3 GiB free"; exit 1; }
+cat > /run/konjir-inject-log-flood.py <<'PY'
+import os, socket, subprocess, sys, time
+target, seconds = int(sys.argv[1]), int(sys.argv[2])
+LINE, FLOOR, ROTATE_EVERY = 16000, 2 << 30, 64 << 20
+total = -(-target // LINE)
+per_s = -(-total // seconds)
+journal = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+journal.connect('/run/systemd/journal/socket')
+head = 'konjir-ops inject log-flood: harmless filler for the log-flood alarm, not a real event; line %d of %d. '
+print('writing %d lines of %d bytes, %d a second, into konjir.service\'s journal' % (total, LINE, per_s), flush=True)
+start, sent, since_rotate = time.monotonic(), 0, 0
+while sent < total:
+    st = os.statvfs('/')
+    if st.f_bavail * st.f_frsize < FLOOR:
+        sys.exit('under 2 GiB free on /: the flood stops after %d lines' % sent)
+    for _ in range(min(per_s, total - sent)):
+        sent += 1
+        text = head % (sent, total)
+        text += 'filler ' * ((LINE - len(text)) // 7)
+        journal.send(('MESSAGE=%s\nPRIORITY=6\nSYSLOG_IDENTIFIER=konjir-inject\nOBJECT_SYSTEMD_UNIT=konjir.service\n' % text).encode())
+        since_rotate += LINE
+    if since_rotate >= ROTATE_EVERY:
+        # Rotates /var/log/konjir/konjir.log once it passes 50 MB (copytruncate), as its timer does.
+        subprocess.run(['/usr/bin/systemctl', 'start', 'konjir-journal-rotate.service'], check=False)
+        since_rotate = 0
+    time.sleep(max(0.0, start + sent / per_s - time.monotonic()))
+print('wrote %d lines, %d MiB' % (sent, sent * LINE >> 20), flush=True)
+PY
+systemctl reset-failed "$unit.service" "$unit.timer" 2>/dev/null || true
+when=()
+[ "$delay" -eq 0 ] || when=(--on-active="${delay}s" --timer-property=AccuracySec=1s)
+systemd-run --quiet --collect --unit="$unit" "${when[@]}" -p RuntimeMaxSec=$((seconds + 600)) \
+  -p Nice=19 -p IOSchedulingClass=idle -p CPUQuota=30% \
+  /usr/bin/python3 /run/konjir-inject-log-flood.py "$target" "$seconds"
+echo "  started $unit, with $((avail >> 30)) GiB free on /; its progress: journalctl -u $unit"
+EOF
+}
+
+inject_log_flood() {
+  local alarm threshold target seconds=1500 now into delay=0 starts
+  alarm="$(alarm_named log-flood)"
+  refuse_if_alarm "$alarm"
+  threshold="$(alarm_value "$alarm" Threshold)"; threshold="${threshold%.*}"
+  # 30% over: lines the agent hadn't sent yet when the copy was rotated are lost.
+  target=$(( threshold * 13 / 10 ))
+  # The alarm sums an hour. Started in the hour's first half, the flood ends inside it; later, it
+  # waits for the next hour's first minute, so that it isn't split across two.
+  now="$(date +%s)"; into=$(( now % 3600 ))
+  [ "$into" -le 1800 ] || delay=$(( 3600 - into + 60 ))
+  if [ "$delay" -eq 0 ]; then starts=now; else starts="at $(hhmm $(( now + delay ))) (in $(( delay / 60 )) minutes)"; fi
+  echo "inject log-flood: writes $(( target >> 20 )) MiB of harmless lines, each marked 'konjir-ops inject log-flood', into konjir.service's"
+  echo "  journal, paced over $(( seconds / 60 )) minutes and starting $starts. They ship to the konjir stream like Kolab's own lines, for about"
+  echo "  \$$(python3 -c 'import sys; print("%.2f" % (int(sys.argv[1]) / 1e9 * 0.5))' "$target") of ingestion. Kolab keeps running; the flood stops if / has under 2 GiB free."
+  log_flood_script | on_kolab_script log-flood "$target" "$seconds" "$delay"
+  echo "watch $alarm (deploy/konjir-ops.sh alarms): it fires once the hour's lines pass $(( threshold >> 20 )) MiB, so within the hour the"
+  echo "flood ends in, and recovers in the hour after. To stop it early, in a shell: sudo systemctl stop konjir-inject-log-flood.timer konjir-inject-log-flood"
+}
+
+# disk-high: one file, /var/tmp/konjir-inject-disk-high.fill (fallocate, so it takes no time),
+# takes the root file system, which the alarm watches, to 3 points over the alarm's threshold:
+# 83% of 16 GiB leaves 2.7 GiB free, and over journald's own reserve (15%). It is refused if / is
+# over the threshold already, or would be left under 2 GiB. The hold is a transient unit that
+# removes the file on exit (a trap) and after it (ExecStopPost, even if killed), lasts at most
+# its minutes, and removes the file early if / falls under 1 GiB free meanwhile. Kolab's database
+# is on RDS, and its data volume (/var/lib/konjir) is a file system of its own, so neither is touched.
+disk_high_script() {
+  cat <<'EOF'
+set -euo pipefail
+unit=konjir-inject-disk-high
+f=/var/tmp/konjir-inject-disk-high.fill
+gib=$((1 << 30))
+case "$1" in
+  check|start)
+    threshold=$2 hold=$3
+    if systemctl is-active -q "$unit"; then echo "refused: an inject disk-high is holding already"; exit 1; fi
+    rm -f "$f"   # left by a hold that a reboot cut short
+    command -v fallocate >/dev/null || { echo "refused: no fallocate (util-linux) on the instance"; exit 1; }
+    [ "$(findmnt -n -o TARGET --target /var/tmp)" = / ] || { echo "refused: /var/tmp isn't on /, the file system the alarm watches"; exit 1; }
+    read -r used avail < <(df -B1 --output=used,avail / | tail -n 1)
+    size=$((used + avail)); pct=$((used * 100 / size)); target=$((threshold + 3))
+    need=$((size * target / 100 - used))
+    left=$((avail - need))
+    echo "  / is $((size >> 30)) GiB and ${pct}% used, with $((avail >> 20)) MiB free; at ${target}% it would have $((left >> 20)) MiB free"
+    [ "$pct" -lt "$threshold" ] || { echo "refused: / is ${pct}% used already, at or over the alarm's ${threshold}%: free space first"; exit 1; }
+    [ "$left" -ge $((2 * gib)) ] || { echo "refused: that would leave under 2 GiB free on /"; exit 1; }
+    [ "$1" = start ] || exit 0
+    systemctl reset-failed "$unit" 2>/dev/null || true
+    systemd-run --quiet --collect --unit="$unit" -p RuntimeMaxSec=$((hold + 60)) -p "ExecStopPost=/bin/rm -f $f" \
+      /bin/bash /run/konjir-inject-disk-high.sh hold "$need" "$hold"
+    sleep 3
+    echo "  $f: $((need >> 20)) MiB; / is $(df --output=pcent / | tail -n 1 | tr -d ' ') used, for at most $((hold / 60)) minutes" ;;
+  hold)
+    need=$2 hold=$3
+    trap 'rm -f "$f"; echo "removed $f"' EXIT
+    trap 'exit 0' INT TERM HUP
+    fallocate -l "$need" "$f"
+    end=$(( $(date +%s) + hold ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      free=$(df -B1 --output=avail / | tail -n 1 | tr -d ' ')
+      [ "$free" -ge "$gib" ] || { echo "under 1 GiB free on /: removing $f early"; exit 0; }
+      sleep 5
+    done ;;
+  stop)
+    systemctl stop "$unit" 2>/dev/null || true
+    rm -f "$f"
+    echo "  removed $f; / is $(df --output=pcent / | tail -n 1 | tr -d ' ') used" ;;
+esac
+EOF
+}
+
+inject_disk_high() {
+  local minutes="${1:-20}" yes="$2" alarm threshold
+  [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 12 ] && [ "$minutes" -le 30 ] || die "disk-high holds for 12 to 30 minutes"
+  alarm="$(alarm_named disk-high)"
+  refuse_if_alarm "$alarm"
+  threshold="$(alarm_value "$alarm" Threshold)"; threshold="${threshold%.*}"
+  echo "inject disk-high: fills the instance's root file system to $(( threshold + 3 ))%, past the alarm's ${threshold}%, with one file,"
+  echo "  /var/tmp/konjir-inject-disk-high.fill, and holds it until the alarm fires, for at most $minutes minutes, then removes it."
+  echo "  Kolab keeps running; its database (RDS) and data volume aren't touched, and at least 2 GiB stay free on /."
+  disk_high_script | on_kolab_script disk-high check "$threshold" $(( minutes * 60 ))
+  [ -n "$yes" ] || die "this fills the production instance's disk; run it again with --yes-production"
+  trap 'echo "interrupted: removing the file now"; disk_high_script | on_kolab_script disk-high stop; exit 130' INT TERM
+  disk_high_script | on_kolab_script disk-high start "$threshold" $(( minutes * 60 ))
+  echo "watching $alarm: the agent reports every minute, and the alarm takes two 5-minute periods over ${threshold}%, so 10 to 15 minutes"
+  if await_alarm "$alarm" $(( minutes * 60 )); then
+    trap - INT TERM
+    disk_high_script | on_kolab_script disk-high stop
+    echo "$alarm fired; its email is on its way, and its OK one follows within about 10 minutes"
+  else
+    trap - INT TERM
+    disk_high_script | on_kolab_script disk-high stop
+    die "$alarm didn't fire within $minutes minutes; see deploy/konjir-ops.sh alarms, and the agent's disk_used_percent in Konjir/<name>"
+  fi
+}
+
+# no-logs: stops the CloudWatch agent, so nothing ships, while Kolab, Caddy and the journal copies
+# keep running: their lines wait in /var/log/konjir, and the agent sends them, from where it
+# stopped, once it starts again. A systemd timer starts it after the minutes whatever happens here
+# (it is enabled, so a reboot starts it too), as down's does for Kolab; this starts it as soon as
+# the alarm fires, or on Ctrl-C. Meanwhile every log alarm, and disk-high, is blind.
+restore_shipping() {
+  on_kolab "systemctl stop konjir-inject-no-logs.timer 2>/dev/null; systemctl start amazon-cloudwatch-agent.service && echo '  started the CloudWatch agent again; the lines written meanwhile ship now'"
+}
+
+inject_no_logs() {
+  local minutes="${1:-45}" yes="$2" alarm
+  [[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 35 ] && [ "$minutes" -le 60 ] || die "no-logs pauses shipping for 35 to 60 minutes"
+  alarm="$(alarm_named no-logs)"
+  refuse_if_alarm "$alarm"
+  echo "inject no-logs: stops the CloudWatch agent on the instance until the alarm fires, for at most $minutes minutes, then starts it again."
+  echo "  Kolab, Caddy and the journal copies keep running, and their lines ship once the agent is back; meanwhile the other log alarms are blind."
+  [ -n "$yes" ] || die "this stops log shipping from the production instance; run it again with --yes-production"
+  trap 'echo "interrupted: starting the agent again"; restore_shipping; exit 130' INT TERM
+  on_kolab "systemctl is-active -q amazon-cloudwatch-agent || { echo 'refused: the CloudWatch agent is not running already'; exit 1; }; systemctl reset-failed konjir-inject-no-logs.timer konjir-inject-no-logs.service 2>/dev/null; systemd-run --quiet --collect --unit=konjir-inject-no-logs --on-active=${minutes}m --timer-property=AccuracySec=1s /usr/bin/systemctl start amazon-cloudwatch-agent.service && systemctl stop amazon-cloudwatch-agent.service && echo '  stopped the CloudWatch agent; systemd starts it again in $minutes minutes (konjir-inject-no-logs.timer)'"
+  echo "watching $alarm: it fires after 30 minutes with no fresh heartbeat, so in 30 to 40"
+  if await_alarm "$alarm" $(( minutes * 60 )); then
+    trap - INT TERM
+    restore_shipping
+    echo "$alarm fired; its email is on its way. The heartbeats held back ship now, so its OK email follows within about 10 minutes"
+  else
+    trap - INT TERM
+    restore_shipping
+    die "$alarm didn't fire within $minutes minutes; see deploy/konjir-ops.sh alarms"
+  fi
 }
 
 case "${1:-}" in
@@ -240,5 +483,5 @@ case "${1:-}" in
                    --query 'MetricAlarms[].[AlarmName,StateValue,StateReason]' --output table ;;
   inject)        shift; cmd_inject "$@" ;;
   terraform)     shift; tf "$@" ;;
-  *)             sed -n '2,27p' "$0"; exit 1 ;;
+  *)             sed -n '2,28p' "$0"; exit 1 ;;
 esac
