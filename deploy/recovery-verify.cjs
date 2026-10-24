@@ -18,7 +18,7 @@
 //    on 127.0.0.1:7499, over a read-only session (default_transaction_read_only), answers /healthz,
 //    refuses a token that is no session's with 401 once it has looked it up in the copy, and
 //    refuses admin_list_actors with the break-glass token, since that verb's audit row can't be
-//    written (W2.22); then it stops. It applies no migration, runs no outbox job and can't write.
+//    written (W2.22; a live release from before W2.22 runs it instead); then it stops. It applies no migration, runs no outbox job and can't write.
 //    Then the release's engine, opened read-only on the copy without migrating, lists its actors.
 // With `compare`, a separate, optional step then compares the copy with production: migrations
 // and row counts. Production unreachable is a note, not a failure.
@@ -132,7 +132,10 @@ function checkCopy(copy) {
  *   once its lookup in the copy's sessions has run; a lookup that failed would be a 5xx.
  * - Break-glass stays audited: admin_list_actors with the break-glass token is refused because its
  *   audit row can't be written. Were it to run, the session wasn't read-only or the token's use went
- *   unrecorded, and either fails the check.
+ *   unrecorded, and either fails the check. The refusal must be that call's own: the CLI names the
+ *   verb in its error, and Kolab's log line for the same tool says its insert was refused as
+ *   read-only. A live release from before W2.22 (no recordBreakGlass) audits no verb, so there the
+ *   verb must run and list the actors instead, as it always did.
  * - Real data, read by the release: its engine, opened read-only on the copy without migrating,
  *   lists every actor, as many as the copy holds.
  */
@@ -179,22 +182,49 @@ async function smoke(url, copy) {
     if (auth === 401) pass('smoke: it authenticates against the copy: a token that is no session\'s is refused (401) once it has been looked up in the copy\'s sessions');
     else fail(`smoke: a token that is no session's got ${auth ? `status ${auth}` : 'no answer'}, not 401, so its lookup in the copy's sessions failed`);
 
-    // Break-glass stays audited (W2.22): its verb is refused, since its audit row can't be written
+    // Break-glass stays audited (W2.22): its verb is refused, since its audit row can't be written.
+    // A live release from before W2.22 (rolled back to, in "If a release caused it") audits no
+    // verb, so there the verb runs, read-only, as the smoke check always expected before.
+    const audits = fs.readFileSync(path.join(REL, 'apps/server/src/admin-tools.ts'), 'utf8').includes('recordBreakGlass');
     const from = lines.length;
-    const code = await new Promise((resolve) => {
+    const out = await new Promise((resolve) => {
       const cli = spawn(process.execPath, ['apps/cli/dist/main.js', 'admin_list_actors'],
-        { cwd: REL, env: { PATH: process.env.PATH, HOME: dir, KONJIR_URL: `${base}/mcp`, KONJIR_TOKEN: token }, stdio: 'ignore' });
-      cli.on('exit', resolve);
+        { cwd: REL, env: { PATH: process.env.PATH, HOME: dir, KONJIR_URL: `${base}/mcp`, KONJIR_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      cli.stdout.on('data', (b) => { stdout += b; });
+      cli.stderr.on('data', (b) => { stderr += b; });
+      cli.on('exit', (code) => resolve({ code, stdout, stderr }));
     });
-    const unwritable = () => lines.slice(from).some((l) => /read-only transaction/.test(l));
-    for (let i = 0; i < 10 && code !== 0 && !unwritable(); i++) await sleep(200);   // its log line may trail the CLI's exit
-    if (code === 0) {
-      fail('smoke: the break-glass token ran admin_list_actors on the copy, so the session isn\'t read-only or the token\'s use went unrecorded (W2.22)');
-    } else if (unwritable()) {
-      pass('smoke: the break-glass token\'s admin_list_actors is refused here, since its audit row (break_glass.used) can\'t be written to the read-only copy (W2.22)');
+    if (!audits) {
+      let actors;
+      try { actors = JSON.parse(out.stdout).actors; } catch { actors = undefined; }
+      if (out.code === 0 && Array.isArray(actors)) {
+        pass(`smoke: admin_list_actors through it lists ${actors.length} actors (the live release predates W2.22, so the break-glass token's verbs write no audit row)`);
+      } else {
+        fail(`smoke: admin_list_actors through it failed (exit ${out.code}); the live release predates W2.22, so it writes nothing to run it. Its lines:`);
+        show(from);
+      }
     } else {
-      fail(`smoke: admin_list_actors with the break-glass token failed (exit ${code}), but not because its audit row couldn't be written; its lines:`);
-      show(from);
+      // The refusal must be this call's own: the CLI names the verb in its error, and Kolab's log
+      // line for the same tool says its insert was refused as read-only. The guard's insert, into
+      // audit_event, is the only write the verb's request makes.
+      const cliRefused = out.code !== 0 && out.stderr.includes('konjir_admin_list_actors');
+      const unwritable = () => lines.slice(from).some((l) => {
+        let j;
+        try { j = JSON.parse(l); } catch { return false; }
+        return /konjir_admin_list_actors/.test(String(j.message)) && /cannot execute INSERT in a read-only transaction/.test(String(j.detail));
+      });
+      for (let i = 0; i < 10 && cliRefused && !unwritable(); i++) await sleep(200);   // its log line may trail the CLI's exit
+      if (out.code === 0) {
+        fail('smoke: the break-glass token ran admin_list_actors on the copy, though this release audits each of its verbs (W2.22): the session isn\'t read-only, or the token\'s use went unrecorded');
+      } else if (cliRefused && unwritable()) {
+        pass('smoke: the break-glass token\'s admin_list_actors is refused here, since its audit row (break_glass.used) can\'t be written to the read-only copy (W2.22)');
+      } else {
+        fail(`smoke: admin_list_actors with the break-glass token failed (exit ${out.code}), but not because its audit row couldn't be written; its lines:`);
+        for (const l of out.stderr.split('\n').filter(Boolean).slice(-5)) console.log(`     ${l}`);
+        show(from);
+      }
     }
   } finally {
     kolab.kill('SIGTERM');
