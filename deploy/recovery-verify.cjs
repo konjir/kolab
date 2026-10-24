@@ -14,9 +14,12 @@
 //    checksum, and none it doesn't know. A copy behind the release is the "a release caused it"
 //    case: roll the release back first (deploy/RECOVERY.md).
 // 2. Tables: every table the copy's recorded migrations create is there, and it isn't empty.
-// 3. Smoke: a second Kolab from the live release, `serve --no-migrate --no-worker`, on
-//    127.0.0.1:7499, over a read-only session (default_transaction_read_only), answers /healthz
-//    and admin_list_actors, then stops. It applies no migration, runs no outbox job and can't write.
+// 3. Smoke, with no write: a second Kolab from the live release, `serve --no-migrate --no-worker`,
+//    on 127.0.0.1:7499, over a read-only session (default_transaction_read_only), answers /healthz,
+//    refuses a token that is no session's with 401 once it has looked it up in the copy, and
+//    refuses admin_list_actors with the break-glass token, since that verb's audit row can't be
+//    written (W2.22); then it stops. It applies no migration, runs no outbox job and can't write.
+//    Then the release's engine, opened read-only on the copy without migrating, lists its actors.
 // With `compare`, a separate, optional step then compares the copy with production: migrations
 // and row counts. Production unreachable is a note, not a failure.
 //
@@ -26,12 +29,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { pathToFileURL } = require('url');
 
 // The live release; KONJIR_RELEASE_DIR points it at a checkout, to try it locally.
 const REL = process.env.KONJIR_RELEASE_DIR || '/opt/konjir/current';
 const pg = require(require.resolve('pg', { paths: [REL] }));
 const [dir, host, port, mode] = process.argv.slice(2);
-const SMOKE_PORT = 7499;
+// The smoke check's port; KONJIR_SMOKE_PORT moves it, for a test.
+const SMOKE_PORT = Number(process.env.KONJIR_SMOKE_PORT || 7499);
 const MIGRATIONS = path.join(REL, 'libs/db/src/migrations');
 const result = { ok: true };
 const fail = (what) => { result.ok = false; console.log(`FAIL ${what}`); };
@@ -116,7 +121,22 @@ function checkCopy(copy) {
   else pass(`rows: ${result.rowsRestored} in ${result.tables} tables`);
 }
 
-async function smoke(url) {
+/**
+ * The smoke check, which writes nothing. Since W2.22 nothing can both authenticate and read
+ * through a Kolab without a write: every session is a row whose token is kept only as a hash, so
+ * the copy's own sessions can't be presented and a new one can't be opened; and each admin verb the
+ * break-glass token runs writes its audit row (break_glass.used) first, and is refused if it can't.
+ * So it proves the parts apart, each without a write:
+ * - /healthz: the Kolab on the copy starts, and its database answers.
+ * - Authentication reads the copy: a token that is no session's gets 401, which Kolab answers only
+ *   once its lookup in the copy's sessions has run; a lookup that failed would be a 5xx.
+ * - Break-glass stays audited: admin_list_actors with the break-glass token is refused because its
+ *   audit row can't be written. Were it to run, the session wasn't read-only or the token's use went
+ *   unrecorded, and either fails the check.
+ * - Real data, read by the release: its engine, opened read-only on the copy without migrating,
+ *   lists every actor, as many as the copy holds.
+ */
+async function smoke(url, copy) {
   if (result.behindRelease) return note('smoke: skipped, since the live release would refuse a copy it would migrate (--no-migrate)');
   // A release from before --no-migrate would ignore it. The read-only session would still stop any
   // write, but such a Kolab couldn't start, so say why instead.
@@ -136,6 +156,7 @@ async function smoke(url) {
   for (const s of [kolab.stdout, kolab.stderr]) s.on('data', (b) => lines.push(...String(b).split('\n').filter(Boolean)));
   let exited = false;
   kolab.on('exit', () => { exited = true; });
+  const show = (from) => { for (const l of lines.slice(from).slice(-20)) console.log(`     ${l}`); };
   try {
     const t0 = Date.now();
     let status = 0;
@@ -143,27 +164,58 @@ async function smoke(url) {
     result.smokeStartSeconds = Math.round((Date.now() - t0) / 1000);
     if (status !== 200) {
       fail(`smoke: a read-only Kolab on the copy gave no healthy /healthz in ${result.smokeStartSeconds} s (status ${status}); its last lines:`);
-      for (const l of lines.slice(-20)) console.log(`     ${l}`);
-      return;
+      return show(0);
     }
     pass(`smoke: a read-only Kolab on the copy (no migration, no outbox worker) answered /healthz in ${result.smokeStartSeconds} s`);
-    const out = await new Promise((resolve) => {
+
+    // Authentication reads the copy: a token that is no session's, nor the break-glass token
+    const stranger = crypto.randomBytes(24).toString('base64url');
+    const auth = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${stranger}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      signal: AbortSignal.timeout(20000),
+    }).then((r) => r.status, () => 0);
+    if (auth === 401) pass('smoke: it authenticates against the copy: a token that is no session\'s is refused (401) once it has been looked up in the copy\'s sessions');
+    else fail(`smoke: a token that is no session's got ${auth ? `status ${auth}` : 'no answer'}, not 401, so its lookup in the copy's sessions failed`);
+
+    // Break-glass stays audited (W2.22): its verb is refused, since its audit row can't be written
+    const from = lines.length;
+    const code = await new Promise((resolve) => {
       const cli = spawn(process.execPath, ['apps/cli/dist/main.js', 'admin_list_actors'],
-        { cwd: REL, env: { PATH: process.env.PATH, HOME: dir, KONJIR_URL: `${base}/mcp`, KONJIR_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'] });
-      let text = '';
-      cli.stdout.on('data', (b) => { text += b; });
-      cli.on('exit', (code) => resolve({ code, text }));
+        { cwd: REL, env: { PATH: process.env.PATH, HOME: dir, KONJIR_URL: `${base}/mcp`, KONJIR_TOKEN: token }, stdio: 'ignore' });
+      cli.on('exit', resolve);
     });
-    let actors;
-    try { actors = JSON.parse(out.text).actors; } catch { actors = undefined; }
-    if (out.code === 0 && Array.isArray(actors)) {
-      result.smokeActors = actors.length;
-      pass(`smoke: admin_list_actors through it lists ${actors.length} actors`);
-    } else fail(`smoke: admin_list_actors through it failed (exit ${out.code})`);
+    const unwritable = () => lines.slice(from).some((l) => /read-only transaction/.test(l));
+    for (let i = 0; i < 10 && code !== 0 && !unwritable(); i++) await sleep(200);   // its log line may trail the CLI's exit
+    if (code === 0) {
+      fail('smoke: the break-glass token ran admin_list_actors on the copy, so the session isn\'t read-only or the token\'s use went unrecorded (W2.22)');
+    } else if (unwritable()) {
+      pass('smoke: the break-glass token\'s admin_list_actors is refused here, since its audit row (break_glass.used) can\'t be written to the read-only copy (W2.22)');
+    } else {
+      fail(`smoke: admin_list_actors with the break-glass token failed (exit ${code}), but not because its audit row couldn't be written; its lines:`);
+      show(from);
+    }
   } finally {
     kolab.kill('SIGTERM');
     for (let i = 0; i < 30 && !exited; i++) await sleep(500);
     if (!exited) kolab.kill('SIGKILL');
+  }
+
+  // Real data, read by the release's own engine: on a read-only session, without migrating
+  try {
+    const engine = await import(pathToFileURL(require.resolve('@konjir/engine', { paths: [REL] })).href);
+    const k = await engine.Kolab.open({ databaseUrl: readOnly(url), migrate: false });
+    try {
+      const actors = await k.listActors({ archived: true });
+      result.smokeActors = actors.length;
+      if (actors.length === copy.counts.actor) pass(`smoke: the release's engine, opened read-only on the copy, lists all ${actors.length} of its actors`);
+      else fail(`smoke: the release's engine lists ${actors.length} actors, but the copy holds ${copy.counts.actor}`);
+    } finally {
+      await k.close();
+    }
+  } catch (e) {
+    fail(`smoke: the release's engine couldn't read the copy: ${why(e)}`);
   }
 }
 
@@ -213,7 +265,7 @@ async function main() {
     await Promise.all(clients.map((c) => c.end().catch(() => {})));
   }
   checkCopy(copy);
-  await smoke(copyUrl);
+  await smoke(copyUrl, copy);
   if (mode === 'compare') await compare(prodUrl, copy);
   else note('production: not compared (verify <id> --compare-production compares)');
 }

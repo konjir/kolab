@@ -46,7 +46,8 @@
           "^production",
           "jest",
           "{workspaceRoot}/deploy/release/start.sh",
-          "{workspaceRoot}/deploy/release/install.sh"
+          "{workspaceRoot}/deploy/release/install.sh",
+          "{workspaceRoot}/deploy/recovery-verify.cjs"
         ]
       },
       "bundle": {

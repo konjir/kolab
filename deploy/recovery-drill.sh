@@ -309,10 +309,17 @@ EOF
   if verify "$scratch" compare; then verified=1; fi
   t_verified="$(date +%s)"
 
-  local rpo_ok=no rto_ok=no
+  # The time comparison is only about time, and the verification's result is stated apart: a failed
+  # verification still took the time it took, but proves nothing about the hour.
+  local rpo_ok=no rto_ok=no outcome
   [ "$lag" -lt "$RPO_TARGET_S" ] && rpo_ok=yes
-  [ "$verified" = 1 ] && [ $((t_verified - t_start)) -lt "$RTO_TARGET_S" ] && rto_ok=yes
-  log "summary: recovery point $lag s behind (within 6 minutes: $rpo_ok); restored in $(mins $((t_avail - t_start))), verified in $(mins $((t_verified - t_start))) (under $(mins "$RTO_TARGET_S"): $rto_ok); verification $([ "$verified" = 1 ] && echo passed || echo FAILED)"
+  [ $((t_verified - t_start)) -lt "$RTO_TARGET_S" ] && rto_ok=yes
+  if [ "$verified" = 1 ]; then
+    outcome="verified in $(mins $((t_verified - t_start))) (under $(mins "$RTO_TARGET_S"): $rto_ok); verification passed"
+  else
+    outcome="verification ended in $(mins $((t_verified - t_start))) (under $(mins "$RTO_TARGET_S"): $rto_ok); verification FAILED, so this drill doesn't prove the hour"
+  fi
+  log "summary: recovery point $lag s behind (within 6 minutes: $rpo_ok); restored in $(mins $((t_avail - t_start))), $outcome"
 
   delete_scratch "$scratch" || true
   trap - EXIT INT TERM HUP
