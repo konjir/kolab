@@ -162,4 +162,16 @@ run "role" {
     condition     = !anytrue([for p in [aws_iam_policy.read, aws_iam_policy.ec2, aws_iam_policy.write, aws_iam_policy.site, aws_iam_policy.roles] : strcontains(p.policy, "admin-token") || strcontains(p.policy, "GetParametersByPath") || strcontains(p.policy, "ssm:*") || strcontains(p.policy, "ssm:GetParameter*")])
     error_message = "no allow may name the admin token, GetParametersByPath, ssm:* or ssm:GetParameter*"
   }
+  # The role can't undo the deny: every IAM action it is allowed reaches only the instance and
+  # snapshot roles and the instance profile, never itself (DetachRolePolicy, PutRolePolicy) nor any
+  # policy (DeletePolicy, CreatePolicyVersion, SetDefaultPolicyVersion). Widening a glob in
+  # ReadOwnRoles or the roles policy to reach role/konjir/konjir-deploy-production or policy/ fails here.
+  assert {
+    condition = alltrue(flatten([for p in [aws_iam_policy.read, aws_iam_policy.ec2, aws_iam_policy.write, aws_iam_policy.site, aws_iam_policy.roles] : [
+      for s in jsondecode(p.policy).Statement : [
+        for r in flatten([s.Resource]) : can(regex("^arn:aws:iam::747533038441:(role|instance-profile)/konjir-test-(kolab|dlm)-\\*$", r))
+      ] if s.Effect == "Allow" && anytrue([for a in flatten([s.Action]) : startswith(a, "iam:") || a == "*"])
+    ]]))
+    error_message = "an IAM allow reaches beyond role/konjir-test-{kolab,dlm}-* and instance-profile/konjir-test-*: the deploy role could detach, delete or re-version its own deny"
+  }
 }
