@@ -49,7 +49,7 @@ else
 fi
 
 failed=0
-# expect <decision> <action> <resource> [<encryption context's PARAMETER_ARN>]
+# expect <decision> <action> <resource> [<encryption context's PARAMETER_ARN>]; decision denied takes either deny
 expect() {
   local want="$1" action="$2" resource="$3" context=()
   if [ -n "${4:-}" ]; then
@@ -59,7 +59,7 @@ expect() {
   fi
   local got
   got="$(simulate --action-names "$action" --resource-arns "$resource" ${context[@]+"${context[@]}"} --query 'EvaluationResults[0].EvalDecision' --output text)"
-  if [ "$got" = "$want" ]; then
+  if [ "$got" = "$want" ] || { [ "$want" = denied ] && { [ "$got" = implicitDeny ] || [ "$got" = explicitDeny ]; }; }; then
     echo "ok    $action ${4:-$resource}: $got"
   else
     echo "FAIL  $action ${4:-$resource}: $got, wanted $want"
@@ -81,5 +81,17 @@ for action in GetParameter GetParameters PutParameter DeleteParameter AddTagsToR
 done
 expect allowed kms:Decrypt "$key" "$other"
 expect allowed kms:Encrypt "$key" "$other"
+
+# The role can't undo the deny: not on itself (detach it, put or attach another policy, change its
+# boundary) nor on the deny policy (delete it, re-version it, make an older version the default).
+role="arn:aws:iam::$account:role/konjir/konjir-deploy-production"
+deny="arn:aws:iam::$account:policy/konjir/konjir-deploy-production-not-admin-token"
+for action in DetachRolePolicy AttachRolePolicy PutRolePolicy DeleteRolePolicy PutRolePermissionsBoundary \
+  DeleteRolePermissionsBoundary UpdateAssumeRolePolicy TagRole; do
+  expect denied "iam:$action" "$role"
+done
+for action in DeletePolicy CreatePolicy CreatePolicyVersion SetDefaultPolicyVersion DeletePolicyVersion TagPolicy; do
+  expect denied "iam:$action" "$deny"
+done
 
 exit "$failed"

@@ -887,7 +887,11 @@ resource "aws_iam_policy" "roles" {
 # root module's removed blocks forgot it), so the deploy role needs no access to it, and has none:
 # these denies win over the allows on /konjir/konjir-test/* (ReadOwnParameters, OwnParameters).
 # Without them the plan job could read the token with no alarm (only a use of it alarms), or set it
-# to a known value or to off, outside rotate-admin-token.
+# to a known value or to off, outside rotate-admin-token. They close the direct routes only: code an
+# approved deploy runs on an instance with the instance role (user data, a release) can still read
+# it, as #71's review accepted, under Lee's approvals and the break-glass-used alarm. DescribeParameters
+# (read policy, every parameter) still shows its metadata, never its value. The role can't undo
+# this: it may change no policy and no IAM role but the instance and snapshot roles (tests pin it).
 # - Every SSM action on its ARN: GetParameter, GetParameters, GetParameterHistory, PutParameter,
 #   DeleteParameter(s), LabelParameterVersion, UnlabelParameterVersion and the tag calls.
 # - GetParametersByPath on any path, since a path's ARN isn't the token's; production needs none.
