@@ -147,6 +147,18 @@ export const PLAN_KINDS: readonly Kind[] = ['plan'];
  * binding names its kolab's spec, and a plan its binding. A spec and a prototype name none.
  */
 export const PARENT_KIND: Partial<Record<Kind, Kind>> = { technical_binding: 'functional_spec', plan: 'technical_binding' };
+/**
+ * Why a kind Kolab once took is refused now, pointing to what replaces it (D77), for clients and
+ * scripts written before W4.1; undefined for anything else.
+ */
+export function retiredKind(kind: unknown): string | undefined {
+  if (kind === 'wbs') return 'wbs is now plan (D77): create it with kind plan, naming the binding it plans as its parent';
+  if (kind === 'work_package') return 'a work package is an element of a plan, not a node (KON5, D77): add it to the binding\'s plan (kind plan)';
+  if (kind === 'implementation') return 'implementation is a repository, not a node (KON7, D77): a work package names the repository it is done in';
+  return undefined;
+}
+/** Why `kind` isn't one, in the words a refusal uses. */
+export const notAKind = (kind: unknown) => retiredKind(kind) ?? `a node's kind is one of ${KINDS.join(', ')} (D77), not ${String(kind)}`;
 /** What each kind is called in prose. */
 export const KIND_WORDS: Record<Kind, string> = { functional_spec: 'spec', prototype: 'prototype', technical_binding: 'binding', plan: 'plan' };
 export const DELTA_KINDS = ['add', 'override', 'remove'] as const;

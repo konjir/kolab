@@ -7,7 +7,7 @@ import {
 } from '@konjir/engine';
 import { formatAddress, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
 import {
-  ACCESS_LEVELS, CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
+  ACCESS_LEVELS, CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, notAKind, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
   type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type KolabAccessView, type WebAccessChanged, type WebChangeGrant, type CaseFileState, type CaseFileView, type RulingView,
   type WebCase, type WebCasesView, type WebForeignKolab, type WebOpenCase, type WebPosition, type WebRuleCase, type WebRuleDirect, type WebRuling,
   type ElementInput, type GateResult, type Layer, type Role,
@@ -449,7 +449,7 @@ export class WebService {
   // ---- writes: each is one verb ------------------------------------------------
 
   async createNode(s: string, b: WebCreateNode) {
-    if (!KINDS.includes(b?.kind)) throw bad(`kind is one of ${KINDS.join(', ')}`);
+    if (!KINDS.includes(b?.kind)) throw bad(notAKind(b?.kind));
     if (!b.title?.trim()) throw bad('give the node a title');
     if (!isNodeName(b.name ?? '')) throw bad('a node\'s name has no spaces and no "/", "@", "#" or "~"');
     if (b.parent !== undefined && b.parent !== null && typeof b.parent !== 'string') throw bad('parent is the name of the node this one names: a binding\'s spec, a plan\'s binding');
