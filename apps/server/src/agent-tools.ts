@@ -304,7 +304,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_node',
-    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and prototype are functional; binding and plan are technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds, and each plan the binding it plans (parent, set once), and a binding has exactly one plan. A plan\'s links deliver its own binding\'s elements, never the spec; a binding\'s links serve its own spec. Its name (id) is unique in your kolab; other kolabs may use the same one.',
+    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and prototype are functional; binding and plan are technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds, and each plan the binding it plans (parent, set once), and a binding has at most one plan (a new binding starts without one). A plan\'s links deliver its own binding\'s elements, never the spec; a binding\'s links serve its own spec. Its name (id) is unique in your kolab; other kolabs may use the same one.',
     schema: createNode,
     annotations: { readOnlyHint: false, idempotentHint: false },
   })

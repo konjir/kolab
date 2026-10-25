@@ -1242,7 +1242,7 @@ test('0027 refuses a plan whose binding can\'t be told: no links and several bin
 test('0027 refuses two plans of one binding (KON5)', async () => {
   await refuses0027(`${BASE_0026} ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('b', 'b', 'technical_binding', 'technical', 'B', 'shop', 'lee'),
       ('w1', 'w1', 'wbs', 'technical', 'W1', 'shop', 'lee'), ('w2', 'w2', 'wbs', 'technical', 'W2', 'shop', 'lee');`,
-    /each binding has exactly one plan \(KON5, D77\), and these bindings would have more: shop\/b: w1, w2\./);
+    /a binding has at most one plan \(KON5, D96\), and these bindings would have more: shop\/b: w1, w2\./);
 });
 
 test('0027 refuses a live link outside its parent, a plan\'s into the spec or a binding\'s into another kolab\'s spec; a superseded version\'s is history (D78, KON6)', async () => {

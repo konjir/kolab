@@ -3532,7 +3532,7 @@ export class Kolab {
         if (String(e).includes('node_kolab_name_key')) throw taken();   // made by another call since the check
         // Made by another call since the checks: the database holds to the limits (0027).
         if (String(e).includes('node_one_spec_per_kolab')) throw secondSpec((await spec())?.name ?? 'another');
-        if (String(e).includes('node_one_plan_per_binding')) throw new GateError(`binding ${parent!.name} already has its plan, and a binding has exactly one (KON5, D77)`);
+        if (String(e).includes('node_one_plan_per_binding')) throw new GateError(`binding ${parent!.name} already has its plan, and a binding has at most one (KON5, D96)`);
         if (!String(e).includes('node_pkey')) throw e;
       }
     }
@@ -3571,7 +3571,7 @@ export class Kolab {
     } else {
       throw new GateError(`a plan names the binding it plans (D78), and kolab ${kolab} holds ${of.length} bindings: name one with parent=<binding> (${of.map((n) => n.name).join(', ')})`);
     }
-    if (kind === 'plan' && p.plan) throw new GateError(`binding ${p.name} already has its plan, ${p.plan}, and a binding has exactly one (KON5, D77)`);
+    if (kind === 'plan' && p.plan) throw new GateError(`binding ${p.name} already has its plan, ${p.plan}, and a binding has at most one (KON5, D96)`);
     return p;
   }
 
@@ -3712,9 +3712,19 @@ export class Kolab {
       if (p.node_id !== nodeId) {
         const [child, of] = [await this.node(nodeId), await this.node(p.node_id)];
         if (!variantKindAllowed(child.kind, of.kind)) {
-          throw new GateError(`${child.name} is a ${KIND_WORDS[child.kind]}, and a variant is of its parent's kind: `
-            + `${of.kolab_id === child.kolab_id ? of.name : `${of.kolab_id}/${of.name}`} is a ${KIND_WORDS[of.kind]}. `
-            + `Only a prototype may be derived from the spec (KON3, D95)${child.kind === 'plan' ? '; a plan is derived from its binding, never the spec (KON6)' : ''}`);
+          const ofName = of.kolab_id === child.kolab_id ? of.name : `${of.kolab_id}/${of.name}`;
+          const named = child.parent_node_id ? (await this.node(child.parent_node_id)).name : undefined;
+          throw new GateError(child.kind === 'plan'
+            // A plan's parent is a node, its binding (D78): its versions are never built on a binding's or a spec's.
+            ? `${child.name} is a plan, and its versions build on its own versions (or, as a variant, on another plan's), never on a ${KIND_WORDS[of.kind]}'s: ${ofName} is a ${KIND_WORDS[of.kind]}. `
+              + `Write the version without a parent: the plan names its binding${named ? `, ${named},` : ''} as its parent node, and its work packages deliver that binding's elements through links (D78, D95, KON6)`
+            : child.kind === 'binding'
+              ? `${child.name} is a binding, and its versions build on its own versions (or, as a variant, on another binding's), never on a ${KIND_WORDS[of.kind]}'s: ${ofName} is a ${KIND_WORDS[of.kind]}. `
+                + `Write the version without a parent: the binding names its spec as its parent node, and serves the spec's requirements through links (D78, D95, KON6)`
+              : child.kind === 'spec'
+                ? `${child.name} is a spec, and a spec's variant is a spec, never a ${KIND_WORDS[of.kind]}'s: ${ofName} is a ${KIND_WORDS[of.kind]}. `
+                  + `Write the version without a parent, or on a spec's version (another kolab's, as a fork, KON9); a prototype may be derived from the spec, not the other way round (KON3, D95)`
+                : `${child.name} is a prototype, and its versions build on its own, on another prototype's or on the spec's (KON3, D95), never on a ${KIND_WORDS[of.kind]}'s: ${ofName} is a ${KIND_WORDS[of.kind]}`);
         }
       }
       parentEls = await this.elements(parentId);

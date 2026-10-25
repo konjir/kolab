@@ -54,7 +54,7 @@ begin
       when 3 then 'A kolab holds exactly one spec (KON1, D77), and these hold more: %s. Kolab won''t choose which is the spec: decide, and change the others'' kind.'
       when 4 then 'Each binding names the spec it binds (D78), but these bindings'' kolabs hold no spec: %s. Add the spec, or decide what each becomes.'
       when 5 then 'Each plan names the binding it plans (D78), and these plans'' bindings can''t be told: %s. Their live versions'' links reach no binding of their kolab and it hasn''t exactly one, or they reach more than one. Decide each one''s binding.'
-      when 6 then 'Each binding has exactly one plan (KON5, D77), and these bindings would have more: %s. Decide which is the plan.'
+      when 6 then 'A binding has at most one plan (KON5, D96), and these bindings would have more: %s. Decide which is the plan.'
       when 7 then 'A plan''s links deliver its own binding''s elements, never the spec (KON6, D78), and a binding''s links to a spec serve its own spec (D78). These links don''t: %s. Decide what each should link to, and remove the others.'
       when 8 then 'A cascade Kolab still owes (an after_commit job in the outbox, waiting or dead) would carry these links forward, and they break the same rules: %s. Let the outbox drain first, retrying a dead job with konjir_admin_outbox retry=<id>; the links then stand on their nodes'' latest versions, where this check names them.'
       when 9 then 'A variant is of its parent''s kind, and only a prototype may be derived from the spec (KON3, KON6, D95), and these live versions aren''t: %s. Decide what each should be built on.'
@@ -149,7 +149,7 @@ select r.ord, r.why, string_agg(r.detail, case when r.ord in (3, 6) then '; ' el
 -- check:end
     ) q;
   if bad is not null then
-    raise exception 'migration 0027: % Each needs a person''s decision before 0027 applies; deploy/preflight/0027.sql lists the same.', bad;
+    raise exception 'migration 0027: % Each needs a person''s decision before 0027 applies; deploy/preflight/0027.sql lists the same (deploy/konjir-ops.sh preflight 0027). An archived kolab''s rows can''t change while it is archived: unarchive it, make the change, then archive it again.', bad;
   end if;
 end
 $$;
