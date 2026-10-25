@@ -208,10 +208,14 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 </div>
 <div style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
 <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
-<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># connect an agent once</span>
+<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># connect your agents once, each its own sign-in</span>
+konjir connect claude \
+  --url https://kolab.konjir.com/mcp
+
+<span style="color: var(--secondary);"># or add Kolab to Claude Code, then sign in</span>
+<span style="color: var(--secondary);"># with GitHub in the browser, through /mcp</span>
 claude mcp add --transport http konjir \
-  https://kolab.konjir.com/mcp \
-  --header "Authorization: Bearer $KONJIR_TOKEN"
+  https://kolab.konjir.com/mcp
 
 <span style="color: var(--secondary);"># or work from any shell</span>
 konjir resolve kj:checkout@3#R1

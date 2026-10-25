@@ -7,7 +7,7 @@
 //    following lines)
 //  - tables: a header row, a "| --- |" row, then rows, every row starting and ending with "|"
 //  - fenced code blocks, ``` followed by one of CODE_KINDS, which names the box's label
-//  - inline: `code`, **bold** and [text](https://… or /… or #…)
+//  - inline: `code`, **bold** and [text](https://… or /… or #…), the link holding no "\", "(" or ")"
 //
 // All text is escaped; raw HTML is never passed through. No dependency, no network: the build stays
 // offline and deterministic.
@@ -30,7 +30,10 @@ function inline(text, fail) {
   if (s.includes('`')) fail(`an unclosed code span: ${text.slice(0, 60)}`);
   s = esc(s);
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
-    if (!/^(https:\/\/|\/(?!\/)|#)/.test(href)) fail(`a link to ${href}: only https://, /path and #anchor links`);
+    if (!/^(https:\/\/|\/(?![/\\])|#)/.test(href)) fail(`a link to ${href}: only https://, /path and #anchor links`);
+    // A browser reads "\" as "/" ("/\evil.example" is another host), and an href can't hold
+    // parentheses here, since the first ")" ends the link.
+    if (/[\\()]/.test(href)) fail(`a link to ${href}: no "\\", "(" or ")" in a link`);
     return `<a href="${href}">${label}</a>`;
   });
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -39,7 +42,7 @@ function inline(text, fail) {
 }
 
 /**
- * Renders `md`. Returns the title (the "# " heading's text), its HTML, the first paragraph as plain
+ * Renders `md`. Returns the title (the "# " heading, as escaped plain text and as HTML), the first paragraph as plain
  * text (the page's description), the "## " headings for a table of contents, and the body's HTML.
  */
 export function render(md, fail = (m) => { throw new Error(m); }) {
@@ -71,7 +74,8 @@ export function render(md, fail = (m) => { throw new Error(m); }) {
       if (level === 1) {
         if (title !== null) fail('a second "# " title');
         if (out.length) fail('the "# " title must come first');
-        title = { text: h[2].trim(), html };
+        // text is the title as escaped plain text, for <title>: the rendered heading without its tags.
+        title = { text: html.replace(/<[^>]+>/g, ''), html };
       } else if (level === 2 || level === 3) {
         if (title === null) fail('a heading before the "# " title');
         const hid = id(html);

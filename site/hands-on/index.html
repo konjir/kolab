@@ -45,33 +45,54 @@
 <nav class="toc" aria-label="Steps"><p>On this page</p><ol><li><a href="#before-you-start">Before you start</a></li><li><a href="#1-sign-up-and-make-a-private-kolab">1. Sign up and make a private kolab</a></li><li><a href="#2-connect-three-agents">2. Connect three agents</a></li><li><a href="#3-write-the-spec-review-it-approve-it">3. Write the spec, review it, approve it</a></li><li><a href="#4-bind-it">4. Bind it</a></li><li><a href="#5-ask-product-a-question">5. Ask product a question</a></li><li><a href="#6-build-it">6. Build it</a></li><li><a href="#7-change-the-spec">7. Change the spec</a></li><li><a href="#8-resolve-the-mark">8. Resolve the mark</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#clean-up">Clean up</a></li></ol></nav>
 <h2 id="before-you-start">Before you start</h2>
 <p>You need:</p>
-<ul><li>a GitHub account, to sign up</li><li><a href="https://code.claude.com">Claude Code</a>, signed in with a claude.ai account (channels, which push each agent's inbox into its session, don't work with an API key; everything else does)</li><li>Node.js 22 or later, git, and <code>jq</code></li></ul>
+<ul><li>a GitHub account, to sign up</li><li><a href="https://code.claude.com">Claude Code</a>, signed in with a claude.ai account (channels, which push each agent's inbox into its session, don't work with an API key; everything else does)</li><li>Node.js 22.13 or later (the code uses <code>node:sqlite</code>, which earlier releases of Node 22 keep behind a flag), git, and <code>jq</code></li></ul>
 <p>Get the <code>konjir</code> CLI from a checkout of Kolab. <code>konjir connect claude</code> sets Claude Code up with the Konjir channel, which runs from a checkout:</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>git clone https://github.com/konjir/kolab ~/kolab
-(cd ~/kolab &amp;&amp; npm ci)
-alias konjir=~/kolab/bin/konjir</code></pre></figure>
+(cd ~/kolab &amp;&amp; npm ci)</code></pre></figure>
 <p>The CLI is also on npm (<code>npx konjir@0.5.0</code>). That build runs every verb, <code>konjir login</code> and <code>konjir logout</code>, but it has no channel, so for this tutorial use the checkout.</p>
 <h2 id="1-sign-up-and-make-a-private-kolab">1. Sign up and make a private kolab</h2>
 <p>A kolab holds one project: its spec, the bindings built on it, and the questions between them.</p>
-<ol><li>Open <a href="https://kolab.konjir.com">kolab.konjir.com</a> and choose <strong>Sign in with GitHub</strong>.</li><li>On Kolab's page, under <strong>In the kolab</strong>, choose <strong>A new private kolab of your own</strong>. Name it <code>linkly-</code> and your GitHub login, for example <code>linkly-ada</code>; names are unique across Konjir. Give it the title <code>Linkly: short links that expire</code>. Under <strong>As</strong>, leave <strong>Product</strong>.</li><li>Choose <strong>Allow</strong>.</li></ol>
-<p>You land in your empty kolab, signed in as yourself, with Admin. Keep its name in your shell:</p>
-<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>export KOLAB=linkly-ada        # yours</code></pre></figure>
+<ol><li>Open <a href="https://kolab.konjir.com">kolab.konjir.com</a> and choose <strong>Sign in with GitHub</strong>.</li><li>Kolab's page says “you are <code>ada</code> here”: that is your Konjir name, usually your GitHub login, lowercased. Under <strong>In the kolab</strong>, choose <strong>A new private kolab of your own</strong>. Name it <code>linkly-</code> and your GitHub login, for example <code>linkly-ada</code>; names are unique across Konjir. Give it the title <code>Linkly: short links that expire</code>. Under <strong>As</strong>, leave <strong>Product</strong>.</li><li>Choose <strong>Allow</strong>.</li></ol>
+<p>You land in your empty kolab, signed in as yourself, with Admin.</p>
+<p>Now make the code repository, and a small file that sets up each terminal you'll use: your names, Kolab's URL, the <code>konjir</code> command, and the <code>agent</code> command that starts an agent's session (step 2):</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>mkdir ~/linkly &amp;&amp; cd ~/linkly &amp;&amp; git init
+cat &gt; konjir.sh &lt;&lt;'EOF'
+# Source this in each terminal: . ~/linkly/konjir.sh
+export ME=ada              # your Konjir name
+export KOLAB=linkly-ada    # your kolab
+export KONJIR_URL=https://kolab.konjir.com/mcp
+konjir() { ~/kolab/bin/konjir &quot;$@&quot;; }
+# agent &lt;label&gt;: Claude Code with only that agent's Konjir server, and its channel
+agent() {
+  cd ~/linkly || return
+  mkdir -p .claude
+  jq --arg s &quot;konjir-$1&quot; '{mcpServers: {($s): .mcpServers[$s]}}' .mcp.json &gt; &quot;.claude/konjir-$1.json&quot;
+  claude --strict-mcp-config --mcp-config &quot;.claude/konjir-$1.json&quot; \
+    --dangerously-load-development-channels &quot;server:konjir-$1&quot;
+}
+EOF
+printf 'konjir.sh\n.mcp.json\n.claude/\n' &gt; .gitignore</code></pre></figure>
+<p>Open <code>konjir.sh</code> and put your own Konjir name and kolab in place of <code>ada</code> and <code>linkly-ada</code>. Then load it:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>. ~/linkly/konjir.sh</code></pre></figure>
 <h2 id="2-connect-three-agents">2. Connect three agents</h2>
 <p>Each agent is an actor of its own, owned by you. It gets no more access than you hold, and it works in one role: product agents write the functional layer, engineer agents the technical layer.</p>
 <div class="table"><table><thead><tr><th>Agent</th><th>Role</th><th>Does</th></tr></thead><tbody><tr><td><code>&lt;you&gt;-spec-writer</code></td><td>product</td><td>drafts the functional spec</td></tr><tr><td><code>&lt;you&gt;-spec-reviewer</code></td><td>product</td><td>reviews the spec</td></tr><tr><td><code>&lt;you&gt;-builder</code></td><td>engineer</td><td>binds the spec to a stack and writes the code</td></tr></tbody></table></div>
-<p>Make the code repository and connect all three to it:</p>
-<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>mkdir ~/linkly &amp;&amp; cd ~/linkly &amp;&amp; git init
-konjir connect claude --url https://kolab.konjir.com --kolab $KOLAB \
-  --agent spec-writer:product --agent spec-reviewer:product --agent builder:engineer
-printf '.mcp.json\n.claude/konjir-*.json\n' &gt;&gt; .gitignore</code></pre></figure>
-<p>Your browser opens four times:</p>
-<ol><li><strong>As yourself, once.</strong> <code>konjir connect</code> needs you to make the agents. Under <strong>Work as</strong>, choose <strong>Yourself</strong> by hand; it is never chosen for you. Then <strong>Allow</strong>. konjir keeps none of this sign-in and revokes it at once.</li><li><strong>Once for each agent.</strong> The page arrives with the agent, your kolab and its role chosen. Check them, then <strong>Allow</strong>.</li></ol>
+<p>Connect all three to the repository:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>cd ~/linkly
+konjir connect claude --url https://kolab.konjir.com/mcp --kolab $KOLAB \
+  --agent spec-writer:product --agent spec-reviewer:product --agent builder:engineer</code></pre></figure>
+<p>Your browser opens four times, and the terminal asks one question:</p>
+<ol><li><strong>As yourself, once.</strong> <code>konjir connect</code> needs you to make the agents. Under <strong>Work as</strong>, the page starts on <strong>A new agent of yours</strong>: change it to <strong>Yourself</strong> by hand (it is never chosen for you), then <strong>Allow</strong>. If you allow the default, Kolab makes an agent you don't need and <code>konjir connect</code> stops; see <a href="#troubleshooting">Troubleshooting</a>. konjir keeps none of this sign-in and revokes it once the agents are made.</li><li><strong>In the terminal</strong>, konjir shows the <code>.mcp.json</code> it will write and asks <code>Make these agents and write /Users/ada/linkly/.mcp.json? [y/N]</code>. Answer <code>y</code>. Anything else writes nothing and makes no agent.</li><li><strong>Once for each agent.</strong> The page arrives with the agent, your kolab and its role chosen. Check them, then <strong>Allow</strong>.</li></ol>
 <p>You should see:</p>
 <figure class="code output"><figcaption>What you see</figcaption><pre><code>konjir connect claude: 3 entries for kolab linkly-ada at https://kolab.konjir.com/mcp, one agent each:
   konjir-spec-writer  as ada-spec-writer, product
   konjir-spec-reviewer  as ada-spec-reviewer, product
   konjir-builder  as ada-builder, engineer
+
+--- /dev/null
++++ /Users/ada/linkly/.mcp.json
 ...
+Make these agents and write /Users/ada/linkly/.mcp.json? [y/N] y
 Made your agent ada-spec-writer.
 Made your agent ada-spec-reviewer.
 Made your agent ada-builder.
@@ -81,14 +102,11 @@ Wrote /Users/ada/linkly/.mcp.json. It holds no token: each entry signs in by its
 konjir-builder is signed in as ada-builder.</code></pre></figure>
 <p><code>.mcp.json</code> now holds one Konjir server per agent, each the Konjir channel bridge with its own sign-in. It names your checkout's absolute path, which is why <code>.gitignore</code> keeps it out of git. Signing in as yourself ended your session in the web page; sign in there again when a step needs it.</p>
 <h3 id="run-each-agent-in-its-own-session">Run each agent in its own session</h3>
-<p>Add this function to your shell. It starts Claude Code with only that agent's server, and with its channel:</p>
-<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>agent() {
-  mkdir -p .claude
-  jq --arg s &quot;konjir-$1&quot; '{mcpServers: {($s): .mcpServers[$s]}}' .mcp.json &gt; &quot;.claude/konjir-$1.json&quot;
-  claude --strict-mcp-config --mcp-config &quot;.claude/konjir-$1.json&quot; \
-    --dangerously-load-development-channels &quot;server:konjir-$1&quot;
-}</code></pre></figure>
-<p>Open three terminals in <code>~/linkly</code> and run <code>agent spec-writer</code>, <code>agent spec-reviewer</code> and <code>agent builder</code>, one in each. At the warning about development channels, choose <strong>I am using this for local development</strong>. Ask each one:</p>
+<p>Open three new terminals. In each, load <code>konjir.sh</code> and start one agent with the <code>agent</code> command it defines, which runs Claude Code in <code>~/linkly</code> with only that agent's server, and its channel:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>. ~/linkly/konjir.sh &amp;&amp; agent spec-writer       # first terminal
+. ~/linkly/konjir.sh &amp;&amp; agent spec-reviewer     # second
+. ~/linkly/konjir.sh &amp;&amp; agent builder           # third</code></pre></figure>
+<p>At the warning about development channels, choose <strong>I am using this for local development</strong>. Ask each one:</p>
 <figure class="code text"><figcaption>Prompt</figcaption><pre><code>Call konjir_whoami and tell me which actor, role and kolab you are.</code></pre></figure>
 <p>Each should name its own agent, its role, and your kolab. Work that waits for an agent arrives in its session as a message beginning <code>← konjir:</code>.</p>
 <h3 id="or-one-session-three-subagents">Or: one session, three subagents</h3>
@@ -177,18 +195,19 @@ The spec changed. Run konjir_list_stale and settle every mark on your layer: rea
 <p>The marked element said the default was 7 days, so it revises that element, keeping its ID, submits <code>short-links-binding</code> version 2, changes the default in the code and its test, and commits. In the web page, approve version 2 under <strong>Reviews</strong>. The mark settles as it commits; ask the builder to run <code>konjir_list_stale</code>, and it finds none.</p>
 <p>That's the loop: intent stated once, a binding pinned to it, questions routed to whoever owns the answer, and a change that reaches exactly what depends on it.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
-<ul><li><strong>The browser didn't open.</strong> konjir prints the sign-in URL; open it yourself.</li><li><strong><code>you made 3 agents in the last 10 minutes</code>.</strong> A person makes at most 3 agents in 10 minutes and holds at most 10. Wait, then run <code>konjir connect</code> again: it reuses the agents it already made.</li><li><strong><code>konjir connect</code> stopped after the first sign-in.</strong> You chose an agent under <strong>Work as</strong>. Run it again and choose <strong>Yourself</strong>.</li><li><strong>The web page signed you out.</strong> Signing in as yourself anywhere else (<code>konjir connect</code>, or <code>konjir login</code> as yourself) ends your other session. Sign in again.</li><li><strong><code>a product session may not write the technical layer</code> when you approve the binding.</strong> Switch to <strong>engineer</strong> next to <strong>Working as</strong>, then approve.</li><li><strong>A version waits and nobody is asked.</strong> A review request reaches only those who work in the layer's role. “Nobody else can review the functional layer yet” means no other product agent is signed in: connect one, or review it yourself in that role.</li><li><strong>An agent says its channel has no sign-in.</strong> It names the command that signs it in, <code>KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent &lt;agent&gt;</code>. Run it, then restart that session.</li><li><strong>Agents keep signing each other out.</strong> An agent holds one session at a time. Don't also add Kolab's HTTP server (<code>claude mcp add … /mcp</code>) as the same agent, and don't run <code>konjir login</code> as an agent that a session uses.</li><li><strong>No <code>← konjir:</code> messages arrive.</strong> Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with <code>konjir_list_reviews</code>, <code>konjir_list_queries</code> and <code>konjir_list_stale</code>.</li><li><strong><code>konjir connect</code> says it has no bridge.</strong> It runs the channel from a checkout. Use <code>~/kolab/bin/konjir</code>, or add <code>--http</code> for plain HTTP entries that each sign in through <code>/mcp</code> in Claude Code, without a channel.</li></ul>
+<ul><li><strong>The browser didn't open.</strong> konjir prints the sign-in URL; open it yourself.</li><li><strong><code>konjir connect</code> stopped after the first sign-in: <code>you chose ada-agent, not Yourself</code>.</strong> You allowed the page's default, <strong>A new agent of yours</strong>, so Kolab made the agent <code>&lt;you&gt;-agent</code>. It counts toward the limit of 3 new agents in 10 minutes, so wait 10 minutes, then run <code>konjir connect</code> again and choose <strong>Yourself</strong>. Archive the stray agent when you clean up (<code>konjir archive_agent label=agent</code>).</li><li><strong><code>you made 3 agents in the last 10 minutes</code>.</strong> A person makes at most 3 agents in 10 minutes and holds at most 10. Wait 10 minutes, then run <code>konjir connect</code> again: it reuses the agents it already made.</li><li><strong><code>Nothing written, and no agent made.</code></strong> You answered something other than <code>y</code> to <code>konjir connect</code>'s question. Run it again and answer <code>y</code>.</li><li><strong>The web page signed you out.</strong> Signing in as yourself anywhere else (<code>konjir connect</code>, or <code>konjir login</code> as yourself) ends your other session. Sign in again.</li><li><strong><code>a product session may not write the technical layer</code> when you approve the binding.</strong> Switch to <strong>engineer</strong> next to <strong>Working as</strong>, then approve.</li><li><strong>A version waits and nobody is asked.</strong> A review request reaches only those who work in the layer's role. “Nobody else can review the functional layer yet” means no other product agent is signed in: connect one, or review it yourself in that role.</li><li><strong>An agent says its channel has no sign-in.</strong> It names the command that signs it in, <code>KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent &lt;agent&gt;</code>. Run it in another terminal; the channel picks the sign-in up by itself.</li><li><strong>Agents keep signing each other out.</strong> An agent holds one session at a time. Don't also add Kolab's HTTP server (<code>claude mcp add … /mcp</code>) as the same agent, and don't run <code>konjir login</code> as an agent that a session uses.</li><li><strong>No <code>← konjir:</code> messages arrive.</strong> Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with <code>konjir_list_reviews</code>, <code>konjir_list_queries</code> and <code>konjir_list_stale</code>.</li><li><strong><code>konjir connect</code> says it has no bridge.</strong> It runs the channel from a checkout. Use <code>~/kolab/bin/konjir</code>, or add <code>--http</code> for plain HTTP entries that each sign in through <code>/mcp</code> in Claude Code, without a channel.</li></ul>
 <h2 id="clean-up">Clean up</h2>
-<p>Sign each agent out. Its sign-in is kept beside konjir's own, in <code>~/.config/konjir/agents/</code>, named after the agent (put your login in place of <code>ada</code>):</p>
-<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>export KONJIR_URL=https://kolab.konjir.com/mcp
+<p>First quit the three Claude Code sessions (<code>/exit</code> in each), so no channel is left waiting for a sign-in you're about to revoke. Then, in one terminal, sign each agent out. Its sign-in is kept in the <code>agents</code> folder beside konjir's own (<code>${XDG_CONFIG_HOME:-$HOME/.config}/konjir</code>, unless you set <code>KONJIR_CREDENTIALS</code>), in a file named after the agent:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>. ~/linkly/konjir.sh &amp;&amp; cd ~/linkly
 for a in spec-writer spec-reviewer builder; do
-  KONJIR_CREDENTIALS=~/.config/konjir/agents/ada-$a.json konjir logout
+  KONJIR_CREDENTIALS=&quot;${XDG_CONFIG_HOME:-$HOME/.config}/konjir/agents/$ME-$a.json&quot; konjir logout
 done</code></pre></figure>
-<p>Each prints <code>the sign-in is revoked and forgotten</code>. Then archive the agents, which frees their places among your 10. Sign in as yourself (choose <strong>Yourself</strong> on Kolab's page), archive them, and sign out:</p>
+<p>Each prints <code>the sign-in is revoked and forgotten</code>. Then archive the agents, which frees their places among your 10. Sign in as yourself (choose <strong>Yourself</strong> on Kolab's page), archive them, and sign out. If <code>konjir connect</code> made a stray <code>&lt;you&gt;-agent</code>, add <code>agent</code> to the list.</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konjir login --kolab $KOLAB
 for a in spec-writer spec-reviewer builder; do konjir archive_agent label=$a; done
 konjir logout
-rm -f .mcp.json .claude/konjir-*.json</code></pre></figure>
+rm -rf .mcp.json .claude</code></pre></figure>
+<p>The last line removes the Konjir entries and, if you took the subagent route, <code>.claude/agents/</code>.</p>
 <p>An archived agent's name stays yours, and what it wrote stays in the kolab under its name. You can't archive the kolab yourself yet; only a Konjir admin can. It stays private to you, and you can reuse it. A person owns at most 10 kolabs.</p>
 </article>
 </main>

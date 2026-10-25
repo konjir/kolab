@@ -121,6 +121,9 @@ test("the build refuses a tutorial with Markdown it doesn't render, rather than 
     ['```sh\nnever closed', 'an unclosed code block'],
     ['#### Too deep', 'a level-4 heading'],
     ['Some *emphasis* here.', "Markdown this renderer doesn't handle"],
+    ['See [this](/\\evil.example).', 'only https://, /path and #anchor links'],
+    ['See [this](https://x.example/a\\b).', 'no "\\", "(" or ")" in a link'],
+    ['See [this](https://x.example/(y)).', 'no "\\", "(" or ")" in a link'],
   ]) {
     writeFileSync(md, `${original}\n${add}\n`);
     const b = build(r);
@@ -134,4 +137,40 @@ test("the build refuses a tutorial with Markdown it doesn't render, rather than 
   const page = readFileSync(join(r, 'site/hands-on/index.html'), 'utf8');
   expect(page).toContain('A paragraph with &lt;img src=x onerror=alert(1)&gt; in it.');
   expect(page).not.toContain('<img src=x');
+});
+
+test("a tutorial title holding markup is escaped wherever it goes, <title> included, and the finished page holds no tag the build didn't write", () => {
+  const r = copy('hands-on-title');
+  const md = join(r, 'site/src/hands-on.md');
+  const original = readFileSync(md, 'utf8');
+  for (const title of [
+    'Tutorial </title><script src="https://evil.example/x.js"></script><title>',
+    'Tutorial </title><meta http-equiv="refresh" content="0;url=https://evil.example/"><title>',
+  ]) {
+    writeFileSync(md, original.replace(/^# .*$/m, `# ${title}`));
+    const b = build(r);
+    expect([b.status, b.stderr]).toStrictEqual([0, '']);
+    const page = readFileSync(join(r, 'site/hands-on/index.html'), 'utf8');
+    expect(page).not.toContain('evil.example/x.js"></script>');
+    expect(page).not.toMatch(/<meta http-equiv/i);
+    expect([...page.matchAll(/<title>/g)]).toHaveLength(1);
+    expect(page).toMatch(/<title>Hands-on: Tutorial &lt;\/title&gt;&lt;(script|meta) [^<]*: Konjir<\/title>/);
+    expect(page).toContain('<h1 id="ho-title">Tutorial &lt;/title&gt;&lt;');
+  }
+});
+
+test('the build checks each finished page whole: a description holding markup is refused, not written', () => {
+  const r = copy('page-check');
+  const md = join(r, 'site/src/hands-on.md');
+  const original = readFileSync(md, 'utf8');
+  // A lead paragraph can't hold markup (it is escaped), so make page() itself write some: a stand-in
+  // for a future source of text the renderer doesn't escape.
+  const buildPath = join(r, 'deploy/site/build.mjs');
+  const script = readFileSync(buildPath, 'utf8');
+  writeFileSync(buildPath, script.replace("handsOn, tutorial.lead)", "handsOn, tutorial.lead + '\"><meta http-equiv=\"refresh\" content=\"0\">')"));
+  writeFileSync(md, original);
+  const b = build(r);
+  expect(b.status).toBe(1);
+  expect(b.stderr).toContain("site/hands-on/index.html would have a <head> other than the one the build writes");
+  expect(existsSync(join(r, 'site/hands-on/index.html'))).toBe(false);
 });

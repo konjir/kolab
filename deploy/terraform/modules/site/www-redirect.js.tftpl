@@ -2,7 +2,8 @@
 // keeping the path and the query string exactly as the browser sent them. On the apex, a folder's
 // page is its index.html (S3 behind OAC has no index documents, and default_root_object covers only
 // "/"): a path ending in "/" is served from <path>index.html, and a path whose last segment has no
-// "." (/hands-on) answers with a 301 to the same path with "/" added. Every other request passes.
+// "." (/hands-on) answers with a 301 to the same path with "/" added. A path that starts "//" or
+// holds "\" is neither. Every other request passes.
 // Tested in apps/cli/test/site-www-redirect.test.ts.
 function handler(event) {
   var request = event.request;
@@ -20,6 +21,9 @@ function handler(event) {
   };
   if (host === '${www}') return redirect('https://${apex}' + request.uri);
   var uri = request.uri;
+  // A path holding "\" is never rewritten or redirected (a browser may read "\" as "/", so "/\x"
+  // could name another host): it passes as it came, to be a 404.
+  if (uri.indexOf('\\') >= 0) return request;
   if (uri.charAt(uri.length - 1) === '/') {
     if (uri !== '/') request.uri = uri + 'index.html';
     return request;

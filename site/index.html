@@ -187,10 +187,14 @@
 </div>
 <div class="s78">
 <div class="s79">Terminal</div>
-<pre class="s80"><span class="s81"># connect an agent once</span>
+<pre class="s80"><span class="s81"># connect your agents once, each its own sign-in</span>
+konjir connect claude \
+  --url https://kolab.konjir.com/mcp
+
+<span class="s81"># or add Kolab to Claude Code, then sign in</span>
+<span class="s81"># with GitHub in the browser, through /mcp</span>
 claude mcp add --transport http konjir \
-  https://kolab.konjir.com/mcp \
-  --header "Authorization: Bearer $KONJIR_TOKEN"
+  https://kolab.konjir.com/mcp
 
 <span class="s81"># or work from any shell</span>
 konjir resolve kj:checkout@3#R1
