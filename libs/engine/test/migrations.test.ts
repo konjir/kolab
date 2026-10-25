@@ -1093,7 +1093,20 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     await db.exec(BEFORE_KINDS);
     const before = await konjirRows(db);
     const nodesBefore = (await db.query<Record<string, unknown>>(`select * from node order by id`)).rows;
+    // The preflight finds nothing to refuse, and says which parent 0027 will give each node and why.
+    const { refusals, parents } = await preflight0027(db);
+    expect(refusals).toStrictEqual([]);
+    expect(parents.filter((p) => p.kolab_id === 'kolab' || p.kolab_id === 'lab')).toStrictEqual([
+      { kolab_id: 'kolab', node: 'kolab-binding', kind: 'technical_binding', parent: 'kolab', how: 'its kolab\'s one spec' },
+      { kolab_id: 'kolab', node: 'kolab-plan', kind: 'plan', parent: 'kolab-binding', how: 'the one binding its links reach' },
+      { kolab_id: 'lab', node: 'lab-api', kind: 'technical_binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
+      { kolab_id: 'lab', node: 'lab-ui', kind: 'technical_binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
+      { kolab_id: 'lab', node: 'lab-plan', kind: 'plan', parent: 'lab-api', how: 'the one binding its links reach' },
+    ]);
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [versions[at]] });
+    // Each parent is the one the preflight named.
+    const given = (await db.query<{ name: string; parent: string }>(`select n.name, p.name as parent from node n join node p on p.id = n.parent_node_id`)).rows;
+    expect(given.map((g) => `${g.name}>${g.parent}`).sort()).toStrictEqual(parents.map((p) => `${p.node}>${p.parent}`).sort());
     expect((await db.query(`select kolab_id, name, kind, layer, parent_node_id from node order by kolab_id, kind, name`)).rows).toStrictEqual([
       { kolab_id: 'acme-demo-r1', name: 'invitations', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
       { kolab_id: 'acme-demo-r1', name: 'invitations-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'invitations' },
@@ -1152,6 +1165,28 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
   } finally { await kolab.close(); }
 });
 
+/** deploy/preflight/0027.sql, run as it ships: its refusals (no rows when 0027 applies) and the parents it infers. */
+const PREFLIGHT_0027 = readFileSync(new URL('../../../deploy/preflight/0027.sql', import.meta.url), 'utf8');
+async function preflight0027(db: Db) {
+  const [refusals, parents] = PREFLIGHT_0027.split(/;\s*\n/).map((s) => s.trim()).filter((s) => s.replace(/^--.*$/gm, '').trim());
+  return {
+    refusals: (await db.query<{ ord: number; why: string; nodes: string }>(refusals)).rows,
+    parents: (await db.query<{ kolab_id: string; node: string; kind: string; parent: string; how: string }>(parents)).rows,
+  };
+}
+
+test('the preflight runs 0027\'s own check and its own inference of parents, text for text', () => {
+  const migration = MIGRATIONS.find((x) => x.name === 'konstruct_kinds')!.sql;
+  const block = (sql: string, name: string) => [...sql.matchAll(new RegExp(`-- ${name}:begin\\n([\\s\\S]*?)-- ${name}:end`, 'g'))].map((m) => m[1]);
+  for (const name of ['check', 'parents']) {
+    const ours = block(migration, name);
+    expect(ours).toHaveLength(1);
+    expect(block(PREFLIGHT_0027, name)).toStrictEqual(ours);
+  }
+  // The inference the check reasons about is the one the migration applies.
+  expect(block(migration, 'check')[0].startsWith(block(migration, 'parents')[0])).toBe(true);
+});
+
 /** Migrates a fresh database to 0026, runs `seed`, then expects 0027 to stop with `refusal` and change nothing. */
 async function refuses0027(seed: string, refusal: RegExp) {
   const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
@@ -1160,7 +1195,9 @@ async function refuses0027(seed: string, refusal: RegExp) {
     await db.exec(seed);
     const before = await konjirRows(db);
     const nodes = (await db.query(`select * from node order by id`)).rows;
-    expect(await rejection(migrate(db))).toMatch(new RegExp(`0027_konstruct_kinds\\.sql failed: migration 0027: .*${refusal.source}`));
+    // The preflight predicts it: it finds a refusal, and so does 0027.
+    expect((await preflight0027(db)).refusals.length).toBeGreaterThan(0);
+    expect(await rejection(migrate(db))).toMatch(new RegExp(`0027_konstruct_kinds\\.sql failed: migration 0027: .*${refusal.source}`, 'i'));
     expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
     expect(await konjirRows(db)).toStrictEqual(before);
     expect((await db.query(`select * from node order by id`)).rows).toStrictEqual(nodes);
@@ -1174,7 +1211,7 @@ const BASE_0026 = `
 
 test('0027 refuses, naming them, nodes that are a work_package or an implementation: neither is a kind any more (D77, KON5, KON7)', async () => {
   await refuses0027(`${BASE_0026} ${N} ('wp1', 'wp1', 'work_package', 'technical', 'WP', 'shop', 'lee'), ('impl', 'impl', 'implementation', 'technical', 'I', 'mall', 'lee');`,
-    /a node's kind is now one of functional_spec, prototype, technical_binding or plan \(D77\).*These nodes have no kind to map to: mall\/impl \(implementation\), shop\/wp1 \(work_package\)\. Decide what each becomes before applying 0027/);
+    /a node's kind is now one of functional_spec, prototype, technical_binding or plan \(D77\).*These nodes have no kind to map to: mall\/impl \(implementation\), shop\/wp1 \(work_package\)\. Decide what each becomes\./);
 });
 
 test('0027 refuses a kolab with more than one spec, naming them: it won\'t choose which is the spec (KON1)', async () => {
@@ -1237,4 +1274,82 @@ test('0027 refuses a live link outside its parent, a plan\'s into the spec or a 
 test('0027 refuses a node whose layer isn\'t its kind\'s, naming it, rather than move it (KON8)', async () => {
   await refuses0027(`${BASE_0026} ${N} ('s', 's', 'functional_spec', 'technical', 'S', 'shop', 'lee');`,
     /a node's layer follows from its kind \(KON8, D77\), and these nodes' don't: shop\/s \(functional_spec in the technical layer\)/);
+});
+
+/** A spec with R1 and R2, its binding, and a wbs with a committed version that delivers the binding: what the review's probes started from. */
+const PLAN_0026 = `${BASE_0026}
+  ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('b', 'b', 'technical_binding', 'technical', 'B', 'shop', 'lee'),
+    ('w', 'w', 'wbs', 'technical', 'W', 'shop', 'lee');
+  ${V} ('sv', 's', 1, null, 'functional', 'committed', 'lee', 'product', 'lee'), ('bv', 'b', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'),
+    ('wv1', 'w', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee');
+  ${E} ${elRow('sv', 'R1', 0, 'S runs.')}, ${elRow('sv', 'R2', 1, 'S ships.')}, ${elRow('bv', 'b1', 0, 'A table.')}, ${elRow('wv1', 'W1', 0, 'Build it.')};
+  ${L} ${edgeRow('e-b', 'dependency', 'bv', 'b1', 'sv', 'R1', 'S runs.', 'lee')}, ${edgeRow('e-w1', 'dependency', 'wv1', 'W1', 'bv', 'b1', 'A table.', 'lee')}`;
+
+test('an abandoned plan draft that linked the spec is history: 0027 applies, and a spec commit that leaves its element as it was re-pins it, and the cascade finishes (review H1)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // w@2, drafted on w@1 and abandoned (rejected), linked spec element R2.
+    await db.exec(`${PLAN_0026};
+      ${V} ('wv2', 'w', 2, 'wv1', 'technical', 'rejected', 'lee', 'engineer', 'lee');
+      ${E} ${elRow('wv2', 'W1', 0, 'Build it.')};
+      ${L} ${edgeRow('e-w2', 'dependency', 'wv2', 'W1', 'sv', 'R2', 'S ships.', 'lee')};`);
+    expect((await preflight0027(db)).refusals).toStrictEqual([]);
+    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+  }, store);
+  const kolab = await TestKolab.open(store);
+  try {
+    const pm = await kolab.openSession('lee', 'product', { kolab: 'shop' });   // lee owns shop
+    // R1 changes and R2 doesn't: the abandoned draft's link to R2 is re-pinned to s@2, an update the trigger lets through.
+    await kolab.commit(pm, 's', { elements: els({ R1: 'S runs fast.', R2: 'S ships.' }) });
+    const s2 = (await kolab.latestCommitted('s'))!.id;
+    expect((await kolab.db.query(`select target_version_id from edge where id = 'e-w2'`)).rows).toStrictEqual([{ target_version_id: s2 }]);
+    expect(await kolab.outboxJobs()).toStrictEqual([]);
+    // The binding element is marked, and the plan's work package through it.
+    expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason])).toStrictEqual([['b1', 'changed']]);
+    expect((await marksOn(kolab, 'w')).filter((m) => m.version_id === 'wv1').map((m) => [m.element_id, m.reason])).toStrictEqual([['W1', 'upstream_dirty']]);
+    // A link can't be moved onto another source to get outside its parent, for any role.
+    expect(await rejection(kolab.db.query(`update edge set source_version_id = 'wv1' where id = 'e-w2'`))).toMatch(/a plan's links deliver its own binding's elements/);
+  } finally { await kolab.close(); }
+});
+
+test('a cascade still owed would carry an unchecked link: 0027 refuses until the outbox drains, then applies (review H2)', async () => {
+  // w@1 linked the spec; w@2 delivers the binding, and its after_commit job, which copies w@1's links onto it, hasn't run.
+  const owed = (state: string) => `${PLAN_0026};
+    ${V} ('wv2', 'w', 2, 'wv1', 'technical', 'committed', 'lee', 'engineer', 'lee');
+    ${E} ${elRow('wv2', 'W1', 0, 'Build it.')}, ${elRow('wv2', 'W2', 1, 'Ship it.')};
+    ${L} ${edgeRow('e-old', 'dependency', 'wv1', 'W1', 'sv', 'R2', 'S ships.', 'lee')}, ${edgeRow('e-w2', 'dependency', 'wv2', 'W2', 'bv', 'b1', 'A table.', 'lee')};
+    insert into outbox(id, kind, version_id, state) values ('01JOB', 'after_commit', 'wv2', '${state}');`;
+  for (const state of ['pending', 'dead']) {
+    await refuses0027(owed(state),
+      /A cascade Kolab still owes \(an after_commit job in the outbox, waiting or dead\) would carry these links forward, and they break the same rules: shop\/w@1#W1 -> shop\/s@1#R2\. Let the outbox drain first/);
+  }
+  // Drained, w@2's links are its own (it never had w@1's), and its superseded version is history.
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(owed('pending'));
+    await db.exec(`delete from outbox`);
+    expect((await preflight0027(db)).refusals).toStrictEqual([]);
+    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+  });
+});
+
+test('the preflight names every refusal at once, in 0027\'s order, and 0027 reports each of them', async () => {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`${BASE_0026} ${N} ('a', 'a', 'functional_spec', 'functional', 'A', 'shop', 'lee'), ('a2', 'a2', 'functional_spec', 'functional', 'A2', 'shop', 'lee'),
+      ('x', 'x', 'work_package', 'technical', 'X', 'shop', 'lee'), ('b', 'b', 'technical_binding', 'technical', 'B', 'mall', 'lee'),
+      ('w1', 'w1', 'wbs', 'technical', 'W1', 'mall', 'lee'), ('w2', 'w2', 'wbs', 'technical', 'W2', 'mall', 'lee');`);
+    expect((await preflight0027(db)).refusals).toStrictEqual([
+      { ord: 1, why: 'not a kind', nodes: 'shop/x (work_package)' },
+      { ord: 3, why: 'more than one spec', nodes: 'kolab shop: a, a2' },
+      { ord: 4, why: 'binding with no spec', nodes: 'mall/b' },
+      { ord: 6, why: 'two plans of one binding', nodes: 'mall/b: w1, w2' },
+    ]);
+    const said = await rejection(migrate(db));
+    for (const s of ['These nodes have no kind to map to: shop/x', 'these hold more: kolab shop: a, a2', 'hold no spec: mall/b', 'would have more: mall/b: w1, w2']) expect(said).toContain(s);
+  });
 });

@@ -36,7 +36,8 @@ test('over MCP: a spec, its prototype, two bindings and a plan, each naming its 
   expect(await rejection(call(pm, 'create_node', { kind: 'functional_spec', title: 'Billing', id: 'billing' })))
     .toMatch(/kolab test already holds its spec, orders, and a kolab holds exactly one \(KON1, D77\)\. Write its prototypes as prototype nodes, or a variant of it in another kolab, as a fork \(KON9\)/);
   // The old label is no kind.
-  expect(await rejection(call(eng, 'create_node', { kind: 'wbs', title: 'Plan', id: 'plan' }))).toMatch(/functional_spec|invalid/i);
+  expect(await rejection(call(eng, 'create_node', { kind: 'wbs', title: 'Plan', id: 'plan' }))).toMatch(/wbs is now plan \(D77\): create it with kind plan/);
+  expect(await rejection(call(eng, 'list_nodes', { kind: 'implementation' }))).toMatch(/implementation is a repository, not a node \(KON7, D77\)/);
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }, { id: 'R2', text: 'Orders ship in a day.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
   expect(await call(pm, 'create_node', { kind: 'prototype', title: 'Orders screens', id: 'orders-ui' })).toStrictEqual({ node: 'orders-ui' });

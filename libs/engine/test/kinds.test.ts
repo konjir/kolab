@@ -130,7 +130,10 @@ test('a node\'s layer follows from its kind, and its kind, layer and parent neve
   // The engine fixes the layer from the kind, and the role check follows it.
   expect(await rejection(kolab.createNode(product, 'plan', 'Plan', 'p'))).toMatch(/RoleError/);
   expect(await rejection(kolab.createNode(engineer, 'prototype', 'Screens', 'ui'))).toMatch(/RoleError/);
-  expect(await rejection(kolab.createNode(engineer, 'wbs' as never, 'Old label', 'w'))).toBe('GateError: a node\'s kind is one of functional_spec, prototype, technical_binding, plan (D77), not wbs');
+  // A kind Kolab once took points to what replaces it (D77).
+  expect(await rejection(kolab.createNode(engineer, 'wbs' as never, 'Old label', 'w'))).toBe('GateError: wbs is now plan (D77): create it with kind plan, naming the binding it plans as its parent');
+  expect(await rejection(kolab.createNode(engineer, 'work_package' as never, 'Old label', 'w'))).toMatch(/a work package is an element of a plan, not a node \(KON5, D77\)/);
+  expect(await rejection(kolab.createNode(engineer, 'nonsense' as never, 'X', 'w'))).toBe('GateError: a node\'s kind is one of functional_spec, prototype, technical_binding, plan (D77), not nonsense');
   const insert = (id: string, kind: string, layer: string) => kolab.db.query(
     `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ($1, $1, $2, $3, 'X', $4, 'admin')`, [id, kind, layer, TEST_KOLAB]);
   expect(await rejection(insert('u1', 'prototype', 'technical'))).toMatch(/node_layer_of_kind/);

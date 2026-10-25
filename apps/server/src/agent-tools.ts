@@ -6,7 +6,7 @@ import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, type EdgeKind, type GateResult,
-  nobodyCanReview,
+  nobodyCanReview, notAKind,
 } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
 import { PAGED, paging } from './paging.js';
@@ -29,7 +29,7 @@ const deltaInput = z.object({
 });
 const from = address.optional().describe('Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark.');
 
-const listNodes = z.object({ kind: z.enum(KINDS).optional(), ...paging });
+const listNodes = z.object({ kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).optional(), ...paging });
 const resolve = z.object({ address });
 const readNode = z.object({
   node: z.string().describe('A node by name: one in your kolab (checkout), or <kolab>/<node> in any kolab you can read.'),
@@ -51,7 +51,7 @@ const listQueries = z.object({
   ...paging,
 });
 const createNode = z.object({
-  kind: z.enum(KINDS).describe('functional_spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. technical_binding: how the spec is built on one stack; it names the spec. plan: a binding\'s one plan, its elements the work packages; it names the binding'),
+  kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('functional_spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. technical_binding: how the spec is built on one stack; it names the spec. plan: a binding\'s one plan, its elements the work packages; it names the binding'),
   title: z.string(),
   id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.'),
   parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a technical_binding, the spec it binds (the default: your kolab\'s one spec); for a plan, the binding it plans (the default when your kolab has one binding). A spec and a prototype take none.'),
