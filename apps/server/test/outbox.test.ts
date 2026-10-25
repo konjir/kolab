@@ -18,7 +18,7 @@ test('a server that boots finishes the cascade a stopped process owed, without b
   const a = await openKolab({ ...store, checks, outboxLeaseMs: 300, closeWaitMs: 0 });
   await people(a, 'alice', { layers: ['functional'] });
   const alice = await a.openSession('alice', 'product');
-  await a.createNode(alice, 'functional_spec', 'P', 'P');
+  await a.createNode(alice, 'spec', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
   await a.createNode(alice, 'prototype', 'V', 'V');
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
@@ -46,7 +46,7 @@ test('a server started with worker: false and migrate: false leaves the job a st
   const a = await openKolab({ ...store, checks, outboxLeaseMs: 300, closeWaitMs: 0 });
   await people(a, 'alice', { layers: ['functional'] });
   const alice = await a.openSession('alice', 'product');
-  await a.createNode(alice, 'functional_spec', 'P', 'P');
+  await a.createNode(alice, 'spec', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
   await a.createNode(alice, 'prototype', 'V', 'V');
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });

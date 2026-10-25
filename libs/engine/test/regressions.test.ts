@@ -5,9 +5,9 @@ import { approved, commitReviewed, els, marksOn, people, rejection, setup, textO
 
 test('a pending draft does not hide its node from the cascade; the draft catches up on commit', async () => {
   const { kolab, product, engineer } = await setup();
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
-  const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
+  const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
 
@@ -22,7 +22,7 @@ test('a pending draft does not hide its node from the cascade; the draft catches
 
 test('a variant drafted while its parent moved on is rebased when the draft commits', async () => {
   const { kolab, product } = await setup();
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Logo top-left.', E2: 'White background.' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'Navy background.' }] });
@@ -39,8 +39,8 @@ test('optimistic concurrency: a draft overtaken by a human commit is rejected, n
   const { kolab, product, engineer } = await setup();
   await people(kolab, 'dave');
   const dave = await kolab.openSession('dave', 'engineer');
-  await kolab.createNode(product, 'functional_spec', 'S', 'S');   // the spec B binds (D78)
-  const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
+  await kolab.createNode(product, 'spec', 'S', 'S');   // the spec B binds (D78)
+  const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   await commitReviewed(kolab, engineer, dave, B, { elements: els({ b1: 'v1' }) });
   const bobDraft = await kolab.draft(engineer, B, { elements: els({ b1: 'bob edit' }) });
   await commitReviewed(kolab, dave, engineer, B, { elements: els({ b1: 'dave edit' }) });
@@ -54,7 +54,7 @@ test('optimistic concurrency: a draft overtaken by a human commit is rejected, n
 test('a rejected override resolution keeps the mark and the query open', async () => {
   let reject = false;
   const { kolab, product } = await setup(() => (reject ? { ok: false, note: 'no' } : { ok: true }));
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E3: 'Timeout 15.' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'override', element: 'E3', text: 'Timeout 30.' }] });
@@ -73,7 +73,7 @@ test('a rejected override resolution keeps the mark and the query open', async (
 
 test('variants may not inherit from each other in a loop', async () => {
   const { kolab, product } = await setup();
-  const A = await kolab.createNode(product, 'functional_spec', 'A', 'A');
+  const A = await kolab.createNode(product, 'spec', 'A', 'A');
   const a1 = await kolab.commit(product, A, { elements: els({ E: 'x' }) });
   const B = await kolab.createNode(product, 'prototype', 'B', 'B');
   const b1 = await kolab.commit(product, B, { parent: a1, deltas: [{ kind: 'add', element: 'F', text: 'y' }] });
@@ -83,9 +83,9 @@ test('variants may not inherit from each other in a loop', async () => {
 
 test('row-level security: agents cannot self-commit, mislabel a layer, or link from another layer', async () => {
   const { kolab, product, engineer } = await setup();
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   const s1 = await kolab.commit(product, S, { elements: els({ R: 'r' }) });
-  const T = await kolab.createNode(engineer, 'technical_binding', 'T', 'T');
+  const T = await kolab.createNode(engineer, 'binding', 'T', 'T');
   const t1 = await kolab.commit(engineer, T, { elements: els({ t: 'x' }) });
   const asAgent = (session: string, sql: string, params: unknown[] = []) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
@@ -104,9 +104,9 @@ test('row-level security: agents cannot self-commit, mislabel a layer, or link f
 
 test('a whole-version dependent gets one mark per commit, and clears only when every cause clears', async () => {
   const { kolab, product, engineer } = await setup();
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'a one', R2: 'b two' }) });
-  const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
+  const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b = await kolab.commit(engineer, B, { elements: els({ b1: 'w1', b2: 'w2' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: 'b2', target: s1, targetElement: 'R2' });
@@ -128,7 +128,7 @@ test('a whole-version dependent gets one mark per commit, and clears only when e
 
 test('an equivalence pair does not flag the version that was just committed', async () => {
   const { kolab, product } = await setup();
-  const A = await kolab.createNode(product, 'functional_spec', 'A', 'A');
+  const A = await kolab.createNode(product, 'spec', 'A', 'A');
   const a1 = await kolab.commit(product, A, { elements: els({ E: 'x' }) });
   const B = await kolab.createNode(product, 'prototype', 'B', 'B');
   const b1 = await kolab.commit(product, B, { elements: els({ F: 'y' }) });
@@ -145,7 +145,7 @@ test('folding keeps the draft author, so a second stale draft is rejected instea
   const { kolab, product } = await setup();
   await people(kolab, 'erin');
   const erin = await kolab.openSession('erin', 'product');
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, erin, P, { elements: els({ E1: 'one' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, erin, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
@@ -164,7 +164,7 @@ test('folding keeps the draft author, so a second stale draft is rejected instea
 
 test('folding carries the dependencies the draft declared', async () => {
   const { kolab, product } = await setup();
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'r one' }) });
   const P = await kolab.createNode(product, 'prototype', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
@@ -183,7 +183,7 @@ test('folding carries the dependencies the draft declared', async () => {
 
 test('a later successful rebase settles an earlier rebase_failed mark', async () => {
   const { kolab, product } = await setup();
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
@@ -204,7 +204,7 @@ test('a later successful rebase settles an earlier rebase_failed mark', async ()
 
 test("a variant's own commit onto the parent's latest version settles its rebase_failed mark and question", async () => {
   const { kolab, product } = await setup();
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'one' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await kolab.commit(product, C, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
@@ -222,7 +222,7 @@ test("a variant's own commit onto the parent's latest version settles its rebase
 
 test('propagation skips only the changed element, not the whole triggering node', async () => {
   const { kolab, product } = await setup();
-  const A = await kolab.createNode(product, 'functional_spec', 'A', 'A');
+  const A = await kolab.createNode(product, 'spec', 'A', 'A');
   const a1 = await kolab.commit(product, A, { elements: els({ E1: 'e one', E2: 'e two' }) });
   const B = await kolab.createNode(product, 'prototype', 'B', 'B');
   const b1 = await kolab.commit(product, B, { elements: els({ F: 'f' }) });

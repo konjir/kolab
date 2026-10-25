@@ -11,9 +11,9 @@ import type { Act } from '../src/components/Marks.js';
 const pm: WebMe = { actor: 'lee', name: 'Lee', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'accounts', access: { level: 'write', layers: ['functional', 'technical'] } };
 const eng: WebMe = { ...pm, actor: 'eng-agent', name: 'eng-agent', kind: 'agent', owner: 'lee', role: 'engineer', layer: 'technical' };
 const node = (name: string, kind: WebNodeSummary['kind'], parent?: string): WebNodeSummary => ({
-  name, kind, layer: kind === 'functional_spec' || kind === 'prototype' ? 'functional' : 'technical', title: name, latest: 1, drafts: 0, in_review: 0, ...(parent ? { parent } : {}),
+  name, kind, layer: kind === 'spec' || kind === 'prototype' ? 'functional' : 'technical', title: name, latest: 1, drafts: 0, in_review: 0, ...(parent ? { parent } : {}),
 });
-const NODES = [node('accounts', 'functional_spec'), node('accounts-api', 'technical_binding', 'accounts'), node('accounts-web', 'technical_binding', 'accounts'),
+const NODES = [node('accounts', 'spec'), node('accounts-api', 'binding', 'accounts'), node('accounts-web', 'binding', 'accounts'),
   node('accounts-api-plan', 'plan', 'accounts-api')];
 const overview = (me: WebMe, nodes: WebNodeSummary[] = NODES): WebOverview => ({
   me, kolab: { id: 'accounts', title: 'Accounts', owner: 'lee', visibility: 'private', current: true, access: me.access }, kolabs: [],
@@ -38,12 +38,12 @@ test('a kolab with its spec offers product a prototype, never a second spec (KON
   expect(kinds()).toStrictEqual(['prototype']);
   cleanup();
   form(overview(pm, []));
-  expect(kinds()).toStrictEqual(['functional_spec', 'prototype']);
+  expect(kinds()).toStrictEqual(['spec', 'prototype']);
 });
 
 test('a plan names the binding it plans, from those without a plan (D78, KON5)', async () => {
   form(overview(eng));
-  expect(kinds()).toStrictEqual(['technical_binding', 'plan']);
+  expect(kinds()).toStrictEqual(['binding', 'plan']);
   fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'plan' } });
   expect([...(screen.getByLabelText('Plans the binding') as HTMLSelectElement).options].map((o) => o.value)).toStrictEqual(['accounts-web']);
   fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Web plan' } });
@@ -57,7 +57,7 @@ test('a binding is made with no parent named: Kolab names the kolab\'s spec', as
   fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Mobile' } });
   fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'accounts-mobile' } });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create' })); });
-  expect(calls.at(-1)).toStrictEqual({ url: '/api/nodes', body: { kind: 'technical_binding', title: 'Mobile', name: 'accounts-mobile' } });
+  expect(calls.at(-1)).toStrictEqual({ url: '/api/nodes', body: { kind: 'binding', title: 'Mobile', name: 'accounts-mobile' } });
 });
 
 test('a plan\'s page says which binding it plans', async () => {

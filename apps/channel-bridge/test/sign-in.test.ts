@@ -97,7 +97,7 @@ async function kolabWithSignIn() {
  * the functional layer, approves it, then asks about it as engineer. Returns her engineer client.
  */
 async function specInReview(url: string, kolab: Awaited<ReturnType<typeof openKolab>>, agent: Client) {
-  await call(agent, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(agent, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(agent, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(agent, 'submit_for_review', { node: 'orders', version: 1 });
   const product = await kolabClient(url, await annAs(kolab, 'product'));
@@ -480,7 +480,7 @@ test('W3.8 done when: with only the bridge configured, as konjir connect claude 
   expect(await call(claude, 'whoami')).toMatchObject({ actor: 'ann-claude', kolab: 'anns', role: 'product' });
   await listening(1);
   expect(stderr).toMatch(/using the sign-in kept for ann-claude at/);
-  await call(claude, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(claude, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(claude, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(claude, 'submit_for_review', { node: 'orders', version: 1 });
   const product = await kolabClient(server.url, await annAs(kolab, 'product'));

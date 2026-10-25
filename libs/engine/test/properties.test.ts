@@ -99,7 +99,7 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
 
   m.P = P_ORDER.map((id) => ({ id, text: t(id, 0), parent: P_PARENTS[id] }));
   // The family is prototypes: a kolab holds one spec (KON1), which the bindings B and W name (D78).
-  if (!(await kolab.listNodes('functional_spec', TEST_KOLAB)).length) await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
+  if (!(await kolab.listNodes('spec', TEST_KOLAB)).length) await kolab.createNode(product, 'spec', 'Spec', 'spec');
   await kolab.createNode(product, 'prototype', 'P', ids.P);
   const p = await kolab.commit(product, ids.P, { elements: m.P.map(input) });
 
@@ -126,7 +126,7 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
   m.placed('V1');
   m.placed('V2');
   const versions: Partial<Record<NodeKey, string>> = { P: p, V1: v1, V2: v2 };
-  for (const [key, kind] of [['B', 'technical_binding'], ['W', 'technical_binding'], ['X', 'plan']] as const) {
+  for (const [key, kind] of [['B', 'binding'], ['W', 'binding'], ['X', 'plan']] as const) {
     for (const el of PLAIN[key]) m.plain[key].set(el, t(el, 0));
     await kolab.createNode(engineer, kind, key, ids[key], key === 'X' ? { parent: ids.W } : {});
     versions[key] = await kolab.commit(engineer, ids[key], { elements: m.mat(key).map(input) });

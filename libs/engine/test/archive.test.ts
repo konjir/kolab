@@ -43,7 +43,7 @@ async function world() {
   await kolab.grant('orders', 'bob', 'write', { layers: ['technical'] });
   const ann = await kolab.openSession('ann', 'product', { kolab: 'orders' });
   // Alone on the functional layer, Ann commits the spec without review (W1.6).
-  await kolab.createNode(ann, 'functional_spec', 'Orders', 'orders-spec');
+  await kolab.createNode(ann, 'spec', 'Orders', 'orders-spec');
   await kolab.commit(ann, 'orders-spec', { elements: els({ R1: 'Orders can be cancelled.' }) });
   await kolab.addActor('ann-pm', { owner: 'ann' });
   await kolab.grant('orders', 'ann-pm', 'write', { layers: ['functional'] });
@@ -268,7 +268,7 @@ test("a person's own kolab stays live for the others who work in it; only an org
   expect(await kolab.openSessions([carol, bob])).toStrictEqual(new Set([carol]));
   expect(await kolab.access('bob', 'notes')).toStrictEqual(NONE);
   expect((await kolab.sessionInfo(carol)).access).toMatchObject({ level: 'write' });
-  await kolab.createNode(carol, 'functional_spec', 'Notes', 'notes-spec');
+  await kolab.createNode(carol, 'spec', 'Notes', 'notes-spec');
   expect((await kolab.listKolabs()).map((k) => k.id)).toStrictEqual(['notes', 'orders']);
   // Bob owns no new kolab while archived.
   expect(await rejection(kolab.createKolab('notes-2', { owner: 'bob' }))).toMatch(/bob is archived, so it owns no new kolab/);

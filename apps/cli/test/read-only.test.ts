@@ -29,7 +29,7 @@ async function world() {
   await call(admin, 'admin_grant', { kolab: 'shop', to: 'rita', level: 'read' });
   const erin = await session('erin');
   const c = erin.client;
-  await call(c, 'create_node', { kind: 'functional_spec', title: 'Spec', id: 'spec' });
+  await call(c, 'create_node', { kind: 'spec', title: 'Spec', id: 'spec' });
   await call(c, 'draft', { node: 'spec', elements: [{ id: 'R1', text: 'Carts last a day.' }, { id: 'R2', text: 'Carts are shared.' }] });
   await call(c, 'submit_for_review', { node: 'spec', version: 1 });
   // A question a person asked, answered; and two a ruling's mark raised: one settled by amending

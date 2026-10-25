@@ -17,9 +17,9 @@ async function twoAccounts() {
   await kolab.createKolab('billing', { owner: 'bob' });
   const alice = await kolab.openSession('alice', 'product');
   const bob = await kolab.openSession('bob', 'product');
-  await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
   await kolab.commit(alice, 'orders-spec', { elements: els({ R1: 'Orders can be cancelled.' }) });
-  await kolab.createNode(bob, 'functional_spec', 'Billing', 'billing-spec');
+  await kolab.createNode(bob, 'spec', 'Billing', 'billing-spec');
   await kolab.commit(bob, 'billing-spec', { elements: els({ B1: 'Invoices are monthly.' }) });
   return { kolab, alice, bob };
 }
@@ -76,7 +76,7 @@ test('every row carries the kolab of what it belongs to, whatever its writer say
   await kolab.db.query(`insert into element(version_id, element_id, ord, text, fingerprint, kolab_id) values ($1, 'R9', 9, 'x', 'x', 'billing')`, [v.id]);
   expect((await kolab.db.query(`select kolab_id from element where element_id = 'R9'`)).rows).toStrictEqual([{ kolab_id: 'orders' }]);
   // A node with no kolab is refused.
-  expect(await rejection(kolab.db.query(`insert into node(id, kind, layer, title) values ('loose', 'functional_spec', 'functional', 'Loose')`))).toMatch(/kolab_id/);
+  expect(await rejection(kolab.db.query(`insert into node(id, kind, layer, title) values ('loose', 'spec', 'functional', 'Loose')`))).toMatch(/kolab_id/);
   expect((await kolab.sessionInfo(alice)).kolab).toBe('orders');
 });
 
@@ -208,7 +208,7 @@ test('an organization can own agents: they work in its kolabs, and hold nothing 
   await kolab.grant('acme-api', 'acme-bot', 'write', { layers: ['functional'] });
   const s = await kolab.openSession('acme-bot', 'product');
   expect(await kolab.sessionInfo(s)).toMatchObject({ actor: 'acme-bot', kind: 'agent', owner: 'acme', kolab: 'acme-api', access: { level: 'write', layers: ['functional'] } });
-  await kolab.createNode(s, 'functional_spec', 'API', 'api');
+  await kolab.createNode(s, 'spec', 'API', 'api');
   const v = await kolab.commit(s, 'api', { elements: els({ A1: 'Requests are authenticated.' }) });
   expect(await kolab.author(v)).toStrictEqual({ actor: 'acme-bot', kind: 'agent', owner: 'acme', role: 'product' });
 
@@ -278,7 +278,7 @@ test('precedent is per kolab: two kolabs with the same fingerprints never share 
   // The same template in each kolab, with the same variant and override.
   const setUp = async (person: string, prefix: string) => {
     const s = await kolab.openSession(person, 'product');
-    await kolab.createNode(s, 'functional_spec', 'Base', `${prefix}-base`);
+    await kolab.createNode(s, 'spec', 'Base', `${prefix}-base`);
     const base = await kolab.commit(s, `${prefix}-base`, { elements: els({ R1: 'Prices show in dollars.' }) });
     await kolab.createNode(s, 'prototype', 'Variant', `${prefix}-eu`);
     await kolab.commit(s, `${prefix}-eu`, { parent: base, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
@@ -374,8 +374,8 @@ test("submitting a draft needs Write on its layer, and a draft whose author lost
 test("a node name another kolab has is free here, and the name taken here is refused naming only this kolab (W1.4)", async () => {
   const { kolab, alice, bob } = await twoAccounts();
   expect(await kolab.createNode(bob, 'prototype', 'X', 'orders-spec')).toMatch(/^~[0-9A-Z]{26}$/);
-  expect(await rejection(kolab.createNode(alice, 'functional_spec', 'X', 'orders-spec'))).toBe('GateError: the node name orders-spec is taken in kolab orders; choose another');
-  expect((await kolab.listNodes(undefined, 'billing')).map((n) => n.name)).toStrictEqual(['billing-spec', 'orders-spec']);
+  expect(await rejection(kolab.createNode(alice, 'spec', 'X', 'orders-spec'))).toBe('GateError: the node name orders-spec is taken in kolab orders; choose another');
+  expect((await kolab.listNodes(undefined, 'billing')).map((n) => n.name)).toStrictEqual(['orders-spec', 'billing-spec']);
 });
 
 test('a public kolab is no default: openSession picks only from kolabs an actor owns, belongs to or is granted', async () => {

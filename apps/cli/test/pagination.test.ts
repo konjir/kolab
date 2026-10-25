@@ -45,11 +45,11 @@ async function pageAll(c: Client, verb: string, key: string, args: Record<string
 
 test('every list verb returns a page and next; following next reads the rest, and the last page says so', async () => {
   const { admin, pm, dev } = await kolab();
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }, { id: 'R2', text: 'Orders ship in a day.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
   for (const name of ['a', 'b', 'c']) await call(pm, 'create_node', { kind: 'prototype', title: name, id: name });
-  await call(dev, 'create_node', { kind: 'technical_binding', title: 'Orders on Postgres', id: 'orders-pg' });
+  await call(dev, 'create_node', { kind: 'binding', title: 'Orders on Postgres', id: 'orders-pg' });
   await call(dev, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A flag.' }, { id: 'b2', text: 'A queue.' }, { id: 'b3', text: 'A job.' }],
     links: [{ source_element: 'b1', target: 'kj:orders@1#R1' }, { source_element: 'b2', target: 'kj:orders@1#R2' }, { source_element: 'b3', target: 'kj:orders@1#R1' }] });
   await call(dev, 'submit_for_review', { node: 'orders-pg', version: 1 });
@@ -102,7 +102,7 @@ test('list_reviews pages both its lists with one cursor', async () => {
 test('read_node pages a large version\'s elements; the inbox names a list it cut short', async () => {
   const { pm, dev } = await kolab();
   const n = READ_NODE_PAGE + 10;
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Big', id: 'big' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Big', id: 'big' });
   await call(pm, 'draft', { node: 'big', elements: Array.from({ length: n }, (_, i) => ({ id: `R${i}`, text: `Requirement ${i} holds.` })) });
   await call(pm, 'submit_for_review', { node: 'big', version: 1 });
   const first = await call(pm, 'read_node', { node: 'big' }) as { elements: { id: string }[]; element_count: number; elements_from: number; elements_to: number; next: string };
@@ -124,7 +124,7 @@ test('read_node pages a large version\'s elements; the inbox names a list it cut
 
 test('a draft over the limits, an over-long question, and a body over the request limit are refused, naming the limit', async () => {
   const { server, pm, dev } = await kolab();
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await expect(call(pm, 'draft', { node: 'orders', elements: Array.from({ length: MAX_ELEMENTS + 1 }, (_, i) => ({ id: `R${i}`, text: 'x' })) }))
     .rejects.toThrow(/LimitError: that draft sends 1,001 elements; a version holds at most 1,000 elements.*Nothing was written/);
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });

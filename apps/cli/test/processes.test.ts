@@ -89,7 +89,7 @@ async function until(cond: () => boolean, ms = 10_000) {
     closeAtEnd(w.subscription);
   }
 
-  await call(pmOnB, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pmOnB, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(pmOnB, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(pmOnB, 'submit_for_review', { node: 'orders', version: 1 });
 
@@ -139,7 +139,7 @@ async function until(cond: () => boolean, ms = 10_000) {
   await people(b, 'eng', { layers: ['technical'] });
   const pmToken = await b.openSession('pm', 'product');
   const engToken = await b.openSession('eng', 'engineer');
-  await b.createNode(pmToken, 'functional_spec', 'Orders', 'orders');
+  await b.createNode(pmToken, 'spec', 'Orders', 'orders');
   await b.commit(pmToken, 'orders', { elements: els({ R8: 'Office staff can cancel an order.' }) });
 
   const pm = await connect(a.url, pmToken);
@@ -208,7 +208,7 @@ async function until(cond: () => boolean, ms = 10_000) {
       closeAtEnd(w.subscription);
     }
     const pm = clients[`${kolab}-pm`].onB;
-    await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+    await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
     await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
     await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
   }

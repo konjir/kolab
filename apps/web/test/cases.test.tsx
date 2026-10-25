@@ -41,7 +41,7 @@ const el = (id: string, text: string, over: Partial<WebNodeView['elements'][numb
   id, parent: null, text, address: `kj:password-reset@3#${id}`, queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [], ...over,
 });
 const spec = (over: Partial<WebNodeView> = {}, els: WebNodeView['elements'] = [el('PR3', 'The request page shows the same response either way.', { cases: [caseFile()] })]): WebNodeView => ({
-  node: { name: 'password-reset', kind: 'functional_spec', layer: 'functional', title: 'Password reset', latest: 3, drafts: 0, in_review: 0 },
+  node: { name: 'password-reset', kind: 'spec', layer: 'functional', title: 'Password reset', latest: 3, drafts: 0, in_review: 0 },
   reading: { seq: 3, state: 'committed', author: 'Lee', role: 'product', at, note: null, mine: true },
   versions: [1, 2, 3].map((seq) => ({ seq, state: 'committed' as const, author: 'pm-agent', role: 'product', at, note: null, mine: false })), versions_next: null,
   elements: els, queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true, rulings: [], kolab: 'accounts', foreign: false, ...over,
@@ -167,7 +167,7 @@ test('the cases page lists open case files, the rulings, and settled case files'
 
 test('another kolab\'s node reads in place, read only: no edits, questions, disputes or rulings from here', async () => {
   const q: WebQuery = { ...ruledQuestion, id: 'q1', address: 'kj:checkout/checkout@2#R5', node: 'checkout', seq: 2, element: 'R5', question: 'Retry the receipt?', mark: null, mark_reason: null, raised_by: 'eng-agent' };
-  const foreign = spec({ kolab: 'checkout', foreign: true, can_write: false, node: { name: 'checkout', kind: 'functional_spec', layer: 'functional', title: 'Checkout', latest: 2, drafts: 0, in_review: 0 },
+  const foreign = spec({ kolab: 'checkout', foreign: true, can_write: false, node: { name: 'checkout', kind: 'spec', layer: 'functional', title: 'Checkout', latest: 2, drafts: 0, in_review: 0 },
     reading: { seq: 2, state: 'committed', author: 'Lee', role: 'product', at, note: null, mine: true } },
   [{ ...el('R5', 'A receipt email is sent within a minute.', { queries: [q] }), address: 'kj:checkout/checkout@2#R5' }]);
   view(lee, foreign, { kolab: 'checkout' });

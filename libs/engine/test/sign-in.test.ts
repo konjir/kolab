@@ -105,7 +105,7 @@ test('an access token is a session token that expires; refreshing rotates both t
   const stored = JSON.stringify((await kolab.db.query(`select * from session`)).rows) + JSON.stringify((await kolab.db.query(`select * from oauth_refresh_token`)).rows);
   for (const secret of [t.accessToken, t.refreshToken]) expect(stored).not.toContain(secret);
   expect((await kolab.sessionInfo(t.accessToken)).session).toBe(t.session);
-  await kolab.createNode(t.accessToken, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(t.accessToken, 'spec', 'Orders', 'orders');
 
   const r = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: (await kolab.db.query<{ client_id: string }>(`select client_id from oauth_grant`)).rows[0].client_id });
   expect([r.session, r.kolab, r.role, r.actor]).toStrictEqual([t.session, 'test', 'product', actor]);

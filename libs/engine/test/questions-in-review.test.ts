@@ -19,7 +19,7 @@ async function specInReview() {
   const dave = await kolab.openSession('dave', 'product');
   await people(kolab, 'bob-agent', { owner: 'bob', layers: ['technical'] });
   const agent = await kolab.openSession('bob-agent', 'engineer');
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.', R2: 'A failed payment can be retried.' }) });
   expect(await kolab.review(v1)).toMatchObject({ in_review: true, reviewers: ['dave'] });
   return { ...ctx, dave, agent, spec, v1 };
@@ -70,7 +70,7 @@ test('a question about a version in review carries over when it commits, and rea
 test('abandoned, a version in review hands its questions to the latest committed version where the element is there, and withdraws the rest', async () => {
   const { kolab, product, dave, engineer, agent, spec, v1 } = await specInReview();
   await kolab.recordReview(dave, v1, { verdict: 'approve' });
-  await kolab.createNode(agent, 'technical_binding', 'Checkout on Postgres', 'checkout-pg');
+  await kolab.createNode(agent, 'binding', 'Checkout on Postgres', 'checkout-pg');
   await commitReviewed(kolab, agent, engineer, 'checkout-pg', { elements: els({ b1: 'Payments retry from a queue.' }) });
 
   const v2 = await kolab.draft(product, spec, { deltas: [
@@ -221,7 +221,7 @@ test('a moved quote the committed text has more than once is withdrawn: it can\'
 
 test('withdrawn with no committed version on its node, a question marks nothing: a mark\'s trigger is always committed', async () => {
   const { kolab, engineer, dave, agent, v1 } = await specInReview();
-  await kolab.createNode(agent, 'technical_binding', 'Checkout on Postgres', 'checkout-pg');
+  await kolab.createNode(agent, 'binding', 'Checkout on Postgres', 'checkout-pg');
   await commitReviewed(kolab, agent, engineer, 'checkout-pg', { elements: els({ b1: 'Payments retry from a queue.' }) });
   const q = await kolab.raiseQuery(agent, 'kj:checkout@1#R2', 'How many retries?', { from: 'kj:checkout-pg#b1' });
   await kolab.recordReview(dave, v1, { verdict: 'request_changes', note: 'Say how many.' });
@@ -289,7 +289,7 @@ async function leesKolab() {
   await people(kolab, 'lee-agent', { owner: 'lee' });
   const pat = await kolab.openSession('pat', 'product');
   const eng = await kolab.openSession('lee-agent', 'engineer');
-  const spec = await kolab.createNode(pat, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(pat, 'spec', 'Checkout', 'checkout');
   return { kolab, pat, eng, spec };
 }
 
@@ -328,7 +328,7 @@ test('when nobody else can review yet, the version waits in review and says how 
   await people(kolab, 'pat-agent', { owner: 'pat' });
   const pat = await kolab.openSession('pat', 'product');
   await kolab.openSession('pat-agent', 'engineer');
-  const spec = await kolab.createNode(pat, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(pat, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(pat, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
 
   const r = await kolab.review(v1);

@@ -24,7 +24,7 @@ const mark: WebMark = {
   override: null, question: null,
 };
 const spec = (over: Partial<WebNodeView> = {}): WebNodeView => ({
-  node: { name: 'password-reset', kind: 'functional_spec', layer: 'functional', title: 'Password reset', latest: 3, drafts: 0, in_review: 0 },
+  node: { name: 'password-reset', kind: 'spec', layer: 'functional', title: 'Password reset', latest: 3, drafts: 0, in_review: 0 },
   reading: { seq: 3, state: 'committed', author: 'Lee', role: 'product', at, note: null, mine: true },
   versions: [1, 2, 3].map((seq) => ({ seq, state: 'committed' as const, author: 'pm-agent', role: 'product', at, note: null, mine: false })), versions_next: null,
   elements: [
@@ -37,7 +37,7 @@ const spec = (over: Partial<WebNodeView> = {}): WebNodeView => ({
 });
 const binding = (): WebNodeView => ({
   ...spec(),
-  node: { name: 'password-reset-pg', kind: 'technical_binding', layer: 'technical', title: 'Password reset on Postgres', latest: 2, drafts: 0, in_review: 0 },
+  node: { name: 'password-reset-pg', kind: 'binding', layer: 'technical', title: 'Password reset on Postgres', latest: 2, drafts: 0, in_review: 0 },
   reading: { seq: 2, state: 'committed', author: 'eng-agent', role: 'engineer', at, note: null, mine: false },
   versions: [],
   elements: [{ id: 'B9', parent: null, text: 'Rate limit: 5 requests per normalized email per hour.', address: 'kj:password-reset-pg@2#B9', queries: [], relied_on_by: [], marks: [mark], rulings: [], cases: [],

@@ -133,12 +133,12 @@ export interface Author { actor: string; kind: ActorKind | 'system'; owner: stri
 export const LAYERS = ['functional', 'technical'] as const;
 export type Layer = typeof LAYERS[number];
 /**
- * A node's kind, fixed when it is made and checked by the database (D77; migration 0027's
+ * A node's kind, fixed when it is made and checked by the database (D77, D95; migration 0027's
  * node_kind_check): a kolab's one spec (KON1), its prototypes (KON2, D79), its bindings (KON4) and
  * each binding's one plan (KON5), whose elements are its work packages. Implementation is a
  * repository, not a node (KON7).
  */
-export const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'plan'] as const;
+export const KINDS = ['spec', 'prototype', 'binding', 'plan'] as const;
 export type Kind = typeof KINDS[number];
 /** A binding's plan: a version of one commits after structural checks, without review (VER3, PLN2, D26). */
 export const PLAN_KINDS: readonly Kind[] = ['plan'];
@@ -146,21 +146,30 @@ export const PLAN_KINDS: readonly Kind[] = ['plan'];
  * The kind of node each kind names as its parent, set when it is made and never changed (D78): a
  * binding names its kolab's spec, and a plan its binding. A spec and a prototype name none.
  */
-export const PARENT_KIND: Partial<Record<Kind, Kind>> = { technical_binding: 'functional_spec', plan: 'technical_binding' };
+export const PARENT_KIND: Partial<Record<Kind, Kind>> = { binding: 'spec', plan: 'binding' };
 /**
- * Why a kind Kolab once took is refused now, pointing to what replaces it (D77), for clients and
- * scripts written before W4.1; undefined for anything else.
+ * Whether a node of kind `child` may be a variant of a version of a node of kind `parent` (D95): a
+ * variant is of its parent's kind, but a prototype may be derived from the spec (KON3). So a plan
+ * or a binding never inherits a spec's elements (KON6). Migration 0027's version_parent_kind holds
+ * to the same for every role.
+ */
+export const variantKindAllowed = (child: Kind, parent: Kind) => child === parent || (child === 'prototype' && parent === 'spec');
+/**
+ * Why a kind Kolab once took is refused now, pointing to what replaces it (D77, D95), for clients
+ * and scripts written before W4.1; undefined for anything else.
  */
 export function retiredKind(kind: unknown): string | undefined {
   if (kind === 'wbs') return 'wbs is now plan (D77): create it with kind plan, naming the binding it plans as its parent';
+  if (kind === 'functional_spec') return 'functional_spec is now spec (D95): create it with kind spec';
+  if (kind === 'technical_binding') return 'technical_binding is now binding (D95): create it with kind binding';
   if (kind === 'work_package') return 'a work package is an element of a plan, not a node (KON5, D77): add it to the binding\'s plan (kind plan)';
   if (kind === 'implementation') return 'implementation is a repository, not a node (KON7, D77): a work package names the repository it is done in';
   return undefined;
 }
 /** Why `kind` isn't one, in the words a refusal uses. */
-export const notAKind = (kind: unknown) => retiredKind(kind) ?? `a node's kind is one of ${KINDS.join(', ')} (D77), not ${String(kind)}`;
+export const notAKind = (kind: unknown) => retiredKind(kind) ?? `a node's kind is one of ${KINDS.join(', ')} (D77, D95), not ${String(kind)}`;
 /** What each kind is called in prose. */
-export const KIND_WORDS: Record<Kind, string> = { functional_spec: 'spec', prototype: 'prototype', technical_binding: 'binding', plan: 'plan' };
+export const KIND_WORDS: Record<Kind, string> = { spec: 'spec', prototype: 'prototype', binding: 'binding', plan: 'plan' };
 export const DELTA_KINDS = ['add', 'override', 'remove'] as const;
 export type DeltaKind = typeof DELTA_KINDS[number];
 export const EDGE_KINDS = ['dependency', 'derivation', 'equivalence'] as const;
@@ -227,9 +236,9 @@ export const MARK_REASONS = [
 export type MarkReason = typeof MARK_REASONS[number];
 
 export const LAYER_OF_KIND: Record<Kind, Layer> = {
-  functional_spec: 'functional',
+  spec: 'functional',
   prototype: 'functional',
-  technical_binding: 'technical',
+  binding: 'technical',
   plan: 'technical',
 };
 export const LAYER_OF_ROLE: Record<Role, Layer> = { product: 'functional', engineer: 'technical' };

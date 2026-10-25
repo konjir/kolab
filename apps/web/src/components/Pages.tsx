@@ -282,16 +282,16 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
   const [kName, setKName] = useState('');
   const [kTouched, setKTouched] = useState(false);
   const slug = (t: string) => t.toLowerCase().normalize('NFKD').replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-  const [kind, setKind] = useState<Kind>(overview.me.layer === 'functional' ? 'functional_spec' : 'technical_binding');
+  const [kind, setKind] = useState<Kind>(overview.me.layer === 'functional' ? 'spec' : 'binding');
   const [title, setTitle] = useState('');
   const [name, setName] = useState('');
   // A kolab holds one spec (KON1, D77): once it has one, a product session makes prototypes.
-  const hasSpec = overview.nodes.some((n) => n.kind === 'functional_spec');
-  const kinds = KINDS.filter((k) => LAYER_OF_KIND[k] === overview.me.layer && !(k === 'functional_spec' && hasSpec));
+  const hasSpec = overview.nodes.some((n) => n.kind === 'spec');
+  const kinds = KINDS.filter((k) => LAYER_OF_KIND[k] === overview.me.layer && !(k === 'spec' && hasSpec));
   const shown = kinds.includes(kind) ? kind : kinds[0];
   // A plan names the binding it plans (D78), one plan per binding (KON5): the bindings without one.
   const planned = new Set(overview.nodes.filter((n) => n.kind === 'plan').map((n) => n.parent));
-  const unplanned = overview.nodes.filter((n) => n.kind === 'technical_binding' && !planned.has(n.name)).map((n) => n.name);
+  const unplanned = overview.nodes.filter((n) => n.kind === 'binding' && !planned.has(n.name)).map((n) => n.name);
   const [parent, setParent] = useState('');
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -337,7 +337,7 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
           <form onSubmit={create}>
             <div className="field"><label htmlFor="nKind">Kind</label>
               <select id="nKind" value={shown} onChange={(e) => setKind(e.target.value as Kind)}>{kinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}</select>
-              {shown === 'technical_binding' && <span className="hint">It binds this kolab’s spec{hasSpec ? '' : ', which it needs first'}.</span>}</div>
+              {shown === 'binding' && <span className="hint">It binds this kolab’s spec{hasSpec ? '' : ', which it needs first'}.</span>}</div>
             {shown === 'plan' && <div className="field"><label htmlFor="nParent">Plans the binding</label>
               <select id="nParent" value={parent || unplanned[0] || ''} onChange={(e) => setParent(e.target.value)}>{unplanned.map((b) => <option key={b} value={b}>{b}</option>)}</select>
               <span className="hint">Each binding has one plan, whose elements are its work packages.</span></div>}

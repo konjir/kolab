@@ -61,9 +61,9 @@ test('a rolled-back change signals no one; a committed one signals this Kolab on
 
 test('clearing a mark signals every layer whose inbox it empties, the cascade\'s included', async () => {
   const { kolab, product, engineer } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  const spec = await kolab.createNode(product, 'spec', 'Orders', 'orders');
   const s1 = await kolab.commit(product, spec, { elements: els({ R1: 'Orders can be cancelled.' }) });
-  const binding = await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  const binding = await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
   const b1 = await kolab.commit(engineer, binding, { elements: els({ b1: 'A cancel endpoint.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   // A functional prototype relies on the binding, so a mark on the binding cascades to it.
@@ -96,7 +96,7 @@ async function twoKolabsIn(kolab: TestKolab) {
     otherProduct: await kolab.openSession('dana', 'product', { kolab: 'other' }), otherEngineer: await kolab.openSession('erin', 'engineer', { kolab: 'other' }),
   };
   for (const [pm, name] of [[sessions.product, 'orders'], [sessions.otherProduct, 'billing']] as const) {
-    await kolab.createNode(pm, 'functional_spec', name, name);
+    await kolab.createNode(pm, 'spec', name, name);
     await kolab.commit(pm, name, { elements: els({ R1: `${name} can be cancelled.` }) });
   }
   return sessions;
@@ -220,7 +220,7 @@ async function silenceableProxy(databaseUrl: string) {
     await people(b, 'alice', { layers: ['functional'] }); await people(b, 'bob', { layers: ['technical'] });
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
-    await b.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await b.createNode(product, 'spec', 'Orders', 'orders');
     await b.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
 
     const q = await b.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
@@ -399,7 +399,7 @@ async function silenceableProxy(databaseUrl: string) {
     await people(b, 'alice', { layers: ['functional'] }); await people(b, 'bob', { layers: ['technical'] });
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
-    await b.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await b.createNode(product, 'spec', 'Orders', 'orders');
     await b.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     await settle();
     const admin = new pg.Client({ connectionString: url });
@@ -488,7 +488,7 @@ async function silenceableProxy(databaseUrl: string) {
     await people(b, 'alice', { layers: ['functional'] }); await people(b, 'bob', { layers: ['technical'] });
     const product = await b.openSession('alice', 'product');
     const engineer = await b.openSession('bob', 'engineer');
-    await b.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await b.createNode(product, 'spec', 'Orders', 'orders');
     await b.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     const q = await b.raiseQuery(engineer, 'kj:orders#R1', 'By whom?');
     await settle();

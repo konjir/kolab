@@ -95,7 +95,7 @@ export async function seed(kolab: Kolab) {
   await kolab.createKolab('checkout', { owner: 'lee', title: 'Checkout', ...admin });
   await kolab.grant('checkout', 'eng-agent', 'write', { layers: ['technical'], ...admin });
   const leeThere = await kolab.openSession('lee', 'product', { kolab: 'checkout', ...admin });
-  await kolab.createNode(leeThere, 'functional_spec', 'Checkout', 'checkout');
+  await kolab.createNode(leeThere, 'spec', 'Checkout', 'checkout');
   await kolab.commit(leeThere, 'checkout', { elements: els(checkoutV1) });
   await kolab.commit(leeThere, 'checkout', { elements: els(checkoutV2) });
   const engThere = await kolab.openSession('eng-agent', 'engineer', { kolab: 'checkout', ...admin });
@@ -124,9 +124,9 @@ export async function seed(kolab: Kolab) {
     }
   };
 
-  await kolab.createNode(pm, 'functional_spec', 'Password reset', 'password-reset');
+  await kolab.createNode(pm, 'spec', 'Password reset', 'password-reset');
   await commit(pm, lee, 'password-reset', els(specV1));
-  await kolab.createNode(eng, 'technical_binding', 'Password reset on Postgres', 'password-reset-pg');
+  await kolab.createNode(eng, 'binding', 'Password reset on Postgres', 'password-reset-pg');
   const b1 = await commit(eng, qa, 'password-reset-pg', els(bindV1));
   await link(b1);
   const q1 = await kolab.raiseQuery(eng, 'kj:password-reset#PR7', 'PR7 says "all of the user\'s other sessions" are signed out. Other than which session? Should a successful reset sign the user in with a new session that survives, or leave them signed out with every session revoked?', { from: 'kj:password-reset-pg#B8' });

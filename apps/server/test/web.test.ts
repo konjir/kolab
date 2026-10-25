@@ -50,9 +50,9 @@ async function signIn(base: string, token: string) {
 async function specAndBinding() {
   const ctx = await setup();
   const { kolab, product, engineer } = ctx;
-  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
   await kolab.commit(product, 'orders', { elements: els({ R1: 'Office staff can cancel an order.', R2: 'A cancelled order is refunded in full.' }) });
-  await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
   await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.', b2: 'Refunds go through the payments queue.' }) });
   for (const [b, r] of [['b1', 'R1'], ['b2', 'R2']]) {
     const v = await kolab.latestCommitted('orders-pg');
@@ -170,7 +170,7 @@ test('a spec reads with its questions and notes beside each element, and a chang
 
   const overview = (await alice.call<WebOverview>('overview')).body;
   expect(overview.counts).toStrictEqual({ stale: 0, waiting: 1, reviews: 0, open: 1, cases: 0 });
-  expect(overview.nodes.map((n) => [n.name, n.layer, n.latest])).toStrictEqual([['orders', 'functional', 1], ['orders-pg', 'technical', 1]]);
+  expect(overview.nodes.map((n) => [n.name, n.layer, n.latest])).toStrictEqual([['orders-pg', 'technical', 1], ['orders', 'functional', 1]]);
 
   // Alice answers, and edits R1 through the page: alone on the functional layer, it commits unreviewed.
   expect((await alice.call(`queries/${q}/answer`, { answer: 'Open or Assigned.' })).status).toBe(200);
@@ -411,7 +411,7 @@ test('a page reads and writes only its session\'s kolab', async () => {
   await kolab.addActor('erin');
   await kolab.createKolab('other', { owner: 'erin' });
   const erin = await kolab.openSession('erin', 'product', { kolab: 'other' });
-  await kolab.createNode(erin, 'functional_spec', 'Secret', 'secret');
+  await kolab.createNode(erin, 'spec', 'Secret', 'secret');
   await kolab.commit(erin, 'secret', { elements: els({ S1: 'Only erin knows.' }) });
   const base = await serve(kolab);
   const alice = await signIn(base, product);
@@ -626,7 +626,7 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   await kolab.createKolab('other', { owner: 'erin', title: 'Other' });
   await kolab.grant('other', 'alice', 'read');
   const erin = await kolab.openSession('erin', 'product', { kolab: 'other' });
-  await kolab.createNode(erin, 'functional_spec', 'Secret', 'secret');
+  await kolab.createNode(erin, 'spec', 'Secret', 'secret');
   await kolab.commit(erin, 'secret', { elements: els({ S1: 'Only those who read other know.' }) });
   await kolab.commit(erin, 'secret', { elements: els({ S1: 'Readers of other know this.' }) });
   await kolab.raiseQuery(erin, 'kj:secret#S1', 'Who reads it?');
@@ -642,7 +642,7 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   const list = await alice.call<WebForeignKolab>('kolabs/other/nodes');
   expect(list.body).toStrictEqual({
     kolab: { id: 'other', title: 'Other', owner: 'erin', visibility: 'private', access: { level: 'read', layers: [] } },
-    nodes: [{ name: 'secret', kind: 'functional_spec', layer: 'functional', title: 'Secret', latest: 2, drafts: 0, in_review: 0 }],
+    nodes: [{ name: 'secret', kind: 'spec', layer: 'functional', title: 'Secret', latest: 2, drafts: 0, in_review: 0 }],
     next: null,
   });
   const read = (await alice.call<WebNodeView>('kolabs/other/nodes/secret')).body;
@@ -767,7 +767,7 @@ test('every list the web API returns comes a page at a time: ?cursor= reads the 
   }
   expect((await call(`activity?cursor=${encodeURIComponent(cursorFor(scoped('web:activity', { here: TEST_KOLAB }), ['soon', 'node', 'x']))}`)).status).toBe(400);
   // A NUL in a text key part is a 400, not the database's "invalid byte sequence".
-  const nul = await call<{ message: string }>(`nodes?cursor=${encodeURIComponent(cursorFor(scoped('web:nodes', { here: TEST_KOLAB }), ['functional_spec', 'a\u0000']))}`);
+  const nul = await call<{ message: string }>(`nodes?cursor=${encodeURIComponent(cursorFor(scoped('web:nodes', { here: TEST_KOLAB }), ['spec', 'a\u0000']))}`);
   expect(nul).toMatchObject({ status: 400, body: { message: expect.stringMatching(/^invalid cursor/) } });
   // Lineage reads each node's elements, so however many are asked for, a page holds at most 20.
   for (let i = 0; i < 21; i++) {

@@ -39,7 +39,7 @@ async function boot() {
 
 /** Precedent of a kolab's own: a ruling, and a question answered. */
 async function precedent(c: Client, word: string) {
-  await call(c, 'create_node', { kind: 'functional_spec', title: 'Spec', id: 'spec' });
+  await call(c, 'create_node', { kind: 'spec', title: 'Spec', id: 'spec' });
   await call(c, 'draft', { node: 'spec', elements: [{ id: 'R1', text: `The ${word} requirement.` }] });
   await call(c, 'submit_for_review', { node: 'spec', version: 1 });
   await call(c, 'rule', { address: 'kj:spec#R1', text: `Ruling private to ${word}.`, effect: 'keep_intent' });
@@ -155,7 +155,7 @@ test('a session that holds only Read gets no precedent and no question a mark ra
 test('the instructions print the newest 20 answered questions, and say how many there are in all', async () => {
   const { server, open } = await boot();
   const ann = await open('ann', 'anns');
-  await call(ann.client, 'create_node', { kind: 'functional_spec', title: 'Spec', id: 'spec' });
+  await call(ann.client, 'create_node', { kind: 'spec', title: 'Spec', id: 'spec' });
   await call(ann.client, 'draft', { node: 'spec', elements: [{ id: 'R1', text: 'The requirement.' }] });
   await call(ann.client, 'submit_for_review', { node: 'spec', version: 1 });
   for (let i = 1; i <= 22; i++) {

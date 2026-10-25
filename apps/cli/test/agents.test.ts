@@ -45,7 +45,7 @@ test("two agents of one person hold sessions at once over MCP, and whoami and re
   expect(await call(two.client, 'whoami')).toMatchObject({ actor: 'alice-pm-2', kind: 'agent', owner: 'alice' });
 
   // Each agent commits a version of the same spec while both sessions are open.
-  await call(one.client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(one.client, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   await call(one.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }] });
   await call(one.client, 'submit_for_review', { node: 'checkout', version: 1 });
   await call(two.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 10 seconds.' }] });
@@ -77,7 +77,7 @@ test('over MCP, an agent whose draft another agent overtook is told it is stale,
   };
   const one = await session('ann');
   const two = await session('ben');
-  await call(one, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(one, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   await call(one, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }] });
   await call(one, 'submit_for_review', { node: 'checkout', version: 1 });
   await call(two, 'review', { node: 'checkout', version: 1, verdict: 'approve' });
@@ -123,10 +123,10 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
   expect([bot.k, pm.k]).toStrictEqual(['billing', 'orders']);
   expect(await rejection(call(admin, 'admin_open_session', { actor: 'ann', role: 'product', kolab: 'billing' }))).toMatch(/AccessError: ann has no access to kolab billing/);
 
-  await call(bot.c, 'create_node', { kind: 'functional_spec', title: 'Billing', id: 'billing-spec' });
+  await call(bot.c, 'create_node', { kind: 'spec', title: 'Billing', id: 'billing-spec' });
   await call(bot.c, 'draft', { node: 'billing-spec', elements: [{ id: 'B1', text: 'Invoices are monthly.' }] });
   await call(bot.c, 'submit_for_review', { node: 'billing-spec', version: 1 });
-  await call(pm.c, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders-spec' });
+  await call(pm.c, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders-spec' });
 
   // Neither sees the other's node: not in a list, not by name, not to link or ask about.
   expect((await call(pm.c, 'list_nodes') as unknown as { nodes: { id: string }[] }).nodes.map((n) => n.id)).toStrictEqual(['orders-spec']);
@@ -184,7 +184,7 @@ test('over MCP, a review request waits in the reviewer\'s inbox, konjir_review s
     const [content] = (await client.readResource({ uri })).contents;
     return JSON.parse('text' in content ? content.text : '');
   };
-  await call(claude, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(claude, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   await call(claude, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds and emails a receipt.' }] });
   expect(await call(claude, 'submit_for_review', { node: 'checkout', version: 1 })).toMatchObject({
     ok: false, committed: null, in_review: 'kj:checkout@1', reviewers: ['lee', 'lee-codex'], next: expect.stringMatching(/^In review: lee, lee-codex each have a review request/),
@@ -230,7 +230,7 @@ test('over MCP, only the admin token applies a ruling, which commits without rev
   };
   const pm = await session('mirror-product');
   const other = await session('pm-2');   // a reviewer: without D47, the version would wait for it
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Kolab', id: 'kolab' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Kolab', id: 'kolab' });
   const ruling = { ruling: 'D46', actor: 'mirror-product', node: 'kolab', elements: [{ id: 'R1', text: 'Kolab adopts onivoro hooks.' }] };
 
   expect((await pm.listTools()).tools.some((t) => t.name === 'konjir_admin_apply_ruling')).toBe(false);
@@ -259,7 +259,7 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
   const alice = await session('alice');
   const bob = await session('bob');
   for (const [client, text] of [[alice, 'Orders ship within a day.'], [bob, 'Invoices are sent monthly.']] as const) {
-    expect(await call(client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' })).toStrictEqual({ node: 'checkout' });
+    expect(await call(client, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' })).toStrictEqual({ node: 'checkout' });
     await call(client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text }] });
     expect(await call(client, 'submit_for_review', { node: 'checkout', version: 1 })).toMatchObject({ ok: true, committed: 'kj:checkout@1' });
   }

@@ -209,7 +209,7 @@ export function App() {
   }
 
   const specs = [...(overview?.nodes ?? []), ...(moreNodes?.nodes ?? [])];
-  const home = specs.find((n) => n.kind === 'functional_spec') ?? specs[0];
+  const home = specs.find((n) => n.kind === 'spec') ?? specs[0];
   const r: Route = route.view === 'home' ? (home ? { view: 'node', name: home.name } : { view: 'start' }) : route;
   const counts = overview?.counts;
   const belongs = me.access.layers.length > 0;

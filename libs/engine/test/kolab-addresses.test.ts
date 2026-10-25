@@ -20,8 +20,8 @@ async function twoCheckouts(opts: Parameters<typeof openKolab>[0] = {}) {
   await kolab.createKolab('billing', { owner: 'bob' });
   const alice = await kolab.openSession('alice', 'product');
   const bob = await kolab.openSession('bob', 'product');
-  const mine = await kolab.createNode(alice, 'functional_spec', 'Checkout', 'checkout');
-  const theirs = await kolab.createNode(bob, 'functional_spec', 'Checkout', 'checkout');
+  const mine = await kolab.createNode(alice, 'spec', 'Checkout', 'checkout');
+  const theirs = await kolab.createNode(bob, 'spec', 'Checkout', 'checkout');
   await kolab.commit(alice, mine, { elements: els({ R1: 'Orders ship within a day.' }) });
   await kolab.commit(bob, theirs, { elements: els({ R1: 'Invoices are sent monthly.' }) });
   return { kolab, alice, bob, mine, theirs };
@@ -42,7 +42,7 @@ test('a node name is unique within its kolab: two kolabs may each have one, and 
   expect(text(await kolab.resolve('kj:checkout#R1', { system: 'billing' }))).toBe('Invoices are sent monthly.');
 
   // Within one kolab a name is taken once, and the refusal names only that kolab.
-  expect(await rejection(kolab.createNode(bob, 'functional_spec', 'Again', 'checkout'))).toBe('GateError: the node name checkout is taken in kolab billing; choose another');
+  expect(await rejection(kolab.createNode(bob, 'spec', 'Again', 'checkout'))).toBe('GateError: the node name checkout is taken in kolab billing; choose another');
   expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a/b'))).toMatch(/GateError: "a\/b" isn't a valid node name: it may not contain '\/', '@', '#', '~' or whitespace/);
   expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a b'))).toMatch(/isn't a valid node name/);
 
@@ -59,7 +59,7 @@ test('a node name is unique within its kolab: two kolabs may each have one, and 
   await kolab.createKolab('store', { owner: 'dave' });
   const carol = await kolab.openSession('carol', 'product');
   const dave = await kolab.openSession('dave', 'product');
-  const made = await Promise.all([carol, dave].map((s) => kolab.createNode(s, 'functional_spec', 'Checkout', 'checkout')));
+  const made = await Promise.all([carol, dave].map((s) => kolab.createNode(s, 'spec', 'Checkout', 'checkout')));
   expect(made.every((id) => GENERATED.test(id)) && made[0] !== made[1]).toBe(true);
 });
 
@@ -108,7 +108,7 @@ test('the full form resolves wherever its reader holds Read, and elsewhere is no
   await kolab.addActor('erin');
   await kolab.createKolab('docs', { owner: 'erin', visibility: 'public' });
   const erin = await kolab.openSession('erin', 'product', { kolab: 'docs' });
-  await kolab.createNode(erin, 'functional_spec', 'Guide', 'guide');
+  await kolab.createNode(erin, 'spec', 'Guide', 'guide');
   await kolab.commit(erin, 'guide', { elements: els({ G1: 'Read the guide first.' }) });
   expect(text(await kolab.resolve('kj:docs/guide#G1', { session: alice }))).toBe('Read the guide first.');
   expect(await rejection(kolab.resolve('kj:docs/guide#G1', { session: pm }))).toBe('Error: no node guide in kolab docs');
@@ -154,8 +154,8 @@ test('every address and message Kolab gives names a node by its name, never its 
   const eve = await kolab.openSession('eve', 'engineer', { kolab: 'orders' });
   const dan = await kolab.openSession('dan', 'engineer', { kolab: 'billing' });
   const fay = await kolab.openSession('fay', 'engineer', { kolab: 'billing' });
-  expect(await kolab.createNode(eve, 'technical_binding', 'Impl', 'impl')).toBe('impl');
-  const impl = await kolab.createNode(dan, 'technical_binding', 'Impl', 'impl');
+  expect(await kolab.createNode(eve, 'binding', 'Impl', 'impl')).toBe('impl');
+  const impl = await kolab.createNode(dan, 'binding', 'Impl', 'impl');
   expect(impl).toMatch(GENERATED);
 
   const v1 = await kolab.draft(dan, impl, { elements: els({ b1: 'A job sends invoices on the first of the month.' }) });

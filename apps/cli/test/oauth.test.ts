@@ -85,7 +85,7 @@ test('an MCP client signs a person in with OAuth, as their agent; its token refr
   expect(harness.info?.client_id).toMatch(/^kjcl_/);   // registered itself (RFC 7591)
   expect(harness.saved).toMatchObject({ token_type: 'Bearer', expires_in: 900, scope: 'konjir kolab:raes role:product' });
   expect(await call(agent, 'whoami')).toMatchObject({ actor: 'rae-claude', kind: 'agent', owner: 'rae', kolab: 'raes', role: 'product', layer: 'functional' });
-  await call(agent, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(agent, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
 
   // The access token expires; the next call refreshes it, by itself, and goes through.
   const first = harness.saved!;

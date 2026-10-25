@@ -1,10 +1,10 @@
 -- Preflight for migration 0027 (W4.1): read-only, against a database at 0026, before the release
--- that carries 0027 is deployed. Run as is, for example with psql against the RDS database.
+-- that carries 0027 is deployed. Run it as is, for example: psql "$DATABASE_URL" -f deploy/preflight/0027.sql
 --
 -- The first query is 0027's own check, text for text (libs/engine/test/migrations.test.ts compares
 -- them): it returns no rows exactly when 0027 applies, and otherwise one row per kind of refusal,
 -- naming the nodes or links, in the order 0027 reports them. The second lists the parent 0027 will
--- give each binding and each plan, and why: it refuses nothing.
+-- give each binding and each plan, and why, under the kinds 0027 gives them: it refuses nothing.
 
 -- check:begin
 with
@@ -35,7 +35,7 @@ reached as (
   select p.id as plan, array_agg(distinct t.id order by t.id) as bindings
     from node p join checked c on c.node_id = p.id join edge e on e.source_version_id = c.id
     join version tv on tv.id = e.target_version_id join node t on t.id = tv.node_id
-   where p.kind in ('wbs', 'plan') and t.kind = 'technical_binding' and t.kolab_id = p.kolab_id
+   where p.kind = 'wbs' and t.kind = 'technical_binding' and t.kolab_id = p.kolab_id
    group by p.id
 ),
 -- Each binding's spec, its kolab's one spec; each plan's binding, the one its links reach, or
@@ -49,12 +49,12 @@ inferred as (
               when cardinality(r.bindings) = 1 then 'the one binding its links reach'
               when r.bindings is null then 'its kolab''s only binding' end as how
     from node n left join spec s on s.kolab_id = n.kolab_id left join reached r on r.plan = n.id left join sole o on o.kolab_id = n.kolab_id
-   where n.kind in ('technical_binding', 'wbs', 'plan')
+   where n.kind in ('technical_binding', 'wbs')
 )
 select r.ord, r.why, string_agg(r.detail, case when r.ord in (3, 6) then '; ' else ', ' end order by r.detail) as nodes
   from (
     select 1 as ord, 'not a kind' as why, format('%s/%s (%s)', kolab_id, name, kind) as detail
-      from node where kind not in ('functional_spec', 'prototype', 'technical_binding', 'wbs', 'plan')
+      from node where kind not in ('functional_spec', 'prototype', 'technical_binding', 'wbs')
     union all
     select 2, 'layer not its kind''s', format('%s/%s (%s in the %s layer)', kolab_id, name, kind, layer)
       from node where layer <> case when kind in ('functional_spec', 'prototype') then 'functional' else 'technical' end
@@ -67,10 +67,10 @@ select r.ord, r.why, string_agg(r.detail, case when r.ord in (3, 6) then '; ' el
        and not exists (select 1 from node s where s.kolab_id = b.kolab_id and s.kind = 'functional_spec')
     union all
     select 5, 'plan whose binding can''t be told', format('%s/%s', kolab_id, name)
-      from inferred where kind in ('wbs', 'plan') and parent_id is null
+      from inferred where kind = 'wbs' and parent_id is null
     union all
     select 6, 'two plans of one binding', format('%s/%s: %s', b.kolab_id, b.name, string_agg(i.name, ', ' order by i.name))
-      from inferred i join node b on b.id = i.parent_id where i.kind in ('wbs', 'plan') group by b.kolab_id, b.name having count(*) > 1
+      from inferred i join node b on b.id = i.parent_id where i.kind = 'wbs' group by b.kolab_id, b.name having count(*) > 1
     union all
     select case when c.owed then 8 else 7 end, case when c.owed then 'link a cascade still owed would carry' else 'link outside its parent' end,
            format('%s/%s@%s%s -> %s/%s@%s%s', s.kolab_id, s.name, sv.seq, coalesce('#' || e.source_element_id, ''),
@@ -79,9 +79,17 @@ select r.ord, r.why, string_agg(r.detail, case when r.ord in (3, 6) then '; ' el
       join version sv on sv.id = e.source_version_id join node s on s.id = sv.node_id
       join version tv on tv.id = e.target_version_id join node t on t.id = tv.node_id
       left join inferred i on i.id = s.id
-     where not coalesce(case when s.kind in ('wbs', 'plan') then t.id = i.parent_id or t.id = s.id
+     where not coalesce(case when s.kind = 'wbs' then t.id = i.parent_id or t.id = s.id
                              when s.kind = 'technical_binding' and t.kind = 'functional_spec' then t.id = i.parent_id
                              else true end, true)
+    union all
+    -- A variant is of its parent's kind, but a prototype may be derived from the spec (D95, KON3):
+    -- never a plan or a binding on a spec's version (KON6). A live version's parent is the one its
+    -- next draft and its rebases build on.
+    select 9, 'variant of another kind', format('%s/%s@%s (%s) on %s/%s@%s (%s)', c.kolab_id, c.name, v.seq, c.kind, p.kolab_id, p.name, pv.seq, p.kind)
+      from live l join version v on v.id = l.id join node c on c.id = v.node_id
+      join version pv on pv.id = v.parent_version_id join node p on p.id = pv.node_id
+     where p.id <> c.id and not (c.kind = p.kind or (c.kind = 'prototype' and p.kind = 'functional_spec'))
   ) r
  group by r.ord, r.why
 -- check:end
@@ -116,7 +124,7 @@ reached as (
   select p.id as plan, array_agg(distinct t.id order by t.id) as bindings
     from node p join checked c on c.node_id = p.id join edge e on e.source_version_id = c.id
     join version tv on tv.id = e.target_version_id join node t on t.id = tv.node_id
-   where p.kind in ('wbs', 'plan') and t.kind = 'technical_binding' and t.kolab_id = p.kolab_id
+   where p.kind = 'wbs' and t.kind = 'technical_binding' and t.kolab_id = p.kolab_id
    group by p.id
 ),
 -- Each binding's spec, its kolab's one spec; each plan's binding, the one its links reach, or
@@ -130,9 +138,9 @@ inferred as (
               when cardinality(r.bindings) = 1 then 'the one binding its links reach'
               when r.bindings is null then 'its kolab''s only binding' end as how
     from node n left join spec s on s.kolab_id = n.kolab_id left join reached r on r.plan = n.id left join sole o on o.kolab_id = n.kolab_id
-   where n.kind in ('technical_binding', 'wbs', 'plan')
+   where n.kind in ('technical_binding', 'wbs')
 )
 -- parents:end
-select i.kolab_id, i.name as node, case when i.kind = 'wbs' then 'plan' else i.kind end as kind, p.name as parent, i.how
+select i.kolab_id, i.name as node, case i.kind when 'wbs' then 'plan' when 'technical_binding' then 'binding' else i.kind end as kind, p.name as parent, i.how
   from inferred i join node p on p.id = i.parent_id
  order by i.kolab_id, i.kind, i.name;

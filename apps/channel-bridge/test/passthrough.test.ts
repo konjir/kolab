@@ -122,7 +122,7 @@ test('done when, by token: Claude Code lists Kolab\'s tools, prompts and resourc
   expect((await b.claude.getPrompt({ name: prompt.name })).messages.length).toBeGreaterThan(0);
 
   // Work through the bridge; the engineer asks about it; the same session hears it on the channel.
-  await call(b.claude, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(b.claude, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(b.claude, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(b.claude, 'submit_for_review', { node: 'orders', version: 1 });
   await until('listening', () => /connected to Kolab/.test(b.stderr()) || undefined, 20_000, b.more);

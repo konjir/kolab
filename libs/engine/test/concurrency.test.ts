@@ -22,7 +22,7 @@ async function hooked(opts: { submissionChecks?: Checks; checks?: Checks } = {})
 
 /** P@1 with three elements, and `roots` variants V0, V1, …, each with `children` variants under it (V0.0, …). */
 async function family(kolab: Kolab, s: string, roots: number, children = 0) {
-  await kolab.createNode(s, 'functional_spec', 'P', 'P');
+  await kolab.createNode(s, 'spec', 'P', 'P');
   const p1 = await kolab.commit(s, 'P', { elements: els({ E0: 'Parent element 0, rev 1.', E1: 'Parent element 1.', E2: 'Parent element 2.' }) });
   const ids: string[] = [];
   const add = async (id: string, parent: string) => {
@@ -92,7 +92,7 @@ test('two commits to one node built on the same version: the second is rejected 
 
 test('a commit to a node while another draft of it is in review rejects that draft, even after the reviewer passed it', async () => {
   const { kolab, product, setHook } = await hooked();
-  const B = await kolab.createNode(product, 'functional_spec', 'B', 'B');
+  const B = await kolab.createNode(product, 'spec', 'B', 'B');
   await kolab.commit(product, B, { elements: els({ b1: 'v1' }) });
   await people(kolab, 'dave', { layers: ['functional'] });
   const dave = await kolab.openSession('dave', 'product');
@@ -111,7 +111,7 @@ test('a commit to a node while another draft of it is in review rejects that dra
 
 test('a draft reviewed twice at once commits once; the other review gets a GateError', async () => {
   const { kolab, product } = await setup();
-  const B = await kolab.createNode(product, 'functional_spec', 'B', 'B');
+  const B = await kolab.createNode(product, 'spec', 'B', 'B');
   await kolab.commit(product, B, { elements: els({ b1: 'v1' }) });
   const draft = await kolab.draft(product, B, { elements: els({ b1: 'v2' }) });
   const rs = await Promise.allSettled([kolab.review(draft), kolab.review(draft)]);
@@ -396,7 +396,7 @@ test('a variant whose rebases keep failing holds one rebase_failed mark and one 
 
 test('an agent may only build a draft on a committed version of its own node', async () => {
   const { kolab, product } = await setup();
-  const A = await kolab.createNode(product, 'functional_spec', 'A', 'A');
+  const A = await kolab.createNode(product, 'spec', 'A', 'A');
   const a1 = await kolab.commit(product, A, { elements: els({ E: 'a' }) });
   const B = await kolab.createNode(product, 'prototype', 'B', 'B');
   await kolab.commit(product, B, { elements: els({ F: 'b' }) });
@@ -415,7 +415,7 @@ test('an agent may only build a draft on a committed version of its own node', a
 async function reviewers() {
   const ctx = await hooked();
   const { kolab, product } = ctx;
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   await kolab.commit(product, S, { elements: els({ s1: 'v1' }) });
   await people(kolab, ['dave', 'erin'], { layers: ['functional'] });
   return { ...ctx, S, dave: await kolab.openSession('dave', 'product'), erin: await kolab.openSession('erin', 'product') };

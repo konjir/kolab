@@ -183,12 +183,12 @@ test('the database refuses a row that names no one, and a session ended, an invi
   await people(kolab, 'alice');
   const s = await kolab.openSession('alice', 'product');
   const nobody = /must name who made this write/;
-  expect(await rejection(kolab.db.query(`insert into node(id, name, kind, layer, title, kolab_id) values ('n', 'n', 'functional_spec', 'functional', 'N', $1)`, [TEST_KOLAB]))).toMatch(nobody);
+  expect(await rejection(kolab.db.query(`insert into node(id, name, kind, layer, title, kolab_id) values ('n', 'n', 'spec', 'functional', 'N', $1)`, [TEST_KOLAB]))).toMatch(nobody);
   expect(await rejection(kolab.db.query(`insert into account(id, kind, name) values ('zed', 'user', 'Zed')`))).toMatch(nobody);
   expect(await rejection(kolab.db.query(`insert into kolab(id, owner_id, title) values ('k2', 'test-org', 'K')`))).toMatch(nobody);
   expect(await rejection(kolab.db.query(`insert into team(id, org_id, name) values ('test-org/t', 'test-org', 't')`))).toMatch(nobody);
   expect(await rejection(kolab.db.query(`update session set ended_at = now() where id = $1`, [sessionKey(s)]))).toMatch(nobody);
-  const node = await kolab.createNode(s, 'functional_spec', 'Orders', 'orders');
+  const node = await kolab.createNode(s, 'spec', 'Orders', 'orders');
   const draft = await kolab.draft(s, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
   expect(await rejection(kolab.db.query(`update version set state = 'committed' where id = $1`, [draft]))).toMatch(nobody);
   const { invite } = await kolab.createInvite(await adminSession(kolab), { level: 'read' });
@@ -208,7 +208,7 @@ test('Kolab makes every caller name who made its write: none is taken as the adm
   const kolab = await openKolab();
   await people(kolab, ['alice', 'bob']);
   const s = await kolab.openSession('alice', 'product');
-  const v = await kolab.draft(s, await kolab.createNode(s, 'functional_spec', 'Orders', 'orders'), { elements: els({ R1: 'Orders can be cancelled.' }) });
+  const v = await kolab.draft(s, await kolab.createNode(s, 'spec', 'Orders', 'orders'), { elements: els({ R1: 'Orders can be cancelled.' }) });
   const audited = async () => (await kolab.db.query<{ n: number }>(`select count(*)::int as n from audit_event`)).rows[0].n;
   const before = await audited();
   // Kolab itself, as a server or a script calls it, with no `by` (TestKolab fills one in for tests).
@@ -346,7 +346,7 @@ test('changes of access, memberships and outbox retries leave no row of their ow
   await people(kolab, 'bob', { layers: ['technical'] });
   // An outbox retry, by the admin.
   const s = await kolab.openSession('alice', 'product');
-  const node = await kolab.createNode(s, 'functional_spec', 'Orders', 'orders');
+  const node = await kolab.createNode(s, 'spec', 'Orders', 'orders');
   const v = await kolab.commit(s, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
   await kolab.db.query(`insert into outbox(id, kind, version_id, state, attempts) values ('01JOB', 'after_commit', $1, 'dead', 10) on conflict do nothing`, [v]);
   const job = (await kolab.outboxJobs({ state: 'dead' }))[0].id;
@@ -392,7 +392,7 @@ test('nodes, invites, versions and grants record who made, revoked or submitted 
   await people(kolab, 'alice', { layers: ['functional'] });
   await people(kolab, 'bob', { layers: ['technical'] });
   const s = await kolab.openSession('alice', 'product');
-  const node = await kolab.createNode(s, 'functional_spec', 'Orders', 'orders');
+  const node = await kolab.createNode(s, 'spec', 'Orders', 'orders');
   expect(await row(kolab, `select created_by, created_at is not null as dated from node where id = $1`, [node])).toStrictEqual({ created_by: 'alice', dated: true });
   expect((await kolab.readNode(s, 'orders').catch(() => undefined))).toBeUndefined();   // no committed version yet
   const v = await kolab.commit(s, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
@@ -454,7 +454,7 @@ test('a version returned to its author and submitted again names whoever submitt
   const alice = await kolab.openSession('alice', 'product');
   const dave = await kolab.openSession('dave', 'product');
   const eve = await kolab.openSession('eve', 'product');
-  const node = await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders');
+  const node = await kolab.createNode(alice, 'spec', 'Orders', 'orders');
   const v = await kolab.draft(alice, node, { elements: els({ R1: 'Orders can be cancelled.' }) });
   expect(await kolab.submit(alice, v)).toMatchObject({ in_review: true });
   expect(await row(kolab, `select state, submitted_by from version where id = $1`, [v])).toStrictEqual({ state: 'in_review', submitted_by: 'alice' });
@@ -472,7 +472,7 @@ test("who made a node is told only to readers in its own kolab: not through read
   await kolab.addActor('olga');
   await kolab.grant('other', 'olga', 'write');
   const olga = await kolab.openSession('olga', 'product', { kolab: 'other' });
-  const node = await kolab.createNode(olga, 'functional_spec', 'Theirs', 'theirs');
+  const node = await kolab.createNode(olga, 'spec', 'Theirs', 'theirs');
   await kolab.commit(olga, node, { elements: els({ T1: 'Theirs.' }) });
   expect((await kolab.readNode(olga, 'theirs')).createdBy).toBe('olga');
   // alice reads other, but works in the test kolab: she sees the version and its author, not who made the node.

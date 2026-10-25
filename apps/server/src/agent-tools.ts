@@ -51,10 +51,10 @@ const listQueries = z.object({
   ...paging,
 });
 const createNode = z.object({
-  kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('functional_spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. technical_binding: how the spec is built on one stack; it names the spec. plan: a binding\'s one plan, its elements the work packages; it names the binding'),
+  kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. binding: how the spec is built on one stack; it names the spec. plan: a binding\'s one plan, its elements the work packages; it names the binding'),
   title: z.string(),
   id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.'),
-  parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a technical_binding, the spec it binds (the default: your kolab\'s one spec); for a plan, the binding it plans (the default when your kolab has one binding). A spec and a prototype take none.'),
+  parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab\'s one spec); for a plan, the binding it plans (the default when your kolab has one binding). A spec and a prototype take none.'),
 });
 const draft = z.object({
   node,
@@ -304,7 +304,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_node',
-    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: functional_spec and prototype are functional; technical_binding and plan are technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds, and each plan the binding it plans (parent, set once), and a binding has exactly one plan. A plan\'s links deliver its own binding\'s elements, never the spec; a binding\'s links serve its own spec. Its name (id) is unique in your kolab; other kolabs may use the same one.',
+    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and prototype are functional; binding and plan are technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds, and each plan the binding it plans (parent, set once), and a binding has exactly one plan. A plan\'s links deliver its own binding\'s elements, never the spec; a binding\'s links serve its own spec. Its name (id) is unique in your kolab; other kolabs may use the same one.',
     schema: createNode,
     annotations: { readOnlyHint: false, idempotentHint: false },
   })
@@ -331,14 +331,19 @@ export class AgentTools {
       const n = await kolab.nodeIn(s, a.node, 'drafting');
       // A variant's parent may be another kolab's committed version, one this session reads: a fork (KON9).
       const parent = a.parent ? (await kolab.versionIn(s, a.parent, { what: 'a variant (a fork)', across: true })).id : undefined;
-      const id = await kolab.draft(s, n.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef) });
-      const v = await kolab.version(id);
+      // Its links are resolved first, then checked and written with the draft, in one transaction:
+      // a link refused leaves no draft behind (D95).
+      const links = [];
       const linked: string[] = [];
       for (const l of a.links ?? []) {
         const el = l.source_element ?? l.element!;
-        await linkOne(kolab, s, { kind: l.kind ?? 'dependency', source: `kj:${n.name}@${v.seq}#${el}`, target: l.target });
+        const tgt = parseAddress(l.target);
+        links.push({ kind: l.kind ?? 'dependency', sourceElement: el,
+          target: (await kolab.versionIn(s, tgt, { what: 'linking', across: true })).id, targetElement: tgt.element, selector: tgt.selector });
         linked.push(`${el} -> ${l.target}`);
       }
+      const id = await kolab.draft(s, n.id, { elements: a.elements, deltas: a.deltas, parent, unlink: a.unlink?.map(toLinkRef), links });
+      const v = await kolab.version(id);
       const unlinked = a.unlink?.length ? { unlinked: await kolab.removedLinks({ session: s }, v) } : {};
       return { node: n.name, version: v.seq, versionId: id, state: v.state, linked, ...unlinked, next: `konjir_submit_for_review node=${n.name} version=${v.seq}` };
     });

@@ -31,12 +31,14 @@ async function kolabWithAgents() {
 test('over MCP: a spec, its prototype, two bindings and a plan, each naming its parent, and the limits refused with what to do', async () => {
   const { pm, eng: { c: eng } } = await kolabWithAgents();
   // A binding before the spec is refused: it names the spec it binds.
-  expect(await rejection(call(eng, 'create_node', { kind: 'technical_binding', title: 'Too soon', id: 'early' }))).toMatch(/holds no spec yet: create its spec first/);
-  expect(await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' })).toStrictEqual({ node: 'orders' });
-  expect(await rejection(call(pm, 'create_node', { kind: 'functional_spec', title: 'Billing', id: 'billing' })))
+  expect(await rejection(call(eng, 'create_node', { kind: 'binding', title: 'Too soon', id: 'early' }))).toMatch(/holds no spec yet: create its spec first/);
+  expect(await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' })).toStrictEqual({ node: 'orders' });
+  expect(await rejection(call(pm, 'create_node', { kind: 'spec', title: 'Billing', id: 'billing' })))
     .toMatch(/kolab test already holds its spec, orders, and a kolab holds exactly one \(KON1, D77\)\. Write its prototypes as prototype nodes, or a variant of it in another kolab, as a fork \(KON9\)/);
   // The old label is no kind.
   expect(await rejection(call(eng, 'create_node', { kind: 'wbs', title: 'Plan', id: 'plan' }))).toMatch(/wbs is now plan \(D77\): create it with kind plan/);
+  expect(await rejection(call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'o' }))).toMatch(/functional_spec is now spec \(D95\): create it with kind spec/);
+  expect(await rejection(call(eng, 'create_node', { kind: 'technical_binding', title: 'B', id: 'b' }))).toMatch(/technical_binding is now binding \(D95\): create it with kind binding/);
   expect(await rejection(call(eng, 'list_nodes', { kind: 'implementation' }))).toMatch(/implementation is a repository, not a node \(KON7, D77\)/);
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }, { id: 'R2', text: 'Orders ship in a day.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
@@ -46,10 +48,10 @@ test('over MCP: a spec, its prototype, two bindings and a plan, each naming its 
   await call(pm, 'submit_for_review', { node: 'orders-ui', version: 1 });
 
   // A binding names the kolab's spec by default; a plan, the only binding, or the one it names.
-  expect(await call(eng, 'create_node', { kind: 'technical_binding', title: 'On Postgres', id: 'orders-pg' })).toStrictEqual({ node: 'orders-pg', parent: 'orders' });
+  expect(await call(eng, 'create_node', { kind: 'binding', title: 'On Postgres', id: 'orders-pg' })).toStrictEqual({ node: 'orders-pg', parent: 'orders' });
   await call(eng, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }], links: [{ source_element: 'b1', target: 'kj:orders@1#R1' }] });
   await call(eng, 'submit_for_review', { node: 'orders-pg', version: 1 });
-  expect(await call(eng, 'create_node', { kind: 'technical_binding', title: 'On DynamoDB', id: 'orders-ddb', parent: 'orders' })).toStrictEqual({ node: 'orders-ddb', parent: 'orders' });
+  expect(await call(eng, 'create_node', { kind: 'binding', title: 'On DynamoDB', id: 'orders-ddb', parent: 'orders' })).toStrictEqual({ node: 'orders-ddb', parent: 'orders' });
   expect(await rejection(call(eng, 'create_node', { kind: 'plan', title: 'Plan', id: 'orders-plan' })))
     .toMatch(/kolab test holds 2 bindings: name one with parent=<binding> \(orders-ddb, orders-pg\)/);
   expect(await call(eng, 'create_node', { kind: 'plan', title: 'Plan', id: 'orders-plan', parent: 'orders-pg' })).toStrictEqual({ node: 'orders-plan', parent: 'orders-pg' });
@@ -58,18 +60,25 @@ test('over MCP: a spec, its prototype, two bindings and a plan, each naming its 
   // A work package delivers its binding's element, never the spec's: in the draft's links and in konjir_link.
   await expect(call(eng, 'draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build the endpoint.' }], links: [{ source_element: 'W1', target: 'kj:orders@1#R1' }] }))
     .rejects.toThrow(/orders-plan is a plan: its work packages deliver elements of its own binding, never the spec \(KON6, D78\)/);
-  // The draft stands, without the link refused, as with any link refused (konjir_draft drafts, then links).
-  await call(eng, 'link', { kind: 'dependency', source: 'kj:orders-plan@1#W1', target: 'kj:orders-pg@1#b1' });
+  // A draft with links is all or nothing (D95): the refused link left no draft behind.
+  expect(await call(eng, 'read_node', { node: 'orders-plan' }).catch(String)).toMatch(/has no committed version/);
+  expect((await call(eng, 'list_nodes', { kind: 'plan' }) as { nodes: { drafts: number }[] }).nodes[0].drafts).toBe(0);
+  // One refused link among good ones refuses them all, and the draft.
+  await expect(call(eng, 'draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build the endpoint.' }],
+    links: [{ source_element: 'W1', target: 'kj:orders-pg@1#b1' }, { source_element: 'W1', target: 'kj:orders@1#R2' }] })).rejects.toThrow(/never the spec/);
+  expect((await call(eng, 'list_nodes', { kind: 'plan' }) as { nodes: { drafts: number }[] }).nodes[0].drafts).toBe(0);
+  expect(await call(eng, 'draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build the endpoint.' }], links: [{ source_element: 'W1', target: 'kj:orders-pg@1#b1' }] }))
+    .toMatchObject({ version: 1, linked: ['W1 -> kj:orders-pg@1#b1'] });
   await expect(call(eng, 'link', { kind: 'dependency', source: 'kj:orders-plan@1#W1', target: 'kj:orders@1#R2' })).rejects.toThrow(/never the spec/);
   await call(eng, 'submit_for_review', { node: 'orders-plan', version: 1 });
 
   const { nodes } = await call(eng, 'list_nodes', {}) as { nodes: { id: string; kind: string; layer: string; parent?: string }[] };
   expect(nodes.map(({ id, kind, layer, parent }) => ({ id, kind, layer, ...(parent ? { parent } : {}) }))).toStrictEqual([
-    { id: 'orders', kind: 'functional_spec', layer: 'functional' },
+    { id: 'orders-ddb', kind: 'binding', layer: 'technical', parent: 'orders' },
+    { id: 'orders-pg', kind: 'binding', layer: 'technical', parent: 'orders' },
     { id: 'orders-plan', kind: 'plan', layer: 'technical', parent: 'orders-pg' },
     { id: 'orders-ui', kind: 'prototype', layer: 'functional' },
-    { id: 'orders-ddb', kind: 'technical_binding', layer: 'technical', parent: 'orders' },
-    { id: 'orders-pg', kind: 'technical_binding', layer: 'technical', parent: 'orders' },
+    { id: 'orders', kind: 'spec', layer: 'functional' },
   ]);
   expect((await call(eng, 'list_nodes', { kind: 'plan' }) as { nodes: { id: string }[] }).nodes.map((n) => n.id)).toStrictEqual(['orders-plan']);
   expect(await call(eng, 'read_node', { node: 'orders-plan' })).toMatchObject({ node: 'orders-plan', kind: 'plan', parent: 'orders-pg' });
@@ -84,12 +93,12 @@ test('over MCP: a spec, its prototype, two bindings and a plan, each naming its 
 
 test('in a shell: konjir create_node takes kind and parent, and prints the parent Kolab named', async () => {
   const { server, pm, eng } = await kolabWithAgents();
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   const out: string[] = [];
   jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
   process.env.KONJIR_URL = server.url;
   process.env.KONJIR_TOKEN = eng.token;
-  await main(['create_node', 'kind=technical_binding', 'title=On Postgres', 'id=orders-pg']);
+  await main(['create_node', 'kind=binding', 'title=On Postgres', 'id=orders-pg']);
   await main(['create_node', 'kind=plan', 'title=Plan', 'id=orders-plan', 'parent=orders-pg']);
   expect(out.map((l) => JSON.parse(l))).toStrictEqual([{ node: 'orders-pg', parent: 'orders' }, { node: 'orders-plan', parent: 'orders-pg' }]);
 });

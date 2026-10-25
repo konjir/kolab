@@ -30,13 +30,13 @@ test('two agents of one person hold sessions at the same time, and each version 
 
   // Both product agents write the same spec, one version each, while both sessions are open,
   // and each reviews the other's (D25).
-  const spec = await kolab.createNode(pm, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(pm, 'spec', 'Checkout', 'checkout');
   const v1 = await commitReviewed(kolab, pm, pm2, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   const v2 = await commitReviewed(kolab, pm2, pm, spec, { elements: els({ R1: 'Checkout completes in 10 seconds.' }) });
   // Alice herself, in an engineer session, reviews her engineer agent's binding.
   await kolab.endSession(self);
   const selfEng = await kolab.openSession('alice', 'engineer');
-  const binding = await kolab.createNode(eng, 'technical_binding', 'Checkout on Postgres', 'checkout-pg');
+  const binding = await kolab.createNode(eng, 'binding', 'Checkout on Postgres', 'checkout-pg');
   const b1 = await commitReviewed(kolab, eng, selfEng, binding, { elements: els({ b1: 'A queue worker finalizes orders.' }) });
 
   expect(await kolab.author(v1)).toStrictEqual({ actor: 'alice-pm', kind: 'agent', owner: 'alice', role: 'product' });
@@ -56,7 +56,7 @@ test("Kolab's own rebases are authored by the system, not by a person or an agen
   const kolab = await aliceAndHerAgents();
   const pm = await kolab.openSession('alice-pm', 'product');
   const pm2 = await kolab.openSession('alice-pm-2', 'product');   // the reviewer of alice-pm's versions
-  const spec = await kolab.createNode(pm, 'functional_spec', 'Storefront', 'storefront');
+  const spec = await kolab.createNode(pm, 'spec', 'Storefront', 'storefront');
   const parent = await commitReviewed(kolab, pm, pm2, spec, { elements: els({ R1: 'Prices show in dollars.' }) });
   const child = await kolab.createNode(pm, 'prototype', 'EU storefront', 'storefront-eu');
   await commitReviewed(kolab, pm, pm2, child, { parent, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
@@ -129,7 +129,7 @@ test("row-level security: an agent's session writes only as its own actor and ro
   const kolab = await aliceAndHerAgents();
   const pm = await kolab.openSession('alice-pm', 'product');
   const pm2 = await kolab.openSession('alice-pm-2', 'product');
-  const spec = await kolab.createNode(pm, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(pm, 'spec', 'Checkout', 'checkout');
   const v1 = await commitReviewed(kolab, pm, pm2, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   const asAgent = (sql: string, params: unknown[]) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');
@@ -168,7 +168,7 @@ test("row-level security: an agent's session writes only as its own actor and ro
 test("author() takes the system from the version's role, and refuses a version whose actor is gone", async () => {
   const kolab = await aliceAndHerAgents();
   const pm = await kolab.openSession('alice-pm', 'product');
-  const spec = await kolab.createNode(pm, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(pm, 'spec', 'Checkout', 'checkout');
   await kolab.db.query(`insert into version(id, node_id, seq, layer, state, actor_id, active_role)
                         values ('v-ghost', $1, 1, 'functional', 'committed', 'ghost', 'product')`, [spec]);
   expect(await rejection(kolab.author('v-ghost'))).toMatch(/ActorError: version v-ghost names actor ghost, who doesn't exist/);
