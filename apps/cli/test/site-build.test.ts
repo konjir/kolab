@@ -84,3 +84,54 @@ test('the build refuses to write outside its own files: a path with .. is refuse
   expect(b.stderr).toContain(`refusing to write site/assets/fonts/${name}`);
   expect(existsSync(join(r, 'site/src/evil-OFL.txt'))).toBe(false);
 });
+
+test("the hands-on tutorial is built into hands-on/index.html, inside the home page's header and footer, with its stylesheet and script and nothing the CSP would block", () => {
+  const r = copy('hands-on');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const home = readFileSync(join(r, 'site/index.html'), 'utf8');
+  const page = readFileSync(join(r, 'site/hands-on/index.html'), 'utf8');
+  expect(page).toContain('<article class="ho" aria-labelledby="ho-title">');
+  expect(page).toMatch(/<h1 id="ho-title">Write a spec, then build it with a team of agents<\/h1>/);
+  expect(page).toMatch(/<title>Hands-on: [^<]+: Konjir<\/title>/);
+  // The same stylesheet and script as the home page, and no other script, style or inline style.
+  expect(assetsOf(r)).toStrictEqual([...page.matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort());
+  expect([...page.matchAll(/<script\b[^>]*>/g)].map((m) => m[0])).toStrictEqual([...home.matchAll(/<script\b[^>]*>/g)].map((m) => m[0]));
+  expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
+  // The header's in-page links go home; the article's own contents stay on the page.
+  expect(page).toContain('href="/#how"');
+  expect(page).not.toMatch(/href="#(how|circle|agents|kolabs|signup|top)"/);
+  expect(page).toMatch(/<nav class="toc" aria-label="Steps">[\s\S]*href="#before-you-start"/);
+  // Code is escaped and kept as written, `$` and all, in a labelled box.
+  expect(page).toContain('<figure class="code text"><figcaption>Prompt</figcaption>');
+  expect(page).toContain('--kolab $KOLAB');
+  expect(page).toContain('&lt;you&gt;-spec-writer');
+  // The home page links to it.
+  expect(home).toContain('href="https://konjir.com/hands-on/"');
+});
+
+test("the build refuses a tutorial with Markdown it doesn't render, rather than guess, and escapes any HTML in its text", () => {
+  const r = copy('hands-on-refusals');
+  const md = join(r, 'site/src/hands-on.md');
+  const original = readFileSync(md, 'utf8');
+  for (const [add, why] of [
+    ['<script src="/x.js"></script>', "a line this renderer doesn't handle"],
+    ['See [this](javascript:alert(1)).', 'only https://, /path and #anchor links'],
+    ['```js\nalert(1)\n```', 'a code block of kind "js"'],
+    ['```sh\nnever closed', 'an unclosed code block'],
+    ['#### Too deep', 'a level-4 heading'],
+    ['Some *emphasis* here.', "Markdown this renderer doesn't handle"],
+  ]) {
+    writeFileSync(md, `${original}\n${add}\n`);
+    const b = build(r);
+    expect([b.status, add]).toStrictEqual([1, add]);
+    expect(b.stderr).toContain('site/src/hands-on.md');
+    expect(b.stderr).toContain(why);
+  }
+  writeFileSync(md, `${original}\nA paragraph with <img src=x onerror=alert(1)> in it.\n`);
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const page = readFileSync(join(r, 'site/hands-on/index.html'), 'utf8');
+  expect(page).toContain('A paragraph with &lt;img src=x onerror=alert(1)&gt; in it.');
+  expect(page).not.toContain('<img src=x');
+});

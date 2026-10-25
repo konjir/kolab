@@ -4,8 +4,9 @@ The marketing site at `https://konjir.com` (D81). Its source is here, in `site/s
 
 - `src/project/Main.dc.html`: the artboard, on the claude.ai design runtime
 - `src/images/<id>.<ext>`: each image the artboard names as `/_blob/<id>`
+- `src/hands-on.md`: the hands-on tutorial, `https://konjir.com/hands-on/`, in the subset of Markdown that `deploy/site/markdown.mjs` renders
 
-These are the artboard and its images, at the paths they have in the claude.ai artifact [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W), which is published from `site/src/`. The artifact holds other files too, its `project/canvas.json` and the design system's tokens (`project/ds/…`): those stay in the artifact, aren't part of the source here, and a publish from `site/src/` keeps them, since files a publish leaves out are kept. The `konjir-site` kolab (D15) is still the page's future home; until it has W4.1 prototypes to publish from, this is the source.
+The tutorial lives only here. The artboard and its images are at the paths they have in the claude.ai artifact [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W), which is published from `site/src/`. The artifact holds other files too, its `project/canvas.json` and the design system's tokens (`project/ds/…`): those stay in the artifact, aren't part of the source here, and a publish from `site/src/` keeps them, since files a publish leaves out are kept. The `konjir-site` kolab (D15) is still the page's future home; until it has W4.1 prototypes to publish from, this is the source.
 
 Everything else here except this README is generated from `src/`, and `terraform apply` publishes it (the `site` module; see *Marketing site* in the top-level README). The module never uploads `src/` or this README. None of `site/` is in Kolab's release, so publishing the site alone doesn't reinstall Kolab.
 
@@ -18,7 +19,7 @@ Everything else here except this README is generated from `src/`, and `terraform
    node deploy/site/build.mjs
    ```
 
-   With no arguments it reads `site/src/project/Main.dc.html` and `site/src/images/`; `node deploy/site/build.mjs <Main.dc.html> <image-folder>` reads others. It rewrites `index.html`, `404.html`, `robots.txt`, `favicon.svg` and the files in `assets/`, and never touches `src/` or this README. It reads nothing from the network. It keeps the hashed assets that `origin/main`'s pages use (at the merge base with it), and those of every commit since on the branch, so a page cached just before a deploy still finds them and rebuilding a committed build changes nothing; it removes older ones. Without an `origin/main` it keeps HEAD's. CI's *Test on PGlite* rebuilds and fails if anything in `site/` changes or is added, so commit the build with the source.
+   With no arguments it reads `site/src/project/Main.dc.html` and `site/src/images/`; `node deploy/site/build.mjs <Main.dc.html> <image-folder>` reads others. It always reads `site/src/hands-on.md`. It rewrites `index.html`, `404.html`, `hands-on/index.html`, `robots.txt`, `favicon.svg` and the files in `assets/`, and never touches `src/` or this README. It reads nothing from the network. It keeps the hashed assets that `origin/main`'s pages use (at the merge base with it), and those of every commit since on the branch, so a page cached just before a deploy still finds them and rebuilding a committed build changes nothing; it removes older ones. Without an `origin/main` it keeps HEAD's. CI's *Test on PGlite* rebuilds and fails if anything in `site/` changes or is added, so commit the build with the source.
 3. Look at it: serve `site/` (for example `npx http-server site`) and check the page renders, the theme switch works, and the console shows no errors.
 4. Commit the source and the build together, then `terraform apply`.
 
@@ -37,6 +38,7 @@ The artboard runs on the artifact's design runtime, which a static site can't lo
 - moves every inline `style` into a generated class, so the CSP needs no `'unsafe-inline'`
 - names assets by content hash, so they can be cached for a year
 - adds a viewport tag, a description (the hero's lead), the favicon (`brand/konjir-mark-tile.svg`), `robots.txt`, and `404.html` with the page's header and footer
+- renders `src/hands-on.md` into `hands-on/index.html`, inside the same header and footer (their in-page links pointing home), with a contents list of its `##` headings, its first paragraph as its description, and `deploy/site/article.css` added to the shared stylesheet. `markdown.mjs` renders only what the tutorial uses: `#`, `##` and `###` headings, paragraphs, `-` and `1.` lists, tables, fenced code blocks of the kinds `sh`, `text` (a prompt to paste), `output` and `file`, and inline code, bold and links to `https://`, `/` or `#`. It escapes all text and refuses anything else, raw HTML included, rather than guess. The site's CloudFront Function serves `/hands-on/` from `hands-on/index.html` and sends `/hands-on` there
 
 It refuses, rather than guess, an artboard that uses runtime features it doesn't handle (`<sc-for>`, `<sc-if>`, `<dc-import>`, unknown template holes) or anything the CSP would block: event handler attributes in any case, `<script>`, `<style>`, `<iframe>`, `<object>`, `<embed>` or `<form>` in the body, `javascript:` URLs, resources from anywhere but the site itself, and a `style` holding `url()`, `@import` or a brace.
 

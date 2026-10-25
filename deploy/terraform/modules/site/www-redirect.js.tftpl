@@ -1,17 +1,31 @@
 // konjir.com's viewer-request function (cloudfront-js-2.0): www answers with a 301 to the apex,
-// keeping the path and the query string exactly as the browser sent them. Every other host passes.
+// keeping the path and the query string exactly as the browser sent them. On the apex, a folder's
+// page is its index.html (S3 behind OAC has no index documents, and default_root_object covers only
+// "/"): a path ending in "/" is served from <path>index.html, and a path whose last segment has no
+// "." (/hands-on) answers with a 301 to the same path with "/" added. Every other request passes.
 // Tested in apps/cli/test/site-www-redirect.test.ts.
 function handler(event) {
   var request = event.request;
   var host = request.headers.host ? request.headers.host.value.toLowerCase() : '';
-  if (host !== '${www}') return request;
   // The query as the browser sent it, never rebuilt from the parsed one, which could change its
-  // meaning. rawQueryString() is a cloudfront-js-2.0 helper; were it ever missing, the redirect
+  // meaning. rawQueryString() is a cloudfront-js-2.0 helper; were it ever missing, a redirect
   // drops the query rather than failing.
   var query = typeof request.rawQueryString === 'function' ? request.rawQueryString() : '';
-  return {
-    statusCode: 301,
-    statusDescription: 'Moved Permanently',
-    headers: { location: { value: 'https://${apex}' + request.uri + (query ? '?' + query : '') } }
+  var redirect = function (location) {
+    return {
+      statusCode: 301,
+      statusDescription: 'Moved Permanently',
+      headers: { location: { value: location + (query ? '?' + query : '') } }
+    };
   };
+  if (host === '${www}') return redirect('https://${apex}' + request.uri);
+  var uri = request.uri;
+  if (uri.charAt(uri.length - 1) === '/') {
+    if (uri !== '/') request.uri = uri + 'index.html';
+    return request;
+  }
+  var last = uri.slice(uri.lastIndexOf('/') + 1);
+  // A path redirected relative to this host, so "//evil.example" can't become another host's URL.
+  if (last.indexOf('.') < 0 && uri.charAt(0) === '/' && uri.charAt(1) !== '/') return redirect(uri + '/');
+  return request;
 }

@@ -38,11 +38,33 @@ test('www answers with a 301 to the apex, path and raw query string untouched', 
   });
 });
 
-test('the apex, other hosts and a missing host pass through as they came', () => {
+test('the apex, other hosts and a missing host pass a file through as it came', () => {
   for (const host of ['konjir.com', 'kolab.konjir.com', 'www.konjir.com.evil.example', 'evilwww.konjir.com', undefined]) {
-    const r = request(host, '/x', 'q=1');
-    expect(handler({ request: r })).toBe(r);
+    for (const uri of ['/', '/index.html', '/assets/site.0123456789.css', '/robots.txt']) {
+      const r = request(host, uri, 'q=1');
+      expect(handler({ request: r })).toBe(r);
+      expect(r.uri).toBe(uri);
+    }
   }
+});
+
+test("a folder's page is its index.html: /hands-on/ is served from /hands-on/index.html, and /hands-on redirects there", () => {
+  const r = request('konjir.com', '/hands-on/', '');
+  expect(handler({ request: r })).toBe(r);
+  expect(r.uri).toBe('/hands-on/index.html');
+  expect(handler({ request: request('konjir.com', '/hands-on', 'a=1&b=%26') })).toStrictEqual({
+    statusCode: 301,
+    statusDescription: 'Moved Permanently',
+    headers: { location: { value: '/hands-on/?a=1&b=%26' } },
+  });
+  // www still goes to the apex first, path as sent; the apex then adds the "/".
+  expect(handler({ request: request('www.konjir.com', '/hands-on', '') })).toMatchObject({ headers: { location: { value: 'https://konjir.com/hands-on' } } });
+});
+
+test('a redirect for the "/" stays on this host: a path starting "//" passes through, to be a 404', () => {
+  const r = request('konjir.com', '//evil.example', '');
+  expect(handler({ request: r })).toBe(r);
+  expect(r.uri).toBe('//evil.example');
 });
 
 test('the location is always the fixed apex, whatever the path holds', () => {
