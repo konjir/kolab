@@ -20,6 +20,8 @@
 #                                                       and the RDS ones touch the instance: they need --yes-production
 #   bootstrap-log                                       the instance's first-boot install log
 #   shell                                               interactive shell (Session Manager plugin)
+#   preflight <NNNN>                                    run deploy/preflight/<NNNN>.sql on the database, read-only, before
+#                                                       deploying migration NNNN: its refusals, or that it applies cleanly
 #   admin-token                                         print the break-glass admin token
 #   rotate-admin-token [--off]                          write a new break-glass admin token to SSM and restart Kolab
 #                                                       (W2.22); --off disables the break-glass instead, refused unless
@@ -130,6 +132,31 @@ on_kolab() {
   aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$instance" \
     --query '[StandardOutputContent, StandardErrorContent]' --output text
   [ "$status" = Success ] || die "command on Kolab ended with status $status"
+}
+
+# Runs deploy/preflight/<NNNN>.sql on Kolab's database, read-only, through Kolab's instance
+# (deploy/preflight/run.cjs, as recovery-drill.sh runs recovery-verify.cjs): with the live release's
+# own pg module, the instance's environment (/etc/konjir/env) and its database URL from SSM, read
+# into a file only the konjir user can read, never printed or put on a command line. It prints the
+# migration's refusals, or that it applies cleanly, then what it will do; it changes nothing.
+cmd_preflight() {
+  local migration="${1:-}" runner sql script
+  [[ "$migration" =~ ^[0-9]{4}$ ]] || die "usage: konjir-ops.sh preflight <NNNN>, for example preflight 0027"
+  [ -f "$HERE/preflight/$migration.sql" ] || die "no preflight for $migration: deploy/preflight/$migration.sql doesn't exist"
+  runner="$(gzip -9c <"$HERE/preflight/run.cjs" | base64 | tr -d '\n')"
+  sql="$(gzip -9c <"$HERE/preflight/$migration.sql" | base64 | tr -d '\n')"
+  script="set -euo pipefail
+. /etc/konjir/env
+d=\$(mktemp -d /tmp/konjir-preflight.XXXXXX)
+trap 'rm -rf \"\$d\"' EXIT
+umask 077
+aws ssm get-parameter --region \"\$AWS_REGION\" --name \"\$KONJIR_DATABASE_PARAM\" --with-decryption --query Parameter.Value --output text >\"\$d/url\"
+printf '%s' '$runner' | base64 -d | gunzip >\"\$d/run.cjs\"
+printf '%s' '$sql' | base64 -d | gunzip >\"\$d/preflight.sql\"
+chown -R konjir:konjir \"\$d\"
+runuser -u konjir -- /usr/local/bin/node \"\$d/run.cjs\" \"\$d\" '$migration'"
+  echo "preflight $migration: read-only, on $ENV's database, through Kolab's instance with the live release's pg"
+  on_kolab "$script"
 }
 
 cmd_connect() {
@@ -575,6 +602,7 @@ case "${1:-}" in
                  aws cloudwatch describe-alarms --alarm-names $(tf output -json alarms | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin)))') \
                    --query 'MetricAlarms[].[AlarmName,StateValue,StateReason]' --output table ;;
   inject)        shift; cmd_inject "$@" ;;
+  preflight)     shift; cmd_preflight "$@" ;;
   terraform)     shift; tf "$@" ;;
-  *)             sed -n '2,28p' "$0"; exit 1 ;;
+  *)             sed -n '2,30p' "$0"; exit 1 ;;
 esac

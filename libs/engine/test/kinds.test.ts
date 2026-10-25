@@ -95,13 +95,13 @@ test('a binding names the spec it binds, its kolab\'s one spec, set when it is m
   expect(await rejection(insert('b0', 'binding', 'technical', 'orders', 'other'))).toMatch(/node_parent_kolab_fkey|no spec of its kolab/);
 });
 
-test('each binding has exactly one plan, which names it; with several bindings the plan names its own (D78, KON5)', async () => {
+test('a binding has at most one plan, which names it, and starts without one; with several bindings the plan names its own (D78, KON5, D96)', async () => {
   const { kolab, engineer } = await specAndBinding();
   // The kolab's only binding, by default.
   await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
   expect((await kolab.listNodes('plan', TEST_KOLAB)).map((n) => [n.name, n.layer, n.parent])).toStrictEqual([['orders-plan', 'technical', 'orders-pg']]);
   expect(await rejection(kolab.createNode(engineer, 'plan', 'Another plan', 'plan-2')))
-    .toBe('GateError: binding orders-pg already has its plan, orders-plan, and a binding has exactly one (KON5, D77)');
+    .toBe('GateError: binding orders-pg already has its plan, orders-plan, and a binding has at most one (KON5, D96)');
   await kolab.createNode(engineer, 'binding', 'On DynamoDB', 'orders-ddb');
   // Two bindings: Kolab never picks one.
   expect(await rejection(kolab.createNode(engineer, 'plan', 'Which?', 'plan-2')))
@@ -230,11 +230,16 @@ test('a variant is of its parent\'s kind, and only a prototype may be derived fr
   // The review's reproduction: a plan whose first version takes the spec's as its parent.
   await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
   expect(await rejection(kolab.commit(engineer, 'orders-plan', { parent: s1, deltas: [{ kind: 'add', element: 'W1', text: 'Build it.' }] })))
-    .toBe('GateError: orders-plan is a plan, and a variant is of its parent\'s kind: orders is a spec. Only a prototype may be derived from the spec (KON3, D95); a plan is derived from its binding, never the spec (KON6)');
+    .toBe('GateError: orders-plan is a plan, and its versions build on its own versions (or, as a variant, on another plan\'s), never on a spec\'s: orders is a spec. Write the version without a parent: the plan names its binding, orders-pg, as its parent node, and its work packages deliver that binding\'s elements through links (D78, D95, KON6)');
   expect((await kolab.db.query(`select 1 from version where node_id = 'orders-plan'`)).rows).toStrictEqual([]);
+  // Nor on its own binding's version: the binding is its parent node, not its parent version. A
+  // ruling applied through the admin verbs is told the same (D47).
+  const onBinding = /^GateError: orders-plan is a plan, and its versions build on its own versions \(or, as a variant, on another plan's\), never on a binding's: orders-pg is a binding\. Write the version without a parent: the plan names its binding, orders-pg, as its parent node/;
+  expect(await rejection(kolab.draft(engineer, 'orders-plan', { parent: b1, deltas: [] }))).toMatch(onBinding);
+  expect(await rejection(kolab.applyRuling('orders-plan', { parent: b1, deltas: [] }, { id: 'D95', actor: 'bob', by: 'admin' }))).toMatch(onBinding);
   // A second binding on the spec's version is refused; on the first binding's, it is a binding's variant.
   await kolab.createNode(engineer, 'binding', 'On DynamoDB', 'orders-ddb');
-  expect(await rejection(kolab.draft(engineer, 'orders-ddb', { parent: s1, deltas: [] }))).toMatch(/orders-ddb is a binding, and a variant is of its parent's kind: orders is a spec/);
+  expect(await rejection(kolab.draft(engineer, 'orders-ddb', { parent: s1, deltas: [] }))).toMatch(/orders-ddb is a binding, and its versions build on its own versions \(or, as a variant, on another binding's\), never on a spec's: orders is a spec\. Write the version without a parent/);
   await kolab.commit(engineer, 'orders-ddb', { parent: b1, deltas: [{ kind: 'override', element: 'b1', text: 'A cancel table.' }] });
   // A prototype may be derived from the spec, and from a prototype; a spec from neither.
   await kolab.createNode(product, 'prototype', 'Screens', 'ui');
@@ -243,7 +248,7 @@ test('a variant is of its parent\'s kind, and only a prototype may be derived fr
   await kolab.commit(product, 'ui-mobile', { parent: u1, deltas: [{ kind: 'override', element: 'S1', text: 'https://example.com/m/cancel' }] });
   await kolab.createNode(product, 'prototype', 'A sketch', 'sketch');
   const k1 = await kolab.commit(product, 'sketch', { elements: els({ K1: 'https://example.com/sketch' }) });
-  expect(await rejection(kolab.draft(product, 'orders', { parent: k1, deltas: [] }))).toMatch(/orders is a spec, and a variant is of its parent's kind: sketch is a prototype/);
+  expect(await rejection(kolab.draft(product, 'orders', { parent: k1, deltas: [] }))).toMatch(/orders is a spec, and a spec's variant is a spec, never a prototype's: sketch is a prototype/);
   // The database holds to it for every role, Kolab's own login included.
   const insert = (id: string, node: string, parent: string, layer: string) => kolab.db.query(
     `insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role) values ($1, $2, 9, $3, $4, 'drafted', 'bob', 'engineer')`, [id, node, parent, layer]);

@@ -23,7 +23,7 @@ The CLI is also on npm (`npx konjir@0.5.0`). That build runs every verb, `konjir
 
 ## 1. Sign up and make a private kolab
 
-A kolab holds one project: its spec, the bindings built on it, and the questions between them.
+A kolab holds one project: its one spec, the bindings built on it, each with at most one plan, and the questions between them.
 
 1. Open [kolab.konjir.com](https://kolab.konjir.com) and choose **Sign in with GitHub**.
 2. Kolab's page says “you are `ada` here”: that is your Konjir name, usually your GitHub login, lowercased. Under **In the kolab**, choose **A new private kolab of your own**. Name it `linkly-` and your GitHub login, for example `linkly-ada`; names are unique across Konjir. Give it the title `Linkly: short links that expire`. Under **As**, leave **Product**.
@@ -153,7 +153,7 @@ In the **spec-writer** session:
 ```text
 You are the product writer for Linkly, a link shortener. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
 
-Create a functional spec node named short-links, titled "Short links that expire", and write it from the product notes below. Group the notes into sections (S1, S2, ...) and write one requirement per note, with stable IDs R1, R2, ... nested under their section. Keep each note's meaning and wording, and add no requirements of your own. Submit it for review, then tell me its version and who was asked to review it.
+Create the kolab's spec (a node of kind spec) named short-links, titled "Short links that expire", and write it from the product notes below. Group the notes into sections (S1, S2, ...) and write one requirement per note, with stable IDs R1, R2, ... nested under their section. Keep each note's meaning and wording, and add no requirements of your own. Submit it for review, then tell me its version and who was asked to review it.
 
 Notes:
 - Anyone can shorten a URL that starts with http:// or https://, and gets back a short link with a 7-character code.
@@ -196,7 +196,7 @@ In the **builder** session:
 ```text
 You are the engineer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
 
-Bind the committed spec short-links to our stack. Create a technical binding node named short-links-binding, titled "Linkly on Node.js", for this stack: Node.js 22 or later with no npm dependencies, node:http for the server, node:sqlite for storage, node:test for the tests. Write one element per implementation decision (b1, b2, ...). Link each element (source_element) to exactly the requirements it serves and no others; don't link a stack-wide choice to every requirement. Every requirement must be served by at least one element. Add no behavior the spec doesn't state. Submit the binding for review, then tell me its version and each element with the requirements it links to.
+Bind the committed spec short-links to our stack. Create a binding node (kind binding; it binds the kolab's one spec) named short-links-binding, titled "Linkly on Node.js", for this stack: Node.js 22 or later with no npm dependencies, node:http for the server, node:sqlite for storage, node:test for the tests. Write one element per implementation decision (b1, b2, ...). Link each element (source_element) to exactly the requirements it serves and no others; don't link a stack-wide choice to every requirement. Every requirement must be served by at least one element. Add no behavior the spec doesn't state. Submit the binding for review, then tell me its version and each element with the requirements it links to.
 ```
 
 It lists the elements, `b1` to `b8` in our run, each linked to the requirement it serves, and says version 1 waits on your approval. Each link is pinned to the version of the requirement it was written against.
