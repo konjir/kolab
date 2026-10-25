@@ -69,7 +69,7 @@ async function overtakenInReview(kolab: TestKolab) {
   const dave = await kolab.openSession('dave', 'product');
   await kolab.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, alice, dave, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
-  await kolab.createNode(alice, 'functional_spec', 'V', 'V');
+  await kolab.createNode(alice, 'prototype', 'V', 'V');
   await commitReviewed(kolab, alice, dave, 'V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
   const v2 = await kolab.draft(alice, 'V', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] });
   expect(await kolab.review(v2)).toMatchObject({ in_review: true, reviewers: ['dave'] });
@@ -134,14 +134,14 @@ test('a variant\'s rebase a stopped process cut short is finished once by the ne
   const bob = await k.openSession('bob', 'engineer');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(k, alice, dave, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.createNode(alice, 'prototype', 'V', 'V');
   await commitReviewed(k, alice, dave, 'V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
-  // Bob's binding relies on E1, and his work package on the binding (a transitive mark's path).
+  // Bob's binding relies on E1, and his plan's work package on the binding (a transitive mark's path).
   await k.createNode(bob, 'technical_binding', 'B', 'B');
   const b1 = await k.draft(bob, 'B', { elements: els({ b1: 'An endpoint for E1.' }) });
   await k.link(bob, { kind: 'dependency', source: b1, sourceElement: 'b1', target: p1, targetElement: 'E1' });
   expect((await k.review(b1)).ok).toBe(true);
-  await k.createNode(bob, 'work_package', 'W', 'W');
+  await k.createNode(bob, 'plan', 'W', 'W');
   const w1 = await k.draft(bob, 'W', { elements: els({ w1: 'Build the endpoint.' }) });
   await k.link(bob, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   expect((await k.review(w1)).ok).toBe(true);
@@ -188,7 +188,7 @@ test('a cascade that fails is freed with its error and retried by the worker unt
   const alice = await k.openSession('alice', 'product');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.createNode(alice, 'prototype', 'V', 'V');
   await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
 
   // The first read of P@2's cascade, its links in, fails, as a dropped connection would.
@@ -321,9 +321,9 @@ test('an answer and everything it causes commit together, or not at all', async 
   await new Promise((r) => setTimeout(r, 200));
   await people(a, 'alice', { layers: ['functional'] });
   const alice = await a.openSession('alice', 'product');
-  await a.createNode(alice, 'functional_spec', 'P', 'P');
+  await a.createNode(alice, 'prototype', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await a.createNode(alice, 'functional_spec', 'V', 'V');
+  await a.createNode(alice, 'prototype', 'V', 'V');
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
 
   const proto = Object.getPrototypeOf(a.db);
@@ -451,7 +451,7 @@ test('a node\'s later commit waits for a cascade that failed, rather than run ah
   const alice = await a.openSession('alice', 'product');
   await a.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await a.createNode(alice, 'functional_spec', 'V', 'V');
+  await a.createNode(alice, 'prototype', 'V', 'V');
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
 
   const held = holding();
@@ -556,7 +556,7 @@ test('a ruling applied through the admin token, overtaken by Kolab\'s rebase as 
   alice = await k.openSession('alice', 'product');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.createNode(alice, 'prototype', 'V', 'V');
   await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
   void k.applyRuling('V', { deltas: [{ kind: 'add', element: 'D', text: 'Ruled: V adds D.' }] }, { id: 'D99', actor: 'alice' }).catch(() => undefined);
   await reached;
@@ -589,7 +589,7 @@ test('closing waits for the outbox work this process is running, then frees noth
   const alice = await k.openSession('alice', 'product');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.createNode(alice, 'prototype', 'V', 'V');
   await k.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
   await k.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) });
   // The worker's rebase of V, queued by P@2's commit (P6), reaches its checks and is held there.
@@ -657,7 +657,7 @@ test('a settle job run again finds the fold it already made in review, and folds
   const dave = await k.openSession('dave', 'product');
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(k, alice, dave, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.createNode(alice, 'prototype', 'V', 'V');
   await commitReviewed(k, alice, dave, 'V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
   const v2 = await k.draft(alice, 'V', { deltas: [{ kind: 'add', element: 'A', text: 'Alice adds A.' }] });
   await commitReviewed(k, alice, dave, 'P', { elements: els({ E1: 'Parent one, revised.', E2: 'Parent two.' }) });
@@ -688,7 +688,7 @@ async function variants(store: Store) {
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await k.commit(alice, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
   const variant = async (id: string, parent: string) => {
-    await k.createNode(alice, 'functional_spec', id, id);
+    await k.createNode(alice, 'prototype', id, id);
     return k.commit(alice, id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says two its way.` }] });
   };
   const v1 = await variant('V1', p1);
@@ -755,7 +755,7 @@ test('queued rebases survive a stop: the next process to open the database rebas
   await a.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
   for (const id of ['V1', 'V2']) {
-    await a.createNode(alice, 'functional_spec', id, id);
+    await a.createNode(alice, 'prototype', id, id);
     await a.commit(alice, id, { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: `${id} says two its way.` }] });
   }
   const v2 = (await a.latestCommitted('V2'))!.id;

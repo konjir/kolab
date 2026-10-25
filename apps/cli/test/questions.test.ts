@@ -100,13 +100,26 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025) and before admins who are people (0026),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025), before admins who are people (0026) and before typed konstruct kinds (0027),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger edge_within_parent on edge;
+      drop function kj_edge_within_parent(), kj_link_within_parent(text, text, text, text, text);
+      drop trigger node_kind_fixed on node;
+      drop function kj_node_kind_fixed();
+      drop trigger node_parent_kind on node;
+      drop function kj_node_parent_kind();
+      drop index node_one_spec_per_kolab, node_one_plan_per_binding, node_parent;
+      alter table node drop constraint node_parent_given, drop constraint node_parent_kolab_fkey, drop constraint node_layer_of_kind;
+      alter table node drop column parent_node_id;
+      alter table node drop constraint node_kind_check;
+      update node set kind = 'wbs' where kind = 'plan';
+      alter table node add constraint node_kind_check check (kind in
+        ('functional_spec','prototype','technical_binding','wbs','work_package','implementation'));
       alter table oauth_request drop column raise_id;
       drop table admin_raise;
       alter table session drop constraint session_grant_token;
@@ -311,9 +324,18 @@ test('a database from the previous release is migrated on open', async () => {
       alter table position drop column verdict;
       alter table ruling drop column replaces, drop column element_id, drop column version_id;
       alter table ruling alter column case_file_id set not null, alter column verdict set not null;`);
+    // A binding of the spec and its plan, labelled as 0.5 labelled them: a wbs.
+    await kolab.db.exec(`insert into node(id, kind, layer, title) values
+      ('orders-pg', 'technical_binding', 'technical', 'Orders on Postgres'), ('orders-plan', 'wbs', 'technical', 'Plan')`);
     await kolab.close();
 
     kolab = await TestKolab.open(store);
+    // 0027: the wbs is a plan, of the kolab's one binding, which binds the kolab's one spec (D77, D78).
+    expect((await kolab.db.query(`select id, kind, parent_node_id from node order by id`)).rows).toStrictEqual([
+      { id: 'orders', kind: 'functional_spec', parent_node_id: null },
+      { id: 'orders-pg', kind: 'technical_binding', parent_node_id: 'orders' },
+      { id: 'orders-plan', kind: 'plan', parent_node_id: 'orders-pg' },
+    ]);
     // 0026: alice's hand-issued session, from before tokens expired, now expires 30 days from the migration (W2.22).
     const lapse = (await kolab.db.query<{ expires_at: Date | string }>(`select expires_at from session where actor_id = 'alice' and ended_at is null`)).rows.map((r) => new Date(r.expires_at).getTime());
     expect(lapse).toHaveLength(1);

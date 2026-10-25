@@ -401,11 +401,11 @@ test('nodes, invites, versions and grants record who made, revoked or submitted 
   const feed = (await activity(kolab, s)).items;
   expect(feed.find((r) => r.kind === 'node')).toMatchObject({ kind: 'node', node: 'orders', actor: 'alice', title: 'Orders' });
   // A node with only a draft not yet submitted isn't in the feed, as its draft isn't.
-  const quiet = await kolab.createNode(s, 'functional_spec', 'Quiet', 'quiet');
+  const quiet = await kolab.createNode(s, 'prototype', 'Quiet', 'quiet');
   await kolab.draft(s, quiet, { elements: els({ Q1: 'Not yet.' }) });
   expect((await activity(kolab, s)).items.filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
   // Nor one whose only draft was abandoned before it was ever submitted.
-  const dropped = await kolab.createNode(s, 'functional_spec', 'Dropped', 'dropped');
+  const dropped = await kolab.createNode(s, 'prototype', 'Dropped', 'dropped');
   await kolab.abandon(s, await kolab.draft(s, dropped, { elements: els({ D1: 'Never mind.' }) }));
   expect((await activity(kolab, s)).items.filter((r) => r.kind === 'node').map((r) => r.node)).toStrictEqual(['orders']);
 

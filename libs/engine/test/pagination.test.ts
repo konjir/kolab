@@ -129,10 +129,10 @@ test('marks, nodes, lineage, review requests and submissions page by cursor to t
   // The web interface's marks, the same marks a page at a time.
   expect((await all((p) => markDetailsPage(kolab, engineer, p), 2)).items.map((m) => m.id)).toStrictEqual(marks.items.map((m) => m.mark));
 
-  for (const name of ['a', 'b', 'c']) await kolab.createNode(product, 'functional_spec', name.toUpperCase(), name);
+  for (const name of ['a', 'b', 'c']) await kolab.createNode(product, 'prototype', name.toUpperCase(), name);
   const nodes = await all((p) => kolab.nodesPage(TEST_KOLAB, undefined, p), 2);
-  expect(nodes.items.map((n) => n.name)).toStrictEqual(['a', 'b', 'c', 'orders', 'orders-pg']);
-  expect((await all((p) => kolabNodesPage(kolab, product, p), 2)).items.map((n) => n.name)).toStrictEqual(['a', 'b', 'c', 'orders', 'orders-pg']);
+  expect(nodes.items.map((n) => n.name)).toStrictEqual(['orders', 'a', 'b', 'c', 'orders-pg']);
+  expect((await all((p) => kolabNodesPage(kolab, product, p), 2)).items.map((n) => n.name)).toStrictEqual(['orders', 'a', 'b', 'c', 'orders-pg']);
   expect((await all((p) => kolabNodesPage(kolab, product, p, { committed: true }), 1)).items.map((n) => n.name)).toStrictEqual(['orders', 'orders-pg']);
   expect((await all((p) => readableNodes(kolab, product, TEST_KOLAB, p).then((r) => r!), 1)).items.map((n) => n.name)).toStrictEqual(['orders', 'orders-pg']);
 
@@ -275,7 +275,7 @@ test('many nodes, questions and marks list in pages quickly, on the indexes the 
   // In bulk, straight into the tables: 2,000 nodes, 20,000 questions and 5,000 open marks.
   await kolab.db.exec(`
     insert into node(id, name, kind, layer, title, kolab_id, created_by)
-      select 'n' || lpad(i::text, 5, '0'), 'n' || lpad(i::text, 5, '0'), 'functional_spec', 'functional', 'Node ' || i, '${TEST_KOLAB}', 'alice' from generate_series(1, 2000) i;
+      select 'n' || lpad(i::text, 5, '0'), 'n' || lpad(i::text, 5, '0'), 'prototype', 'functional', 'Node ' || i, '${TEST_KOLAB}', 'alice' from generate_series(1, 2000) i;
     insert into query(id, version_id, element_id, question, state, kind, kolab_id, created_at)
       select '01Q' || lpad(i::text, 8, '0'), '${v}', 'R1', 'Question ' || i, case when i % 3 = 0 then 'answered' else 'open' end, 'question',
              '${TEST_KOLAB}', now() - (20000 - i) * interval '1 second' from generate_series(1, 20000) i;

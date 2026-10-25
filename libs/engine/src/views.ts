@@ -185,7 +185,8 @@ async function markRows(kolab: Kolab, session: string, only: { node?: string }, 
   }) };
 }
 
-export interface NodeRowView { name: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }
+/** A node as a listing gives it; `parent` is the node it names as its parent (D78): a binding's spec, a plan's binding. */
+export interface NodeRowView { name: string; kind: Kind; layer: Layer; title: string; parent: string | null; latest: number | null; drafts: number; in_review: number }
 
 /** The session's kolab's nodes, with their latest committed version and how many drafts and versions in review each has. */
 export async function kolabNodes(kolab: Kolab, session: string, only: { name?: string; committed?: boolean } = {}): Promise<NodeRowView[]> {
@@ -204,7 +205,7 @@ async function nodeRows(kolab: Kolab, session: string, only: { name?: string; co
   const after = page ? keyOf(list, page.cursor, ['text', 'text']) as [string, string] | undefined : undefined;
   const rows = await kolab.readAs(session, async (q) => (await q.query<NodeRowView>(
     `select * from (
-       select n.name, n.kind, n.layer, n.title,
+       select n.name, n.kind, n.layer, n.title, (select p.name from node p where p.id = n.parent_node_id) as parent,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review
@@ -250,7 +251,7 @@ export async function readableNodes(kolab: Kolab, session: string, inKolab: stri
     const may = (await q.query<{ ok: boolean }>(`select $1 = any ((select kj_session_readable_kolabs())::text[]) as ok`, [inKolab])).rows[0]?.ok;
     if (!may) return undefined;
     const rows = (await q.query<NodeRowView>(
-      `select n.name, n.kind, n.layer, n.title, l.latest, 0 as drafts, 0 as in_review
+      `select n.name, n.kind, n.layer, n.title, (select p.name from node p where p.id = n.parent_node_id) as parent, l.latest, 0 as drafts, 0 as in_review
          from node n cross join lateral (select max(v.seq) as latest from version v where v.node_id = n.id and v.state = 'committed') l
         where n.kolab_id = $1 and l.latest is not null and ($2::text is null or (n.kind, n.name) > ($2, $3::text))
         order by n.kind, n.name limit $4`, [inKolab, after?.[0] ?? null, after?.[1] ?? null, size + 1])).rows;

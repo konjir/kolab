@@ -47,7 +47,7 @@ test('a link into another kolab needs Read there, follows its commits, and keeps
   await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
   const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced with the monthly invoice.' }) });
   const edge = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
-  await kolab.createNode(alice, 'functional_spec', 'FAQ', 'faq');
+  await kolab.createNode(alice, 'prototype', 'FAQ', 'faq');
   const f1 = await kolab.commit(alice, 'faq', { elements: els({ F1: 'Your order shows on next month\'s invoice.' }) });
   await kolab.link(alice, { kind: 'dependency', source: f1, sourceElement: 'F1', target: o1, targetElement: 'O1' });
   expect((await kolab.db.query(`select kolab_id, target_kolab_id, held_by from edge where id = $1`, [edge])).rows)
@@ -82,7 +82,7 @@ test('revoking Read marks the link access_lost in the same change; its target\'s
   await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
   const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.', O2: 'Orders are priced in euros.' }) });
   const edge = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
-  await kolab.createNode(alice, 'functional_spec', 'FAQ', 'faq');
+  await kolab.createNode(alice, 'prototype', 'FAQ', 'faq');
   const f1 = await kolab.commit(alice, 'faq', { elements: els({ F1: 'Invoices come monthly.' }) });
   await kolab.link(alice, { kind: 'dependency', source: f1, sourceElement: 'F1', target: o1, targetElement: 'O1' });
 
@@ -208,7 +208,7 @@ test('a holder who leaves the dependent\'s kolab is no channel into it: the fork
   await kolab.createNode(dave, 'functional_spec', 'EU', 'eu');
   const parent = await kolab.versionIn(dave, 'kj:billing/checkout@1', { what: 'a variant (a fork)', across: true });
   await commitReviewed(kolab, dave, alice, 'eu', { parent: parent.id, deltas: [{ kind: 'override', element: 'R2', text: 'Invoices are in euros and pounds.' }] });
-  await kolab.createNode(dave, 'functional_spec', 'Orders', 'orders-spec');
+  await kolab.createNode(dave, 'prototype', 'Orders', 'orders-spec');
   const o1 = await commitReviewed(kolab, dave, alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
   await linkAcross(kolab, dave, o1, 'O1', 'kj:billing/checkout#R1');
 
@@ -239,7 +239,7 @@ test('an access_lost mark names what triggered it only to a session that reads i
   await kolab.createNode(dave, 'functional_spec', 'EU', 'eu');
   const parent = await kolab.versionIn(dave, 'kj:billing/checkout@1', { what: 'a variant (a fork)', across: true });
   await commitReviewed(kolab, dave, alice, 'eu', { parent: parent.id, deltas: [{ kind: 'override', element: 'R2', text: 'Invoices are in euros and pounds.' }] });
-  await kolab.createNode(dave, 'functional_spec', 'Orders', 'orders-spec');
+  await kolab.createNode(dave, 'prototype', 'Orders', 'orders-spec');
   const o1 = await commitReviewed(kolab, dave, alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
   await linkAcross(kolab, dave, o1, 'O1', 'kj:billing/checkout#R1');
   await kolab.revoke('orders', 'dave');
@@ -277,7 +277,7 @@ test('removing a link into another kolab is recorded in the draft, and settles i
 test('another kolab\'s failing dependent work never stops this kolab\'s own cascade, and the committer hears nothing of it', async () => {
   const { kolab, alice, bob, checkout } = await twoKolabs();
   // A link inside billing, and one from orders into it.
-  const faq = await kolab.createNode(bob, 'functional_spec', 'FAQ', 'faq');
+  const faq = await kolab.createNode(bob, 'prototype', 'FAQ', 'faq');
   const f1 = await kolab.commit(bob, faq, { elements: els({ F1: 'See the invoice schedule.' }) });
   await kolab.link(bob, { kind: 'dependency', source: f1, sourceElement: 'F1', target: (await kolab.latestCommitted(checkout))!.id, targetElement: 'R1' });
   await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
@@ -321,7 +321,7 @@ test('a change of access looks only at the links and forks its actors hold', asy
 
 test('row-level security holds an agent\'s override base to what it reads, as its links and parents', async () => {
   const { kolab, bob } = await twoKolabs();
-  await kolab.createNode(bob, 'functional_spec', 'Other', 'other');
+  await kolab.createNode(bob, 'prototype', 'Other', 'other');
   await kolab.addActor('carl');
   await kolab.createKolab('shop', { owner: 'carl' });
   const carl = await kolab.openSession('carl', 'product', { kolab: 'shop' });
@@ -433,7 +433,7 @@ test('archiving a holder, or bringing back a dependent kolab, marks links and fo
   const dave2 = await kolab.openSession('dave', 'product', { kolab: 'orders' });
 
   // alice's link from orders, revoked while orders was archived: marked as orders comes back.
-  await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
+  await kolab.createNode(alice, 'prototype', 'Orders', 'orders-spec');
   const a1 = await commitReviewed(kolab, alice, dave2, 'orders-spec', { elements: els({ A1: 'Orders ship fast.' }) });
   await linkAcross(kolab, alice, a1, 'A1', 'kj:billing/checkout#R2');
   await kolab.archive({ kolab: 'orders' });

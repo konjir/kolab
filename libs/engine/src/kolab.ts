@@ -9,7 +9,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, LAYERS, LAYER_OF_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -1832,6 +1832,10 @@ export class Kolab {
         // that is the reader's kolab but the node was made before Kolab recorded it, and absent
         // otherwise. Read as kj_agent, through kj_node_creator, which answers for that kolab alone.
         ...(node.kolab_id === from ? { createdBy: (await q.query<{ c: string | null }>(`select kj_node_creator($1) as c`, [node.id])).rows[0]?.c ?? null } : {}),
+        // The node it names as its parent (D78), read as kj_agent: a reader from another kolab
+        // learns its name only where it reads that node itself.
+        parent: node.parent_node_id
+          ? (await q.query<{ name: string }>(`select name from node where id = $1`, [node.parent_node_id])).rows[0]?.name ?? null : null,
         elements,
         queries: t === false ? [] : await this.listQueries({ node: node.id, from, ...(t ? { perElement: t.per, elements: on } : {}) }, q),
         query_counts: t ? await this.queryCounts({ node: node.id, from, elements: on }, q) : undefined,
@@ -3493,24 +3497,85 @@ export class Kolab {
    * The id is the name, or '~' and a ULID when another kolab's node already holds that id; either
    * way, nothing outside the session's kolab shows (TEN12).
    */
-  async createNode(sessionId: string, kind: Kind, title: string, name: string = ulid()): Promise<string> {
+  async createNode(sessionId: string, kind: Kind, title: string, name: string = ulid(), opts: { parent?: string } = {}): Promise<string> {
+    if (!KINDS.includes(kind)) throw new GateError(`a node's kind is one of ${KINDS.join(', ')} (D77), not ${String(kind)}`);
     if (!isNodeName(name)) throw new GateError(`"${name}" isn't a valid node name: it may not contain '/', '@', '#', '~' or whitespace`);
     checkText('the title', title, MAX_TITLE);
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
     const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
     if (await this.findNode(this.db, s.kolab, name)) throw taken();
+    const spec = async () => (await this.db.query<{ name: string }>(`select name from node where kolab_id = $1 and kind = 'functional_spec'`, [s.kolab])).rows[0];
+    const secondSpec = (held: string) => new GateError(`kolab ${s.kolab} already holds its spec, ${held}, and a kolab holds exactly one (KON1, D77). `
+      + `Write its prototypes as prototype nodes, or a variant of it in another kolab, as a fork (KON9)`);
+    if (kind === 'functional_spec') { const held = await spec(); if (held) throw secondSpec(held.name); }
+    const parent = await this.parentFor(s.kolab, kind, opts.parent);
     // Each candidate id in turn: the name, then '~' and a ULID, which no name can be (node_id_name_check).
     for (const id of [name, `~${ulid()}`]) {
       try {
-        await this.db.query(`insert into node(id, name, kind, layer, title, kolab_id, created_by) values ($1, $2, $3, $4, $5, $6, $7)`,
-          [id, name, kind, LAYER_OF_KIND[kind], title, s.kolab, s.actor_id]);
+        await this.db.query(`insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [id, name, kind, LAYER_OF_KIND[kind], title, s.kolab, parent?.id ?? null, s.actor_id]);
         return id;
       } catch (e) {
         if (String(e).includes('node_kolab_name_key')) throw taken();   // made by another call since the check
+        // Made by another call since the checks: the database holds to the limits (0027).
+        if (String(e).includes('node_one_spec_per_kolab')) throw secondSpec((await spec())?.name ?? 'another');
+        if (String(e).includes('node_one_plan_per_binding')) throw new GateError(`binding ${parent!.name} already has its plan, and a binding has exactly one (KON5, D77)`);
         if (!String(e).includes('node_pkey')) throw e;
       }
     }
     throw taken();   // a ULID taken too: never, in practice
+  }
+
+  /**
+   * The parent a new node of `kind` names in `kolab` (D78): a binding's spec, its kolab's one spec;
+   * a plan's binding, the one `given` names, or the kolab's only binding. A spec and a prototype
+   * name none. Refused, saying what to do, when there is none to name, `given` names something
+   * else, or the binding already has its plan (KON5); it never picks one of several.
+   */
+  private async parentFor(kolab: string, kind: Kind, given: string | undefined): Promise<{ id: string; name: string } | undefined> {
+    const want = PARENT_KIND[kind];
+    if (!want) {
+      if (given !== undefined) throw new GateError(`a ${KIND_WORDS[kind]} names no parent: a binding names its spec, and a plan its binding (D78)`);
+      return undefined;
+    }
+    const of = (await this.db.query<{ id: string; name: string; plan: string | null }>(
+      `select n.id, n.name, (select p.name from node p where p.parent_node_id = n.id and p.kind = 'plan') as plan
+         from node n where n.kolab_id = $1 and n.kind = $2 order by n.name`, [kolab, want])).rows;
+    const word = KIND_WORDS[want];
+    let p: typeof of[number] | undefined;
+    if (given !== undefined) {
+      p = of.find((n) => n.name === given);
+      if (!p) {
+        throw new GateError(`a ${KIND_WORDS[kind]} names the ${word} it ${kind === 'plan' ? 'plans' : 'binds'}, in its own kolab (D78), and ${given} is no ${word} of kolab ${kolab}`
+          + (of.length ? `: its ${word}${of.length === 1 ? ' is' : 's are'} ${of.map((n) => n.name).join(', ')}` : ''));
+      }
+    } else if (of.length === 1) {
+      p = of[0];
+    } else if (!of.length) {
+      throw new GateError(kind === 'technical_binding'
+        ? `a binding names the spec it binds (D78), and kolab ${kolab} holds no spec yet: create its spec first (kind functional_spec)`
+        : `a plan names the binding it plans (D78), and kolab ${kolab} holds no binding yet: create the binding first (kind technical_binding)`);
+    } else {
+      throw new GateError(`a plan names the binding it plans (D78), and kolab ${kolab} holds ${of.length} bindings: name one with parent=<binding> (${of.map((n) => n.name).join(', ')})`);
+    }
+    if (kind === 'plan' && p.plan) throw new GateError(`binding ${p.name} already has its plan, ${p.plan}, and a binding has exactly one (KON5, D77)`);
+    return p;
+  }
+
+  /**
+   * Why a link from node `src` may not target node `tgt`, if it may not (D78): a plan's links deliver
+   * its own binding's elements, or depend on its own, never the spec (KON6); a binding's links to a
+   * spec serve its own spec. Migration 0027's edge_within_parent holds to the same for every role.
+   */
+  private linkOutsideParent(src: NodeRow, tgt: NodeRow): string | undefined {
+    const at = (n: NodeRow) => (n.kolab_id === src.kolab_id ? n.name : `${n.kolab_id}/${n.name}`);
+    if (src.kind === 'plan' && tgt.id !== src.parent_node_id && tgt.id !== src.id) {
+      return `${src.name} is a plan: its work packages deliver elements of its own binding, never ${tgt.kind === 'functional_spec' ? 'the spec' : `${KIND_WORDS[tgt.kind]} ${at(tgt)}`} (KON6, D78). Link the binding element that serves it`;
+    }
+    if (src.kind === 'technical_binding' && tgt.kind === 'functional_spec' && tgt.id !== src.parent_node_id) {
+      return `${src.name} is a binding of its kolab's spec, and serves that spec alone, not ${at(tgt)} (D78)`;
+    }
+    return undefined;
   }
 
   async version(id: string): Promise<VersionRow> {
@@ -4480,6 +4545,9 @@ export class Kolab {
     if (tgt.state !== 'committed') {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
+    // Element links point inside the parent (D78, KON6).
+    const outside = this.linkOutsideParent(await this.node(src.node_id), await this.node(tgt.node_id));
+    if (outside) throw new GateError(outside);
     // A link is pinned to what its target says now: its node's live version, never an older one.
     const live = (await this.latestCommitted(tgt.node_id))!;
     if (live.id !== tgt.id) {
@@ -6213,8 +6281,9 @@ export class Kolab {
   }
 
   private async nodeRows(kind?: Kind, kolab?: string, after?: [string, string], limit?: number) {
-    return (await this.db.query<{ id: string; name: string; kolab: string; kind: Kind; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number; rebase_pending: boolean; rebase_dead: boolean }>(
+    return (await this.db.query<{ id: string; name: string; kolab: string; kind: Kind; layer: Layer; title: string; parent: string | null; latest: number | null; drafts: number; in_review: number; rebase_pending: boolean; rebase_dead: boolean }>(
       `select n.id, n.name, n.kolab_id as kolab, n.kind, n.layer, n.title,
+              (select p.name from node p where p.id = n.parent_node_id) as parent,
               (select max(seq) from version v where v.node_id = n.id and v.state = 'committed') as latest,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'drafted') as drafts,
               (select count(*)::int from version v where v.node_id = n.id and v.state = 'in_review') as in_review,
@@ -6910,11 +6979,13 @@ async function nextSeq(tx: Q, nodeId: string): Promise<number> {
 /** A node: `name` is how addresses name it, unique in its kolab; `id` is Kolab's own key for it. */
 export interface NodeRow {
   id: string; name: string; kind: Kind; layer: Layer; title: string; kolab_id: string;
+  /** The node it names as its parent (D78): a binding's spec, a plan's binding; null for a spec or a prototype. */
+  parent_node_id: string | null;
   /** When the node was made (W2.20): null for a node made before migration 0024. Who made it is read apart (kj_node_creator). */
   created_at: Date | string | null;
 }
-/** A node's columns as NodeRow reads them: every one kj_agent may read (migration 0024). */
-const NODE_COLUMNS = 'id, name, kind, layer, title, kolab_id, created_at';
+/** A node's columns as NodeRow reads them: every one kj_agent may read (migrations 0024 and 0027). */
+const NODE_COLUMNS = 'id, name, kind, layer, title, kolab_id, parent_node_id, created_at';
 
 /**
  * Where an address is read: in a session, which reads its own kolab and any other it holds Read

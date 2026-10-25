@@ -43,8 +43,8 @@ test('a node name is unique within its kolab: two kolabs may each have one, and 
 
   // Within one kolab a name is taken once, and the refusal names only that kolab.
   expect(await rejection(kolab.createNode(bob, 'functional_spec', 'Again', 'checkout'))).toBe('GateError: the node name checkout is taken in kolab billing; choose another');
-  expect(await rejection(kolab.createNode(bob, 'functional_spec', 'Bad', 'a/b'))).toMatch(/GateError: "a\/b" isn't a valid node name: it may not contain '\/', '@', '#', '~' or whitespace/);
-  expect(await rejection(kolab.createNode(bob, 'functional_spec', 'Bad', 'a b'))).toMatch(/isn't a valid node name/);
+  expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a/b'))).toMatch(/GateError: "a\/b" isn't a valid node name: it may not contain '\/', '@', '#', '~' or whitespace/);
+  expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a b'))).toMatch(/isn't a valid node name/);
 
   // Listing gives each node's name, which every verb takes.
   expect((await kolab.listNodes(undefined, 'billing')).map((n) => [n.id, n.name, n.kolab])).toStrictEqual([[theirs, 'checkout', 'billing']]);
@@ -66,7 +66,7 @@ test('a node name is unique within its kolab: two kolabs may each have one, and 
 test('the database holds a node to one name in its kolab, and its id to that name', async () => {
   const { kolab, theirs } = await twoCheckouts();
   const insert = (id: string, name: string, kolabId: string) => kolab.db.query(
-    `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ($1, $2, 'functional_spec', 'functional', 'X', $3, 'admin')`, [id, name, kolabId]);
+    `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ($1, $2, 'prototype', 'functional', 'X', $3, 'admin')`, [id, name, kolabId]);
   expect(await rejection(insert('~01JAAAAAAAAAAAAAAAAAAAAAAA', 'checkout', 'orders'))).toMatch(/node_kolab_name_key/);
   expect(await rejection(insert('shipping', 'returns', 'orders'))).toMatch(/node_id_name_check/);
   expect(await rejection(insert('orders/returns', 'returns', 'orders'))).toMatch(/node_id_name_check/);
@@ -75,7 +75,7 @@ test('the database holds a node to one name in its kolab, and its id to that nam
   await insert('~01JBBBBBBBBBBBBBBBBBBBBBBB', 'returns', 'orders');   // a generated id
   expect(await rejection(kolab.db.query(`update node set name = 'refunds' where id = 'checkout'`))).toMatch(/a node's id and name never change once written/);
   expect(await rejection(kolab.db.query(`update node set id = '~01JCCCCCCCCCCCCCCCCCCCCCCC' where id = $1`, [theirs]))).toMatch(/never change once written/);
-  expect(await rejection(kolab.db.query(`insert into node(id, kind, layer, title, kolab_id) values ('nameless', 'functional_spec', 'functional', 'X', 'orders')`))).toMatch(/"name"/);
+  expect(await rejection(kolab.db.query(`insert into node(id, kind, layer, title, kolab_id) values ('nameless', 'prototype', 'functional', 'X', 'orders')`))).toMatch(/"name"/);
 });
 
 test('the full form resolves wherever its reader holds Read, and elsewhere is no node at all (TEN12)', async () => {
@@ -121,7 +121,7 @@ test('a question across kolabs is refused by the address alone; a link or a vari
   expect(await rejection(kolab.versionIn(alice, 'kj:billing/nothing', { what: 'linking', across: true }))).toBe('Error: no node nothing in kolab billing');
   expect(await rejection(kolab.versionIn(alice, 'kj:shop/checkout', { what: 'a variant (a fork)', across: true }))).toBe('Error: no node checkout in kolab shop');
   // The engine refuses a link to, or a variant of, a version of a kolab it can't read, as a version that isn't there.
-  const spec = await kolab.createNode(alice, 'functional_spec', 'EU', 'eu');
+  const spec = await kolab.createNode(alice, 'prototype', 'EU', 'eu');
   const draft = await kolab.draft(alice, spec, { elements: els({ E1: 'EU orders ship within two days.' }) });
   const target = (await kolab.latestCommitted(theirs))!.id;
   expect(await rejection(kolab.link(alice, { kind: 'dependency', source: draft, sourceElement: 'E1', target, targetElement: 'R1' })))
@@ -201,7 +201,7 @@ test('every address and message Kolab gives names a node by its name, never its 
   expect(JSON.stringify(said)).not.toContain(theirs);
 
   // A variant loop names the nodes by name too.
-  const eu = await kolab.createNode(bob, 'functional_spec', 'EU', 'eu');
+  const eu = await kolab.createNode(bob, 'prototype', 'EU', 'eu');
   await kolab.commit(bob, eu, { parent: (await kolab.latestCommitted(theirs))!.id, deltas: [{ kind: 'override', element: 'R1', text: 'EU invoices are sent weekly, in euros.' }] });
   expect(await rejection(kolab.draft(bob, theirs, { parent: (await kolab.latestCommitted(eu))!.id, deltas: [] })))
     .toBe('GateError: checkout would inherit from itself through eu -> checkout');

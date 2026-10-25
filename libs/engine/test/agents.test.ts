@@ -58,7 +58,7 @@ test("Kolab's own rebases are authored by the system, not by a person or an agen
   const pm2 = await kolab.openSession('alice-pm-2', 'product');   // the reviewer of alice-pm's versions
   const spec = await kolab.createNode(pm, 'functional_spec', 'Storefront', 'storefront');
   const parent = await commitReviewed(kolab, pm, pm2, spec, { elements: els({ R1: 'Prices show in dollars.' }) });
-  const child = await kolab.createNode(pm, 'functional_spec', 'EU storefront', 'storefront-eu');
+  const child = await kolab.createNode(pm, 'prototype', 'EU storefront', 'storefront-eu');
   await commitReviewed(kolab, pm, pm2, child, { parent, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
   await commitReviewed(kolab, pm, pm2, spec, { elements: els({ R1: 'Prices show in dollars.', R2: 'Carts persist.' }) });
   const rebased = (await kolab.latestCommitted(child))!;

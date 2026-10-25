@@ -15,7 +15,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { GateError, structuralChecks, type Kolab } from '@konjir/engine';
-import { setup } from '@konjir/engine/testing';
+import { TEST_KOLAB, setup } from '@konjir/engine/testing';
 import {
   FUNCTIONAL, LINKS, Model, NODES, P_ORDER, P_PARENTS, PLAIN, VETO, fp, linkKey, textFor, vetoed,
   type El, type NodeKey, type Resolution, type VariantKey,
@@ -98,10 +98,12 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
   const t = (el: string, i: number) => textFor(tag, el, i);
 
   m.P = P_ORDER.map((id) => ({ id, text: t(id, 0), parent: P_PARENTS[id] }));
-  await kolab.createNode(product, 'functional_spec', 'P', ids.P);
+  // The family is prototypes: a kolab holds one spec (KON1), which the bindings B and W name (D78).
+  if (!(await kolab.listNodes('functional_spec', TEST_KOLAB)).length) await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
+  await kolab.createNode(product, 'prototype', 'P', ids.P);
   const p = await kolab.commit(product, ids.P, { elements: m.P.map(input) });
 
-  await kolab.createNode(product, 'functional_spec', 'V1', ids.V1);
+  await kolab.createNode(product, 'prototype', 'V1', ids.V1);
   const v1Deltas = [
     ...Object.entries(s.v1).map(([el, i]) => ({ kind: 'override' as const, element: el, text: t(el, i!) })),
     { kind: 'add' as const, element: 'X1', text: t('X1', 0) },
@@ -112,7 +114,7 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
     m.V.V1.set(d.element, { kind: d.kind, text: d.text, baseFp: pe ? fp(pe.text) : null, state: 'clean', parent: pe?.parent ?? null });
   }
 
-  await kolab.createNode(product, 'functional_spec', 'V2', ids.V2);
+  await kolab.createNode(product, 'prototype', 'V2', ids.V2);
   const v2Deltas = Object.entries(s.v2).map(([el, i]) => ({ kind: 'override' as const, element: el, text: t(el, i!) }));
   const v1Els = m.mat('V1');
   const v2 = await kolab.commit(product, ids.V2, { parent: v1, deltas: v2Deltas });
@@ -124,9 +126,9 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
   m.placed('V1');
   m.placed('V2');
   const versions: Partial<Record<NodeKey, string>> = { P: p, V1: v1, V2: v2 };
-  for (const [key, kind] of [['B', 'technical_binding'], ['W', 'wbs'], ['X', 'work_package']] as const) {
+  for (const [key, kind] of [['B', 'technical_binding'], ['W', 'technical_binding'], ['X', 'plan']] as const) {
     for (const el of PLAIN[key]) m.plain[key].set(el, t(el, 0));
-    await kolab.createNode(engineer, kind, key, ids[key]);
+    await kolab.createNode(engineer, kind, key, ids[key], key === 'X' ? { parent: ids.W } : {});
     versions[key] = await kolab.commit(engineer, ids[key], { elements: m.mat(key).map(input) });
   }
 

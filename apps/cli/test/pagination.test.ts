@@ -48,7 +48,7 @@ test('every list verb returns a page and next; following next reads the rest, an
   await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }, { id: 'R2', text: 'Orders ship in a day.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
-  for (const name of ['a', 'b', 'c']) await call(pm, 'create_node', { kind: 'functional_spec', title: name, id: name });
+  for (const name of ['a', 'b', 'c']) await call(pm, 'create_node', { kind: 'prototype', title: name, id: name });
   await call(dev, 'create_node', { kind: 'technical_binding', title: 'Orders on Postgres', id: 'orders-pg' });
   await call(dev, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A flag.' }, { id: 'b2', text: 'A queue.' }, { id: 'b3', text: 'A job.' }],
     links: [{ source_element: 'b1', target: 'kj:orders@1#R1' }, { source_element: 'b2', target: 'kj:orders@1#R2' }, { source_element: 'b3', target: 'kj:orders@1#R1' }] });
@@ -85,7 +85,7 @@ test('list_reviews pages both its lists with one cursor', async () => {
   const { pm, as } = await kolab();
   const dana = await as('dana', 'product', ['functional']);
   for (const name of ['a', 'b', 'c']) {
-    await call(pm, 'create_node', { kind: 'functional_spec', title: name, id: name });
+    await call(pm, 'create_node', { kind: 'prototype', title: name, id: name });
     await call(pm, 'draft', { node: name, elements: [{ id: 'R1', text: `${name} holds.` }] });
     await call(pm, 'submit_for_review', { node: name, version: 1 });
   }
@@ -111,7 +111,7 @@ test('read_node pages a large version\'s elements; the inbox names a list it cut
   expect(rest.elements.map((e) => e.id)).toStrictEqual(Array.from({ length: 10 }, (_, i) => `R${READ_NODE_PAGE + i}`));
   expect(rest.next).toBeNull();
   // A small version is one page.
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Small', id: 'small' });
+  await call(pm, 'create_node', { kind: 'prototype', title: 'Small', id: 'small' });
   await call(pm, 'draft', { node: 'small', elements: [{ id: 'R1', text: 'One.' }] });
   await call(pm, 'submit_for_review', { node: 'small', version: 1 });
   expect(await call(pm, 'read_node', { node: 'small' })).toMatchObject({ element_count: 1, next: null });

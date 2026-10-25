@@ -280,7 +280,7 @@ test('kolab titles count characters, and the admin\'s names and titles are cappe
 test('resolving an override mark is a draft: it takes a place in the resolver\'s budget, so a person at the limit can\'t keep resolving a mark', async () => {
   const { kolab, product } = await setup();
   const p1 = await kolab.commit(product, await kolab.createNode(product, 'functional_spec', 'Storefront', 'P'), { elements: els({ E1: 'Session timeout is 15 minutes.' }) });
-  const child = await kolab.createNode(product, 'functional_spec', 'Storefront for Acme', 'C');
+  const child = await kolab.createNode(product, 'prototype', 'Storefront for Acme', 'C');
   await kolab.commit(product, child, { parent: p1, deltas: [{ kind: 'override', element: 'E1', text: 'Session timeout is 30 minutes.' }] });
   await kolab.commit(product, 'P', { elements: els({ E1: 'Session timeout is 10 minutes.' }) });
   const mark = (await kolab.openMarks()).find((m) => m.reason === 'override_stale')!;

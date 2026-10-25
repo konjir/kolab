@@ -1,19 +1,20 @@
 // A reference model of the cascade and rebases (W2.5, binding element TST2), for the property
-// tests in properties.test.ts. It follows one small spec family through the operations the
-// generators produce, and says what Kolab should hold after each: every element's text, every
-// variant's overrides and their states, where every link is pinned, and which marks are open.
+// tests in properties.test.ts. It follows one small family of prototypes (a spec's own variants
+// live in other kolabs, KON9) through the operations the generators produce, and says what Kolab
+// should hold after each: every element's text, every variant's overrides and their states,
+// where every link is pinned, and which marks are open.
 // It is written from the spec and the binding, not from the engine's code.
 //
 // The family:
 //
-//   P   functional spec   E1, E2 (with child E2a), E3
+//   P   prototype         E1, E2 (with child E2a), E3
 //   V1  variant of P      overrides some of E1, E2, E3; adds X1
 //   V2  variant of V1     overrides some of E1, E2, E3, X1
 //                         X1 -> B.b1, X1 -> B.b6           (a variant that depends on the binding)
 //   B   binding           b1 -> P.E1, b2 -> P.E2 (its subtree), b3 -> V1.E1, b4 -> V2.E3,
 //                         b5 -> P (whole), b6 -> V2.X1     (b6 and V2.X1 form a cycle)
-//   W   wbs               w1 -> B.b1, w2 -> B.b3, w3 -> B.b4, w4 -> B.b6
-//   X   work package      x1 -> W.w1, x2 -> W.w3           (a third hop)
+//   W   binding           w1 -> B.b1, w2 -> B.b3, w3 -> B.b4, w4 -> B.b6  (a binding relying on B)
+//   X   plan of W         x1 -> W.w1, x2 -> W.w3           (a third hop: its work packages)
 //
 // What it encodes, from the spec (LNK, OVR) and the binding (CAS):
 // - CAS1, LNK4: a commit resolves each link into the node. Content that still fingerprints the
@@ -393,9 +394,9 @@ export class Model {
 
   /** The engineer commits B, W or X with `el` rewritten. Text that fingerprints the same is no edit: Kolab keeps the old text. */
   edit(key: 'B' | 'W' | 'X', el: string, text: string): boolean {
-    // The plan (W, a wbs) and its work package (X) commit after structural checks only, so the
-    // reviewer's veto reaches only the binding (VER3, PLN2, W1.6).
-    if (vetoed(text) && key === 'B') return false;
+    // The plan (X, W's plan) commits after structural checks only, so the reviewer's veto reaches
+    // only the bindings, B and W (VER3, PLN2, W1.6).
+    if (vetoed(text) && key !== 'X') return false;
     const before = this.mat(key);
     if (fp(this.plain[key].get(el)!) !== fp(text)) this.plain[key].set(el, text);
     this.revised(key, before);
@@ -409,7 +410,7 @@ export class Model {
    */
   unlink(key: string, text?: string): 'ok' | 'rejected' {
     const e = this.edges.find((x) => x.key === key)!;
-    if (text !== undefined && vetoed(text) && e.src !== 'W' && e.src !== 'X') return 'rejected';
+    if (text !== undefined && vetoed(text) && e.src !== 'X') return 'rejected';
     if (e.src === 'V2') {
       const before = this.mat('V2');
       this.removeEdge(e);

@@ -20,7 +20,7 @@ test('a server that boots finishes the cascade a stopped process owed, without b
   const alice = await a.openSession('alice', 'product');
   await a.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await a.createNode(alice, 'functional_spec', 'V', 'V');
+  await a.createNode(alice, 'prototype', 'V', 'V');
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
   void a.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) }).catch(() => undefined);
   await stopped;
@@ -48,7 +48,7 @@ test('a server started with worker: false and migrate: false leaves the job a st
   const alice = await a.openSession('alice', 'product');
   await a.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = await a.commit(alice, 'P', { elements: els({ E1: 'Parent one.' }) });
-  await a.createNode(alice, 'functional_spec', 'V', 'V');
+  await a.createNode(alice, 'prototype', 'V', 'V');
   await a.commit(alice, 'V', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'V adds A.' }] });
   void a.commit(alice, 'P', { elements: els({ E1: 'Parent one, revised.' }) }).catch(() => undefined);
   await stopped;

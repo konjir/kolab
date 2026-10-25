@@ -23,7 +23,7 @@ test('over MCP: a parent\'s commit says how many rebases it queued, and read_nod
   await call(pm, 'create_node', { kind: 'functional_spec', title: 'Storefront', id: 'P' });
   await call(pm, 'draft', { node: 'P', elements: [{ id: 'E1', text: 'Background is white.' }, { id: 'E2', text: 'Logo sits top-left.' }] });
   expect(await call(pm, 'submit_for_review', { node: 'P', version: 1 })).not.toHaveProperty('rebases_queued');
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Storefront for Acme', id: 'V' });
+  await call(pm, 'create_node', { kind: 'prototype', title: 'Storefront for Acme', id: 'V' });
   await call(pm, 'draft', { node: 'V', parent: 'kj:P@1', deltas: [{ kind: 'override', element: 'E1', text: 'Background is navy.' }] });
   await call(pm, 'submit_for_review', { node: 'V', version: 1 });
   expect(await call(pm, 'read_node', { node: 'V' })).not.toHaveProperty('rebase');

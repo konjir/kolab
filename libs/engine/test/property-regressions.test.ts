@@ -10,7 +10,7 @@ test('a mark spreads downstream through a link that carries a mark of its own (L
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
   const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker.' }) });
-  const W = await kolab.createNode(engineer, 'wbs', 'W', 'W');
+  const W = await kolab.createNode(engineer, 'plan', 'W', 'W');
   const w1 = await kolab.commit(engineer, W, { elements: els({ w1: 'Build the order worker.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
@@ -37,9 +37,9 @@ async function nested() {
   const { kolab, product } = ctx;
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 15 minutes.', E2: 'Logo top-left.' }) });
-  const V1 = await kolab.createNode(product, 'functional_spec', 'V1', 'V1');
+  const V1 = await kolab.createNode(product, 'prototype', 'V1', 'V1');
   const v1 = await kolab.commit(product, V1, { parent: p1, deltas: [{ kind: 'add', element: 'X1', text: 'Chat is on.' }] });
-  const V2 = await kolab.createNode(product, 'functional_spec', 'V2', 'V2');
+  const V2 = await kolab.createNode(product, 'prototype', 'V2', 'V2');
   return { ...ctx, P, V1, V2, v1 };
 }
 
@@ -100,7 +100,7 @@ async function twins(reviewer?: Parameters<typeof setup>[0]) {
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 15 minutes.', E2: 'Logo top-left.' }) });
   for (const id of ['A', 'B']) {
-    await kolab.createNode(product, 'functional_spec', id, id);
+    await kolab.createNode(product, 'prototype', id, id);
     await kolab.commit(product, id, { parent: p1, deltas: [{ kind: 'override', element: 'E1', text: 'Timeout is 30 minutes.' }] });
   }
   await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 10 minutes.', E2: 'Logo top-left.' }) });
@@ -163,7 +163,7 @@ test('a variant\'s commit settles marks only on the elements it revised, not on 
   const { kolab, product, engineer } = await setup();
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 15 minutes.', E2: 'Logo top-left.' }) });
-  const V = await kolab.createNode(product, 'functional_spec', 'V', 'V');
+  const V = await kolab.createNode(product, 'prototype', 'V', 'V');
   const v1 = await kolab.commit(product, V, { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'Logo top-right.' }] });
   const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Logo renderer.' }) });
@@ -184,7 +184,7 @@ test('revising an element settles its upstream_dirty mark (LNK6, CAS4)', async (
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
   const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker.' }) });
-  const W = await kolab.createNode(engineer, 'wbs', 'W', 'W');
+  const W = await kolab.createNode(engineer, 'plan', 'W', 'W');
   const w1 = await kolab.commit(engineer, W, { elements: els({ w1: 'Build the order worker.', w2: 'Test it.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });

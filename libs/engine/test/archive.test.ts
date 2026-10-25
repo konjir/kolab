@@ -95,7 +95,7 @@ test('an archived kolab ends its sessions, refuses new ones and every write, and
   // The database refuses any write to it, from any role: Kolab's own login included.
   const v1 = (await kolab.latestCommitted('orders-spec'))!;
   for (const sql of [
-    `insert into node(id, name, kind, layer, title, kolab_id) values ('n2', 'n2', 'functional_spec', 'functional', 'N2', 'orders')`,
+    `insert into node(id, name, kind, layer, title, kolab_id) values ('n2', 'n2', 'prototype', 'functional', 'N2', 'orders')`,
     `update element set text = 'Rewritten.' where version_id = '${v1.id}'`,
     `delete from element where version_id = '${v1.id}'`,
     `update version set state = 'rejected' where id = '${draft}'`,

@@ -131,7 +131,7 @@ test('done when, by token: Claude Code lists Kolab\'s tools, prompts and resourc
   expect(asked.meta).toMatchObject({ uri: 'konjir://inbox/test/functional', kind: 'inbox' });
 
   // A list pages through the bridge as it does direct: cursor and limit reach Kolab, and next comes back (W2.21, D71).
-  await call(b.claude, 'create_node', { kind: 'functional_spec', title: 'Invoices', id: 'invoices' });
+  await call(b.claude, 'create_node', { kind: 'prototype', title: 'Invoices', id: 'invoices' });
   const first = await call(b.claude, 'list_nodes', { limit: 1 }) as { nodes: { id: string }[]; next: string | null };
   expect(first.nodes).toHaveLength(1);
   expect(first.next).toEqual(expect.any(String));

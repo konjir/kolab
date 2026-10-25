@@ -10,8 +10,9 @@ import {
   BASELINE, MIGRATIONS, checkMigrations, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
-import { commitReviewed, els, people, persistentStore, rejection, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
-import { ARCHIVABLE, AUDIT_ACTIONS,
+import { fingerprint } from '@konjir/address';
+import { commitReviewed, els, marksOn, people, persistentStore, rejection, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
+import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
 } from '@konjir/types';
@@ -91,7 +92,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE and AUDIT_ACTIONS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS and KINDS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -120,6 +121,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, Q
     expect(await check('ruling_effect_check')).toStrictEqual([...RULING_EFFECTS].sort());
     expect(await check('position_seeks_check')).toStrictEqual([...RULING_EFFECTS].sort());
     expect(await check('kolab_invite_level_check')).toStrictEqual([...INVITE_LEVELS].sort());
+    expect(await check('node_kind_check')).toStrictEqual([...KINDS].sort());
   });
 });
 
@@ -250,9 +252,9 @@ test('a database at 0003 reaches 0004: marks from failed rebases become rebase_f
       insert into actor(id, name) values ('lee', 'Lee');
       insert into session(id, actor_id, active_role) values ('kjs_lee', 'lee', 'product');
       insert into node(id, kind, layer, title) values
-        ('P', 'functional_spec', 'functional', 'P'), ('V', 'functional_spec', 'functional', 'V'),
-        ('W', 'functional_spec', 'functional', 'W'), ('X', 'functional_spec', 'functional', 'X'),
-        ('Y', 'functional_spec', 'functional', 'Y');
+        ('P', 'functional_spec', 'functional', 'P'), ('V', 'prototype', 'functional', 'V'),
+        ('W', 'prototype', 'functional', 'W'), ('X', 'prototype', 'functional', 'X'),
+        ('Y', 'prototype', 'functional', 'Y');   -- the variants are prototypes: a kolab holds one spec (0027)
       insert into version(id, node_id, seq, parent_version_id, base_version_id, layer, state, actor_id, active_role) values
         ('p1', 'P', 1, null, null, 'functional', 'committed', 'lee', 'product'),
         ('p2', 'P', 2, null, 'p1', 'functional', 'committed', 'lee', 'product'),
@@ -512,11 +514,20 @@ test('a database at 0007 reaches 0008: each node keeps its id, which becomes its
   try {
     // kj:kolab/kolab, the spec's own address (D15), resolves from anywhere.
     expect(await kolab.resolve('kj:kolab/kolab@1#TEN1', { system: 'shop' })).toMatchObject({ status: 'ok', content: 'Konjir is one hosted service.' });
-    // Another kolab's binding may be called kolab-binding too.
+    // 0027: the plan is a plan now, of its kolab's one binding, which binds its kolab's one spec (D77, D78).
+    expect((await kolab.db.query(`select name, kind, parent_node_id from node order by name`)).rows).toStrictEqual([
+      { name: 'kolab', kind: 'functional_spec', parent_node_id: null },
+      { name: 'kolab-binding', kind: 'technical_binding', parent_node_id: 'kolab' },
+      { name: 'kolab-plan', kind: 'plan', parent_node_id: 'kolab-binding' },
+    ]);
+    // Another kolab's binding may be called kolab-binding too, beside its own spec.
     await kolab.createKolab('shop', { owner: 'lee' });
+    const pm = await kolab.openSession('lee', 'product', { kolab: 'shop' });
+    await kolab.createNode(pm, 'functional_spec', 'Shop', 'shop');
+    await kolab.endSession(pm, { by: 'lee' });
     const s = await kolab.openSession('lee', 'engineer', { kolab: 'shop' });
     expect(await kolab.createNode(s, 'technical_binding', 'Binding', 'kolab-binding')).toMatch(/^~[0-9A-Z]{26}$/);
-    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.name)).toStrictEqual(['kolab', 'kolab-binding', 'kolab-plan']);
+    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.name)).toStrictEqual(['kolab', 'kolab-plan', 'kolab-binding']);   // by kind, then name
   } finally { await kolab.close(); }
 });
 
@@ -978,4 +989,252 @@ test('on Postgres, the suite runs as a login that is not a superuser, as on RDS'
       `select rolsuper, rolcreaterole, rolcreatedb from pg_roles where rolname = current_user`);
     expect(r.rows[0]).toStrictEqual({ rolsuper: false, rolcreaterole: true, rolcreatedb: true });
   });
+});
+
+// ---- 0027: typed konstruct kinds (W4.1; D77, D78, D79) ---------------------------------------
+
+/** One element row, with its real fingerprint, as Kolab writes it. */
+const elRow = (version: string, id: string, ord: number, text: string) => `('${version}', '${id}', ${ord}, '${text}', '${fingerprint(text)}')`;
+/** One link row, pinned to its target's text as it was linked. */
+const edgeRow = (id: string, kind: string, source: string, sourceEl: string | null, target: string, targetEl: string, text: string, heldBy = 'mirror-engineer') =>
+  `('${id}', '${kind}', '${source}', ${sourceEl === null ? 'null' : `'${sourceEl}'`}, '${target}', '${targetEl}', '${fingerprint(text)}', '${heldBy}')`;
+const V = 'insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role, submitted_by) values';
+const N = 'insert into node(id, name, kind, layer, title, kolab_id, created_by) values';
+const E = 'insert into element(version_id, element_id, ord, text, fingerprint) values';
+const L = 'insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by) values';
+
+/**
+ * Production as 0026 leaves it, by its shapes: Konjir's own kolab with its spec, its binding, its
+ * plan (a wbs) and a prototype, the binding with a version in review; the demo walkthrough's two
+ * kolabs (a spec and its binding; a spec alone, whose node name another kolab has); a kolab with
+ * two bindings whose wbs links one; an archived kolab with a spec, a binding and a wbs; and a
+ * superseded plan version that linked the spec directly, before D78.
+ */
+const BEFORE_KINDS = `
+  insert into account(id, kind, name, created_by) values ('konjir', 'organization', 'Konjir', 'admin'), ('lee', 'user', 'Lee', 'admin'),
+    ('acme-r1', 'organization', 'Acme', 'admin'), ('globex-r1', 'organization', 'Globex', 'admin');
+  insert into actor(id, name, created_by) values ('lee', 'Lee', 'admin');
+  insert into actor(id, name, kind, owner_id, created_by) values ('mirror-product', 'mirror-product', 'agent', 'konjir', 'admin'),
+    ('mirror-engineer', 'mirror-engineer', 'agent', 'konjir', 'admin');
+  insert into kolab(id, owner_id, title, created_by) values ('kolab', 'konjir', 'Kolab', 'admin'), ('acme-demo-r1', 'acme-r1', 'Acme', 'admin'),
+    ('globex-demo-r1', 'globex-r1', 'Globex', 'admin'), ('lab', 'lee', 'Lab', 'admin'), ('old', 'lee', 'Old', 'admin');
+  ${N} ('kolab', 'kolab', 'functional_spec', 'functional', 'Kolab — Functional Spec', 'kolab', 'admin'),
+    ('kolab-binding', 'kolab-binding', 'technical_binding', 'technical', 'Kolab — Technical Binding', 'kolab', 'admin'),
+    ('kolab-plan', 'kolab-plan', 'wbs', 'technical', 'Kolab — Plan', 'kolab', 'admin'),
+    ('kolab-page', 'kolab-page', 'prototype', 'functional', 'Konjir Kolab', 'kolab', 'admin'),
+    ('invitations', 'invitations', 'functional_spec', 'functional', 'Team invitations', 'acme-demo-r1', 'admin'),
+    ('invitations-binding', 'invitations-binding', 'technical_binding', 'technical', 'Team invitations on Node', 'acme-demo-r1', 'admin'),
+    ('~01JG0000000000000000000000', 'invitations', 'functional_spec', 'functional', 'Globex invitations', 'globex-demo-r1', 'admin'),
+    ('lab-spec', 'lab-spec', 'functional_spec', 'functional', 'Lab', 'lab', 'admin'),
+    ('lab-api', 'lab-api', 'technical_binding', 'technical', 'Lab API', 'lab', 'admin'),
+    ('lab-ui', 'lab-ui', 'technical_binding', 'technical', 'Lab UI', 'lab', 'admin'),
+    ('lab-plan', 'lab-plan', 'wbs', 'technical', 'Lab API plan', 'lab', 'admin'),
+    ('old-spec', 'old-spec', 'functional_spec', 'functional', 'Old', 'old', 'admin'),
+    ('old-binding', 'old-binding', 'technical_binding', 'technical', 'Old binding', 'old', 'admin'),
+    ('old-plan', 'old-plan', 'wbs', 'technical', 'Old plan', 'old', 'admin');
+  ${V} ('s1', 'kolab', 1, null, 'functional', 'committed', 'mirror-product', 'product', 'mirror-product'),
+    ('s2', 'kolab', 2, 's1', 'functional', 'committed', 'mirror-product', 'product', 'mirror-product'),
+    ('b1', 'kolab-binding', 1, null, 'technical', 'committed', 'mirror-engineer', 'engineer', 'mirror-engineer'),
+    ('b2', 'kolab-binding', 2, 'b1', 'technical', 'committed', 'mirror-engineer', 'engineer', 'mirror-engineer'),
+    ('b3', 'kolab-binding', 3, 'b2', 'technical', 'in_review', 'mirror-engineer', 'engineer', 'mirror-engineer'),
+    ('w1', 'kolab-plan', 1, null, 'technical', 'committed', 'mirror-engineer', 'engineer', 'mirror-engineer'),
+    ('w2', 'kolab-plan', 2, 'w1', 'technical', 'committed', 'mirror-engineer', 'engineer', 'mirror-engineer'),
+    ('k1', 'kolab-page', 1, null, 'functional', 'committed', 'mirror-product', 'product', 'mirror-product'),
+    ('ai1', 'invitations', 1, null, 'functional', 'committed', 'mirror-product', 'product', 'mirror-product'),
+    ('ab1', 'invitations-binding', 1, null, 'technical', 'committed', 'mirror-engineer', 'engineer', 'mirror-engineer'),
+    ('gi1', '~01JG0000000000000000000000', 1, null, 'functional', 'committed', 'mirror-product', 'product', 'mirror-product'),
+    ('ls1', 'lab-spec', 1, null, 'functional', 'committed', 'lee', 'product', 'lee'),
+    ('la1', 'lab-api', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'),
+    ('lu1', 'lab-ui', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'),
+    ('lp1', 'lab-plan', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'),
+    ('os1', 'old-spec', 1, null, 'functional', 'committed', 'lee', 'product', 'lee');
+  ${E} ${elRow('s1', 'TEN1', 0, 'Konjir is one hosted service.')}, ${elRow('s1', 'KON1', 1, 'A kolab holds specs.')},
+    ${elRow('s2', 'TEN1', 0, 'Konjir is one hosted service.')}, ${elRow('s2', 'KON1', 1, 'A kolab holds exactly one functional spec.')},
+    ${elRow('b1', 'TEN-DATA', 0, 'Every row carries its kolab.')}, ${elRow('b2', 'TEN-DATA', 0, 'Every row carries its kolab.')},
+    ${elRow('b2', 'KON-MODEL', 1, 'Node kinds are free labels.')},
+    ${elRow('b3', 'TEN-DATA', 0, 'Every row carries its kolab.')}, ${elRow('b3', 'KON-MODEL', 1, 'Node kinds are typed.')},
+    ${elRow('w1', 'W1.3', 0, 'Accounts and kolabs.')}, ${elRow('w2', 'W1.3', 0, 'Accounts and kolabs.')}, ${elRow('w2', 'W4.1', 1, 'Typed konstruct kinds.')},
+    ${elRow('k1', 'home', 0, 'https://claude.ai/artifact/99doLyY9QFgZZkENDb4GNa')},
+    ${elRow('ai1', 'R1', 0, 'An admin invites a teammate by email.')}, ${elRow('ab1', 'b1', 0, 'An invites table.')},
+    ${elRow('gi1', 'R1', 0, 'Globex invites by link.')}, ${elRow('ls1', 'R1', 0, 'Lab runs.')},
+    ${elRow('la1', 'a1', 0, 'An API.')}, ${elRow('lu1', 'u1', 0, 'A page.')}, ${elRow('lp1', 'p1', 0, 'Build the API.')},
+    ${elRow('os1', 'R1', 0, 'Old runs.')};
+  ${L} ${edgeRow('e-b1', 'dependency', 'b1', 'TEN-DATA', 's1', 'TEN1', 'Konjir is one hosted service.')},
+    ${edgeRow('e-b2', 'dependency', 'b2', 'TEN-DATA', 's2', 'TEN1', 'Konjir is one hosted service.')},
+    ${edgeRow('e-b2k', 'dependency', 'b2', 'KON-MODEL', 's2', 'KON1', 'A kolab holds exactly one functional spec.')},
+    ${edgeRow('e-b3', 'dependency', 'b3', 'TEN-DATA', 's2', 'TEN1', 'Konjir is one hosted service.')},
+    ${edgeRow('e-b3k', 'dependency', 'b3', 'KON-MODEL', 's2', 'KON1', 'A kolab holds exactly one functional spec.')},
+    ${edgeRow('e-w1', 'dependency', 'w1', 'W1.3', 's1', 'TEN1', 'Konjir is one hosted service.')},
+    ${edgeRow('e-w2', 'dependency', 'w2', 'W1.3', 'b2', 'TEN-DATA', 'Every row carries its kolab.')},
+    ${edgeRow('e-w2k', 'dependency', 'w2', 'W4.1', 'b2', 'KON-MODEL', 'Node kinds are free labels.')},
+    ${edgeRow('e-k1', 'equivalence', 'k1', 'home', 's2', 'TEN1', 'Konjir is one hosted service.', 'mirror-product')},
+    ${edgeRow('e-ab1', 'dependency', 'ab1', 'b1', 'ai1', 'R1', 'An admin invites a teammate by email.')},
+    ${edgeRow('e-la1', 'dependency', 'la1', 'a1', 'ls1', 'R1', 'Lab runs.', 'lee')},
+    ${edgeRow('e-lu1', 'dependency', 'lu1', 'u1', 'ls1', 'R1', 'Lab runs.', 'lee')},
+    ${edgeRow('e-lp1', 'dependency', 'lp1', 'p1', 'la1', 'a1', 'An API.', 'lee')};
+  update kolab set archived_at = now() where id = 'old';`;
+
+/** Every row of a database's Konjir data but the nodes, to show a migration lost nothing. */
+async function konjirRows(db: Db) {
+  const rows: Record<string, unknown[]> = {};
+  for (const [t, key] of [['version', 'id'], ['element', 'version_id, element_id'], ['edge', 'id'], ['delta', 'id'], ['invalidation', 'id'], ['query', 'id'],
+    ['kolab', 'id'], ['account', 'id'], ['actor', 'id']] as const) {
+    rows[t] = (await db.query(`select * from ${t} order by ${key}`)).rows;
+  }
+  return rows;
+}
+
+test('a database at 0026 reaches 0027: each node is mapped by its label, wbs becomes plan, each binding names its spec and each plan its binding, and nothing else changes', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  expect(at).toBe(MIGRATIONS.length - 1);
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(BEFORE_KINDS);
+    const before = await konjirRows(db);
+    const nodesBefore = (await db.query<Record<string, unknown>>(`select * from node order by id`)).rows;
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [versions[at]] });
+    expect((await db.query(`select kolab_id, name, kind, layer, parent_node_id from node order by kolab_id, kind, name`)).rows).toStrictEqual([
+      { kolab_id: 'acme-demo-r1', name: 'invitations', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'acme-demo-r1', name: 'invitations-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'invitations' },
+      { kolab_id: 'globex-demo-r1', name: 'invitations', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'kolab', name: 'kolab', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'kolab', name: 'kolab-plan', kind: 'plan', layer: 'technical', parent_node_id: 'kolab-binding' },
+      { kolab_id: 'kolab', name: 'kolab-page', kind: 'prototype', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'kolab', name: 'kolab-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'kolab' },
+      { kolab_id: 'lab', name: 'lab-spec', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      // Of lab's two bindings, the plan's links deliver lab-api's alone: that is its binding.
+      { kolab_id: 'lab', name: 'lab-plan', kind: 'plan', layer: 'technical', parent_node_id: 'lab-api' },
+      { kolab_id: 'lab', name: 'lab-api', kind: 'technical_binding', layer: 'technical', parent_node_id: 'lab-spec' },
+      { kolab_id: 'lab', name: 'lab-ui', kind: 'technical_binding', layer: 'technical', parent_node_id: 'lab-spec' },
+      // An archived kolab's nodes are mapped too, and it stays archived.
+      { kolab_id: 'old', name: 'old-spec', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'old', name: 'old-plan', kind: 'plan', layer: 'technical', parent_node_id: 'old-binding' },
+      { kolab_id: 'old', name: 'old-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'old-spec' },
+    ]);
+    // No data lost: every other row is as it was, and each node differs only in its kind (wbs to plan) and its new parent.
+    expect(await konjirRows(db)).toStrictEqual(before);
+    const relabel = (n: Record<string, unknown>) => ({ ...n, kind: n.kind === 'wbs' ? 'plan' : n.kind });
+    expect((await db.query<Record<string, unknown>>(`select * from node order by id`)).rows.map(({ parent_node_id: _, ...n }) => n)).toStrictEqual(nodesBefore.map(relabel));
+    // The archived kolab still refuses every write.
+    expect(await rejection(db.query(`update node set title = 'x' where id = 'old-spec'`))).toMatch(/kolab old is archived/);
+  }, store);
+  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await TestKolab.open(store);
+  try {
+    // Kolab works on what was migrated: the mirror agents write the spec, its binding and its plan (D47's actors).
+    await kolab.grant('kolab', 'mirror-product', 'write', { layers: ['functional'] });
+    await kolab.grant('kolab', 'mirror-engineer', 'write', { layers: ['technical'] });
+    const pm = await kolab.openSession('mirror-product', 'product', { kolab: 'kolab' });
+    const eng = await kolab.openSession('mirror-engineer', 'engineer', { kolab: 'kolab' });
+    expect(await rejection(kolab.createNode(pm, 'functional_spec', 'A second spec', 'kolab-2'))).toMatch(/kolab kolab already holds its spec, kolab/);
+    expect(await rejection(kolab.createNode(eng, 'plan', 'A second plan', 'kolab-plan-2'))).toMatch(/binding kolab-binding already has its plan, kolab-plan/);
+    // A spec change flags the binding element that serves it, the work package that delivers that,
+    // and the prototype's screen that shows it (M4's done-when, D93).
+    await kolab.commit(pm, 'kolab', { elements: els({ TEN1: 'Konjir is one hosted service, at kolab.konjir.com.', KON1: 'A kolab holds exactly one functional spec.' }) });
+    const on = async (node: string) => (await marksOn(kolab, node)).map((m) => [m.element_id, m.reason]);
+    // The binding's committed version, and its version in review, which carries the same link.
+    expect((await marksOn(kolab, 'kolab-binding')).map((m) => [m.version_id, m.element_id, m.reason]).sort()).toStrictEqual([['b2', 'TEN-DATA', 'changed'], ['b3', 'TEN-DATA', 'changed']]);
+    expect(await on('kolab-plan')).toStrictEqual([['W1.3', 'upstream_dirty']]);
+    expect(await on('kolab-page')).toStrictEqual([['home', 'changed']]);
+    // The plan delivers the binding's elements, never the spec (KON6, D78).
+    const plan = (await kolab.latestCommitted('kolab-plan'))!.id;
+    expect(await rejection(kolab.link(eng, { kind: 'dependency', source: plan, sourceElement: 'W4.1', target: (await kolab.latestCommitted('kolab'))!.id, targetElement: 'KON1' })))
+      .toMatch(/kolab-plan is a plan: its work packages deliver elements of its own binding, never the spec/);
+    // The binding's version in review is as it was.
+    expect((await kolab.version('b3')).state).toBe('in_review');
+    // Listings and reads name each node's parent.
+    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => [n.name, n.kind, n.parent])).toStrictEqual([
+      ['kolab', 'functional_spec', null], ['kolab-plan', 'plan', 'kolab-binding'], ['kolab-page', 'prototype', null], ['kolab-binding', 'technical_binding', 'kolab'],
+    ]);
+    expect((await kolab.readNode(eng, 'kolab-plan')).parent).toBe('kolab-binding');
+  } finally { await kolab.close(); }
+});
+
+/** Migrates a fresh database to 0026, runs `seed`, then expects 0027 to stop with `refusal` and change nothing. */
+async function refuses0027(seed: string, refusal: RegExp) {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(seed);
+    const before = await konjirRows(db);
+    const nodes = (await db.query(`select * from node order by id`)).rows;
+    expect(await rejection(migrate(db))).toMatch(new RegExp(`0027_konstruct_kinds\\.sql failed: migration 0027: .*${refusal.source}`));
+    expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
+    expect(await konjirRows(db)).toStrictEqual(before);
+    expect((await db.query(`select * from node order by id`)).rows).toStrictEqual(nodes);
+  });
+}
+
+const BASE_0026 = `
+  insert into account(id, kind, name, created_by) values ('lee', 'user', 'Lee', 'admin');
+  insert into actor(id, name, created_by) values ('lee', 'Lee', 'admin');
+  insert into kolab(id, owner_id, title, created_by) values ('shop', 'lee', 'Shop', 'admin'), ('mall', 'lee', 'Mall', 'admin');`;
+
+test('0027 refuses, naming them, nodes that are a work_package or an implementation: neither is a kind any more (D77, KON5, KON7)', async () => {
+  await refuses0027(`${BASE_0026} ${N} ('wp1', 'wp1', 'work_package', 'technical', 'WP', 'shop', 'lee'), ('impl', 'impl', 'implementation', 'technical', 'I', 'mall', 'lee');`,
+    /a node's kind is now one of functional_spec, prototype, technical_binding or plan \(D77\).*These nodes have no kind to map to: mall\/impl \(implementation\), shop\/wp1 \(work_package\)\. Decide what each becomes before applying 0027/);
+});
+
+test('0027 refuses a kolab with more than one spec, naming them: it won\'t choose which is the spec (KON1)', async () => {
+  await refuses0027(`${BASE_0026} ${N} ('a', 'a', 'functional_spec', 'functional', 'A', 'shop', 'lee'), ('b', 'b', 'functional_spec', 'functional', 'B', 'shop', 'lee'),
+      ('c', 'c', 'functional_spec', 'functional', 'C', 'mall', 'lee');`,
+    /a kolab holds exactly one spec \(KON1, D77\), and these hold more: kolab shop: a, b\. Kolab won't choose which is the spec/);
+});
+
+test('0027 refuses a binding whose kolab holds no spec (D78)', async () => {
+  await refuses0027(`${BASE_0026} ${N} ('b', 'b', 'technical_binding', 'technical', 'B', 'shop', 'lee'), ('s', 's', 'functional_spec', 'functional', 'S', 'mall', 'lee');`,
+    /each binding names the spec it binds \(D78\), but these bindings' kolabs hold no spec: shop\/b\./);
+});
+
+test('0027 refuses a plan whose binding can\'t be told: no links and several bindings, none at all, or links into more than one (D78)', async () => {
+  const two = `${BASE_0026} ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('b1', 'b1', 'technical_binding', 'technical', 'B1', 'shop', 'lee'),
+      ('b2', 'b2', 'technical_binding', 'technical', 'B2', 'shop', 'lee'), ('w', 'w', 'wbs', 'technical', 'W', 'shop', 'lee');`;
+  await refuses0027(two, /each plan names the binding it plans \(D78\), and these plans' bindings can't be told: shop\/w\./);
+  await refuses0027(`${BASE_0026} ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('w', 'w', 'wbs', 'technical', 'W', 'shop', 'lee');`,
+    /these plans' bindings can't be told: shop\/w\./);
+  await refuses0027(`${two}
+    ${V} ('b1v', 'b1', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'), ('b2v', 'b2', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'),
+      ('wv', 'w', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee');
+    ${E} ${elRow('b1v', 'x', 0, 'X.')}, ${elRow('b2v', 'y', 0, 'Y.')}, ${elRow('wv', 'w1', 0, 'Build X.')}, ${elRow('wv', 'w2', 1, 'Build Y.')};
+    ${L} ${edgeRow('e1', 'dependency', 'wv', 'w1', 'b1v', 'x', 'X.', 'lee')}, ${edgeRow('e2', 'dependency', 'wv', 'w2', 'b2v', 'y', 'Y.', 'lee')};`,
+  /these plans' bindings can't be told: shop\/w\./);
+});
+
+test('0027 refuses two plans of one binding (KON5)', async () => {
+  await refuses0027(`${BASE_0026} ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('b', 'b', 'technical_binding', 'technical', 'B', 'shop', 'lee'),
+      ('w1', 'w1', 'wbs', 'technical', 'W1', 'shop', 'lee'), ('w2', 'w2', 'wbs', 'technical', 'W2', 'shop', 'lee');`,
+    /each binding has exactly one plan \(KON5, D77\), and these bindings would have more: shop\/b: w1, w2\./);
+});
+
+test('0027 refuses a live link outside its parent, a plan\'s into the spec or a binding\'s into another kolab\'s spec; a superseded version\'s is history (D78, KON6)', async () => {
+  const seed = `${BASE_0026}
+    ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('b', 'b', 'technical_binding', 'technical', 'B', 'shop', 'lee'),
+      ('w', 'w', 'wbs', 'technical', 'W', 'shop', 'lee'), ('m', 'm', 'functional_spec', 'functional', 'M', 'mall', 'lee');
+    ${V} ('sv', 's', 1, null, 'functional', 'committed', 'lee', 'product', 'lee'), ('bv', 'b', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'),
+      ('wv1', 'w', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'), ('wv2', 'w', 2, 'wv1', 'technical', 'committed', 'lee', 'engineer', 'lee'),
+      ('mv', 'm', 1, null, 'functional', 'committed', 'lee', 'product', 'lee');
+    ${E} ${elRow('sv', 'R1', 0, 'S runs.')}, ${elRow('bv', 'b1', 0, 'A table.')}, ${elRow('wv1', 'W1', 0, 'Build it.')}, ${elRow('wv2', 'W1', 0, 'Build it.')},
+      ${elRow('mv', 'M1', 0, 'M runs.')};
+    ${L} ${edgeRow('e-b', 'dependency', 'bv', 'b1', 'sv', 'R1', 'S runs.', 'lee')},
+      ${edgeRow('e-old', 'dependency', 'wv1', 'W1', 'sv', 'R1', 'S runs.', 'lee')},
+      ${edgeRow('e-w', 'dependency', 'wv2', 'W1', 'bv', 'b1', 'A table.', 'lee')}`;
+  // As it stands, it migrates: the plan's live version delivers the binding, and its superseded one's link into the spec is history.
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`${seed};`);
+    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+  });
+  // The plan's live version into the spec, or the binding's into another kolab's spec, stops it.
+  await refuses0027(`${seed}, ${edgeRow('e-bad', 'dependency', 'wv2', 'W1', 'sv', 'R1', 'S runs.', 'lee')};`,
+    /a plan's links deliver its own binding's elements, never the spec \(KON6, D78\).*These links don't: shop\/w@2#W1 -> shop\/s@1#R1\. Decide what each should link to/);
+  await refuses0027(`${seed}, ${edgeRow('e-bad', 'dependency', 'bv', 'b1', 'mv', 'M1', 'M runs.', 'lee')};`,
+    /These links don't: shop\/b@1#b1 -> mall\/m@1#M1\./);
+});
+
+test('0027 refuses a node whose layer isn\'t its kind\'s, naming it, rather than move it (KON8)', async () => {
+  await refuses0027(`${BASE_0026} ${N} ('s', 's', 'functional_spec', 'technical', 'S', 'shop', 'lee');`,
+    /a node's layer follows from its kind \(KON8, D77\), and these nodes' don't: shop\/s \(functional_spec in the technical layer\)/);
 });

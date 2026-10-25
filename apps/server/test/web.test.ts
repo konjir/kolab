@@ -394,7 +394,7 @@ test('replacing a draft claims it only while it is a draft: a "resubmit as it is
   await kolab.addActor('olga');
   await kolab.createKolab('other', { owner: 'olga' });
   const olga = await kolab.openSession('olga', 'product', { kolab: 'other' });
-  await kolab.createNode(olga, 'functional_spec', 'Secret', 'secret');
+  await kolab.createNode(olga, 'prototype', 'Secret', 'secret');
   await kolab.commit(olga, 'secret', { elements: els({ S1: 'Only olga knows.' }) });
   await kolab.grant('other', 'bob', 'read');
   const foreign = await returned({ target: (await kolab.latestCommitted('secret'))!.id, element: 'S1' });
@@ -633,7 +633,7 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   await kolab.draft(erin, 'secret', { elements: els({ S1: 'A draft only erin sees.' }) });
   await kolab.rule(erin, { address: 'kj:secret#S1', text: 'A ruling private to other.', effect: 'change_intent' });
   // A node with only a draft reads exactly as one that isn't there.
-  await kolab.createNode(erin, 'functional_spec', 'Acquire Foo Inc', 'acquisition-plan');
+  await kolab.createNode(erin, 'prototype', 'Acquire Foo Inc', 'acquisition-plan');
   await kolab.draft(erin, 'acquisition-plan', { elements: els({ A1: 'Buy Foo.' }) });
   const base = await serve(kolab);
   const alice = await signIn(base, product);
@@ -728,7 +728,7 @@ test('in the page: with nobody else able to review yet it says so; an engineer a
 test('every list the web API returns comes a page at a time: ?cursor= reads the next, ?limit= sets the size (W2.21)', async () => {
   const { kolab, product, engineer } = await specAndBinding();
   for (let i = 0; i < 4; i++) await kolab.raiseQuery(engineer, 'kj:orders#R2', `Question ${i}?`);
-  for (const name of ['a', 'b', 'c']) await kolab.createNode(product, 'functional_spec', name.toUpperCase(), name);
+  for (const name of ['a', 'b', 'c']) await kolab.createNode(product, 'prototype', name.toUpperCase(), name);
   const base = await serve(kolab);
   const { call } = await signIn(base, product);
   /** Every item of `key`, following next, and the calls it took. */
@@ -771,7 +771,7 @@ test('every list the web API returns comes a page at a time: ?cursor= reads the 
   expect(nul).toMatchObject({ status: 400, body: { message: expect.stringMatching(/^invalid cursor/) } });
   // Lineage reads each node's elements, so however many are asked for, a page holds at most 20.
   for (let i = 0; i < 21; i++) {
-    await kolab.createNode(product, 'functional_spec', `Part ${i}`, `part-${i}`);
+    await kolab.createNode(product, 'prototype', `Part ${i}`, `part-${i}`);
     await kolab.commit(product, `part-${i}`, { elements: els({ R1: `Part ${i}.` }) });
   }
   const lineage = await call<{ nodes: unknown[]; next: string | null }>('lineage?limit=200');

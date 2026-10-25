@@ -452,7 +452,8 @@ export class WebService {
     if (!KINDS.includes(b?.kind)) throw bad(`kind is one of ${KINDS.join(', ')}`);
     if (!b.title?.trim()) throw bad('give the node a title');
     if (!isNodeName(b.name ?? '')) throw bad('a node\'s name has no spaces and no "/", "@", "#" or "~"');
-    const id = await this.kolab.createNode(s, b.kind, b.title.trim(), b.name);
+    if (b.parent !== undefined && b.parent !== null && typeof b.parent !== 'string') throw bad('parent is the name of the node this one names: a binding\'s spec, a plan\'s binding');
+    const id = await this.kolab.createNode(s, b.kind, b.title.trim(), b.name, { parent: b.parent || undefined });
     return { node: (await this.kolab.node(id)).name };
   }
 
@@ -869,5 +870,5 @@ const mark = (m: MarkDetailRow): WebMark => ({
   question: m.question,
 });
 
-const summary = ({ name, kind, layer, title, latest, drafts, in_review }: { name: string; kind: WebNodeSummary['kind']; layer: Layer; title: string; latest: number | null; drafts: number; in_review: number }): WebNodeSummary =>
-  ({ name, kind, layer, title, latest: latest === null ? null : Number(latest), drafts: Number(drafts), in_review: Number(in_review) });
+const summary = ({ name, kind, layer, title, parent, latest, drafts, in_review }: { name: string; kind: WebNodeSummary['kind']; layer: Layer; title: string; parent?: string | null; latest: number | null; drafts: number; in_review: number }): WebNodeSummary =>
+  ({ name, kind, layer, title, ...(parent ? { parent } : {}), latest: latest === null ? null : Number(latest), drafts: Number(drafts), in_review: Number(in_review) });

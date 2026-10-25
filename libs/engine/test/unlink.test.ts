@@ -36,7 +36,7 @@ async function family(ctx: Ctx) {
   for (const [el, r] of [['b1', 'R1'], ['b2', 'R2'], ['b3', 'R3']]) {
     await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: el, target: s1, targetElement: r });
   }
-  await kolab.createNode(engineer, 'wbs', 'WBS', 'w');
+  await kolab.createNode(engineer, 'plan', 'WBS', 'w');
   const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
   await kolab.link(engineer, { kind: 'derivation', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   return { s1, b1, w1 };
@@ -158,6 +158,7 @@ test('only the draft\'s author removes links, only in a draft, only links it has
   await kolab.grant('other', 'alice', 'write', { layers: ['functional'] });
   await kolab.endSession(engineer);
   const there = await kolab.openSession('bob', 'engineer', { kolab: 'other' });
+  await kolab.db.query(`insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('os', 'os', 'functional_spec', 'functional', 'Other spec', 'other', 'admin')`);   // the spec ob binds (D78)
   await kolab.createNode(there, 'technical_binding', 'Other', 'ob');
   const elsewhere = await kolab.draft(there, 'ob', { elements: els({ o1: 'Something.' }) });
   expect(await rejection(kolab.unlink(erin, elsewhere, [{ sourceElement: 'o1', target: 'kj:spec#R3' }]))).toBe('Error: no node ob in kolab test');
@@ -222,9 +223,9 @@ test("a draft overtaken by Kolab's rebase is folded with its removals (CAS7)", a
   const { kolab, product } = ctx;
   await kolab.createNode(product, 'functional_spec', 'Glossary', 'g');
   const g1 = await kolab.commit(product, 'g', { elements: els({ G1: 'A cart holds items.' }) });
-  await kolab.createNode(product, 'functional_spec', 'Parent', 'p');
+  await kolab.createNode(product, 'prototype', 'Parent', 'p');
   const p1 = await kolab.commit(product, 'p', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
-  await kolab.createNode(product, 'functional_spec', 'Variant', 'v');
+  await kolab.createNode(product, 'prototype', 'Variant', 'v');
   const v1 = await kolab.commit(product, 'v', { parent: p1, deltas: [{ kind: 'add', element: 'A', text: 'The variant adds A.' }] });
   await kolab.link(product, { kind: 'dependency', source: v1, sourceElement: 'A', target: g1, targetElement: 'G1' });
 
@@ -268,11 +269,11 @@ test('a cascade stopped part way and run again removes the link and settles its 
   const product = await a.openSession('alice', 'product');
   await a.createNode(product, 'functional_spec', 'Glossary', 'g');
   const g1 = await a.commit(product, 'g', { elements: els({ G1: 'A cart holds items.', G2: 'An item has a price.' }) });
-  await a.createNode(product, 'functional_spec', 'Spec', 'v');
+  await a.createNode(product, 'prototype', 'Spec', 'v');
   const v1 = await a.commit(product, 'v', { elements: els({ E1: 'One.', E2: 'Two.' }) });
   await a.link(product, { kind: 'dependency', source: v1, sourceElement: 'E1', target: g1, targetElement: 'G1' });
   await a.link(product, { kind: 'dependency', source: v1, sourceElement: 'E2', target: g1, targetElement: 'G2' });
-  await a.createNode(product, 'functional_spec', 'Variant', 'vv');
+  await a.createNode(product, 'prototype', 'Variant', 'vv');
   await a.commit(product, 'vv', { parent: v1, deltas: [{ kind: 'add', element: 'X', text: 'The variant adds X.' }] });
   await a.commit(product, 'g', { elements: els({ G2: 'An item has a price.' }) });   // orphans v's E1 -> G1
   const [orphan] = await marksOn(a, 'v');
@@ -426,14 +427,14 @@ test('removing a link settles the transitive marks that reached its element, and
   // brief#X <- spec#R1 <- b#b1 <- w#w1, and spec#R2 <- b#b2.
   await kolab.createNode(product, 'functional_spec', 'Brief', 'brief');
   const br1 = await kolab.commit(product, 'brief', { elements: els({ X: 'Carts are kept a while.' }) });
-  await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
+  await kolab.createNode(product, 'prototype', 'Spec', 'spec');
   const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 30 days.', R2: 'Carts hold 50 items.' }) });
   await kolab.link(product, { kind: 'dependency', source: s1, sourceElement: 'R1', target: br1, targetElement: 'X' });
   await kolab.createNode(engineer, 'technical_binding', 'Binding', 'b');
   const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A nightly job expires carts.', b2: 'A check caps carts.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b2', target: s1, targetElement: 'R2' });
-  await kolab.createNode(engineer, 'wbs', 'WBS', 'w');
+  await kolab.createNode(engineer, 'plan', 'WBS', 'w');
   const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
   await kolab.link(engineer, { kind: 'derivation', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   await kolab.commit(product, 'brief', { elements: els({ X: 'Carts are kept a long while.' }) });
