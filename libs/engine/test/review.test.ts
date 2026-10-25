@@ -145,7 +145,7 @@ test('a rebase Kolab makes commits after structural checks only, with no review 
   const { kolab, product, dave } = await twoProductOwners();
   const parent = await kolab.createNode(product, 'functional_spec', 'Storefront', 'storefront');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ R1: 'Prices show in dollars.' }) });
-  const child = await kolab.createNode(dave, 'functional_spec', 'EU storefront', 'storefront-eu');
+  const child = await kolab.createNode(dave, 'prototype', 'EU storefront', 'storefront-eu');
   await commitReviewed(kolab, dave, product, child, { parent: p1, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
 
   const p2 = await kolab.draft(product, parent, { elements: els({ R1: 'Prices show in dollars.', R2: 'Carts persist.' }) });
@@ -180,7 +180,7 @@ test('a variant\'s version approved after Kolab\'s rebase overtook it is folded 
   const { kolab, product, dave } = await twoProductOwners();
   const parent = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ E1: 'one' }) });
-  const child = await kolab.createNode(product, 'functional_spec', 'C', 'C');
+  const child = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, child, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   const draft = await kolab.draft(product, child, { deltas: [{ kind: 'add', element: 'Y', text: 'y' }] });
   expect((await kolab.review(draft)).in_review).toBe(true);
@@ -215,7 +215,7 @@ test('an override resolution that waits in review settles its mark and sets prec
   const { kolab, product, dave } = await twoProductOwners();
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, P, { elements: els({ E3: 'Timeout 15.' }) });
-  const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
+  const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, C, { parent: p1, deltas: [{ kind: 'override', element: 'E3', text: 'Timeout 30.' }] });
   await commitReviewed(kolab, product, dave, P, { elements: els({ E3: 'Timeout 10.' }) });
   const [mark] = (await marksOn(kolab, C)).filter((m) => m.reason === 'override_stale');
@@ -273,22 +273,21 @@ test('an agent can read review requests but never write one, nor move a version 
 
 // ---- PR #26 review -------------------------------------------------------------------
 
-test('a plan version (wbs, work_package) commits after structural checks only, with no review requests (VER3, PLN2, D26)', async () => {
-  const { kolab, engineer } = await setup();
+test('a plan version commits after structural checks only, with no review requests (VER3, PLN2, D26)', async () => {
+  const { kolab, product, engineer } = await setup();
   await people(kolab, 'erin', { layers: ['technical'] });
   await kolab.openSession('erin', 'engineer');   // another engineer: a reviewer of bindings, not of plans
-  for (const kind of ['wbs', 'work_package'] as const) {
-    const plan = await kolab.createNode(engineer, kind, 'Plan', `plan-${kind}`);
-    const v = await kolab.draft(engineer, plan, { elements: els({ W1: 'Do a thing.' }) });
-    const r = await kolab.review(v);
-    expect(r).toMatchObject({ ok: true, version: v });
-    expect(r.in_review).toBeUndefined();
-    expect(r.unreviewed).toBeUndefined();
-    expect(r.note).toMatch(/commits after structural checks, without review \(PLN2\)/);
-  }
+  await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
+  const b = await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
+  const plan = await kolab.createNode(engineer, 'plan', 'Plan', 'b-plan');
+  const v = await kolab.draft(engineer, plan, { elements: els({ W1: 'Do a thing.' }) });
+  const r = await kolab.review(v);
+  expect(r).toMatchObject({ ok: true, version: v });
+  expect(r.in_review).toBeUndefined();
+  expect(r.unreviewed).toBeUndefined();
+  expect(r.note).toMatch(/commits after structural checks, without review \(PLN2\)/);
   expect((await kolab.db.query(`select 1 from review_request`)).rows).toStrictEqual([]);
   // A binding still waits for erin.
-  const b = await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
   expect((await kolab.review(await kolab.draft(engineer, b, { elements: els({ b1: 'A queue.' }) }))).reviewers).toStrictEqual(['erin']);
 });
 
@@ -296,7 +295,7 @@ test('a version approved and then folded ends settled as folded into the fold, w
   const { kolab, product, dave } = await twoProductOwners();
   const parent = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ E1: 'one' }) });
-  const child = await kolab.createNode(product, 'functional_spec', 'C', 'C');
+  const child = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, child, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   const draft = await kolab.draft(product, child, { deltas: [{ kind: 'add', element: 'Y', text: 'y' }] });
   await kolab.review(draft);
@@ -321,7 +320,7 @@ test('an override resolution folded at approval still sets precedent and settles
   const { kolab, product, dave } = await twoProductOwners();
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, P, { elements: els({ E3: 'Timeout 15.', E4: 'a' }) });
-  const C = await kolab.createNode(product, 'functional_spec', 'C', 'C');
+  const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, C, { parent: p1, deltas: [{ kind: 'override', element: 'E3', text: 'Timeout 30.' }] });
   await commitReviewed(kolab, product, dave, P, { elements: els({ E3: 'Timeout 10.', E4: 'a' }) });
   const [mark] = (await marksOn(kolab, C)).filter((m) => m.reason === 'override_stale');
@@ -465,7 +464,7 @@ test('a ruling overtaken by Kolab\'s rebase while its checks run is folded, and 
   const mirror = await kolab.openSession('mirror-product', 'product');   // a reviewer of alice's versions
   const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, mirror, P, { elements: els({ E1: 'one' }) });
-  const V0 = await kolab.createNode(product, 'functional_spec', 'V0', 'V0');
+  const V0 = await kolab.createNode(product, 'prototype', 'V0', 'V0');
   await commitReviewed(kolab, product, mirror, V0, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   // While the ruling's checks run, the parent commits, and Kolab's rebase of V0 overtakes it.
   during = async () => { await commitReviewed(kolab, product, mirror, P, { elements: els({ E1: 'one, revised' }) }); };

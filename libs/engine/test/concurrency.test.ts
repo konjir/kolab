@@ -27,7 +27,7 @@ async function family(kolab: Kolab, s: string, roots: number, children = 0) {
   const ids: string[] = [];
   const add = async (id: string, parent: string) => {
     ids.push(id);
-    await kolab.createNode(s, 'functional_spec', id, id);
+    await kolab.createNode(s, 'prototype', id, id);
     return kolab.commit(s, id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says E2 its own way.` }] });
   };
   for (let r = 0; r < roots; r++) {
@@ -398,7 +398,7 @@ test('an agent may only build a draft on a committed version of its own node', a
   const { kolab, product } = await setup();
   const A = await kolab.createNode(product, 'functional_spec', 'A', 'A');
   const a1 = await kolab.commit(product, A, { elements: els({ E: 'a' }) });
-  const B = await kolab.createNode(product, 'functional_spec', 'B', 'B');
+  const B = await kolab.createNode(product, 'prototype', 'B', 'B');
   await kolab.commit(product, B, { elements: els({ F: 'b' }) });
   const insert = (base: string) => kolab.db.transaction(async (tx) => {
     await tx.exec('set local role kj_agent');

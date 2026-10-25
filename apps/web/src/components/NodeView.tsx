@@ -8,9 +8,10 @@ import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 import { More, useMore } from './Pages.js';
 
 const KIND_WORD: Record<string, string> = {
-  functional_spec: 'Functional spec', prototype: 'Prototype', technical_binding: 'Technical binding',
-  wbs: 'Plan', work_package: 'Work package', implementation: 'Implementation',
+  functional_spec: 'Functional spec', prototype: 'Prototype', technical_binding: 'Technical binding', plan: 'Plan',
 };
+/** What a node is to the node it names as its parent (D78). */
+const PARENT_WORD: Record<string, string> = { technical_binding: 'binds', plan: 'plans' };
 
 /**
  * Edits not yet submitted: kept in the page, per node, until submitted or discarded. `replaces` is
@@ -194,6 +195,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       <section aria-labelledby="doc-title">
         <div className="doc-head">
           <span className="kind">{KIND_WORD[view.node.kind] ?? view.node.kind}</span>
+          {view.node.parent && <span className="kind">{PARENT_WORD[view.node.kind] ?? 'of'} <Addr>{foreign ? `kj:${view.kolab}/${view.node.parent}` : addr(view.node.parent)}</Addr></span>}
           <h2 id="doc-title">{view.node.title}</h2>
           <Addr>{foreign ? `kj:${view.kolab}/${name}${reading ? `@${reading.seq}` : ''}` : addr(name, reading?.seq)}</Addr>
           <div className="doc-meta">

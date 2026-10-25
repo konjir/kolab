@@ -35,6 +35,8 @@ export interface WebKolab {
 
 export interface WebNodeSummary {
   name: string; kind: Kind; layer: Layer; title: string;
+  /** The node it names as its parent (D78): a binding's spec, a plan's binding. Absent for a spec or a prototype. */
+  parent?: string;
   /** The latest committed version's number, or null before the first commit. */
   latest: number | null; drafts: number; in_review: number;
 }
@@ -247,7 +249,8 @@ export interface WebOutcome {
 // ---- requests ----------------------------------------------------------------
 
 export interface WebSignIn { token: string }
-export interface WebCreateNode { kind: Kind; title: string; name: string }
+/** A new node; `parent` names a binding's spec or a plan's binding (D78), defaulting to the kolab's only one. */
+export interface WebCreateNode { kind: Kind; title: string; name: string; parent?: string }
 /** A change to one node: elements edited, added or removed, against its latest committed version. */
 export interface WebSubmit {
   /**

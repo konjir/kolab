@@ -41,7 +41,7 @@ async function build(kolab: TestKolab) {
   const spec = await kolab.createNode(sb, 'functional_spec', 'Spec', `spec-${r}`);
   const u1 = await kolab.commit(sb, spec, { elements: els({ R1: `${r} text 0`, R2: `${r} fixed` }) });
   // alice's link and fork; carol (a second writer in down) reviews them.
-  const dep = await kolab.createNode(sa, 'functional_spec', 'Dep', `dep-${r}`);
+  const dep = await kolab.createNode(sa, 'prototype', 'Dep', `dep-${r}`);
   const d1v = await kolab.draft(sa, dep, { elements: els({ D1: `${r} relies on R1` }) });
   await kolab.review(d1v);
   await kolab.recordReview(sc, d1v, { verdict: 'approve' });

@@ -132,10 +132,23 @@ export interface AuditEvent { id: number; action: AuditAction; kolab: string | n
 export interface Author { actor: string; kind: ActorKind | 'system'; owner: string | null; role: string }
 export const LAYERS = ['functional', 'technical'] as const;
 export type Layer = typeof LAYERS[number];
-export const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'wbs', 'work_package', 'implementation'] as const;
+/**
+ * A node's kind, fixed when it is made and checked by the database (D77; migration 0027's
+ * node_kind_check): a kolab's one spec (KON1), its prototypes (KON2, D79), its bindings (KON4) and
+ * each binding's one plan (KON5), whose elements are its work packages. Implementation is a
+ * repository, not a node (KON7).
+ */
+export const KINDS = ['functional_spec', 'prototype', 'technical_binding', 'plan'] as const;
 export type Kind = typeof KINDS[number];
-/** A binding's plan and its work packages: a version of one commits after structural checks, without review (VER3, PLN2, D26). */
-export const PLAN_KINDS: readonly Kind[] = ['wbs', 'work_package'];
+/** A binding's plan: a version of one commits after structural checks, without review (VER3, PLN2, D26). */
+export const PLAN_KINDS: readonly Kind[] = ['plan'];
+/**
+ * The kind of node each kind names as its parent, set when it is made and never changed (D78): a
+ * binding names its kolab's spec, and a plan its binding. A spec and a prototype name none.
+ */
+export const PARENT_KIND: Partial<Record<Kind, Kind>> = { technical_binding: 'functional_spec', plan: 'technical_binding' };
+/** What each kind is called in prose. */
+export const KIND_WORDS: Record<Kind, string> = { functional_spec: 'spec', prototype: 'prototype', technical_binding: 'binding', plan: 'plan' };
 export const DELTA_KINDS = ['add', 'override', 'remove'] as const;
 export type DeltaKind = typeof DELTA_KINDS[number];
 export const EDGE_KINDS = ['dependency', 'derivation', 'equivalence'] as const;
@@ -205,9 +218,7 @@ export const LAYER_OF_KIND: Record<Kind, Layer> = {
   functional_spec: 'functional',
   prototype: 'functional',
   technical_binding: 'technical',
-  wbs: 'technical',
-  work_package: 'technical',
-  implementation: 'technical',
+  plan: 'technical',
 };
 export const LAYER_OF_ROLE: Record<Role, Layer> = { product: 'functional', engineer: 'technical' };
 /** The role that writes a layer. */

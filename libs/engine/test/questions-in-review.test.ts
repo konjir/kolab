@@ -132,9 +132,9 @@ test('a version in review rejected as stale hands its questions on too', async (
 
 test('a version in review that Kolab folds onto its rebase takes its questions to the fold', async () => {
   const { kolab, product, dave, agent } = await specInReview();
-  const parent = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const parent = await kolab.createNode(product, 'prototype', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ E1: 'one' }) });
-  const child = await kolab.createNode(product, 'functional_spec', 'C', 'C');
+  const child = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, child, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
   const draft = await kolab.draft(product, child, { deltas: [{ kind: 'add', element: 'Y', text: 'y' }] });
   await kolab.review(draft);

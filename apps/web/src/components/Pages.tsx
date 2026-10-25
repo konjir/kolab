@@ -285,10 +285,18 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
   const [kind, setKind] = useState<Kind>(overview.me.layer === 'functional' ? 'functional_spec' : 'technical_binding');
   const [title, setTitle] = useState('');
   const [name, setName] = useState('');
-  const kinds = KINDS.filter((k) => LAYER_OF_KIND[k] === overview.me.layer);
+  // A kolab holds one spec (KON1, D77): once it has one, a product session makes prototypes.
+  const hasSpec = overview.nodes.some((n) => n.kind === 'functional_spec');
+  const kinds = KINDS.filter((k) => LAYER_OF_KIND[k] === overview.me.layer && !(k === 'functional_spec' && hasSpec));
+  const shown = kinds.includes(kind) ? kind : kinds[0];
+  // A plan names the binding it plans (D78), one plan per binding (KON5): the bindings without one.
+  const planned = new Set(overview.nodes.filter((n) => n.kind === 'plan').map((n) => n.parent));
+  const unplanned = overview.nodes.filter((n) => n.kind === 'technical_binding' && !planned.has(n.name)).map((n) => n.name);
+  const [parent, setParent] = useState('');
   const create = async (e: FormEvent) => {
     e.preventDefault();
-    if (await act.run(() => api('nodes', { kind, title, name }), `Created ${addr(name)}`)) { onCreated(name); setTitle(''); setName(''); }
+    const of = shown === 'plan' ? (parent || unplanned[0]) : undefined;
+    if (await act.run(() => api('nodes', { kind: shown, title, name, ...(of ? { parent: of } : {}) }), `Created ${addr(name)}`)) { onCreated(name); setTitle(''); setName(''); setParent(''); }
   };
   return (
     <>
@@ -328,7 +336,11 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
           <p className="why-not">Your role writes the {overview.me.layer} layer. Its name is its address: <span className="addr">kj:{name || 'name'}</span>.</p>
           <form onSubmit={create}>
             <div className="field"><label htmlFor="nKind">Kind</label>
-              <select id="nKind" value={kind} onChange={(e) => setKind(e.target.value as Kind)}>{kinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}</select></div>
+              <select id="nKind" value={shown} onChange={(e) => setKind(e.target.value as Kind)}>{kinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}</select>
+              {shown === 'technical_binding' && <span className="hint">It binds this kolab’s spec{hasSpec ? '' : ', which it needs first'}.</span>}</div>
+            {shown === 'plan' && <div className="field"><label htmlFor="nParent">Plans the binding</label>
+              <select id="nParent" value={parent || unplanned[0] || ''} onChange={(e) => setParent(e.target.value)}>{unplanned.map((b) => <option key={b} value={b}>{b}</option>)}</select>
+              <span className="hint">Each binding has one plan, whose elements are its work packages.</span></div>}
             <div className="field"><label htmlFor="nTitle">Title</label><input id="nTitle" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Checkout" /></div>
             <div className="field"><label htmlFor="nName">Name</label><input id="nName" value={name} spellCheck={false} onChange={(e) => setName(e.target.value)} placeholder="checkout" />
               <span className="hint">No spaces, and no “/”, “@”, “#” or “~”. Unique in this kolab.</span></div>

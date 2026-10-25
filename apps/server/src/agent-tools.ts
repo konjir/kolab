@@ -50,7 +50,12 @@ const listQueries = z.object({
   node: node.optional().describe('Only those raised on this node of your kolab'),
   ...paging,
 });
-const createNode = z.object({ kind: z.enum(KINDS), title: z.string(), id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.') });
+const createNode = z.object({
+  kind: z.enum(KINDS).describe('functional_spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. technical_binding: how the spec is built on one stack; it names the spec. plan: a binding\'s one plan, its elements the work packages; it names the binding'),
+  title: z.string(),
+  id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.'),
+  parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a technical_binding, the spec it binds (the default: your kolab\'s one spec); for a plan, the binding it plans (the default when your kolab has one binding). A spec and a prototype take none.'),
+});
 const draft = z.object({
   node,
   elements: z.array(elementInput).optional(),
@@ -147,7 +152,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_nodes',
-    description: `List the specs, bindings, WBS, work packages and implementations in your kolab, with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again. By kind, then name.${PAGED}`,
+    description: `List the nodes in your kolab: its spec, its prototypes, its bindings (parent: the spec each binds) and their plans (parent: the binding each plans), with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again. By kind, then name.${PAGED}`,
     schema: listNodes,
     annotations: { readOnlyHint: true },
   })
@@ -155,8 +160,8 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       const { items, next } = await this.kolab.nodesPage(await this.kolab.sessionKolab(s), kind, { cursor, limit });
       return {
-        nodes: items.map(({ name, kind: k, layer, title, latest, drafts, in_review, rebase_pending, rebase_dead }) => ({
-          id: name, kind: k, layer, title, latest, drafts, in_review, ...(rebase_pending ? { rebase_pending } : {}), ...(rebase_dead ? { rebase_dead } : {}),
+        nodes: items.map(({ name, kind: k, layer, title, parent, latest, drafts, in_review, rebase_pending, rebase_dead }) => ({
+          id: name, kind: k, layer, title, ...(parent ? { parent } : {}), latest, drafts, in_review, ...(rebase_pending ? { rebase_pending } : {}), ...(rebase_dead ? { rebase_dead } : {}),
         })),
         next,
       };
@@ -224,7 +229,10 @@ export class AgentTools {
       const open = by(cases.map(({ case: id, on, question, positions, next }) => ({ case: id, on, question, positions: positions.length, next })));
       const at = (element?: string) => formatAddress({ kolab: n.kolab_id, node: n.name, version: row.seq, element }, { from: here });
       return {
-        node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
+        node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, kind: n.kind,
+        // The node it names as its parent (D78), in its own kolab: a binding's spec, a plan's binding.
+        ...(read.parent ? { parent: n.kolab_id === here ? read.parent : `${n.kolab_id}/${read.parent}` } : {}),
+        version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
         // Who made the node (W2.20), for a reader in its own kolab only (D49, D58); null for one
         // made before Kolab recorded it.
         ...('createdBy' in read ? { node_created_by: read.createdBy ?? null } : {}),
@@ -296,12 +304,16 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_node',
-    description: 'Create a node in your kolab. Its kind fixes its layer: functional_spec and prototype are functional; the rest are technical. Its name (id) is unique in your kolab; other kolabs may use the same one.',
+    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: functional_spec and prototype are functional; technical_binding and plan are technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds, and each plan the binding it plans (parent, set once), and a binding has exactly one plan. A plan\'s links deliver its own binding\'s elements, never the spec; a binding\'s links serve its own spec. Its name (id) is unique in your kolab; other kolabs may use the same one.',
     schema: createNode,
     annotations: { readOnlyHint: false, idempotentHint: false },
   })
-  createNode({ kind, title, id }: z.infer<typeof createNode>, context?: McpToolContext) {
-    return asAgent(context, async (s) => ({ node: (await this.kolab.node(await this.kolab.createNode(s, kind, title, id))).name }));
+  createNode({ kind, title, id, parent }: z.infer<typeof createNode>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const n = await this.kolab.node(await this.kolab.createNode(s, kind, title, id, { parent }));
+      // The parent it names (D78), which Kolab chose when it was the kolab's only one.
+      return { node: n.name, ...(n.parent_node_id ? { parent: (await this.kolab.node(n.parent_node_id)).name } : {}) };
+    });
   }
 
   @McpTool({

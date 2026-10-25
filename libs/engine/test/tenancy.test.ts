@@ -280,7 +280,7 @@ test('precedent is per kolab: two kolabs with the same fingerprints never share 
     const s = await kolab.openSession(person, 'product');
     await kolab.createNode(s, 'functional_spec', 'Base', `${prefix}-base`);
     const base = await kolab.commit(s, `${prefix}-base`, { elements: els({ R1: 'Prices show in dollars.' }) });
-    await kolab.createNode(s, 'functional_spec', 'Variant', `${prefix}-eu`);
+    await kolab.createNode(s, 'prototype', 'Variant', `${prefix}-eu`);
     await kolab.commit(s, `${prefix}-eu`, { parent: base, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
     await kolab.commit(s, `${prefix}-base`, { elements: els({ R1: 'Prices show in dollars, with tax.' }) });
     return s;
@@ -373,7 +373,7 @@ test("submitting a draft needs Write on its layer, and a draft whose author lost
 
 test("a node name another kolab has is free here, and the name taken here is refused naming only this kolab (W1.4)", async () => {
   const { kolab, alice, bob } = await twoAccounts();
-  expect(await kolab.createNode(bob, 'functional_spec', 'X', 'orders-spec')).toMatch(/^~[0-9A-Z]{26}$/);
+  expect(await kolab.createNode(bob, 'prototype', 'X', 'orders-spec')).toMatch(/^~[0-9A-Z]{26}$/);
   expect(await rejection(kolab.createNode(alice, 'functional_spec', 'X', 'orders-spec'))).toBe('GateError: the node name orders-spec is taken in kolab orders; choose another');
   expect((await kolab.listNodes(undefined, 'billing')).map((n) => n.name)).toStrictEqual(['billing-spec', 'orders-spec']);
 });

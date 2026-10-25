@@ -284,7 +284,7 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
   await call(alice, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Orders ship within a day.' }, { id: 'R2', text: 'Invoices follow billing.' }] });
   expect(await call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:billing/checkout#R1' })).toMatchObject({ edge: expect.any(String) });
   expect(await rejection(call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:shop/checkout#R1' }))).toMatch(/no node checkout in kolab shop/);
-  await call(alice, 'create_node', { kind: 'functional_spec', title: 'Billing EU', id: 'billing-eu' });
+  await call(alice, 'create_node', { kind: 'prototype', title: 'Billing EU', id: 'billing-eu' });   // orders holds its one spec already (KON1)
   expect(await call(alice, 'draft', { node: 'billing-eu', parent: 'kj:billing/checkout@2', deltas: [{ kind: 'override', element: 'R1', text: 'Invoices are sent weekly, in euros.' }] }))
     .toMatchObject({ node: 'billing-eu', version: 1 });
   expect(await rejection(call(alice, 'ask', { address: 'kj:billing/checkout#R1', question: 'Why weekly?' }))).toMatch(/asking across kolabs isn't supported yet/);

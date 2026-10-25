@@ -29,7 +29,7 @@ async function family(opts: { store?: Store; checks?: Checks; reviewers?: boolea
   };
   await k.createNode(alice, 'functional_spec', 'P', 'P');
   const p1 = (await commit('P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) })).version;
-  await k.createNode(alice, 'functional_spec', 'V', 'V');
+  await k.createNode(alice, 'prototype', 'V', 'V');
   await commit('V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
   return { k, alice, dave, commit };
 }
@@ -208,9 +208,9 @@ test('a write that fails throws its own error, even when the drain after it fail
   const p1 = await writer.commit(alice, 'P', parentRev(1));
   const ids = ['V0', 'V1', 'V2', 'V3'];
   for (const id of ids) {
-    await writer.createNode(alice, 'functional_spec', id, id);
+    await writer.createNode(alice, 'prototype', id, id);
     const v = await writer.commit(alice, id, { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: `${id} says two its way.` }] });
-    await writer.createNode(alice, 'functional_spec', `${id}.0`, `${id}.0`);
+    await writer.createNode(alice, 'prototype', `${id}.0`, `${id}.0`);
     await writer.commit(alice, `${id}.0`, { parent: v, deltas: [{ kind: 'add', element: 'C', text: `${id}.0 adds C.` }] });
   }
   await worker.listen();

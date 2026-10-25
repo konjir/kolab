@@ -19,9 +19,9 @@ async function family() {
   const { kolab, product } = ctx;
   const parent = await kolab.createNode(product, 'functional_spec', 'Storefront', 'P');
   const p1 = await kolab.commit(product, parent, { elements: els(PARENT_V1) });
-  const child = await kolab.createNode(product, 'functional_spec', 'Storefront for Acme', 'C');
+  const child = await kolab.createNode(product, 'prototype', 'Storefront for Acme', 'C');
   await kolab.commit(product, child, { parent: p1, deltas: CHILD_DELTAS });
-  const sibling = await kolab.createNode(product, 'functional_spec', 'Storefront for Globex', 'G');
+  const sibling = await kolab.createNode(product, 'prototype', 'Storefront for Globex', 'G');
   await kolab.commit(product, sibling, {
     parent: p1, deltas: [{ kind: 'override', element: 'E3', text: 'Session timeout is 30 minutes.' }],
   });
@@ -113,7 +113,7 @@ test('a rebase Kolab makes commits after structural checks only, without review,
   const dave = await kolab.openSession('dave', 'product');   // a reviewer for alice's versions
   const parent = await kolab.createNode(product, 'functional_spec', 'Theme', 'Q');
   const q1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ A1: 'Header is blue.' }) });
-  const child = await kolab.createNode(product, 'functional_spec', 'Theme for Acme', 'QC');
+  const child = await kolab.createNode(product, 'prototype', 'Theme for Acme', 'QC');
   const c1 = await commitReviewed(kolab, product, dave, child, { parent: q1, deltas: [{ kind: 'override', element: 'A1', text: 'Header is green.' }] });
   expect(reviewed).toBe(2);
 
@@ -137,7 +137,7 @@ test('a rebase that fails the structural checks leaves its variant a rebase_fail
   const { kolab, product } = await setup();
   const parent = await kolab.createNode(product, 'functional_spec', 'Theme', 'Q');
   const q1 = await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.' }) });
-  const child = await kolab.createNode(product, 'functional_spec', 'Theme for Acme', 'QC');
+  const child = await kolab.createNode(product, 'prototype', 'Theme for Acme', 'QC');
   const c1 = await kolab.commit(product, child, { parent: q1, deltas: [{ kind: 'override', element: 'A1', text: 'Header is green.' }] });
   // The parent adds, word for word, the text the child overrides A1 with.
   await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.', A2: 'Header is green.' }) });
@@ -151,7 +151,7 @@ test('a rebase that fails the structural checks leaves its variant a rebase_fail
 test('resolving an override checks who may resolve before telling what the mark is: a Read-only session and another kolab\'s learn nothing of it', async () => {
   const { kolab, product, parent, child } = await family();
   const p1 = (await kolab.latestCommitted(parent))!.id;
-  const d1 = await kolab.commit(product, await kolab.createNode(product, 'functional_spec', 'Docs', 'D'), { elements: els({ D1: 'Sessions time out.' }) });
+  const d1 = await kolab.commit(product, await kolab.createNode(product, 'prototype', 'Docs', 'D'), { elements: els({ D1: 'Sessions time out.' }) });
   await kolab.link(product, { kind: 'dependency', source: d1, sourceElement: 'D1', target: p1, targetElement: 'E3' });
   await kolab.commit(product, parent, { elements: els({ ...PARENT_V1, E3: 'Session timeout is 10 minutes.' }) });
   const childV = (await kolab.latestCommitted(child))!.id;
