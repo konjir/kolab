@@ -260,7 +260,7 @@ function main() {
     `Priya's drafting agent writes "Team invitations" for Acme Workspace: two sections, six requirements, each with`,
     'a stable ID. Its first draft slips: R3 says how expiry is built, not what the person sees.',
   ]);
-  k(A.pm, 'create_node', { kind: 'functional_spec', id: SPEC, title: 'Team invitations' });
+  k(A.pm, 'create_node', { kind: 'spec', id: SPEC, title: 'Team invitations' });
   const v1 = k(A.pm, 'draft', { node: SPEC, elements: spec({ R3: 'An invitation expires 7 days after it is sent: a nightly cron job deletes expired rows from the invitations table.' }) });
   const s1 = k(A.pm, 'submit_for_review', { node: SPEC, version: v1.version });
   say(`${s1.in_review} is in review; review requests went to ${(s1.reviewers ?? []).join(', ')}`);
@@ -294,7 +294,7 @@ function main() {
   check(ap.ok && ap.committed, 'one approval from another agent of the same person commits the spec');
 
   step("Roles are enforced by Kolab, not by the agent's harness", 'ROL2, ROL5', []);
-  refused(A.pm, 'create_node', { kind: 'technical_binding', id: 'pm-binding', title: 'A binding by product' }, 'a product session cannot write the technical layer');
+  refused(A.pm, 'create_node', { kind: 'binding', id: 'pm-binding', title: 'A binding by product' }, 'a product session cannot write the technical layer');
   refused(A.eng, 'draft', { node: SPEC, deltas: [{ kind: 'override', element: 'R6', text: 'A Free workspace has unlimited members.' }] }, 'an engineer session cannot change behavior');
 
   // ---- 3. the binding
@@ -310,7 +310,7 @@ function main() {
     'Each binding element links to the requirement it serves; b4 links to the exact words "no longer valid" in R5',
     '(a quote with context, not a whole element). Links pin the committed version and a fingerprint of their target.',
   ]);
-  k(A.eng, 'create_node', { kind: 'technical_binding', id: BINDING, title: 'Team invitations on Node, Postgres and the mail queue' });
+  k(A.eng, 'create_node', { kind: 'binding', id: BINDING, title: 'Team invitations on Node, Postgres and the mail queue' });
   const span = (el, exact, prefix, suffix) => `kj:${SPEC}@${specV}#${el}~q(${JSON.stringify({ exact, prefix, suffix })})`;
   const bd = k(A.eng, 'draft', {
     node: BINDING, elements: binding(), links: [
@@ -437,7 +437,7 @@ function main() {
   state.sessions.push({ actor: A.globex.name, token: A.globex.token });
   save();
   refused(admin, 'admin_add_kolab', { name: KOLAB, owner: GLOBEX }, 'a kolab name is unique across all of Konjir');
-  k(A.globex, 'create_node', { kind: 'functional_spec', id: SPEC, title: 'Globex invitations' });
+  k(A.globex, 'create_node', { kind: 'spec', id: SPEC, title: 'Globex invitations' });
   const gd = k(A.globex, 'draft', { node: SPEC, elements: [{ id: 'G1', text: 'A Globex manager can invite a contractor for a fixed number of days.' }] });
   const gs = k(A.globex, 'submit_for_review', { node: SPEC, version: gd.version });
   say(`committed ${gs.committed} in ${GKOLAB}${gs.unreviewed ? ', unreviewed: no one else at Globex holds Write on the layer' : ''}`);

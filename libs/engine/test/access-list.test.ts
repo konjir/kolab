@@ -268,10 +268,10 @@ test('revoking Read marks the person\'s links and forks into the kolab access_lo
   await kolab.createKolab('billing', { owner: 'bob' });
   const alice = await kolab.openSession('alice', 'product', { kolab: 'orders' });
   const bob = await kolab.openSession('bob', 'product', { kolab: 'billing' });
-  await kolab.createNode(bob, 'functional_spec', 'Checkout', 'checkout');
+  await kolab.createNode(bob, 'spec', 'Checkout', 'checkout');
   await kolab.commit(bob, 'checkout', { elements: els({ R1: 'Invoices are sent monthly.' }) });
   await kolab.grant('billing', 'alice', 'read');
-  await kolab.createNode(alice, 'functional_spec', 'Orders', 'orders-spec');
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
   const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
   const t = await kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking', across: true });
   await kolab.link(alice, { kind: 'dependency', source: o1, sourceElement: 'O1', target: t.id, targetElement: 'R1' });

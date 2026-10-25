@@ -27,7 +27,7 @@ async function family(opts: { store?: Store; checks?: Checks; reviewers?: boolea
     if (!done.ok) throw new Error(`expected ${node} to commit: ${done.note ?? ''}`);
     return done;
   };
-  await k.createNode(alice, 'functional_spec', 'P', 'P');
+  await k.createNode(alice, 'spec', 'P', 'P');
   const p1 = (await commit('P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) })).version;
   await k.createNode(alice, 'prototype', 'V', 'V');
   await commit('V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
@@ -204,7 +204,7 @@ test('a write that fails throws its own error, even when the drain after it fail
   const writer = await openKolab({ ...store, queued: true });
   await people(writer, 'alice', { layers: ['functional'] });
   const alice = await writer.openSession('alice', 'product');
-  await writer.createNode(alice, 'functional_spec', 'P', 'P');
+  await writer.createNode(alice, 'spec', 'P', 'P');
   const p1 = await writer.commit(alice, 'P', parentRev(1));
   const ids = ['V0', 'V1', 'V2', 'V3'];
   for (const id of ids) {

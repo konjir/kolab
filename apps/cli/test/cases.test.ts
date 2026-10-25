@@ -26,10 +26,10 @@ test('over MCP, a case file is opened, argued and ruled; the ruling reaches the 
   // Lee, a person, owns the spec; an engineer the binding. Each is alone on a layer, so commits need no review.
   const lee = await session('lee', 'product');
   const eng = await session('lee-eng', 'engineer');
-  await call(lee, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(lee, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   await call(lee, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes within 2 seconds of payment confirming.' }] });
   await call(lee, 'submit_for_review', { node: 'checkout', version: 1 });
-  await call(eng, 'create_node', { kind: 'technical_binding', title: 'Checkout on Postgres', id: 'checkout-pg' });
+  await call(eng, 'create_node', { kind: 'binding', title: 'Checkout on Postgres', id: 'checkout-pg' });
   await call(eng, 'draft', { node: 'checkout-pg', elements: [{ id: 'b1', text: 'The provider confirms in 3 to 5 seconds.' }] });
   await call(eng, 'submit_for_review', { node: 'checkout-pg', version: 1 });
   const pm = await session('lee-pm', 'product', 'lee');
@@ -101,7 +101,7 @@ test('a reader outside a kolab gets none of the questions its marks raised, over
     return { client, token };
   };
   const erin = await open('erin', 'other');
-  await call(erin.client, 'create_node', { kind: 'functional_spec', title: 'Secret', id: 'secret' });
+  await call(erin.client, 'create_node', { kind: 'spec', title: 'Secret', id: 'secret' });
   await call(erin.client, 'draft', { node: 'secret', elements: [{ id: 'S1', text: 'Readers of other know this.' }] });
   await call(erin.client, 'submit_for_review', { node: 'secret', version: 1 });
   await call(erin.client, 'ask', { address: 'kj:secret#S1', question: 'Who reads it?' });

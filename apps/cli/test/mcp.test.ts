@@ -37,7 +37,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   });
 
   // Product authors and commits the spec.
-  await call(pm.client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(pm.client, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   await call(pm.client, 'draft', { node: 'checkout', elements: [
     { id: 'R1', text: 'Checkout completes within 30 seconds of payment confirmation.' },
     { id: 'R2', text: 'Users can save a cart for later.' },
@@ -49,7 +49,7 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   expect(await rejection(call(eng.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'x' }] }))).toMatch(/RoleError.*konjir_ask/);
 
   // The engineer binds, links element to element, and asks the spec a question.
-  await call(eng.client, 'create_node', { kind: 'technical_binding', title: 'Checkout on Postgres', id: 'checkout-pg' });
+  await call(eng.client, 'create_node', { kind: 'binding', title: 'Checkout on Postgres', id: 'checkout-pg' });
   await call(eng.client, 'draft', { node: 'checkout-pg', elements: [{ id: 'b1', text: 'Order finalizer worker with a 25s budget.' }, { id: 'b2', text: 'saved_cart table.' }] });
   expect(await rejection(call(eng.client, 'link', { kind: 'dependency', source: 'kj:checkout-pg@1', source_element: 'b1', target: 'kj:checkout-pg@1' }))).toMatch(/not committed|GateError/);
   await call(eng.client, 'submit_for_review', { node: 'checkout-pg', version: 1 });
@@ -180,7 +180,7 @@ test('Kolab persists across restarts', async () => {
   {
     let { server, admin } = await boot(store);
     const pm = await agentFor(server.url, admin, 'pm', 'product');
-    await call(pm.client, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+    await call(pm.client, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
     await call(pm.client, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Persist me.' }] });
     await call(pm.client, 'submit_for_review', { node: 'checkout', version: 1 });
     await pm.client.close(); await admin.close(); await server.close();

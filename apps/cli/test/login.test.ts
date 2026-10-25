@@ -79,8 +79,8 @@ test('from nothing to an agent working in its own kolab, with a teammate invited
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', owner: 'ann', kolab: 'anns' });
   out = [];
   // Ann's kolab holds its spec, which a binding names (D78).
-  await kolab.db.query(`insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('orders', 'orders', 'functional_spec', 'functional', 'Orders', 'anns', 'ann')`);
-  await main(['create_node', 'kind=technical_binding', 'title=Orders on Postgres', 'id=orders-pg']);
+  await kolab.db.query(`insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('orders', 'orders', 'spec', 'functional', 'Orders', 'anns', 'ann')`);
+  await main(['create_node', 'kind=binding', 'title=Orders on Postgres', 'id=orders-pg']);
 
   // Its access token expires; the next command refreshes it by itself, and the file keeps the new one.
   await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-cli' and ended_at is null`);
@@ -301,9 +301,9 @@ test('konjir watch, as its stream closes at token expiry and listens again, lets
     return kolab.openSession('ann', role, { kolab: 'anns' });
   };
   // Ann commits a binding in anns; asking about it signals ann-cli's technical inbox.
-  await kolab.createNode(await annAs('product'), 'functional_spec', 'Orders', 'orders');   // the spec it binds (D78)
+  await kolab.createNode(await annAs('product'), 'spec', 'Orders', 'orders');   // the spec it binds (D78)
   const eng = await annAs('engineer');
-  await kolab.createNode(eng, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  await kolab.createNode(eng, 'binding', 'Orders on Postgres', 'orders-pg');
   // It waits for ann-cli, the layer's other writer, who approves it.
   await rejection(kolab.commit(eng, 'orders-pg', { elements: els({ b1: 'orders.status allows cancel from Open.' }) }));
   await main(['review', 'node=orders-pg', 'version=1', 'verdict=approve']);

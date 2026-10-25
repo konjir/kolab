@@ -21,7 +21,7 @@ test('span resolution: exact is clean even if moved, near is fuzzy, gone is orph
 
 test('each edge goes dirty only when its own addressed scope changes', async () => {
   const { kolab, product, engineer } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'S');
   const s1 = await kolab.commit(product, spec, {
     elements: els({
       R1: 'Checkout completes within 30 seconds of payment confirmation.',
@@ -34,7 +34,7 @@ test('each edge goes dirty only when its own addressed scope changes', async () 
     }, { R3: 'SEC', R4: 'SEC' }),
   });
 
-  const binding = await kolab.createNode(engineer, 'technical_binding', 'Checkout on Postgres', 'B');
+  const binding = await kolab.createNode(engineer, 'binding', 'Checkout on Postgres', 'B');
   const b = await kolab.commit(engineer, binding, {
     elements: els({ b1: 'Order worker SLA', b2: 'Saved carts table', b3: 'Payments adapter', b4: 'Guest sessions', b6: 'Tax display' }),
   });
@@ -79,7 +79,7 @@ test('each edge goes dirty only when its own addressed scope changes', async () 
 
 test('D42: a verbatim copy whose context no longer agrees is marked; a moved quote with its context is not', async () => {
   const { kolab, product, engineer } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'S');
   const s1 = await kolab.commit(product, spec, {
     elements: els({
       R1: 'Alpha said save the cart now. Beta said save the cart later.',
@@ -87,7 +87,7 @@ test('D42: a verbatim copy whose context no longer agrees is marked; a moved quo
       R3: 'Beta said save the cart later.',
     }),
   });
-  const binding = await kolab.createNode(engineer, 'technical_binding', 'Checkout on Postgres', 'B');
+  const binding = await kolab.createNode(engineer, 'binding', 'Checkout on Postgres', 'B');
   const b = await kolab.commit(engineer, binding, { elements: els({ b1: 'Beta', b2: 'Any', b3: 'Refunds', b4: 'Moved' }) });
   const link = (src: string, tgt: string, selector: { exact: string; prefix?: string; suffix?: string }) =>
     kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: src, target: s1, targetElement: tgt, selector });
@@ -113,11 +113,11 @@ test('D42: a verbatim copy whose context no longer agrees is marked; a moved quo
 
 test('a link whose quoted context does not match is refused, with a selector that would', async () => {
   const { kolab, product, engineer } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'S');
   const s1 = await kolab.commit(product, spec, {
     elements: els({ R1: 'Alpha said save the cart now. Beta said save a cart later.' }),
   });
-  const binding = await kolab.createNode(engineer, 'technical_binding', 'Checkout on Postgres', 'B');
+  const binding = await kolab.createNode(engineer, 'binding', 'Checkout on Postgres', 'B');
   const b = await kolab.commit(engineer, binding, { elements: els({ b1: 'Beta' }) });
   const link = (selector: { exact: string; prefix?: string; suffix?: string }) =>
     kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: 'b1', target: s1, targetElement: 'R1', selector });
@@ -145,7 +145,7 @@ test('a link whose quoted context does not match is refused, with a selector tha
 
 test('resolve() follows the address scope and floats to the latest committed version', async () => {
   const { kolab, product } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'S');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'S');
   await kolab.commit(product, spec, { elements: els({ R1: 'Timeout is 30 seconds.' }) });
   await kolab.commit(product, spec, { elements: els({ R1: 'Timeout is 10 seconds.' }) });
   // Inside its kolab the short form is enough; the full form names the kolab too (DAT11).

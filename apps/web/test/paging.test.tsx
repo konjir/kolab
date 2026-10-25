@@ -66,7 +66,7 @@ test('the activity reads its next page on asking', async () => {
 
 /** A spec at version 3 whose element R1 has more questions than it shows, as does the node as a whole. */
 const spec = (): WebNodeView => ({
-  node: { name: 'orders', kind: 'functional_spec', layer: 'functional', title: 'Orders', latest: 3, drafts: 0, in_review: 0 },
+  node: { name: 'orders', kind: 'spec', layer: 'functional', title: 'Orders', latest: 3, drafts: 0, in_review: 0 },
   reading: { seq: 3, state: 'committed', author: 'lee', role: 'product', at, note: null, mine: true },
   versions: [3, 2].map((seq) => ({ seq, state: 'committed' as const, author: 'lee', role: 'product', at, note: null, mine: true })),
   versions_next: 'v2',

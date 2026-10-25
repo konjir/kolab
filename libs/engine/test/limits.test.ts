@@ -15,9 +15,9 @@ const count = (n: number) => n.toLocaleString('en');
 async function orders() {
   const ctx = await setup();
   const { kolab, product, engineer } = ctx;
-  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
   await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
-  await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
   await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'Cancelling sets a flag.' }) });
   const versions = async (node: string) => (await kolab.db.query(`select 1 from version where node_id = $1`, [node])).rows.length;
   return { ...ctx, versions };
@@ -75,7 +75,7 @@ test('a case file\'s question, a claim, its evidence and a ruling over their lim
   expect(await rejection(open({ evidence: [long(MAX_EVIDENCE_TEXT + 1)] }))).toMatch(/LimitError: evidence item 1 is 1,001 characters; the limit is 1,000/);
   expect(await rejection(open({ evidence: ['a test run', long(MAX_TEXT + 1)] }))).toMatch(/LimitError: evidence item 2 is 4,001 characters; the limit is 1,000/);
   expect(await rejection(kolab.rule(product, { address: 'kj:orders#R1', text: long(MAX_TEXT + 1), effect: 'keep_intent' }))).toMatch(/LimitError: the ruling is/);
-  expect(await rejection(kolab.createNode(product, 'functional_spec', long(MAX_TITLE + 1), 'long'))).toMatch(new RegExp(`LimitError: the title is ${MAX_TITLE + 1} characters; the limit is ${MAX_TITLE}`));
+  expect(await rejection(kolab.createNode(product, 'spec', long(MAX_TITLE + 1), 'long'))).toMatch(new RegExp(`LimitError: the title is ${MAX_TITLE + 1} characters; the limit is ${MAX_TITLE}`));
 });
 
 test('a person and their agents ask and draft at most so many times an hour, together; the refusal names the limit and the wait, writes nothing, and holds no one else back', async () => {
@@ -141,7 +141,7 @@ test('the limit holds when many ask and draft at once: each takes its turn in th
   expect(tries.filter((t) => t.status === 'rejected').map((t) => String((t as PromiseRejectedResult).reason).split(':')[0])).toStrictEqual(Array(35).fill('LimitError'));
   expect((await kolab.db.query(`select 1 from query where raised_by = 'bob'`)).rows).toHaveLength(5);
   // Drafts on twenty different nodes, so no node's lock puts them in turn: only the budget's does.
-  for (let i = 0; i < 20; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  for (let i = 0; i < 20; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
   Object.assign(kolab.rates, { drafts: 3 });
   const drafts = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => kolab.draft(engineer, `part-${i}`, { elements: els({ b1: `Take ${i}.` }) })));
   // Bob wrote orders-pg's first version: two more.
@@ -178,7 +178,7 @@ test('a draft counts against its author when it is made, whatever becomes of it:
   // Dave is a second writer on the technical layer: the colluding second account of the review's L1.
   await people(kolab, 'dave', { layers: ['technical'] });
   const dave = await kolab.openSession('dave', 'engineer', { by: ADMIN_DOER });
-  for (let i = 0; i < 4; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  for (let i = 0; i < 4; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
   // Bob wrote orders-pg's first version; with a limit of 4, three more.
   Object.assign(kolab.rates, { drafts: 4 });
   const counted = async () => (await kolab.db.query<{ r_count: number }>(`select * from kj_rate_take('bob', 'draft', $1, 0, 0)`, [RATE_WINDOW_MS])).rows[0].r_count;
@@ -222,7 +222,7 @@ test('an organization\'s agents share one budget of the organization\'s, with it
   await kolab.raiseQuery(bobs, 'kj:orders#R1', 'From Bob\'s agent?');
   expect(await rejection(kolab.raiseQuery(bobs, 'kj:orders#R1', 'Again?'))).toMatch(/^LimitError: bob-claude, with the rest of bob's agents and bob, raised 2 .* the limit is 2 in an hour, shared by a person and their agents/);
   // Drafts the same way: the organization's 3, across its agents, counted when made.
-  for (let i = 0; i < 3; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  for (let i = 0; i < 3; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
   await kolab.draft(orgA, 'part-0', { elements: els({ b1: 'A.' }) });
   await kolab.draft(orgB, 'part-1', { elements: els({ b1: 'B.' }) });
   await kolab.draft(orgA, 'part-2', { elements: els({ b1: 'C.' }) });
@@ -243,7 +243,7 @@ test('an organization\'s agents share one budget of the organization\'s, with it
 (process.env.KONJIR_TEST_DATABASE_URL ? test : test.skip)('one person\'s burst of big drafts doesn\'t starve another person\'s read', async () => {
   const { kolab, product, engineer } = await orders();
   const parts = 20;
-  for (let i = 0; i < 2 * parts; i++) await kolab.createNode(engineer, 'technical_binding', `Part ${i}`, `part-${i}`);
+  for (let i = 0; i < 2 * parts; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
   const big = Array.from({ length: MAX_ELEMENTS }, (_, i) => ({ id: `b${i}`, text: `Element ${i}: ${long(150)}` }));
   const read = async () => { const t = Date.now(); await kolab.queriesPage(product, {}); return Date.now() - t; };
   /** Bob drafts on `parts` nodes at once, from node `from`; Alice reads once the burst has the pool. */
@@ -279,7 +279,7 @@ test('kolab titles count characters, and the admin\'s names and titles are cappe
 
 test('resolving an override mark is a draft: it takes a place in the resolver\'s budget, so a person at the limit can\'t keep resolving a mark', async () => {
   const { kolab, product } = await setup();
-  const p1 = await kolab.commit(product, await kolab.createNode(product, 'functional_spec', 'Storefront', 'P'), { elements: els({ E1: 'Session timeout is 15 minutes.' }) });
+  const p1 = await kolab.commit(product, await kolab.createNode(product, 'spec', 'Storefront', 'P'), { elements: els({ E1: 'Session timeout is 15 minutes.' }) });
   const child = await kolab.createNode(product, 'prototype', 'Storefront for Acme', 'C');
   await kolab.commit(product, child, { parent: p1, deltas: [{ kind: 'override', element: 'E1', text: 'Session timeout is 30 minutes.' }] });
   await kolab.commit(product, 'P', { elements: els({ E1: 'Session timeout is 10 minutes.' }) });

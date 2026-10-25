@@ -25,6 +25,6 @@
   "0024_write_actors.sql": "8087698873975ae8001a8bfd1e9ad54bb67afae0fb397b645f07b7ff6d827c20",
   "0025_list_indexes.sql": "0ebd52a1bd9aae3167c2c1949b3624570fb2b17fc057863b67058f809741dd75",
   "0026_admin_people.sql": "2a42a0e8fe268c5db0a0ca84cac017de630c011045fc9a422e5a611137a3e24d",
-  "0027_konstruct_kinds.sql": "2a022e1b6dc05b959403c3ce140b1c88860bed32b03edafedb0957f3daccc368",
+  "0027_konstruct_kinds.sql": "afaa6e049a3d067b7fc1c7d2ecefbf603f9825039794e85f08fa99e65ab49d91",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

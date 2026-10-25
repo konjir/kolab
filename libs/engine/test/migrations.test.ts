@@ -87,7 +87,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   try {
     await people(kolab, 'alice');
     const product = await kolab.openSession('alice', 'product');
-    await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await kolab.createNode(product, 'spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
   } finally { await kolab.close(); }
 });
@@ -438,7 +438,7 @@ test('a database at 0005 reaches 0006: its data becomes the kolab `kolab` of the
     const pat = await kolab.openSession('pat', 'product');
     const v2 = await commitReviewed(kolab, 'kjs_pm', pat, 'kolab', { elements: els({ TEN1: 'Konjir is one hosted service that every account shares.' }) });
     expect(await kolab.author(v2)).toStrictEqual({ actor: 'lee-pm', kind: 'agent', owner: 'lee', role: 'product' });
-    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.id)).toStrictEqual(['kolab', 'kolab-binding']);
+    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.id)).toStrictEqual(['kolab-binding', 'kolab']);
     // An agent of the organization now, which a person's agent couldn't be before.
     await kolab.addActor('konjir-bot', { owner: 'konjir' });
     await kolab.grant('kolab', 'konjir-bot', 'read');
@@ -516,18 +516,18 @@ test('a database at 0007 reaches 0008: each node keeps its id, which becomes its
     expect(await kolab.resolve('kj:kolab/kolab@1#TEN1', { system: 'shop' })).toMatchObject({ status: 'ok', content: 'Konjir is one hosted service.' });
     // 0027: the plan is a plan now, of its kolab's one binding, which binds its kolab's one spec (D77, D78).
     expect((await kolab.db.query(`select name, kind, parent_node_id from node order by name`)).rows).toStrictEqual([
-      { name: 'kolab', kind: 'functional_spec', parent_node_id: null },
-      { name: 'kolab-binding', kind: 'technical_binding', parent_node_id: 'kolab' },
+      { name: 'kolab', kind: 'spec', parent_node_id: null },
+      { name: 'kolab-binding', kind: 'binding', parent_node_id: 'kolab' },
       { name: 'kolab-plan', kind: 'plan', parent_node_id: 'kolab-binding' },
     ]);
     // Another kolab's binding may be called kolab-binding too, beside its own spec.
     await kolab.createKolab('shop', { owner: 'lee' });
     const pm = await kolab.openSession('lee', 'product', { kolab: 'shop' });
-    await kolab.createNode(pm, 'functional_spec', 'Shop', 'shop');
+    await kolab.createNode(pm, 'spec', 'Shop', 'shop');
     await kolab.endSession(pm, { by: 'lee' });
     const s = await kolab.openSession('lee', 'engineer', { kolab: 'shop' });
-    expect(await kolab.createNode(s, 'technical_binding', 'Binding', 'kolab-binding')).toMatch(/^~[0-9A-Z]{26}$/);
-    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.name)).toStrictEqual(['kolab', 'kolab-plan', 'kolab-binding']);   // by kind, then name
+    expect(await kolab.createNode(s, 'binding', 'Binding', 'kolab-binding')).toMatch(/^~[0-9A-Z]{26}$/);
+    expect((await kolab.listNodes(undefined, 'kolab')).map((n) => n.name)).toStrictEqual(['kolab-binding', 'kolab-plan', 'kolab']);   // by kind, then name
   } finally { await kolab.close(); }
 });
 
@@ -575,7 +575,7 @@ test('a database at 0010 reaches 0011: each session is stored by the hash of its
     expect(await kolab.sessionOpen(lee)).toBe(false);
     // The agent writes with its old token, and Lee, in a new session, reviews it.
     const reviewer = await kolab.openSession('lee', 'product');
-    const spec = await kolab.createNode(pm, 'functional_spec', 'Kolab', 'kolab');
+    const spec = await kolab.createNode(pm, 'spec', 'Kolab', 'kolab');
     await commitReviewed(kolab, pm, reviewer, spec, { elements: els({ TEN1: 'Konjir is one hosted service.' }) });
     // Ending a migrated session by its token tells listeners by the same key.
     const ended: string[] = [];
@@ -1097,37 +1097,37 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     const { refusals, parents } = await preflight0027(db);
     expect(refusals).toStrictEqual([]);
     expect(parents.filter((p) => p.kolab_id === 'kolab' || p.kolab_id === 'lab')).toStrictEqual([
-      { kolab_id: 'kolab', node: 'kolab-binding', kind: 'technical_binding', parent: 'kolab', how: 'its kolab\'s one spec' },
+      { kolab_id: 'kolab', node: 'kolab-binding', kind: 'binding', parent: 'kolab', how: 'its kolab\'s one spec' },
       { kolab_id: 'kolab', node: 'kolab-plan', kind: 'plan', parent: 'kolab-binding', how: 'the one binding its links reach' },
-      { kolab_id: 'lab', node: 'lab-api', kind: 'technical_binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
-      { kolab_id: 'lab', node: 'lab-ui', kind: 'technical_binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
+      { kolab_id: 'lab', node: 'lab-api', kind: 'binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
+      { kolab_id: 'lab', node: 'lab-ui', kind: 'binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
       { kolab_id: 'lab', node: 'lab-plan', kind: 'plan', parent: 'lab-api', how: 'the one binding its links reach' },
     ]);
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [versions[at]] });
     // Each parent is the one the preflight named.
     const given = (await db.query<{ name: string; parent: string }>(`select n.name, p.name as parent from node n join node p on p.id = n.parent_node_id`)).rows;
     expect(given.map((g) => `${g.name}>${g.parent}`).sort()).toStrictEqual(parents.map((p) => `${p.node}>${p.parent}`).sort());
-    expect((await db.query(`select kolab_id, name, kind, layer, parent_node_id from node order by kolab_id, kind, name`)).rows).toStrictEqual([
-      { kolab_id: 'acme-demo-r1', name: 'invitations', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
-      { kolab_id: 'acme-demo-r1', name: 'invitations-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'invitations' },
-      { kolab_id: 'globex-demo-r1', name: 'invitations', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
-      { kolab_id: 'kolab', name: 'kolab', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
-      { kolab_id: 'kolab', name: 'kolab-plan', kind: 'plan', layer: 'technical', parent_node_id: 'kolab-binding' },
+    expect((await db.query(`select kolab_id, name, kind, layer, parent_node_id from node order by kolab_id, name`)).rows).toStrictEqual([
+      { kolab_id: 'acme-demo-r1', name: 'invitations', kind: 'spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'acme-demo-r1', name: 'invitations-binding', kind: 'binding', layer: 'technical', parent_node_id: 'invitations' },
+      { kolab_id: 'globex-demo-r1', name: 'invitations', kind: 'spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'kolab', name: 'kolab', kind: 'spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'kolab', name: 'kolab-binding', kind: 'binding', layer: 'technical', parent_node_id: 'kolab' },
       { kolab_id: 'kolab', name: 'kolab-page', kind: 'prototype', layer: 'functional', parent_node_id: null },
-      { kolab_id: 'kolab', name: 'kolab-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'kolab' },
-      { kolab_id: 'lab', name: 'lab-spec', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'kolab', name: 'kolab-plan', kind: 'plan', layer: 'technical', parent_node_id: 'kolab-binding' },
       // Of lab's two bindings, the plan's links deliver lab-api's alone: that is its binding.
+      { kolab_id: 'lab', name: 'lab-api', kind: 'binding', layer: 'technical', parent_node_id: 'lab-spec' },
       { kolab_id: 'lab', name: 'lab-plan', kind: 'plan', layer: 'technical', parent_node_id: 'lab-api' },
-      { kolab_id: 'lab', name: 'lab-api', kind: 'technical_binding', layer: 'technical', parent_node_id: 'lab-spec' },
-      { kolab_id: 'lab', name: 'lab-ui', kind: 'technical_binding', layer: 'technical', parent_node_id: 'lab-spec' },
+      { kolab_id: 'lab', name: 'lab-spec', kind: 'spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'lab', name: 'lab-ui', kind: 'binding', layer: 'technical', parent_node_id: 'lab-spec' },
       // An archived kolab's nodes are mapped too, and it stays archived.
-      { kolab_id: 'old', name: 'old-spec', kind: 'functional_spec', layer: 'functional', parent_node_id: null },
+      { kolab_id: 'old', name: 'old-binding', kind: 'binding', layer: 'technical', parent_node_id: 'old-spec' },
       { kolab_id: 'old', name: 'old-plan', kind: 'plan', layer: 'technical', parent_node_id: 'old-binding' },
-      { kolab_id: 'old', name: 'old-binding', kind: 'technical_binding', layer: 'technical', parent_node_id: 'old-spec' },
+      { kolab_id: 'old', name: 'old-spec', kind: 'spec', layer: 'functional', parent_node_id: null },
     ]);
-    // No data lost: every other row is as it was, and each node differs only in its kind (wbs to plan) and its new parent.
+    // No data lost: every other row is as it was, and each node differs only in its kind's name (D77, D95) and its new parent.
     expect(await konjirRows(db)).toStrictEqual(before);
-    const relabel = (n: Record<string, unknown>) => ({ ...n, kind: n.kind === 'wbs' ? 'plan' : n.kind });
+    const relabel = (n: Record<string, unknown>) => ({ ...n, kind: ({ wbs: 'plan', functional_spec: 'spec', technical_binding: 'binding' } as Record<string, string>)[n.kind as string] ?? n.kind });
     expect((await db.query<Record<string, unknown>>(`select * from node order by id`)).rows.map(({ parent_node_id: _, ...n }) => n)).toStrictEqual(nodesBefore.map(relabel));
     // The archived kolab still refuses every write.
     expect(await rejection(db.query(`update node set title = 'x' where id = 'old-spec'`))).toMatch(/kolab old is archived/);
@@ -1141,7 +1141,7 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     await kolab.grant('kolab', 'mirror-engineer', 'write', { layers: ['technical'] });
     const pm = await kolab.openSession('mirror-product', 'product', { kolab: 'kolab' });
     const eng = await kolab.openSession('mirror-engineer', 'engineer', { kolab: 'kolab' });
-    expect(await rejection(kolab.createNode(pm, 'functional_spec', 'A second spec', 'kolab-2'))).toMatch(/kolab kolab already holds its spec, kolab/);
+    expect(await rejection(kolab.createNode(pm, 'spec', 'A second spec', 'kolab-2'))).toMatch(/kolab kolab already holds its spec, kolab/);
     expect(await rejection(kolab.createNode(eng, 'plan', 'A second plan', 'kolab-plan-2'))).toMatch(/binding kolab-binding already has its plan, kolab-plan/);
     // A spec change flags the binding element that serves it, the work package that delivers that,
     // and the prototype's screen that shows it (M4's done-when, D93).
@@ -1159,7 +1159,7 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     expect((await kolab.version('b3')).state).toBe('in_review');
     // Listings and reads name each node's parent.
     expect((await kolab.listNodes(undefined, 'kolab')).map((n) => [n.name, n.kind, n.parent])).toStrictEqual([
-      ['kolab', 'functional_spec', null], ['kolab-plan', 'plan', 'kolab-binding'], ['kolab-page', 'prototype', null], ['kolab-binding', 'technical_binding', 'kolab'],
+      ['kolab-binding', 'binding', 'kolab'], ['kolab-plan', 'plan', 'kolab-binding'], ['kolab-page', 'prototype', null], ['kolab', 'spec', null],
     ]);
     expect((await kolab.readNode(eng, 'kolab-plan')).parent).toBe('kolab-binding');
   } finally { await kolab.close(); }
@@ -1211,7 +1211,7 @@ const BASE_0026 = `
 
 test('0027 refuses, naming them, nodes that are a work_package or an implementation: neither is a kind any more (D77, KON5, KON7)', async () => {
   await refuses0027(`${BASE_0026} ${N} ('wp1', 'wp1', 'work_package', 'technical', 'WP', 'shop', 'lee'), ('impl', 'impl', 'implementation', 'technical', 'I', 'mall', 'lee');`,
-    /a node's kind is now one of functional_spec, prototype, technical_binding or plan \(D77\).*These nodes have no kind to map to: mall\/impl \(implementation\), shop\/wp1 \(work_package\)\. Decide what each becomes\./);
+    /a node's kind is now one of spec, prototype, binding or plan \(D77, D95\).*These nodes have no kind to map to: mall\/impl \(implementation\), shop\/wp1 \(work_package\)\. Decide what each becomes\./);
 });
 
 test('0027 refuses a kolab with more than one spec, naming them: it won\'t choose which is the spec (KON1)', async () => {
@@ -1352,4 +1352,22 @@ test('the preflight names every refusal at once, in 0027\'s order, and 0027 repo
     const said = await rejection(migrate(db));
     for (const s of ['These nodes have no kind to map to: shop/x', 'these hold more: kolab shop: a, a2', 'hold no spec: mall/b', 'would have more: mall/b: w1, w2']) expect(said).toContain(s);
   });
+});
+
+test('0027 refuses a live version that is a variant of another kind: a plan or a binding on a spec\'s version (D95, KON6); a prototype on the spec\'s is fine', async () => {
+  const seed = `${BASE_0026}
+    ${N} ('s', 's', 'functional_spec', 'functional', 'S', 'shop', 'lee'), ('b', 'b', 'technical_binding', 'technical', 'B', 'shop', 'lee'),
+      ('u', 'u', 'prototype', 'functional', 'U', 'shop', 'lee'), ('w', 'w', 'wbs', 'technical', 'W', 'shop', 'lee');
+    ${V} ('sv', 's', 1, null, 'functional', 'committed', 'lee', 'product', 'lee'), ('bv', 'b', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee');
+    insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role, submitted_by) values
+      ('uv', 'u', 1, 'sv', 'functional', 'committed', 'lee', 'product', 'lee')`;
+  const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(`${seed};`);
+    expect((await preflight0027(db)).refusals).toStrictEqual([]);
+    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+  });
+  await refuses0027(`${seed}, ('wv', 'w', 1, 'sv', 'technical', 'committed', 'lee', 'engineer', 'lee');`,
+    /A variant is of its parent's kind, and only a prototype may be derived from the spec \(KON3, KON6, D95\), and these live versions aren't: shop\/w@1 \(wbs\) on shop\/s@1 \(functional_spec\)\./);
 });

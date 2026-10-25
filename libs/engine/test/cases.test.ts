@@ -15,12 +15,12 @@ import { commitReviewed, els, marksOn, people, rejection, setup, TEST_KOLAB } fr
 async function dispute() {
   const ctx = await setup();
   const { kolab, product, engineer } = ctx;
-  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
   await kolab.commit(product, 'orders', { elements: els({
     R1: 'Checkout completes within 2 seconds of payment confirming.',
     R2: 'Users can save a cart for later.',
   }) });
-  await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
   await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'The payment provider confirms in 3 to 5 seconds.' }) });
   await people(kolab, 'alice-pm', { owner: 'alice', layers: ['functional'] });
   await people(kolab, 'bob-eng', { owner: 'bob', layers: ['technical'] });
@@ -204,7 +204,7 @@ test("case files and rulings belong to the kolab's work: another kolab's, and a 
   await kolab.addActor('dave');
   await kolab.createKolab('elsewhere', { owner: 'dave' });
   const dave = await kolab.openSession('dave', 'product', { kolab: 'elsewhere' });
-  await kolab.commit(dave, await kolab.createNode(dave, 'functional_spec', 'Orders', 'orders'), { elements: els({ R1: 'Orders ship in a day.' }) });
+  await kolab.commit(dave, await kolab.createNode(dave, 'spec', 'Orders', 'orders'), { elements: els({ R1: 'Orders ship in a day.' }) });
 
   expect(await kolab.casesFor(dave, {})).toStrictEqual([]);
   expect(await kolab.rulingsFor(dave, {})).toStrictEqual([]);

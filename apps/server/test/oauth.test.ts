@@ -450,7 +450,7 @@ test('hand-issued tokens can be turned off; the admin token works either way', a
 
 test('a web page\'s event stream outlives no access token: when it expires the stream closes without `ended`, and reconnecting refreshes it', async () => {
   const { kolab, product, engineer } = await setup();
-  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
   await kolab.commit(product, 'orders', { elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });
   const { base, idp } = await serve(kolab);
   const browser = new Browser(base);

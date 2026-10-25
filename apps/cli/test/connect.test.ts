@@ -384,7 +384,7 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   closeAtEnd(product, engineer);
   expect(await call(product, 'whoami')).toMatchObject({ actor: 'ann-product', kind: 'agent', owner: 'ann', kolab: 'anns', role: 'product', access: { level: 'write', layers: ['functional', 'technical'] } });
   expect(await call(engineer, 'whoami')).toMatchObject({ actor: 'ann-engineer', kind: 'agent', owner: 'ann', kolab: 'anns', role: 'engineer' });
-  await call(product, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(product, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   expect(JSON.stringify(await call(engineer, 'list_nodes'))).toContain('checkout');
   // An agent's session makes no agents (D59).
   expect(await rejection(call(product, 'create_agent', { label: 'more' }))).toMatch(/ann-product is an agent: only a person makes agents/);

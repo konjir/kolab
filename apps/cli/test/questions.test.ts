@@ -11,12 +11,12 @@ import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, te
 async function specAndBinding() {
   const ctx = await setup();
   const { kolab, product, engineer } = ctx;
-  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
   await kolab.commit(product, 'orders', { elements: els({
     R8: 'Office staff can cancel an order.',
     R13: 'Photos taken more than 50 meters from the property are flagged.',
   }) });
-  await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
   const draft = await kolab.draft(engineer, 'orders-pg', { elements: els({
     b1: 'orders.status allows cancel from Open and Assigned (pending a spec question).',
     b2: 'Photo GPS distance check in the mobile app.',
@@ -92,7 +92,7 @@ test('a database from the previous release is migrated on open', async () => {
     await people(kolab, 'alice', { layers: ['functional'] });
     await people(kolab, 'bob', { layers: ['technical'] });
     const product = await kolab.openSession('alice', 'product');
-    await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+    await kolab.createNode(product, 'spec', 'Orders', 'orders');
     await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
     // Put the tables back the way 0.5 created them, before migrations were recorded, before
     // agents (0002), before version bases (0003), before rebase_failed (0004), before rulings
@@ -107,6 +107,8 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger version_parent_kind on version;
+      drop function kj_version_parent_kind();
       drop trigger edge_within_parent on edge;
       drop function kj_edge_within_parent(), kj_link_within_parent(text, text, text, text, text);
       drop trigger node_kind_fixed on node;
@@ -117,7 +119,7 @@ test('a database from the previous release is migrated on open', async () => {
       alter table node drop constraint node_parent_given, drop constraint node_parent_kolab_fkey, drop constraint node_layer_of_kind;
       alter table node drop column parent_node_id;
       alter table node drop constraint node_kind_check;
-      update node set kind = 'wbs' where kind = 'plan';
+      update node set kind = case kind when 'spec' then 'functional_spec' when 'binding' then 'technical_binding' when 'plan' then 'wbs' else kind end;
       alter table node add constraint node_kind_check check (kind in
         ('functional_spec','prototype','technical_binding','wbs','work_package','implementation'));
       alter table oauth_request drop column raise_id;
@@ -332,8 +334,8 @@ test('a database from the previous release is migrated on open', async () => {
     kolab = await TestKolab.open(store);
     // 0027: the wbs is a plan, of the kolab's one binding, which binds the kolab's one spec (D77, D78).
     expect((await kolab.db.query(`select id, kind, parent_node_id from node order by id`)).rows).toStrictEqual([
-      { id: 'orders', kind: 'functional_spec', parent_node_id: null },
-      { id: 'orders-pg', kind: 'technical_binding', parent_node_id: 'orders' },
+      { id: 'orders', kind: 'spec', parent_node_id: null },
+      { id: 'orders-pg', kind: 'binding', parent_node_id: 'orders' },
       { id: 'orders-plan', kind: 'plan', parent_node_id: 'orders-pg' },
     ]);
     // 0026: alice's hand-issued session, from before tokens expired, now expires 30 days from the migration (W2.22).
@@ -346,7 +348,7 @@ test('a database from the previous release is migrated on open', async () => {
     // 0008: the existing node keeps its id, now also its name in the kolab 0006 put it in.
     expect(await kolab.node('orders')).toMatchObject({ id: 'orders', name: 'orders', kolab_id: 'kolab' });
     const engineer = await kolab.openSession('bob', 'engineer');
-    await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
+    await kolab.createNode(engineer, 'binding', 'B', 'b');
     await kolab.commit(engineer, 'b', { elements: els({ b1: 'Cancel endpoint.' }) });
     const q = await kolab.raiseQuery(engineer, 'kj:orders#R1~q({"exact":"cancelled"})', 'By whom?', { from: 'kj:b#b1' });
     await kolab.answerQuery(product, q, 'Office staff.');
@@ -388,10 +390,10 @@ test('over MCP: questions sit beside the spec element, and answers are pushed to
   const wEng = await watch(eng, (uri, body) => { pushed.push({ who: 'eng', uri, body: body as never }); });
   closeAtEnd(wPm.subscription, wEng.subscription);
 
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
-  await call(eng, 'create_node', { kind: 'technical_binding', title: 'Orders on Postgres', id: 'orders-pg' });
+  await call(eng, 'create_node', { kind: 'binding', title: 'Orders on Postgres', id: 'orders-pg' });
   await call(eng, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'Cancel allowed from Open.' }] });
 
   // The engineer asks; product is told.
@@ -446,7 +448,7 @@ test('over MCP: an engineer agent asks about a version in review, and konjir_sub
   const pat = await open('pat', 'product');
   const eng = await open('pat-eng', 'engineer');
 
-  await call(pat, 'create_node', { kind: 'functional_spec', title: 'Checkout', id: 'checkout' });
+  await call(pat, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   await call(pat, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Checkout completes in 30 seconds.' }, { id: 'R2', text: 'A failed payment can be retried.' }] });
   const submitted = await call(pat, 'submit_for_review', { node: 'checkout', version: 1 }) as { in_review: string; reviewers: string[]; review: string; next: string };
   expect(submitted).toMatchObject({ ok: false, in_review: 'kj:checkout@1', reviewers: [] });

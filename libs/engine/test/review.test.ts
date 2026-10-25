@@ -22,7 +22,7 @@ test('a submitted version waits in review, with a request in each reviewer\'s in
   const { kolab, product, engineer, dave } = await twoProductOwners();
   const events: KolabEvent[] = [];
   kolab.onEvent((e) => events.push(e));
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
 
   const r = await kolab.review(v1);
@@ -37,7 +37,7 @@ test('a submitted version waits in review, with a request in each reviewer\'s in
 
   // Nothing is truth, or linkable, until it commits (VER4).
   expect(await kolab.latestCommitted(spec)).toBeUndefined();
-  const binding = await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
+  const binding = await kolab.createNode(engineer, 'binding', 'B', 'b');
   const b1 = await kolab.draft(engineer, binding, { elements: els({ b1: 'A queue.' }) });
   expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: v1, targetElement: 'R1' })))
     .toMatch(/GateError: nothing may derive from/);
@@ -65,7 +65,7 @@ test('another agent of the same person counts as a reviewer, and so does the per
   await people(kolab, ['alice-pm', 'alice-codex'], { owner: 'alice', layers: ['functional'] });
   const pm = await kolab.openSession('alice-pm', 'product');
   const codex = await kolab.openSession('alice-codex', 'product');
-  const spec = await kolab.createNode(pm, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(pm, 'spec', 'Checkout', 'checkout');
 
   // Both the other agent and the person who owns them hold Write on the layer: each is a reviewer,
   // whatever session it has open, or none (VER16).
@@ -86,7 +86,7 @@ test('a request for changes returns the version to drafted; its author resubmits
   const { kolab, product, dave } = await twoProductOwners();
   await people(kolab, 'erin', { layers: ['functional'] });
   const erin = await kolab.openSession('erin', 'product');
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds and emails a receipt.' }) });
   expect((await kolab.review(v1)).reviewers).toStrictEqual(['dave', 'erin']);
 
@@ -124,7 +124,7 @@ test('a request for changes returns the version to drafted; its author resubmits
 
 test('with no one else holding Write on the layer, structural checks alone commit a version, and it says so (VER11)', async () => {
   const { kolab, product, engineer } = await setup();   // one product owner, one engineer
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   const r = await kolab.review(v1);
   expect(r).toMatchObject({ ok: true, unreviewed: true, version: v1 });
@@ -143,7 +143,7 @@ test('with no one else holding Write on the layer, structural checks alone commi
 
 test('a rebase Kolab makes commits after structural checks only, with no review request, while people\'s versions wait for review (VER12)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const parent = await kolab.createNode(product, 'functional_spec', 'Storefront', 'storefront');
+  const parent = await kolab.createNode(product, 'spec', 'Storefront', 'storefront');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ R1: 'Prices show in dollars.' }) });
   const child = await kolab.createNode(dave, 'prototype', 'EU storefront', 'storefront-eu');
   await commitReviewed(kolab, dave, product, child, { parent: p1, deltas: [{ kind: 'override', element: 'R1', text: 'Prices show in euros.' }] });
@@ -162,7 +162,7 @@ test('a rebase Kolab makes commits after structural checks only, with no review 
 
 test('a version in review that someone else\'s commit overtakes is rejected as stale, and its requests leave the inboxes', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   await commitReviewed(kolab, product, dave, spec, { elements: els({ R1: 'v1' }) });
   const mine = await kolab.draft(product, spec, { elements: els({ R1: 'alice edit' }) });
   expect((await kolab.review(mine)).in_review).toBe(true);
@@ -178,7 +178,7 @@ test('a version in review that someone else\'s commit overtakes is rejected as s
 
 test('a variant\'s version approved after Kolab\'s rebase overtook it is folded onto the rebase, and commits as approved', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const parent = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const parent = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ E1: 'one' }) });
   const child = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, child, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
@@ -200,7 +200,7 @@ test('a variant\'s version approved after Kolab\'s rebase overtook it is folded 
 
 test('an approval with a layer leak commits the version and raises a question to the layer that owns the answer (VER9)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Orders are stored in Postgres.' }) });
   await kolab.review(v1);
   const leak = { kind: 'layer_leak' as const, elements: ['R1'], explanation: 'Postgres is implementation.' };
@@ -213,7 +213,7 @@ test('an approval with a layer leak commits the version and raises a question to
 
 test('an override resolution that waits in review settles its mark and sets precedent only when it commits', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, P, { elements: els({ E3: 'Timeout 15.' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, C, { parent: p1, deltas: [{ kind: 'override', element: 'E3', text: 'Timeout 30.' }] });
@@ -233,7 +233,7 @@ test('an override resolution that waits in review settles its mark and sets prec
 
 test('a reviewer who gained Write on the layer after submission can still review; an ended session can\'t', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   await kolab.review(v1);
   await people(kolab, 'erin', { layers: ['functional'] });
@@ -248,7 +248,7 @@ test('a reviewer who gained Write on the layer after submission can still review
 
 test('an agent can read review requests but never write one, nor move a version into or out of review: only Kolab\'s verbs do (ENF2, ENF3)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   await people(kolab, 'erin', { layers: ['functional'] });
   await kolab.openSession('erin', 'product');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
@@ -277,8 +277,8 @@ test('a plan version commits after structural checks only, with no review reques
   const { kolab, product, engineer } = await setup();
   await people(kolab, 'erin', { layers: ['technical'] });
   await kolab.openSession('erin', 'engineer');   // another engineer: a reviewer of bindings, not of plans
-  await kolab.createNode(product, 'functional_spec', 'Spec', 'spec');
-  const b = await kolab.createNode(engineer, 'technical_binding', 'B', 'b');
+  await kolab.createNode(product, 'spec', 'Spec', 'spec');
+  const b = await kolab.createNode(engineer, 'binding', 'B', 'b');
   const plan = await kolab.createNode(engineer, 'plan', 'Plan', 'b-plan');
   const v = await kolab.draft(engineer, plan, { elements: els({ W1: 'Do a thing.' }) });
   const r = await kolab.review(v);
@@ -293,7 +293,7 @@ test('a plan version commits after structural checks only, with no review reques
 
 test('a version approved and then folded ends settled as folded into the fold, which the author\'s answers show with the approval', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const parent = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const parent = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ E1: 'one' }) });
   const child = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, child, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });
@@ -318,7 +318,7 @@ test('a version approved and then folded ends settled as folded into the fold, w
 
 test('an override resolution folded at approval still sets precedent and settles its mark (OVR8, OVR9)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, dave, P, { elements: els({ E3: 'Timeout 15.', E4: 'a' }) });
   const C = await kolab.createNode(product, 'prototype', 'C', 'C');
   await commitReviewed(kolab, product, dave, C, { parent: p1, deltas: [{ kind: 'override', element: 'E3', text: 'Timeout 30.' }] });
@@ -339,7 +339,7 @@ test('a person\'s version that fails Kolab\'s checks stays drafted with the reas
   const { kolab, product } = await setup(async (ctx) => (contradiction
     ? { ok: false, note: 'R1 contradicts R2.' }
     : (await import('@konjir/engine')).structuralChecks(ctx)));
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const bad = await kolab.draft(product, spec, { elements: els({ R1: 'Same.', R2: 'Same.' }) });
   const r = await kolab.review(bad);
   expect(r).toMatchObject({ ok: false, version: bad });
@@ -359,7 +359,7 @@ test('a person\'s version that fails Kolab\'s checks stays drafted with the reas
 
 test('a version in review whose reviewers have all lost Write can be resubmitted: with no reviewer left it commits on structural checks (VER11)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   await kolab.review(v1);
   // While someone can still review it, resubmitting re-asks them, adding anyone new.
@@ -378,7 +378,7 @@ test('a version in review whose reviewers have all lost Write can be resubmitted
 
 test('approving a version that was abandoned, or rejected as stale, says why; abandoning a settled version reports it', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   await kolab.review(v1);
   expect(await kolab.abandon(product, v1)).toBe('rejected');
@@ -389,7 +389,7 @@ test('approving a version that was abandoned, or rejected as stale, says why; ab
 
 test('Kolab\'s own checks are structural and report no findings: a layer leak is the reviewer\'s to report (REV5, VER5, VER7)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Orders are stored in Postgres.' }) });
   const r = await kolab.review(v1);
   expect(r).toMatchObject({ in_review: true, reviewers: ['dave'] });
@@ -405,7 +405,7 @@ test('Kolab\'s own checks are structural and report no findings: a layer leak is
 test('a ruling applied to the mirror commits after structural checks only, with no review request, and its note records it (D47)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
   await people(kolab, 'mirror-product', { layers: ['functional'] });
-  const spec = await kolab.createNode(product, 'functional_spec', 'Kolab', 'kolab');
+  const spec = await kolab.createNode(product, 'spec', 'Kolab', 'kolab');
   await commitReviewed(kolab, product, dave, spec, { elements: els({ R1: 'One spec per kolab.' }) });
   const waiting = await kolab.draft(product, spec, { elements: els({ R1: 'One spec per kolab, alice says.' }) });
   expect((await kolab.review(waiting)).in_review).toBe(true);
@@ -440,7 +440,7 @@ test('reviewers are whoever holds Write on the layer in the version\'s kolab, wh
   await people(kolab, 'erin', { layers: ['functional', 'technical'] });
   const erinEng = await kolab.openSession('erin', 'engineer');        // Write on the spec's layer, in the other role
   await people(kolab, 'frank', { layers: ['functional'] });           // Write, never connected
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout', 'checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout', 'checkout');
   const v1 = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
   expect(await kolab.review(v1)).toMatchObject({ in_review: true, reviewers: ['erin', 'frank'] });
   // A reviewer may give a verdict only from a session in the layer's role.
@@ -462,7 +462,7 @@ test('a ruling overtaken by Kolab\'s rebase while its checks run is folded, and 
   });
   await people(kolab, 'mirror-product', { layers: ['functional'] });
   const mirror = await kolab.openSession('mirror-product', 'product');   // a reviewer of alice's versions
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await commitReviewed(kolab, product, mirror, P, { elements: els({ E1: 'one' }) });
   const V0 = await kolab.createNode(product, 'prototype', 'V0', 'V0');
   await commitReviewed(kolab, product, mirror, V0, { parent: p1, deltas: [{ kind: 'add', element: 'X', text: 'x' }] });

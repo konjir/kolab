@@ -29,9 +29,9 @@ async function run(n: number, mode: Mode) {
   const range = [...Array(n).keys()];
   const elems = (p: string, text: (i: number) => string) => range.map((i) => ({ id: `${p}${i}`, text: text(i) }));
 
-  const S = await kolab.createNode(product, 'functional_spec', 'Spec', 'S');
+  const S = await kolab.createNode(product, 'spec', 'Spec', 'S');
   const s1 = await kolab.commit(product, S, { elements: elems('R', (i) => `Requirement ${i} holds.`) });
-  const B = await kolab.createNode(engineer, 'technical_binding', 'Binding', 'B');
+  const B = await kolab.createNode(engineer, 'binding', 'Binding', 'B');
   const b = await kolab.commit(engineer, B, { elements: elems('b', (i) => `Binding for ${i}`) });
   const W = await kolab.createNode(engineer, 'plan', 'Plan', 'W', { parent: 'B' });
   const w = await kolab.commit(engineer, W, { elements: elems('w', (i) => `Work for ${i}`) });
@@ -48,7 +48,7 @@ async function run(n: number, mode: Mode) {
     await link(b, `b${i}`, s1, `R${i}`);
     if (!mode.planWhole) await link(w, `w${i}`, b, `b${i}`, 'derivation');
     // A component's own binding, relying as a whole on the work item w_i, and that binding's plan (D78).
-    const C = await kolab.createNode(engineer, 'technical_binding', `C${i}`, `C${i}`);
+    const C = await kolab.createNode(engineer, 'binding', `C${i}`, `C${i}`);
     const c = await kolab.commit(engineer, C, { elements: [{ id: 'c', text: `Component ${i}` }] });
     await link(c, undefined, w, `w${i}`);
     const X = await kolab.createNode(engineer, 'plan', `X${i}`, `X${i}`, { parent: `C${i}` });

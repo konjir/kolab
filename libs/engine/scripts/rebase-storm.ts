@@ -82,7 +82,7 @@ async function family(kolab: Kolab, s: Shape) {
   await people(kolab, 'alice');
   const product = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
   const range = [...Array(s.E).keys()];
-  const P = await kolab.createNode(product, 'functional_spec', 'Parent', 'P');
+  const P = await kolab.createNode(product, 'spec', 'Parent', 'P');
   const p1 = await kolab.commit(product, P, { elements: range.map((i) => ({ id: `E${i}`, text: text(i) })) });
 
   const depth = new Map<string, number>();
@@ -97,7 +97,7 @@ async function family(kolab: Kolab, s: Shape) {
       const i = (start + j) % s.E;
       return { kind: 'override' as const, element: `E${i}`, text: `Variant ${id} says element ${i} differently.` };
     });
-    await kolab.createNode(product, 'functional_spec', `Variant ${id}`, id);
+    await kolab.createNode(product, 'spec', `Variant ${id}`, id);
     const v = await kolab.commit(product, id, { parent: parentVersion, deltas });
     depth.set(id, level);
     if (level < s.D) for (let b = 0; b < s.B; b++) await grow(v, `${path}.${b}`, level + 1);
@@ -219,7 +219,7 @@ async function probe(backend: Backend, s: Shape) {
     // without waiting for review (W1.6).
     await people(kolab, 'dave', { layers: ['technical'] });
     const other = await kolab.openSession('dave', 'engineer', { by: ADMIN_DOER });
-    const U = await kolab.createNode(other, 'technical_binding', 'Unrelated', 'U');
+    const U = await kolab.createNode(other, 'binding', 'Unrelated', 'U');
     let u = 0;
     const unrelated = () => kolab.commit(other, U, { elements: [{ id: 'X', text: `Unrelated revision ${++u}.` }] });
     const variants = [...depth.keys()].reverse();
@@ -322,12 +322,12 @@ async function raceKolab(backend: Backend) {
 async function raceFamily(kolab: Kolab, roots: number, children = 0) {
   await people(kolab, 'alice');
   const s = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
-  await kolab.createNode(s, 'functional_spec', 'P', 'P');
+  await kolab.createNode(s, 'spec', 'P', 'P');
   const p1 = await kolab.commit(s, 'P', { elements: [0, 1, 2].map((i) => ({ id: `E${i}`, text: `Parent element ${i}, rev 1.` })) });
   const ids: string[] = [];
   const add = async (id: string, parent: string) => {
     ids.push(id);
-    await kolab.createNode(s, 'functional_spec', id, id);
+    await kolab.createNode(s, 'spec', id, id);
     return kolab.commit(s, id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says E2 its own way.` }] });
   };
   for (let r = 0; r < roots; r++) {

@@ -6,16 +6,16 @@ import { isInboxEvent, isSessionEnded, type KolabEvent } from '@konjir/types';
 
 test('an engineer session cannot create or write the functional layer', async () => {
   const { kolab, product, engineer } = await setup();
-  await expect(kolab.createNode(engineer, 'functional_spec', 'Checkout')).rejects.toBeInstanceOf(RoleError);
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout');
+  await expect(kolab.createNode(engineer, 'spec', 'Checkout')).rejects.toBeInstanceOf(RoleError);
+  const spec = await kolab.createNode(product, 'spec', 'Checkout');
   await expect(kolab.draft(engineer, spec, { elements: els({ R1: 'x' }) })).rejects.toBeInstanceOf(RoleError);
   await kolab.close();
 });
 
 test('a role refusal names the session with the right article: "an engineer", "a product"', async () => {
   const { kolab, product, engineer } = await setup();
-  expect(await rejection(kolab.createNode(engineer, 'functional_spec', 'Checkout'))).toMatch(/RoleError: an engineer session may not write the functional layer/);
-  expect(await rejection(kolab.createNode(product, 'technical_binding', 'Checkout on Postgres'))).toMatch(/RoleError: a product session may not write the technical layer/);
+  expect(await rejection(kolab.createNode(engineer, 'spec', 'Checkout'))).toMatch(/RoleError: an engineer session may not write the functional layer/);
+  expect(await rejection(kolab.createNode(product, 'binding', 'Checkout on Postgres'))).toMatch(/RoleError: a product session may not write the technical layer/);
   await kolab.close();
 });
 
@@ -54,7 +54,7 @@ test('ending a session revokes it and tells listeners, by the session\'s key, so
 
 test('row-level security backstops Kolab: a direct write in the wrong layer is refused', async () => {
   const { kolab, product, engineer } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout');
   // Each writes as its own actor and role, which row-level security also checks (0002).
   const attempt = async (session: string) => {
     const me = await kolab.sessionInfo(session);
@@ -73,9 +73,9 @@ test('row-level security backstops Kolab: a direct write in the wrong layer is r
 
 test('review gate: nothing may derive from an uncommitted version', async () => {
   const { kolab, product, engineer } = await setup();
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout');
   const drafted = await kolab.draft(product, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
-  const binding = await kolab.createNode(engineer, 'technical_binding', 'Checkout on Postgres');
+  const binding = await kolab.createNode(engineer, 'binding', 'Checkout on Postgres');
   const b1 = await kolab.commit(engineer, binding, { elements: els({ b1: 'A queue worker finalizes orders.' }) });
   await expect(kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: drafted, targetElement: 'R1' })).rejects.toBeInstanceOf(GateError);
   await kolab.close();
@@ -84,7 +84,7 @@ test('review gate: nothing may derive from an uncommitted version', async () => 
 test('review gate: a rejected draft is not committed', async () => {
   const { kolab, product } = await setup(({ elements }) =>
     elements.some((e) => /TBD/.test(e.text)) ? { ok: false, note: 'contains TBD' } : { ok: true });
-  const spec = await kolab.createNode(product, 'functional_spec', 'Checkout');
+  const spec = await kolab.createNode(product, 'spec', 'Checkout');
   await expect(kolab.commit(product, spec, { elements: els({ R1: 'Timeout is TBD.' }) })).rejects.toBeInstanceOf(GateError);
   expect(await kolab.latestCommitted(spec)).toBe(undefined);
   await kolab.close();

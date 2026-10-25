@@ -136,7 +136,7 @@ test('Lee bootstraps himself as the first admin with the break-glass token, then
 
   // A ruling of his, applied as the node's author would write it, records him as who applied it.
   const ann = await as(await kolab.openSession('ann', 'product'));
-  await call(ann, 'create_node', { kind: 'functional_spec', title: 'Spec', id: 'spec' });
+  await call(ann, 'create_node', { kind: 'spec', title: 'Spec', id: 'spec' });
   await call(ann, 'draft', { node: 'spec', elements: [{ id: 'R1', text: 'One.' }] });
   await call(ann, 'submit_for_review', { node: 'spec', version: 1 });
   expect(await call(lee, 'admin_apply_ruling', { ruling: 'D69', actor: 'ann', node: 'test/spec', elements: [{ id: 'R1', text: 'One, ruled.' }] }))

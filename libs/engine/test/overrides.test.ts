@@ -17,7 +17,7 @@ const CHILD_DELTAS = [
 async function family() {
   const ctx = await setup();
   const { kolab, product } = ctx;
-  const parent = await kolab.createNode(product, 'functional_spec', 'Storefront', 'P');
+  const parent = await kolab.createNode(product, 'spec', 'Storefront', 'P');
   const p1 = await kolab.commit(product, parent, { elements: els(PARENT_V1) });
   const child = await kolab.createNode(product, 'prototype', 'Storefront for Acme', 'C');
   await kolab.commit(product, child, { parent: p1, deltas: CHILD_DELTAS });
@@ -111,7 +111,7 @@ test('a rebase Kolab makes commits after structural checks only, without review,
   });
   await people(kolab, 'dave', { layers: ['functional'] });
   const dave = await kolab.openSession('dave', 'product');   // a reviewer for alice's versions
-  const parent = await kolab.createNode(product, 'functional_spec', 'Theme', 'Q');
+  const parent = await kolab.createNode(product, 'spec', 'Theme', 'Q');
   const q1 = await commitReviewed(kolab, product, dave, parent, { elements: els({ A1: 'Header is blue.' }) });
   const child = await kolab.createNode(product, 'prototype', 'Theme for Acme', 'QC');
   const c1 = await commitReviewed(kolab, product, dave, child, { parent: q1, deltas: [{ kind: 'override', element: 'A1', text: 'Header is green.' }] });
@@ -135,7 +135,7 @@ test('a rebase Kolab makes commits after structural checks only, without review,
 
 test('a rebase that fails the structural checks leaves its variant a rebase_failed mark and question', async () => {
   const { kolab, product } = await setup();
-  const parent = await kolab.createNode(product, 'functional_spec', 'Theme', 'Q');
+  const parent = await kolab.createNode(product, 'spec', 'Theme', 'Q');
   const q1 = await kolab.commit(product, parent, { elements: els({ A1: 'Header is blue.' }) });
   const child = await kolab.createNode(product, 'prototype', 'Theme for Acme', 'QC');
   const c1 = await kolab.commit(product, child, { parent: q1, deltas: [{ kind: 'override', element: 'A1', text: 'Header is green.' }] });

@@ -6,9 +6,9 @@ import { approved, commitReviewed, els, marksOn, people, setup, textOf } from '@
 
 test('a mark spreads downstream through a link that carries a mark of its own (LNK5)', async () => {
   const { kolab, product, engineer } = await setup();
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
-  const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
+  const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker.' }) });
   const W = await kolab.createNode(engineer, 'plan', 'W', 'W');
   const w1 = await kolab.commit(engineer, W, { elements: els({ w1: 'Build the order worker.' }) });
@@ -35,7 +35,7 @@ test('a mark spreads downstream through a link that carries a mark of its own (L
 async function nested() {
   const ctx = await setup();
   const { kolab, product } = ctx;
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 15 minutes.', E2: 'Logo top-left.' }) });
   const V1 = await kolab.createNode(product, 'prototype', 'V1', 'V1');
   const v1 = await kolab.commit(product, V1, { parent: p1, deltas: [{ kind: 'add', element: 'X1', text: 'Chat is on.' }] });
@@ -97,7 +97,7 @@ test('a resolution\'s precedent reaches the nested variant its own cascade rebas
 async function twins(reviewer?: Parameters<typeof setup>[0]) {
   const ctx = await setup(reviewer);
   const { kolab, product } = ctx;
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 15 minutes.', E2: 'Logo top-left.' }) });
   for (const id of ['A', 'B']) {
     await kolab.createNode(product, 'prototype', id, id);
@@ -161,11 +161,11 @@ test('of two resolutions of one mark, only the one that commits sets precedent a
 
 test('a variant\'s commit settles marks only on the elements it revised, not on overrides it carried forward (CAS4)', async () => {
   const { kolab, product, engineer } = await setup();
-  const P = await kolab.createNode(product, 'functional_spec', 'P', 'P');
+  const P = await kolab.createNode(product, 'spec', 'P', 'P');
   const p1 = await kolab.commit(product, P, { elements: els({ E1: 'Timeout is 15 minutes.', E2: 'Logo top-left.' }) });
   const V = await kolab.createNode(product, 'prototype', 'V', 'V');
   const v1 = await kolab.commit(product, V, { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'Logo top-right.' }] });
-  const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
+  const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Logo renderer.' }) });
   await kolab.link(product, { kind: 'dependency', source: v1, sourceElement: 'E2', target: b1, targetElement: 'b1' });
   await kolab.commit(engineer, B, { elements: els({ b1: 'Logo renderer, cached.' }) });
@@ -180,9 +180,9 @@ test('a variant\'s commit settles marks only on the elements it revised, not on 
 
 test('revising an element settles its upstream_dirty mark (LNK6, CAS4)', async () => {
   const { kolab, product, engineer } = await setup();
-  const S = await kolab.createNode(product, 'functional_spec', 'S', 'S');
+  const S = await kolab.createNode(product, 'spec', 'S', 'S');
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
-  const B = await kolab.createNode(engineer, 'technical_binding', 'B', 'B');
+  const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker.' }) });
   const W = await kolab.createNode(engineer, 'plan', 'W', 'W');
   const w1 = await kolab.commit(engineer, W, { elements: els({ w1: 'Build the order worker.', w2: 'Test it.' }) });

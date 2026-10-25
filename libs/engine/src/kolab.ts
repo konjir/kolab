@@ -9,7 +9,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -28,6 +28,19 @@ interface DeltaRow {
   text: string | null; parent_element_id: string | null; ord: number | null;
   base_version_id: string | null; base_fingerprint: string | null;
   state: 'clean' | 'dirty' | 'orphaned';
+}
+/** A link to write: its kind, the source element, and the target version, element and quote. */
+interface LinkInput {
+  kind: 'derivation' | 'dependency' | 'equivalence';
+  sourceElement?: string;
+  target: string; targetElement?: string; selector?: QuoteSelector;
+}
+/** The version a link is from: one of the session's, or a draft about to be written. */
+type LinkSource = Pick<VersionRow, 'id' | 'node_id' | 'state' | 'actor_id' | 'base_version_id'>;
+/** A link planLink has checked, ready for writeLink. */
+interface LinkPlan {
+  id: string; e: LinkInput; across: boolean; targetNode: string; fingerprint: string; actor: string;
+  repoint: LinkIdentity[] | undefined;
 }
 interface EdgeRow {
   id: string; kind: string; source_version_id: string; source_element_id: string | null;
@@ -3504,10 +3517,10 @@ export class Kolab {
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
     const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
     if (await this.findNode(this.db, s.kolab, name)) throw taken();
-    const spec = async () => (await this.db.query<{ name: string }>(`select name from node where kolab_id = $1 and kind = 'functional_spec'`, [s.kolab])).rows[0];
+    const spec = async () => (await this.db.query<{ name: string }>(`select name from node where kolab_id = $1 and kind = 'spec'`, [s.kolab])).rows[0];
     const secondSpec = (held: string) => new GateError(`kolab ${s.kolab} already holds its spec, ${held}, and a kolab holds exactly one (KON1, D77). `
       + `Write its prototypes as prototype nodes, or a variant of it in another kolab, as a fork (KON9)`);
-    if (kind === 'functional_spec') { const held = await spec(); if (held) throw secondSpec(held.name); }
+    if (kind === 'spec') { const held = await spec(); if (held) throw secondSpec(held.name); }
     const parent = await this.parentFor(s.kolab, kind, opts.parent);
     // Each candidate id in turn: the name, then '~' and a ULID, which no name can be (node_id_name_check).
     for (const id of [name, `~${ulid()}`]) {
@@ -3552,9 +3565,9 @@ export class Kolab {
     } else if (of.length === 1) {
       p = of[0];
     } else if (!of.length) {
-      throw new GateError(kind === 'technical_binding'
-        ? `a binding names the spec it binds (D78), and kolab ${kolab} holds no spec yet: create its spec first (kind functional_spec)`
-        : `a plan names the binding it plans (D78), and kolab ${kolab} holds no binding yet: create the binding first (kind technical_binding)`);
+      throw new GateError(kind === 'binding'
+        ? `a binding names the spec it binds (D78), and kolab ${kolab} holds no spec yet: create its spec first (kind spec)`
+        : `a plan names the binding it plans (D78), and kolab ${kolab} holds no binding yet: create the binding first (kind binding)`);
     } else {
       throw new GateError(`a plan names the binding it plans (D78), and kolab ${kolab} holds ${of.length} bindings: name one with parent=<binding> (${of.map((n) => n.name).join(', ')})`);
     }
@@ -3570,9 +3583,9 @@ export class Kolab {
   private linkOutsideParent(src: NodeRow, tgt: NodeRow): string | undefined {
     const at = (n: NodeRow) => (n.kolab_id === src.kolab_id ? n.name : `${n.kolab_id}/${n.name}`);
     if (src.kind === 'plan' && tgt.id !== src.parent_node_id && tgt.id !== src.id) {
-      return `${src.name} is a plan: its work packages deliver elements of its own binding, never ${tgt.kind === 'functional_spec' ? 'the spec' : `${KIND_WORDS[tgt.kind]} ${at(tgt)}`} (KON6, D78). Link the binding element that serves it`;
+      return `${src.name} is a plan: its work packages deliver elements of its own binding, never ${tgt.kind === 'spec' ? 'the spec' : `${KIND_WORDS[tgt.kind]} ${at(tgt)}`} (KON6, D78). Link the binding element that serves it`;
     }
-    if (src.kind === 'technical_binding' && tgt.kind === 'functional_spec' && tgt.id !== src.parent_node_id) {
+    if (src.kind === 'binding' && tgt.kind === 'spec' && tgt.id !== src.parent_node_id) {
       return `${src.name} is a binding of its kolab's spec, and serves that spec alone, not ${at(tgt)} (D78)`;
     }
     return undefined;
@@ -3608,12 +3621,12 @@ export class Kolab {
    * `parent` defaults to this node's latest committed version.
    */
   async draft(sessionId: string, nodeId: string,
-    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] }): Promise<string> {
+    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[]; links?: LinkInput[] }): Promise<string> {
     await this.requireNodeIn(sessionId, nodeId);   // another kolab's node reads as no node at all
     const node = await this.node(nodeId);
     const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
     checkDraftInput(input);
-    return this.writeDraft(nodeId, node.layer, s, input, (fn, access) => this.asAgent(sessionId, fn, nodeId, { access }), true);
+    return this.writeDraft(nodeId, node.layer, s, input, (fn, access) => this.asAgent(sessionId, fn, nodeId, { access }), true, input.links);
   }
 
   /**
@@ -3652,7 +3665,13 @@ export class Kolab {
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
     as: (fn: (tx: Q, signal: Signal) => Promise<void>, access: boolean) => Promise<void>,
     /** A draft the actor makes, taken from its owner's draft rate in the transaction that writes it; not an applied ruling. */
-    rated = false): Promise<string> {
+    rated = false,
+    /**
+     * Links the draft declares from its own elements (konjir_draft's links): each checked before
+     * anything is written, and written in the draft's own transaction, so a link refused leaves no
+     * draft behind (D95).
+     */
+    links: LinkInput[] = []): Promise<string> {
     // Its size first, before any work is done on it (W2.21).
     checkDraftInput(input);
 
@@ -3689,6 +3708,15 @@ export class Kolab {
       }
       if (p.state !== 'committed') throw new GateError(`parent ${parentId} has not cleared review`);
       await this.refuseCycle(nodeId, parentId);
+      // A variant is of its parent's kind; only a prototype may be derived from the spec (D95, KON3, KON6).
+      if (p.node_id !== nodeId) {
+        const [child, of] = [await this.node(nodeId), await this.node(p.node_id)];
+        if (!variantKindAllowed(child.kind, of.kind)) {
+          throw new GateError(`${child.name} is a ${KIND_WORDS[child.kind]}, and a variant is of its parent's kind: `
+            + `${of.kolab_id === child.kolab_id ? of.name : `${of.kolab_id}/${of.name}`} is a ${KIND_WORDS[of.kind]}. `
+            + `Only a prototype may be derived from the spec (KON3, D95)${child.kind === 'plan' ? '; a plan is derived from its binding, never the spec (KON6)' : ''}`);
+        }
+      }
       parentEls = await this.elements(parentId);
     }
 
@@ -3713,6 +3741,11 @@ export class Kolab {
     checkVersion(els);
     const removals = input.unlink?.length ? await this.linkIdentities(nodeId, latest?.id ?? null, null, input.unlink) : [];
     const id = ulid();
+    const once = new Map(links.map((e) => [JSON.stringify([e.kind, e.sourceElement ?? null, e.target, e.targetElement ?? null, e.selector ?? null]), e]));
+    const plans: LinkPlan[] = [];
+    for (const e of once.values()) {
+      plans.push(await this.planLink(s, { id, node_id: nodeId, state: 'drafted', actor_id: s.actor_id, base_version_id: latest?.id ?? null }, e));
+    }
     // Built on the live version read above: if the node moves on before this commits, review sees it.
     // A fork is written under a shared hold on the access lock, so the Read it rests on can't be
     // revoked between the check (row-level security's, as it inserts) and its commit (LNK8).
@@ -3722,9 +3755,10 @@ export class Kolab {
         layer, actor_id: s.actor_id, active_role: s.active_role, parent_held_by: heldBy,
       }, els, deltaRows);
       await applyRemovals(tx, id, removals);
+      for (const p of plans) await this.writeLink(tx, { id, state: 'drafted' }, p);
       // The version and its use of the budget commit together (takeRate).
       await this.useRate(tx, hold);
-    }, heldBy !== null);
+    }, heldBy !== null || plans.some((p) => p.across));
     if (rated) await this.rated(s.actor_id, 'draft', write);
     else await write(null);
     return id;
@@ -4529,13 +4563,31 @@ export class Kolab {
 
   // ---- edges ---------------------------------------------------------------
 
-  async link(sessionId: string, e: {
-    kind: 'derivation' | 'dependency' | 'equivalence';
-    source: string; sourceElement?: string;
-    target: string; targetElement?: string; selector?: QuoteSelector;
-  }): Promise<string> {
+  async link(sessionId: string, e: LinkInput & { source: string }): Promise<string> {
     const src = await this.version(e.source);
     const s = await this.requireLayer(sessionId, src.layer, src.kolab_id);
+    const plan = await this.planLink(s, src, e);
+    // One edge per (source scope, target scope): duplicates would multiply marks.
+    const dup = await this.db.query<{ id: string }>(
+      `select id from edge where kind = $1 and source_version_id = $2
+          and source_element_id is not distinct from $3 and target_version_id = $4
+          and target_element_id is not distinct from $5 and target_selector is not distinct from $6::jsonb`,
+      [e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
+        e.selector ? JSON.stringify(e.selector) : null]);
+    if (dup.rows[0]) {
+      // Declared again across kolabs by someone who reads the target: they hold it now.
+      if (plan.across) await this.holdLink(dup.rows[0].id, s.actor_id);
+      return dup.rows[0].id;
+    }
+    await this.asAgent(sessionId, (tx) => this.writeLink(tx, src, plan), src.node_id, { access: plan.across });
+    return plan.id;
+  }
+
+  /**
+   * Checks a link from `src`, a version of the session's own, or one about to be drafted, and
+   * says how to write it (writeLink): everything that can refuse it, before anything is written.
+   */
+  private async planLink(s: { actor_id: string; kolab: string }, src: LinkSource, e: LinkInput): Promise<LinkPlan> {
     const tgt = await this.version(e.target);
     // A link into another kolab needs Read on it now (LNK8, D3), and only its committed versions
     // can be named (D49): anything else reads as a version that isn't there. The link rests on
@@ -4560,45 +4612,35 @@ export class Kolab {
     }
     const r = await this.resolveIn(e.target, e.targetElement ?? null, e.selector ?? null);
     if (r.status !== 'ok') throw new Error(await this.linkRefusal(tgt, e.targetElement ?? null, e.selector ?? null, r.status));
-    // One edge per (source scope, target scope): duplicates would multiply marks.
-    const dup = await this.db.query<{ id: string }>(
-      `select id from edge where kind = $1 and source_version_id = $2
-          and source_element_id is not distinct from $3 and target_version_id = $4
-          and target_element_id is not distinct from $5 and target_selector is not distinct from $6::jsonb`,
-      [e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
-        e.selector ? JSON.stringify(e.selector) : null]);
-    if (dup.rows[0]) {
-      // Declared again across kolabs by someone who reads the target: they hold it now.
-      if (across) await this.holdLink(dup.rows[0].id, s.actor_id);
-      return dup.rows[0].id;
-    }
     const repoint = src.state === 'drafted' && src.actor_id === s.actor_id
       ? await this.repointed(src, e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null, e.selector ?? null) : undefined;
-    const id = ulid();
-    await this.asAgent(sessionId, async (tx) => {
-      // Across kolabs, Read is checked again here, under the shared access lock this transaction
-      // took first, so no revoke can land between the check and the link's commit (LNK8); row-level
-      // security (edge_target) checks it once more as the edge is inserted.
-      if (across && !(await tx.query<{ ok: boolean }>(`select kj_session_reads_version($1) as ok`, [e.target])).rows[0].ok) {
-        throw new Error(`no version ${e.target}`);
-      }
-      // Re-pointing drops the marked link in the same transaction that adds its replacement.
-      if (repoint) await applyRemovals(tx, src.id, repoint);
-      // Linking in a draft what the draft drops keeps the link after all: the later word wins.
-      if (src.state === 'drafted') {
-        await tx.query(
-          `delete from link_removal where version_id = $1 and kind = $2 and source_element_id is not distinct from $3
-              and target_node_id = $4 and target_element_id is not distinct from $5 and target_selector is not distinct from $6::jsonb`,
-          [e.source, e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null, e.selector ? JSON.stringify(e.selector) : null]);
-      }
+    return { id: ulid(), e, across, targetNode: tgt.node_id, fingerprint: r.fingerprint!, actor: s.actor_id, repoint };
+  }
+
+  /** Writes a link planLink checked, from version `src`, in `tx`: an agent's transaction. */
+  private async writeLink(tx: Q, src: { id: string; state: string }, p: LinkPlan) {
+    const { e } = p;
+    const selector = e.selector ? JSON.stringify(e.selector) : null;
+    // Across kolabs, Read is checked again here, under the shared access lock this transaction
+    // took first, so no revoke can land between the check and the link's commit (LNK8); row-level
+    // security (edge_target) checks it once more as the edge is inserted.
+    if (p.across && !(await tx.query<{ ok: boolean }>(`select kj_session_reads_version($1) as ok`, [e.target])).rows[0].ok) {
+      throw new Error(`no version ${e.target}`);
+    }
+    // Re-pointing drops the marked link in the same transaction that adds its replacement.
+    if (p.repoint) await applyRemovals(tx, src.id, p.repoint);
+    // Linking in a draft what the draft drops keeps the link after all: the later word wins.
+    if (src.state === 'drafted') {
       await tx.query(
-        `insert into edge(id, kind, source_version_id, source_element_id, target_version_id,
-                          target_element_id, target_selector, target_fingerprint, held_by)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [id, e.kind, e.source, e.sourceElement ?? null, e.target, e.targetElement ?? null,
-          e.selector ? JSON.stringify(e.selector) : null, r.fingerprint, s.actor_id]);
-    }, src.node_id, { access: across });
-    return id;
+        `delete from link_removal where version_id = $1 and kind = $2 and source_element_id is not distinct from $3
+            and target_node_id = $4 and target_element_id is not distinct from $5 and target_selector is not distinct from $6::jsonb`,
+        [src.id, e.kind, e.sourceElement ?? null, p.targetNode, e.targetElement ?? null, selector]);
+    }
+    await tx.query(
+      `insert into edge(id, kind, source_version_id, source_element_id, target_version_id,
+                        target_element_id, target_selector, target_fingerprint, held_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [p.id, e.kind, src.id, e.sourceElement ?? null, e.target, e.targetElement ?? null, selector, p.fingerprint, p.actor]);
   }
 
   /**
@@ -4611,7 +4653,7 @@ export class Kolab {
    * and suffix the new quote keeps is the one replaced; if that doesn't pick one, the owner names
    * it with konjir_unlink.
    */
-  private async repointed(src: VersionRow, kind: string, sourceElement: string | null, targetNode: string,
+  private async repointed(src: Pick<VersionRow, 'base_version_id'>, kind: string, sourceElement: string | null, targetNode: string,
     targetElement: string | null, selector: QuoteSelector | null): Promise<LinkIdentity[] | undefined> {
     if (!src.base_version_id) return undefined;
     let found = (await this.db.query<EdgeRow & { target_node_id: string }>(

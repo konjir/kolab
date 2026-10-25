@@ -38,7 +38,7 @@ async function build(kolab: TestKolab) {
   const sa = await kolab.openSession(alice, 'product', { kolab: down });
   const sb = await kolab.openSession(bob, 'product', { kolab: up });
   const sc = await kolab.openSession(carol, 'product', { kolab: down });
-  const spec = await kolab.createNode(sb, 'functional_spec', 'Spec', `spec-${r}`);
+  const spec = await kolab.createNode(sb, 'spec', 'Spec', `spec-${r}`);
   const u1 = await kolab.commit(sb, spec, { elements: els({ R1: `${r} text 0`, R2: `${r} fixed` }) });
   // alice's link and fork; carol (a second writer in down) reviews them.
   const dep = await kolab.createNode(sa, 'prototype', 'Dep', `dep-${r}`);
@@ -46,7 +46,7 @@ async function build(kolab: TestKolab) {
   await kolab.review(d1v);
   await kolab.recordReview(sc, d1v, { verdict: 'approve' });
   const edge = await kolab.link(sa, { kind: 'dependency', source: d1v, sourceElement: 'D1', target: u1, targetElement: 'R1' });
-  const fork = await kolab.createNode(sa, 'functional_spec', 'Fork', `fork-${r}`);
+  const fork = await kolab.createNode(sa, 'spec', 'Fork', `fork-${r}`);
   const f1 = await kolab.draft(sa, fork, { parent: u1, deltas: [{ kind: 'override', element: 'R2', text: `${r} forked` }] });
   await kolab.review(f1);
   await kolab.recordReview(sc, f1, { verdict: 'approve' });

@@ -28,10 +28,10 @@ async function all<T>(read: (page: PageOpts) => Promise<{ items: T[]; next: stri
 async function kolabWith(n: number) {
   const ctx = await setup();
   const { kolab, product, engineer } = ctx;
-  await kolab.createNode(product, 'functional_spec', 'Orders', 'orders');
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
   const ids = Array.from({ length: n }, (_, i) => `R${i + 1}`);
   await kolab.commit(product, 'orders', { elements: els(Object.fromEntries(ids.map((id) => [id, `Requirement ${id} holds.`]))) });
-  await kolab.createNode(engineer, 'technical_binding', 'Orders on Postgres', 'orders-pg');
+  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
   await kolab.commit(engineer, 'orders-pg', { elements: els(Object.fromEntries(ids.map((id) => [`b${id}`, `Binding for ${id}.`]))) });
   return { ...ctx, ids };
 }
@@ -79,7 +79,7 @@ test('a cursor whose key parts are the wrong shape, or that another filter gave,
   for (const at of ['2026-01-01 00:00:00.123456+00', '2026-01-01 00:00:00+05:30', '2026-01-01 00:00:00-03:30:15', '2026-01-01 00:00:00+15:59:59', '-infinity', 'infinity']) {
     await expect(kolab.marksPage(engineer, { layer: 'technical' }, { cursor: cursorFor(marks, [at, 'x']) })).resolves.toMatchObject({ items: [] });
   }
-  for (const key of [['functional_spec', 'a\u0000'], ['\u0000', 'a']]) {
+  for (const key of [['spec', 'a\u0000'], ['\u0000', 'a']]) {
     expect(await rejection(kolab.nodesPage(TEST_KOLAB, undefined, { cursor: cursorFor(scoped('nodes', { kolab: TEST_KOLAB }), key) }))).toMatch(invalid);
     expect(await rejection(kolab.rulingsPage(product, {}, { cursor: cursorFor(scoped('rulings', { kolab: TEST_KOLAB }), ['2026-01-01 00:00:00+00', 'x\u0000']) }))).toMatch(invalid);
     expect(await rejection(kolab.queriesPage(product, {}, { cursor: cursorFor(scoped('queries', { kolab: TEST_KOLAB }), ['x\u0000']) }))).toMatch(invalid);
@@ -131,10 +131,10 @@ test('marks, nodes, lineage, review requests and submissions page by cursor to t
 
   for (const name of ['a', 'b', 'c']) await kolab.createNode(product, 'prototype', name.toUpperCase(), name);
   const nodes = await all((p) => kolab.nodesPage(TEST_KOLAB, undefined, p), 2);
-  expect(nodes.items.map((n) => n.name)).toStrictEqual(['orders', 'a', 'b', 'c', 'orders-pg']);
-  expect((await all((p) => kolabNodesPage(kolab, product, p), 2)).items.map((n) => n.name)).toStrictEqual(['orders', 'a', 'b', 'c', 'orders-pg']);
-  expect((await all((p) => kolabNodesPage(kolab, product, p, { committed: true }), 1)).items.map((n) => n.name)).toStrictEqual(['orders', 'orders-pg']);
-  expect((await all((p) => readableNodes(kolab, product, TEST_KOLAB, p).then((r) => r!), 1)).items.map((n) => n.name)).toStrictEqual(['orders', 'orders-pg']);
+  expect(nodes.items.map((n) => n.name)).toStrictEqual(['orders-pg', 'a', 'b', 'c', 'orders']);
+  expect((await all((p) => kolabNodesPage(kolab, product, p), 2)).items.map((n) => n.name)).toStrictEqual(['orders-pg', 'a', 'b', 'c', 'orders']);
+  expect((await all((p) => kolabNodesPage(kolab, product, p, { committed: true }), 1)).items.map((n) => n.name)).toStrictEqual(['orders-pg', 'orders']);
+  expect((await all((p) => readableNodes(kolab, product, TEST_KOLAB, p).then((r) => r!), 1)).items.map((n) => n.name)).toStrictEqual(['orders-pg', 'orders']);
 
   const live = (await kolab.latestCommitted('orders'))!.id;
   const down = await all((p) => kolab.lineagePage(live, 'downstream', p), 2);
@@ -311,7 +311,7 @@ test('many nodes, questions and marks list in pages quickly, on the indexes the 
     [`select id from query where kolab_id = $1 and state = 'open' and id > $2 order by id limit 51`, [TEST_KOLAB, '01Q00000100']],
     [`select id from query where kolab_id = $1 and (created_at, id) < (now(), $2) order by created_at desc, id desc limit 51`, [TEST_KOLAB, '01Q00009000']],
     [`select id from invalidation where kolab_id = $1 and state = 'open' and (created_at, id) > (now() - interval '1 hour', $2) order by created_at, id limit 51`, [TEST_KOLAB, '01M']],
-    [`select name from node where kolab_id = $1 and (kind, name) > ($2, $3) order by kind, name limit 51`, [TEST_KOLAB, 'functional_spec', 'n01000']],
+    [`select name from node where kolab_id = $1 and (kind, name) > ($2, $3) order by kind, name limit 51`, [TEST_KOLAB, 'spec', 'n01000']],
   ] as const) {
     const p = await plan(sql, [...params]);
     expect(p).toMatch(/Index (Only )?Scan|Bitmap Index Scan/);

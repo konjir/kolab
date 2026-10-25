@@ -43,7 +43,7 @@ async function agent(server: KonjirServer, admin: Client, id: string, role: 'pro
  * review, and `reviewer`, or Lee, approves it (W1.6).
  */
 async function spec(pm: Client, reviewer?: Client) {
-  await call(pm, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
   const r = await call(reviewer ?? lee!, 'review', { node: 'orders', version: 1, verdict: 'approve' }) as { ok: boolean };
@@ -393,7 +393,7 @@ test('a change in one kolab wakes its own subscribers and no other kolab\'s', as
   const otherEng = await inOther(admin, server, 'other-eng', 'engineer');
   await spec(pm.client);
   // In the other kolab, its product agent is alone on its layer, so the checks alone commit its spec (W1.6).
-  await call(otherPm.client, 'create_node', { kind: 'functional_spec', title: 'Orders', id: 'orders' });
+  await call(otherPm.client, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   await call(otherPm.client, 'draft', { node: 'orders', elements: [{ id: 'R8', text: 'Office staff can cancel an order.' }] });
   await call(otherPm.client, 'submit_for_review', { node: 'orders', version: 1 });
 
