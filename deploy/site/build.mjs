@@ -262,10 +262,29 @@ ${withScript}
 `;
 };
 
-writeFileSync(outPath('index.html'), page(title, body));
-writeFileSync(outPath('404.html'), page('Not found: Konjir', notFound));
+// Every finished page is checked whole before it is written: its head must be exactly the one
+// page() writes, its title and description holding no markup, and its body, but for the one
+// site.js tag, must pass the same refusals as the artboard. So nothing a source holds (a title, a
+// description, a heading) can add a tag anywhere in the page.
+const headRe = new RegExp(`^<!doctype html>\\n<html lang="[a-zA-Z-]+">\\n<head>\\n<meta charset="utf-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1">\\n<title>[^<>]*</title>\\n<meta name="description" content="[^<>"]*">\\n<link rel="icon" href="/favicon.svg" type="image/svg\\+xml">\\n<link rel="stylesheet" href="${cssHref.replaceAll('.', '\\.')}">\\n</head>\\n<body>\\n`);
+const finished = (rel, html) => {
+  const head = headRe.exec(html) ?? fail(`site/${rel} would have a <head> other than the one the build writes: ${html.slice(0, 600)}`);
+  const script = `<script src="${jsHref}"></script>`;
+  const rest = html.slice(head[0].length);
+  if (rest.split(script).length !== 2) fail(`site/${rel} would hold site.js other than once`);
+  const inBody = rest.replace(script, '').replace(/\n<\/body>\n<\/html>\n$/, '');
+  if (/<\/?(html|head|body|title)\b/i.test(inBody)) fail(`site/${rel} would have a second <html>, <head>, <body> or <title>`);
+  for (const [re, what] of refuse) {
+    const m = re.exec(inBody);
+    if (m) fail(`site/${rel} would have ${what}: ${inBody.slice(m.index, m.index + 80)}`);
+  }
+  writeFileSync(outPath(rel), html);
+};
+
+finished('index.html', page(title, body));
+finished('404.html', page('Not found: Konjir', notFound));
 mkdirSync(outPath('hands-on'), { recursive: true });
-writeFileSync(outPath('hands-on/index.html'), page(`Hands-on: ${tutorial.title.text}: Konjir`, handsOn, tutorial.lead));
+finished('hands-on/index.html', page(`Hands-on: ${tutorial.title.text}: Konjir`, handsOn, tutorial.lead));
 writeFileSync(outPath('robots.txt'), 'User-agent: *\nAllow: /\n');
 copyFileSync(join(repo, 'brand', 'konjir-mark-tile.svg'), outPath('favicon.svg'));
 

@@ -61,10 +61,12 @@ test("a folder's page is its index.html: /hands-on/ is served from /hands-on/ind
   expect(handler({ request: request('www.konjir.com', '/hands-on', '') })).toMatchObject({ headers: { location: { value: 'https://konjir.com/hands-on' } } });
 });
 
-test('a redirect for the "/" stays on this host: a path starting "//" passes through, to be a 404', () => {
-  const r = request('konjir.com', '//evil.example', '');
-  expect(handler({ request: r })).toBe(r);
-  expect(r.uri).toBe('//evil.example');
+test('a redirect for the "/" stays on this host: a path starting "//", or holding "\\", passes through unchanged, to be a 404', () => {
+  for (const uri of ['//evil.example', '/\\evil.example', '/\\evil.example/', '/a\\b', '/a/\\/']) {
+    const r = request('konjir.com', uri, '');
+    expect(handler({ request: r })).toBe(r);
+    expect(r.uri).toBe(uri);
+  }
 });
 
 test('the location is always the fixed apex, whatever the path holds', () => {
