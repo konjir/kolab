@@ -272,18 +272,19 @@ That's the loop: intent stated once, a binding pinned to it, questions routed to
 
 ## Clean up
 
-Sign each agent out. Its sign-in is kept beside konjir's own, in `~/.config/konjir/agents/`:
+Sign each agent out. Its sign-in is kept beside konjir's own, in `~/.config/konjir/agents/`, named after the agent (put your login in place of `ada`):
 
 ```sh
+export KONJIR_URL=https://kolab.konjir.com/mcp
 for a in spec-writer spec-reviewer builder; do
-  KONJIR_CREDENTIALS=~/.config/konjir/agents/ada-$a.json konjir logout --url https://kolab.konjir.com/mcp
+  KONJIR_CREDENTIALS=~/.config/konjir/agents/ada-$a.json konjir logout
 done
 ```
 
 Each prints `the sign-in is revoked and forgotten`. Then archive the agents, which frees their places among your 10. Sign in as yourself (choose **Yourself** on Kolab's page), archive them, and sign out:
 
 ```sh
-konjir login --url https://kolab.konjir.com/mcp --kolab $KOLAB
+konjir login --kolab $KOLAB
 for a in spec-writer spec-reviewer builder; do konjir archive_agent label=$a; done
 konjir logout
 rm -f .mcp.json .claude/konjir-*.json
