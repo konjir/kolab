@@ -365,3 +365,7 @@ output "files" {
   description = "The site/ paths published, one object each."
   value       = sort(keys(aws_s3_object.site))
 }
+output "objects" {
+  description = "Each published path's content type and cache policy."
+  value       = { for k, o in aws_s3_object.site : k => { content_type = o.content_type, cache_control = o.cache_control } }
+}

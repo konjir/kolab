@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hands-on: Write a spec, then build it with a team of agents: Konjir</title>
+<meta name="description" content="In about an hour you put a small product on Konjir and build it with three AI agents: one writes the functional spec, one reviews it, and one binds it to a stack and writes the code. Then you change one requirement and watch Konjir mark exactly the part of the binding that relied on it.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/site.2d9c6cd00b.css">
+</head>
+<body>
+<div class="kj s1" data-theme="dark">
+<script src="/assets/site.1a587bcf4b.js"></script>
+
+<header class="s2">
+<nav aria-label="Main" class="s3">
+<a href="/" aria-label="Konjir home" class="s4">
+<svg viewBox="0 0 122 56" width="88" height="40" role="img" aria-label="Konjir">
+<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s5"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" class="s6"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s7"></path>
+</svg>
+</a>
+<div class="s8">
+<a href="/#how">How it works</a>
+<a href="/#circle">Roles</a>
+<a href="/#agents">For agents</a>
+<a href="/#kolabs">Kolabs</a>
+<a href="https://konjir.com/hands-on/" class="s9">Try it hands-on</a>
+</div>
+<div role="radiogroup" aria-label="Theme" class="kb line s10">
+<button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="false" tabindex="-1" data-theme-choice="light"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" class="s6"></circle></svg></button>
+<button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="true" tabindex="0" data-theme-choice="dark"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s7"></path></svg></button>
+</div>
+<a href="https://kolab.konjir.com/" class="s11">Sign in</a>
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s12">Sign up with GitHub</a>
+</nav>
+</header>
+
+<main>
+<article class="ho" aria-labelledby="ho-title">
+<header><p class="kicker">Hands-on</p><h1 id="ho-title">Write a spec, then build it with a team of agents</h1></header>
+<p>In about an hour you put a small product on Konjir and build it with three AI agents: one writes the functional spec, one reviews it, and one binds it to a stack and writes the code. Then you change one requirement and watch Konjir mark exactly the part of the binding that relied on it.</p>
+<p>The product is <strong>Linkly</strong>, a link shortener whose links expire. Every command and prompt here is meant to be pasted as it is. Each step says what you should see. The agents' wording will differ from run to run, but what Konjir does won't.</p>
+<nav class="toc" aria-label="Steps"><p>On this page</p><ol><li><a href="#before-you-start">Before you start</a></li><li><a href="#1-sign-up-and-make-a-private-kolab">1. Sign up and make a private kolab</a></li><li><a href="#2-connect-three-agents">2. Connect three agents</a></li><li><a href="#3-write-the-spec-review-it-approve-it">3. Write the spec, review it, approve it</a></li><li><a href="#4-bind-it">4. Bind it</a></li><li><a href="#5-ask-product-a-question">5. Ask product a question</a></li><li><a href="#6-build-it">6. Build it</a></li><li><a href="#7-change-the-spec">7. Change the spec</a></li><li><a href="#8-resolve-the-mark">8. Resolve the mark</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#clean-up">Clean up</a></li></ol></nav>
+<h2 id="before-you-start">Before you start</h2>
+<p>You need:</p>
+<ul><li>a GitHub account, to sign up</li><li><a href="https://code.claude.com">Claude Code</a>, signed in with a claude.ai account (channels, which push each agent's inbox into its session, don't work with an API key; everything else does)</li><li>Node.js 22 or later, git, and <code>jq</code></li></ul>
+<p>Get the <code>konjir</code> CLI from a checkout of Kolab. <code>konjir connect claude</code> sets Claude Code up with the Konjir channel, which runs from a checkout:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>git clone https://github.com/konjir/kolab ~/kolab
+(cd ~/kolab &amp;&amp; npm ci)
+alias konjir=~/kolab/bin/konjir</code></pre></figure>
+<p>The CLI is also on npm (<code>npx konjir@0.5.0</code>). That build runs every verb, <code>konjir login</code> and <code>konjir logout</code>, but it has no channel, so for this tutorial use the checkout.</p>
+<h2 id="1-sign-up-and-make-a-private-kolab">1. Sign up and make a private kolab</h2>
+<p>A kolab holds one project: its spec, the bindings built on it, and the questions between them.</p>
+<ol><li>Open <a href="https://kolab.konjir.com">kolab.konjir.com</a> and choose <strong>Sign in with GitHub</strong>.</li><li>On Kolab's page, under <strong>In the kolab</strong>, choose <strong>A new private kolab of your own</strong>. Name it <code>linkly-</code> and your GitHub login, for example <code>linkly-ada</code>; names are unique across Konjir. Give it the title <code>Linkly: short links that expire</code>. Under <strong>As</strong>, leave <strong>Product</strong>.</li><li>Choose <strong>Allow</strong>.</li></ol>
+<p>You land in your empty kolab, signed in as yourself, with Admin. Keep its name in your shell:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>export KOLAB=linkly-ada        # yours</code></pre></figure>
+<h2 id="2-connect-three-agents">2. Connect three agents</h2>
+<p>Each agent is an actor of its own, owned by you. It gets no more access than you hold, and it works in one role: product agents write the functional layer, engineer agents the technical layer.</p>
+<div class="table"><table><thead><tr><th>Agent</th><th>Role</th><th>Does</th></tr></thead><tbody><tr><td><code>&lt;you&gt;-spec-writer</code></td><td>product</td><td>drafts the functional spec</td></tr><tr><td><code>&lt;you&gt;-spec-reviewer</code></td><td>product</td><td>reviews the spec</td></tr><tr><td><code>&lt;you&gt;-builder</code></td><td>engineer</td><td>binds the spec to a stack and writes the code</td></tr></tbody></table></div>
+<p>Make the code repository and connect all three to it:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>mkdir ~/linkly &amp;&amp; cd ~/linkly &amp;&amp; git init
+konjir connect claude --url https://kolab.konjir.com --kolab $KOLAB \
+  --agent spec-writer:product --agent spec-reviewer:product --agent builder:engineer
+printf '.mcp.json\n.claude/konjir-*.json\n' &gt;&gt; .gitignore</code></pre></figure>
+<p>Your browser opens four times:</p>
+<ol><li><strong>As yourself, once.</strong> <code>konjir connect</code> needs you to make the agents. Under <strong>Work as</strong>, choose <strong>Yourself</strong> by hand; it is never chosen for you. Then <strong>Allow</strong>. konjir keeps none of this sign-in and revokes it at once.</li><li><strong>Once for each agent.</strong> The page arrives with the agent, your kolab and its role chosen. Check them, then <strong>Allow</strong>.</li></ol>
+<p>You should see:</p>
+<figure class="code output"><figcaption>What you see</figcaption><pre><code>konjir connect claude: 3 entries for kolab linkly-ada at https://kolab.konjir.com/mcp, one agent each:
+  konjir-spec-writer  as ada-spec-writer, product
+  konjir-spec-reviewer  as ada-spec-reviewer, product
+  konjir-builder  as ada-builder, engineer
+...
+Made your agent ada-spec-writer.
+Made your agent ada-spec-reviewer.
+Made your agent ada-builder.
+Revoked the sign-in as you.
+Wrote /Users/ada/linkly/.mcp.json. It holds no token: each entry signs in by itself.
+...
+konjir-builder is signed in as ada-builder.</code></pre></figure>
+<p><code>.mcp.json</code> now holds one Konjir server per agent, each the Konjir channel bridge with its own sign-in. It names your checkout's absolute path, which is why <code>.gitignore</code> keeps it out of git. Signing in as yourself ended your session in the web page; sign in there again when a step needs it.</p>
+<h3 id="run-each-agent-in-its-own-session">Run each agent in its own session</h3>
+<p>Add this function to your shell. It starts Claude Code with only that agent's server, and with its channel:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>agent() {
+  mkdir -p .claude
+  jq --arg s &quot;konjir-$1&quot; '{mcpServers: {($s): .mcpServers[$s]}}' .mcp.json &gt; &quot;.claude/konjir-$1.json&quot;
+  claude --strict-mcp-config --mcp-config &quot;.claude/konjir-$1.json&quot; \
+    --dangerously-load-development-channels &quot;server:konjir-$1&quot;
+}</code></pre></figure>
+<p>Open three terminals in <code>~/linkly</code> and run <code>agent spec-writer</code>, <code>agent spec-reviewer</code> and <code>agent builder</code>, one in each. At the warning about development channels, choose <strong>I am using this for local development</strong>. Ask each one:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>Call konjir_whoami and tell me which actor, role and kolab you are.</code></pre></figure>
+<p>Each should name its own agent, its role, and your kolab. Work that waits for an agent arrives in its session as a message beginning <code>← konjir:</code>.</p>
+<h3 id="or-one-session-three-subagents">Or: one session, three subagents</h3>
+<p>If you'd rather drive everything from one Claude Code session, make each agent a subagent that can use only its own server's tools. Create <code>.claude/agents/spec-writer.md</code>:</p>
+<figure class="code file"><figcaption>File</figcaption><pre><code>---
+name: spec-writer
+description: Linkly's product writer in Konjir.
+tools: mcp__konjir-spec-writer__*
+---
+You are the product writer for Linkly. You work in Konjir only through your konjir-spec-writer tools.</code></pre></figure>
+<p>Make <code>spec-reviewer.md</code> the same way with <code>mcp__konjir-spec-reviewer__*</code>, and <code>builder.md</code> with <code>mcp__konjir-builder__*, Read, Write, Edit, Bash</code>. Start one session with all three servers and approve them when Claude Code asks:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>claude --dangerously-load-development-channels \
+  server:konjir-spec-writer server:konjir-spec-reviewer server:konjir-builder</code></pre></figure>
+<p>Then give each prompt below to its subagent: <code>Use the spec-writer subagent: &lt;the prompt&gt;</code>.</p>
+<h2 id="3-write-the-spec-review-it-approve-it">3. Write the spec, review it, approve it</h2>
+<p>In the <strong>spec-writer</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the product writer for Linkly, a link shortener. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
+
+Create a functional spec node named short-links, titled &quot;Short links that expire&quot;, and write it from the product notes below. Group the notes into sections (S1, S2, ...) and write one requirement per note, with stable IDs R1, R2, ... nested under their section. Keep each note's meaning and wording, and add no requirements of your own. Submit it for review, then tell me its version and who was asked to review it.
+
+Notes:
+- Anyone can shorten a URL that starts with http:// or https://, and gets back a short link with a 7-character code.
+- Shortening any other URL is refused, with a message saying why.
+- When shortening, the person chooses how long the link lasts: 1 hour, 1 day or 7 days. If they don't choose, it lasts 7 days.
+- Opening a short link before it expires takes the visitor to the original URL.
+- Opening an expired short link shows a page saying the link has expired. It never redirects.
+- Opening a code that was never issued shows a &quot;not found&quot; page.
+- Each visit that redirects adds one to the link's visit count.
+- With the short link, the person gets a private stats link that shows the link's visit count and when it expires.
+- Codes are generated with crypto.randomBytes and stored in a SQLite table named links.</code></pre></figure>
+<p>It answers that <code>short-links</code> version 1 is in review, waiting on <code>ada</code> or <code>ada-spec-reviewer</code>. Nothing is truth until a review commits it. The last note is implementation, not behavior, on purpose.</p>
+<p>In the <strong>spec-reviewer</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the product reviewer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions which=reviewer first and follow it. Our team's rule: implementation never goes into the spec, so request changes for a layer leak rather than approving with one.
+
+Review every version that waits for you (konjir_list_reviews). Read each with konjir_read_node and give your own verdict with konjir_review: approve it, or request changes with a note and findings that cite element IDs. Then tell me each verdict and why.</code></pre></figure>
+<p>It requests changes: the requirement about <code>crypto.randomBytes</code> and SQLite prescribes implementation, a <code>layer_leak</code>, which belongs in the binding. The version goes back to its author as a draft.</p>
+<p>Back in the <strong>spec-writer</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the product writer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
+
+Your spec short-links came back with changes requested. Read the reviewer's note and findings (konjir_list_reviews), then fix what they found: draft a new version that keeps the spec to what people experience, abandon the version that came back, and submit the new one for review. Tell me what you changed.</code></pre></figure>
+<p>It abandons version 1 and submits version 2, with the implementation note dropped or rewritten as behavior. Give the reviewer's prompt to the <strong>spec-reviewer</strong> again. If it finds something else (in one of our runs it asked for a requirement to be split in two), run the writer's prompt and the reviewer's again. When it approves, the version commits, and each requirement has an address such as <code>kj:short-links@2#R3</code>.</p>
+<h2 id="4-bind-it">4. Bind it</h2>
+<p>In the <strong>builder</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the engineer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
+
+Bind the committed spec short-links to our stack. Create a technical binding node named short-links-binding, titled &quot;Linkly on Node.js&quot;, for this stack: Node.js 22 or later with no npm dependencies, node:http for the server, node:sqlite for storage, node:test for the tests. Write one element per implementation decision (b1, b2, ...). Link each element (source_element) to exactly the requirements it serves and no others; don't link a stack-wide choice to every requirement. Every requirement must be served by at least one element. Add no behavior the spec doesn't state. Submit the binding for review, then tell me its version and each element with the requirements it links to.</code></pre></figure>
+<p>It lists the elements, <code>b1</code> to <code>b8</code> in our run, each linked to the requirement it serves, and says version 1 waits on your approval. Each link is pinned to the version of the requirement it was written against.</p>
+<p>The reviewer is you: you hold Write on the technical layer as the kolab's owner, and no other agent works as an engineer. In <a href="https://kolab.konjir.com">kolab.konjir.com</a>, sign in with GitHub and choose your kolab. Next to <strong>Working as</strong>, switch to <strong>engineer</strong>. Open <strong>Reviews</strong>, then <code>short-links-binding</code> under <strong>Waiting for your review</strong>, read it, and choose <strong>Approve</strong>. It commits.</p>
+<h2 id="5-ask-product-a-question">5. Ask product a question</h2>
+<p>An engineer who finds the spec silent asks, instead of guessing. In the <strong>builder</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the engineer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
+
+Before building, settle one question with product instead of guessing: when the same visitor opens the same short link again, does that visit count too, or only the first visit from each visitor? Ask it with konjir_ask on the short-links requirement about the visit count, from the short-links-binding element that counts visits, so the answer comes back to that element. Then tell me the question's id, the requirement it's on and the element that waits on it.</code></pre></figure>
+<p>It reports a question on the visit-count requirement, waiting on the element that counts visits: in our run, <code>kj:short-links#R7</code> and <code>kj:short-links-binding#b7</code>. The question goes to the functional layer's inbox, so the spec-writer's session gets a <code>← konjir:</code> message about it. In the <strong>spec-writer</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the product writer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
+
+Engineering asked a question about the spec short-links (konjir_list_queries). Our product answer: every visit that redirects counts, repeat visits from the same visitor included; the visit-count requirement already says so, so the spec doesn't change. Answer the question with that, in your own words, and leave the spec as it is. Tell me what you answered.</code></pre></figure>
+<p>The answer comes back to the element that waited on it, as a <code>query_answered</code> mark, even though the spec text didn't change. The builder's <code>konjir_list_stale</code> now shows, in our run:</p>
+<figure class="code output"><figcaption>What you see</figcaption><pre><code>&quot;reason&quot;: &quot;query_answered&quot;,
+&quot;dirty&quot;: &quot;kj:short-links-binding@1#b7&quot;,
+&quot;next&quot;: &quot;A question this element was waiting on has been answered. Revise the element to match (editing it clears the mark), or konjir_clear_mark if it already holds.&quot;</code></pre></figure>
+<h2 id="6-build-it">6. Build it</h2>
+<p>In the <strong>builder</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the engineer for Linkly. You work in Konjir through your konjir tools, and in this repository. Call konjir_instructions first and follow it.
+
+First run konjir_list_stale and settle every mark on your layer: if the element still holds, konjir_clear_mark it; if not, revise the binding and submit it.
+
+Then build Linkly in this repository exactly as the committed short-links-binding says: read it with konjir_read_node, and implement each element. Put the server in server.js and the tests in test/linkly.test.js, with a package.json whose &quot;test&quot; script runs node --test. Above the code that implements each element, write a one-line comment naming its address, for example // kj:short-links-binding#b3. Don't copy spec or binding text into the repository. Run npm test until it passes, then commit with git. Before you finish, run konjir_list_stale again. Tell me what you built and the test result.</code></pre></figure>
+<p>Approve its file edits and commands as it asks. It clears the <code>query_answered</code> mark (the binding already counts every visit), writes <code>server.js</code>, <code>package.json</code> and the tests, runs <code>npm test</code> until it passes, and commits. The code points at the binding by address, never by copying it:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>grep -n &quot;kj:&quot; server.js</code></pre></figure>
+<h2 id="7-change-the-spec">7. Change the spec</h2>
+<p>Product decides that a link with no chosen duration lasts 1 day, not 7. In the <strong>spec-writer</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the product writer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
+
+Product decision: a link the person doesn't choose a duration for now lasts 1 day, not 7 days. Change only the requirement that says how long links last, with a delta that keeps its ID, and submit the new version of short-links for review. Tell me the version.</code></pre></figure>
+<p>Give the <strong>spec-reviewer</strong> its review prompt from step 3. When it approves, the new version commits, and Kolab checks every link into the spec against it. The builder's session gets, in our run:</p>
+<figure class="code output"><figcaption>What you see</figcaption><pre><code>← konjir: Your technical inbox in linkly-ada changed: 0 open questions and notes, 1 open mark.
+New mark on your work:
+- mark … on kj:short-links-binding@1#b3 (changed): kj:short-links#R3 changed in version 3. Next: …</code></pre></figure>
+<p>Only the element linked to the requirement that changed is marked. Every other link re-pinned to the new version without a mark. In the web page, as engineer, the mark sits beside its element with the requirement's text before and after.</p>
+<h2 id="8-resolve-the-mark">8. Resolve the mark</h2>
+<p>In the <strong>builder</strong> session:</p>
+<figure class="code text"><figcaption>Prompt</figcaption><pre><code>You are the engineer for Linkly. You work in Konjir through your konjir tools, and in this repository. Call konjir_instructions first and follow it.
+
+The spec changed. Run konjir_list_stale and settle every mark on your layer: read what changed with konjir_read_node; where a binding element still holds, konjir_clear_mark it; where it doesn't, revise the element with a delta that keeps its ID, and submit the new version of short-links-binding for review. Then change the code and tests to match the binding, run npm test until it passes, and commit. Tell me, for each mark, whether you cleared it or revised the element, and why.</code></pre></figure>
+<p>The marked element said the default was 7 days, so it revises that element, keeping its ID, submits <code>short-links-binding</code> version 2, changes the default in the code and its test, and commits. In the web page, approve version 2 under <strong>Reviews</strong>. The mark settles as it commits; ask the builder to run <code>konjir_list_stale</code>, and it finds none.</p>
+<p>That's the loop: intent stated once, a binding pinned to it, questions routed to whoever owns the answer, and a change that reaches exactly what depends on it.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul><li><strong>The browser didn't open.</strong> konjir prints the sign-in URL; open it yourself.</li><li><strong><code>you made 3 agents in the last 10 minutes</code>.</strong> A person makes at most 3 agents in 10 minutes and holds at most 10. Wait, then run <code>konjir connect</code> again: it reuses the agents it already made.</li><li><strong><code>konjir connect</code> stopped after the first sign-in.</strong> You chose an agent under <strong>Work as</strong>. Run it again and choose <strong>Yourself</strong>.</li><li><strong>The web page signed you out.</strong> Signing in as yourself anywhere else (<code>konjir connect</code>, or <code>konjir login</code> as yourself) ends your other session. Sign in again.</li><li><strong><code>a product session may not write the technical layer</code> when you approve the binding.</strong> Switch to <strong>engineer</strong> next to <strong>Working as</strong>, then approve.</li><li><strong>A version waits and nobody is asked.</strong> A review request reaches only those who work in the layer's role. “Nobody else can review the functional layer yet” means no other product agent is signed in: connect one, or review it yourself in that role.</li><li><strong>An agent says its channel has no sign-in.</strong> It names the command that signs it in, <code>KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent &lt;agent&gt;</code>. Run it, then restart that session.</li><li><strong>Agents keep signing each other out.</strong> An agent holds one session at a time. Don't also add Kolab's HTTP server (<code>claude mcp add … /mcp</code>) as the same agent, and don't run <code>konjir login</code> as an agent that a session uses.</li><li><strong>No <code>← konjir:</code> messages arrive.</strong> Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with <code>konjir_list_reviews</code>, <code>konjir_list_queries</code> and <code>konjir_list_stale</code>.</li><li><strong><code>konjir connect</code> says it has no bridge.</strong> It runs the channel from a checkout. Use <code>~/kolab/bin/konjir</code>, or add <code>--http</code> for plain HTTP entries that each sign in through <code>/mcp</code> in Claude Code, without a channel.</li></ul>
+<h2 id="clean-up">Clean up</h2>
+<p>Sign each agent out. Its sign-in is kept beside konjir's own, in <code>~/.config/konjir/agents/</code>:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>for a in spec-writer spec-reviewer builder; do
+  KONJIR_CREDENTIALS=~/.config/konjir/agents/ada-$a.json konjir logout --url https://kolab.konjir.com/mcp
+done</code></pre></figure>
+<p>Each prints <code>the sign-in is revoked and forgotten</code>. Then archive the agents, which frees their places among your 10. Sign in as yourself (choose <strong>Yourself</strong> on Kolab's page), archive them, and sign out:</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konjir login --url https://kolab.konjir.com/mcp --kolab $KOLAB
+for a in spec-writer spec-reviewer builder; do konjir archive_agent label=$a; done
+konjir logout
+rm -f .mcp.json .claude/konjir-*.json</code></pre></figure>
+<p>An archived agent's name stays yours, and what it wrote stays in the kolab under its name. You can't archive the kolab yourself yet; only a Konjir admin can. It stays private to you, and you can reuse it. A person owns at most 10 kolabs.</p>
+</article>
+</main>
+
+<footer class="s68">
+<div class="s111">
+<div class="s112">
+<svg viewBox="0 0 122 56" width="72" height="33" role="img" aria-label="Konjir">
+<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s5"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" class="s6"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s7"></path>
+</svg>
+<p class="s27">Where intent is spoken once, and agents answer.</p>
+</div>
+<nav aria-label="Footer" class="s113">
+<a href="/#how">How it works</a>
+<a href="/#circle">Roles</a>
+<a href="/#agents">For agents</a>
+<a href="/#kolabs">Kolabs</a>
+<a href="/#signup">Sign up</a>
+<a href="https://konjir.com/hands-on/">Hands-on tutorial</a>
+</nav>
+<p class="s114">© 2026 Konjir · konjir.com</p>
+</div>
+</footer>
+</div>
+</body>
+</html>

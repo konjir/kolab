@@ -38,3 +38,4 @@ module "site" {
 }
 
 output "files" { value = module.site.files }
+output "objects" { value = module.site.objects }

@@ -1,0 +1,33 @@
+/* Article pages (the hands-on tutorial): deploy/site/markdown.mjs renders them, build.mjs adds this to the site's stylesheet. */
+.ho{max-width:760px;margin:0 auto;padding:clamp(48px,7vw,88px) clamp(16px,4vw,48px) clamp(64px,8vw,104px);box-sizing:border-box;min-width:0}
+.ho .kicker{margin:0 0 16px;font-size:12px;line-height:16px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
+.ho h1{margin:0 0 28px;font-family:'Fraunces',Georgia,'Times New Roman',serif;font-weight:400;font-size:clamp(40px,5.6vw,64px);line-height:1.04;letter-spacing:-.02em;font-variation-settings:'opsz' 144;text-wrap:balance}
+.ho h2{margin:64px 0 16px;padding-top:28px;border-top:1px solid var(--line);font-family:'Fraunces',Georgia,'Times New Roman',serif;font-weight:400;font-size:clamp(26px,3vw,34px);line-height:1.18;letter-spacing:-.01em;text-wrap:balance;scroll-margin-top:24px}
+.ho h3{margin:40px 0 12px;font-size:20px;line-height:28px;font-weight:600;scroll-margin-top:24px}
+.ho p,.ho ul,.ho ol{margin:0 0 18px}
+.ho > p:first-of-type{font-size:clamp(18px,1.7vw,21px);line-height:1.55}
+.ho ul,.ho ol{padding-left:24px}
+.ho li{margin:0 0 8px}
+.ho li::marker{color:var(--ink-muted)}
+.ho strong{font-weight:600}
+.ho a{color:var(--accent);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+.ho a:hover{color:var(--ink)}
+.ho code{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;background:var(--sunken);border:1px solid var(--line);border-radius:2px;padding:0 5px;overflow-wrap:anywhere}
+.ho .code{margin:0 0 22px;border:1px solid var(--line);border-radius:6px;background:var(--sunken);overflow:hidden;min-width:0}
+.ho .code figcaption{padding:8px 16px;border-bottom:1px solid var(--line);font-size:12px;line-height:16px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
+.ho .code.text{border-color:var(--accent)}
+.ho .code.text figcaption{color:var(--accent);border-bottom-color:var(--accent)}
+.ho .code.output figcaption{color:var(--clean)}
+.ho pre{margin:0;padding:16px 18px;overflow-x:auto;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:22px;color:var(--ink);white-space:pre}
+.ho .code.text pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.ho pre code{font-size:inherit;background:none;border:0;padding:0;overflow-wrap:normal}
+.ho .table{margin:0 0 22px;overflow-x:auto}
+.ho table{border-collapse:collapse;width:100%;font-size:15px;line-height:22px}
+.ho th,.ho td{text-align:left;vertical-align:top;padding:10px 14px 10px 0;border-bottom:1px solid var(--line)}
+.ho th{font-size:12px;line-height:16px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
+.ho .toc{margin:36px 0 0;padding:18px 22px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
+.ho .toc p{margin:0 0 8px;font-size:12px;line-height:16px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
+.ho .toc ol{margin:0;padding-left:0;list-style:none;columns:2 240px;column-gap:32px}
+.ho .toc li{margin:0 0 4px;break-inside:avoid}
+.ho .toc a{color:var(--ink);text-decoration:none}
+.ho .toc a:hover{color:var(--accent)}
