@@ -86,14 +86,15 @@ export const claudeBridgeEntry = (e: Entry, command: string) => ({
 
 /**
  * A browser sign-in that came back as someone other than the agent it was for (another chosen on
- * an older Kolab's page, say): whoever throws it has already revoked it, or forgotten it, and kept
- * nothing. `konjir connect` and `konjir login --agent` then ask again for the same agent.
+ * an older Kolab's page, say): whoever throws it has already forgotten it, kept nothing, and tried
+ * to revoke it. `revoked` says whether that worked. `konjir connect` and `konjir login --agent` ask
+ * again for the same agent only when it did, so no grant left standing is followed by another.
  */
 export class WrongAgentError extends Error {
-  constructor(readonly actor: string, readonly agent: string, message: string) { super(message); }
+  constructor(readonly actor: string, readonly agent: string, readonly revoked: boolean, message: string) { super(message); }
 }
 
-/** How many more times a sign-in that came back as the wrong agent is asked again for the same agent, at once (Lee's ruling of 2026-10-27). */
+/** How many more times a sign-in that came back as the wrong agent, and was revoked, is asked again for the same agent, at once (D97). */
 export const ASK_AGAIN = 2;
 
 /** The name the bridge registers under at Kolab, which its consent page shows: the bridge's own CLIENT_NAME. */
@@ -602,6 +603,12 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
               io.log(`${e.name} is signed in as ${e.agent}.`);
               signed++;
             } catch (err) {
+              if (err instanceof WrongAgentError && !err.revoked) {
+                // Not revoked: a grant as someone else still stands at Kolab. Asking again could leave
+                // more of them, so konjir stops for this agent and says so.
+                io.log(`${e.name} came back signed in as ${err.actor}, not ${e.agent}, and that sign-in couldn't be revoked: it is forgotten, not revoked, and lapses within 30 days unused. konjir connect doesn't ask again for ${e.agent}, so no more such sign-ins pile up. ${e.name} signs in by itself, in your browser, when Claude Code first starts it.`);
+                break;
+              }
               if (err instanceof WrongAgentError && tries <= ASK_AGAIN) {
                 io.log(`${e.name} came back signed in as ${err.actor}, not ${e.agent}, so that sign-in was revoked. Asking again for ${e.agent}${which}, try ${tries + 1} of ${ASK_AGAIN + 1}: on Kolab's page, check it names ${e.agent}, then Allow.`);
                 continue;

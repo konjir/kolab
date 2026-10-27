@@ -529,12 +529,15 @@ export async function personSession(url: string, token: string | undefined, opts
 
 /**
  * `konjir login`: signs in with the browser and keeps it. With `agent` (--agent), a sign-in that
- * comes back as anyone else is revoked and forgotten, never kept, and the same agent is asked for
- * again at once, at most ASK_AGAIN times (Lee's ruling of 2026-10-27). `path`, `open` and `log` are for tests.
+ * comes back as anyone else is forgotten, never kept, and revoked; once revoked, the same agent is
+ * asked for again at once, at most ASK_AGAIN times (D97). One that couldn't be revoked stops it
+ * there, so no grant left standing is followed by another. The error names every try's outcome.
+ * `path`, `open` and `log` are for tests.
  */
 export async function loginAs(url: string, scope: string, agent: string | undefined,
   opts: { path?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void } = {}) {
   const log = opts.log ?? ((l: string) => console.error(l));
+  const outcomes: string[] = [];
   for (let tries = 1; ; tries++) {
     let me;
     try {
@@ -545,11 +548,15 @@ export async function loginAs(url: string, scope: string, agent: string | undefi
     if (agent === undefined || me.actor === agent) return me;
     // --agent: a sign-in as anyone else (chosen otherwise on Kolab's page) is never kept.
     const r = await logout(url, { path: opts.path, forget: true });
-    const gone = r.revoked ? 'revoked' : 'forgotten, unrevoked,';
-    if (tries > ASK_AGAIN) {
-      throw new Error(`you signed in as ${me.actor}, not ${agent}, on each of ${tries} tries, so each sign-in was ${gone} and nothing is kept: run konjir login again, and on Kolab's page check it names ${agent}`);
+    outcomes.push(`try ${tries}: ${me.actor}, ${r.revoked ? 'revoked' : 'forgotten, not revoked'}`);
+    const all = `${outcomes.join('; ')}`;
+    if (!r.revoked) {
+      throw new Error(`you signed in as ${me.actor}, not ${agent}, and that sign-in couldn't be revoked: it is forgotten, not revoked, and lapses within 30 days unused, so konjir login doesn't ask again (${all}). Nothing is kept: run konjir login again once Kolab can be reached, and on Kolab's page check it names ${agent}`);
     }
-    log(`You signed in as ${me.actor}, not ${agent}, so that sign-in was ${gone} and nothing is kept. Asking again for ${agent}, try ${tries + 1} of ${ASK_AGAIN + 1}: on Kolab's page, check it names ${agent}, then Allow.`);
+    if (tries > ASK_AGAIN) {
+      throw new Error(`you didn't sign in as ${agent} in ${tries} tries (${all}). Nothing is kept: run konjir login again, and on Kolab's page check it names ${agent}`);
+    }
+    log(`You signed in as ${me.actor}, not ${agent}, so that sign-in was revoked and nothing is kept. Asking again for ${agent}, try ${tries + 1} of ${ASK_AGAIN + 1}: on Kolab's page, check it names ${agent}, then Allow.`);
   }
 }
 
@@ -565,7 +572,7 @@ export async function signInAgent(e: Entry, credentials: string, opts: { open?: 
   if (who.actor !== e.agent) {
     // Chosen otherwise on Kolab's page (another agent, or Yourself): never kept as this entry's sign-in.
     const r = await logout(e.url, { path: credentials, forget: true });
-    throw new WrongAgentError(who.actor, e.agent, `it signed in as ${who.actor}, not ${e.agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept for ${e.name}`);
+    throw new WrongAgentError(who.actor, e.agent, r.revoked, `it signed in as ${who.actor}, not ${e.agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept for ${e.name}`);
   }
   return who.actor;
 }

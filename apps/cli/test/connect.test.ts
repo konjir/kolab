@@ -515,7 +515,7 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
 });
 
 /**
- * A sign-in page as a Kolab from before the lock (Lee's ruling of 2026-10-27) would show it: the
+ * A sign-in page as a Kolab from before the lock (D97) would show it: the
  * scope without its `agent:`, so the page is the old one, every choice on it. The person then
  * chooses Yourself there, by mistake: the sign-in comes back as Ann, not the agent.
  */
@@ -526,7 +526,7 @@ const unlocked = (u: URL) => {
 };
 const agentOf = (u: URL) => (u.searchParams.get('scope') ?? '').split(' ').find((w) => w.startsWith('agent:'))?.slice(6);
 
-test('W3.8: a channel entry signed in as anyone but its agent is revoked and forgotten, then asked again for the same agent at once, at most twice, before the next (Lee\'s ruling of 2026-10-27)', async () => {
+test('W3.8: a channel entry signed in as anyone but its agent is revoked and forgotten, then asked again for the same agent at once, at most twice, before the next (D97)', async () => {
   const { kolab, idp, server } = await local();
   const project = scratch();
   const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
@@ -586,7 +586,74 @@ test('W3.8: on a Kolab with the lock, choosing anyone else on the page isn\'t po
   expect(io.lines.join('\n')).toContain('konjir-pm is signed in as ann-pm.');
 });
 
-test('konjir login --agent: a sign-in that comes back as anyone else is revoked, never kept, and asked again for the same agent, at most twice (Lee\'s ruling of 2026-10-27)', async () => {
+/** Makes Kolab's revoke endpoint unreachable while `on()` says so: as a network that drops it would. */
+function failingRevoke(on: () => boolean) {
+  const real = globalThis.fetch;
+  jest.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (on() && new URL(url).pathname === '/oauth/revoke') return Promise.reject(new TypeError('fetch failed'));
+    return real(input, init);
+  });
+}
+
+test('W3.8: a wrong sign-in that couldn\'t be revoked is said to be forgotten, not revoked, and konjir connect stops asking for that agent, then goes on to the next (D97)', async () => {
+  const { kolab, idp, server } = await local();
+  const project = scratch();
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
+  let failing = false;
+  failingRevoke(() => failing);
+  const asked: string[] = [];
+  const io: ConnectIO & { lines: string[] } = {
+    ...world(server, idp, async () => 0),
+    signInAgent: (e, credentials, step) => {
+      // Only ann-pm's wrong sign-in finds Kolab's revoke unreachable.
+      failing = e.agent === 'ann-pm';
+      return signInAgent(e, credentials, {
+        log: () => undefined, step,
+        open: (u) => {
+          const agent = agentOf(u)!;
+          asked.push(agent);
+          idp.next({ subject: '41', login: 'ann' });
+          const wrong = agent === 'ann-pm';
+          void consentAt(wrong ? unlocked(u) : u, wrong ? { as: 'self' } : {}, true);
+        },
+      }).finally(() => { failing = false; });
+    },
+  };
+  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product', 'dev:engineer']), yes: true, env }), io);
+  expect(asked).toStrictEqual(['ann-pm', 'ann-dev']);   // never asked again for ann-pm
+  const said = io.lines.join('\n');
+  expect(said).toContain('konjir-pm came back signed in as ann, not ann-pm, and that sign-in couldn\'t be revoked: it is forgotten, not revoked, and lapses within 30 days unused. konjir connect doesn\'t ask again for ann-pm');
+  expect(said).not.toContain('so that sign-in was revoked');
+  expect(said).not.toContain('Asking again');
+  expect(said).toContain('konjir-dev is signed in as ann-dev.');
+  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-pm', env) }).signedIn).toBe(false);
+  // The one grant as Ann left standing is that one: no more piled up behind it.
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 1 });
+});
+
+test('konjir login --agent: a wrong sign-in that couldn\'t be revoked stops it at once, its error naming every try (D97)', async () => {
+  const { kolab, idp, server } = await local();
+  const { actor: ann } = await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
+  await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
+  await kolab.addOwnAgent(ann, 'cli');
+  const path = join(scratch(), 'credentials.json');
+  let tries = 0;
+  failingRevoke(() => tries === 2);
+  const said: string[] = [];
+  const err = await rejection(loginAs(server.url, 'konjir kolab:anns role:product agent:ann-cli', 'ann-cli', {
+    path, log: (l) => said.push(l),
+    open: (u) => { tries++; idp.next({ subject: '41', login: 'ann' }); void consentAt(unlocked(u), { as: 'self' }, true); },
+  }));
+  expect(tries).toBe(2);
+  expect(err).toMatch(/you signed in as ann, not ann-cli, and that sign-in couldn't be revoked: it is forgotten, not revoked, .*so konjir login doesn't ask again \(try 1: ann, revoked; try 2: ann, forgotten, not revoked\)\. Nothing is kept/);
+  const asked = said.filter((l) => l.startsWith('You signed in'));
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toContain('so that sign-in was revoked and nothing is kept. Asking again for ann-cli, try 2 of 3');
+  expect(new StoredLogin(server.url, { path }).signedIn).toBe(false);
+});
+
+test('konjir login --agent: a sign-in that comes back as anyone else is revoked, never kept, and asked again for the same agent, at most twice (D97)', async () => {
   const { kolab, idp, server } = await local();
   const { actor: ann } = await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
   await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
@@ -613,7 +680,7 @@ test('konjir login --agent: a sign-in that comes back as anyone else is revoked,
   tries = 0;
   const other = join(scratch(), 'credentials.json');
   expect(await rejection(loginAs(server.url, scope, 'ann-cli', { path: other, open: as(9), log: () => undefined })))
-    .toMatch(/you signed in as ann, not ann-cli, on each of 3 tries, so each sign-in was revoked and nothing is kept/);
+    .toMatch(/you didn't sign in as ann-cli in 3 tries \(try 1: ann, revoked; try 2: ann, revoked; try 3: ann, revoked\)\. Nothing is kept/);
   expect(tries).toBe(3);
   expect(new StoredLogin(server.url, { path: other }).signedIn).toBe(false);
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });

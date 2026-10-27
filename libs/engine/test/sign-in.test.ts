@@ -22,6 +22,24 @@ async function authorized(kolab: Kolab, person: string, choice: Parameters<Kolab
   return { client, code, verifier, tokens: () => kolab.exchangeCode({ code, clientId: client, redirectUri, codeVerifier: verifier }) };
 }
 
+test('migration 0028: a sign-in\'s "N of M" is both or neither, each 1 to 99, N no more than M, whatever writes it (D97)', async () => {
+  const kolab = await openKolab();
+  const client = (await kolab.registerClient({ name: 'Test client', redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  const { binding } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256('v'.repeat(43)), step: { n: 2, of: 3 } });
+  const id = sessionKey(binding);
+  expect((await kolab.db.query(`select step, steps from oauth_request where id = $1`, [id])).rows).toStrictEqual([{ step: 2, steps: 3 }]);
+  for (const [step, steps] of [[5, 4], [0, 4], [1, 100], [1, null], [null, 2], [-1, 2]]) {
+    expect([step, steps, await rejection(kolab.db.query(`update oauth_request set step = $2, steps = $3 where id = $1`, [id, step, steps]))])
+      .toStrictEqual([step, steps, expect.stringMatching(/oauth_request_step/)]);
+  }
+  for (const [step, steps] of [[null, null], [1, 1], [99, 99], [3, 7]]) {
+    await kolab.db.query(`update oauth_request set step = $2, steps = $3 where id = $1`, [id, step, steps]);
+  }
+  // The engine keeps only a valid one: anything else is stored as neither.
+  const bad = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256('w'.repeat(43)), step: { n: 3, of: 2 } });
+  expect((await kolab.db.query(`select step, steps from oauth_request where id = $1`, [sessionKey(bad.binding)])).rows).toStrictEqual([{ step: null, steps: null }]);
+});
+
 test('a first sign-in signs a person up, named after their login; a later one, by the same id, finds them, whatever their login is now', async () => {
   const kolab = await openKolab();
   expect(await kolab.signInWith(github('1001', 'LeeNorris', 'Lee Norris'))).toStrictEqual({ actor: 'leenorris', created: true });
