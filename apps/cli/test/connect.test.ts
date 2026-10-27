@@ -15,7 +15,7 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { auth, type OAuthClientProvider, type StoredOAuthClientInformation, type StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
-import { StoredLogin, agentCredentialsPath, call, connect, login, main, personSession, signInAgent } from '../src/cli.js';
+import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main, personSession, signInAgent } from '../src/cli.js';
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
 import { MAX_CONFIG_BYTES, bridgeCommand, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
@@ -220,6 +220,12 @@ test('the diff shows what is added and what is kept, and a file is written atomi
  * where Kolab sent the browser back to; with `deliver`, the browser goes there too (the CLI's own
  * loopback listener).
  */
+/** The fixed fields of a consent page locked to one agent, its kolab and role; and none of the old page's choices. */
+function locked(html: string): string[] {
+  expect(html).not.toContain('type="radio"');
+  return [...html.matchAll(/type="hidden" name="(?:as|kolab|role)" value="([^"]+)"/g)].map((m) => m[1]);
+}
+
 async function consentAt(start: URL, form: Record<string, string> | ((html: string) => Record<string, string>) = {}, deliver = false): Promise<{ html: string; back: URL }> {
   const jar = new Map<string, string>();
   const go = async (url: URL, init: RequestInit = {}) => {
@@ -234,12 +240,13 @@ async function consentAt(start: URL, form: Record<string, string> | ((html: stri
   const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)?.[1];
   const csrf = field('csrf');
   if (!csrf) throw new Error(`no consent page at ${url.pathname}: ${res.status} ${html.slice(0, 300)}`);
-  const shown = Object.fromEntries([...html.matchAll(/name="(as|kolab|role)" value="([^"]+)" checked/g)].map((m) => [m[1], m[2]]));
+  // What the page has chosen: the checked choices, or on a page locked to one agent, its fixed fields.
+  const shown = Object.fromEntries([...html.matchAll(/name="(as|kolab|role)" value="([^"]+)" checked/g), ...html.matchAll(/type="hidden" name="(as|kolab|role)" value="([^"]+)"/g)].map((m) => [m[1], m[2]]));
   const done = await go(new URL('/oauth/consent', url), {
     method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ csrf, sign_in: field('sign_in') ?? '', decision: 'allow', ...shown, ...(typeof form === 'function' ? form(html) : form) }).toString(),
   });
-  if (done.status !== 303) throw new Error(`the consent was refused: ${done.status} ${(await done.text()).slice(0, 400)}`);
+  if (done.status !== 303) throw new Error(`the consent was refused: ${done.status} ${(await done.text()).slice(0, 4000)}`);
   const back = new URL(done.headers.get('location')!);
   if (deliver) await (await fetch(back)).text();
   return { html, back };
@@ -372,10 +379,9 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   expect(auths).toStrictEqual(['opencode mcp auth konjir-product', 'opencode mcp auth konjir-engineer']);
   expect(diff).toContain('Connected: each entry works as its own agent in anns.');
 
-  // Kolab's page arrived with each entry's agent, kolab and role chosen.
-  const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
-  expect(checked(pages.get('konjir-product')!)).toStrictEqual(['agent:ann-product', 'kolab:anns', 'product']);
-  expect(checked(pages.get('konjir-engineer')!)).toStrictEqual(['agent:ann-engineer', 'kolab:anns', 'engineer']);
+  // Kolab's page arrived locked to each entry's agent, kolab and role: nothing else to choose.
+  expect(locked(pages.get('konjir-product')!)).toStrictEqual(['agent:ann-product', 'kolab:anns', 'product']);
+  expect(locked(pages.get('konjir-engineer')!)).toStrictEqual(['agent:ann-engineer', 'kolab:anns', 'engineer']);
   expect(pages.get('konjir-product')).toContain('<strong>OpenCode</strong>');
 
   // Both work at once, each as its own agent, with what its owner lent it there (D30).
@@ -438,7 +444,7 @@ test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to 
   });
   const said = io.lines.join('\n');
   expect(said).toContain('Run claude, and type /mcp.');
-  expect(said).toContain('Choose konjir-pm, then Authenticate. Kolab\'s page arrives with ann-pm, kolab anns and product chosen');
+  expect(said).toContain('Choose konjir-pm, then Authenticate. Kolab\'s page is for ann-pm alone, in kolab anns as product: check it, then Allow.');
 
   const home = scratch();
   const g = world(server, idp, async () => 0);
@@ -455,8 +461,8 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
   const io: ConnectIO & { lines: string[] } = {
     ...world(server, idp, async () => { throw new Error('nothing to run for Claude Code'); }),
     // The entry signs in as its agent, with the browser: Kolab's page arrives with it chosen.
-    signInAgent: (e, credentials) => signInAgent(e, credentials, {
-      log: () => undefined,
+    signInAgent: (e, credentials, step) => signInAgent(e, credentials, {
+      log: () => undefined, step,
       open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, (html) => { pages.push(html); return {}; }, true); },
     }),
   };
@@ -475,9 +481,11 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
   // No token: KONJIR_TOKEN is set empty, so one in Claude Code's own environment never overrides the agent's sign-in.
   expect(text.replaceAll('"KONJIR_TOKEN": ""', '')).not.toMatch(/kj[src]_|token|bearer|authorization|as:self/i);
 
-  // Each signed in as its own agent, the page preselected, and kept in that agent's own file, where the bridge looks.
-  const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
-  expect(pages.map(checked)).toStrictEqual([['agent:ann-pm', 'kolab:anns', 'product'], ['agent:ann-dev', 'kolab:anns', 'engineer']]);
+  // Each signed in as its own agent, on a page locked to it that says which of the two it is, and
+  // kept in that agent's own file, where the bridge looks.
+  expect(pages.map(locked)).toStrictEqual([['agent:ann-pm', 'kolab:anns', 'product'], ['agent:ann-dev', 'kolab:anns', 'engineer']]);
+  expect(pages.map((p) => /<title>([^<]*)<\/title>/.exec(p)?.[1])).toStrictEqual(['Sign in as ann-pm (agent 1 of 2) · Kolab', 'Sign in as ann-dev (agent 2 of 2) · Kolab']);
+  expect(io.lines).toContain('Signing konjir-dev in as ann-dev (agent 2 of 2), in your browser. Kolab\'s page is for ann-dev alone, in kolab anns as engineer: check it names ann-dev, then Allow.');
   expect(pages[0]).toContain('konjir channel (Claude Code)');
   for (const agent of ['ann-pm', 'ann-dev']) {
     const kept = new StoredLogin(server.url, { path: agentCredentialsPath(agent) });
@@ -506,26 +514,113 @@ test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Cod
   expect(await rejection(connectHarness(options(server, scratch(), { http: true, yes: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
 });
 
-test('W3.8: a channel entry signed in as anyone but its agent (another chosen on Kolab\'s page) is revoked, forgotten and not counted', async () => {
+/**
+ * A sign-in page as a Kolab from before the lock (Lee's ruling of 2026-10-27) would show it: the
+ * scope without its `agent:`, so the page is the old one, every choice on it. The person then
+ * chooses Yourself there, by mistake: the sign-in comes back as Ann, not the agent.
+ */
+const unlocked = (u: URL) => {
+  const old = new URL(u);
+  old.searchParams.set('scope', (u.searchParams.get('scope') ?? '').split(' ').filter((w) => !w.startsWith('agent:')).join(' '));
+  return old;
+};
+const agentOf = (u: URL) => (u.searchParams.get('scope') ?? '').split(' ').find((w) => w.startsWith('agent:'))?.slice(6);
+
+test('W3.8: a channel entry signed in as anyone but its agent is revoked and forgotten, then asked again for the same agent at once, at most twice, before the next (Lee\'s ruling of 2026-10-27)', async () => {
   const { kolab, idp, server } = await local();
   const project = scratch();
   const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
+  // ann-pm comes back as Ann every time; ann-dev once, then as itself.
+  const asked: string[] = [];
   const io: ConnectIO & { lines: string[] } = {
     ...world(server, idp, async () => 0),
-    // The person chooses Yourself by hand, not the preselected agent.
-    signInAgent: (e, credentials) => signInAgent(e, credentials, {
-      log: () => undefined,
-      open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'self' }, true); },
+    signInAgent: (e, credentials, step) => signInAgent(e, credentials, {
+      log: () => undefined, step,
+      open: (u) => {
+        const agent = agentOf(u)!;
+        asked.push(`${agent} ${u.searchParams.get('step')}/${u.searchParams.get('steps')}`);
+        idp.next({ subject: '41', login: 'ann' });
+        const wrong = agent === 'ann-pm' || asked.filter((a) => a.startsWith('ann-dev')).length === 1;
+        void consentAt(wrong ? unlocked(u) : u, wrong ? { as: 'self' } : {}, true);
+      },
     }),
   };
-  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), yes: true, env }), io);
+  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product', 'dev:engineer']), yes: true, env }), io);
+  // The same agent asked for again at once, never skipping ahead: three tries for ann-pm, then ann-dev's two.
+  expect(asked).toStrictEqual(['ann-pm 1/2', 'ann-pm 1/2', 'ann-pm 1/2', 'ann-dev 2/2', 'ann-dev 2/2']);
   const said = io.lines.join('\n');
-  expect(said).toContain('konjir-pm didn\'t sign in (it signed in as ann, not ann-pm, so that sign-in was revoked and nothing is kept for konjir-pm)');
+  expect(said).toContain('konjir-pm came back signed in as ann, not ann-pm, so that sign-in was revoked. Asking again for ann-pm (agent 1 of 2), try 2 of 3: on Kolab\'s page, check it names ann-pm, then Allow.');
+  expect(said).toContain('Asking again for ann-pm (agent 1 of 2), try 3 of 3');
+  expect(said).not.toContain('try 4');
+  expect(said).toContain('konjir-pm didn\'t sign in (it signed in as ann, not ann-pm, so that sign-in was revoked and nothing is kept for konjir-pm; asked 3 times)');
+  expect(said).toContain('konjir-dev came back signed in as ann, not ann-dev, so that sign-in was revoked. Asking again for ann-dev (agent 2 of 2), try 2 of 3');
+  expect(said).toContain('konjir-dev is signed in as ann-dev.');
   expect(said).not.toContain('konjir-pm is signed in');
   expect(said).toContain('On first start each entry signs in by itself in your browser');
   expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-pm', env) }).signedIn).toBe(false);
-  // No grant as Ann is left: not this one, nor konjir connect's own sign-in as her.
+  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-dev', env) }).signedIn).toBe(true);
+  // No grant as Ann is left: none of the four wrong ones, nor konjir connect's own sign-in as her.
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is not null`)).rows[0]).toStrictEqual({ n: 5 });
+});
+
+test('W3.8: on a Kolab with the lock, choosing anyone else on the page isn\'t possible: a form posted for another actor is refused, and the sign-in still waits for the agent', async () => {
+  const { idp, server } = await local();
+  const project = scratch();
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
+  const refusals: string[] = [];
+  const io: ConnectIO & { lines: string[] } = {
+    ...world(server, idp, async () => 0),
+    signInAgent: (e, credentials, step) => signInAgent(e, credentials, {
+      log: () => undefined, step,
+      open: (u) => {
+        idp.next({ subject: '41', login: 'ann' });
+        // Yourself, posted anyway: refused. Then the page as it is: allowed, as the agent.
+        void consentAt(u, { as: 'self' }, true).catch((err: Error) => { refusals.push(err.message); idp.next({ subject: '41', login: 'ann' }); return consentAt(u, {}, true); });
+      },
+    }),
+  };
+  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), yes: true, env }), io);
+  expect(refusals).toHaveLength(1);
+  expect(refusals[0]).toMatch(/^the consent was refused: 400 .*this sign-in is for ann-pm only, in kolab anns as product: allow that, or deny it/s);
+  expect(io.lines.join('\n')).toContain('konjir-pm is signed in as ann-pm.');
+});
+
+test('konjir login --agent: a sign-in that comes back as anyone else is revoked, never kept, and asked again for the same agent, at most twice (Lee\'s ruling of 2026-10-27)', async () => {
+  const { kolab, idp, server } = await local();
+  const { actor: ann } = await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
+  await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
+  await kolab.addOwnAgent(ann, 'cli');
+  const path = join(scratch(), 'credentials.json');
+  const scope = 'konjir kolab:anns role:product agent:ann-cli';
+  const said: string[] = [];
+  let tries = 0;
+  const as = (wrongTimes: number) => (u: URL) => {
+    const wrong = tries++ < wrongTimes;
+    idp.next({ subject: '41', login: 'ann' });
+    void consentAt(wrong ? unlocked(u) : u, wrong ? { as: 'self' } : {}, true);
+  };
+  // Wrong once: asked again, and the agent is kept.
+  const me = await loginAs(server.url, scope, 'ann-cli', { path, open: as(1), log: (l) => said.push(l) });
+  expect([tries, me.actor]).toStrictEqual([2, 'ann-cli']);
+  expect(said).toContain('You signed in as ann, not ann-cli, so that sign-in was revoked and nothing is kept. Asking again for ann-cli, try 2 of 3: on Kolab\'s page, check it names ann-cli, then Allow.');
+  const kept = new StoredLogin(server.url, { path });
+  const c = await connect(server.url, kept);
+  closeAtEnd(c);
+  expect(await call(c, 'whoami')).toMatchObject({ actor: 'ann-cli', kind: 'agent', owner: 'ann' });
+  kept.releaseIdleLock();
+  // Wrong every time: three tries, then an error, and nothing kept.
+  tries = 0;
+  const other = join(scratch(), 'credentials.json');
+  expect(await rejection(loginAs(server.url, scope, 'ann-cli', { path: other, open: as(9), log: () => undefined })))
+    .toMatch(/you signed in as ann, not ann-cli, on each of 3 tries, so each sign-in was revoked and nothing is kept/);
+  expect(tries).toBe(3);
+  expect(new StoredLogin(server.url, { path: other }).signedIn).toBe(false);
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
+  // Without --agent, whoever was chosen is kept, as before.
+  tries = 0;
+  expect((await loginAs(server.url, 'konjir kolab:anns', undefined, { path: join(scratch(), 'credentials.json'), open: as(1), log: () => undefined })).actor).toBe('ann');
+  expect(tries).toBe(1);
 });
 
 test('W3.8: the bridge is found only in the checkout this konjir runs from; a konjir installed in a project that ships channel-bridge/scripts/start.sh finds none', () => {

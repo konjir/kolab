@@ -552,7 +552,14 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
 }
 
 /** How a browser sign-in is started and finished: its scope, how the browser opens, where it says so, how long it may take. */
-interface BrowserOpts { scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; again?: string }
+interface BrowserOpts {
+  scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; again?: string;
+  /**
+   * Which of several sign-ins this is, for Kolab's page to say "agent N of M" (`konjir connect`):
+   * sent as `step` and `steps`, apart from the scope, so it grants nothing.
+   */
+  step?: { n: number; of: number };
+}
 
 /**
  * Signs a provider in through the person's browser: a loopback listener on a port of its own
@@ -569,6 +576,7 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
     const provider = make(`http://127.0.0.1:${port}/callback`, async (u) => {
       // What to preselect on Kolab's page: the kolab and role (Kolab reads them from the scope).
       if (opts.scope) u.searchParams.set('scope', opts.scope);
+      if (opts.step) { u.searchParams.set('step', String(opts.step.n)); u.searchParams.set('steps', String(opts.step.of)); }
       // Only Kolab's own sign-in page is ever printed or opened.
       checkAuthorizeUrl(u, url);
       log(`Opening your browser to sign in to Kolab. If it doesn't open, go to:\n  ${u.toString()}`);

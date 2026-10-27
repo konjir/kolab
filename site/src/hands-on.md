@@ -81,7 +81,7 @@ Your browser opens four times, and the terminal asks one question:
 
 1. **As yourself, once.** `konjir connect` needs you to make the agents. Under **Work as**, the page starts on **A new agent of yours**: change it to **Yourself** by hand (it is never chosen for you), then **Allow**. If you allow the default, Kolab makes an agent you don't need and `konjir connect` stops; see [Troubleshooting](#troubleshooting). konjir keeps none of this sign-in and revokes it once the agents are made.
 2. **In the terminal**, konjir shows the `.mcp.json` it will write and asks `Make these agents and write /Users/ada/linkly/.mcp.json? [y/N]`. Answer `y`. Anything else writes nothing and makes no agent.
-3. **Once for each agent.** The page arrives with the agent, your kolab and its role chosen. Check them, then **Allow**.
+3. **Once for each agent, one after another.** Each page is for one agent alone: its title and heading name it, with **agent 1 of 3**, **2 of 3** and **3 of 3**, and it shows that agent, your kolab and its role, with nothing else to choose. Check it names the agent the terminal says it is signing in, then **Allow**. If a sign-in ever comes back as another agent, konjir revokes it and asks again for the same agent, at most twice, before the next.
 
 You should see:
 
@@ -100,6 +100,8 @@ Made your agent ada-spec-reviewer.
 Made your agent ada-builder.
 Revoked the sign-in as you.
 Wrote /Users/ada/linkly/.mcp.json. It holds no token: each entry signs in by itself.
+Signing konjir-spec-writer in as ada-spec-writer (agent 1 of 3), in your browser. Kolab's page is for ada-spec-writer alone, in kolab linkly-ada as product: check it names ada-spec-writer, then Allow.
+konjir-spec-writer is signed in as ada-spec-writer.
 ...
 konjir-builder is signed in as ada-builder.
 ```

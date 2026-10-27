@@ -27,10 +27,10 @@ import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
-import { CHANNEL_CLIENT_NAME, HARNESSES, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
+import { ASK_AGAIN, CHANNEL_CLIENT_NAME, HARNESSES, WrongAgentError, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
-export { connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
+export { ASK_AGAIN, WrongAgentError, connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
 // commands that need it, so the client verbs start without loading it. The published
@@ -340,7 +340,7 @@ export async function main(argv: string[]) {
     if (rest.length) throw new Error(`konjir connect: unknown ${rest.join(' ')}`);
     const mcp = mcpUrl(url);
     await connectHarness({ harness: harness as Harness, url: mcp, kolab, agents: parseAgents(agents), cwd: process.cwd(), env: process.env, ...opts },
-      terminalIO(() => personSession(mcp, token, { kolab }), signInAgent));
+      terminalIO(() => personSession(mcp, token, { kolab }), (e, credentials, step) => signInAgent(e, credentials, step ? { step } : {})));
     return;
   }
 
@@ -352,17 +352,7 @@ export async function main(argv: string[]) {
     if (kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
     if (agent !== undefined && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) throw new Error('--agent names an agent of yours, such as ann-product: lowercase letters, digits and -');
     const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`, agent && `agent:${agent}`].filter(Boolean).join(' ');
-    let me;
-    try {
-      me = await login(url, { scope });
-    } catch (e) {
-      throw unreachable(e, url) ?? e;
-    }
-    if (agent !== undefined && me.actor !== agent) {
-      // --agent: a sign-in as anyone else (chosen otherwise on Kolab's page) is never kept.
-      const r = await logout(url, { forget: true });
-      throw new Error(`you signed in as ${me.actor}, not ${agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept: run it again and choose ${agent} on Kolab's page`);
-    }
+    const me = await loginAs(url, scope, agent);
     console.log(`Signed in to ${url} as ${me.actor}${me.kind === 'agent' ? ` (an agent of ${me.owner}'s)` : ''}, in kolab ${me.kolab} as ${me.role}.`);
     console.log(`Kept in ${credentialsPath()}; every konjir command now uses it. Start with: konjir instructions`);
     return;
@@ -538,16 +528,44 @@ export async function personSession(url: string, token: string | undefined, opts
 }
 
 /**
- * Signs a Claude Code channel entry in as its agent (W3.8), with the browser, kept in the agent's own
- * credentials file, where the bridge started with KONJIR_AGENT finds it. Its scope preselects the
- * agent, kolab and role; never Yourself (D60). A sign-in as anyone else is revoked, forgotten, and an error.
+ * `konjir login`: signs in with the browser and keeps it. With `agent` (--agent), a sign-in that
+ * comes back as anyone else is revoked and forgotten, never kept, and the same agent is asked for
+ * again at once, at most ASK_AGAIN times (Lee's ruling of 2026-10-27). `path`, `open` and `log` are for tests.
  */
-export async function signInAgent(e: Entry, credentials: string, opts: { open?: (u: URL) => void | Promise<void>; log?: (line: string) => void } = {}): Promise<string> {
-  const who = await login(e.url, { path: credentials, clientName: CHANNEL_CLIENT_NAME, scope: entryScope(e.kolab, e.role, e.agent), open: opts.open, log: opts.log });
+export async function loginAs(url: string, scope: string, agent: string | undefined,
+  opts: { path?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void } = {}) {
+  const log = opts.log ?? ((l: string) => console.error(l));
+  for (let tries = 1; ; tries++) {
+    let me;
+    try {
+      me = await login(url, { scope, path: opts.path, open: opts.open, log: opts.log });
+    } catch (e) {
+      throw unreachable(e, url) ?? e;
+    }
+    if (agent === undefined || me.actor === agent) return me;
+    // --agent: a sign-in as anyone else (chosen otherwise on Kolab's page) is never kept.
+    const r = await logout(url, { path: opts.path, forget: true });
+    const gone = r.revoked ? 'revoked' : 'forgotten, unrevoked,';
+    if (tries > ASK_AGAIN) {
+      throw new Error(`you signed in as ${me.actor}, not ${agent}, on each of ${tries} tries, so each sign-in was ${gone} and nothing is kept: run konjir login again, and on Kolab's page check it names ${agent}`);
+    }
+    log(`You signed in as ${me.actor}, not ${agent}, so that sign-in was ${gone} and nothing is kept. Asking again for ${agent}, try ${tries + 1} of ${ASK_AGAIN + 1}: on Kolab's page, check it names ${agent}, then Allow.`);
+  }
+}
+
+/**
+ * Signs a Claude Code channel entry in as its agent (W3.8), with the browser, kept in the agent's own
+ * credentials file, where the bridge started with KONJIR_AGENT finds it. Its scope names the agent,
+ * kolab and role, which locks Kolab's page to them; never Yourself (D60). `step` is which of
+ * several entries this is, which the page says. A sign-in as anyone else is revoked, forgotten, and
+ * a WrongAgentError.
+ */
+export async function signInAgent(e: Entry, credentials: string, opts: { open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; step?: { n: number; of: number } } = {}): Promise<string> {
+  const who = await login(e.url, { path: credentials, clientName: CHANNEL_CLIENT_NAME, scope: entryScope(e.kolab, e.role, e.agent), open: opts.open, log: opts.log, ...(opts.step ? { step: opts.step } : {}) });
   if (who.actor !== e.agent) {
     // Chosen otherwise on Kolab's page (another agent, or Yourself): never kept as this entry's sign-in.
     const r = await logout(e.url, { path: credentials, forget: true });
-    throw new Error(`it signed in as ${who.actor}, not ${e.agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept for ${e.name}`);
+    throw new WrongAgentError(who.actor, e.agent, `it signed in as ${who.actor}, not ${e.agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept for ${e.name}`);
   }
   return who.actor;
 }

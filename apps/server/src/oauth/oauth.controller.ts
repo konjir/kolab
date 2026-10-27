@@ -1,11 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, type ConsentChoice } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, scopeLock, signInStep, type ConsentChoice } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ADMIN_ELEVATION_S, ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
-import { consentPage, formActionSource, raisedPage, raisePage, sendError, sendPage, type ConsentView } from './pages.js';
+import { consentPage, formActionSource, lockAllowed, lockedTitle, raisedPage, raisePage, sendError, sendPage, type ConsentView } from './pages.js';
 
 /** The web interface's own client: first party, never registered, and only ever a person (W3.1). */
 export const WEB_CLIENT = 'konjir-web';
@@ -353,6 +353,9 @@ export class OAuthController {
     const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
     await this.toIdentityProvider(req, res, base, {
       clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
+      // Which of several sign-ins this is (`konjir connect`'s "agent N of M"): display only, kept
+      // only when both are whole numbers, never part of the scope, so it grants nothing.
+      step: client.web ? null : signInStep(q.step, q.steps),
     });
   }
 
@@ -520,10 +523,14 @@ export class OAuthController {
     // The form leads on to the client's redirect URI, Allow and Deny alike, so the page's
     // form-action names it: a browser holds the 303 there to it too.
     const target = formActionSource(pending.redirectUri);
-    sendPage(res, status, 'Sign in', consentPage({
+    // A scope naming the agent, kolab and role together locks the page to them (Lee's ruling of 2026-10-27).
+    const locked = web ? undefined : scopeLock(pending.scope);
+    const view: ConsentView = {
       signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
       kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
-    }), { formTargets: target ? [target] : [] });
+      ...(locked ? { lock: { ...locked, step: pending.step } } : {}),
+    };
+    sendPage(res, status, view.lock ? lockedTitle(view.lock, lockAllowed(view)) : 'Sign in', consentPage(view), { formTargets: target ? [target] : [] });
   }
 
   /** The person's choice, from the consent page's form: same origin only, with the form's token and the browser's binding. */

@@ -71,7 +71,7 @@ async function register(base: string, redirectUris = [CB]) {
   return { status: r.status, body: await r.json() as { client_id: string; error?: string; error_description?: string } };
 }
 
-function authorizeUrl(base: string, client: string, p: { verifier?: string; state?: string; redirect?: string; scope?: string; method?: string; challenge?: string | null } = {}) {
+function authorizeUrl(base: string, client: string, p: { verifier?: string; state?: string; redirect?: string; scope?: string; method?: string; challenge?: string | null; extra?: Record<string, string> } = {}) {
   const u = new URL('/oauth/authorize', base);
   const q: Record<string, string> = {
     response_type: 'code', client_id: client, redirect_uri: p.redirect ?? CB, state: p.state ?? 'client-state',
@@ -79,6 +79,7 @@ function authorizeUrl(base: string, client: string, p: { verifier?: string; stat
   };
   if (p.challenge !== null) q.code_challenge = p.challenge ?? s256(p.verifier ?? 'v'.repeat(43));
   if (p.scope) q.scope = p.scope;
+  Object.assign(q, p.extra ?? {});
   u.search = new URLSearchParams(q).toString();
   return u;
 }
@@ -184,9 +185,11 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   const shown = async (scope: string) => (await toConsent(base, idp, client, { subject: '601', login: 'zed' }, { scope }));
   const checked = (html: string) => [...html.matchAll(/value="([^"]+)" checked/g)].map((m) => m[1]);
 
-  // Its agent, kolab and role, named: all three arrive chosen.
-  const c = await shown('konjir kolab:test role:engineer agent:zed-engineer');
-  expect(checked(c.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'engineer']);
+  // Its agent and kolab, named without a role: both arrive chosen, among the rest. (All three named lock the page: below.)
+  const c = await shown('konjir kolab:test agent:zed-engineer');
+  expect(checked(c.html)).toStrictEqual(['agent:zed-engineer', 'kolab:test', 'product']);
+  expect(c.html).toContain('value="agent:zed-product"');
+  expect(c.html).toContain('value="self"');
   const done = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'agent:zed-engineer', kolab: 'kolab:test', role: 'engineer' });
   expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
 
@@ -223,6 +226,99 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(checked(byHand.html)).not.toContain('self');
   const mine = await byHand.browser.consent({ csrf: byHand.csrf, decision: 'allow', as: 'self', kolab: 'kolab:test', role: 'product' });
   expect(mine.left?.searchParams.get('code')).toMatch(/^kjc_/);
+});
+
+test('a scope naming the agent, kolab and role locks the consent page to them: no other agent, no new agent, no Yourself, and the server refuses any other choice; "agent N of M" is display only (Lee\'s ruling of 2026-10-27)', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const { actor: zed } = await kolab.signInWith({ provider: 'stub', subject: '621', login: 'zed' });
+  await kolab.grant('test', zed, 'write');
+  await kolab.addOwnAgent(zed, 'writer');
+  await kolab.addOwnAgent(zed, 'reviewer');
+  await kolab.addOwnAgent('bob', 'eng');
+  const LOCK = 'konjir kolab:test role:engineer agent:zed-writer';
+  const shown = async (scope: string, extra?: Record<string, string>, verifier?: string) =>
+    toConsent(base, idp, client, { subject: '621', login: 'zed' }, { scope, extra, verifier });
+  const title = (html: string) => /<title>([^<]*)<\/title>/.exec(html)?.[1];
+  const heading = (html: string) => /<h1>([^]*?)<\/h1>/.exec(html)?.[1];
+
+  // The page offers that agent, kolab and role alone, as fixed fields: nothing on it can choose anyone else.
+  const c = await shown(LOCK, { step: '2', steps: '4' });
+  expect(c.status).toBe(200);
+  expect(title(c.html)).toBe('Sign in as zed-writer (agent 2 of 4) · Kolab');
+  expect(heading(c.html)).toBe('Sign in as <code>zed-writer</code> <span class="muted">(agent 2 of 4)</span>');
+  expect(c.html).toContain('<strong>Agent 2 of 4.</strong>');
+  expect(c.html).not.toContain('type="radio"');
+  expect(c.html).not.toContain('type="text"');
+  for (const absent of ['zed-reviewer', 'value="new-agent"', 'value="self"', 'agent_label', 'Yourself', '@new', 'Work as</legend>']) expect([absent, c.html.includes(absent)]).toStrictEqual([absent, false]);
+  expect([...c.html.matchAll(/<input type="hidden" name="(as|kolab|role)" value="([^"]+)">/g)].map((m) => `${m[1]}=${m[2]}`)).toStrictEqual(['as=agent:zed-writer', 'kolab=kolab:test', 'role=engineer']);
+  expect(c.html).toContain('<button class="primary" type="submit" name="decision" value="allow">Allow as zed-writer</button>');
+
+  // The server holds to it: any other agent, a new agent, Yourself, another kolab or role is refused,
+  // the page shown again, nothing made, and the sign-in still good for the agent it names.
+  for (const other of <Record<string, string>[]>[
+    { as: 'agent:zed-reviewer' }, { as: 'self' }, { as: 'new-agent', agent_label: 'sneak' }, { as: 'agent:bob-eng' },
+    { kolab: '@new', new_kolab_name: 'zeds', new_kolab_title: 'Zed' }, { role: 'product' },
+  ]) {
+    const refused = await c.browser.consent({ csrf: c.csrf, decision: 'allow', as: 'agent:zed-writer', kolab: 'kolab:test', role: 'engineer', ...other });
+    expect([JSON.stringify(other), refused.res.status, refused.left]).toStrictEqual([JSON.stringify(other), 400, undefined]);
+    const html = await refused.res.text();
+    expect(html).toContain('this sign-in is for zed-writer only, in kolab test as engineer: allow that, or deny it');
+    expect(html).not.toContain('type="radio"');
+  }
+  expect((await kolab.listActors({ owner: zed })).map((a) => a.id).sort()).toStrictEqual(['zed-reviewer', 'zed-writer']);
+  expect((await kolab.db.query(`select count(*)::int as n from kolab where id = 'zeds'`)).rows[0]).toStrictEqual({ n: 0 });
+  // The same page, with no `as` at all, isn't taken for a new agent either.
+  const bare = await c.browser.consent({ csrf: c.csrf, decision: 'allow', kolab: 'kolab:test', role: 'engineer' });
+  expect([bare.res.status, bare.left]).toStrictEqual([400, undefined]);
+
+  // Allowed as the page says: the agent named, and the "N of M" granted nothing beyond the scope Kolab gives any grant.
+  const verifier = randomBytes(32).toString('base64url');
+  const v = await shown(LOCK, { step: '1', steps: '2' }, verifier);
+  const done = await v.browser.consent({ csrf: v.csrf, decision: 'allow', as: 'agent:zed-writer', kolab: 'kolab:test', role: 'engineer' });
+  const t = await token(base, { grant_type: 'authorization_code', client_id: client, code: done.left!.searchParams.get('code')!, redirect_uri: CB, code_verifier: verifier, resource: `${base}/mcp` });
+  expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:test role:engineer']);
+  expect(await kolab.sessionInfo(t.body.access_token)).toMatchObject({ actor: 'zed-writer', kind: 'agent', owner: zed, kolab: 'test', role: 'engineer' });
+
+  // "N of M" only when both are whole numbers 1 to 99, N no more than M; otherwise the page just names the agent.
+  for (const [step, steps] of [['5', '4'], ['0', '4'], ['1', '100'], ['x', '2'], ['1.5', '2'], [' 1', '2'], ['01', '2']]) {
+    const page = await shown(LOCK, { step, steps });
+    expect([step, steps, title(page.html)]).toStrictEqual([step, steps, 'Sign in as zed-writer · Kolab']);
+    expect(page.html).not.toContain(' of ');
+  }
+  // One of one says nothing of it, and the numbers never reach the scope Kolab keeps.
+  expect(title((await shown(LOCK, { step: '1', steps: '1' })).html)).toBe('Sign in as zed-writer · Kolab');
+  expect((await kolab.db.query(`select distinct scope from oauth_request where scope is not null`)).rows).toStrictEqual([{ scope: LOCK }]);
+
+  // Without `agent:` (or without its kolab or role), the page is as it was: every agent of theirs, a
+  // new agent and Yourself, the scope only preselecting (D59); "N of M" isn't shown there.
+  for (const scope of ['konjir kolab:test role:engineer', 'konjir kolab:test agent:zed-writer', 'konjir role:engineer agent:zed-writer', '']) {
+    const open = await shown(scope, { step: '1', steps: '2' });
+    expect([scope, title(open.html)]).toStrictEqual([scope, 'Sign in · Kolab']);
+    for (const offered of ['value="agent:zed-writer"', 'value="agent:zed-reviewer"', 'value="new-agent"', 'value="self"', 'value="@new"']) expect([scope, offered, open.html.includes(offered)]).toStrictEqual([scope, offered, true]);
+    expect(open.html).not.toContain('of 2');
+  }
+
+  // An agent that isn't a live agent of theirs, or a kolab they can't reach: never named, and nothing to allow but Deny.
+  for (const [scope, why, hidden] of [
+    ['konjir kolab:test role:product agent:bob-eng', 'it asks to work as an agent that isn\'t a live agent of yours', 'bob-eng'],
+    ['konjir kolab:test role:product agent:zed-nobody', 'it asks to work as an agent that isn\'t a live agent of yours', 'zed-nobody'],
+    ['konjir kolab:elsewhere role:product agent:zed-writer', 'it asks to work in a kolab you can\'t reach', 'elsewhere'],
+  ] as const) {
+    const o = await shown(scope, { step: '3', steps: '4' });
+    expect([scope, title(o.html)]).toStrictEqual([scope, 'Sign-in can&#39;t be allowed (agent 3 of 4) · Kolab']);
+    expect(o.html).toContain(`This sign-in can't be allowed: ${why}.`);
+    expect(o.html).not.toContain(hidden);
+    expect(o.html).not.toContain('value="allow"');
+    expect(o.html).not.toContain('type="radio"');
+    const refused = await o.browser.consent({ csrf: o.csrf, decision: 'allow', as: 'new-agent', agent_label: 'fallback', kolab: 'kolab:test', role: 'product' });
+    expect([refused.res.status, refused.left]).toStrictEqual([400, undefined]);
+    // Deny still tells the app.
+    const denied = await o.browser.consent({ csrf: o.csrf, decision: 'deny' });
+    expect(denied.left?.searchParams.get('error')).toBe('access_denied');
+  }
+  expect((await kolab.listActors({ owner: zed })).map((a) => a.id).sort()).toStrictEqual(['zed-reviewer', 'zed-writer']);
 });
 
 test('an agent signed in now is marked on the consent page, since choosing it ends that session; a client new to the person preselects a new agent, one signing in again its own agent unless the person revoked it or it is signed in through another client, and the scope still names one (ENF4, D59)', async () => {

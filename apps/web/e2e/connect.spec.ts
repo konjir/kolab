@@ -27,6 +27,11 @@ const KONJIR: string = 'konjir';
 const cli = () => import(KONJIR) as Promise<Cli>;
 
 const checked = (page: Page) => page.$$eval('input[type=radio]:checked', (els) => els.map((e) => (e as HTMLInputElement).value));
+/** A page locked to one agent (Lee's ruling of 2026-10-27): its fixed fields, and no choices at all. */
+const locked = async (page: Page) => {
+  await expect(page.locator('input[type=radio]')).toHaveCount(0);
+  return page.$$eval('input[type=hidden][name=as], input[type=hidden][name=kolab], input[type=hidden][name=role]', (els) => els.map((e) => (e as HTMLInputElement).value));
+};
 
 /** OpenCode's loopback listener for the code. */
 async function listener(): Promise<{ url: string; hits: URL[]; close: () => Promise<void> }> {
@@ -64,8 +69,9 @@ async function opencodeAuth(page: Page, cwd: string, name: string, store: Map<st
     };
     if (await auth(provider, { serverUrl: entry.url }) !== 'REDIRECT') return 1;
     await page.goto(opened!.toString());
-    await expect(page.getByRole('heading', { name: 'Sign in to Kolab' })).toBeVisible();
-    shown.set(name, await checked(page));
+    // The page is locked to the entry's agent, and its heading names it.
+    await expect(page.getByRole('heading', { name: `Sign in as ann-${name.replace('konjir-', '')}` })).toBeVisible();
+    shown.set(name, await locked(page));
     await page.getByRole('button', { name: 'Allow' }).click();
     await page.waitForURL((u) => u.toString().startsWith(app.url));
     const back = app.hits[0];
@@ -75,7 +81,7 @@ async function opencodeAuth(page: Page, cwd: string, name: string, store: Map<st
   }
 }
 
-test('konjir connect opencode: Ann signs the CLI in as herself, choosing Yourself by hand, gets two agents and two entries, and each entry signs in as its own agent with the page preselected', async ({ page }) => {
+test('konjir connect opencode: Ann signs the CLI in as herself, choosing Yourself by hand, gets two agents and two entries, and each entry signs in as its own agent on a page locked to it', async ({ page }) => {
   const { call, connect, connectHarness, parseAgents, personSession } = await cli();
   process.env.KONJIR_CREDENTIALS = join(mkdtempSync(join(tmpdir(), 'konjir-e2e-')), 'credentials.json');
   const mcp = `${SIGNIN_ANN}/mcp`;
