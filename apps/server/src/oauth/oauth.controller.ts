@@ -354,8 +354,10 @@ export class OAuthController {
     await this.toIdentityProvider(req, res, base, {
       clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
       // Which of several sign-ins this is (`konjir connect`'s "agent N of M"): display only, kept
-      // only when both are whole numbers, never part of the scope, so it grants nothing.
-      step: client.web ? null : signInStep(q.step, q.steps),
+      // only when both are whole numbers, never part of the scope, so it grants nothing. Only from
+      // an app on the person's own machine (every redirect URI loopback, as konjir's are): from a
+      // hosted one it would dress a lure up as a setup the person started, so it is ignored (D97).
+      step: client.web || !client.redirectUris.every(onLoopback) ? null : signInStep(q.step, q.steps),
     });
   }
 
@@ -523,7 +525,7 @@ export class OAuthController {
     // The form leads on to the client's redirect URI, Allow and Deny alike, so the page's
     // form-action names it: a browser holds the 303 there to it too.
     const target = formActionSource(pending.redirectUri);
-    // A scope naming the agent, kolab and role together locks the page to them (Lee's ruling of 2026-10-27).
+    // A scope naming the agent, kolab and role together locks the page to them (D97).
     const locked = web ? undefined : scopeLock(pending.scope);
     const view: ConsentView = {
       signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
@@ -661,6 +663,14 @@ export class OAuthController {
     });
     json(res, 200, {});
   }
+}
+
+/** Whether a redirect URI is on this machine: http on 127.0.0.1 or [::1], any port, as konjir's own are. */
+export function onLoopback(uri: string): boolean {
+  try {
+    const u = new URL(uri);
+    return u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === '[::1]');
+  } catch { return false; }
 }
 
 /** Clears one sign-in's binding cookie, and no other's. */

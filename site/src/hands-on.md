@@ -81,7 +81,7 @@ Your browser opens four times, and the terminal asks one question:
 
 1. **As yourself, once.** `konjir connect` needs you to make the agents. Under **Work as**, the page starts on **A new agent of yours**: change it to **Yourself** by hand (it is never chosen for you), then **Allow**. If you allow the default, Kolab makes an agent you don't need and `konjir connect` stops; see [Troubleshooting](#troubleshooting). konjir keeps none of this sign-in and revokes it once the agents are made.
 2. **In the terminal**, konjir shows the `.mcp.json` it will write and asks `Make these agents and write /Users/ada/linkly/.mcp.json? [y/N]`. Answer `y`. Anything else writes nothing and makes no agent.
-3. **Once for each agent, one after another.** Each page is for one agent alone: its title and heading name it, with **agent 1 of 3**, **2 of 3** and **3 of 3**, and it shows that agent, your kolab and its role, with nothing else to choose. Check it names the agent the terminal says it is signing in, then **Allow**. If a sign-in ever comes back as another agent, konjir revokes it and asks again for the same agent, at most twice, before the next.
+3. **Once for each agent, one after another.** Each page is for one agent alone: its title and heading name it, with **agent 1 of 3**, **2 of 3** and **3 of 3**, and it shows that agent, your kolab and its role, with nothing else to choose. Check it names the agent the terminal says it is signing in, then **Allow**. If a sign-in ever comes back as another agent, konjir revokes it and asks again for the same agent, at most twice, before the next. If it can't revoke it, it says so and stops asking for that agent.
 
 You should see:
 
@@ -286,6 +286,8 @@ That's the loop: intent stated once, a binding pinned to it, questions routed to
 ## Troubleshooting
 
 - **The browser didn't open.** konjir prints the sign-in URL; open it yourself.
+- **The page doesn't say "agent 1 of 3", or konjir doesn't ask again.** Only the Claude Code channel entries this tutorial uses get both. OpenCode entries, and Claude Code's plain HTTP entries (`konjir connect claude --http`), are signed in by the harness itself (`opencode mcp auth`, or `/mcp` in Claude Code): their page is still locked to the one agent, but it says no "N of M", and a sign-in that comes back as anyone else isn't asked again. Check the agent's name on each page.
+- **`… came back signed in as …, and that sign-in couldn't be revoked`.** konjir couldn't reach Kolab to revoke a wrong sign-in, so it forgot it and stopped asking for that agent. The grant lapses within 30 days unused. Run `konjir connect` again once Kolab can be reached; it reuses the agents.
 - **`konjir connect` stopped after the first sign-in: `you chose ada-agent, not Yourself`.** You allowed the page's default, **A new agent of yours**, so Kolab made the agent `<you>-agent`. It counts toward the limit of 3 new agents in 10 minutes, so wait 10 minutes, then run `konjir connect` again and choose **Yourself**. Archive the stray agent when you clean up (`konjir archive_agent label=agent`).
 - **`you made 3 agents in the last 10 minutes`.** A person makes at most 3 agents in 10 minutes and holds at most 10. Wait 10 minutes, then run `konjir connect` again: it reuses the agents it already made.
 - **`Nothing written, and no agent made.`** You answered something other than `y` to `konjir connect`'s question. Run it again and answer `y`.

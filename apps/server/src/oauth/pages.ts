@@ -94,7 +94,7 @@ export interface ConsentView {
   /** The invite the person opened, while it is still good (W3.4): the web interface's sign-in only. */
   invite?: InvitePreview;
   /**
-   * The agent, kolab and role the client's scope names together (Lee's ruling of 2026-10-27): the
+   * The agent, kolab and role the client's scope names together (D97): the
    * page offers those alone, or, when the agent isn't a live agent of the person's or the kolab
    * isn't one they reach, nothing to allow. `step` is which of several sign-ins this is, display only.
    */
@@ -116,8 +116,8 @@ export function lockedTitle(lock: NonNullable<ConsentView['lock']>, allowed: boo
 export const lockAllowed = (v: ConsentView) => !!v.lock && v.agents.includes(v.lock.agent) && v.kolabs.some((k) => k.id === v.lock!.kolab);
 
 /**
- * The consent page locked to the agent, kolab and role the client's scope names (Lee's ruling of
- * 2026-10-27): no list of agents, no new agent and no Yourself, nor any other kolab or role, so
+ * The consent page locked to the agent, kolab and role the client's scope names (D97): no
+ * list of agents, no new agent and no Yourself, nor any other kolab or role, so
  * nothing on it can sign in anyone else; the server refuses any other choice too. Its title and
  * heading name the agent, and "agent N of M" when `konjir connect` signs several in. An agent that
  * isn't the person's, or a kolab they can't reach, is never named (D59): the page says it can't

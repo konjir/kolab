@@ -27,7 +27,7 @@ const KONJIR: string = 'konjir';
 const cli = () => import(KONJIR) as Promise<Cli>;
 
 const checked = (page: Page) => page.$$eval('input[type=radio]:checked', (els) => els.map((e) => (e as HTMLInputElement).value));
-/** A page locked to one agent (Lee's ruling of 2026-10-27): its fixed fields, and no choices at all. */
+/** A page locked to one agent (D97): its fixed fields, and no choices at all. */
 const locked = async (page: Page) => {
   await expect(page.locator('input[type=radio]')).toHaveCount(0);
   return page.$$eval('input[type=hidden][name=as], input[type=hidden][name=kolab], input[type=hidden][name=role]', (els) => els.map((e) => (e as HTMLInputElement).value));

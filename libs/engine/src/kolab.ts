@@ -162,7 +162,7 @@ const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 /**
  * The agent, kolab and role a sign-in's scope names together, if it names all three
  * (`agent:<id> kolab:<name> role:<role>`, as `konjir connect` writes it): such a sign-in is locked
- * to them (Lee's ruling of 2026-10-27). Its consent page offers nothing else, and a consent for it
+ * to them (D97). Its consent page offers nothing else, and a consent for it
  * grants that agent, in that kolab and role, or nothing. A scope that names fewer only preselects
  * (D59). Never the web interface's own sign-in, which is for people.
  */
@@ -2222,8 +2222,8 @@ export class Kolab {
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
     if (!ROLES.includes(choice.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
     if (opts.selfOnly && choice.as.kind !== 'self') throw new AccessError('the web interface is for people: sign in as yourself');
-    // A sign-in whose scope names its agent, kolab and role is locked to them (Lee's ruling of
-    // 2026-10-27): nothing posted for it grants anyone else, anywhere else, whatever the form says.
+    // A sign-in whose scope names its agent, kolab and role is locked to them (D97):
+    // nothing posted for it grants anyone else, anywhere else, whatever the form says.
     const lock = opts.selfOnly ? undefined : scopeLock(req.scope);
     if (lock && (choice.as.kind !== 'agent' || choice.as.agent !== lock.agent || choice.kolab !== lock.kolab || choice.role !== lock.role)) {
       throw new AccessError(`this sign-in is for ${lock.agent} only, in kolab ${lock.kolab} as ${lock.role}: allow that, or deny it`);

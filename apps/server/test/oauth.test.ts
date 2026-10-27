@@ -228,7 +228,7 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(mine.left?.searchParams.get('code')).toMatch(/^kjc_/);
 });
 
-test('a scope naming the agent, kolab and role locks the consent page to them: no other agent, no new agent, no Yourself, and the server refuses any other choice; "agent N of M" is display only (Lee\'s ruling of 2026-10-27)', async () => {
+test('a scope naming the agent, kolab and role locks the consent page to them: no other agent, no new agent, no Yourself, and the server refuses any other choice; "agent N of M" is display only (D97)', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
   const client = (await register(base)).body.client_id;
@@ -287,6 +287,21 @@ test('a scope naming the agent, kolab and role locks the consent page to them: n
     expect([step, steps, title(page.html)]).toStrictEqual([step, steps, 'Sign in as zed-writer · Kolab']);
     expect(page.html).not.toContain(' of ');
   }
+  // Only from an app on the person's own machine (every redirect URI http on 127.0.0.1 or [::1]):
+  // a hosted client, or one with any redirect URI elsewhere, is never shown as one step of a setup.
+  for (const uris of [['https://app.example.com/cb'], [CB, 'https://app.example.com/cb'], ['http://localhost:9/cb'], ['http://[::1]:9/cb']]) {
+    const hosted = (await register(base, uris)).body.client_id;
+    const page = await toConsent(base, idp, hosted, { subject: '621', login: 'zed' }, { scope: LOCK, redirect: uris.at(-1), extra: { step: '2', steps: '2' } });
+    const loopback = uris.every((u) => /^http:\/\/(127\.0\.0\.1|\[::1\]):/.test(u));
+    expect([uris, title(page.html)]).toStrictEqual([uris, loopback ? 'Sign in as zed-writer (agent 2 of 2) · Kolab' : 'Sign in as zed-writer · Kolab']);
+    if (!loopback) {
+      expect(page.html).not.toContain('Agent 2 of 2');
+      expect(page.html).not.toContain('one after another');
+      expect(page.html).toContain('Allow as zed-writer');   // still locked: only "N of M" is dropped
+    }
+  }
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_request where step is not null and client_id <> $1`, [client])).rows[0]).toStrictEqual({ n: 1 });   // the [::1] one alone
+
   // One of one says nothing of it, and the numbers never reach the scope Kolab keeps.
   expect(title((await shown(LOCK, { step: '1', steps: '1' })).html)).toBe('Sign in as zed-writer · Kolab');
   expect((await kolab.db.query(`select distinct scope from oauth_request where scope is not null`)).rows).toStrictEqual([{ scope: LOCK }]);
