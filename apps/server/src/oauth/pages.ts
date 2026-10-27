@@ -17,7 +17,8 @@ label.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 0}label.opt sm
 input[type=text]{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;margin-top:4px}
 .row{display:flex;gap:8px;margin-top:20px}button{font:inherit;padding:9px 16px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#111;font-weight:600}.err{color:var(--err);font-weight:600}
-code{font-family:ui-monospace,Menlo,monospace;font-size:13px}`;
+code{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+dl.locked{margin:16px 0}dl.locked dt{font-weight:600;margin-top:10px}dl.locked dd{margin:2px 0 0}dl.locked small{display:block;color:var(--muted)}`;
 const STYLE_HASH = createHash('sha256').update(STYLE).digest('base64');
 const csp = (formTargets: string[]) =>
   [`default-src 'none'`, `style-src 'sha256-${STYLE_HASH}'`, `form-action ${["'self'", ...formTargets].join(' ')}`, `frame-ancestors 'none'`, `base-uri 'none'`].join('; ');
@@ -92,6 +93,77 @@ export interface ConsentView {
   error?: string;
   /** The invite the person opened, while it is still good (W3.4): the web interface's sign-in only. */
   invite?: InvitePreview;
+  /**
+   * The agent, kolab and role the client's scope names together (Lee's ruling of 2026-10-27): the
+   * page offers those alone, or, when the agent isn't a live agent of the person's or the kolab
+   * isn't one they reach, nothing to allow. `step` is which of several sign-ins this is, display only.
+   */
+  lock?: { agent: string; kolab: string; role: Role; step: { n: number; of: number } | null };
+}
+
+const ROLE_SHOWN: Record<Role, [string, string]> = {
+  product: ['Product', 'Writes the functional layer: what it does'],
+  engineer: ['Engineer', 'Writes the technical layer: how it\'s built'],
+};
+
+/** The title and heading of a page locked to one agent: the agent, and which of several sign-ins it is. */
+export function lockedTitle(lock: NonNullable<ConsentView['lock']>, allowed: boolean): string {
+  const step = lock.step && lock.step.of > 1 ? ` (agent ${lock.step.n} of ${lock.step.of})` : '';
+  return allowed ? `Sign in as ${lock.agent}${step}` : `Sign-in can't be allowed${step}`;
+}
+
+/** Whether a locked page has anything to allow: the agent is a live agent of the person's, and the kolab one they reach. */
+export const lockAllowed = (v: ConsentView) => !!v.lock && v.agents.includes(v.lock.agent) && v.kolabs.some((k) => k.id === v.lock!.kolab);
+
+/**
+ * The consent page locked to the agent, kolab and role the client's scope names (Lee's ruling of
+ * 2026-10-27): no list of agents, no new agent and no Yourself, nor any other kolab or role, so
+ * nothing on it can sign in anyone else; the server refuses any other choice too. Its title and
+ * heading name the agent, and "agent N of M" when `konjir connect` signs several in. An agent that
+ * isn't the person's, or a kolab they can't reach, is never named (D59): the page says it can't
+ * be allowed, and offers only Deny.
+ */
+function lockedConsentPage(v: ConsentView & { lock: NonNullable<ConsentView['lock']> }): string {
+  const { lock } = v;
+  const allowed = lockAllowed(v);
+  const kolab = v.kolabs.find((k) => k.id === lock.kolab);
+  const step = lock.step && lock.step.of > 1
+    ? `<p><strong>Agent ${lock.step.n} of ${lock.step.of}.</strong> Each agent signs in on a page of its own, one after another${allowed ? `: this one is for <code>${esc(lock.agent)}</code> alone` : ''}.</p>` : '';
+  const hidden = `<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
+<input type="hidden" name="csrf" value="${esc(v.csrf)}">`;
+  const intro = `<p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>`;
+  const asks = `<p><strong>${esc(v.client)}</strong> asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just connected it.</p>`;
+  if (!allowed) {
+    const why = !v.agents.includes(lock.agent)
+      ? 'it asks to work as an agent that isn\'t a live agent of yours'
+      : 'it asks to work in a kolab you can\'t reach';
+    return `<h1>${esc(lockedTitle(lock, false))}</h1>
+${intro}
+<form class="card" method="post" action="/oauth/consent">
+${step}${asks}
+<p class="err" role="alert">This sign-in can't be allowed: ${why}. Deny it, then check the app's configuration, or run konjir connect again.</p>
+${hidden}
+<div class="row"><button class="primary" type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
+  }
+  const [roleName, roleSays] = ROLE_SHOWN[lock.role];
+  return `<h1>Sign in as <code>${esc(lock.agent)}</code>${lock.step && lock.step.of > 1 ? ` <span class="muted">(agent ${lock.step.n} of ${lock.step.of})</span>` : ''}</h1>
+${intro}
+<form class="card" method="post" action="/oauth/consent">
+${step}${asks}
+${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+${hidden}
+<input type="hidden" name="as" value="agent:${esc(lock.agent)}">
+<input type="hidden" name="kolab" value="kolab:${esc(lock.kolab)}">
+<input type="hidden" name="role" value="${esc(lock.role)}">
+<dl class="locked">
+<dt>Work as</dt><dd><code>${esc(lock.agent)}</code><small>${v.signedIn?.includes(lock.agent) ? '<strong>Signed in elsewhere now: allowing this ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you (D30)'}</small></dd>
+<dt>In the kolab</dt><dd><code>${esc(kolab!.id)}</code> ${esc(kolab!.title)}<small>You hold ${esc(describe(kolab!.access))}</small></dd>
+<dt>As</dt><dd>${roleName}<small>${roleSays}</small></dd>
+</dl>
+<p class="muted">This page signs in <code>${esc(lock.agent)}</code> and no one else. To sign in as anyone else, deny it and start again from your app.</p>
+<div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow as ${esc(lock.agent)}</button><button type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
 }
 
 /**
@@ -101,6 +173,7 @@ export interface ConsentView {
  * and an agent signed in now is marked, since choosing it ends that session too.
  */
 export function consentPage(v: ConsentView): string {
+  if (v.lock && !v.web) return lockedConsentPage({ ...v, lock: v.lock });
   const checked = (on: boolean) => (on ? ' checked' : '');
   // An invite is chosen already only for someone with no kolab yet; anyone else picks, explicitly (W3.4).
   const kolab = v.pick.kolab ?? (v.invite ? (v.kolabs.length ? '' : '@invite') : v.kolabs[0] ? `kolab:${v.kolabs[0].id}` : '@new');

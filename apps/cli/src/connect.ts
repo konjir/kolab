@@ -84,6 +84,18 @@ export const claudeBridgeEntry = (e: Entry, command: string) => ({
   env: { KONJIR_URL: e.url, KONJIR_TOKEN: '', KONJIR_AGENT: e.agent, KONJIR_SCOPE: entryScope(e.kolab, e.role, e.agent) },
 });
 
+/**
+ * A browser sign-in that came back as someone other than the agent it was for (another chosen on
+ * an older Kolab's page, say): whoever throws it has already revoked it, or forgotten it, and kept
+ * nothing. `konjir connect` and `konjir login --agent` then ask again for the same agent.
+ */
+export class WrongAgentError extends Error {
+  constructor(readonly actor: string, readonly agent: string, message: string) { super(message); }
+}
+
+/** How many more times a sign-in that came back as the wrong agent is asked again for the same agent, at once (Lee's ruling of 2026-10-27). */
+export const ASK_AGAIN = 2;
+
 /** The name the bridge registers under at Kolab, which its consent page shows: the bridge's own CLIENT_NAME. */
 export const CHANNEL_CLIENT_NAME = 'konjir channel (Claude Code)';
 
@@ -400,8 +412,12 @@ export interface ConnectIO {
   run: (cmd: string, args: string[], opts: { cwd: string }) => Promise<number>;
   /** The CLI signed in as the person: konjir login's kept sign-in if it is already the person's, or one in memory only, revoked on close. */
   person: () => Promise<PersonSession>;
-  /** Signs a Claude Code channel entry in with the browser as its agent, kept in `credentials`; resolves with who it works as. */
-  signInAgent?: (e: Entry, credentials: string) => Promise<string>;
+  /**
+   * Signs a Claude Code channel entry in with the browser as its agent, kept in `credentials`;
+   * resolves with who it works as. `step` is which of the entries this is, for Kolab's page to say
+   * "agent N of M". A sign-in as anyone else is revoked, and throws WrongAgentError.
+   */
+  signInAgent?: (e: Entry, credentials: string, step?: { n: number; of: number }) => Promise<string>;
 }
 
 /** The default terminal: asks on stderr, runs commands attached to it. */
@@ -434,7 +450,7 @@ function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: 
     '  At the warning, choose "I am using this for local development".',
     signedIn
       ? `  Each entry is one Konjir server: Kolab's tools and its channel, on its agent's sign-in. Don't also add Kolab's HTTP server as the same agent: one session each (ENF4).`
-      : `  On first start each entry signs in by itself in your browser, as its own agent: Kolab's page arrives with ${entries.map((e) => e.agent).join(' and ')} chosen in turn. Check them, then Allow.`,
+      : `  On first start each entry signs in by itself in your browser, as its own agent: Kolab's page for each is locked to its agent, ${entries.map((e) => e.agent).join(' then ')}. Check it names the agent you expect, then Allow.`,
   ];
 }
 
@@ -442,12 +458,12 @@ function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: 
 function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: boolean): string[] {
   if (harness === 'opencode') {
     return [`Sign each entry in, one at a time${global ? '' : `, from ${cwd}`}:`,
-      ...entries.map((e) => `  opencode mcp auth ${e.name}     # Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow`)];
+      ...entries.map((e) => `  opencode mcp auth ${e.name}     # Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow`)];
   }
   return [`Sign each entry in, one at a time, from Claude Code${global ? '' : ` started in ${cwd}`}:`,
     '  1. Run claude, and type /mcp.',
     ...(global ? [] : ['     Claude Code asks first whether to use the servers in this project\'s .mcp.json: approve the konjir- ones.']),
-    ...entries.map((e, k) => `  ${k + 2}. Choose ${e.name}, then Authenticate. Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow.`)];
+    ...entries.map((e, k) => `  ${k + 2}. Choose ${e.name}, then Authenticate. Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow.`)];
 }
 
 /**
@@ -572,16 +588,27 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     if (channel) {
       let signed = 0;
       if (opts.auth && io.signInAgent) {
-        for (const e of entries) {
-          io.log(`Signing ${e.name} in as ${e.agent}, in your browser. Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow.`);
-          try {
-            // signInAgent revokes and forgets a sign-in that works as anyone but e.agent, and throws.
-            const actor = await io.signInAgent(e, agentCredentials(e.agent, opts.env));
-            if (actor !== e.agent) throw new Error(`it worked as ${actor}, not ${e.agent}`);
-            io.log(`${e.name} is signed in as ${e.agent}.`);
-            signed++;
-          } catch (err) {
-            io.log(`${e.name} didn't sign in (${(err as Error).message}). It signs in by itself, in your browser, when Claude Code first starts it.`);
+        for (const [k, e] of entries.entries()) {
+          // One page per agent, each locked to it, and saying which of them it is.
+          const step = entries.length > 1 ? { n: k + 1, of: entries.length } : undefined;
+          const which = step ? ` (agent ${step.n} of ${step.of})` : '';
+          io.log(`Signing ${e.name} in as ${e.agent}${which}, in your browser. Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it names ${e.agent}, then Allow.`);
+          // A sign-in that comes back as anyone else (signInAgent has revoked it) is asked again for
+          // the same agent at once, at most ASK_AGAIN times, before going on to the next.
+          for (let tries = 1; ; tries++) {
+            try {
+              const actor = await io.signInAgent(e, agentCredentials(e.agent, opts.env), step);
+              if (actor !== e.agent) throw new Error(`it worked as ${actor}, not ${e.agent}`);
+              io.log(`${e.name} is signed in as ${e.agent}.`);
+              signed++;
+            } catch (err) {
+              if (err instanceof WrongAgentError && tries <= ASK_AGAIN) {
+                io.log(`${e.name} came back signed in as ${err.actor}, not ${e.agent}, so that sign-in was revoked. Asking again for ${e.agent}${which}, try ${tries + 1} of ${ASK_AGAIN + 1}: on Kolab's page, check it names ${e.agent}, then Allow.`);
+                continue;
+              }
+              io.log(`${e.name} didn't sign in (${(err as Error).message}${err instanceof WrongAgentError ? `; asked ${tries} times` : ''}). It signs in by itself, in your browser, when Claude Code first starts it.`);
+            }
+            break;
           }
         }
       }
@@ -590,7 +617,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     }
     if (opts.harness === 'opencode' && opts.auth) {
       for (const [k, e] of entries.entries()) {
-        io.log(`Signing ${e.name} in as ${e.agent}. Kolab's page arrives with ${e.agent}, kolab ${e.kolab} and ${e.role} chosen: check them, then Allow.`);
+        io.log(`Signing ${e.name} in as ${e.agent}. Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow.`);
         const code = await io.run('opencode', ['mcp', 'auth', e.name], { cwd: opts.cwd });
         if (code !== 0) {
           io.log(`opencode mcp auth ${e.name} didn't finish${code === -1 ? ' (is OpenCode installed, and opencode on your PATH?)' : ''}.`);

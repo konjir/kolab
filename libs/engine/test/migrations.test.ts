@@ -1087,7 +1087,6 @@ async function konjirRows(db: Db) {
 test('a database at 0026 reaches 0027: each node is mapped by its label, wbs becomes plan, each binding names its spec and each plan its binding, and nothing else changes', async () => {
   const store = await persistentStore();
   const at = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
-  expect(at).toBe(MIGRATIONS.length - 1);
   await withDb(async (db) => {
     await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
     await db.exec(BEFORE_KINDS);
@@ -1103,7 +1102,7 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
       { kolab_id: 'lab', node: 'lab-ui', kind: 'binding', parent: 'lab-spec', how: 'its kolab\'s one spec' },
       { kolab_id: 'lab', node: 'lab-plan', kind: 'plan', parent: 'lab-api', how: 'the one binding its links reach' },
     ]);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [versions[at]] });
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [versions[at]] });
     // Each parent is the one the preflight named.
     const given = (await db.query<{ name: string; parent: string }>(`select n.name, p.name as parent from node n join node p on p.id = n.parent_node_id`)).rows;
     expect(given.map((g) => `${g.name}>${g.parent}`).sort()).toStrictEqual(parents.map((p) => `${p.node}>${p.parent}`).sort());
@@ -1132,7 +1131,8 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     // The archived kolab still refuses every write.
     expect(await rejection(db.query(`update node set title = 'x' where id = 'old-spec'`))).toMatch(/kolab old is archived/);
   }, store);
-  expect(await withDb(schemaOf, store)).toStrictEqual(await currentSchema());
+  // The migrations after 0027 then bring it to the schema a fresh database reaches.
+  expect(await withDb(async (db) => { await migrate(db); return schemaOf(db); }, store)).toStrictEqual(await currentSchema());
 
   const kolab = await TestKolab.open(store);
   try {
@@ -1262,7 +1262,7 @@ test('0027 refuses a live link outside its parent, a plan\'s into the spec or a 
   await withDb(async (db) => {
     await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
     await db.exec(`${seed};`);
-    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+    expect((await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).applied).toStrictEqual([versions[at]]);
   });
   // The plan's live version into the spec, or the binding's into another kolab's spec, stops it.
   await refuses0027(`${seed}, ${edgeRow('e-bad', 'dependency', 'wv2', 'W1', 'sv', 'R1', 'S runs.', 'lee')};`,
@@ -1296,7 +1296,7 @@ test('an abandoned plan draft that linked the spec is history: 0027 applies, and
       ${E} ${elRow('wv2', 'W1', 0, 'Build it.')};
       ${L} ${edgeRow('e-w2', 'dependency', 'wv2', 'W1', 'sv', 'R2', 'S ships.', 'lee')};`);
     expect((await preflight0027(db)).refusals).toStrictEqual([]);
-    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+    expect((await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).applied).toStrictEqual([versions[at]]);
   }, store);
   const kolab = await TestKolab.open(store);
   try {
@@ -1332,7 +1332,7 @@ test('a cascade still owed would carry an unchecked link: 0027 refuses until the
     await db.exec(owed('pending'));
     await db.exec(`delete from outbox`);
     expect((await preflight0027(db)).refusals).toStrictEqual([]);
-    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+    expect((await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).applied).toStrictEqual([versions[at]]);
   });
 });
 
@@ -1366,7 +1366,7 @@ test('0027 refuses a live version that is a variant of another kind: a plan or a
     await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
     await db.exec(`${seed};`);
     expect((await preflight0027(db)).refusals).toStrictEqual([]);
-    expect((await migrate(db)).applied).toStrictEqual([versions[at]]);
+    expect((await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).applied).toStrictEqual([versions[at]]);
   });
   await refuses0027(`${seed}, ('wv', 'w', 1, 'sv', 'technical', 'committed', 'lee', 'engineer', 'lee');`,
     /A variant is of its parent's kind, and only a prototype may be derived from the spec \(KON3, KON6, D95\), and these live versions aren't: shop\/w@1 \(wbs\) on shop\/s@1 \(functional_spec\)\./);

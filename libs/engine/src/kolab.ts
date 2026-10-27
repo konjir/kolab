@@ -117,6 +117,8 @@ export interface PendingAuthorization {
   inviteKey: string | null;
   /** The key of the admin raise this browser step completes (W2.22), for Kolab's own raise sign-in only. */
   raiseKey: string | null;
+  /** Which of several sign-ins this is, as the client said (`konjir connect`'s "agent N of M"): display only, never part of the scope. */
+  step: { n: number; of: number } | null;
 }
 
 /** An admin raise waiting for its person's browser (W2.22): whose session, through which client, and until when. */
@@ -156,6 +158,29 @@ const IDP_SUBJECT = /^[A-Za-z0-9._@|:-]{1,200}$/;
 const PKCE_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 /** A PKCE verifier (RFC 7636 §4.1). */
 const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
+
+/**
+ * The agent, kolab and role a sign-in's scope names together, if it names all three
+ * (`agent:<id> kolab:<name> role:<role>`, as `konjir connect` writes it): such a sign-in is locked
+ * to them (Lee's ruling of 2026-10-27). Its consent page offers nothing else, and a consent for it
+ * grants that agent, in that kolab and role, or nothing. A scope that names fewer only preselects
+ * (D59). Never the web interface's own sign-in, which is for people.
+ */
+export function scopeLock(scope: string | null | undefined): { agent: string; kolab: string; role: Role } | undefined {
+  const words = (scope ?? '').split(/\s+/);
+  const word = (prefix: string) => words.find((w) => w.startsWith(prefix))?.slice(prefix.length);
+  const agent = word('agent:');
+  const kolab = word('kolab:');
+  const role = word('role:') as Role | undefined;
+  return agent && kolab && role && ROLES.includes(role) ? { agent, kolab, role } : undefined;
+}
+
+/** A sign-in's "N of M", as GET /oauth/authorize's `step` and `steps` give it: whole numbers 1 to 99, N no more than M; anything else, none. */
+export function signInStep(step: unknown, steps: unknown): { n: number; of: number } | null {
+  const num = (v: unknown) => (typeof v === 'string' && /^[1-9][0-9]?$/.test(v) ? Number(v) : undefined);
+  const n = num(step), of = num(steps);
+  return n !== undefined && of !== undefined && n <= of ? { n, of } : null;
+}
 
 /** The scope a grant carries: Konjir's, with the kolab and role its session works in. */
 export const grantedScope = (kolab: string, role: Role) => `konjir kolab:${kolab} role:${role}`;
@@ -2073,13 +2098,15 @@ export class Kolab {
    * identity provider, so the provider's answer counts only in the browser that asked, with the
    * state it was given (CSRF). Old requests and codes are cleared as it goes.
    */
-  async beginAuthorization(r: { provider: string; clientId: string; redirectUri: string; clientState?: string; codeChallenge: string; scope?: string; resource?: string; invite?: string; raise?: string }): Promise<{ binding: string; state: string }> {
+  async beginAuthorization(r: { provider: string; clientId: string; redirectUri: string; clientState?: string; codeChallenge: string; scope?: string; resource?: string; invite?: string; raise?: string; step?: { n: number; of: number } | null }): Promise<{ binding: string; state: string }> {
     if (!PKCE_CHALLENGE.test(r.codeChallenge)) throw new OAuthGrantError('invalid_request', 'code_challenge must be an S256 challenge: 43 base64url characters');
     // An invite rides along by its key only (W3.4); whether it is still good is checked when it is shown and when it is used.
     const inviteKey = r.invite !== undefined && INVITE_TOKEN.test(r.invite) ? sessionKey(r.invite) : null;
     // So does an admin raise, for Kolab's own raise sign-in (W2.22): checked again as it completes.
     if (r.raise !== undefined && !RAISE_TOKEN.test(r.raise)) throw new OAuthGrantError('invalid_request', 'that is not a raise link');
     const raiseKey = r.raise === undefined ? null : sessionKey(r.raise);
+    // Display only: kept when it is one, checked again here, never otherwise.
+    const step = r.step ? signInStep(String(r.step.n), String(r.step.of)) : null;
     const binding = randomBytes(32).toString('base64url');
     const state = randomBytes(32).toString('base64url');
     // An expired request is kept 2 hours, unusable, so a late consent form can be told it expired:
@@ -2090,10 +2117,10 @@ export class Kolab {
       where expires_at < now() and (redirect_uri <> '' or client_state is not null or scope is not null or resource is not null or invite_key is not null)`);
     await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
     await this.db.query(
-      `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key, raise_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10 * interval '1 second', $11, $12)`,
+      `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key, raise_id, step, steps)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10 * interval '1 second', $11, $12, $13, $14)`,
       [sessionKey(binding), sessionKey(state), r.provider, r.clientId, r.redirectUri, r.clientState ?? null, r.codeChallenge,
-        r.scope ?? null, r.resource ?? null, this.oauth.requestTtlS, inviteKey, raiseKey]);
+        r.scope ?? null, r.resource ?? null, this.oauth.requestTtlS, inviteKey, raiseKey, step?.n ?? null, step?.of ?? null]);
     return { binding, state };
   }
 
@@ -2119,11 +2146,12 @@ export class Kolab {
    * its consent form's token: a form from an earlier sign-in that this one replaced has another.
    */
   async pendingAuthorization(binding: string, opts: { state?: string; csrf?: string } = {}): Promise<PendingAuthorization | undefined> {
-    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null; raise_id: string | null }>(
-      `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key, raise_id from oauth_request
+    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null; raise_id: string | null; step: number | null; steps: number | null }>(
+      `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key, raise_id, step, steps from oauth_request
         where id = $1 and expires_at > now() and ($2::text is null or state_key = $2) and ($3::text is null or csrf_key = $3)`,
       [sessionKey(binding), opts.state === undefined ? null : sessionKey(opts.state), opts.csrf === undefined ? null : sessionKey(opts.csrf)])).rows[0];
-    return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider, inviteKey: r.invite_key, raiseKey: r.raise_id };
+    return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider, inviteKey: r.invite_key, raiseKey: r.raise_id,
+      step: r.step !== null && r.steps !== null ? { n: Number(r.step), of: Number(r.steps) } : null };
   }
 
   /**
@@ -2194,6 +2222,12 @@ export class Kolab {
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
     if (!ROLES.includes(choice.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
     if (opts.selfOnly && choice.as.kind !== 'self') throw new AccessError('the web interface is for people: sign in as yourself');
+    // A sign-in whose scope names its agent, kolab and role is locked to them (Lee's ruling of
+    // 2026-10-27): nothing posted for it grants anyone else, anywhere else, whatever the form says.
+    const lock = opts.selfOnly ? undefined : scopeLock(req.scope);
+    if (lock && (choice.as.kind !== 'agent' || choice.as.agent !== lock.agent || choice.kolab !== lock.kolab || choice.role !== lock.role)) {
+      throw new AccessError(`this sign-in is for ${lock.agent} only, in kolab ${lock.kolab} as ${lock.role}: allow that, or deny it`);
+    }
     const code = `kjc_${randomBytes(24).toString('base64url')}`;
     // One use: whichever submission deletes the request issues the code, in the transaction `tx`.
     const issue = async (tx: Q, actor: string, kolab: string) => {
