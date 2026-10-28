@@ -41,12 +41,16 @@ const SUBJECT = 4000;
 export const GIT_SAFETY = [
   '-c', 'log.showSignature=false', '-c', 'core.fsmonitor=', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat',
   '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '-c', 'diff.external=',
+  // No transport at all: a partial clone's lazy fetch (stopped by GIT_NO_LAZY_FETCH too) would reach
+  // a remote, and an ext:: remote is a command. Reading local objects uses no protocol.
+  '-c', 'protocol.ext.allow=never', '-c', 'protocol.allow=never',
 ] as const;
 
 /**
  * Git in `dir`, never through a shell, with GIT_SAFETY's settings, no system config
- * (`GIT_CONFIG_NOSYSTEM`), no pager and no external diff from the environment, and no prompt
- * (`GIT_TERMINAL_PROMPT=0`). Every revision a call names comes after `--end-of-options`.
+ * (`GIT_CONFIG_NOSYSTEM`), no pager and no external diff from the environment, no prompt
+ * (`GIT_TERMINAL_PROMPT=0`), no lazy fetch (`GIT_NO_LAZY_FETCH`) and no replace refs
+ * (`GIT_NO_REPLACE_OBJECTS`). Every revision a call names comes after `--end-of-options`.
  */
 export function gitIn(dir: string, env: NodeJS.ProcessEnv = process.env): Git {
   const { GIT_EXTERNAL_DIFF: _diff, GIT_PAGER: _pager, PAGER: _p, ...rest } = env;
@@ -54,7 +58,10 @@ export function gitIn(dir: string, env: NodeJS.ProcessEnv = process.env): Git {
     try {
       return execFileSync('git', ['--no-pager', ...GIT_SAFETY, ...args], {
         cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024,
-        env: { ...rest, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_PAGER: 'cat' },
+        // GIT_NO_LAZY_FETCH: a partial clone's missing objects are never fetched (git 2.45 and later),
+        // so no remote, credential helper or ssh command runs; GIT_NO_REPLACE_OBJECTS: refs/replace
+        // can't change what a sha reads as.
+        env: { ...rest, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_PAGER: 'cat', GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1' },
       });
     } catch (e) {
       const err = e as { code?: string; stderr?: string; message?: string };
@@ -164,6 +171,7 @@ export interface TaggedCommit { sha: string; subject: string; files: string[] }
 /** A revision the user gave (`--since`), as the commit's sha it names, or a refusal; never read as an option. */
 function commitOf(git: Git, rev: string): string {
   if (!rev || rev.startsWith('-') || /[\0\n\r]/.test(rev)) throw new Error(`${JSON.stringify(rev)} isn't a revision: give a commit, a branch or a tag`);
+  if (rev.startsWith('^') || rev.includes('..')) throw new Error(`${JSON.stringify(rev)} is a range or an exclusion: --since takes one commit, a branch or a tag, and delivers what HEAD has since it`);
   let out: string;
   try { out = git(['rev-parse', '--verify', '--quiet', '--end-of-options', `${rev}^{commit}`]); } catch {
     throw new Error(`${JSON.stringify(rev)} names no commit in this checkout`);
@@ -188,7 +196,7 @@ export function taggedCommits(git: Git, address: string, opts: { since?: string 
   const listed = shas(git(['log', '-z', '--no-show-signature', '--reverse', '-F', `--grep=${address}`, '--format=%H', '--end-of-options', ...range, '--']));
   const commits: TaggedCommit[] = [];
   for (const sha of listed) {
-    const trailers = git(['log', '-1', '--no-show-signature', '--format=%(trailers:key=Konjir-Work,valueonly)', '--end-of-options', sha, '--']);
+    const trailers = git(['log', '-1', '--no-show-signature', '--format=%(trailers:key=Konjir-Work,valueonly,unfold)', '--end-of-options', sha, '--']);
     if (!trailers.split('\n').map((x) => x.trim()).includes(address)) continue;
     const subject = git(['log', '-1', '--no-show-signature', '--format=%s', '--end-of-options', sha, '--']).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
     const files = git(['diff-tree', '--no-commit-id', '--name-only', '--no-ext-diff', '--no-textconv', '-r', '--root', '-z', '--end-of-options', sha]).split('\0').filter(Boolean);
