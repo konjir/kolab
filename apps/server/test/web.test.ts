@@ -868,3 +868,26 @@ test('a plan\'s page shows each work package\'s fields, read only, and an edit o
   // A spec's elements carry none.
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work' in e))).toBe(true);
 });
+
+test('the page resubmits a returned plan draft whose milestone became a work package, carrying its Delivers from it (verification Low 1)', async () => {
+  const { kolab, engineer } = await specAndBinding();
+  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
+  await kolab.commit(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
+  // A draft that makes M1 a work package delivering b2, returned by PLN2 for an unrelated problem.
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const draft = await kolab.draft(engineer, 'orders-plan', {
+    elements: [{ id: 'W1', text: 'Build it.', work: { depends_on: ['W9'] } }, { id: 'M1', text: 'Ship it.', work: null }],
+    links: [{ kind: 'dependency', sourceElement: 'M1', target: b, targetElement: 'b2' }],
+  });
+  expect(await kolab.submit(engineer, draft)).toMatchObject({ ok: false });
+  // The page replaces it: M1 stays a work package (removed and added again, with its fields), and its Delivers is carried.
+  const bob = await signIn(await serve(kolab), engineer);
+  const out = await bob.call<WebOutcome>('nodes/orders-plan/submit', { base: 1, replaces: 2, changes: [
+    { kind: 'remove', element: 'M1' }, { kind: 'add', element: 'M1', text: 'Ship it.', work: { size: 'S' } },
+  ] });
+  expect(out.status).toBe(200);
+  expect(out.body).toMatchObject({ ok: true, committed: true });
+  const view = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  expect(view.elements.find((e) => e.id === 'M1')).toMatchObject({ work: { size: 'S' } });
+  expect(view.elements.find((e) => e.id === 'M1')!.relies_on.map((l) => [l.target.node, l.target.element])).toStrictEqual([['orders-pg', 'b2']]);
+});

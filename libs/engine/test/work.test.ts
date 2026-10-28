@@ -299,5 +299,44 @@ test('a Delivers from an element that has become a milestone is refused, whichev
   // The commit first: a link added afterwards to the version it superseded is refused, under the node's lock.
   await kolab.commit(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.' }] });
   expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W1', target: b1, targetElement: 'b1' })))
-    .toBe('GateError: W1 is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers orders-pg#b1, and make the milestone depend on it');
+    .toBe('GateError: W1 is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers orders-pg@1#b1, and make the milestone depend on it');
+});
+
+test('konjir_link from a draft is checked against the draft\'s own elements: a milestone it turned into a work package may deliver (verification Low 1)', async () => {
+  const ctx = await planned();
+  const { kolab, engineer, b1 } = ctx;
+  await submitPlan(ctx, [{ id: 'W1', text: 'Build it.' }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }]);
+  // Draft @2 makes M1 a work package: a Delivers from it, declared with konjir_link on the draft, stands.
+  const draft = await kolab.draft(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }, { id: 'M1', text: 'Ship it.', work: null }] });
+  await kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'M1', target: b1, targetElement: 'b2' });
+  expect(await kolab.submit(engineer, draft)).toMatchObject({ ok: true });
+  // And a draft that keeps M1 a milestone is still refused it, against its own elements.
+  const kept = await kolab.draft(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: kept, sourceElement: 'M1', target: b1, targetElement: 'b1' })))
+    .toMatch(/^GateError: M1 is a milestone, and a milestone delivers nothing \(PLN2, PLN3\)/);
+});
+
+test('a ruling that fails PLN2 in its commit step, after a link slipped in, is rejected, not left drafted (verification Low 2, D47)', async () => {
+  const ctx = await planned();
+  const { kolab, b1 } = ctx;
+  const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.' }, { id: 'W2', text: 'Ship it.' }])).id;
+  const fp = ((await kolab.resolveIn(b1, 'b1', null)) as { fingerprint: string }).fingerprint;
+  // Between the ruling's PLN2 checks in judge and its commit step, a Delivers from W1 lands on the version it is built on.
+  const k = kolab as unknown as { planChecks: (...a: unknown[]) => Promise<unknown> };
+  const original = k.planChecks.bind(kolab);
+  let calls = 0;
+  k.planChecks = async (...a: unknown[]) => {
+    const r = await original(...a);
+    if (++calls === 1) {
+      await kolab.db.query(`insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
+                            values ('late', 'dependency', $1, 'W1', $2, 'b1', $3, 'bob')`, [v1, b1, fp]);
+    }
+    return r;
+  };
+  const r = await kolab.applyRuling('orders-plan', { elements: [{ id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.' }] },
+    { id: 'D98', actor: 'bob', by: ADMIN_DOER });
+  expect(calls).toBe(2);
+  expect(r).toMatchObject({ ok: false, note: expect.stringContaining('W1 is a milestone, and delivers orders-pg@1#b1') });
+  expect((await kolab.version(r.version)).state).toBe('rejected');
+  expect((await kolab.latestCommitted('orders-plan'))!.id).toBe(v1);
 });

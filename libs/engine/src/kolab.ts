@@ -3918,6 +3918,7 @@ export class Kolab {
     // The node may have moved on while the checks ran.
     const late = await this.commitStep(v, note, {
       submittedBy: by,
+      ...(ruling ? { ruling } : {}),
       ...(approvedBy ? { record: (tx: Q, signal: Signal, overtaken: boolean) => this.foldRecord(tx, signal, v, overtaken) } : {}),
       ...(this.settlesDurably(v) ? { settle: { ruling, ...(applier ? { rulingBy: applier } : {}) } } : {}),
     });
@@ -4361,6 +4362,8 @@ export class Kolab {
     submittedBy?: Doer;
     record?: (tx: Q, signal: Signal, overtaken: boolean) => Promise<boolean>;
     settle?: { approvedBy?: string; ruling?: string; rulingBy?: Doer };
+    /** The ruling it applies (D47), if any: a ruling that fails a check here has no author to return to. */
+    ruling?: string;
   } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> {
     const from = opts.from ?? 'drafted';
     const late = await this.asSystem(async (tx, signal): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> => {
@@ -4377,8 +4380,9 @@ export class Kolab {
       if ((await tx.query(`select 1 from node where id = $1 and kind = 'plan'`, [v.node_id])).rows.length) {
         const pln = await this.planChecks(v, { ok: true }, tx);
         if (!pln.ok) {
-          // As at submission: back to a person's author, still drafted; Kolab's own rejected.
-          if (v.active_role === 'system' || v.folded_from) await this.rejectIn(tx, signal, v.id, pln.note!);
+          // As at submission: back to a person's author, still drafted; Kolab's own, and a ruling
+          // (which has no author to return to, D47), rejected.
+          if (v.active_role === 'system' || v.folded_from || opts.ruling) await this.rejectIn(tx, signal, v.id, pln.note!);
           else await tx.query(`update version set review_note = $2 where id = $1 and state = 'drafted'`, [v.id, pln.note]);
           return { refused: pln.note! };
         }
@@ -4683,17 +4687,23 @@ export class Kolab {
       return dup.rows[0].id;
     }
     await this.asAgent(sessionId, async (tx) => {
-      // A Delivers from an element that is a milestone in the node's latest committed version is
-      // refused here too, under the node's lock, which a commit of the plan also takes: so a link
-      // added to the version a plan draft is built on can't slip a milestone's Delivers past that
-      // draft's PLN2 checks (its commit step checks again, under the same lock).
-      if (plan.e.sourceElement && (await this.deliversInto(tx, src.node_id, plan.targetNode))) {
+      // A link from a committed plan version is carried forward by the plan's next commit, so a
+      // Delivers from an element that is a milestone in the plan's latest committed version is
+      // refused here too, under the node's lock, which a commit of the plan also takes: a link added
+      // to the version a draft is built on, or to the version its commit just superseded (copied in
+      // after_commit), can't slip a milestone's Delivers past its PLN2 checks (its commit step checks
+      // again, under the same lock). A draft's own links are checked against its own elements
+      // (planLink), and are carried nowhere until it commits.
+      if (src.state === 'committed' && plan.e.sourceElement && (await this.deliversInto(tx, src.node_id, plan.targetNode))) {
         const at = (await tx.query<{ work: WorkFields | null }>(
           `select el.work from element el
             where el.element_id = $2
               and el.version_id = (select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1)`,
           [src.node_id, plan.e.sourceElement])).rows[0]?.work;
-        if (at?.milestone) throw new GateError(milestoneDelivers(plan.e.sourceElement, `${await nameIn(tx, plan.targetNode)}#${plan.e.targetElement ?? ''}`));
+        if (at?.milestone) {
+          const seq = (await tx.query<{ seq: number }>(`select seq from version where id = $1`, [plan.e.target])).rows[0].seq;
+          throw new GateError(milestoneDelivers(plan.e.sourceElement, `${await nameIn(tx, plan.targetNode)}@${seq}#${plan.e.targetElement ?? ''}`));
+        }
       }
       await this.writeLink(tx, src, plan);
     }, src.node_id, { access: plan.across });
