@@ -163,3 +163,50 @@ export function planProblems(elements: { element_id: string; work?: WorkFields |
   }
   return problems;
 }
+
+/**
+ * Natural order of work package ids (PLN17): digits compare as numbers, the rest as text, so W1.2
+ * comes before W1.10 and W2 before W10. Ids that compare equal so (W01 and W1) fall back to plain
+ * text order, so the same plan always gives the same order.
+ */
+export function naturalCompare(a: string, b: string): number {
+  const pa = a.match(/\d+|\D+/g) ?? [];
+  const pb = b.match(/\d+|\D+/g) ?? [];
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const [x, y] = [pa[i], pb[i]];
+    if (/^\d/.test(x) && /^\d/.test(y)) {
+      const [sx, sy] = [x.replace(/^0+(?=\d)/, ''), y.replace(/^0+(?=\d)/, '')];
+      if (sx.length !== sy.length) return sx.length - sy.length;
+      if (sx !== sy) return sx < sy ? -1 : 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  if (pa.length !== pb.length) return pa.length - pb.length;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Each milestone's state as its members make it (PLN3): Done when every work package it depends
+ * on is Done, a member milestone included, and To do otherwise. `states` holds every package's
+ * state now. Milestones settle from their members up, so a milestone of milestones follows them.
+ * Returns the milestones whose state this changes, with their new state.
+ */
+export function milestoneStates(milestones: { id: string; members: string[] }[], states: Map<string, string>): Map<string, 'todo' | 'done'> {
+  const now = new Map(states);
+  // Depends on has no cycle (PLN2), so one pass per milestone settles them all.
+  for (let pass = 0; pass <= milestones.length; pass++) {
+    let moved = false;
+    for (const m of milestones) {
+      const want = m.members.length > 0 && m.members.every((id) => now.get(id) === 'done') ? 'done' : 'todo';
+      if (now.get(m.id) !== want) { now.set(m.id, want); moved = true; }
+    }
+    if (!moved) break;
+  }
+  const changed = new Map<string, 'todo' | 'done'>();
+  for (const m of milestones) {
+    const want = now.get(m.id) as 'todo' | 'done';
+    if (states.get(m.id) !== want) changed.set(m.id, want);
+  }
+  return changed;
+}

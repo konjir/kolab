@@ -193,6 +193,8 @@ main { min-width: 0; display: grid; gap: 28px; align-content: start; }
 .el .work dt { font-weight: 500; color: var(--secondary); }
 .el .work dd { margin: 0; display: flex; gap: 6px; flex-wrap: wrap; }
 .el .work code { font-family: var(--font-mono); font-size: 12px; }
+.el .work .work-state dd { align-items: center; }
+.el .work .blocked { color: var(--question); }
 .el .links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--ink-muted); align-items: center; }
 .chip { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--line); border-radius: var(--r-hair); padding: 0 6px; color: var(--secondary); background: var(--surface-sunken); cursor: pointer; }
 .chip.stale { border-color: var(--stale); color: var(--stale); }

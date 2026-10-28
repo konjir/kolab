@@ -111,11 +111,12 @@ export const ADMIN_DOER = 'admin';
  * grant made, replaced or removed, a person added to or removed from an organization or a team,
  * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
  * a Konjir admin, an admin raising their session to run admin verbs and lowering it, and each admin
- * verb the break-glass token runs.
+ * verb the break-glass token runs; and a kolab's lease length for work set (PLN15, W5.1b).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
   'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
+  'work_lease.set',
 ] as const;
 /**
  * How long an admin's session may run admin verbs once they raise it (konjir_admin_elevate, W2.22),
@@ -270,6 +271,63 @@ export const WORK_FIELDS = ['done_when', 'depends_on', 'size', 'milestone', 'tar
  */
 export interface WorkFields {
   done_when?: string; depends_on?: string[]; size?: WorkSize; milestone?: boolean; target_date?: string; repo?: string;
+}
+/**
+ * A work package's state (PLN12), as on an agile board: To do, In progress, In review or Done.
+ * Blocked is a flag Kolab computes, not a state. Migration 0030's work_package_state_check.
+ */
+export const WORK_STATES = ['todo', 'in_progress', 'in_review', 'done'] as const;
+export type WorkState = typeof WORK_STATES[number];
+/**
+ * What a work package's event records (PLN4, PLN5): its plan adding, removing or restoring it; a
+ * pull, a release, a reassignment and a lease that lapsed (PLN14, PLN15); evidence, submission,
+ * review and reopening (PLN16, PLN10, W5.1c and W5.2); and a milestone Kolab finds Done, or no
+ * longer Done (PLN3). Migration 0030's work_event_kind_check.
+ */
+export const WORK_EVENT_KINDS = [
+  'added', 'removed', 'restored', 'pulled', 'released', 'reassigned', 'lapsed',
+  'evidence', 'submitted', 'approved', 'changes_requested', 'done_unreviewed', 'reopened', 'confirmed',
+  'milestone_done', 'milestone_reopened',
+] as const;
+export type WorkEventKind = typeof WORK_EVENT_KINDS[number];
+/** A kolab's lease on In progress work (PLN15), in minutes: 30 by default, from 1 to 1,440 (a day). */
+export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;
+/**
+ * Why a work package is blocked (PLN19, as D98 amends it): a work package it depends on isn't
+ * Done, or an open question or case file sits on a binding element it delivers. A reason a reader
+ * may not see (a question a mark raised, for a session that holds only Read, D58) says only its kind.
+ */
+export type WorkBlock =
+  | { reason: 'depends_on'; work: string; state: WorkState }
+  | { reason: 'question'; on: string; query?: string }
+  | { reason: 'case_file'; on: string; case?: string };
+/** One work package on the board (konjir_list_work): what it is, where it stands, and whether it can be pulled. */
+export interface WorkItemView {
+  /** Its address: kj:<plan>#<id> in the reader's kolab. */
+  work: string; plan: string; id: string; text: string;
+  state: WorkState;
+  /** Who holds it, or held it last (null for To do, and for a milestone). */
+  assignee: string | null;
+  /** While In progress: when its lease lapses unless its assignee calls Kolab (PLN15). */
+  lease_until: string | null;
+  milestone: boolean; size: WorkSize | null;
+  /** Blocked (PLN19): why, empty when it isn't. Work already In progress continues. */
+  blocked: WorkBlock[];
+  /** To do, not blocked and not a milestone, and the reader may write the technical layer (PLN13). */
+  ready: boolean;
+  /** Removed from the plan (PLN4): the plan version that removed it. Never ready. */
+  removed_in?: string;
+  /** Done on submission with no reviewer (PLN16). */
+  unreviewed?: boolean;
+}
+/** One event of a work package (PLN5), oldest first. */
+export interface WorkEventView {
+  id: string; kind: WorkEventKind; from: WorkState | null; to: WorkState | null; actor: string; at: string;
+  /** The plan version it stood in. */
+  plan_version: string;
+  /** The binding elements it delivers, at the versions the event concerned. */
+  concerned: { address: string; version_id: string | null; fingerprint: string | null }[];
+  note: string | null;
 }
 /** An element as a draft gives it: `work` only on a plan's elements (D98). */
 export interface ElementInput { id?: string; text: string; parent?: string; work?: WorkFields | null }

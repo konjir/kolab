@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WorkFields } from '@konjir/types';
+import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WebWorkState, type WorkFields } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
@@ -307,17 +307,39 @@ const asElement = (name: string) => (a: { id: string; text: string; work?: WorkF
  * A work package's fields (PLN1, D98), read only: the page shows them and keeps them as they are
  * when the text is edited. They are written through konjir_draft.
  */
-function Work({ work, name }: { work: WorkFields; name: string }) {
+function Work({ work, state, name }: { work: WorkFields; state?: WebWorkState; name: string }) {
   const facts: string[] = [];
   if (work.milestone) facts.push(work.target_date ? `Milestone, due ${work.target_date}` : 'Milestone');
   if (work.size) facts.push(`Size ${work.size}`);
   if (work.repo) facts.push(`In ${work.repo}`);
   return (
     <dl className="work" aria-label="Work package">
+      {state && <WorkStateLine state={state} name={name} />}
       {facts.length > 0 && <div><dt className="sr-only">Kind</dt><dd>{facts.join(' · ')}</dd></div>}
       {work.done_when && <div><dt>Done when</dt><dd>{work.done_when}</dd></div>}
       {work.depends_on?.length ? <div><dt>{work.milestone ? 'Members' : 'Depends on'}</dt><dd>{work.depends_on.map((d) => <code key={d} title={addr(name, null, d)}>{d}</code>)}</dd></div> : null}
     </dl>
+  );
+}
+
+const STATE_LABEL: Record<WebWorkState['state'], string> = { todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
+
+/**
+ * Where a work package stands (PLN12, W5.1b), read only: its state, who holds it and until when its
+ * lease runs, and why it is blocked (PLN19). Agents pull and release work through MCP.
+ */
+function WorkStateLine({ state, name }: { state: WebWorkState; name: string }) {
+  const held = state.state === 'in_progress' && state.assignee
+    ? ` · ${state.assignee}${state.lease_until ? `, lease until ${new Date(state.lease_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`
+    : state.assignee && state.state !== 'todo' ? ` · ${state.assignee}` : '';
+  const why = state.blocked.map((b) => (b.reason === 'depends_on' ? `${b.work.replace(`kj:${name}#`, '')} (${STATE_LABEL[b.state]})`
+    : b.reason === 'question' ? `an open question on ${b.on}` : `an open case file on ${b.on}`));
+  return (
+    <div className="work-state">
+      <dt>State</dt>
+      <dd><Pill tone={state.state === 'done' ? 'clean' : why.length && !state.milestone ? 'question' : 'stale'}>{STATE_LABEL[state.state]}</Pill>{held}
+        {why.length > 0 && !state.milestone && <span className="blocked"> · Blocked by {why.join(', ')}</span>}</dd>
+    </div>
   );
 }
 
@@ -376,7 +398,7 @@ function ElementRow(p: RowProps) {
         ) : (
           <p style={p.removed ? { textDecoration: 'line-through' } : undefined}>{p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.text}</p>
         )}
-        {e.work && <Work work={e.work} name={p.name} />}
+        {(e.work || e.work_state) && <Work work={e.work ?? {}} state={e.work_state} name={p.name} />}
         {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => (
           <span key={l.edge} style={p.unlinked.includes(l.edge) ? { textDecoration: 'line-through' } : undefined}>
             {chip(l, 'target')}

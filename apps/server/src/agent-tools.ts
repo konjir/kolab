@@ -5,7 +5,7 @@ import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
-  POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, type EdgeKind, type GateResult,
+  POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   nobodyCanReview, notAKind,
 } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
@@ -129,6 +129,23 @@ const listCases = z.object({
 });
 const readCase = z.object({ case: z.string() });
 const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab'), ...paging });
+const work = z.string().describe('A work package of your kolab: kj:<plan>#<id>, e.g. kj:checkout-plan#W1.2');
+const listWork = z.object({
+  plan: node.optional().describe('Only this plan\'s work packages'),
+  state: z.enum(WORK_STATES).optional(),
+  ready: z.boolean().optional().describe('true: only those you could pull now'),
+  mine: z.boolean().optional().describe('true: only those you hold'),
+  ...paging,
+});
+const readWork = z.object({
+  work,
+  events_cursor: z.string().optional().describe('The events_next a previous read returned, for the events after it'),
+  limit: z.number().int().optional().describe('How many events to return: 50 by default, at most 200'),
+});
+const pullWork = z.object({ plan: node.optional().describe('The plan to pull from: needed only when your kolab has more than one') });
+const releaseWork = z.object({ work, note: z.string().optional().describe(`Why, for whoever pulls it next. At most ${MAX_TEXT} characters`) });
+const reassignWork = z.object({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
+const setWorkLease = z.object({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
@@ -602,6 +619,74 @@ export class AgentTools {
       const { items, next } = await this.kolab.rulingsPage(s, { node: id }, { cursor, limit });
       return { rulings: items, next };
     });
+  }
+
+  // ---- work packages: the board, pulling and the lease (W5.1b; PLN12–PLN19, D98) ----
+
+  @McpTool({
+    name: 'konjir_list_work',
+    description: `The board: your kolab's work packages (a plan's elements), plan by plan, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on a binding element it delivers), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. plan: one plan only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
+    schema: listWork,
+    annotations: { readOnlyHint: true },
+  })
+  listWork({ plan, state, ready, mine, cursor, limit }: z.infer<typeof listWork>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const { items, next } = await this.kolab.listWork(s, { plan, state, ready, mine }, { cursor, limit });
+      return { work: items, next };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_read_work',
+    description: `Read one work package of your kolab, kj:<plan>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), each binding element it delivers at its latest committed version with that element's links (the spec elements it serves, with their ancestors), questions, notes and rulings, the git trailer for its commits, and its events (who changed its state, when, against which versions), oldest first. A package the plan removed reads too, with removed_in. Events are paged: while events_next isn't null, call again with events_cursor=events_next.`,
+    schema: readWork,
+    annotations: { readOnlyHint: true },
+  })
+  readWork({ work, events_cursor, limit }: z.infer<typeof readWork>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.readWork(s, work, { cursor: events_cursor, limit }));
+  }
+
+  @McpTool({
+    name: 'konjir_pull_work',
+    description: 'Pull work: Kolab gives you the first ready work package of your kolab\'s plan in natural ID order, makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<plan>#<id>). Every call you make to Kolab renews the lease; if you make none for its length, the package goes back to To do and you are told in your answers. You hold one work package In progress at a time, in any kolab: finish or release it before pulling another. From an engineer session that may write the technical layer. plan is needed only when your kolab has more than one. With nothing ready, it says why (blocked by dependencies, questions or case files). A pull counts as a draft against your hourly budget.',
+    schema: pullWork,
+  })
+  pullWork({ plan }: z.infer<typeof pullWork>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const r = await this.kolab.pullWork(s, { plan });
+      if (!r.pulled) return { pulled: false, why: r.why, counts: r.counts, next: 'Nothing to do now: konjir_list_work shows each package\'s reasons. Answer or ask the open questions, or wait for the work it depends on.' };
+      return {
+        pulled: true, ...r.item, trailer: r.trailer, context: r.context,
+        next: `Build it to its done-when. Put "${r.trailer}" as a trailer in every commit for it. Your calls to Kolab keep your lease; release it (konjir_release_work work=${r.item.work}) if you stop.`,
+      };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_release_work',
+    description: 'Give back the work package you hold In progress, kj:<plan>#<id>: it returns to To do, for anyone to pull, with your note recorded. Only its assignee releases it, while its lease runs; one whose lease lapsed is To do already.',
+    schema: releaseWork,
+  })
+  releaseWork({ work, note }: z.infer<typeof releaseWork>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.releaseWork(s, work, { note }));
+  }
+
+  @McpTool({
+    name: 'konjir_reassign_work',
+    description: 'With Maintain or Admin in your kolab: give a work package that is To do or In progress to `to`, who must hold Write on the technical layer there and hold no work package In progress. It becomes In progress for them, with a fresh lease, and both are told in their answers. Not a milestone, nor a package the plan removed.',
+    schema: reassignWork,
+  })
+  reassignWork({ work, to }: z.infer<typeof reassignWork>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.reassignWork(s, work, to));
+  }
+
+  @McpTool({
+    name: 'konjir_set_work_lease',
+    description: `With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max} (${WORK_LEASE_MINUTES.default} by default). Audited. Leases running now keep their time; the next pull or renewal takes the new length.`,
+    schema: setWorkLease,
+  })
+  setWorkLease({ minutes }: z.infer<typeof setWorkLease>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.setWorkLease(s, minutes));
   }
 
   // ---- a person's own agents (D59) -----------------------------------------------

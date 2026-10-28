@@ -5,8 +5,15 @@
  */
 import type {
   Access, AccessLevel, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
-  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkFields,
+  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkState,
 } from './index.js';
+
+/**
+ * A work package's state on its plan's page (PLN12, W5.1b), read only: where it stands, who holds
+ * it and until when, and why it is blocked. Agents pull and release through MCP; the page has no
+ * board yet (M6).
+ */
+export interface WebWorkState { state: WorkState; assignee: string | null; lease_until: string | null; blocked: WorkBlock[]; milestone: boolean }
 
 /** How a person may sign in to this Kolab (D55): with its identity provider, named for the button, and with a pasted token (development). */
 export interface WebSignInMethods { provider: string | null; token: boolean }
@@ -115,6 +122,8 @@ export interface WebElement {
   id: string; parent: string | null; text: string; address: string;
   /** A plan element's work fields (PLN1, D98), shown read-only; absent when it has none. */
   work?: WorkFields;
+  /** On the plan's latest committed version: the work package's state (W5.1b), read only. */
+  work_state?: WebWorkState;
   /** Questions and notes on this element, open and answered, from any version (Q5): the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
   /** The cursor to the older ones (GET /api/nodes/:name/queries?element=), or null when that is all (W2.21). */
