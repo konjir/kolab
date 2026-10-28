@@ -31,7 +31,12 @@ export interface CaseView {
 
 /** Each body names its kolab since D50; a Kolab from before that leaves it out. */
 export type InboxBody = { kolab?: string; layer: string; queries: QueryView[]; marks: MarkView[]; reviews?: ReviewView[]; cases?: CaseView[] };
-export type AnswersBody = { kolab?: string; actor: string; queries: QueryView[]; submissions?: SubmissionView[]; cases?: CaseView[] };
+/** A change others made to this session's work, as Kolab's answers resource serves it (W5.1b, W5.1c). */
+export interface WorkNoticeView { id: string; work: string; kind: string; actor: string; note: string | null }
+export type AnswersBody = {
+  kolab?: string; actor: string; queries: QueryView[]; submissions?: SubmissionView[]; cases?: CaseView[];
+  work?: { events?: WorkNoticeView[] };
+};
 
 /** The params of a notifications/claude/channel notification. Meta keys must be identifiers. */
 export interface ChannelMessage { content: string; meta: Record<string, string> }
@@ -71,7 +76,17 @@ const answerLine = (q: QueryView) => `${q.kind} ${q.id} on ${q.address}, ${quote
 const reviewLine = (r: ReviewView) => `review ${r.subject}, by ${r.author}.${r.next ? ` Next: ${clip(r.next)}` : ''}`;
 const verdictLine = (v: SubmissionView) => `${v.subject} is ${v.state.replace('_', ' ')}${v.note ? `: ${quote(v.note)}` : ''}`;
 const caseLine = (c: CaseView) => `case ${c.case} on ${c.on}${c.question ? `: ${quote(c.question)}` : ''} (${plural(c.positions.length, 'position')}).${c.next ? ` Next: ${clip(c.next)}` : ''}`;
-const rulingLine = (c: CaseView) => `case ${c.case} on ${c.on}: ${c.ruling?.ruled_by ?? 'someone'} ruled ${quote(c.ruling?.text ?? '')}${c.ruling?.effect ? ` (${c.ruling.effect === 'change_intent' ? 'the intent changes' : 'the intent stands; find another way'})` : ''}`;
+/** What happened to a work package, in words: approved, changes requested, lapsed… */
+const WORK_WORDS: Record<string, string> = {
+  approved: 'was approved: it is Done',
+  changes_requested: 'came back with changes requested: it is In progress for you again, with a fresh lease',
+  lapsed: 'lapsed: no call of yours renewed its lease, so it is To do again',
+  reassigned: 'was reassigned', released: 'was given back by Kolab', removed: 'was removed from its plan',
+  reopened: 'was reopened: it is To do again', confirmed: 'was confirmed: its work holds',
+};
+const workLine = (e: WorkNoticeView) => `${e.work} ${WORK_WORDS[e.kind] ?? e.kind.replace(/_/g, ' ')}, by ${e.actor}${e.note ? `: ${quote(e.note)}` : ''}`;
+const workOf = (b: AnswersBody) => b.work?.events ?? [];
+const rulingLine =(c: CaseView) => `case ${c.case} on ${c.on}: ${c.ruling?.ruled_by ?? 'someone'} ruled ${quote(c.ruling?.text ?? '')}${c.ruling?.effect ? ` (${c.ruling.effect === 'change_intent' ? 'the intent changes' : 'the intent stands; find another way'})` : ''}`;
 const reviewsOf = (b: InboxBody) => b.reviews ?? [];
 /** Where an inbox is, in a message: its layer, and its kolab when Kolab names it. */
 const inboxName = (b: InboxBody) => `${b.layer} inbox${b.kolab ? ` in ${b.kolab}` : ''}`;
@@ -143,7 +158,10 @@ function answersMessage(uri: string, before: AnswersBody, after: AnswersBody): C
   const wasCase = new Map(casesOf(before).map((c) => [c.case, c]));
   const ruled = casesOf(after).filter((c) => c.ruling && !wasCase.get(c.case)?.ruling);
   const argued = casesOf(after).filter((c) => !c.ruling && wasCase.has(c.case) && wasCase.get(c.case)!.positions.length < c.positions.length);
-  if (!answered.length && !decided.length && !ruled.length && !argued.length) return null;
+  // A change others made to your work (W5.1c): a verdict on a package you submitted, a lapse, a reassignment.
+  const seenW = new Set(workOf(before).map((e) => e.id));
+  const worked = before.work ? workOf(after).filter((e) => !seenW.has(e.id)) : [];
+  if (!answered.length && !decided.length && !ruled.length && !argued.length && !worked.length) return null;
   const lines: string[] = [];
   if (answered.length) {
     lines.push(`${answered.length === 1 ? 'An answer has' : `${answered.length} answers have`} come back to what you raised:`, ...listed(answered, answerLine));
@@ -160,9 +178,13 @@ function answersMessage(uri: string, before: AnswersBody, after: AnswersBody): C
   if (argued.length) {
     lines.push(`The other side took a position on ${argued.length === 1 ? 'a case file' : `${argued.length} case files`} of yours; ${argued.length === 1 ? 'it waits' : 'they wait'} for a ruling:`, ...listed(argued, caseLine));
   }
+  if (worked.length) {
+    lines.push(`${worked.length === 1 ? 'A work package of yours has changed' : `${worked.length} changes to your work packages`}:`, ...listed(worked, workLine));
+    lines.push(`Read ${uri}, or call konjir_read_work, for where it stands and what to do next.`);
+  }
   return finish(lines.join('\n'), {
     uri, kind: 'answers', ...kolabMeta(after), actor: after.actor, answered: String(answered.length), ...(decided.length ? { reviewed: String(decided.length) } : {}),
-    ...(ruled.length ? { ruled: String(ruled.length) } : {}),
+    ...(ruled.length ? { ruled: String(ruled.length) } : {}), ...(worked.length ? { work: String(worked.length) } : {}),
   });
 }
 

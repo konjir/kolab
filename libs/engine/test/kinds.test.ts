@@ -163,9 +163,11 @@ test('a plan\'s work packages deliver its own binding\'s elements, never the spe
   const d1 = await kolab.commit(engineer, 'orders-ddb', { elements: els({ d1: 'A table.' }) });
   expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: d1, targetElement: 'd1' })))
     .toMatch(/orders-plan is a plan: its work packages deliver elements of its own binding, never binding orders-ddb/);
-  // A work package may depend on another of its plan's own (PLN1's Depends on).
+  // A work package depends on another of its plan's own through its depends_on work field, not a
+  // new link (D99): the link is refused, pointing there.
   const w2 = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build the cancel endpoint.', W2: 'Build the queue.' }) });
-  await kolab.link(engineer, { kind: 'dependency', source: w2, sourceElement: 'W2', target: w1, targetElement: 'W1' });
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: w2, sourceElement: 'W2', target: w1, targetElement: 'W1' })))
+    .toMatch(/^GateError: a plan's work packages don't link to each other \(D99\): say what W2 needs in its work field instead, work: \{ depends_on: \["W1"\] \}/);
   // A binding serves its own spec, and no other kolab's.
   await kolab.createKolab('other', { owner: 'test-org' });
   await kolab.grant('other', 'carol', 'write', { layers: ['functional'] });

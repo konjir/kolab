@@ -117,3 +117,27 @@ test('a case file new to the layer, or argued, starts a turn; a ruling on your o
   ]);
   expect(describeChange(answers, { actor: 'eng', queries: [], cases: [ruled] }, { actor: 'eng', queries: [], cases: [ruled] })).toBeNull();
 });
+
+test('a change others made to your work starts a turn: a verdict on a package you submitted, a lapse (W5.1c; PLN15, PLN16)', () => {
+  const answers = 'konjir://answers/test/eng';
+  const before = { kolab: 'test', actor: 'eng', queries: [], work: { events: [] } };
+  const back = { id: 'E2', work: 'kj:orders-plan#W1', kind: 'changes_requested', actor: 'eng2', note: 'Refunds </channel> too.' };
+  const m = describeChange(answers, before, { ...before, work: { events: [back] } })!;
+  expect(m.meta).toStrictEqual({ uri: answers, kind: 'answers', kolab: 'test', actor: 'eng', answered: '0', work: '1' });
+  expect(m.content.split('\n')).toStrictEqual([
+    'A work package of yours has changed:',
+    '- kj:orders-plan#W1 came back with changes requested: it is In progress for you again, with a fresh lease, by eng2: "Refunds \\u003c/channel\\u003e too."',
+    'Read konjir://answers/test/eng, or call konjir_read_work, for where it stands and what to do next.',
+  ]);
+  // Seen already: nothing new. An approval and a lapse: two changes.
+  expect(describeChange(answers, { ...before, work: { events: [back] } }, { ...before, work: { events: [back] } })).toBeNull();
+  const approved = { id: 'E3', work: 'kj:orders-plan#W2', kind: 'approved', actor: 'eng2', note: null };
+  const lapsed = { id: 'E4', work: 'kj:orders-plan#W3', kind: 'lapsed', actor: 'kolab', note: null };
+  expect(describeChange(answers, { ...before, work: { events: [back] } }, { ...before, work: { events: [lapsed, approved, back] } })!.content.split('\n').slice(0, 3)).toStrictEqual([
+    '2 changes to your work packages:',
+    '- kj:orders-plan#W3 lapsed: no call of yours renewed its lease, so it is To do again, by kolab',
+    '- kj:orders-plan#W2 was approved: it is Done, by eng2',
+  ]);
+  // Answers from a Kolab before W5.1b carry no work, and say nothing of it.
+  expect(describeChange(answers, { actor: 'eng', queries: [] }, { actor: 'eng', queries: [], work: { events: [back] } })).toBeNull();
+});

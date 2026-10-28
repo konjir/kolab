@@ -43,6 +43,16 @@ export const MAX_DONE_WHEN = MAX_TEXT;
 export const MAX_DEPENDS_ON = 50;
 /** Characters in a work package's repo, a repository's id (KON7, D98; kj_work_valid). */
 export const MAX_WORK_REPO = 200;
+/** Items of evidence one call records on a work package (konjir_add_evidence, konjir_submit_work; D98). */
+export const MAX_EVIDENCE_PER_CALL = 50;
+/** Items of evidence one work package holds (D98): a delivery is tens of commits, not thousands. */
+export const MAX_EVIDENCE_PER_PACKAGE = 500;
+/** Paths one commit's evidence names (D98; migration 0031's evidence_files). */
+export const MAX_EVIDENCE_FILES = 500;
+/** Characters in one path a commit touched (D98). */
+export const MAX_EVIDENCE_PATH = 1024;
+/** Characters in an evidence link (D98; migration 0031's evidence_url). */
+export const MAX_EVIDENCE_URL = 2000;
 /** Findings in one review verdict. */
 export const MAX_FINDINGS = 100;
 /** Characters in a node's title. */
