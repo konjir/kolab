@@ -132,10 +132,13 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
     commits: [{ sha: c1, subject: 'Cancel orders', files: 1 }, { sha: c5, subject: 'Refund on cancel', files: 2 }],
   });
   const read = await eng.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: Record<string, unknown>[] };
-  expect(read.evidence.map((e) => [e.sha, e.title, e.files, e.repository, e.confirmed])).toStrictEqual([
+  // Recorded in one call, so in no fixed order among themselves.
+  const shown = read.evidence.map((e) => [e.sha, e.title, e.files, e.repository, e.confirmed]);
+  expect(shown).toHaveLength(2);
+  expect(shown).toStrictEqual(expect.arrayContaining([
     [c1, 'Cancel orders', ['src/cancel.ts'], 'https://github.com/acme/orders', false],
     [c5, 'Refund on cancel', ['src/cancel.ts', 'test/cancel.test.ts'], 'https://github.com/acme/orders', false],
-  ]);
+  ]));
   // Delivered again: nothing new, both already counted.
   expect(await deliverWork(eng.call, gitIn(dir), { work: 'kj:orders-plan#W1' })).toMatchObject({ recorded: 0, already: 2 });
 
@@ -164,8 +167,9 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   const submitted = await deliverWork(eng.call, gitIn(dir), { submit: true, pr: 'https://github.com/acme/orders/pull/3', tests: ['npm test: 3 passed'], note: 'Cancels, refunds.' });
   expect(submitted).toMatchObject({ recorded: 2, already: 2, state: 'in_review', in_review: true });
   const evidence = (await eng2.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: Record<string, unknown>[] }).evidence;
-  expect(evidence.map((e) => e.kind)).toStrictEqual(['commit', 'commit', 'pull_request', 'test_run']);
-  expect(evidence[2]).toMatchObject({ url: 'https://github.com/acme/orders/pull/3', pr: 3, repository: 'https://github.com/acme/orders' });
+  // Items recorded in one call share their time, so their order among themselves isn't fixed.
+  expect(evidence.map((e) => e.kind).sort()).toStrictEqual(['commit', 'commit', 'pull_request', 'test_run']);
+  expect(evidence.find((e) => e.kind === 'pull_request')).toMatchObject({ url: 'https://github.com/acme/orders/pull/3', pr: 3, repository: 'https://github.com/acme/orders' });
   // eng2 approves: neither its registrar nor its assignee, so the repository is confirmed.
   expect(await eng2.call('review', { work: 'kj:orders-plan#W1', verdict: 'approve' })).toMatchObject({ state: 'done', confirmed_repositories: ['https://github.com/acme/orders'] });
   expect(await eng.call('list_repositories', {})).toMatchObject({ repositories: [{ confirmed: true, confirmed_by: 'eng2', confirmed_by_work: 'kj:orders-plan#W1' }] });
