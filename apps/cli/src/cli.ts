@@ -270,10 +270,11 @@ export function signInSettings(env: Record<string, string | undefined>) {
 /**
  * The session token the CLI is given: --token, else KONJIR_TOKEN. An empty or blank one is unset,
  * so the sign-in konjir login keeps is used: `konjir connect claude` writes KONJIR_TOKEN as "" in
- * .mcp.json, and those settings copied into a shell must not send an empty bearer token.
+ * .mcp.json, and those settings copied into a shell must not send an empty bearer token. A flag
+ * beats the environment: a blank --token means no token, even with KONJIR_TOKEN exported.
  */
 export function sessionToken(given: string | undefined, env: Record<string, string | undefined> = process.env): string | undefined {
-  return given?.trim() || env.KONJIR_TOKEN?.trim() || undefined;
+  return given !== undefined ? given.trim() || undefined : env.KONJIR_TOKEN?.trim() || undefined;
 }
 
 export async function main(argv: string[]) {
