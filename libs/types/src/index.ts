@@ -111,12 +111,13 @@ export const ADMIN_DOER = 'admin';
  * grant made, replaced or removed, a person added to or removed from an organization or a team,
  * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
  * a Konjir admin, an admin raising their session to run admin verbs and lowering it, and each admin
- * verb the break-glass token runs; and a kolab's lease length for work set (PLN15, W5.1b).
+ * verb the break-glass token runs; a kolab's lease length for work set (PLN15, W5.1b); and a
+ * repository registered or archived by a person (KON7, D98, W5.2a).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
   'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
-  'work_lease.set',
+  'work_lease.set', 'repository.registered', 'repository.archived',
 ] as const;
 /**
  * How long an admin's session may run admin verbs once they raise it (konjir_admin_elevate, W2.22),
@@ -303,6 +304,11 @@ export type EvidenceKind = typeof EVIDENCE_KINDS[number];
  */
 export interface EvidenceInput {
   kind: EvidenceKind; sha?: string; pr?: number; url?: string; title?: string; files?: string[];
+  /**
+   * A commit's or pull request's repository (W5.2a, D98): the URL of one registered in the kolab. It may
+   * be left out when the package has its repository (its `repo` field, or its binding's implementation).
+   */
+  repo?: string;
 }
 /** One item of a work package's evidence, as readers see it. */
 export interface EvidenceView {
@@ -310,6 +316,23 @@ export interface EvidenceView {
   recorded_by: string; at: string;
   /** The event that recorded it: evidence while the work was under way, or a submission. */
   event: string;
+  /**
+   * A commit's or pull request's repository, by its URL (W5.2a), and whether that repository is
+   * confirmed (D98 ruling 1). Evidence recorded before repositories existed names none, and is
+   * unconfirmed (`before_repositories`). A test run has neither.
+   */
+  repository?: string | null; confirmed?: boolean; before_repositories?: true;
+}
+/**
+ * A repository registered in a kolab (KON7, D98 ruling 1; W5.2a): its canonical https URL, its root
+ * commit (the parentless commit a checkout of it must have), the binding it implements if any, who
+ * registered it, and whether, when and by which work package's approval it was confirmed.
+ */
+export interface RepositoryView {
+  id: string; url: string; root_sha: string; binding: string | null;
+  registered_by: string; registered_at: string;
+  confirmed: boolean; confirmed_by: string | null; confirmed_at: string | null; confirmed_by_work: string | null;
+  archived_at: string | null;
 }
 /** A kolab's lease on In progress work (PLN15), in minutes: 30 by default, from 1 to 1,440 (a day). */
 export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;

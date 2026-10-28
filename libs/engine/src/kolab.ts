@@ -10,8 +10,8 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, milestoneStates, naturalCompare, planProblems,
-  type CheckedEvidence, type PlanLink,
+  canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, insideRepository, milestoneStates, naturalCompare, planProblems,
+  repositoryUrl, type CheckedEvidence, type PlanLink,
 } from './work.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
@@ -22,7 +22,7 @@ import {
   type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
-  MAX_EVIDENCE_PER_PACKAGE, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
+  MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
 } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
@@ -3993,6 +3993,17 @@ export class Kolab {
         target: `${l.target_kolab === plan.kolab_id ? '' : `${l.target_kolab}/`}${l.target_name}@${l.target_seq}${l.target_element_id ? `#${l.target_element_id}` : ''}`,
       }));
     const problems = planProblems(els, links);
+    // A work package's repo names a repository registered in the plan's kolab, and live (KON7, W5.2a).
+    const named = els.filter((e) => e.work?.repo);
+    if (named.length) {
+      const live = new Set((await q.query<{ url: string }>(`select lower(url) as url from repository where kolab_id = $1 and archived_at is null`, [plan.kolab_id])).rows.map((r) => r.url));
+      for (const e of named) {
+        const u = repositoryUrl(e.work!.repo);
+        if (!u.url || !live.has(u.url.toLowerCase())) {
+          problems.push(`${e.element_id}'s repo ${e.work!.repo} isn't a repository registered in kolab ${plan.kolab_id} (KON7): a person with Maintain or Admin registers it (konjir_register_repository), or leave repo out to work in the binding's implementation`);
+        }
+      }
+    }
     return problems.length ? { ok: false, note: `Plan checks failed (PLN2): ${problems.join('; ')}.` } : passed;
   }
 
@@ -6822,8 +6833,12 @@ export class Kolab {
       }
       return out;
     });
+    // The repository it is done in (KON7, D38): its repo, or its binding's implementation; null when
+    // it has neither, or its repo has been archived since the plan committed.
+    const repo = await this.packageRepositoryIn(this.db, p.plan, p.work).catch((e: unknown) => { if (e instanceof GateError) return null; throw e; });
     return {
       work: formatAddress({ node: p.plan.name, element: p.id }), plan: p.plan.name, id: p.id, text: p.text,
+      repository: repo ? { url: repo.url, root_sha: repo.root_sha, confirmed: repo.confirmed_at !== null, via: repo.via } : null,
       ...(p.work?.done_when ? { done_when: p.work.done_when } : {}),
       ...(p.work?.size ? { size: p.work.size } : {}),
       ...(p.work?.repo ? { repo: p.work.repo } : {}),
@@ -6860,7 +6875,7 @@ export class Kolab {
     const events = await this.workEventViews(shown, s.access.layers.length > 0);
     // Its evidence, oldest first (PLN16), and its reviews, as every session of the kolab reads them.
     const { evidence, reviews } = await this.read({ session: sessionId }, async (q) => ({
-      evidence: (await q.query<EvidenceRow>(`select ${EVIDENCE_COLUMNS} from evidence e where e.plan_node_id = $1 and e.element_id = $2 order by e.at, e.id`, [plan.id, id])).rows.map(evidenceView),
+      evidence: (await q.query<EvidenceRow>(`select ${EVIDENCE_COLUMNS} from ${EVIDENCE_FROM} where e.plan_node_id = $1 and e.element_id = $2 order by e.at, e.id`, [plan.id, id])).rows.map(evidenceView),
       reviews: (await q.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; created_at: Date | string; decided_at: Date | string | null }>(
         `select reviewer_id, state, note, created_at, decided_at from review_request where plan_node_id = $1 and element_id = $2
           order by created_at, reviewer_id, id`, [plan.id, id])).rows
@@ -7457,14 +7472,16 @@ export class Kolab {
    * those not already among its evidence since it was last To do (the same kind and reference),
    * which are counted in `already`. Refused past MAX_EVIDENCE_PER_PACKAGE.
    */
-  private async evidenceIn(tx: Q, plan: string, element: string, items: CheckedEvidence[], eventId: string, actor: string): Promise<{ recorded: string[]; already: number }> {
+  private async evidenceIn(tx: Q, plan: string, element: string, items: CheckedEvidence[], eventId: string, actor: string,
+    repositories: (string | null)[]): Promise<{ recorded: string[]; already: number }> {
     const have = await this.roundEvidence(tx, plan, element);
-    const seen = new Set(have.map((e) => evidenceKey(e.kind, e.ref, e.url, e.title)));
+    const seen = new Set(have.map((e) => evidenceKey(e.kind, e.ref, e.url, e.title, e.repository_id)));
     // The cap is per round (since the package was last To do), so a package reopened, released or
     // restored can always be delivered again; earlier rounds stay as history.
     const total = have.length;
-    const fresh = items.filter((e) => {
-      const k = evidenceKey(e.kind, e.ref, e.url, e.title);
+    const pinned = items.map((e, i) => ({ ...e, repository: repositories[i] ?? null }));
+    const fresh = pinned.filter((e) => {
+      const k = evidenceKey(e.kind, e.ref, e.url, e.title, e.repository);
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
@@ -7476,8 +7493,8 @@ export class Kolab {
     for (const e of fresh) {
       const id = ulid();
       await tx.query(
-        `insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, url, title, files, recorded_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, [id, plan, element, eventId, e.kind, e.ref, e.url, e.title, e.files, actor]);
+        `insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, url, title, files, recorded_by, repository_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [id, plan, element, eventId, e.kind, e.ref, e.url, e.title, e.files, actor, e.repository]);
       recorded.push(id);
     }
     return { recorded, already: items.length - fresh.length };
@@ -7489,7 +7506,7 @@ export class Kolab {
    */
   private async roundEvidence(q: Q, plan: string, element: string): Promise<EvidenceRow[]> {
     return (await q.query<EvidenceRow>(
-      `select ${EVIDENCE_COLUMNS} from evidence e join work_event ev on ev.id = e.event_id
+      `select ${EVIDENCE_COLUMNS} from ${EVIDENCE_FROM} join work_event ev on ev.id = e.event_id
         where e.plan_node_id = $1 and e.element_id = $2
           and (ev.at, ev.id) > coalesce((select (t.at, t.id) from work_event t where t.plan_node_id = $1 and t.element_id = $2 and t.to_state = 'todo'
                                           order by t.at desc, t.id desc limit 1), ('-infinity'::timestamptz, ''::text))
@@ -7526,6 +7543,7 @@ export class Kolab {
         const lease = await this.workTx(tx, s, 'records no evidence');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.plan_node_id = $1 and w.element_id = $2 for update of w`, [plan.id, id])).rows[0];
         this.requireHolding(r, s, at, 'records its evidence');
+        const repositories = await this.pinEvidenceIn(tx, plan, id, items);
         const until = (await tx.query<{ lease_until: Date }>(
           `update work_package set lease_until = clock_timestamp() + $3 * interval '1 second', touched_at = clock_timestamp(), updated_at = clock_timestamp()
             where plan_node_id = $1 and element_id = $2 returning lease_until`, [plan.id, id, lease])).rows[0].lease_until;
@@ -7533,7 +7551,7 @@ export class Kolab {
         const ev = await this.workEventIn(tx, { plan: plan.id, element: id, kind: 'evidence', from: 'in_progress', to: 'in_progress', actor: s.actor_id,
           assigneeFrom: s.actor_id, assigneeTo: s.actor_id, planVersion: c.version.id, concerned: c.delivers,
           note: `${items.length} item${items.length === 1 ? '' : 's'} of evidence: ${evidenceSummary(items)}` });
-        const { recorded, already } = await this.evidenceIn(tx, plan.id, id, items, ev, s.actor_id);
+        const { recorded, already } = await this.evidenceIn(tx, plan.id, id, items, ev, s.actor_id, repositories);
         await this.useRate(tx, hold);
         return { recorded: recorded.length, already, lease_until: iso(until) };
       }, undefined, { access: true }));
@@ -7593,6 +7611,7 @@ export class Kolab {
         }
         this.requireHolding(r, s, at, 'submits it');
         if (r.milestone) throw new GateError(`${at} is a milestone: it has no work of its own, and is Done when its members are (PLN3)`);
+        const repositories = await this.pinEvidenceIn(tx, plan, id, items);
         // The evidence it needs (D98): a commit or a pull request since it was last To do, this call's included.
         const have = await this.roundEvidence(tx, plan.id, id);
         if (![...have, ...items].some((e) => e.kind === 'commit' || e.kind === 'pull_request')) {
@@ -7620,7 +7639,7 @@ export class Kolab {
             assigneeFrom: s.actor_id, assigneeTo: s.actor_id, planVersion: c.version.id, concerned: c.delivers,
             note: note ?? 'no one other than its assignee holds Write on the technical layer, so it is Done on submission, unreviewed (PLN16)' });
         }
-        const { recorded, already } = await this.evidenceIn(tx, plan.id, id, items, ev, s.actor_id);
+        const { recorded, already } = await this.evidenceIn(tx, plan.id, id, items, ev, s.actor_id, repositories);
         if (state === 'done') await this.settleMilestonesIn(tx, plan, c.version);
         await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
         await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
@@ -7642,7 +7661,9 @@ export class Kolab {
    * they can no longer write the technical layer. Either way the other requests are withdrawn.
    * Under the plan's lock, as every change of Done takes it.
    */
-  reviewWork(sessionId: string, ref: string, input: { verdict: ReviewVerdictKind; note?: string }): Promise<{ work: string; verdict: ReviewVerdictKind; state: WorkState; assignee: string | null }> {
+  reviewWork(sessionId: string, ref: string, input: { verdict: ReviewVerdictKind; note?: string }): Promise<{
+    work: string; verdict: ReviewVerdictKind; state: WorkState; assignee: string | null; confirmed_repositories: string[];
+  }> {
     return this.packageScoped(sessionId, ref, async ({ s, plan, id }) => {
       this.requireEngineer(s, 'reviews no work');
       if (input.verdict !== 'approve' && input.verdict !== 'request_changes') throw new GateError('a verdict is approve or request_changes');
@@ -7667,11 +7688,15 @@ export class Kolab {
         const c = await this.concernedIn(tx, plan.id, id);
         const assignee = r.assignee_id!;
         let state: WorkState;
+        let confirmed: string[] = [];
         if (input.verdict === 'approve') {
           state = 'done';
           await tx.query(`update work_package set state = 'done', unreviewed = false, updated_at = clock_timestamp() where plan_node_id = $1 and element_id = $2`, [plan.id, id]);
           await this.workEventIn(tx, { plan: plan.id, element: id, kind: 'approved', from: 'in_review', to: 'done', actor: s.actor_id,
             assigneeFrom: assignee, assigneeTo: assignee, planVersion: c.version.id, concerned: c.delivers, note });
+          // The approval vouches for the repositories its evidence names (D98 ruling 1): the first by
+          // someone other than a repository's registrar and the assignee confirms it.
+          confirmed = await this.confirmRepositoriesIn(tx, plan, id, s.actor_id, assignee);
           await this.settleMilestonesIn(tx, plan, c.version);
         } else if ((await accessIn(tx, assignee, s.kolab)).layers.includes('technical')) {
           // Back to its assignee, In progress, with a fresh lease, whatever else they hold (PLN18, D98).
@@ -7690,7 +7715,7 @@ export class Kolab {
         }
         await signal({ inbox: 'actor', kolab: s.kolab, actor: assignee });
         await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
-        return { work: at, verdict: input.verdict, state, assignee: state === 'todo' ? null : assignee };
+        return { work: at, verdict: input.verdict, state, assignee: state === 'todo' ? null : assignee, confirmed_repositories: confirmed };
       }, plan.id, { access: true });
     });
   }
@@ -7781,6 +7806,229 @@ export class Kolab {
       assigneeFrom: r.assignee_id, assigneeTo: r.assignee_id, planVersion: c.version.id, concerned: c.delivers,
       note: `cleared mark ${m.id} (${m.reason}): the work holds (PLN10)` });
     if (r.assignee_id && r.assignee_id !== actor) await signal({ inbox: 'actor', kolab: plan.kolab_id, actor: r.assignee_id });
+  }
+
+  // ---- repositories, and evidence pinned to them (W5.2a; KON7, PLN16, D98 rulings 1 and 2, D102) ----
+
+  /**
+   * Registers a git repository in the session's kolab (KON7, D98 ruling 1): its https URL, in the
+   * one form Kolab compares (repositoryUrl), and its root commit, the parentless commit every checkout
+   * of it has, which `konjir work deliver` checks the local checkout against. With `binding`, it is
+   * that binding's implementation, one per binding (D38): its work packages' commits and pull
+   * requests are recorded in it unless a package names another (its `repo`).
+   *
+   * Only a person with Maintain or Admin in the kolab registers one, never an agent, as only a
+   * person invites people (ENF7): an injected agent can't point a kolab at a repository of its
+   * choosing. Checked again under the access lock, and audited (repository.registered). Kolab never
+   * reads git (D36), so it checks the form of what it is given, not that the repository exists.
+   * The same URL may be registered in other kolabs; in one kolab, once while it is live.
+   */
+  async registerRepository(sessionId: string, input: { url: unknown; root_sha: unknown; binding?: string | null }): Promise<RepositoryView> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') {
+      throw new AccessError(`${s.actor_id} is an agent, and an agent registers no repository: a person with Maintain or Admin in kolab ${s.kolab} registers it (D98)`);
+    }
+    const needsMaintain = (a: Access) => new AccessError(`registering a repository in kolab ${s.kolab} needs Maintain or Admin there (D98); ${s.actor_id} holds ${describeAccess(a)}`);
+    if (rankOf(s.access.level) < rankOf('maintain')) throw needsMaintain(s.access);
+    const u = repositoryUrl(input.url);
+    if (u.problem) throw new GateError(u.problem);
+    const root = typeof input.root_sha === 'string' ? input.root_sha.trim().toLowerCase() : '';
+    if (!ROOT_SHA.test(root)) {
+      throw new GateError(`root_sha is the repository's root commit, its full sha: 40 hexadecimal characters (64 for SHA-256), as \`git rev-list --max-parents=0 HEAD\` prints it; not ${JSON.stringify(input.root_sha ?? null)}`);
+    }
+    let binding: NodeRow | undefined;
+    if (input.binding !== undefined && input.binding !== null) {
+      binding = await this.nodeIn(sessionId, String(input.binding), 'naming the binding a repository implements');
+      if (binding.kind !== 'binding') throw new GateError(`${binding.name} is a ${binding.kind}, not a binding: a repository implements a binding (KON7, D38)`);
+    }
+    await this.requireLiveKolab(s.kolab, 'registers no repository');
+    const id = ulid();
+    try {
+      await this.inTransaction(async (tx) => {
+        const mine = await accessIn(tx, s.actor_id, s.kolab);
+        if (rankOf(mine.level) < rankOf('maintain')) throw needsMaintain(mine);
+        // On Kolab's own login, as setWorkLease writes, since the audit log is its alone.
+        const live = (await tx.query<{ n: number }>(`select count(*)::int as n from repository where kolab_id = $1 and archived_at is null`, [s.kolab])).rows[0].n;
+        if (live >= MAX_REPOSITORIES_PER_KOLAB) {
+          throw new LimitError(`kolab ${s.kolab} has ${live} repositories, the most it registers (${MAX_REPOSITORIES_PER_KOLAB}); archive one it no longer uses first`);
+        }
+        await tx.query(
+          `insert into repository(id, kolab_id, url, root_sha, binding_node_id, registered_by) values ($1, $2, $3, $4, $5, $6)`,
+          [id, s.kolab, u.url, root, binding?.id ?? null, s.actor_id]);
+        await audit(tx, s.actor_id, 'repository.registered', { kolab: s.kolab, subject: id, detail: { url: u.url, root_sha: root, binding: binding?.name ?? null } });
+      }, undefined, { access: true });
+    } catch (e) {
+      if (isUniqueViolation(e, 'repository_url_per_kolab')) throw new GateError(`${u.url} is already registered in kolab ${s.kolab} (konjir_list_repositories)`);
+      if (isUniqueViolation(e, 'one_implementation_per_binding')) {
+        throw new GateError(`binding ${binding!.name} already has its implementation: a binding is implemented in one repository (D38); archive that one first, or register this one without binding`);
+      }
+      throw e;
+    }
+    return (await this.repositoryRows(this.db, s.kolab, { id }))[0];
+  }
+
+  /**
+   * Archives a repository of the session's kolab (konjir_archive_repository): no evidence names it
+   * from then on, and a binding it implemented may name another. Its evidence keeps naming it. A
+   * person with Maintain or Admin there, as for registering; audited (repository.archived).
+   */
+  async archiveRepository(sessionId: string, repo: string): Promise<RepositoryView> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent, and an agent archives no repository: a person with Maintain or Admin does (D98)`);
+    const needsMaintain = (a: Access) => new AccessError(`archiving a repository in kolab ${s.kolab} needs Maintain or Admin there (D98); ${s.actor_id} holds ${describeAccess(a)}`);
+    if (rankOf(s.access.level) < rankOf('maintain')) throw needsMaintain(s.access);
+    await this.requireLiveKolab(s.kolab, 'archives no repository');
+    const id = await this.inTransaction(async (tx) => {
+      const mine = await accessIn(tx, s.actor_id, s.kolab);
+      if (rankOf(mine.level) < rankOf('maintain')) throw needsMaintain(mine);
+      const r = await this.repositoryNamed(tx, s.kolab, repo, { forUpdate: true });
+      if (r.archived_at) throw new GateError(`${r.url} is archived already`);
+      await tx.query(`update repository set archived_by = $2, archived_at = clock_timestamp() where id = $1`, [r.id, s.actor_id]);
+      await audit(tx, s.actor_id, 'repository.archived', { kolab: s.kolab, subject: r.id, detail: { url: r.url } });
+      return r.id;
+    }, undefined, { access: true });
+    return (await this.repositoryRows(this.db, s.kolab, { id }))[0];
+  }
+
+  /**
+   * The repositories of the session's kolab (konjir_list_repositories), by URL, a page at a time:
+   * each with its root commit, the binding it implements, who registered it, and whether it is
+   * confirmed. Archived ones only when asked. Any session of the kolab reads them; no other kolab
+   * does (D49).
+   */
+  async listRepositories(sessionId: string, filter: { archived?: boolean } = {}, page: PageOpts = {}): Promise<{ items: RepositoryView[]; next: string | null }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('repositories', { kolab: s.kolab, archived: !!filter.archived });
+    const after = keyOf(list, page.cursor, ['text', 'text']) as [string, string] | undefined;
+    const rows = await this.read({ session: sessionId }, (q) => this.repositoryRows(q, s.kolab, { archived: !!filter.archived, after, limit: size + 1 }));
+    const { rows: items, next } = pageOf(rows, size, list, (r) => [r.url.toLowerCase(), r.id]);
+    return { items, next };
+  }
+
+  /** A kolab's repositories as readers see them, on `q`: one by id, or a page by lower(url) and id. */
+  private async repositoryRows(q: Q, kolab: string, opts: { id?: string; archived?: boolean; after?: [string, string]; limit?: number }): Promise<RepositoryView[]> {
+    const rows = (await q.query<RepositoryRow & { binding: string | null; confirmed_plan: string | null }>(
+      `select r.*, b.name as binding, cp.name as confirmed_plan from repository r
+         left join node b on b.id = r.binding_node_id left join node cp on cp.id = r.confirmed_plan_node_id
+        where r.kolab_id = $1 and ($2::text is null or r.id = $2) and ($3::boolean or r.archived_at is null)
+          and ($4::text is null or (lower(r.url), r.id) > ($4::text, $5::text))
+        order by lower(r.url), r.id limit $6`,
+      [kolab, opts.id ?? null, !!opts.archived || opts.id !== undefined, opts.after?.[0] ?? null, opts.after?.[1] ?? null, opts.limit ?? 1000])).rows;
+    return rows.map((r) => ({
+      id: r.id, url: r.url, root_sha: r.root_sha, binding: r.binding, registered_by: r.registered_by, registered_at: iso(r.registered_at)!,
+      confirmed: r.confirmed_at !== null, confirmed_by: r.confirmed_by, confirmed_at: iso(r.confirmed_at),
+      confirmed_by_work: r.confirmed_plan && r.confirmed_element_id ? formatAddress({ node: r.confirmed_plan, element: r.confirmed_element_id }) : null,
+      archived_at: iso(r.archived_at),
+    }));
+  }
+
+  /**
+   * A repository of `kolab` named by its URL (in any form repositoryUrl takes) or its id, on `q`;
+   * one that isn't there (with `live`, or is archived) is refused as not registered.
+   */
+  private async repositoryNamed(q: Q, kolab: string, given: string, opts: { forUpdate?: boolean; forShare?: boolean; live?: boolean } = {}): Promise<RepositoryRow> {
+    const canonical = repositoryUrl(given).url;
+    const r = (await q.query<RepositoryRow>(
+      `select * from repository where kolab_id = $1 and (id = $2 or lower(url) = lower($3)) ${opts.live ? 'and archived_at is null' : ''}
+        order by archived_at nulls first, registered_at desc limit 1 ${opts.forUpdate ? 'for update' : opts.forShare ? 'for share' : ''}`,
+      [kolab, String(given), canonical ?? ''])).rows[0];
+    if (!r) {
+      throw new GateError(`${canonical ?? String(given)} isn't a repository registered in kolab ${kolab}${opts.live ? ', or it is archived' : ''}: `
+        + 'a person with Maintain or Admin registers it (konjir repo register, or konjir_register_repository); konjir_list_repositories lists them');
+    }
+    return r;
+  }
+
+  /**
+   * The repository a work package is done in (KON7, D38), on `q`: the one its `repo` names, or else
+   * its plan's binding's implementation; null when it has neither. `work` is its fields in the plan's
+   * latest committed version. A `repo` that names no live repository is refused, as PLN2 refuses it
+   * at submit (it may have been archived since).
+   */
+  private async packageRepositoryIn(q: Q, plan: Pick<NodeRow, 'kolab_id' | 'parent_node_id'>, work: WorkFields | null | undefined,
+    opts: { forShare?: boolean } = {}): Promise<(RepositoryRow & { via: 'repo' | 'binding' }) | null> {
+    if (work?.repo) return { ...(await this.repositoryNamed(q, plan.kolab_id, work.repo, { live: true, forShare: opts.forShare })), via: 'repo' };
+    if (!plan.parent_node_id) return null;
+    const r = (await q.query<RepositoryRow>(`select * from repository where binding_node_id = $1 and archived_at is null ${opts.forShare ? 'for share' : ''}`, [plan.parent_node_id])).rows[0];
+    return r ? { ...r, via: 'binding' } : null;
+  }
+
+  /** A work package's fields in its plan's latest committed version, on `q`. */
+  private async packageWorkIn(q: Q, plan: string, element: string): Promise<WorkFields | null> {
+    return (await q.query<{ work: WorkFields | null }>(
+      `select e.work from element e join version v on v.id = e.version_id
+        where v.node_id = $1 and v.state = 'committed' and e.element_id = $2 order by v.seq desc limit 1`, [plan, element])).rows[0]?.work ?? null;
+  }
+
+  /**
+   * Ties each commit and pull request among `items` to its repository (W5.2a, D98 ruling 2), in `tx`,
+   * or refuses them all, writing nothing: one it names (`repo`), which must be registered in the
+   * package's kolab and live, and must be the package's own when it has one (its `repo`, or its
+   * binding's implementation, KON7); or, named by none, the package's own. A pull request's link,
+   * and a commit's, must sit inside its repository's URL. A test run names none. Returns each
+   * item's repository id (null for a test run), in order.
+   */
+  private async pinEvidenceIn(tx: Q, plan: NodeRow, element: string, items: CheckedEvidence[]): Promise<(string | null)[]> {
+    if (!items.some((e) => e.kind !== 'test_run')) return items.map(() => null);
+    const at = formatAddress({ node: plan.name, element });
+    const own = await this.packageRepositoryIn(tx, plan, await this.packageWorkIn(tx, plan.id, element));
+    const ownWhy = own?.via === 'repo' ? 'its repo names it' : 'it is its binding\'s implementation';
+    const out: (string | null)[] = [];
+    for (const [i, e] of items.entries()) {
+      if (e.kind === 'test_run') { out.push(null); continue; }
+      const what = `evidence ${i + 1} (a ${e.kind === 'commit' ? 'commit' : 'pull request'})`;
+      let repo: RepositoryRow;
+      if (e.repo) {
+        repo = await this.repositoryNamed(tx, plan.kolab_id, e.repo, { live: true });
+        if (own && own.id !== repo.id) {
+          throw new GateError(`${what} is in ${repo.url}, and ${at} is done in ${own.url} (${ownWhy}, KON7): record that repository's commits and pull requests, or change the package's repo in the plan`);
+        }
+      } else if (own) {
+        repo = own;
+      } else {
+        throw new GateError(`${what} names no repository, and ${at} has none of its own (no repo, and its binding has no implementation): `
+          + 'give repo=<its URL>, one of konjir_list_repositories, or have a person with Maintain register the binding\'s (konjir repo register --binding <binding>)');
+      }
+      if (e.url && !insideRepository(e.url, repo.url)) {
+        throw new GateError(`${what}'s url ${e.url} isn't inside its repository, ${repo.url}: a ${e.kind === 'commit' ? 'commit' : 'pull request'} of ${repo.url} links under it (D98)`);
+      }
+      out.push(repo.id);
+    }
+    // Each repository named is held (for share) to the end of the transaction, in id order, as
+    // confirmation locks them, so an archive lands before or after the evidence that names it, never
+    // between the check and the write, and transactions that lock several never wait on each other.
+    const ids = [...new Set(out.filter((x): x is string => !!x))].sort();
+    const held = (await tx.query<{ url: string; archived: boolean }>(
+      `select url, archived_at is not null as archived from repository where id = any($1::text[]) order by id for share`, [ids])).rows;
+    const archived = held.find((r) => r.archived);
+    if (archived) throw new GateError(`${archived.url} was archived meanwhile, so no evidence names it now`);
+    return out;
+  }
+
+  /**
+   * Confirms, in `tx`, the repositories a work package's approval vouches for (D98 ruling 1, D102):
+   * those its evidence of this round of work names (commits and pull requests since it was last To
+   * do, never evidence recorded before repositories existed), still unconfirmed and live, registered
+   * by someone other than `reviewer` and `assignee`; the reviewer is never the assignee
+   * (reviewWork). Rows are locked in id order, so approvals at once never deadlock, and one that
+   * finds a repository confirmed meanwhile leaves it. Returns the URLs it confirmed.
+   */
+  private async confirmRepositoriesIn(tx: Q, plan: NodeRow, element: string, reviewer: string, assignee: string): Promise<string[]> {
+    if (reviewer === assignee) return [];
+    const ids = [...new Set((await this.roundEvidence(tx, plan.id, element))
+      .filter((e) => e.kind !== 'test_run' && e.repository_id && !e.before_repositories).map((e) => e.repository_id!))].sort();
+    if (!ids.length) return [];
+    const rows = (await tx.query<{ id: string; url: string }>(
+      `select id, url from repository where id = any($1::text[]) and confirmed_at is null and archived_at is null
+          and registered_by <> $2 order by id for update`, [ids, reviewer])).rows;
+    const confirmed: string[] = [];
+    for (const r of rows) {
+      const u = await tx.query(`update repository set confirmed_by = $2, confirmed_at = clock_timestamp(), confirmed_plan_node_id = $3, confirmed_element_id = $4
+                                 where id = $1 and confirmed_at is null returning id`, [r.id, reviewer, plan.id, element]);
+      if (u.rows.length) confirmed.push(r.url);
+    }
+    return confirmed;
   }
 
   // ---- inspection ----------------------------------------------------------
@@ -8696,20 +8944,40 @@ const EVENT_AT_KEY = `to_char(ev.at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.U
 const WORK_EVENT_COLUMNS = `ev.id, ev.plan_node_id, ev.element_id, ev.kind, ev.from_state, ev.to_state, ev.actor_id, ev.assignee_from,
         ev.assignee_to, ev.plan_version_id, ev.concerned, ev.note, ev.at`;
 
-/** An evidence row (migration 0031). */
+/** An evidence row (migrations 0031 and 0032), with its repository's URL and whether that is confirmed. */
 interface EvidenceRow {
   id: string; event_id: string; kind: EvidenceKind; ref: string | null; url: string | null; title: string | null; files: string[] | null;
   recorded_by: string; at: Date | string;
+  repository_id: string | null; before_repositories: boolean; repository_url: string | null; repository_confirmed: boolean | null;
 }
-const EVIDENCE_COLUMNS = 'e.id, e.event_id, e.kind, e.ref, e.url, e.title, e.files, e.recorded_by, e.at';
+/** Evidence `e` with its repository `er`: select EVIDENCE_COLUMNS from EVIDENCE_FROM. */
+const EVIDENCE_COLUMNS = `e.id, e.event_id, e.kind, e.ref, e.url, e.title, e.files, e.recorded_by, e.at, e.repository_id, e.before_repositories,
+        er.url as repository_url, er.confirmed_at is not null as repository_confirmed`;
+const EVIDENCE_FROM = 'evidence e left join repository er on er.id = e.repository_id';
 
-/** An item of evidence as readers see it: a commit's sha, a pull request's number, and what else was given. */
+/**
+ * An item of evidence as readers see it: a commit's sha, a pull request's number, and what else was
+ * given; a commit's or pull request's repository and whether it is confirmed (D98 ruling 1), or, for
+ * one recorded before repositories existed, none, unconfirmed (W5.2a).
+ */
 const evidenceView = (e: EvidenceRow): EvidenceView => ({
   id: e.id, kind: e.kind,
   ...(e.kind === 'commit' && e.ref ? { sha: e.ref } : {}), ...(e.kind === 'pull_request' && e.ref ? { pr: Number(e.ref) } : {}),
   ...(e.url ? { url: e.url } : {}), ...(e.title ? { title: e.title } : {}), ...(e.files ? { files: e.files } : {}),
   recorded_by: e.recorded_by, at: iso(e.at)!, event: e.event_id,
+  ...(e.kind === 'test_run' ? {} : { repository: e.repository_url, confirmed: !!e.repository_confirmed, ...(e.before_repositories ? { before_repositories: true as const } : {}) }),
 });
+
+/** A repository's root commit, as migration 0032's repository_root_sha holds it: a full sha, SHA-1 or SHA-256. */
+const ROOT_SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/** A repository row (migration 0032). */
+interface RepositoryRow {
+  id: string; kolab_id: string; url: string; root_sha: string; binding_node_id: string | null;
+  registered_by: string; registered_at: Date | string;
+  confirmed_by: string | null; confirmed_at: Date | string | null; confirmed_plan_node_id: string | null; confirmed_element_id: string | null;
+  archived_by: string | null; archived_at: Date | string | null;
+}
 
 /** The marks new work on a package answers, as a revision answers them (LNK6, clearAddressed): settled by a reopening (PLN10). */
 const SETTLED_BY_NEW_WORK = `'changed', 'fuzzy_reanchor', 'upstream_dirty', 'query_answered'`;

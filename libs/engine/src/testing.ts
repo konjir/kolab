@@ -195,6 +195,28 @@ export async function people(kolab: Kolab, ids: string | string[], opts: { owner
   }
 }
 
+/** A root commit for a test repository (W5.2a): a full sha from one hex digit. */
+export const testRoot = (c = 'f') => c.repeat(40);
+
+/**
+ * Registers a repository in `kolab` (the test kolab by default) as a person with Maintain there,
+ * `keeper` (made the first time), whose grant is then removed unless `keep`, so the repository's
+ * registrar holds no other place in the test: it reviews nothing and is no reviewer (W5.2a, D98).
+ * With `binding`, the repository is that binding's implementation.
+ */
+export async function registeredRepository(kolab: Kolab, opts: { url?: string; root?: string; binding?: string; kolab?: string; keeper?: string; keep?: boolean } = {}) {
+  const k = opts.kolab ?? TEST_KOLAB;
+  const keeper = opts.keeper ?? 'repo-keeper';
+  if (!(await kolab.listActors()).some((a) => a.id === keeper)) await kolab.addActor(keeper, { by: ADMIN_DOER });
+  await kolab.grant(k, keeper, 'maintain', { by: ADMIN_DOER });
+  const session = await kolab.openSession(keeper, 'engineer', { kolab: k, by: ADMIN_DOER });
+  try {
+    return await kolab.registerRepository(session, { url: opts.url ?? 'https://github.com/acme/orders', root_sha: opts.root ?? testRoot(), binding: opts.binding });
+  } finally {
+    if (!opts.keep) await kolab.revoke(k, keeper, { by: ADMIN_DOER });
+  }
+}
+
 /**
  * `submissionChecks` check people's versions as they are submitted; `checks`, everything else,
  * Kolab's own rebases included (Kolab.open). Both default to the structural checks. Alice writes

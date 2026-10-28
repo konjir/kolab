@@ -41,8 +41,12 @@ export const MAX_EVIDENCE_TEXT = 1000;
 export const MAX_DONE_WHEN = MAX_TEXT;
 /** Work packages one work package depends on (PLN1, D98; kj_work_valid). A milestone with more members is split into nested milestones. */
 export const MAX_DEPENDS_ON = 50;
-/** Characters in a work package's repo, a repository's id (KON7, D98; kj_work_valid). */
+/** Characters in a work package's repo, the URL of a repository registered in its kolab (KON7, D98; kj_work_valid). */
 export const MAX_WORK_REPO = 200;
+/** Characters in a repository's URL (KON7, D98; migration 0032's repository_url): as many as a work package's repo, which names it. */
+export const MAX_REPOSITORY_URL = MAX_WORK_REPO;
+/** Live repositories one kolab registers (KON7, D98): a binding's implementation and its dependencies', not an organization's every repository. */
+export const MAX_REPOSITORIES_PER_KOLAB = 100;
 /** Items of evidence one call records on a work package (konjir_add_evidence, konjir_submit_work; D98). */
 export const MAX_EVIDENCE_PER_CALL = 50;
 /** Items of evidence one work package holds (D98): a delivery is tens of commits, not thousands. */

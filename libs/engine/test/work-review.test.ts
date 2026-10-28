@@ -9,7 +9,7 @@
 import { expect, test } from '@jest/globals';
 import pg from 'pg';
 import { sessionKey, type Kolab } from '@konjir/engine';
-import { commitReviewed, els, marksOn, openKolab, people, rejection, testStore, TEST_KOLAB } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, openKolab, people, registeredRepository, rejection, testStore, TEST_KOLAB } from '@konjir/engine/testing';
 import { ADMIN_DOER, type ElementInput } from '@konjir/types';
 
 const POSTGRES = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -53,6 +53,8 @@ async function planned(opts: { databaseUrl?: string; alone?: boolean } = {}) {
   const delivers = (from: string, to: string) => ({ kind: 'dependency' as const, sourceElement: from, target: bv, targetElement: to });
   const pv = await kolab.draft(bob, 'orders-plan', { elements: PLAN, links: [delivers('W1.1', 'b1'), delivers('W1.2', 'b2'), delivers('W1.10', 'b3'), delivers('W2.1', 'b4')] });
   expect((await kolab.submit(bob, pv)).ok).toBe(true);
+  // The binding's implementation (W5.2a): its packages' commits and pull requests are recorded there.
+  await registeredRepository(kolab, { binding: 'orders-pg' });
   if (!opts.alone) await people(kolab, ['eve', 'frank'], { layers: ['technical'] });
   await people(kolab, 'carol', { level: 'read' });
   const eve = opts.alone ? '' : await kolab.openSession('eve', 'engineer');
@@ -138,7 +140,7 @@ test('approval makes a package Done, and its milestone Done once every member is
   expect(await rejection(kolab.reviewWork(product, W(id), { verdict: 'approve' }))).toMatch(/^RoleError: a product session reviews no work/);
   expect(await rejection(kolab.reviewWork(carol, W(id), { verdict: 'approve' }))).toMatch(/^AccessError: carol may not write the technical layer of kolab test, so it reviews no work/);
   expect(await rejection(kolab.reviewWork(eve, W(id), { verdict: 'request_changes' }))).toBe('GateError: give a note: say what must change');
-  expect(await kolab.reviewWork(eve, W(id), { verdict: 'approve', note: 'Checked the PR and its tests.' })).toStrictEqual({ work: W(id), verdict: 'approve', state: 'done', assignee: 'bob' });
+  expect(await kolab.reviewWork(eve, W(id), { verdict: 'approve', note: 'Checked the PR and its tests.' })).toStrictEqual({ work: W(id), verdict: 'approve', state: 'done', assignee: 'bob', confirmed_repositories: ['https://github.com/acme/orders'] });
   expect(await row(kolab, id)).toMatchObject({ state: 'done', assignee_id: 'bob', unreviewed: false });
   // The other request is withdrawn; a second verdict is refused.
   expect((await kolab.readWork(bob, W(id))).reviews.map((x) => [x.reviewer, x.state, x.note])).toStrictEqual([
@@ -284,7 +286,7 @@ test('a request for changes returns the package to its assignee, In progress wit
   await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
   expect(await pull(kolab, bob)).toBe('W1.2');
   expect(await kolab.reviewWork(eve, W('W1.1'), { verdict: 'request_changes', note: 'Cancelling a shipped order must fail.' }))
-    .toStrictEqual({ work: W('W1.1'), verdict: 'request_changes', state: 'in_progress', assignee: 'bob' });
+    .toStrictEqual({ work: W('W1.1'), verdict: 'request_changes', state: 'in_progress', assignee: 'bob', confirmed_repositories: [] });
   expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'in_progress', assignee_id: 'bob', returned: true });
   expect(await left(kolab, 'W1.1')).toBeGreaterThan(590);
   // bob holds two now: W1.2 pulled, and W1.1 returned.

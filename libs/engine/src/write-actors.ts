@@ -152,8 +152,12 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   // W5.1c (PLN10, PLN16, D98): evidence names who recorded it; a verdict, its reviewer.
   addEvidence: { recorded: ['work_event.actor_id', 'evidence.recorded_by'] },
   submitWork: { recorded: ['work_event.actor_id', 'evidence.recorded_by'] },
-  reviewWork: { recorded: ['work_event.actor_id', 'review_request.reviewer_id'] },
+  // An approval that confirms a repository names its reviewer there (D98 ruling 1, W5.2a).
+  reviewWork: { recorded: ['work_event.actor_id', 'review_request.reviewer_id', 'repository.confirmed_by'] },
   reopenWork: { recorded: ['work_event.actor_id', 'invalidation.cleared_by'] },
+  // W5.2a (KON7, D98): a repository names the person who registered or archived it, audited.
+  registerRepository: { recorded: ['repository.registered_by', 'audit_event:repository.registered'] },
+  archiveRepository: { recorded: ['repository.archived_by', 'audit_event:repository.archived'] },
   // A lease that lapsed goes back as Kolab's (PLN15): its event names `kolab`.
   sweepLapsedLeases: { recorded: ['work_event.actor_id'] },
 };

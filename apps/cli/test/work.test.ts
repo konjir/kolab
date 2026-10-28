@@ -46,6 +46,8 @@ async function planned() {
   // Added after the binding committed, so it needed no review.
   const eng2 = await agent('eng2', 'engineer');
   const lead = await agent('lead', 'engineer', 'maintain');
+  // Lead, a person with Maintain, registers the binding's implementation (W5.2a, D98): its packages' commits are recorded there.
+  await call(lead.c, 'register_repository', { url: 'https://github.com/acme/orders', root_sha: 'f'.repeat(40), binding: 'orders-pg' });
   return { kolab, server, pm, eng, eng2, lead };
 }
 
@@ -164,7 +166,12 @@ test('over MCP: evidence, submitting, a work package\'s review beside a version\
   expect(answers.work.events[0]).toMatchObject({ work: W1, kind: 'changes_requested', actor: 'eng2', note: 'Refunds too.' });
   // Submitted again, approved: Done. Then reopened as new work: To do.
   await call(eng.c, 'submit_work', { work: W1 });
-  expect(await call(eng2.c, 'review', { work: W1, verdict: 'approve' })).toMatchObject({ state: 'done', next: expect.stringMatching(/^Done/) });
+  // eng2, neither its registrar nor the assignee, approves: that confirms the repository (D98 ruling 1).
+  expect(await call(eng2.c, 'review', { work: W1, verdict: 'approve' })).toMatchObject({
+    state: 'done', confirmed_repositories: ['https://github.com/acme/orders'],
+    next: 'Done. Its assignee is told in their answers. Your approval confirms https://github.com/acme/orders (D98).',
+  });
+  expect(await call(eng.c, 'list_repositories', {})).toMatchObject({ repositories: [{ url: 'https://github.com/acme/orders', confirmed: true, confirmed_by: 'eng2', confirmed_by_work: W1 }], next: null });
   expect(await call(eng2.c, 'reopen_work', { work: W1, note: 'Refunds changed.' })).toMatchObject({ work: W1, state: 'todo', settled: [] });
   const read = await call(eng2.c, 'read_work', { work: W1 }) as { evidence: { kind: string }[]; reviews: { reviewer: string; state: string }[]; events: { kind: string }[] };
   expect(read.evidence.map((e) => e.kind)).toStrictEqual(['commit', 'test_run']);
