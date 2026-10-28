@@ -80,11 +80,13 @@ export async function startServer(opts: {
   const large = [json({ limit: MAX_REQUEST_BYTES }), urlencoded({ limit: MAX_REQUEST_BYTES, extended: true })];
   app.use('/api/session', ...small);
   app.use('/api', ...large);
-  // A read the web page makes by itself after a pushed event says so (REFRESH_HEADER: push), and
-  // renews no lease on its person's work (D100): only requests a person initiates do. The mark can
-  // only withhold a renewal; everything else about the request is as without it.
+  // Only requests a person initiates renew a lease on their work (D100). Two kinds aren't: a read
+  // the web page makes by itself after a pushed event, which says so (REFRESH_HEADER: push), and
+  // opening the page's event stream, which EventSource opens and reopens by itself and can't mark.
+  // Both are read quietly; the mark, or the route, only withholds a renewal, and changes nothing else.
   app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
-    if (req.headers[REFRESH_HEADER] === 'push') kolab.quietly(async () => next()).catch(next);
+    const stream = req.method === 'GET' && req.path === '/events';
+    if (stream || req.headers[REFRESH_HEADER] === 'push') kolab.quietly(async () => next()).catch(next);
     else next();
   });
   const auth = app.get(KonjirAuth);
