@@ -10,8 +10,8 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, insideRepository, milestoneStates, naturalCompare, planProblems,
-  repositoryUrl, type CheckedEvidence, type PlanLink,
+  canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, milestoneStates, naturalCompare, planProblems,
+  repositoryUrl, type CheckedEvidence, type Independence, type Party, type PlanLink,
 } from './work.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
@@ -8009,26 +8009,39 @@ export class Kolab {
   /**
    * Confirms, in `tx`, the repositories a work package's approval vouches for (D98 ruling 1, D102):
    * those its evidence of this round of work names (commits and pull requests since it was last To
-   * do, never evidence recorded before repositories existed), still unconfirmed and live, registered
-   * by someone other than `reviewer` and `assignee`; the reviewer is never the assignee
-   * (reviewWork). Rows are locked in id order, so approvals at once never deadlock, and one that
-   * finds a repository confirmed meanwhile leaves it. Returns the URLs it confirmed.
+   * do, never evidence recorded before repositories existed), still unconfirmed and live, when the
+   * reviewer is independent of the repository's registrar and the package's assignee
+   * (confirmerIndependent). Rows are locked in id order, so approvals at once never deadlock, and one
+   * that finds a repository confirmed meanwhile leaves it. Returns the URLs it confirmed.
    */
   private async confirmRepositoriesIn(tx: Q, plan: NodeRow, element: string, reviewer: string, assignee: string): Promise<string[]> {
-    if (reviewer === assignee) return [];
     const ids = [...new Set((await this.roundEvidence(tx, plan.id, element))
       .filter((e) => e.kind !== 'test_run' && e.repository_id && !e.before_repositories).map((e) => e.repository_id!))].sort();
     if (!ids.length) return [];
-    const rows = (await tx.query<{ id: string; url: string }>(
-      `select id, url from repository where id = any($1::text[]) and confirmed_at is null and archived_at is null
-          and registered_by <> $2 order by id for update`, [ids, reviewer])).rows;
+    const rows = (await tx.query<{ id: string; url: string; registered_by: string }>(
+      `select id, url, registered_by from repository where id = any($1::text[]) and confirmed_at is null and archived_at is null
+        order by id for update`, [ids])).rows;
     const confirmed: string[] = [];
     for (const r of rows) {
+      if (!(await this.confirmerIndependent(tx, reviewer, r.registered_by, assignee))) continue;
       const u = await tx.query(`update repository set confirmed_by = $2, confirmed_at = clock_timestamp(), confirmed_plan_node_id = $3, confirmed_element_id = $4
                                  where id = $1 and confirmed_at is null returning id`, [r.id, reviewer, plan.id, element]);
       if (u.rows.length) confirmed.push(r.url);
     }
     return confirmed;
+  }
+
+  /**
+   * Whether `reviewer` may confirm a repository `registrar` registered, approving `assignee`'s work
+   * (D98 ruling 1, D102), under CONFIRMATION_INDEPENDENCE: the one place the rule is applied, so
+   * moving from per actor to per person (#83's Q1, pending Lee) is a change to that constant.
+   */
+  private async confirmerIndependent(q: Q, reviewer: string, registrar: string, assignee: string): Promise<boolean> {
+    const party = async (id: string): Promise<Party> => {
+      const a = (await q.query<{ kind: ActorKind | null; owner: string | null }>(`select kind, owner_id as owner from actor where id = $1`, [id])).rows[0];
+      return { id, principal: principalOf(id, a ?? { kind: null, owner: null }) };
+    };
+    return independentOf(CONFIRMATION_INDEPENDENCE, await party(reviewer), [await party(registrar), await party(assignee)]);
   }
 
   // ---- inspection ----------------------------------------------------------
@@ -8967,6 +8980,13 @@ const evidenceView = (e: EvidenceRow): EvidenceView => ({
   recorded_by: e.recorded_by, at: iso(e.at)!, event: e.event_id,
   ...(e.kind === 'test_run' ? {} : { repository: e.repository_url, confirmed: !!e.repository_confirmed, ...(e.before_repositories ? { before_repositories: true as const } : {}) }),
 });
+
+/**
+ * Who counts as someone other than a repository's registrar and the package's assignee, to confirm
+ * it (D98 ruling 1, D102): per actor today, as work review's separation of duty is (D30, D102).
+ * #83's Q1 asks Lee whether it should be per person; 'person' makes it so.
+ */
+const CONFIRMATION_INDEPENDENCE = 'actor' as Independence;
 
 /** A repository's root commit, as migration 0032's repository_root_sha holds it: a full sha, SHA-1 or SHA-256. */
 const ROOT_SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
