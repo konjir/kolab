@@ -217,6 +217,17 @@ test('evidence is checked before anything is written: full shas, https links wit
     ['pull_request', 'https://git.example.com/acme/orders/pull/7?KEY=abc', 'KEY'],
     ['commit', 'https://git.example.com/acme/orders/commit/1?signature=abc', 'signature'],
     ['test_run', 'https://ci.example.com/oauth/cb?code=abc', 'code'],
+    // In the fragment, as pairs or as a query after it.
+    ['test_run', 'https://ci.example.com/run/1#access_token=ghp_secret', 'access_token'],
+    ['test_run', 'https://ci.example.com/run/1#?token=ghp_secret', 'token'],
+    ['test_run', 'https://ci.example.com/run/1#/logs?jwt=abc', 'jwt'],
+    // GitLab's token, OAuth's client secret, API keys, bearer and session tokens.
+    ['test_run', 'https://gitlab.example.com/api/v4/jobs/1/trace?private_token=glpat-abc', 'private_token'],
+    ['test_run', 'https://ci.example.com/run/1?client_secret=abc', 'client_secret'],
+    ['test_run', 'https://ci.example.com/run/1?api-key=abc', 'api-key'],
+    ['test_run', 'https://ci.example.com/run/1?API_KEY=abc', 'API_KEY'],
+    ['test_run', 'https://ci.example.com/run/1?bearer=abc', 'bearer'],
+    ['test_run', 'https://ci.example.com/run/1?session=abc', 'session'],
   ] as const) {
     const item = kind === 'commit' ? { kind, sha: sha('a'), url } : { kind, url };
     expect(await refused([item])).toMatch(new RegExp(`^GateError: evidence 1's url carries "${param}", which may be a credential`));
@@ -239,6 +250,8 @@ test('evidence is checked before anything is written: full shas, https links wit
   expect(await kolab.addEvidence(bob, W(id), [{ kind: 'commit', sha: 'A'.repeat(40) }])).toMatchObject({ recorded: 1, already: 0 });
   expect(await kolab.addEvidence(bob, W(id), [{ kind: 'commit', sha: 'a'.repeat(40) }, TESTS, TESTS])).toMatchObject({ recorded: 1, already: 2 });
   expect((await kolab.db.query(`select ref from evidence where kind = 'commit'`)).rows).toStrictEqual([{ ref: sha('a') }]);
+  // A fragment naming a place is kept.
+  expect(await kolab.addEvidence(bob, W(id), [{ kind: 'test_run', url: 'https://ci.example.com/run/1#L120' }])).toMatchObject({ recorded: 1 });
   // A link with an innocent query is kept; the same pull request linked with a trailing slash or another host case is the same item.
   expect(await kolab.addEvidence(bob, W(id), [{ kind: 'test_run', url: 'https://ci.example.com/run/1?attempt=2' }, { kind: 'pull_request', url: 'https://github.com/acme/orders/pull/7' }]))
     .toMatchObject({ recorded: 2, already: 0 });
@@ -555,6 +568,43 @@ test('D102: a plan edit never settles the mark on an at-risk package In review: 
   await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, durable.' }] });
   await kolab.commit(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1.2', text: 'Build the shipping queue, durable.' }] });
   expect((await marksOn(kolab, 'orders-plan')).map((m) => m.element_id)).toStrictEqual(['W1.1']);
+});
+
+test('D102 with a delayed cascade: a package approved between a plan edit\'s commit and its cascade keeps its mark (verification 1)', async () => {
+  const { kolab, bob, eve, plan } = await planned();
+  await pull(kolab, bob);
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
+  // An earlier cascade of the plan is still claimed elsewhere, so the next commit's cascade queues behind it.
+  await kolab.db.query(`insert into outbox(id, kind, version_id, claim, claimed_until)
+                        values ('01JOB0000000000000000000ZZ', 'after_commit', $1, 'elsewhere', now() + interval '1 minute')`, [plan]);
+  await kolab.commit(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1.1', text: 'Build the cancel endpoint, idempotent.' }] });
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'in_review' });
+  // eve approves before the cascade runs.
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' });
+  // The earlier job finishes; the queued cascade runs, and leaves the mark of the package, Done meanwhile, open.
+  await kolab.db.query(`delete from outbox where id = '01JOB0000000000000000000ZZ'`);
+  await kolab.drainOutbox();
+  expect((await kolab.db.query(`select 1 from outbox where kind = 'after_commit'`)).rows).toStrictEqual([]);
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'done' });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
+  expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).toStrictEqual(['added', 'pulled', 'submitted', 'approved']);
+});
+
+test('clearing a mark already cleared changes nothing: who settled it, and how, stays (verification 3)', async () => {
+  const { kolab, bob, eve } = await planned();
+  await pull(kolab, bob);
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' });
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
+  const [m] = await marksOn(kolab, 'orders-plan');
+  const settled = await kolab.reopenWork(eve, W('W1.1'), { note: 'New contract.' });
+  expect(settled.settled).toStrictEqual([m.id]);
+  const before = (await kolab.db.query(`select state, cleared_by from invalidation where id = $1`, [m.id])).rows;
+  await kolab.clear(bob, m.id);
+  expect((await kolab.db.query(`select state, cleared_by from invalidation where id = $1`, [m.id])).rows).toStrictEqual(before);
+  expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).not.toContain('confirmed');
 });
 
 test('an assignee submitting evidence on its package In review is told it waits in review (review 7)', async () => {

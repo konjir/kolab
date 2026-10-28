@@ -239,15 +239,19 @@ function evidenceUrl(what: string, u: unknown): { url?: string; problem?: string
   if (parsed.protocol !== 'https:' || !/^https:\/\/[^/@\s]+(\/\S*)?$/.test(t)) return { problem: `${what}'s url is an https link, with no spaces in it` };
   // Evidence is readable by every session of the kolab, and kept: a link that carries a credential
   // (a pre-signed or token-bearing link to a CI run, an artifact or a log) is refused, not stored.
-  const secret = [...parsed.searchParams.keys()].filter((k) => CREDENTIAL_PARAM.test(k));
+  // In the query, and in the fragment, where OAuth's implicit flow and many CI and log viewers carry
+  // tokens: its key=value pairs, and a query after it (#?…, #/…?…).
+  const frag = parsed.hash.replace(/^#/, '');
+  const pairs = [parsed.searchParams, new URLSearchParams(frag), new URLSearchParams(frag.includes('?') ? frag.slice(frag.indexOf('?') + 1) : '')];
+  const secret = [...new Set(pairs.flatMap((p) => [...p.keys()]).filter((k) => CREDENTIAL_PARAM.test(k)))];
   if (secret.length) {
-    return { problem: `${what}'s url carries ${secret.map((k) => `"${k}"`).join(', ')}, which may be a credential, and evidence is kept and read by everyone in the kolab: give the link without its query string, or a summary as title` };
+    return { problem: `${what}'s url carries ${secret.map((k) => `"${k}"`).join(', ')}, which may be a credential, and evidence is kept and read by everyone in the kolab: give the link without its query string or fragment, or a summary as title` };
   }
   return { url: t };
 }
 
-/** Query parameters that carry credentials in pre-signed and token-bearing links (S3, Azure SAS, OAuth, CI artifact links). */
-const CREDENTIAL_PARAM = /^(token|access_token|id_token|refresh_token|auth|sig|signature|key|api_key|apikey|code|password|secret|x-amz-.*|x-goog-.*)$/i;
+/** Query or fragment parameters that carry credentials in pre-signed and token-bearing links (S3, GCS, Azure SAS, GitLab, OAuth, CI artifact links). A deny-list. */
+const CREDENTIAL_PARAM = /^(token|access_token|id_token|refresh_token|private_token|auth|sig|signature|key|api[-_]?key|code|password|secret|client_secret|jwt|bearer|session|x-amz-.*|x-goog-.*)$/i;
 
 /** A link as two items of evidence compare it: host in lower case, no trailing slash, no fragment. */
 export function sameLink(url: string): string {
