@@ -37,6 +37,12 @@ export const MAX_TEXT = 4000;
 export const MAX_EVIDENCE = 20;
 /** Characters in one item of evidence. */
 export const MAX_EVIDENCE_TEXT = 1000;
+/** Characters in a work package's done-when (PLN1, D98; migration 0029's kj_work_valid): as many as a question's. */
+export const MAX_DONE_WHEN = MAX_TEXT;
+/** Work packages one work package depends on (PLN1, D98; kj_work_valid). A milestone with more members is split into nested milestones. */
+export const MAX_DEPENDS_ON = 50;
+/** Characters in a work package's repo, a repository's id (KON7, D98; kj_work_valid). */
+export const MAX_WORK_REPO = 200;
 /** Findings in one review verdict. */
 export const MAX_FINDINGS = 100;
 /** Characters in a node's title. */

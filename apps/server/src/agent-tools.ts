@@ -9,6 +9,7 @@ import {
   nobodyCanReview, notAKind,
 } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
+import { workInput } from './work-input.js';
 import { PAGED, paging } from './paging.js';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
@@ -20,12 +21,14 @@ const elementInput = z.object({
   id: z.string().optional().describe('Stable element ID. Reuse the existing ID when editing an element; omit only for a brand-new element.'),
   text: z.string(),
   parent: z.string().optional().describe('ID of the containing element (e.g. a section).'),
+  work: workInput.nullable().optional(),
 });
 const deltaInput = z.object({
   kind: z.enum(DELTA_KINDS),
   element: z.string(),
   text: z.string().optional(),
   parent: z.string().optional(),
+  work: workInput.nullable().optional().describe('On an add or an override: the element\'s work fields, replacing its own whole (null clears them). Left out, it keeps its own.'),
 });
 const from = address.optional().describe('Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark.');
 
@@ -184,7 +187,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
+    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a plan's work packages show their work fields (work). Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
@@ -244,6 +247,8 @@ export class AgentTools {
         ...(all.length > READ_NODE_PAGE ? { elements_from: start + 1, elements_to: start + els.length } : {}),
         elements: els.map((e) => ({
           address: at(e.element_id), id: e.element_id, parent: e.parent_element_id, text: e.text,
+          // A work package's fields (PLN1, D98), where it has any.
+          ...(e.work ? { work: e.work } : {}),
           ...shown(e.element_id),
           ...(ruled.get(e.element_id) ? { rulings: ruled.get(e.element_id) } : {}),
           ...(open.get(e.element_id) ? { open_cases: open.get(e.element_id) } : {}),
@@ -318,7 +323,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A plan's elements are its work packages, and each may carry work fields: {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}}; a milestone has "milestone":true, depends on its members, may carry a target_date, and delivers nothing. Each Delivers is a dependency link from a work package to one binding element (links). Submitting a plan version checks them (PLN2): Depends on names work packages of the same version, without cycles. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {

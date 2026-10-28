@@ -5,6 +5,7 @@ import { AccessError, GateError, Kolab, NameTakenError, SESSION_KEY, sessionKey 
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, ADMIN_DOER, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget, type Doer } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
+import { workInput } from './work-input.js';
 import { PAGED, paging } from './paging.js';
 import { fail as toolError, ok } from './results.js';
 
@@ -123,8 +124,8 @@ const applyRuling = z.object({
   ruling: z.string().regex(/^D\d+$/).describe('The ruling being applied, by its Decisions Log ID, e.g. D46'),
   actor: z.string().describe('Who the version is written as, e.g. mirror-product; it writes in the role of the node\'s layer'),
   node: z.string().describe('The node, as <kolab>/<node> (e.g. kolab/kolab-binding), or its name alone when no other kolab has a node of that name'),
-  elements: z.array(z.object({ id: z.string().optional(), text: z.string(), parent: z.string().optional() })).optional(),
-  deltas: z.array(z.object({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional() })).optional(),
+  elements: z.array(z.object({ id: z.string().optional(), text: z.string(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
+  deltas: z.array(z.object({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
   parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
   unlink: z.array(linkRef).optional().describe('Links of the node\'s live version that the ruling drops, so they aren\'t carried forward, and their open marks settle: [{"source_element":"b1","target":"kj:kolab#R1"}] or [{"link":"<id>"}]; targets in the node\'s kolab'),
 });

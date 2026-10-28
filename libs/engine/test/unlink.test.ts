@@ -38,7 +38,7 @@ async function family(ctx: Ctx) {
   }
   await kolab.createNode(engineer, 'plan', 'WBS', 'w');
   const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
-  await kolab.link(engineer, { kind: 'derivation', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   return { s1, b1, w1 };
 }
 
@@ -436,7 +436,7 @@ test('removing a link settles the transitive marks that reached its element, and
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b2', target: s1, targetElement: 'R2' });
   await kolab.createNode(engineer, 'plan', 'WBS', 'w');
   const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
-  await kolab.link(engineer, { kind: 'derivation', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   await kolab.commit(product, 'brief', { elements: els({ X: 'Carts are kept a long while.' }) });
   expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason])).toStrictEqual([['b1', 'upstream_dirty']]);
   expect((await marksOn(kolab, 'w')).map((m) => [m.element_id, m.reason])).toStrictEqual([['w1', 'upstream_dirty']]);

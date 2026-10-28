@@ -8,6 +8,7 @@ import {
 import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konjir/db';
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
+import { checkWork, elementFingerprint, planProblems, type PlanLink } from './work.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -16,7 +17,7 @@ import {
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
-  type VersionState,
+  type VersionState, type WorkFields,
 } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,11 @@ interface DeltaRow {
   text: string | null; parent_element_id: string | null; ord: number | null;
   base_version_id: string | null; base_fingerprint: string | null;
   state: 'clean' | 'dirty' | 'orphaned';
+  /**
+   * An add's or an override's work fields (D98): the element's whole set after the change, null
+   * for none. A remove's is null. Rows written before migration 0029 have none.
+   */
+  work: WorkFields | null;
 }
 /** A link to write: its kind, the source element, and the target version, element and quote. */
 interface LinkInput {
@@ -3638,10 +3644,11 @@ export class Kolab {
   }
 
   async elements(versionId: string, q: Q = this.db): Promise<ElementRow[]> {
-    const r = await q.query<ElementRow>(
-      `select element_id, parent_element_id, ord, text, fingerprint from element where version_id = $1 order by ord`,
+    const r = await q.query<ElementRow & { work: WorkFields | null }>(
+      `select element_id, parent_element_id, ord, text, fingerprint, work from element where version_id = $1 order by ord`,
       [versionId]);
-    return r.rows;
+    // Work fields only where an element has them (D98): every other element reads as it always did.
+    return r.rows.map(({ work, ...e }) => (work ? { ...e, work } : e));
   }
 
   private async deltas(versionId: string): Promise<DeltaRow[]> {
@@ -3708,6 +3715,8 @@ export class Kolab {
     links: LinkInput[] = []): Promise<string> {
     // Its size first, before any work is done on it (W2.21).
     checkDraftInput(input);
+    // Work fields (D98): on a plan's elements only, each checked before anything is written.
+    input = { ...input, ...draftWork((await this.node(nodeId)), input) };
 
     // A variant's new version keeps its foreign parent and carries its
     // existing exceptions forward; a plain node's parent is its own last version.
@@ -3777,6 +3786,8 @@ export class Kolab {
           parent_element_id: d.parent ?? base?.parent_element_id ?? null, ord: null,
           base_version_id: d.kind === 'add' ? null : parentId,
           base_fingerprint: base?.fingerprint ?? null, state: 'clean' as const,
+          // Given, it replaces the element's work fields whole; left out, the element keeps its own.
+          work: d.kind === 'remove' ? null : d.work !== undefined ? d.work : base?.work ?? null,
         };
       })];
     }
@@ -3867,6 +3878,9 @@ export class Kolab {
     } catch (e) {
       throw new ChecksError(`Kolab's checks failed on ${versionId}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
+    // A plan version's own checks (PLN2, D98), whoever wrote it, Kolab's rebases included: they are
+    // Kolab's, so no substituted check stands in for them.
+    if (verdict.ok && plan) verdict = await this.planChecks(v, verdict);
     if (!verdict.ok) {
       // A person's version goes back to its author, still drafted, with the reason (VER2, D33);
       // Kolab's own rebases, and folds, have no author to return to and are rejected.
@@ -3910,6 +3924,38 @@ export class Kolab {
     if (!isCommitted(late)) return this.settle(v, late as Overtaker[], approvedBy, ruling, applier);
     const after = await this.afterCommitNow(v, late);
     return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}), ...after };
+  }
+
+  /**
+   * PLN2's checks on a plan version (W5.1a, D98), on its elements' work fields and on the links it
+   * will hold once it commits: its own, and those of the version it was built on that its commit
+   * carries forward (supersedePrevious: from elements still there, and not removed). Structural, as
+   * a plan's are (VER3): what fails returns the version to its author, naming PLN2.
+   */
+  private async planChecks(v: VersionRow, passed: CheckResult): Promise<CheckResult> {
+    const plan = await this.node(v.node_id);
+    const els = await this.elements(v.id);
+    const live = new Set(els.map((e) => e.element_id));
+    const rows = (await this.db.query<{
+      own: boolean; kind: string; source_element_id: string | null; target_element_id: string | null; selector: boolean;
+      target_node: string; target_state: string; target_seq: number; target_name: string; target_kolab: string;
+    }>(
+      `select e.source_version_id = $1 as own, e.kind, e.source_element_id, e.target_element_id, e.target_selector is not null as selector,
+              t.node_id as target_node, t.state as target_state, t.seq as target_seq, n.name as target_name, n.kolab_id as target_kolab
+         from edge e join version t on t.id = e.target_version_id join node n on n.id = t.node_id
+        where e.source_version_id = $1
+           or (e.source_version_id = $2 and not exists (select 1 from link_removal r where r.version_id = $1 and ${REMOVES('r', 'e', 't')}))
+        order by e.source_element_id nulls first, n.name, t.seq, e.target_element_id`, [v.id, v.base_version_id])).rows;
+    const links: PlanLink[] = rows
+      .filter((l) => l.own || l.source_element_id === null || live.has(l.source_element_id))
+      .map((l) => ({
+        kind: l.kind, source_element_id: l.source_element_id, target_element_id: l.target_element_id, selector: l.selector,
+        into: l.target_node === plan.parent_node_id ? 'binding' : l.target_node === plan.id ? 'plan' : 'other',
+        target_committed: l.target_state === 'committed',
+        target: `${l.target_kolab === plan.kolab_id ? '' : `${l.target_kolab}/`}${l.target_name}@${l.target_seq}${l.target_element_id ? `#${l.target_element_id}` : ''}`,
+      }));
+    const problems = planProblems(els, links);
+    return problems.length ? { ok: false, note: `Plan checks failed (PLN2): ${problems.join('; ')}.` } : passed;
   }
 
   /**
@@ -4642,8 +4688,21 @@ export class Kolab {
       throw new GateError(`nothing may derive from ${e.target}: it has not cleared review`);
     }
     // Element links point inside the parent (D78, KON6).
-    const outside = this.linkOutsideParent(await this.node(src.node_id), await this.node(tgt.node_id));
+    const srcNode = await this.node(src.node_id);
+    const outside = this.linkOutsideParent(srcNode, await this.node(tgt.node_id));
     if (outside) throw new GateError(outside);
+    // A Delivers (PLN1, PLN2, D98): a dependency link from a work package to one binding element,
+    // never from a milestone. Checked as it is declared, and again when the plan version is submitted.
+    if (srcNode.kind === 'plan' && tgt.node_id === srcNode.parent_node_id) {
+      const at = `${await this.nameOf(tgt.node_id)}@${tgt.seq}`;
+      if (e.kind !== 'dependency') throw new GateError(`a work package delivers a binding element through a dependency link (PLN1), not a ${e.kind} link: link ${at}#<element> with kind dependency`);
+      if (!e.sourceElement) throw new GateError(`a Delivers is from a work package, one element of the plan, not the whole version (PLN1): name the work package it is from`);
+      if (!e.targetElement || e.selector) {
+        throw new GateError(`a work package delivers whole binding elements, at element scope (PLN1, LNK3), not ${e.selector ? 'a quote inside one' : 'the whole binding'}: link ${at}#<element>, without a quote`);
+      }
+      const work = (await this.db.query<{ work: WorkFields | null }>(`select work from element where version_id = $1 and element_id = $2`, [src.id, e.sourceElement])).rows[0]?.work;
+      if (work?.milestone) throw new GateError(`${e.sourceElement} is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers ${at}#${e.targetElement}, and make the milestone depend on it`);
+    }
     // A link is pinned to what its target says now: its node's live version, never an older one.
     const live = (await this.latestCommitted(tgt.node_id))!;
     if (live.id !== tgt.id) {
@@ -5389,9 +5448,9 @@ export class Kolab {
         kept.push({ ...rest, base_version_id: newParent.id, state: 'clean' });
         continue;
       }
-      if (d.kind === 'override' && fingerprint(d.text!) === pe.fingerprint) continue; // converged
+      if (d.kind === 'override' && elementFingerprint(d.text ?? pe.text, d.work) === pe.fingerprint) continue; // converged
 
-      const childFp = d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!);
+      const childFp = d.kind === 'remove' ? 'REMOVED' : elementFingerprint(d.text ?? pe.text, d.work);
       const p = await this.db.query<{ resolution: OverrideResolution; amended_text: string | null }>(
         `select resolution, amended_text from precedent
           where base_fingerprint = $1 and parent_fingerprint = $2 and child_fingerprint = $3 and kolab_id = $4`,
@@ -5584,7 +5643,7 @@ export class Kolab {
     const id = ulid();
     const ruling: Ruling = {
       markId, actor: s.actor_id, resolution, amendedText: amendedText ?? null,
-      triple: pe ? [d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : fingerprint(d.text!)] : undefined,
+      triple: pe ? [d.base_fingerprint, pe.fingerprint, d.kind === 'remove' ? 'REMOVED' : elementFingerprint(d.text ?? pe.text, d.work)] : undefined,
     };
     // The version and the ruling waiting on it are written together (W1.8): the agent writes the
     // version, then Kolab, as kj_system, the ruling, which no agent may write. The resolution is a
@@ -6890,6 +6949,40 @@ function LIVE(alias: string) {
             and later.seq > ${alias}.seq and later.state = 'committed')`;
 }
 
+/**
+ * A draft's work fields, checked and in the form Kolab stores them (D98), before anything is
+ * written: refused, naming each problem, when one is malformed or over its limit, or when the node
+ * isn't a plan, whose elements alone are work packages (PLN1). A delta that leaves `work` out keeps
+ * the element's own.
+ */
+function draftWork(node: { name: string; kind: Kind }, input: { elements?: ElementInput[]; deltas?: DeltaInput[] }): { elements?: ElementInput[]; deltas?: DeltaInput[] } {
+  const problems: string[] = [];
+  let limit = false;
+  let any = false;
+  const norm = (element: string, w: unknown): WorkFields | null | undefined => {
+    if (w === undefined) return undefined;
+    const r = checkWork(element, w);
+    problems.push(...r.problems);
+    limit ||= r.limit;
+    if (r.work) any = true;
+    return r.work;
+  };
+  const elements = input.elements?.map((e) => ({ ...e, work: norm(e.id ?? '(new element)', e.work) ?? null }));
+  const deltas = input.deltas?.map((d) => {
+    const work = norm(d.element, d.work);
+    const { work: _given, ...rest } = d;
+    return work === undefined ? rest : { ...rest, work };
+  });
+  if (any && node.kind !== 'plan') {
+    throw new GateError(`work fields (done_when, depends_on, size, milestone, target_date, repo) are only on a plan's elements, its work packages (PLN1, D98), and ${node.name} is a ${KIND_WORDS[node.kind]}`);
+  }
+  if (problems.length) {
+    const said = `${problems.join('; ')}.`;
+    throw limit ? new LimitError(said) : new GateError(said);
+  }
+  return { ...(elements ? { elements } : {}), ...(deltas ? { deltas } : {}) };
+}
+
 function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
   parentVersionId: string | null): Omit<DeltaRow, 'id' | 'version_id'>[] {
   const byId = new Map(parent.map((e) => [e.element_id, e]));
@@ -6897,9 +6990,11 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
   next.forEach((e, ord) => {
     const id = e.id!;
     const p = byId.get(id);
-    const base = { element_id: id, text: e.text, parent_element_id: e.parent ?? null, ord, state: 'clean' as const };
+    // A full element is the whole of it: no work fields given means none (D98).
+    const work = e.work ?? null;
+    const base = { element_id: id, text: e.text, parent_element_id: e.parent ?? null, ord, state: 'clean' as const, work };
     if (!p) out.push({ ...base, kind: 'add', base_version_id: null, base_fingerprint: null });
-    else if (p.fingerprint !== fingerprint(e.text) || p.parent_element_id !== (e.parent ?? null) || p.ord !== ord) {
+    else if (p.fingerprint !== elementFingerprint(e.text, work) || p.parent_element_id !== (e.parent ?? null) || p.ord !== ord) {
       out.push({ ...base, kind: 'override', base_version_id: parentVersionId, base_fingerprint: p.fingerprint });
     }
   });
@@ -6907,7 +7002,7 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
   for (const p of parent) {
     if (!nextIds.has(p.element_id)) {
       out.push({ element_id: p.element_id, kind: 'remove', text: null, parent_element_id: p.parent_element_id,
-        ord: null, base_version_id: parentVersionId, base_fingerprint: p.fingerprint, state: 'clean' });
+        ord: null, base_version_id: parentVersionId, base_fingerprint: p.fingerprint, state: 'clean', work: null });
     }
   }
   return out;
@@ -6922,12 +7017,15 @@ function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'versio
     if (d.kind === 'remove') { removed.add(d.element_id); continue; }
     const existing = map.get(d.element_id);
     const text = d.text ?? existing?.text ?? '';
+    // An add's or override's work fields are the element's whole set (D98).
+    const work = d.work ?? undefined;
     map.set(d.element_id, {
       element_id: d.element_id,
       parent_element_id: d.parent_element_id ?? existing?.parent_element_id ?? null,
       ord: d.ord ?? existing?.ord ?? ++maxOrd,
       text,
-      fingerprint: fingerprint(text),
+      fingerprint: elementFingerprint(text, work),
+      ...(work ? { work } : {}),
     });
   }
   // Removing an element removes its subtree.
@@ -7408,17 +7506,17 @@ async function writeVersion(tx: Q, v: Omit<VersionRow, 'state' | 'kolab_id'>, el
     [v.id, v.node_id, v.seq, v.parent_version_id, v.base_version_id, v.layer, v.actor_id, v.active_role, v.parent_held_by ?? null]);
   for (const e of els) {
     await tx.query(
-      `insert into element(version_id, element_id, parent_element_id, ord, text, fingerprint)
-       values ($1,$2,$3,$4,$5,$6)`,
-      [v.id, e.element_id, e.parent_element_id, e.ord, e.text, e.fingerprint]);
+      `insert into element(version_id, element_id, parent_element_id, ord, text, fingerprint, work)
+       values ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+      [v.id, e.element_id, e.parent_element_id, e.ord, e.text, e.fingerprint, e.work ? JSON.stringify(e.work) : null]);
   }
   for (const d of deltas) {
     await tx.query(
       `insert into delta(id, version_id, element_id, kind, text, parent_element_id, ord,
-                         base_version_id, base_fingerprint, state)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                         base_version_id, base_fingerprint, state, work)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
       [ulid(), v.id, d.element_id, d.kind, d.text, d.parent_element_id, d.ord,
-        d.base_version_id, d.base_fingerprint, d.state]);
+        d.base_version_id, d.base_fingerprint, d.state, d.work ? JSON.stringify(d.work) : null]);
   }
 }
 

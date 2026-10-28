@@ -113,6 +113,7 @@ export class WebService {
         rulings: rulings.filter((r) => r.element === e.element_id),
         cases: cases.filter((c) => c.element === e.element_id),
         id: e.element_id, parent: e.parent_element_id, text: e.text,
+        ...(e.work ? { work: e.work } : {}),
         address: formatAddress({ node: n.name, version: row.seq, element: e.element_id }),
         queries: (threads.get(e.element_id)?.items ?? []).map(query),
         queries_next: threads.get(e.element_id)?.next ?? null,
@@ -218,6 +219,7 @@ export class WebService {
     if (row) {
       elements = (await k.readNode(s, ref, row.seq, { threads: false })).elements.map((e) => ({
         id: e.element_id, parent: e.parent_element_id, text: e.text,
+        ...(e.work ? { work: e.work } : {}),
         address: formatAddress({ kolab, node: n.name, version: row.seq, element: e.element_id }),
         queries: shown(e.element_id), queries_next: threads.get(e.element_id)?.next ?? null,
         relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [],
@@ -484,13 +486,15 @@ export class WebService {
     const live = await k.latestCommitted(n.id);
     // The edits apply to the version they were made on, never silently to a newer one (CAS7).
     if ((live?.seq ?? null) !== b.base) throw stale(n.name, b.base, live?.seq ?? null);
-    const elements: ElementInput[] = live ? (await k.readNode(s, n.name, live.seq, { threads: false })).elements.map((e) => ({ id: e.element_id, text: e.text, parent: e.parent_element_id ?? undefined })) : [];
+    // Each element as it stands, its work fields included (D98): the page edits text, never them.
+    const elements: ElementInput[] = live ? (await k.readNode(s, n.name, live.seq, { threads: false })).elements
+      .map((e) => ({ id: e.element_id, text: e.text, parent: e.parent_element_id ?? undefined, ...(e.work ? { work: e.work } : {}) })) : [];
     for (const c of b.changes) {
       if (!c || typeof c.element !== 'string' || !c.element) throw bad('each change names its element');
       const i = elements.findIndex((e) => e.id === c.element);
       if (c.kind === 'add') {
         if (i >= 0) throw bad(`${c.element} already exists`);
-        elements.push({ id: c.element, text: c.text ?? '', parent: c.parent });
+        elements.push({ id: c.element, text: c.text ?? '', parent: c.parent, ...(c.work ? { work: c.work } : {}) });
       } else if (c.kind === 'override') {
         if (i < 0) throw bad(`there is no ${c.element} to edit`);
         elements[i] = { ...elements[i], text: c.text ?? '' };

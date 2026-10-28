@@ -835,3 +835,32 @@ test('the web page says when the person signed in is a Konjir admin, and says no
   const bob = await signIn(base, engineer);
   expect(bob.me).not.toHaveProperty('konjirAdmin');
 });
+
+test('a plan\'s page shows each work package\'s fields, read only, and an edit of its text in the page keeps them (W5.1a, D98)', async () => {
+  const { kolab, engineer } = await specAndBinding();
+  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
+  await kolab.commit(engineer, 'orders-plan', { elements: [
+    { id: 'W1', text: 'Build the cancel endpoint.', work: { done_when: 'An Open order can be cancelled.', size: 'M' } },
+    { id: 'M1', text: 'Cancelling works.', work: { milestone: true, depends_on: ['W1'], target_date: '2026-12-01' } },
+  ] });
+  const bob = await signIn(await serve(kolab), engineer);
+  const view = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  expect(view.elements.map((e) => [e.id, e.work])).toStrictEqual([
+    ['W1', { done_when: 'An Open order can be cancelled.', size: 'M' }],
+    ['M1', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
+  ]);
+  // The page edits text; the fields stay as they were. An element added in the page may carry them.
+  const out = (await bob.call<WebOutcome>('nodes/orders-plan/submit', { base: 1, changes: [
+    { kind: 'override', element: 'W1', text: 'Build the cancel endpoint, idempotently.' },
+    { kind: 'add', element: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'], size: 'S' } },
+  ] })).body;
+  expect(out).toMatchObject({ ok: true, committed: true, seq: 2 });
+  const after = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  expect(after.elements.map((e) => [e.id, e.text, e.work])).toStrictEqual([
+    ['W1', 'Build the cancel endpoint, idempotently.', { done_when: 'An Open order can be cancelled.', size: 'M' }],
+    ['M1', 'Cancelling works.', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
+    ['W2', 'Refund on cancel.', { depends_on: ['W1'], size: 'S' }],
+  ]);
+  // A spec's elements carry none.
+  expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work' in e))).toBe(true);
+});

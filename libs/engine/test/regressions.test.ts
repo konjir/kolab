@@ -110,7 +110,8 @@ test('a whole-version dependent gets one mark per commit, and clears only when e
   const b = await kolab.commit(engineer, B, { elements: els({ b1: 'w1', b2: 'w2' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: b, sourceElement: 'b2', target: s1, targetElement: 'R2' });
-  const X = await kolab.createNode(engineer, 'plan', 'X', 'X');   // the binding's plan, relying on the whole binding
+  // Another binding, relying on the whole of this one (a plan's links deliver single elements, PLN1).
+  const X = await kolab.createNode(engineer, 'binding', 'X', 'X');
   await kolab.commit(engineer, X, { elements: els({ c: 'code' }) });
   const x = (await kolab.latestCommitted(X))!.id;
   await kolab.link(engineer, { kind: 'dependency', source: x, target: b });

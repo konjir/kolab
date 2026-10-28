@@ -255,8 +255,29 @@ export const ROLE_OF_LAYER: Record<Layer, Role> = { functional: 'product', techn
 export const nobodyCanReview = (layer: Layer) =>
   `Nobody else can review the ${layer} layer yet. Invite a ${ROLE_OF_LAYER[layer]} teammate, or connect an agent of yours with the ${ROLE_OF_LAYER[layer]} role. It waits in review until one of them approves it.`;
 
-export interface ElementInput { id?: string; text: string; parent?: string }
-export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string }
+/** A work package's size (PLN1): it feeds the forecast, and nobody is asked for hours. */
+export const WORK_SIZES = ['S', 'M', 'L'] as const;
+export type WorkSize = typeof WORK_SIZES[number];
+/** The fields a work package may carry, in the order Kolab stores and shows them (migration 0029's kj_work_valid). */
+export const WORK_FIELDS = ['done_when', 'depends_on', 'size', 'milestone', 'target_date', 'repo'] as const;
+/**
+ * A work package's fields (PLN1, PLN3, D98), on an element of a plan and nowhere else (migration
+ * 0029): its definition of done, the work packages of the same plan version it depends on (by
+ * element id), its size, whether it is a milestone (no work of its own: its members are what it
+ * depends on), a milestone's target date (YYYY-MM-DD; only a milestone carries one, PLN2), and the
+ * repository it is done in, when not its binding's own (KON7). What it delivers is not a field: each
+ * Delivers is a dependency link to a binding element (PLN1).
+ */
+export interface WorkFields {
+  done_when?: string; depends_on?: string[]; size?: WorkSize; milestone?: boolean; target_date?: string; repo?: string;
+}
+/** An element as a draft gives it: `work` only on a plan's elements (D98). */
+export interface ElementInput { id?: string; text: string; parent?: string; work?: WorkFields | null }
+/**
+ * A change to one element. On an add or an override, `work` replaces the element's work fields
+ * whole (null clears them); left out, the element keeps the ones it has.
+ */
+export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string; work?: WorkFields | null }
 /**
  * A link a draft drops, so its next version doesn't carry it forward (CAS3, LNK6, D48): by its id,
  * as konjir_lineage and konjir_list_stale give it, or by what it links: the source element (none
@@ -270,7 +291,13 @@ export interface ElementRow {
   parent_element_id: string | null;
   ord: number;
   text: string;
+  /**
+   * The hash of its normalized text, and of its work fields when it has any (D98): so an element
+   * with none keeps the fingerprint it always had, and a change to a done-when is a change.
+   */
   fingerprint: string;
+  /** A plan element's work fields (D98); absent on every other element, and on a plan element with none. */
+  work?: WorkFields;
 }
 export interface VersionRow {
   id: string; node_id: string; seq: number; parent_version_id: string | null;
