@@ -6,7 +6,7 @@
 // approval confirms the repository. Kolab itself reads no git (D36): every git call here is the CLI's.
 import { afterEach, expect, jest, test } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '@konjir/server';
@@ -122,7 +122,7 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   const { dir, root, c1, c5 } = checkout();
   // Nothing registered: refused, nothing sent.
   await eng.call('pull_work', {});
-  expect(await rejection(deliverWork(eng.call, gitIn(dir)))).toMatch(/this checkout \(https:\/\/github\.com\/acme\/orders\) is no repository registered in this kolab/);
+  expect(await rejection(deliverWork(eng.call, gitIn(dir)))).toMatch(/this checkout \(tracking origin, https:\/\/github\.com\/acme\/orders\) is no repository registered in this kolab/);
   await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
 
   // The package it holds, found by itself: c1 and c5, oldest first, not the commit that only mentions it, nor W2's.
@@ -152,9 +152,16 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   const fork = mkdtempSync(join(tmpdir(), 'konjir-fork-'));
   git(fork, 'clone', '-q', dir, '.');
   git(fork, 'remote', 'set-url', 'origin', 'https://github.com/evil/orders.git');
-  expect(await rejection(deliverWork(eng.call, gitIn(fork)))).toMatch(/is no repository registered in this kolab|no remote of this checkout is/);
+  expect(await rejection(deliverWork(eng.call, gitIn(fork)))).toMatch(/this checkout tracks origin \(https:\/\/github\.com\/evil\/orders\), not https:\/\/github\.com\/acme\/orders, though it has its root commit: it may be a fork/);
+  // The usual fork layout: origin is the fork, and an `upstream` remote is the registered URL. A remote
+  // merely present isn't enough: the branch tracks origin, so it is refused (review of #83, 5).
+  git(fork, 'remote', 'add', 'upstream', 'https://github.com/acme/orders.git');
+  expect(await rejection(deliverWork(eng.call, gitIn(fork)))).toMatch(/this checkout tracks origin \(https:\/\/github\.com\/evil\/orders\)/);
   expect(await rejection(deliverWork(eng.call, gitIn(fork), { work: 'kj:orders-plan#W1', repo: 'https://github.com/evil/orders' }))).toMatch(/https:\/\/github\.com\/evil\/orders isn't a repository registered in this kolab/);
   expect(await deliverWork(eng.call, gitIn(fork), { repo: 'https://github.com/acme/orders' })).toMatchObject({ recorded: 0, already: 2 });
+  // Once its branch tracks the registered remote, it is that repository's checkout.
+  git(fork, 'config', 'branch.main.remote', 'upstream');
+  expect(await deliverWork(eng.call, gitIn(fork))).toMatchObject({ recorded: 0, already: 2 });
   // A shallow clone: its oldest commit stands in for the root.
   const shallow = mkdtempSync(join(tmpdir(), 'konjir-shallow-'));
   git(shallow, 'clone', '-q', '--depth', '2', `file://${dir}`, '.');
@@ -199,4 +206,88 @@ test('in a shell: konjir repo register and konjir work deliver, with -C, --dry-r
   expect(JSON.parse(out.pop()!)).toMatchObject({ work: 'kj:orders-plan#W1', recorded: 3, already: 0 });
   await expect(main(['work', 'deliver', '--test', 'https://ci.example.com/run/1?token=abc', '-C', dir])).rejects.toThrow(/may be a credential/);
   await expect(main(['work', 'deliver', '--bogus', '-C', dir])).rejects.toThrow(/unknown --bogus/);
+}, 120_000);
+
+/** A commit whose subject carries git log's old record separators, and an argument or another commit's sha after them (review of #83, 1). */
+const hostile = (dir: string, smuggled: string) =>
+  commit(dir, `evil\x1e${smuggled}\x1fSmuggled\x1fkj:test/orders-plan#W1\x1e\n\nIt mentions kj:test/orders-plan#W1 but carries no trailer.`, { [`h/${Math.random()}.txt`]: 'h\n' });
+
+test('a commit\'s message can\'t reach git\'s arguments: a hostile subject neither truncates a file, under --dry-run or not, nor forges a tagged commit (review of #83, 1)', async () => {
+  const { eng, lee } = await planned();
+  const { dir, c1, c5 } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  await eng.call('pull_work', {});
+  // 1. --output=<file>: git would open the file for writing before refusing the rest.
+  const victim = join(mkdtempSync(join(tmpdir(), 'konjir-victim-')), 'important');
+  writeFileSync(victim, 'important\n');
+  hostile(dir, `--output=${victim}`);
+  // 2. Another commit's sha: an untagged commit passed off as tagged, with a made-up subject.
+  const unrelated = commit(dir, 'Unrelated, untagged', { 'src/other.ts': 'x\n' });
+  hostile(dir, unrelated);
+  const dry = await deliverWork(eng.call, gitIn(dir), { dryRun: true }) as { commits: { sha: string; subject: string }[] };
+  expect(readFileSync(victim, 'utf8')).toBe('important\n');
+  expect(dry.commits.map((c) => c.sha)).toStrictEqual([c1, c5]);
+  expect(JSON.stringify(dry)).not.toMatch(/Smuggled/);
+  const sent = await deliverWork(eng.call, gitIn(dir)) as { commits: { sha: string }[]; recorded: number };
+  expect(readFileSync(victim, 'utf8')).toBe('important\n');
+  expect(sent.commits.map((c) => c.sha)).toStrictEqual([c1, c5]);
+  const evidence = (await eng.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: { sha?: string; title?: string }[] }).evidence;
+  expect(evidence.map((e) => e.sha).sort()).toStrictEqual([c1, c5].sort());
+  expect(evidence.map((e) => e.title)).not.toContain('Smuggled');
+  // A hostile --since is no option either.
+  expect(await rejection(deliverWork(eng.call, gitIn(dir), { since: `--output=${victim}` }))).toMatch(/isn't a revision/);
+  expect(await rejection(deliverWork(eng.call, gitIn(dir), { since: 'no-such-branch' }))).toMatch(/names no commit in this checkout/);
+  expect(readFileSync(victim, 'utf8')).toBe('important\n');
+}, 120_000);
+
+test('a checkout\'s own config can\'t make deliver run a program: log.showSignature with gpg.program on a signed commit runs nothing (review of #83, 4)', async () => {
+  const { eng, lee } = await planned();
+  const { dir } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  await eng.call('pull_work', {});
+  const tools = mkdtempSync(join(tmpdir(), 'konjir-gpg-'));
+  const marker = join(tools, 'ran');
+  const script = join(tools, 'gpg.sh');
+  writeFileSync(script, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+  chmodSync(script, 0o755);
+  git(dir, 'config', 'log.showSignature', 'true');
+  git(dir, 'config', 'gpg.program', script);
+  // A signed, tagged commit, made by hand: its gpgsig header is what makes git call gpg.program.
+  const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
+  const parent = git(dir, 'rev-parse', 'HEAD');
+  const body = [`tree ${tree}`, `parent ${parent}`, 'author Eng <eng@example.com> 1700000000 +0000', 'committer Eng <eng@example.com> 1700000000 +0000',
+    'gpgsig -----BEGIN PGP SIGNATURE-----', ' ', ' iQEzBAABCAAdFiEE', ' -----END PGP SIGNATURE-----', '', 'Signed', '', 'Konjir-Work: kj:test/orders-plan#W1', ''].join('\n');
+  const signed = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: dir, input: body, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } }).trim();
+  git(dir, 'update-ref', 'HEAD', signed);
+  // The fixture works: plain git, reading that config, runs the program.
+  try { git(dir, 'log', '-1'); } catch { /* the program fails the check */ }
+  expect(existsSync(marker)).toBe(true);
+  const { rmSync } = await import('node:fs');
+  rmSync(marker);
+  const r = await deliverWork(eng.call, gitIn(dir), { dryRun: true }) as { commits: { sha: string }[] };
+  expect(r.commits.map((c) => c.sha)).toContain(signed);
+  await registerRepository(lee.call, gitIn(dir), { url: 'https://github.com/acme/other', root: git(dir, 'rev-list', '--max-parents=0', 'HEAD') });
+  expect(existsSync(marker)).toBe(false);
+}, 120_000);
+
+test('remotes and registrations take a repository\'s own URL: a trailing dot, an owner alone, a page of a repository and .git twice; a shallow clone registers no root, --root or not (review of #83, 6)', async () => {
+  expect(canonicalRemote('git@github.com.:acme/orders.git')).toBe('https://github.com/acme/orders');
+  expect(canonicalRemote('https://github.com/acme')).toBeUndefined();
+  expect(canonicalRemote('https://github.com/acme/orders/tree/main')).toBeUndefined();
+  expect(canonicalRemote('https://github.com/acme/orders.git.git')).toBeUndefined();
+  expect(canonicalRemote('https://gitlab.com/group/sub/orders.git')).toBe('https://gitlab.com/group/sub/orders');
+  const { lee } = await planned();
+  const { dir } = checkout();
+  const shallow = mkdtempSync(join(tmpdir(), 'konjir-shallow-'));
+  git(shallow, 'clone', '-q', '--depth', '1', `file://${dir}`, '.');
+  git(shallow, 'remote', 'set-url', 'origin', 'https://github.com/acme/orders');
+  const boundary = git(shallow, 'rev-parse', 'HEAD');
+  expect(await rejection(registerRepository(lee.call, gitIn(shallow), {}))).toMatch(/this is a shallow clone/);
+  expect(await rejection(registerRepository(lee.call, gitIn(shallow), { root: boundary }))).toMatch(/this is a shallow clone/);
+  expect(await rejection(lee.call('register_repository', { url: 'https://github.com/acme', root_sha: 'f'.repeat(40) }))).toMatch(/names an owner, not a repository/);
+  expect(await rejection(lee.call('register_repository', { url: 'https://github.com/acme/orders/tree/main', root_sha: 'f'.repeat(40) }))).toMatch(/on github\.com a repository's URL is https:\/\/github\.com\/<owner>\/<name>/);
+  expect(await rejection(lee.call('register_repository', { url: 'https://github.com/acme/orders.git.git', root_sha: 'f'.repeat(40) }))).toMatch(/ends in \.git twice/);
+  // The trailing dot is dropped, so the same repository isn't registered twice.
+  expect(await lee.call('register_repository', { url: 'https://GitHub.com./acme/orders', root_sha: 'f'.repeat(40) })).toMatchObject({ repository: { url: 'https://github.com/acme/orders' } });
+  expect(await rejection(lee.call('register_repository', { url: 'https://github.com/acme/orders', root_sha: 'f'.repeat(40) }))).toMatch(/is already registered/);
 }, 120_000);

@@ -113,3 +113,33 @@ const N = 'insert into node(id, name, kind, layer, title, kolab_id, created_by) 
   expect(output).toMatch(/RESULT \{"migration":"0029","at":28,"advisory":true,"findings":1\}/);
   expect(output).not.toContain('refuse');
 });
+
+(onPostgres ? test : test.skip)('preflight 0032 is advisory: on a database at 0031 it lists each package repo to register, each plan with work under way whose binding needs an implementation, and the evidence that becomes from before repositories (W5.2a, #83)', async () => {
+  const { databaseUrl } = await persistentStore();
+  const db = openDb({ databaseUrl });
+  try {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, MIGRATIONS.findIndex((m) => m.name === 'repositories')) });
+    await db.exec(`insert into account(id, kind, name, created_by) values ('lee', 'user', 'Lee', 'admin');
+      insert into kolab(id, owner_id, title, created_by) values ('shop', 'lee', 'Shop', 'admin');
+      insert into actor(id, name, created_by) values ('lee', 'Lee', 'admin');
+      insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('s', 's', 'spec', 'functional', 'S', 'shop', 'lee');
+      insert into node(id, name, kind, layer, title, kolab_id, created_by, parent_node_id) values ('b', 'b', 'binding', 'technical', 'B', 'shop', 'lee', 's');
+      insert into node(id, name, kind, layer, title, kolab_id, created_by, parent_node_id) values ('w', 'w', 'plan', 'technical', 'W', 'shop', 'lee', 'b');
+      insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role, submitted_by) values
+        ('wv', 'w', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee');
+      insert into element(version_id, element_id, ord, text, fingerprint, work) values
+        ('wv', 'W1', 0, 'Build it.', 'y', '{"repo": "orders-api"}'), ('wv', 'W2', 1, 'Queue it.', 'z', '{"repo": "https://github.com/acme/queue"}'), ('wv', 'W3', 2, 'Track it.', 'q', null);
+      insert into work_package(plan_node_id, element_id) values ('w', 'W1'), ('w', 'W2'), ('w', 'W3');
+      update work_package set state = 'in_progress', assignee_id = 'lee', lease_until = now() + interval '30 minutes', touched_at = now() where element_id = 'W3';
+      insert into work_event(id, plan_node_id, element_id, kind, from_state, to_state, actor_id, plan_version_id, concerned)
+        values ('ev1', 'w', 'W3', 'evidence', 'in_progress', 'in_progress', 'lee', 'wv', '[]');
+      insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, recorded_by) values ('e1', 'w', 'W3', 'ev1', 'commit', '${'c'.repeat(40)}', 'lee');`);
+  } finally { await db.close(); }
+  const { code, output } = await preflight(databaseUrl!, '0032');
+  expect(code).toBe(0);
+  expect(output).toContain('preflight 0032, read-only, on a database at 0031: advisory, it gates nothing');
+  expect(output).toContain('advise 1 a package\'s repo names no registered repository: shop/w@1#W1: orders-api (not an https URL of owner/name); shop/w@1#W2: https://github.com/acme/queue');
+  expect(output).toContain('advise 2 a plan with work under way whose binding has no registered implementation: shop/w (binding b): W3 in_progress');
+  expect(output).toContain('advise 3 evidence 0032 marks as from before repositories (unconfirmed, never confirming): 1 commits and pull requests, 0 test runs');
+  expect(output).toMatch(/RESULT \{"migration":"0032","at":31,"advisory":true,"findings":3\}/);
+});

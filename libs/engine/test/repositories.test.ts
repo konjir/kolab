@@ -6,6 +6,7 @@
 // kolab's own, immutable but for confirming and archiving once.
 import { expect, test } from '@jest/globals';
 import { type Kolab } from '@konjir/engine';
+import { independentOf } from '../src/work.js';
 import { els, openKolab, people, registeredRepository, rejection, testRoot, testStore, TEST_KOLAB } from '@konjir/engine/testing';
 import { ADMIN_DOER, type ElementInput } from '@konjir/types';
 
@@ -96,7 +97,12 @@ test('a repository\'s URL and root commit are checked: https only, with no user,
   expect(await refused('https://github.com/acme/orders?token=ghp_secret')).toMatch(/has no query or fragment/);
   expect(await refused('https://github.com/acme/orders#access_token=x')).toMatch(/has no query or fragment/);
   expect(await refused('https://github.com/')).toMatch(/names no repository/);
-  expect(await refused(`https://github.com/${'a'.repeat(250)}`)).toMatch(/the limit is 200/);
+  expect(await refused(`https://example.com/acme/${'a'.repeat(250)}`)).toMatch(/the limit is 200/);
+  // At least /owner/name, and exactly that on GitHub; .git once; a trailing dot on the host dropped (review of #83, 6).
+  expect(await refused('https://github.com/acme')).toMatch(/names an owner, not a repository/);
+  expect(await refused('https://example.com/orders')).toMatch(/names an owner, not a repository/);
+  expect(await refused('https://github.com/acme/orders/tree/main')).toMatch(/on github\.com a repository's URL is https:\/\/github\.com\/<owner>\/<name>/);
+  expect(await refused('https://github.com/acme/orders.git.git')).toMatch(/^GateError: .* ends in \.git twice/);
   expect(await refused(ORDERS, 'abc')).toMatch(/^GateError: root_sha is the repository's root commit, its full sha/);
   expect(await refused(ORDERS, 'g'.repeat(40))).toMatch(/root_sha is the repository's root commit/);
   // No credential reached the database or the audit log.
@@ -105,7 +111,8 @@ test('a repository\'s URL and root commit are checked: https only, with no user,
   // A SHA-256 root commit is taken.
   await kolab.registerRepository(mia, { url: 'https://gitlab.example.com:8443/group/sub/orders', root_sha: 'a'.repeat(64) });
   // One live registration a URL, in any case; the binding takes one implementation, and a binding only.
-  const r = await kolab.registerRepository(mia, { url: ORDERS, root_sha: testRoot(), binding: 'orders-pg' });
+  const r = await kolab.registerRepository(mia, { url: 'https://github.com./acme/orders', root_sha: testRoot(), binding: 'orders-pg' });
+  expect(r.url).toBe(ORDERS);
   expect(await refused('https://github.com/ACME/Orders')).toBe(`GateError: https://github.com/ACME/Orders is already registered in kolab test (konjir_list_repositories)`);
   expect(await rejection(kolab.registerRepository(mia, { url: 'https://github.com/acme/other', root_sha: testRoot(), binding: 'orders-pg' })))
     .toMatch(/^GateError: binding orders-pg already has its implementation: a binding is implemented in one repository \(D38\)/);
@@ -372,3 +379,15 @@ test('two registrations of one URL at once: one stands, the other is refused as 
     await other.end();
   }
 }, 60_000);
+
+test('who confirms is decided in one place: per actor today, per person by changing one constant (#83 Q1, pending Lee)', () => {
+  const lee = { id: 'lee', principal: 'lee' };
+  const leeBot = { id: 'lee-bot', principal: 'lee' };
+  const eve = { id: 'eve', principal: 'eve' };
+  const bobBot = { id: 'bob-bot', principal: 'bob' };
+  expect(independentOf('actor', leeBot, [lee, bobBot])).toBe(true);
+  expect(independentOf('person', leeBot, [lee, bobBot])).toBe(false);
+  expect(independentOf('person', eve, [lee, bobBot])).toBe(true);
+  expect(independentOf('actor', lee, [lee, bobBot])).toBe(false);
+  expect(independentOf('person', { id: 'bob', principal: 'bob' }, [lee, bobBot])).toBe(false);
+});

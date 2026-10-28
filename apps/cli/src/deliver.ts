@@ -11,9 +11,10 @@
  * A commit belongs to a work package when its message carries the trailer
  * `Konjir-Work: kj:<kolab>/<plan>#<id>`, the one konjir_pull_work and konjir_read_work give. Before
  * sending anything, deliver checks that the checkout is the registered repository: its root commit
- * (the parentless commit, which every clone of the repository shares and no other repository has)
- * is the one registered, and one of its remotes is the registered URL. A remote's user, password or
- * token never leaves this machine: remotes are compared after dropping them.
+ * (the parentless commit, which every clone shares) is the one registered, and the remote it tracks
+ * (HEAD's upstream's, or origin) is the registered URL. A remote's user, password or token never
+ * leaves this machine: remotes are compared after dropping them. Git runs with GIT_SAFETY's settings,
+ * and nothing a commit says reaches a git call's arguments.
  *
  * The published client bundles none of the engine, so the URL rules are written out again here, to
  * agree with the engine's repositoryUrl.
@@ -30,14 +31,30 @@ const PATH = 1024;
 const SUBJECT = 4000;
 
 /**
- * Git in `dir`, never through a shell. `core.fsmonitor` is off, so a checkout's own config can't
- * have git run a program as it reads; git reads nothing it would ask a password for (`GIT_TERMINAL_PROMPT=0`).
+ * Settings every git call runs with, over whatever the checkout's own config, the user's and the
+ * system's say (W5.2a, review of #83): none of the commands deliver and register run reads a program
+ * from config once these are set. Signatures are never checked (log.showSignature, and gpg.program and
+ * its kin, would run a program per signed commit); no fsmonitor, hook, pager or external diff runs.
+ * What git itself is, and what it does with these, is the checkout owner's: a checkout whose config an
+ * attacker writes is unsafe for any git command, and this narrows that, not more.
+ */
+export const GIT_SAFETY = [
+  '-c', 'log.showSignature=false', '-c', 'core.fsmonitor=', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat',
+  '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '-c', 'diff.external=',
+] as const;
+
+/**
+ * Git in `dir`, never through a shell, with GIT_SAFETY's settings, no system config
+ * (`GIT_CONFIG_NOSYSTEM`), no pager and no external diff from the environment, and no prompt
+ * (`GIT_TERMINAL_PROMPT=0`). Every revision a call names comes after `--end-of-options`.
  */
 export function gitIn(dir: string, env: NodeJS.ProcessEnv = process.env): Git {
+  const { GIT_EXTERNAL_DIFF: _diff, GIT_PAGER: _pager, PAGER: _p, ...rest } = env;
   return (args) => {
     try {
-      return execFileSync('git', ['-c', 'core.fsmonitor=false', ...args], {
-        cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024, env: { ...env, GIT_TERMINAL_PROMPT: '0' },
+      return execFileSync('git', ['--no-pager', ...GIT_SAFETY, ...args], {
+        cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024,
+        env: { ...rest, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_PAGER: 'cat' },
       });
     } catch (e) {
       const err = e as { code?: string; stderr?: string; message?: string };
@@ -47,36 +64,73 @@ export function gitIn(dir: string, env: NodeJS.ProcessEnv = process.env): Git {
   };
 }
 
+/** A full commit sha, SHA-1 or SHA-256, as git prints it. */
+const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/** `out` as shas, one per NUL- or newline-separated record, or a refusal: git printed something that isn't one. */
+function shas(out: string): string[] {
+  const list = out.split(/[\0\n]/).map((x) => x.trim()).filter(Boolean);
+  const bad = list.find((x) => !SHA.test(x));
+  if (bad !== undefined) throw new Error(`git printed ${JSON.stringify(bad.slice(0, 80))} where a commit's sha belongs; stopping, and nothing was sent`);
+  return list;
+}
+
+/** The forges whose repository URLs are exactly /owner/name. */
+const OWNER_NAME_HOSTS = new Set(['github.com', 'bitbucket.org', 'codeberg.org']);
+
 /**
- * A remote's URL as a repository's identity, in the form Kolab stores (https://host[:port]/path, the
- * host in lower case, no trailing slash, no .git), or undefined for a remote that names no host (a
- * local path). An SSH remote (git@host:owner/name, ssh://git@host/owner/name) maps to the same https
- * URL, without its SSH port; a user, password or token in a remote is dropped here, never sent.
+ * A repository path as Kolab stores it, or why not, from a URL's or remote's path: no trailing slash,
+ * one `.git` dropped (a second is refused), at least /owner/name, and exactly that on GitHub,
+ * Bitbucket and Codeberg. The same rules as the engine's repositoryUrl.
+ */
+function repositoryPath(host: string, raw: string): string | undefined {
+  let path = raw.replace(/\/+$/, '');
+  if (/\.git$/i.test(path)) path = path.slice(0, -4).replace(/\/+$/, '');
+  if (/\.git$/i.test(path)) return undefined;
+  const segments = path.split('/').slice(1);
+  if (segments.length < 2 || segments.some((x) => !x)) return undefined;
+  if (OWNER_NAME_HOSTS.has(host) && segments.length !== 2) return undefined;
+  return path;
+}
+
+/**
+ * A remote's URL as a repository's identity, in the form Kolab stores (https://host[:port]/owner/name,
+ * the host in lower case without a trailing dot, no trailing slash, no .git), or undefined for a
+ * remote that names no hosted repository (a local path, or a path too short to be one). An SSH remote
+ * (git@host:owner/name, ssh://git@host/owner/name) maps to the same https URL, without its SSH port; a
+ * user, password or token in a remote is dropped here, never sent.
  */
 export function canonicalRemote(remote: string): string | undefined {
   const t = remote.trim();
   let host: string;
-  let path: string;
+  let port = '';
+  let raw: string;
   const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/)(.+)$/.exec(t);
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) {
     let u: URL;
     try { u = new URL(t); } catch { return undefined; }
     if (!['https:', 'http:', 'ssh:', 'git:', 'git+ssh:', 'ssh+git:'].includes(u.protocol)) return undefined;
-    host = u.protocol === 'https:' || u.protocol === 'http:' ? u.host : u.hostname;
-    path = u.pathname;
+    host = u.hostname;
+    if ((u.protocol === 'https:' || u.protocol === 'http:') && u.port) port = `:${u.port}`;
+    raw = u.pathname;
   } else if (scp && !/^[a-z]:$/i.test(`${scp[1]}:`)) {
     host = scp[1];
-    path = `/${scp[2]}`;
+    raw = `/${scp[2]}`;
   } else {
     return undefined;
   }
-  path = path.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
-  if (!host || !path || path === '/') return undefined;
-  return `https://${host.toLowerCase()}${path}`;
+  host = host.toLowerCase().replace(/\.$/, '');
+  if (!host) return undefined;
+  const path = repositoryPath(host, raw);
+  return path ? `https://${host}${port}${path}` : undefined;
 }
 
-/** What identifies a checkout: its top directory, its root commits, whether it is shallow, and its remotes as repository URLs. */
-export interface Checkout { top: string; roots: string[]; shallow: boolean; remotes: string[] }
+/**
+ * What identifies a checkout: its top directory, its root commits, whether it is shallow, and the
+ * remote it pushes and pulls through (the remote of HEAD's upstream, or `origin` when it has none)
+ * with that remote's URL as a repository URL (undefined when it has none, or names no hosted one).
+ */
+export interface Checkout { top: string; roots: string[]; shallow: boolean; remote: string; tracked: string | undefined }
 
 /** Reads a checkout's identity with `git`, or says it isn't one. */
 export function readCheckout(git: Git): Checkout {
@@ -84,35 +138,61 @@ export function readCheckout(git: Git): Checkout {
   try { top = git(['rev-parse', '--show-toplevel']).trim(); } catch {
     throw new Error('this isn\'t a git checkout: run it in a checkout of the repository (or give -C <dir>)');
   }
-  let roots: string[] = [];
-  try { roots = git(['rev-list', '--max-parents=0', 'HEAD']).split('\n').map((x) => x.trim().toLowerCase()).filter(Boolean); } catch {
+  let roots: string[];
+  try { roots = shas(git(['rev-list', '--max-parents=0', '--end-of-options', 'HEAD', '--'])); } catch (e) {
+    if (/where a commit's sha belongs/.test(String(e))) throw e;
     throw new Error('this checkout has no commit yet');
   }
   const shallow = git(['rev-parse', '--is-shallow-repository']).trim() === 'true';
-  const remotes = [...new Set(git(['remote', '-v']).split('\n')
-    .map((l) => /^\S+\s+(\S+)\s+\(fetch\)$/.exec(l.trim())?.[1]).filter((x): x is string => !!x)
-    .map(canonicalRemote).filter((x): x is string => !!x).map((x) => x.toLowerCase()))];
-  return { top, roots, shallow, remotes };
+  // The remote HEAD's branch tracks; with none (a detached HEAD, a branch with no upstream, or one
+  // tracking a local branch), origin. A remote merely present, such as a fork's `upstream`, isn't it.
+  let remote = 'origin';
+  let head = '';
+  try { head = git(['symbolic-ref', '-q', 'HEAD']).trim(); } catch { /* detached */ }
+  if (/^refs\/heads\/[^\0\s]+$/.test(head)) {
+    const r = git(['for-each-ref', '--format=%(upstream:remotename)', '--end-of-options', head]).trim();
+    if (r && r !== '.' && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(r)) remote = r;
+  }
+  let tracked: string | undefined;
+  try { tracked = canonicalRemote(git(['remote', 'get-url', remote]).trim())?.toLowerCase(); } catch { /* no such remote */ }
+  return { top, roots, shallow, remote, tracked };
 }
 
 /** A commit that carries a work package's trailer: its sha, its subject and the paths it touched. */
 export interface TaggedCommit { sha: string; subject: string; files: string[] }
 
+/** A revision the user gave (`--since`), as the commit's sha it names, or a refusal; never read as an option. */
+function commitOf(git: Git, rev: string): string {
+  if (!rev || rev.startsWith('-') || /[\0\n\r]/.test(rev)) throw new Error(`${JSON.stringify(rev)} isn't a revision: give a commit, a branch or a tag`);
+  let out: string;
+  try { out = git(['rev-parse', '--verify', '--quiet', '--end-of-options', `${rev}^{commit}`]); } catch {
+    throw new Error(`${JSON.stringify(rev)} names no commit in this checkout`);
+  }
+  const [sha] = shas(out);
+  if (!sha) throw new Error(`${JSON.stringify(rev)} names no commit in this checkout`);
+  return sha;
+}
+
 /**
- * The commits reachable from HEAD (or, with `since`, in since..HEAD) whose message carries
+ * The commits reachable from HEAD (or, with `since`, not reachable from it) whose message carries
  * `Konjir-Work: <address>` as a trailer, oldest first, each with its subject and the files it
  * touched. A message that merely mentions the address, outside its trailers, doesn't count.
+ *
+ * Nothing a commit says can reach a git call's arguments (review of #83): the commits are listed by
+ * sha alone, NUL-separated (`-z`), and each must be a full sha before it is used; its trailers, its
+ * subject and its files are each read in a call of their own, after `--end-of-options`. A subject's
+ * control characters are dropped.
  */
 export function taggedCommits(git: Git, address: string, opts: { since?: string } = {}): TaggedCommit[] {
-  const range = opts.since ? `${opts.since}..HEAD` : 'HEAD';
-  const out = git(['log', '--reverse', '-F', `--grep=${address}`, '--format=%H%x1f%s%x1f%(trailers:key=Konjir-Work,valueonly)%x1e', range, '--']);
+  const range = opts.since ? [`^${commitOf(git, opts.since)}`, 'HEAD'] : ['HEAD'];
+  const listed = shas(git(['log', '-z', '--no-show-signature', '--reverse', '-F', `--grep=${address}`, '--format=%H', '--end-of-options', ...range, '--']));
   const commits: TaggedCommit[] = [];
-  for (const record of out.split('\x1e')) {
-    const [sha, subject, trailers] = record.replace(/^\n+/, '').split('\x1f');
-    if (!sha?.trim() || trailers === undefined) continue;
+  for (const sha of listed) {
+    const trailers = git(['log', '-1', '--no-show-signature', '--format=%(trailers:key=Konjir-Work,valueonly)', '--end-of-options', sha, '--']);
     if (!trailers.split('\n').map((x) => x.trim()).includes(address)) continue;
-    const files = git(['diff-tree', '--no-commit-id', '--name-only', '-r', '--root', '-z', sha.trim()]).split('\0').filter(Boolean);
-    commits.push({ sha: sha.trim().toLowerCase(), subject: subject ?? '', files });
+    const subject = git(['log', '-1', '--no-show-signature', '--format=%s', '--end-of-options', sha, '--']).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
+    const files = git(['diff-tree', '--no-commit-id', '--name-only', '--no-ext-diff', '--no-textconv', '-r', '--root', '-z', '--end-of-options', sha]).split('\0').filter(Boolean);
+    commits.push({ sha, subject, files });
   }
   return commits;
 }
@@ -136,7 +216,9 @@ async function repositories(call: Call): Promise<Repository[]> {
 
 /**
  * Whether `checkout` is a checkout of `repo`: it has the registered root commit, and, unless the
- * repository was named by hand (`named`), one of its remotes is the registered URL. Throws why not.
+ * repository was named by hand (`named`), the remote it tracks (its upstream's, or origin) is the
+ * registered URL. A fork whose origin is the fork and whose `upstream` is the registered URL is
+ * refused: its commits may never have reached the registered repository. Throws why not.
  */
 function requireCheckoutOf(checkout: Checkout, repo: Repository, named: boolean) {
   if (!checkout.roots.includes(repo.root_sha)) {
@@ -144,9 +226,9 @@ function requireCheckoutOf(checkout: Checkout, repo: Repository, named: boolean)
       + (checkout.shallow ? 'It is a shallow clone, whose oldest commit stands in for its root: fetch its whole history (git fetch --unshallow) and run it again.'
         : 'Deliver from a checkout of the registered repository; nothing was sent.'));
   }
-  if (!named && !checkout.remotes.includes(repo.url.toLowerCase())) {
-    throw new Error(`no remote of this checkout is ${repo.url} (its remotes are ${checkout.remotes.join(', ') || 'none'}), though it has its root commit: it may be a fork. `
-      + `Deliver from a clone of ${repo.url}, or, if this checkout is one under another URL, name it: --repo ${repo.url}. Nothing was sent.`);
+  if (!named && checkout.tracked !== repo.url.toLowerCase()) {
+    throw new Error(`this checkout tracks ${checkout.remote} (${checkout.tracked ?? 'no hosted URL'}), not ${repo.url}, though it has its root commit: it may be a fork, `
+      + `whose commits never reached ${repo.url}. Deliver from a clone of ${repo.url}, or a branch that tracks it, or, if this checkout is one under another URL, name it: --repo ${repo.url}. Nothing was sent.`);
   }
 }
 
@@ -199,9 +281,9 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
     repo = find(pkg.repository.url);
     if (!repo) throw new Error(`${pkg.work} is done in ${pkg.repository.url}, which this session can't find among the kolab's repositories. Nothing was sent.`);
   } else {
-    const mine = registered.filter((r) => checkout.roots.includes(r.root_sha) && checkout.remotes.includes(r.url.toLowerCase()));
+    const mine = registered.filter((r) => checkout.roots.includes(r.root_sha) && checkout.tracked === r.url.toLowerCase());
     if (!mine.length) {
-      throw new Error(`this checkout (${checkout.remotes.join(', ') || 'no remote'}) is no repository registered in this kolab, and ${pkg.work} has none of its own: `
+      throw new Error(`this checkout (tracking ${checkout.remote}, ${checkout.tracked ?? 'no hosted URL'}) is no repository registered in this kolab, and ${pkg.work} has none of its own: `
         + 'a person with Maintain or Admin registers it, konjir repo register, run in a checkout. Nothing was sent.');
     }
     if (mine.length > 1) throw new Error(`this checkout is ${mine.map((r) => r.url).join(' and ')}: name one with --repo <url>. Nothing was sent.`);
@@ -272,11 +354,13 @@ export async function registerRepository(call: Call, git: Git, opts: { url?: str
         throw new Error('this checkout has no origin remote: give the repository\'s URL, --url https://host/owner/name');
       }
       url = canonicalRemote(origin);
-      if (!url) throw new Error('origin isn\'t a hosted repository\'s URL (it is a local path): give the repository\'s URL, --url https://host/owner/name');
+      if (!url) throw new Error('origin isn\'t a hosted repository\'s URL (a local path, or a path too short for owner/name): give the repository\'s URL, --url https://host/owner/name');
     }
+    // A shallow clone's oldest commit stands in for its root, and is no repository's identity: refused,
+    // --root or not.
+    if (checkout.shallow) throw new Error('this is a shallow clone, whose oldest commit stands in for its root: fetch its whole history (git fetch --unshallow) and run it again');
     if (root && !checkout.roots.includes(root)) throw new Error(`${root} isn't a root commit of this checkout (they are ${checkout.roots.join(', ')})`);
     if (!root) {
-      if (checkout.shallow) throw new Error('this is a shallow clone, whose oldest commit stands in for its root: fetch its whole history (git fetch --unshallow), or give --root <sha>');
       if (checkout.roots.length !== 1) throw new Error(`this checkout has ${checkout.roots.length} root commits (${checkout.roots.join(', ')}): name the repository's own with --root <sha>`);
       root = checkout.roots[0];
     }

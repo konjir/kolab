@@ -243,15 +243,46 @@ export function repositoryUrl(given: unknown): { url?: string; problem?: string 
   if (u.protocol !== 'https:') return { problem: `a repository is named by its https URL, not ${u.protocol.replace(/:$/, '')}: such as https://${u.host || 'github.com'}${u.pathname === '/' ? '/acme/orders' : u.pathname}` };
   if (u.username || u.password) return { problem: 'that repository URL carries a user or password, which may be a credential: give the URL without it, such as https://github.com/acme/orders' };
   if (u.search || u.hash || /[?#]/.test(t)) return { problem: "a repository URL has no query or fragment: give the repository's own URL, such as https://github.com/acme/orders" };
-  const path = u.pathname.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
-  if (!path || path === '/' || path.split('/').slice(1).some((seg) => !seg) || /[@\s%]/.test(path)) {
+  let path = u.pathname.replace(/\/+$/, '');
+  if (/\.git$/i.test(path)) path = path.slice(0, -4).replace(/\/+$/, '');
+  if (/\.git$/i.test(path)) return { problem: `${JSON.stringify(t.slice(0, 200))} ends in .git twice: give the repository's own URL, such as https://github.com/acme/orders` };
+  const host = u.hostname.toLowerCase().replace(/\.$/, '');
+  if (!/^[a-z0-9.-]+$/.test(host) || !host || host.endsWith('.')) return { problem: `${JSON.stringify(u.hostname)} isn't a host name a repository URL takes` };
+  const segments = path.split('/').slice(1);
+  if (!path || segments.some((seg) => !seg) || /[@\s%]/.test(path)) {
     return { problem: `${JSON.stringify(t.slice(0, 200))} names no repository: give its path too, such as https://github.com/acme/orders` };
   }
-  if (!/^[a-z0-9.-]+$/.test(u.hostname)) return { problem: `${JSON.stringify(u.hostname)} isn't a host name a repository URL takes` };
-  const url = `https://${u.host.toLowerCase()}${path}`;
+  // At least /owner/name, so a registration never covers a whole organization's pull requests; and
+  // on the forges whose repositories are exactly that, no deeper (…/orders/tree/main is no repository).
+  if (segments.length < 2) return { problem: `${JSON.stringify(t.slice(0, 200))} names an owner, not a repository: give /owner/name, such as https://${host}/acme/orders` };
+  if (OWNER_NAME_HOSTS.has(host) && segments.length !== 2) {
+    return { problem: `on ${host} a repository's URL is https://${host}/<owner>/<name>, not ${JSON.stringify(t.slice(0, 200))}` };
+  }
+  const url = `https://${host}${u.port ? `:${u.port}` : ''}${path}`;
   if (url.length > MAX_REPOSITORY_URL) return { problem: `that repository URL is ${url.length} characters; the limit is ${MAX_REPOSITORY_URL}` };
   return { url };
 }
+
+/**
+ * How independent a repository's confirmer must be (D98 ruling 1, D102; #83's Q1, pending Lee):
+ * `actor`, as work review's separation of duty is, so another agent of the registrar's own person
+ * counts as someone else; or `person`, comparing principals (an agent's owner, or the person).
+ */
+export type Independence = 'actor' | 'person';
+
+/** One party to a confirmation: an actor, and its principal (its owner, for an agent; itself otherwise). */
+export interface Party { id: string; principal: string }
+
+/**
+ * Whether `reviewer` is independent enough of each of `others` (the repository's registrar and the
+ * package's assignee) to confirm the repository, under `mode`. The one place the rule lives.
+ */
+export function independentOf(mode: Independence, reviewer: Party, others: Party[]): boolean {
+  return others.every((o) => (mode === 'actor' ? o.id !== reviewer.id : o.principal !== reviewer.principal && o.id !== reviewer.id));
+}
+
+/** The forges whose repository URLs are exactly /owner/name (W5.2a): a deeper path there is a page of a repository, not one. */
+export const OWNER_NAME_HOSTS = new Set(['github.com', 'bitbucket.org', 'codeberg.org']);
 
 /** Whether `link` (a pull request's or a commit's) sits inside the repository at `repo` (a canonical URL): under its path, whatever the case. */
 export function insideRepository(link: string, repo: string): boolean {
