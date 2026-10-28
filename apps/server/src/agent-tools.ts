@@ -4,7 +4,7 @@ import * as z from 'zod/v4';
 import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, FINDING_KINDS, KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   nobodyCanReview, notAKind,
 } from '@konjir/types';
@@ -80,9 +80,10 @@ const unlink = z.object({
 });
 const submit = z.object({ node, version: z.number().int() });
 const review = z.object({
-  node,
-  version: z.number().int(),
-  verdict: z.enum(REVIEW_VERDICTS).describe('approve commits the version (one approval is enough); request_changes returns it to its author as a draft'),
+  node: node.optional().describe('The node of the version to review, with version. Leave out for a work package (work).'),
+  version: z.number().int().optional(),
+  work: z.string().optional().describe('A work package In review to review instead of a version: kj:<plan>#<id>, e.g. kj:checkout-plan#W1.2'),
+  verdict: z.enum(REVIEW_VERDICTS).describe('For a version: approve commits it (one approval is enough); request_changes returns it to its author as a draft. For a work package: approve makes it Done; request_changes returns it to its assignee, In progress'),
   note: z.string().optional().describe('What you checked, or what must change. Required with request_changes.'),
   findings: z.array(z.object({
     kind: z.enum(FINDING_KINDS).describe('contradiction: two elements that cannot both hold, or an element that makes what it links to impossible (blocks the commit). layer_leak: implementation in a functional spec, or a binding that changes behavior (commits, and raises a question to the layer that owns the answer).'),
@@ -145,6 +146,22 @@ const readWork = z.object({
 const pullWork = z.object({ plan: node.optional().describe('The plan to pull from: needed only when your kolab has more than one') });
 const releaseWork = z.object({ work, note: z.string().optional().describe(`Why, for whoever pulls it next. At most ${MAX_TEXT} characters`) });
 const reassignWork = z.object({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
+const evidenceItem = z.strictObject({
+  kind: z.enum(EVIDENCE_KINDS).describe('commit, pull_request or test_run'),
+  sha: z.string().optional().describe('A commit\'s full sha: 40 hexadecimal characters (64 for SHA-256)'),
+  pr: z.number().int().optional().describe('A pull request\'s number'),
+  url: z.string().optional().describe(`An https link: to the commit, the pull request (required for one) or the test run. At most ${MAX_EVIDENCE_URL} characters, with no user or password in it`),
+  title: z.string().optional().describe(`A commit's subject, a pull request's title, or a test run's summary ("npm test: 120 passed"). At most ${MAX_TEXT} characters`),
+  files: z.array(z.string()).optional().describe(`A commit's: the paths it touched, at most ${MAX_EVIDENCE_FILES}`),
+});
+const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","title":"npm test: 120 passed"}]`);
+const addEvidence = z.object({ work, evidence: evidenceList });
+const submitWork = z.object({
+  work,
+  evidence: evidenceList.optional().describe('Evidence to record with the submission, as konjir_add_evidence takes it'),
+  note: z.string().optional().describe(`What you did, for the reviewer. At most ${MAX_TEXT} characters`),
+});
+const reopenWork = z.object({ work, note: z.string().describe(`Why the work is opened again. At most ${MAX_TEXT} characters`) });
 const setWorkLease = z.object({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
 
@@ -389,12 +406,25 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_review',
-    description: 'Record your verdict on a version in review that you did not write, on your own layer: approve, or request_changes with a note and findings. Review requests for you are in your inbox (konjir_list_reviews). Read the version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or a binding element that conflicts with a requirement it links to: stricter, looser or different) only with request_changes. A layer_leak is content in the wrong layer that conflicts with nothing (implementation in a spec, or behavior a binding adds that its linked requirements don\'t mention); it can come with approve: the version commits and a question goes to the layer that owns the answer. Anything that conflicts is a contradiction. Send compound requirements back to be split. konjir_instructions which=reviewer has the full checklist.',
+    description: 'Record your verdict on a version in review that you did not write, on your own layer (node and version), or on a work package In review that you are not the assignee of (work, from an engineer session with Write on the technical layer): approve, or request_changes with a note (and, for a version, findings). For a work package, read it first with konjir_read_work, and check its evidence (commits, pull requests, test runs) against its done-when with your own access to the repository, outside Kolab: approve makes it Done; request_changes returns it to its assignee, In progress. Review requests for you are in your inbox (konjir_list_reviews). Read a version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or a binding element that conflicts with a requirement it links to: stricter, looser or different) only with request_changes. A layer_leak is content in the wrong layer that conflicts with nothing (implementation in a spec, or behavior a binding adds that its linked requirements don\'t mention); it can come with approve: the version commits and a question goes to the layer that owns the answer. Anything that conflicts is a contradiction. Send compound requirements back to be split. konjir_instructions which=reviewer has the full checklist.',
     schema: review,
   })
   review(a: z.infer<typeof review>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       if (a.verdict === 'request_changes' && !a.note?.trim()) throw new Error('say what must change: request_changes needs a note');
+      if (a.work !== undefined) {
+        // A work package (VER17, PLN16): its subject is the package, not a version.
+        if (a.node !== undefined || a.version !== undefined) throw new Error('review a version (node and version) or a work package (work), not both');
+        if (a.findings?.length) throw new Error('findings are a version\'s: for a work package, say what must change in the note');
+        const r = await this.kolab.reviewWork(s, a.work, { verdict: a.verdict, note: a.note });
+        return {
+          ...r,
+          next: r.state === 'done' ? 'Done. Its assignee is told in their answers.'
+            : r.state === 'in_progress' ? `Returned to ${r.assignee}, In progress, with a fresh lease; they are told in their answers. Nothing more to do.`
+            : 'Its assignee can no longer write the technical layer, so it is To do, for anyone to pull. Nothing more to do.',
+        };
+      }
+      if (a.node === undefined || a.version === undefined) throw new Error('name what you review: node and version for a version, or work for a work package');
       const v = await this.kolab.versionIn(s, { ...parseNodeRef(a.node), version: a.version }, { allowDraft: true, what: 'reviewing' });
       const r = await this.kolab.recordReview(s, v.id, { verdict: a.verdict, note: a.note, findings: a.findings });
       if (a.verdict === 'request_changes') {
@@ -485,7 +515,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_clear_mark',
-    description: 'Clear a dirty mark on your layer after checking that your work still holds against the new upstream. Re-pins the dependency and clears what it caused. A link into another kolab can be cleared only by someone who reads that kolab, who then holds the link; clearing an access_lost mark is how someone who reads it takes the link or fork over.',
+    description: 'Clear a dirty mark on your layer after checking that your work still holds against the new upstream. Re-pins the dependency and clears what it caused. On a work package with work (In progress, In review or Done), clearing its mark says the work still holds: it keeps its state, recorded as confirmed; if it no longer holds, reopen it instead (konjir_reopen_work). A link into another kolab can be cleared only by someone who reads that kolab, who then holds the link; clearing an access_lost mark is how someone who reads it takes the link or fork over.',
     schema: clearMark,
   })
   clearMark({ mark }: z.infer<typeof clearMark>, context?: McpToolContext) {
@@ -680,6 +710,49 @@ export class AgentTools {
   })
   reassignWork({ work, to }: z.infer<typeof reassignWork>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.reassignWork(s, work, to));
+  }
+
+  @McpTool({
+    name: 'konjir_add_evidence',
+    description: `Record evidence of the work package you hold In progress, kj:<plan>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
+    schema: addEvidence,
+  })
+  addEvidence({ work, evidence }: z.infer<typeof addEvidence>, context?: McpToolContext) {
+    return asAgent(context, async (s) => ({
+      ...(await this.kolab.addEvidence(s, work, evidence)),
+      next: `Carry on, and submit it with konjir_submit_work work=${work} once it meets its done-when.`,
+    }));
+  }
+
+  @McpTool({
+    name: 'konjir_submit_work',
+    description: 'Submit the work package you hold In progress, kj:<plan>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
+    schema: submitWork,
+  })
+  submitWork({ work, evidence, note }: z.infer<typeof submitWork>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const r = await this.kolab.submitWork(s, work, { evidence, note });
+      return {
+        ...r,
+        next: r.in_review
+          ? (r.reviewers.length
+            ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request, and one approval makes it Done. Pull your next work package (konjir_pull_work); the verdict comes back in your answers.`
+            : `In review. ${nobodyCanReview('technical')} The verdict comes back in your answers.`)
+          : 'Done, unreviewed: no one else holds Write on the technical layer. Pull your next work package (konjir_pull_work).',
+      };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_reopen_work',
+    description: 'Open new work on a Done work package, kj:<plan>#<id>, from an engineer session with Write on the technical layer: it returns to To do under the same id, for anyone to pull, with its history and evidence kept and your note recorded. Use it when a package is at risk (something it delivers changed since it was done) and the work no longer holds; if the work still holds, clear its mark instead (konjir_clear_mark), which keeps it Done. Its open marks that the new work answers settle with it. Not a milestone, which is Done when its members are.',
+    schema: reopenWork,
+  })
+  reopenWork({ work, note }: z.infer<typeof reopenWork>, context?: McpToolContext) {
+    return asAgent(context, async (s) => ({
+      ...(await this.kolab.reopenWork(s, work, { note })),
+      next: 'To do again: konjir_pull_work gives it to the next engineer who pulls.',
+    }));
   }
 
   @McpTool({

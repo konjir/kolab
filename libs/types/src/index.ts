@@ -290,6 +290,27 @@ export const WORK_EVENT_KINDS = [
   'milestone_done', 'milestone_reopened',
 ] as const;
 export type WorkEventKind = typeof WORK_EVENT_KINDS[number];
+/**
+ * What a work package's evidence is (PLN16, D98): a commit, a pull request or a test run. Each is an
+ * attributed claim, which its reviewer checks outside Kolab (D36). Migration 0031's evidence_kind_check.
+ */
+export const EVIDENCE_KINDS = ['commit', 'pull_request', 'test_run'] as const;
+export type EvidenceKind = typeof EVIDENCE_KINDS[number];
+/**
+ * One item of evidence as a client gives it (konjir_add_evidence, konjir_submit_work): a commit by
+ * its sha (with its subject, the files it touched, and a link to it), a pull request by its https
+ * link (and its number and title), or a test run by its link or a summary.
+ */
+export interface EvidenceInput {
+  kind: EvidenceKind; sha?: string; pr?: number; url?: string; title?: string; files?: string[];
+}
+/** One item of a work package's evidence, as readers see it. */
+export interface EvidenceView {
+  id: string; kind: EvidenceKind; sha?: string; pr?: number; url?: string; title?: string; files?: string[];
+  recorded_by: string; at: string;
+  /** The event that recorded it: evidence while the work was under way, or a submission. */
+  event: string;
+}
 /** A kolab's lease on In progress work (PLN15), in minutes: 30 by default, from 1 to 1,440 (a day). */
 export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;
 /**
@@ -319,6 +340,8 @@ export interface WorkItemView {
   removed_in?: string;
   /** Done on submission with no reviewer (PLN16). */
   unreviewed?: boolean;
+  /** In progress again after a request for changes (PLN16, PLN18): it doesn't count against its assignee's one pull. */
+  returned?: boolean;
 }
 /** One event of a work package (PLN5), oldest first. */
 export interface WorkEventView {
@@ -415,9 +438,13 @@ export type GateResult = ReviewVerdict & {
   rebases?: number;
 };
 
-/** A review request as a reviewer's inbox shows it. Its subject is a version; work packages come later (VER17). */
+/**
+ * A review request as a reviewer's inbox shows it (VER17): its subject is a version (kj:<node>@<seq>)
+ * or a work package (kj:<plan>#<id>), and `subject_kind` says which. A work package's author is its
+ * assignee.
+ */
 export interface ReviewRequestView {
-  request: string; subject: string; subject_kind: 'version'; author: string; reviewer: string;
+  request: string; subject: string; subject_kind: 'version' | 'work'; author: string; reviewer: string;
   requested_at: string; next: string;
 }
 /** A version an author submitted, with the review it has had, as the author's answers show it. */

@@ -131,3 +131,56 @@ test('in a shell: konjir pull_work, list_work and read_work print what MCP retur
   expect(mine).toMatchObject({ work: [{ id: 'W1', state: 'in_progress', assignee: 'eng' }], next: null });
   expect(read).toMatchObject({ work: 'kj:orders-plan#W1', events: [{ kind: 'added' }, { kind: 'pulled' }] });
 });
+
+test('over MCP: evidence, submitting, a work package\'s review beside a version\'s in the reviewer\'s list and inbox, the verdict in the assignee\'s answers, and reopening (W5.1c; PLN10, PLN16, VER17, D98)', async () => {
+  const { eng, eng2 } = await planned();
+  const W1 = 'kj:orders-plan#W1';
+  await call(eng.c, 'pull_work', {});
+  // The tool's schema refuses what evidence doesn't take, before Kolab sees it.
+  expect(await rejection(call(eng.c, 'add_evidence', { work: W1, evidence: [{ kind: 'commit', sha: 'a'.repeat(40), branch: 'main' }] }))).toMatch(/branch/);
+  expect(await call(eng.c, 'add_evidence', { work: W1, evidence: [{ kind: 'commit', sha: 'a'.repeat(40), title: 'Cancel orders', files: ['src/cancel.ts'] }] }))
+    .toMatchObject({ work: W1, recorded: 1, already: 0, next: expect.stringMatching(/konjir_submit_work work=kj:orders-plan#W1/) });
+  const submitted = await call(eng.c, 'submit_work', { work: W1, evidence: [{ kind: 'test_run', title: 'npm test: 3 passed' }], note: 'Done to its done-when.' }) as Record<string, unknown>;
+  expect(submitted).toMatchObject({ work: W1, state: 'in_review', in_review: true, reviewers: ['eng2', 'lead'], unreviewed: false });
+  expect(submitted.next).toMatch(/^In review: eng2, lead each have a review request/);
+  // eng2's list and inbox hold it, naming its subject (VER17).
+  const reviews = await call(eng2.c, 'list_reviews', {}) as { for_you: { subject: string; subject_kind: string; author: string; next: string }[] };
+  expect(reviews.for_you.map((r) => [r.subject, r.subject_kind, r.author])).toStrictEqual([[W1, 'work', 'eng']]);
+  expect(reviews.for_you[0].next).toMatch(/konjir_review work=kj:orders-plan#W1 verdict=approve/);
+  const inbox = JSON.parse(((await eng2.c.readResource({ uri: 'konjir://inbox/test/technical' })).contents[0] as { text: string }).text) as { reviews: { subject: string }[] };
+  expect(inbox.reviews.map((r) => r.subject)).toStrictEqual([W1]);
+  // A version and a work package aren't reviewed in one call; findings are a version's.
+  expect(await rejection(call(eng2.c, 'review', { work: W1, node: 'orders-pg', version: 1, verdict: 'approve' }))).toMatch(/not both/);
+  expect(await rejection(call(eng2.c, 'review', { work: W1, verdict: 'approve', findings: [{ kind: 'layer_leak', elements: ['W1'], explanation: 'x' }] }))).toMatch(/findings are a version's/);
+  expect(await rejection(call(eng2.c, 'review', { verdict: 'approve' }))).toMatch(/name what you review/);
+  // The assignee can't review its own; eng2 asks for changes: back to eng, In progress.
+  expect(await rejection(call(eng.c, 'review', { work: W1, verdict: 'approve' }))).toMatch(/eng is kj:orders-plan#W1's assignee/);
+  expect(await call(eng2.c, 'review', { work: W1, verdict: 'request_changes', note: 'Refunds too.' }))
+    .toMatchObject({ work: W1, verdict: 'request_changes', state: 'in_progress', assignee: 'eng', next: expect.stringMatching(/^Returned to eng, In progress/) });
+  const answers = JSON.parse(((await eng.c.readResource({ uri: 'konjir://answers/test/eng' })).contents[0] as { text: string }).text) as {
+    work: { holding: { work: string; returned?: boolean } | null; events: { work: string; kind: string; actor: string; note: string }[] };
+  };
+  expect(answers.work.holding).toMatchObject({ work: W1, returned: true });
+  expect(answers.work.events[0]).toMatchObject({ work: W1, kind: 'changes_requested', actor: 'eng2', note: 'Refunds too.' });
+  // Submitted again, approved: Done. Then reopened as new work: To do.
+  await call(eng.c, 'submit_work', { work: W1 });
+  expect(await call(eng2.c, 'review', { work: W1, verdict: 'approve' })).toMatchObject({ state: 'done', next: expect.stringMatching(/^Done/) });
+  expect(await call(eng2.c, 'reopen_work', { work: W1, note: 'Refunds changed.' })).toMatchObject({ work: W1, state: 'todo', settled: [] });
+  const read = await call(eng2.c, 'read_work', { work: W1 }) as { evidence: { kind: string }[]; reviews: { reviewer: string; state: string }[]; events: { kind: string }[] };
+  expect(read.evidence.map((e) => e.kind)).toStrictEqual(['commit', 'test_run']);
+  expect(read.events.map((e) => e.kind)).toStrictEqual(['added', 'pulled', 'evidence', 'submitted', 'changes_requested', 'submitted', 'approved', 'reopened']);
+});
+
+test('in a shell: konjir add_evidence and submit_work take evidence as JSON', async () => {
+  const { server, eng } = await planned();
+  const out: string[] = [];
+  jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+  process.env.KONJIR_URL = server.url;
+  process.env.KONJIR_TOKEN = eng.token;
+  await main(['pull_work']);
+  await main(['add_evidence', 'work=kj:orders-plan#W1', `evidence=[{"kind":"commit","sha":"${'b'.repeat(40)}"}]`]);
+  await main(['submit_work', 'work=kj:orders-plan#W1', 'evidence=[{"kind":"pull_request","url":"https://github.com/acme/orders/pull/1"}]']);
+  const [, added, submitted] = out.map((l) => JSON.parse(l));
+  expect(added).toMatchObject({ work: 'kj:orders-plan#W1', recorded: 1 });
+  expect(submitted).toMatchObject({ work: 'kj:orders-plan#W1', state: 'in_review' });
+});

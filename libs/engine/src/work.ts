@@ -5,7 +5,10 @@
  */
 import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
-import { MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_WORK_REPO, WORK_FIELDS, WORK_SIZES, textLength, type WorkFields } from '@konjir/types';
+import {
+  EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_TEXT, MAX_WORK_REPO,
+  WORK_FIELDS, WORK_SIZES, textLength, type EvidenceKind, type WorkFields,
+} from '@konjir/types';
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -209,4 +212,107 @@ export function milestoneStates(milestones: { id: string; members: string[] }[],
     if (states.get(m.id) !== want) changed.set(m.id, want);
   }
   return changed;
+}
+
+/** One item of evidence as Kolab stores it (migration 0031's evidence): checked, normalized, ready to write. */
+export interface CheckedEvidence {
+  kind: EvidenceKind;
+  /** A commit's sha, lowercase; a pull request's number, as text. */
+  ref: string | null;
+  url: string | null; title: string | null; files: string[] | null;
+}
+
+const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'files'] as const;
+const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/**
+ * An https link with no user or password in it, at most MAX_EVIDENCE_URL characters, as the
+ * database's evidence_url holds it; or why not, and whether that is a size limit.
+ */
+function evidenceUrl(what: string, u: unknown): { url?: string; problem?: string; limit?: boolean } {
+  if (typeof u !== 'string' || !u.trim()) return { problem: `${what}'s url is an https link` };
+  const t = u.trim();
+  if (t.length > MAX_EVIDENCE_URL) return { problem: `${what}'s url is ${t.length.toLocaleString('en')} characters; the limit is ${MAX_EVIDENCE_URL.toLocaleString('en')}`, limit: true };
+  let parsed: URL;
+  try { parsed = new URL(t); } catch { return { problem: `${what}'s url isn't a link: give an https link` }; }
+  if (parsed.username || parsed.password) return { problem: `${what}'s url carries a user or password: give the link without it` };
+  if (parsed.protocol !== 'https:' || !/^https:\/\/[^/@\s]+(\/\S*)?$/.test(t)) return { problem: `${what}'s url is an https link, with no spaces in it` };
+  return { url: t };
+}
+
+/**
+ * Evidence as a client gives it (PLN16, D98), checked: a list of at most MAX_EVIDENCE_PER_CALL
+ * items, each a commit by its full sha (with its subject as `title`, the `files` it touched and a
+ * `url`), a pull request by its https `url` (with its number as `pr`, and its `title`), or a test
+ * run by its `url` or a summary as `title`. Nothing given is dropped quietly: a field the kind
+ * doesn't take, or an unknown one, is refused. `problems` names each refusal; `limit` is set when
+ * one of them is a size limit.
+ */
+export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; problems: string[]; limit: boolean } {
+  const problems: string[] = [];
+  let limit = false;
+  if (!Array.isArray(input)) return { items: [], problems: ['evidence is a list: [{ kind: "commit", sha: "…" }, { kind: "pull_request", url: "https://…" }, { kind: "test_run", title: "…" }]'], limit };
+  if (input.length > MAX_EVIDENCE_PER_CALL) {
+    return { items: [], problems: [`that is ${input.length} items of evidence; the limit is ${MAX_EVIDENCE_PER_CALL} a call: give the rest in another call`], limit: true };
+  }
+  const items: CheckedEvidence[] = [];
+  input.forEach((x, i) => {
+    const what = `evidence ${i + 1}`;
+    if (typeof x !== 'object' || x === null || Array.isArray(x)) { problems.push(`${what} is an object, with a kind: ${EVIDENCE_KINDS.join(', ')}`); return; }
+    const o = x as Record<string, unknown>;
+    const unknown = Object.keys(o).filter((k) => !(EVIDENCE_KEYS as readonly string[]).includes(k));
+    if (unknown.length) problems.push(`${what} has ${unknown.join(', ')}, which evidence doesn't take: it takes ${EVIDENCE_KEYS.join(', ')}`);
+    if (!(EVIDENCE_KINDS as readonly unknown[]).includes(o.kind)) { problems.push(`${what}'s kind is one of ${EVIDENCE_KINDS.join(', ')}, not ${JSON.stringify(o.kind ?? null)}`); return; }
+    const kind = o.kind as EvidenceKind;
+    const given = (k: string) => o[k] !== undefined && o[k] !== null;
+    const refuse = (keys: string[]) => {
+      const there = keys.filter(given);
+      if (there.length) problems.push(`${what} is a ${kind.replace('_', ' ')}, which takes no ${there.join(' or ')}`);
+    };
+    const out: CheckedEvidence = { kind, ref: null, url: null, title: null, files: null };
+    if (given('url')) {
+      const u = evidenceUrl(what, o.url);
+      if (u.problem) { problems.push(u.problem); if (u.limit) limit = true; } else out.url = u.url!;
+    }
+    if (given('title')) {
+      if (typeof o.title !== 'string' || !o.title.trim()) problems.push(`${what}'s title is text`);
+      else if (textLength(o.title.trim()) > MAX_TEXT) { limit = true; problems.push(`${what}'s title is ${textLength(o.title.trim()).toLocaleString('en')} characters; the limit is ${MAX_TEXT.toLocaleString('en')}`); }
+      else out.title = o.title.trim();
+    }
+    if (kind === 'commit') {
+      refuse(['pr']);
+      if (typeof o.sha !== 'string' || !SHA.test(o.sha.trim().toLowerCase())) problems.push(`${what} is a commit, named by its full sha: 40 hexadecimal characters (64 for SHA-256), not ${JSON.stringify(o.sha ?? null)}`);
+      else out.ref = o.sha.trim().toLowerCase();
+      if (given('files')) {
+        const f = o.files;
+        if (!Array.isArray(f) || !f.length || f.some((p) => typeof p !== 'string' || !p.trim())) problems.push(`${what}'s files lists the paths the commit touched: ["src/a.ts", "test/a.test.ts"]`);
+        else if (f.length > MAX_EVIDENCE_FILES) { limit = true; problems.push(`${what} names ${f.length} files; the limit is ${MAX_EVIDENCE_FILES} a commit`); }
+        else if (f.some((p) => textLength((p as string).trim()) > MAX_EVIDENCE_PATH)) { limit = true; problems.push(`${what} names a path of more than ${MAX_EVIDENCE_PATH.toLocaleString('en')} characters`); }
+        else out.files = (f as string[]).map((p) => p.trim());
+      }
+    } else if (kind === 'pull_request') {
+      refuse(['sha', 'files']);
+      if (!given('url')) problems.push(`${what} is a pull request, named by its https url`);
+      if (given('pr')) {
+        if (!Number.isInteger(o.pr) || (o.pr as number) < 1 || (o.pr as number) > 9_999_999_999) problems.push(`${what}'s pr is the pull request's number, a whole number from 1`);
+        else out.ref = String(o.pr);
+      }
+    } else {
+      refuse(['sha', 'pr', 'files']);
+      if (!given('url') && !given('title')) problems.push(`${what} is a test run: give its url, or a summary as title ("npm test: 120 passed")`);
+    }
+    items.push(out);
+  });
+  return { items: problems.length ? [] : items, problems, limit };
+}
+
+/** What makes two items of a package's evidence the same: a commit's sha, a pull request's link, a test run's link or else its summary. */
+export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null): string {
+  return kind === 'commit' ? `commit:${ref}` : kind === 'pull_request' ? `pr:${url}` : url ? `test:${url}` : `test-summary:${title ?? ''}`;
+}
+
+/** A line naming evidence, for an event's note: each commit's short sha, each pull request's link, each test run. */
+export function evidenceSummary(items: CheckedEvidence[]): string {
+  return items.map((e) => (e.kind === 'commit' ? `commit ${e.ref!.slice(0, 12)}` : e.kind === 'pull_request' ? `pull request ${e.url}` : `test run ${e.url ?? e.title}`))
+    .join(', ').slice(0, 1000);
 }

@@ -14,7 +14,7 @@ import { fingerprint } from '@konjir/address';
 import { commitReviewed, els, marksOn, people, persistentStore, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
-  REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES,
+  EVIDENCE_KINDS, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES,
 } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
@@ -92,7 +92,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS, KINDS, WORK_STATES and WORK_EVENT_KINDS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS, KINDS, WORK_STATES, WORK_EVENT_KINDS and EVIDENCE_KINDS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -124,6 +124,7 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, Q
     expect(await check('node_kind_check')).toStrictEqual([...KINDS].sort());
     expect(await check('work_package_state_check')).toStrictEqual([...WORK_STATES].sort());
     expect(await check('work_event_kind_check')).toStrictEqual([...WORK_EVENT_KINDS].sort());
+    expect(await check('evidence_kind_check')).toStrictEqual([...EVIDENCE_KINDS].sort());
   });
 });
 
@@ -1512,5 +1513,48 @@ test('a database at 0029 reaches 0030: each plan\'s latest committed version get
     const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
     expect(await kolab.pullWork(lee)).toMatchObject({ pulled: true, item: { work: 'kj:lab-plan#p1', assignee: 'lee' } });
     expect((await kolab.readWork(lee, 'kj:lab-plan#p1')).events.map((e) => [e.kind, e.actor])).toStrictEqual([['added', 'lee'], ['pulled', 'lee']]);
+  } finally { await kolab.close(); }
+});
+
+// ---- 0031: submitting, reviewing and delivering work (W5.1c; PLN16, PLN18, VER17, D98) --------------
+
+test('a database at 0030 reaches 0031: review requests and work state are kept as they are, a package In progress is touched when it was last changed, and the release before 0031 refuses it (D98)', async () => {
+  const store = await persistentStore();
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  const at = MIGRATIONS.findIndex((x) => x.name === 'work_review');
+  expect(MIGRATIONS[at].version).toBe(31);
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // Lee holds the lab plan's package In progress, and has a version's review request.
+    await db.exec(`update work_package set state = 'in_progress', assignee_id = 'lee', lease_until = now() + interval '30 minutes',
+                     updated_at = '2026-10-28 10:00:00+00' where plan_node_id = 'lab-plan' and element_id = 'p1';
+                   insert into review_request(id, version_id, reviewer_id) values ('rq1', 'lp1', 'lee');`);
+    const before = await konjirRows(db);
+    const requests = (await db.query(`select * from review_request order by id`)).rows;
+    const packages = (await db.query(`select * from work_package order by plan_node_id, element_id`)).rows;
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [31] });
+    expect(await konjirRows(db)).toStrictEqual(before);
+    // Review requests keep every column, and name no work package.
+    expect((await db.query(`select * from review_request order by id`)).rows)
+      .toStrictEqual(requests.map((r) => ({ ...(r as object), plan_node_id: null, element_id: null })));
+    // Work packages gain `returned` (false) and `touched_at`: for one In progress, when it last changed.
+    expect((await db.query(`select * from work_package order by plan_node_id, element_id`)).rows).toStrictEqual(packages.map((p) => {
+      const w = p as { state: string; updated_at: Date };
+      return { ...w, returned: false, touched_at: w.state === 'in_progress' ? w.updated_at : null };
+    }));
+    expect((await db.query(`select count(*)::int as n from evidence`)).rows).toStrictEqual([{ n: 0 }]);
+    // The release before 0031 refuses the database now: going back means restoring a snapshot (README, "Deploying to AWS").
+    expect(await rejection(migrate(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0031_work_review\.sql, which this release of Kolab doesn't know/);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0031_work_review\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => { await migrate(db); return schemaOf(db); }, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await TestKolab.open(store);
+  try {
+    // Lee, alone on the lab's technical layer, submits the package it holds: Done, unreviewed.
+    const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
+    expect(await kolab.submitWork(lee, 'kj:lab-plan#p1', { evidence: [{ kind: 'commit', sha: 'c'.repeat(40) }] })).toMatchObject({ state: 'done', unreviewed: true });
   } finally { await kolab.close(); }
 });

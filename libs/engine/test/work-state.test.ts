@@ -506,9 +506,9 @@ test('work stays in its kolab: another kolab\'s session reads none of it, and on
   await kolab.createNode(bob2, 'plan', 'P', 'p');
   await kolab.commit(bob2, 'p', { elements: els({ X1: 'Do one.' }) });
   expect(await rejection(kolab.pullWork(bob2))).toMatch(/GateError: bob already holds kj:test\/orders-plan#W1\.1 In progress/);
-  // The database holds it too: a second In progress for bob anywhere is refused.
-  expect(await rejection(kolab.db.query(`update work_package set state = 'in_progress', assignee_id = 'bob', lease_until = now() + interval '1 hour' where element_id = 'X1'`)))
-    .toMatch(/one_in_progress_per_actor/);
+  // The database holds it too: a second package pulled by bob anywhere is refused (0031: a returned one isn't counted).
+  expect(await rejection(kolab.db.query(`update work_package set state = 'in_progress', assignee_id = 'bob', lease_until = now() + interval '1 hour', touched_at = now() where element_id = 'X1'`)))
+    .toMatch(/one_pulled_per_actor/);
 });
 
 test('only Kolab\'s trusted role writes work state: an agent\'s raw writes are refused, and events are never edited or removed, even by Kolab\'s login (ENF2, PLN5, D98)', async () => {

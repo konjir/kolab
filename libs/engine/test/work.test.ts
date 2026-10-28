@@ -274,9 +274,15 @@ test('an element-scope link into a work package sees a change to its work fields
   const ctx = await planned();
   const { kolab, engineer } = ctx;
   const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.', work: { done_when: 'It is built.' } }, { id: 'W2', text: 'Ship it.' }, { id: 'W3', text: 'Tell people.' }])).id;
-  // W2 relies on W1, and W3 on W2 (which has no work fields): links within the plan (D78).
-  await kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W2', target: v1, targetElement: 'W1' });
-  await kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W3', target: v1, targetElement: 'W2' });
+  // W2 relies on W1, and W3 on W2 (which has no work fields): links within the plan (D78), written
+  // before D99, which refuses new ones; those already written keep working.
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W2', target: v1, targetElement: 'W1' })))
+    .toMatch(/^GateError: a plan's work packages don't link to each other \(D99\): say what W2 needs in its work field instead, work: \{ depends_on: \["W1"\] \}/);
+  for (const [id, from, to] of [['old-w2', 'W2', 'W1'], ['old-w3', 'W3', 'W2']]) {
+    const fp = ((await kolab.resolveIn(v1, to, null)) as { fingerprint: string }).fingerprint;
+    await kolab.db.query(`insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
+                          values ($1, 'dependency', $2, $3, $2, $4, $5, 'bob')`, [id, v1, from, to, fp]);
+  }
   // A link to an element with no work fields is pinned to its text alone, as it always was.
   const pinned = (await kolab.db.query<{ target_fingerprint: string; target_element_id: string }>(
     `select target_fingerprint, target_element_id from edge where source_version_id = $1 order by target_element_id`, [v1])).rows;

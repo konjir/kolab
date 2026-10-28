@@ -136,7 +136,8 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
 
   // ---- marks, questions and case files ----
   resolveOverride: { recorded: ['precedent.ruled_by', 'version.actor_id', 'version.submitted_by'] },
-  clear: { recorded: ['invalidation.cleared_by'] },
+  // On a work package with work, clearing its mark also records `confirmed` (PLN10, D98).
+  clear: { recorded: ['invalidation.cleared_by', 'work_event.actor_id'] },
   raiseQuery: { recorded: ['query.raised_by'] },
   answerQuery: { recorded: ['query.answered_by'] },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
@@ -148,6 +149,11 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   releaseWork: { recorded: ['work_event.actor_id'] },
   reassignWork: { recorded: ['work_event.actor_id', 'work_package.assignee_id'] },
   setWorkLease: { recorded: ['audit_event:work_lease.set'] },
+  // W5.1c (PLN10, PLN16, D98): evidence names who recorded it; a verdict, its reviewer.
+  addEvidence: { recorded: ['work_event.actor_id', 'evidence.recorded_by'] },
+  submitWork: { recorded: ['work_event.actor_id', 'evidence.recorded_by'] },
+  reviewWork: { recorded: ['work_event.actor_id', 'review_request.reviewer_id'] },
+  reopenWork: { recorded: ['work_event.actor_id', 'invalidation.cleared_by'] },
   // A lease that lapsed goes back as Kolab's (PLN15): its event names `kolab`.
   sweepLapsedLeases: { recorded: ['work_event.actor_id'] },
 };
