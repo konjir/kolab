@@ -17,13 +17,14 @@ import { answersUri, inboxUri } from './uris.js';
 
 const address = z.string().describe('A Konjir address, e.g. kj:checkout@3#R1 or kj:checkout#R1~q({"exact":"30 seconds"}): the short form, a node in your kolab. kj:<kolab>/<node>… names the kolab too (kj:shop/checkout@3#R1). Omit @version to use the latest committed version.');
 const node = z.string().describe('A node in your kolab, by name (checkout), or <kolab>/<node>.');
-const elementInput = z.object({
+// Strict, so a field in the wrong place (a done_when beside text, not inside work) is refused, not dropped.
+const elementInput = z.strictObject({
   id: z.string().optional().describe('Stable element ID. Reuse the existing ID when editing an element; omit only for a brand-new element.'),
   text: z.string(),
   parent: z.string().optional().describe('ID of the containing element (e.g. a section).'),
-  work: workInput.nullable().optional(),
+  work: workInput.nullable().optional().describe('A plan element\'s work fields. Left out, the element keeps its own (as in a delta); null clears them.'),
 });
-const deltaInput = z.object({
+const deltaInput = z.strictObject({
   kind: z.enum(DELTA_KINDS),
   element: z.string(),
   text: z.string().optional(),
@@ -323,7 +324,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A plan's elements are its work packages, and each may carry work fields: {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}}; a milestone has "milestone":true, depends on its members, may carry a target_date, and delivers nothing. Each Delivers is a dependency link from a work package to one binding element (links). Submitting a plan version checks them (PLN2): Depends on names work packages of the same version, without cycles. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A plan's elements are its work packages, and each may carry work fields: {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}}; a milestone has "milestone":true, depends on its members, may carry a target_date, and delivers nothing. Work left out of an element or a delta keeps its own; "work":null clears it. Each Delivers is a dependency link from a work package to one binding element (links). Submitting a plan version checks them (PLN2): Depends on names work packages of the same version, without cycles. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {

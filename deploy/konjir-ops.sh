@@ -21,7 +21,8 @@
 #   bootstrap-log                                       the instance's first-boot install log
 #   shell                                               interactive shell (Session Manager plugin)
 #   preflight <NNNN>                                    run deploy/preflight/<NNNN>.sql on the database, read-only, before
-#                                                       deploying migration NNNN: its refusals, or that it applies cleanly
+#                                                       deploying migration NNNN: its refusals, or that it applies cleanly;
+#                                                       an advisory one (0029) gates nothing, and says so
 #   admin-token                                         print the break-glass admin token
 #   rotate-admin-token [--off]                          write a new break-glass admin token to SSM and restart Kolab
 #                                                       (W2.22); --off disables the break-glass instead, refused unless
@@ -155,7 +156,11 @@ printf '%s' '$runner' | base64 -d | gunzip >\"\$d/run.cjs\"
 printf '%s' '$sql' | base64 -d | gunzip >\"\$d/preflight.sql\"
 chown -R konjir:konjir \"\$d\"
 runuser -u konjir -- /usr/local/bin/node \"\$d/run.cjs\" \"\$d\" '$migration'"
-  echo "preflight $migration: read-only, on $ENV's database, through Kolab's instance with the live release's pg"
+  if head -1 "$HERE/preflight/$migration.sql" | grep -q '^-- advisory'; then
+    echo "preflight $migration (advisory: it gates nothing): read-only, on $ENV's database, through Kolab's instance with the live release's pg"
+  else
+    echo "preflight $migration: read-only, on $ENV's database, through Kolab's instance with the live release's pg"
+  fi
   on_kolab "$script"
 }
 

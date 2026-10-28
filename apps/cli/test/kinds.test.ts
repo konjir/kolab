@@ -114,6 +114,9 @@ test('work-package fields over MCP and in a shell: drafted on a plan\'s elements
   await call(eng.c, 'create_node', { kind: 'plan', title: 'Plan', id: 'orders-plan' });
   // A field Kolab doesn't know is refused, not dropped; a spec's element takes none.
   await expect(call(eng.c, 'draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build it.', work: { estimate: '3d' } }] })).rejects.toThrow(/estimate/);
+  // So is a work field beside the text instead of inside work, on an element or a delta (review M1).
+  await expect(call(eng.c, 'draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build it.', done_when: 'Built.' }] })).rejects.toThrow(/done_when/);
+  await expect(call(eng.c, 'draft', { node: 'orders-plan', deltas: [{ kind: 'add', element: 'W1', text: 'Build it.', size: 'S' }] })).rejects.toThrow(/size/);
   await expect(call(pm, 'draft', { node: 'orders', deltas: [{ kind: 'override', element: 'R1', work: { size: 'S' } }] }))
     .rejects.toThrow(/only on a plan's elements, its work packages \(PLN1, D98\), and orders is a spec/);
   // A cycle is refused at submit, naming PLN2; the draft stays drafted.

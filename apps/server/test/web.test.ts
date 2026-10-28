@@ -861,6 +861,10 @@ test('a plan\'s page shows each work package\'s fields, read only, and an edit o
     ['M1', 'Cancelling works.', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
     ['W2', 'Refund on cancel.', { depends_on: ['W1'], size: 'S' }],
   ]);
+  // The page doesn't change work fields: an override that carries them is refused, not ignored (review nit).
+  const refused = await bob.call<{ error: string; message: string }>('nodes/orders-plan/submit', { base: 2, changes: [{ kind: 'override', element: 'W1', text: 'x', work: { size: 'L' } }] });
+  expect(refused.status).toBe(400);
+  expect(refused.body.message).toBe("the page changes W1's text, not its work fields: change those with konjir_draft");
   // A spec's elements carry none.
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work' in e))).toBe(true);
 });

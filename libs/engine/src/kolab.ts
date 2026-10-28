@@ -8,7 +8,7 @@ import {
 import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konjir/db';
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
-import { checkWork, elementFingerprint, planProblems, type PlanLink } from './work.js';
+import { canonicalWork, checkWork, elementFingerprint, planProblems, type PlanLink } from './work.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_KINDS, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -17,7 +17,7 @@ import {
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
-  type VersionState, type WorkFields,
+  type VersionState, type WorkFields, WORK_FIELDS,
 } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
@@ -3799,7 +3799,8 @@ export class Kolab {
     const once = new Map(links.map((e) => [JSON.stringify([e.kind, e.sourceElement ?? null, e.target, e.targetElement ?? null, e.selector ?? null]), e]));
     const plans: LinkPlan[] = [];
     for (const e of once.values()) {
-      plans.push(await this.planLink(s, { id, node_id: nodeId, state: 'drafted', actor_id: s.actor_id, base_version_id: latest?.id ?? null }, e));
+      // Checked against the draft's own elements, which aren't written yet: a milestone delivers nothing.
+      plans.push(await this.planLink(s, { id, node_id: nodeId, state: 'drafted', actor_id: s.actor_id, base_version_id: latest?.id ?? null }, e, els));
     }
     // Built on the live version read above: if the node moves on before this commits, review sees it.
     // A fork is written under a shared hold on the access lock, so the Read it rests on can't be
@@ -3932,11 +3933,12 @@ export class Kolab {
    * carries forward (supersedePrevious: from elements still there, and not removed). Structural, as
    * a plan's are (VER3): what fails returns the version to its author, naming PLN2.
    */
-  private async planChecks(v: VersionRow, passed: CheckResult): Promise<CheckResult> {
-    const plan = await this.node(v.node_id);
-    const els = await this.elements(v.id);
+  private async planChecks(v: VersionRow, passed: CheckResult, q: Q = this.db): Promise<CheckResult> {
+    const plan = (await q.query<{ id: string; kolab_id: string; parent_node_id: string | null }>(
+      `select id, kolab_id, parent_node_id from node where id = $1`, [v.node_id])).rows[0];
+    const els = await this.elements(v.id, q);
     const live = new Set(els.map((e) => e.element_id));
-    const rows = (await this.db.query<{
+    const rows = (await q.query<{
       own: boolean; kind: string; source_element_id: string | null; target_element_id: string | null; selector: boolean;
       target_node: string; target_state: string; target_seq: number; target_name: string; target_kolab: string;
     }>(
@@ -4370,6 +4372,17 @@ export class Kolab {
       }
       const refused = await this.authorRefusal(tx, signal, v);
       if (refused) return { refused };
+      // A plan version's PLN2 checks again, under the node's lock (D98): a link added meanwhile to
+      // the version it was built on, which it would carry forward, is seen now (see link).
+      if ((await tx.query(`select 1 from node where id = $1 and kind = 'plan'`, [v.node_id])).rows.length) {
+        const pln = await this.planChecks(v, { ok: true }, tx);
+        if (!pln.ok) {
+          // As at submission: back to a person's author, still drafted; Kolab's own rejected.
+          if (v.active_role === 'system' || v.folded_from) await this.rejectIn(tx, signal, v.id, pln.note!);
+          else await tx.query(`update version set review_note = $2 where id = $1 and state = 'drafted'`, [v.id, pln.note]);
+          return { refused: pln.note! };
+        }
+      }
       const r = await tx.query(`update version set state = 'committed', review_note = $2,
                                        submitted_by = case when $3 = 'drafted' then $4 else submitted_by end
                                  where id = $1 and state = $3 returning id`,
@@ -4669,15 +4682,36 @@ export class Kolab {
       if (plan.across) await this.holdLink(dup.rows[0].id, s.actor_id);
       return dup.rows[0].id;
     }
-    await this.asAgent(sessionId, (tx) => this.writeLink(tx, src, plan), src.node_id, { access: plan.across });
+    await this.asAgent(sessionId, async (tx) => {
+      // A Delivers from an element that is a milestone in the node's latest committed version is
+      // refused here too, under the node's lock, which a commit of the plan also takes: so a link
+      // added to the version a plan draft is built on can't slip a milestone's Delivers past that
+      // draft's PLN2 checks (its commit step checks again, under the same lock).
+      if (plan.e.sourceElement && (await this.deliversInto(tx, src.node_id, plan.targetNode))) {
+        const at = (await tx.query<{ work: WorkFields | null }>(
+          `select el.work from element el
+            where el.element_id = $2
+              and el.version_id = (select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1)`,
+          [src.node_id, plan.e.sourceElement])).rows[0]?.work;
+        if (at?.milestone) throw new GateError(milestoneDelivers(plan.e.sourceElement, `${await nameIn(tx, plan.targetNode)}#${plan.e.targetElement ?? ''}`));
+      }
+      await this.writeLink(tx, src, plan);
+    }, src.node_id, { access: plan.across });
     return plan.id;
+  }
+
+  /** Whether `source` is a plan and `target` its binding: a link between them is a Delivers (PLN1). */
+  private async deliversInto(q: Q, source: string, target: string): Promise<boolean> {
+    return (await q.query(`select 1 from node where id = $1 and kind = 'plan' and parent_node_id = $2`, [source, target])).rows.length > 0;
   }
 
   /**
    * Checks a link from `src`, a version of the session's own, or one about to be drafted, and
    * says how to write it (writeLink): everything that can refuse it, before anything is written.
    */
-  private async planLink(s: { actor_id: string; kolab: string }, src: LinkSource, e: LinkInput): Promise<LinkPlan> {
+  private async planLink(s: { actor_id: string; kolab: string }, src: LinkSource, e: LinkInput,
+    /** The elements of a draft about to be written, which `src` is: what its milestones are. */
+    draftEls?: ElementRow[]): Promise<LinkPlan> {
     const tgt = await this.version(e.target);
     // A link into another kolab needs Read on it now (LNK8, D3), and only its committed versions
     // can be named (D49): anything else reads as a version that isn't there. The link rests on
@@ -4700,8 +4734,10 @@ export class Kolab {
       if (!e.targetElement || e.selector) {
         throw new GateError(`a work package delivers whole binding elements, at element scope (PLN1, LNK3), not ${e.selector ? 'a quote inside one' : 'the whole binding'}: link ${at}#<element>, without a quote`);
       }
-      const work = (await this.db.query<{ work: WorkFields | null }>(`select work from element where version_id = $1 and element_id = $2`, [src.id, e.sourceElement])).rows[0]?.work;
-      if (work?.milestone) throw new GateError(`${e.sourceElement} is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers ${at}#${e.targetElement}, and make the milestone depend on it`);
+      const work = draftEls
+        ? draftEls.find((x) => x.element_id === e.sourceElement)?.work
+        : (await this.db.query<{ work: WorkFields | null }>(`select work from element where version_id = $1 and element_id = $2`, [src.id, e.sourceElement])).rows[0]?.work;
+      if (work?.milestone) throw new GateError(milestoneDelivers(e.sourceElement, `${at}#${e.targetElement}`));
     }
     // A link is pinned to what its target says now: its node's live version, never an older one.
     const live = (await this.latestCommitted(tgt.node_id))!;
@@ -6581,7 +6617,7 @@ export class Kolab {
     for (const r of shown) {
       if (!r.asked_id || !r.element_id || outside(r)) continue;
       const [was, now] = [await this.elements(r.asked_id, q), await this.elements(r.version_id, q)];
-      if (subtreeText(was, r.element_id) !== subtreeText(now, r.element_id)) changed.add(r.id);
+      if (subtreeContent(was, r.element_id) !== subtreeContent(now, r.element_id)) changed.add(r.id);
     }
     return shown.map((r) => ({
       id: r.id, kind: r.kind,
@@ -6949,11 +6985,15 @@ function LIVE(alias: string) {
             and later.seq > ${alias}.seq and later.state = 'committed')`;
 }
 
+/** Why a milestone's Delivers is refused (PLN2, PLN3). */
+const milestoneDelivers = (element: string, target: string) =>
+  `${element} is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers ${target}, and make the milestone depend on it`;
+
 /**
  * A draft's work fields, checked and in the form Kolab stores them (D98), before anything is
- * written: refused, naming each problem, when one is malformed or over its limit, or when the node
- * isn't a plan, whose elements alone are work packages (PLN1). A delta that leaves `work` out keeps
- * the element's own.
+ * written: refused, naming each problem, when one is malformed or over its limit, sits beside
+ * `work` rather than in it, or when the node isn't a plan, whose elements alone are work packages
+ * (PLN1). An element or a delta that leaves `work` out keeps the element's own; null clears them.
  */
 function draftWork(node: { name: string; kind: Kind }, input: { elements?: ElementInput[]; deltas?: DeltaInput[] }): { elements?: ElementInput[]; deltas?: DeltaInput[] } {
   const problems: string[] = [];
@@ -6967,12 +7007,19 @@ function draftWork(node: { name: string; kind: Kind }, input: { elements?: Eleme
     if (r.work) any = true;
     return r.work;
   };
-  const elements = input.elements?.map((e) => ({ ...e, work: norm(e.id ?? '(new element)', e.work) ?? null }));
-  const deltas = input.deltas?.map((d) => {
-    const work = norm(d.element, d.work);
-    const { work: _given, ...rest } = d;
-    return work === undefined ? rest : { ...rest, work };
-  });
+  // A work field beside `work` rather than in it is refused, never dropped.
+  const misplaced = (element: string, x: object) => {
+    const keys = Object.keys(x).filter((k) => (WORK_FIELDS as readonly string[]).includes(k));
+    if (keys.length) problems.push(`${element} has ${keys.join(', ')} beside its text: work fields go inside work, as {"work":{"${keys[0]}":…}}`);
+  };
+  const keep = <T extends { work?: WorkFields | null }>(x: T, element: string) => {
+    misplaced(element, x);
+    const work = norm(element, x.work);
+    const { work: _given, ...rest } = x;
+    return work === undefined ? rest as T : { ...rest, work } as T;
+  };
+  const elements = input.elements?.map((e) => keep(e, e.id ?? '(new element)'));
+  const deltas = input.deltas?.map((d) => keep(d, d.element));
   if (any && node.kind !== 'plan') {
     throw new GateError(`work fields (done_when, depends_on, size, milestone, target_date, repo) are only on a plan's elements, its work packages (PLN1, D98), and ${node.name} is a ${KIND_WORDS[node.kind]}`);
   }
@@ -6990,8 +7037,8 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
   next.forEach((e, ord) => {
     const id = e.id!;
     const p = byId.get(id);
-    // A full element is the whole of it: no work fields given means none (D98).
-    const work = e.work ?? null;
+    // Work fields left out keep the element's own, as a delta's do; null clears them (D98).
+    const work = e.work === undefined ? p?.work ?? null : e.work;
     const base = { element_id: id, text: e.text, parent_element_id: e.parent ?? null, ord, state: 'clean' as const, work };
     if (!p) out.push({ ...base, kind: 'add', base_version_id: null, base_fingerprint: null });
     else if (p.fingerprint !== elementFingerprint(e.text, work) || p.parent_element_id !== (e.parent ?? null) || p.ord !== ord) {
@@ -7073,8 +7120,20 @@ function spanContext(text: string, start: number, end: number): { prefix?: strin
   return { ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) };
 }
 
+/**
+ * What an element address without a quote resolves to (D98): its subtree's text, as subtreeText
+ * gives it, with each work package's canonical work fields after its own text. An element with no
+ * work fields adds nothing, so every link and question on one resolves exactly as it always did;
+ * on a work package, a change to its done-when, Depends on, size or date is a change. A quote is
+ * resolved against the text alone.
+ */
+function subtreeContent(els: ElementRow[], rootId: string): string | undefined {
+  if (!els.some((e) => e.work)) return subtreeText(els, rootId);
+  return subtreeText(els, rootId, (e) => (e.work ? `${normalize(e.text)}\n${canonicalWork(e.work)}` : normalize(e.text)));
+}
+
 /** An element plus its descendants, in order. The scope an element address covers. */
-function subtreeText(els: ElementRow[], rootId: string): string | undefined {
+function subtreeText(els: ElementRow[], rootId: string, line: (e: ElementRow) => string = (e) => normalize(e.text)): string | undefined {
   if (!els.some((e) => e.element_id === rootId)) return undefined;
   const kids = new Map<string, ElementRow[]>();
   for (const e of els) {
@@ -7084,7 +7143,7 @@ function subtreeText(els: ElementRow[], rootId: string): string | undefined {
   const out: string[] = [];
   const walk = (id: string) => {
     const e = els.find((x) => x.element_id === id)!;
-    out.push(normalize(e.text));
+    out.push(line(e));
     for (const k of kids.get(id) ?? []) walk(k.element_id);
   };
   walk(rootId);
@@ -7526,9 +7585,12 @@ function resolveInElements(els: ElementRow[], elementId: string | null, selector
     const content = els.map((e) => `${e.element_id}:${e.parent_element_id ?? ''}:${e.fingerprint}`).join('\n');
     return { status: 'ok', content, fingerprint: fingerprint(content) };
   }
+  if (!selector) {
+    const whole = subtreeContent(els, elementId);
+    return whole === undefined ? { status: 'orphan' } : { status: 'ok', content: whole, fingerprint: fingerprint(whole) };
+  }
   const subtree = subtreeText(els, elementId);
   if (subtree === undefined) return { status: 'orphan' };
-  if (!selector) return { status: 'ok', content: subtree, fingerprint: fingerprint(subtree) };
   const span = resolveSpan(subtree, selector);
   if (span.status === 'orphan') return { status: 'orphan' };
   return {

@@ -18,10 +18,11 @@ function isDate(s: string): boolean {
 }
 
 /**
- * An element's work fields as Kolab stores them, or why they can't be: keys in WORK_FIELDS order,
- * a done-when trimmed, a milestone only when true, and nothing at all (null) when no field is left.
- * `problems` names each refusal, in words a refusal can quote; `limit` is set when one of them is
- * a size limit rather than a malformed field.
+ * An element's work fields as Kolab stores them, or why they can't be: keys in WORK_FIELDS order
+ * and a done-when trimmed. Nothing given is dropped quietly: an empty done-when, an empty Depends on
+ * and `milestone: false` are refused, saying to leave the field out, and so is `{}` (null clears).
+ * `problems` names each refusal, in words a refusal can quote; `limit` is set when one of them is a
+ * size limit rather than a malformed field.
  */
 export function checkWork(element: string, w: unknown): { work: WorkFields | null; problems: string[]; limit: boolean } {
   const problems: string[] = [];
@@ -37,7 +38,8 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
     else {
       const t = o.done_when.trim();
       if (textLength(t) > MAX_DONE_WHEN) { limit = true; problems.push(`${element}'s done_when is ${textLength(t).toLocaleString('en')} characters; the limit is ${MAX_DONE_WHEN.toLocaleString('en')}`); }
-      else if (t) out.done_when = t;
+      else if (!t) problems.push(`${element}'s done_when is empty: say when it is done, or leave done_when out`);
+      else out.done_when = t;
     }
   }
   if (o.depends_on !== undefined && o.depends_on !== null) {
@@ -47,7 +49,8 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
       const twice = [...new Set(ids.filter((x, i) => ids.indexOf(x) !== i))];
       if (twice.length) problems.push(`${element}'s depends_on names ${twice.join(', ')} more than once`);
       if (ids.length > MAX_DEPENDS_ON) { limit = true; problems.push(`${element} depends on ${ids.length} work packages; the limit is ${MAX_DEPENDS_ON}. Group them under milestones`); }
-      if (ids.length) out.depends_on = ids;
+      if (!ids.length) problems.push(`${element}'s depends_on is empty: name the work packages it depends on, or leave depends_on out`);
+      else out.depends_on = ids;
     }
   }
   if (o.size !== undefined && o.size !== null) {
@@ -55,8 +58,8 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
     else out.size = o.size as WorkFields['size'];
   }
   if (o.milestone !== undefined && o.milestone !== null) {
-    if (typeof o.milestone !== 'boolean') problems.push(`${element}'s milestone is true or false`);
-    else if (o.milestone) out.milestone = true;
+    if (o.milestone !== true) problems.push(`${element}'s milestone is ${JSON.stringify(o.milestone)}: a milestone says milestone: true, and a work package that isn't one leaves milestone out`);
+    else out.milestone = true;
   }
   if (o.target_date !== undefined && o.target_date !== null) {
     if (typeof o.target_date !== 'string' || !isDate(o.target_date)) problems.push(`${element}'s target_date is a date, YYYY-MM-DD, not ${JSON.stringify(o.target_date)}`);
@@ -70,7 +73,8 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
   }
   // In WORK_FIELDS order, so the same fields are always stored alike.
   const ordered = Object.fromEntries(WORK_FIELDS.filter((k) => out[k] !== undefined).map((k) => [k, out[k]])) as WorkFields;
-  return { work: problems.length || !Object.keys(ordered).length ? null : ordered, problems, limit };
+  if (!problems.length && !Object.keys(ordered).length) problems.push(`${element}'s work is empty: give its fields, or null to clear them`);
+  return { work: problems.length ? null : ordered, problems, limit };
 }
 
 /**
@@ -82,13 +86,22 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
  */
 export function elementFingerprint(text: string, work: WorkFields | null | undefined): string {
   if (!work || !Object.keys(work).length) return fingerprint(text);
+  return createHash('sha256').update(`${normalize(text)}\n${canonicalWork(work)}`).digest('base64url').slice(0, 22);
+}
+
+/**
+ * Work fields as one string that two equal sets always give alike (D98): keys sorted, Depends on
+ * sorted, a done-when normalized as text is. What the fingerprint hashes, and what an element-scope
+ * link resolves to beside the element's text.
+ */
+export function canonicalWork(work: WorkFields): string {
   const canonical: Record<string, unknown> = {};
   for (const k of [...WORK_FIELDS].sort()) {
     const v = work[k];
     if (v === undefined) continue;
     canonical[k] = k === 'depends_on' ? [...(v as string[])].sort() : k === 'done_when' ? normalize(v as string) : v;
   }
-  return createHash('sha256').update(`${normalize(text)}\n${JSON.stringify(canonical)}`).digest('base64url').slice(0, 22);
+  return JSON.stringify(canonical);
 }
 
 /** A link from a plan version, as the plan checks see it: carried forward from its base, or its own. */

@@ -491,6 +491,8 @@ export class WebService {
       .map((e) => ({ id: e.element_id, text: e.text, parent: e.parent_element_id ?? undefined, ...(e.work ? { work: e.work } : {}) })) : [];
     for (const c of b.changes) {
       if (!c || typeof c.element !== 'string' || !c.element) throw bad('each change names its element');
+      // The page edits text: an edit keeps the element's work fields, and only an add may carry them (D98).
+      if (c.kind !== 'add' && 'work' in c && c.work !== undefined) throw bad(`the page changes ${c.element}'s text, not its work fields: change those with konjir_draft`);
       const i = elements.findIndex((e) => e.id === c.element);
       if (c.kind === 'add') {
         if (i >= 0) throw bad(`${c.element} already exists`);
