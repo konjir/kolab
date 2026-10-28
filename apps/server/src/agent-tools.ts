@@ -150,7 +150,7 @@ const evidenceItem = z.strictObject({
   kind: z.enum(EVIDENCE_KINDS).describe('commit, pull_request or test_run'),
   sha: z.string().optional().describe('A commit\'s full sha: 40 hexadecimal characters (64 for SHA-256)'),
   pr: z.number().int().optional().describe('A pull request\'s number'),
-  url: z.string().optional().describe(`An https link: to the commit, the pull request (required for one) or the test run. At most ${MAX_EVIDENCE_URL} characters, with no user or password in it`),
+  url: z.string().optional().describe(`An https link: to the commit, the pull request (required for one) or the test run. At most ${MAX_EVIDENCE_URL} characters, with no user, password or credential-bearing query parameter (token, sig, key, X-Amz-…) in it`),
   title: z.string().optional().describe(`A commit's subject, a pull request's title, or a test run's summary ("npm test: 120 passed"). At most ${MAX_TEXT} characters`),
   files: z.array(z.string()).optional().describe(`A commit's: the paths it touched, at most ${MAX_EVIDENCE_FILES}`),
 });
@@ -714,7 +714,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_add_evidence',
-    description: `Record evidence of the work package you hold In progress, kj:<plan>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
+    description: `Record evidence of the work package you hold In progress, kj:<plan>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. A link carrying a user, a password or a credential in its query (token, sig, X-Amz-…) is refused: evidence is kept, and every session of the kolab reads it. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
     schema: addEvidence,
   })
   addEvidence({ work, evidence }: z.infer<typeof addEvidence>, context?: McpToolContext) {

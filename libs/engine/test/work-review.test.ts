@@ -208,6 +208,21 @@ test('evidence is checked before anything is written: full shas, https links wit
   expect(await refused([{ kind: 'pull_request', url: 'http://github.com/acme/orders/pull/7' }])).toMatch(/evidence 1's url is an https link/);
   expect(await refused([{ kind: 'pull_request', url: 'https://bob:hunter2@github.com/acme/orders/pull/7' }])).toMatch(/evidence 1's url carries a user or password: give the link without it/);
   expect(await refused([{ kind: 'pull_request', url: 'javascript:alert(1)' }])).toMatch(/evidence 1's url is an https link/);
+  // A link that carries a credential in its query (a pre-signed or token-bearing link) is refused, of any kind: evidence is kept, and read by everyone in the kolab.
+  for (const [kind, url, param] of [
+    ['test_run', 'https://ci.example.com/run/1/log?X-Amz-Signature=abc&X-Amz-Credential=AKIA', 'X-Amz-Signature", "X-Amz-Credential'],
+    ['test_run', 'https://ci.example.com/run/1?access_token=ghp_secret', 'access_token'],
+    ['test_run', 'https://acct.blob.core.windows.net/logs/1.txt?sv=2024&sig=abc', 'sig'],
+    ['pull_request', 'https://github.com/acme/orders/pull/7?token=abc', 'token'],
+    ['pull_request', 'https://git.example.com/acme/orders/pull/7?KEY=abc', 'KEY'],
+    ['commit', 'https://git.example.com/acme/orders/commit/1?signature=abc', 'signature'],
+    ['test_run', 'https://ci.example.com/oauth/cb?code=abc', 'code'],
+  ] as const) {
+    const item = kind === 'commit' ? { kind, sha: sha('a'), url } : { kind, url };
+    expect(await refused([item])).toMatch(new RegExp(`^GateError: evidence 1's url carries "${param}", which may be a credential`));
+  }
+  expect(await refused([{ kind: 'test_run', url: 'https://ci.example.com/run/1?token=abc' }, { kind: 'test_run', url: 'https://u:p@ci.example.com/run/1' }]))
+    .toMatch(/evidence 2's url carries a user or password/);
   expect(await refused([{ kind: 'pull_request' }])).toMatch(/evidence 1 is a pull request, named by its https url/);
   expect(await refused([{ kind: 'pull_request', url: PR.url, files: ['a'] }])).toMatch(/evidence 1 is a pull request, which takes no files/);
   expect(await refused([{ kind: 'test_run' }])).toMatch(/evidence 1 is a test run: give its url, or a summary as title/);
@@ -224,10 +239,29 @@ test('evidence is checked before anything is written: full shas, https links wit
   expect(await kolab.addEvidence(bob, W(id), [{ kind: 'commit', sha: 'A'.repeat(40) }])).toMatchObject({ recorded: 1, already: 0 });
   expect(await kolab.addEvidence(bob, W(id), [{ kind: 'commit', sha: 'a'.repeat(40) }, TESTS, TESTS])).toMatchObject({ recorded: 1, already: 2 });
   expect((await kolab.db.query(`select ref from evidence where kind = 'commit'`)).rows).toStrictEqual([{ ref: sha('a') }]);
-  // A package holds at most 500 items.
+  // A link with an innocent query is kept; the same pull request linked with a trailing slash or another host case is the same item.
+  expect(await kolab.addEvidence(bob, W(id), [{ kind: 'test_run', url: 'https://ci.example.com/run/1?attempt=2' }, { kind: 'pull_request', url: 'https://github.com/acme/orders/pull/7' }]))
+    .toMatchObject({ recorded: 2, already: 0 });
+  expect(await kolab.addEvidence(bob, W(id), [{ kind: 'pull_request', url: 'https://GitHub.com/acme/orders/pull/7/' }, { kind: 'pull_request', url: 'https://github.com/acme/orders/pull/7#discussion' }]))
+    .toMatchObject({ recorded: 0, already: 2 });
+});
+
+test('the 500-item evidence cap is per round of work, so a package that reached it is delivered again once it is To do again (D98, review 2)', async () => {
+  const { kolab, bob, eve } = await planned();
+  const id = await pull(kolab, bob);
+  await kolab.addEvidence(bob, W(id), [COMMIT('a')]);
+  // A chatty round: 499 more items.
   await kolab.db.query(`insert into evidence(id, plan_node_id, element_id, event_id, kind, title, recorded_by)
-                        select 'x' || g, plan_node_id, element_id, event_id, 'test_run', 'run ' || g, 'bob' from evidence, generate_series(1, 498) g where kind = 'commit'`);
-  expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT('c')]))).toMatch(/^LimitError: that would give kj:orders-plan#W1\.1 501 items of evidence; the limit is 500 a work package/);
+                        select 'x' || g, plan_node_id, element_id, event_id, 'test_run', 'run ' || g, 'bob' from evidence, generate_series(1, 499) g where kind = 'commit'`);
+  expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT('c')]))).toMatch(/^LimitError: that would give kj:orders-plan#W1\.1 501 items of evidence since it was last To do; the limit is 500 a round of work/);
+  expect(await rejection(kolab.submitWork(bob, W(id), { evidence: [COMMIT('c')] }))).toMatch(/^LimitError: .* 501 items of evidence since it was last To do/);
+  // Its evidence alone still submits it; approved, then reopened: a new round, with room again.
+  await kolab.submitWork(bob, W(id));
+  await kolab.reviewWork(eve, W(id), { verdict: 'approve' });
+  await kolab.reopenWork(eve, W(id), { note: 'Again.' });
+  expect(await pull(kolab, bob)).toBe(id);
+  expect(await kolab.submitWork(bob, W(id), { evidence: [COMMIT('c')] })).toMatchObject({ state: 'in_review', recorded: 1 });
+  expect((await kolab.readWork(bob, W(id))).evidence).toHaveLength(501);
 });
 
 test('a request for changes returns the package to its assignee, In progress with a fresh lease, even when they have pulled another meanwhile; pull and reassign still refuse them (PLN16, PLN18 as D98 amends it)', async () => {
@@ -262,7 +296,7 @@ test('a request for changes returns the package to its assignee, In progress wit
   ]);
 });
 
-test('renewal is per package: a call that names a package renews it, one that names none renews only the package pulled or returned last, so the one neglected lapses (PLN15, PLN18, D98, D100)', async () => {
+test('renewal is per package: a call that names a package renews it and makes it the one worked last; one that names none renews only the package pulled, returned or named last, so the one neglected lapses (PLN15, PLN18, D98, D100)', async () => {
   const { kolab, bob, eve } = await planned();
   await pull(kolab, bob);
   await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
@@ -274,9 +308,13 @@ test('renewal is per package: a call that names a package renews it, one that na
   await kolab.listWork(bob);
   expect(await left(kolab, 'W1.1')).toBeGreaterThan(1790);
   expect(await left(kolab, 'W1.2')).toBeLessThan(121);
-  // A call that names W1.2 renews W1.2 alone.
+  // A call that names W1.2 renews W1.2 alone, and makes it the one worked last: calls that name nothing follow it.
   await leaseIn(kolab, 'W1.1', 120);
   await kolab.readWork(bob, W('W1.2'));
+  expect(await left(kolab, 'W1.2')).toBeGreaterThan(1790);
+  expect(await left(kolab, 'W1.1')).toBeLessThan(121);
+  await leaseIn(kolab, 'W1.2', 120);
+  await kolab.listWork(bob);
   expect(await left(kolab, 'W1.2')).toBeGreaterThan(1790);
   expect(await left(kolab, 'W1.1')).toBeLessThan(121);
   // Evidence renews its own package, in full.
@@ -289,21 +327,49 @@ test('renewal is per package: a call that names a package renews it, one that na
   await kolab.readWork(bob, W('W1.10'));
   expect(await left(kolab, 'W1.1')).toBeLessThan(121);
   expect(await left(kolab, 'W1.2')).toBeLessThan(121);
-  // A quiet call (a listen stream's) renews nothing, even one that names a package (D100).
-  await kolab.quietly(() => kolab.readWork(bob, W('W1.2')));
-  expect(await left(kolab, 'W1.2')).toBeLessThan(121);
-  // bob works on W1.1 with calls that name nothing: W1.2, neglected, lapses back to To do.
-  await leaseIn(kolab, 'W1.2', -1);
+  // A quiet call (a listen stream's) renews nothing, even one that names a package (D100), and moves nothing to the front.
+  await kolab.quietly(() => kolab.readWork(bob, W('W1.1')));
+  expect(await left(kolab, 'W1.1')).toBeLessThan(121);
+  await kolab.listWork(bob);
+  expect(await left(kolab, 'W1.2')).toBeGreaterThan(1790);
+  expect(await left(kolab, 'W1.1')).toBeLessThan(121);
+  // bob works on W1.2 with calls that name nothing: W1.1, neglected, lapses back to To do.
+  await leaseIn(kolab, 'W1.1', -1);
   await kolab.listWork(bob);
   expect(await kolab.sweepLapsedLeases()).toBe(1);
-  expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'todo', assignee_id: null, returned: false });
-  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'in_progress', assignee_id: 'bob', returned: true });
-  // Holding only a returned package, bob still pulls nothing: it finishes W1.1 first.
-  expect(await rejection(kolab.pullWork(bob))).toMatch(/^GateError: bob already holds kj:orders-plan#W1\.1/);
-  // Nor is it given more (PLN15, PLN18).
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'todo', assignee_id: null, returned: false });
+  expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'in_progress', assignee_id: 'bob', returned: false });
+});
+
+test('review 1: an agent building its pulled package keeps it while a returned package it ignores lapses, once it has named the one it builds (PLN18, D98)', async () => {
+  const { kolab, bob, eve } = await planned();
+  // bob submits W1.1, pulls W1.2 and starts building it.
+  await pull(kolab, bob);
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  expect(await pull(kolab, bob)).toBe('W1.2');
+  // eve requests changes on W1.1: it returns to bob.
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'request_changes', note: 'Again.' });
+  // bob ignores W1.1 and keeps building W1.2: it records evidence on it once, then makes only generic calls.
+  await kolab.addEvidence(bob, W('W1.2'), [COMMIT('b')]);
+  for (let round = 0; round < 3; round++) {
+    await leaseIn(kolab, 'W1.1', 20);
+    await leaseIn(kolab, 'W1.2', 20);
+    await kolab.listWork(bob);
+    await kolab.sessionKolab(bob);
+    await kolab.sessionInfo(bob);
+    expect(await left(kolab, 'W1.2')).toBeGreaterThan(1790);
+    expect(await left(kolab, 'W1.1')).toBeLessThan(21);
+  }
+  // W1.1, ignored, lapses; W1.2, under work, is kept.
+  await leaseIn(kolab, 'W1.1', -1);
+  expect(await kolab.sweepLapsedLeases()).toBe(1);
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'todo', assignee_id: null });
+  expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'in_progress', assignee_id: 'bob' });
+  // Holding W1.2, bob still pulls nothing, nor is it given more (PLN15, PLN18).
+  expect(await rejection(kolab.pullWork(bob))).toMatch(/^GateError: bob already holds kj:orders-plan#W1\.2/);
   await people(kolab, 'mia', { level: 'maintain' });
   const mia = await kolab.openSession('mia', 'engineer');
-  expect(await rejection(kolab.reassignWork(mia, W('W1.10'), 'bob'))).toMatch(/^GateError: bob already holds kj:orders-plan#W1\.1 In progress/);
+  expect(await rejection(kolab.reassignWork(mia, W('W1.10'), 'bob'))).toMatch(/^GateError: bob already holds kj:orders-plan#W1\.2 In progress/);
 });
 
 test('a request for changes to an assignee who can no longer write the technical layer leaves the package To do (D98)', async () => {
@@ -355,13 +421,21 @@ test('at risk: a Done package stays Done when what it delivers changes; clearing
   const marks = (await marksOn(kolab, 'orders-plan')).filter((m) => m.element_id === 'W1.1');
   expect(marks.map((m) => m.reason)).toStrictEqual(['changed']);
   expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'done', assignee_id: 'bob' });
-  // eve checks the work against the change, and clears the mark: it holds, still Done, recorded as confirmed.
-  await kolab.clear(eve, marks[0].id);
+  // eve checks the work against the change, and clears the mark: it holds, still Done, recorded as
+  // confirmed, once, however many clears race (review 7).
+  await Promise.allSettled([kolab.clear(eve, marks[0].id), kolab.clear(eve, marks[0].id), kolab.clear(eve, marks[0].id)]);
+  expect((await kolab.db.query(`select count(*)::int as n from work_event where kind = 'confirmed'`)).rows).toStrictEqual([{ n: 1 }]);
   expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'done', assignee_id: 'bob' });
   const ev = (await kolab.readWork(bob, W('W1.1'))).events.at(-1)!;
   expect(ev).toMatchObject({ kind: 'confirmed', actor: 'eve', from: 'done', to: 'done', note: `cleared mark ${marks[0].id} (changed): the work holds (PLN10)` });
   expect(ev.concerned).toStrictEqual([{ address: 'kj:orders-pg@2#b1', version_id: expect.any(String), fingerprint: expect.any(String) }]);
   expect((await kolab.workNotices(bob)).events[0]).toMatchObject({ work: W('W1.1'), kind: 'confirmed', actor: 'eve' });
+  // A session that holds only Read reads the event, but not its note, which names a mark (D58, review 5).
+  const carol = await kolab.openSession('carol', 'engineer');
+  expect((await kolab.readWork(carol, W('W1.1'))).events.at(-1)).toMatchObject({ kind: 'confirmed', actor: 'eve', note: null });
+  await kolab.reopenWork(eve, W('W1.1'), { note: 'Idempotency changes the contract.' });
+  expect((await kolab.readWork(carol, W('W1.1'))).events.at(-1)).toMatchObject({ kind: 'reopened', note: null });
+  expect((await kolab.readWork(bob, W('W1.1'))).events.at(-1)).toMatchObject({ kind: 'reopened', note: 'Idempotency changes the contract.' });
   // A mark on a package with no work yet records nothing.
   await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, durable.' }] });
   const m2 = (await marksOn(kolab, 'orders-plan')).find((m) => m.element_id === 'W1.2')!;
@@ -426,15 +500,41 @@ test('a plan version that revises an at-risk Done package reopens it, so a plan 
   expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'done', assignee_id: 'bob' });
   expect((await kolab.readWork(bob, W('W1.1'))).events.at(-1)).toMatchObject({
     kind: 'reopened', actor: 'bob', from: 'done', to: 'todo', plan_version: 'kj:orders-plan@2',
-    note: 'revised in kj:orders-plan@2 while at risk: a plan edit opens new work, and never settles its mark on its own (PLN10, D98)',
+    note: expect.stringMatching(/^revised in kj:orders-plan@2 while at risk: a plan edit opens new work, and never settles its mark on its own \(PLN10, D98\) \(settled mark \w+\)$/),
   });
-  // The cascade settles the mark as it always did (LNK6): the package is new work, To do.
+  // Its mark settles with the reopening, in the commit's own transaction, as konjir_reopen_work settles it (review 6).
   expect(await marksOn(kolab, 'orders-plan')).toStrictEqual([]);
+  expect((await kolab.db.query<{ cleared_by: string }>(`select cleared_by from invalidation i join version v on v.id = i.version_id
+    where v.node_id = 'orders-plan' and i.element_id = 'W1.1'`)).rows).toStrictEqual([{ cleared_by: 'settled: kj:orders-plan@2 revised it while at risk, which opens new work (PLN10)' }]);
   // A Done package at risk that the plan doesn't revise stays Done.
   await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, durable, in order.' }] });
   await kolab.commit(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1.10', text: 'Build the tracking page, live.' }] });
   expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'done' });
   expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.2', 'changed']]);
+});
+
+test('a plan version drafted before a mark was raised doesn\'t reopen for it: the later mark stays open, as LNK6 leaves it (PLN10, review 6)', async () => {
+  const { kolab, bob, eve } = await planned();
+  await pull(kolab, bob);
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' });
+  // bob drafts a typo fix to W1.1; b1 then changes, and W1.1 is marked; then the draft is submitted.
+  const draft = await kolab.draft(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1.1', text: 'Build the cancel endpoint (typo fixed).' }] });
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
+  expect((await kolab.submit(bob, draft)).ok).toBe(true);
+  // The draft never saw the change: W1.1 stays Done, at risk, its mark open.
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'done', assignee_id: 'bob' });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
+  expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).not.toContain('reopened');
+});
+
+test('an assignee submitting evidence on its package In review is told it waits in review (review 7)', async () => {
+  const { kolab, bob } = await planned();
+  await pull(kolab, bob);
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  expect(await rejection(kolab.submitWork(bob, W('W1.1'), { evidence: [PR] })))
+    .toBe('GateError: kj:orders-plan#W1.1 waits in review, so it takes no evidence now: submit it with no evidence to ask its reviewers again, or wait for the verdict; a request for changes returns it to you');
 });
 
 test('a plan gains no new link between its own work packages, in a draft or with konjir_link, and is pointed to depends_on (D99)', async () => {

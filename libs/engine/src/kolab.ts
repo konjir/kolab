@@ -5800,18 +5800,26 @@ export class Kolab {
         const now = (await tx.query<EdgeRow>(
           `update edge set target_version_id = $2, target_fingerprint = $3, held_by = $4 where id = $1 returning *`,
           [e.id, latest, r.fingerprint, s.actor_id])).rows[0];
+        const was = await this.markStateIn(tx, markId);
         await this.closeMarkIn(tx, signal, markId, s.actor_id);
-        // On a work package with work, clearing says the work holds (PLN10, D98).
-        await this.confirmIn(tx, signal, m, s.actor_id);
+        // On a work package with work, clearing says the work holds (PLN10, D98): once, by whoever
+        // cleared it while it was open, however many clears race.
+        await this.confirmIn(tx, signal, { ...m, state: was }, s.actor_id);
         // They hold the link now, so an access_lost mark its earlier holder left settles too.
         if (across) await this.restoreLinkIn(tx, signal, now, `held by ${s.actor_id}, who reads kolab ${e.target_kolab_id}`);
       }, source, { access: across });
       return;
     }
     await this.asSystem(async (tx, signal) => {
+      const was = await this.markStateIn(tx, markId);
       await this.closeMarkIn(tx, signal, markId, s.actor_id);
-      await this.confirmIn(tx, signal, m, s.actor_id);
+      await this.confirmIn(tx, signal, { ...m, state: was }, s.actor_id);
     }, v.node_id);
+  }
+
+  /** A mark's state as `tx` holds it, its row locked: a clear racing another waits for it, then sees it cleared. */
+  private async markStateIn(tx: Q, markId: string): Promise<MarkRow['state']> {
+    return (await tx.query<{ state: MarkRow['state'] }>(`select state from invalidation where id = $1 for update`, [markId])).rows[0]?.state;
   }
 
   /** clear, for an access_lost mark: `actor`, who must read the other kolab, holds the link or fork now. */
@@ -6513,8 +6521,9 @@ export class Kolab {
   /**
    * Renews a lease on the work `actor` holds In progress in `kolab` (PLN15, D98): its session made a
    * call. A call that names a work package (`pkg`: read_work, add_evidence, submit_work…) renews
-   * that package's, if the actor holds it. A call that names none renews only the package the actor
-   * pulled, was given or had returned most recently (`touched_at`): an actor may hold a package
+   * that package's, if the actor holds it, and makes it the one worked last (`touched_at`). A call
+   * that names none renews only the package the actor pulled, was given, had returned or named most
+   * recently (`touched_at`): an actor may hold a package
    * returned by a request for changes beside the one it pulled (PLN18 as D98 amends it), and the
    * one it neglects lapses. On the database's clock, and only while the lease still runs, so a
    * lapsed lease is never revived, whatever the order in which this and the lapse sweep reach the
@@ -6523,19 +6532,30 @@ export class Kolab {
    * and fails no call.
    */
   private async renewLease(actor: string, kolab: string, pkg?: { plan: string; element: string }) {
-    const which = pkg ? '($3::text, $4::text)'
-      : `(select x.plan_node_id, x.element_id from work_package x
-           where x.assignee_id = $1 and x.kolab_id = $2 and x.state = 'in_progress' and x.lease_until >= clock_timestamp()
-           order by x.touched_at desc, x.plan_node_id, x.element_id limit 1)`;
+    const slack = `w.lease_until < clock_timestamp() + (k.work_lease_s - ${LEASE_RENEW_SLACK_S}) * interval '1 second'`;
+    const renewed = `clock_timestamp() + k.work_lease_s * interval '1 second'`;
     try {
+      if (pkg) {
+        // A call that names the package: it is the one being worked now, so it moves to the front
+        // (touched_at), and calls that name none follow it; its lease is renewed once some is spent.
+        await this.db.query(
+          `update work_package w set touched_at = clock_timestamp(), updated_at = clock_timestamp(),
+                  lease_until = case when ${slack} then ${renewed} else w.lease_until end
+             from kolab k
+            where k.id = w.kolab_id and w.kolab_id = $2 and w.assignee_id = $1 and w.state = 'in_progress'
+              and w.plan_node_id = $3 and w.element_id = $4 and w.lease_until >= clock_timestamp()
+              and not ${archivedKolabSql('w.kolab_id')}`, [actor, kolab, pkg.plan, pkg.element]);
+        return;
+      }
       await this.db.query(
-        `update work_package w set lease_until = clock_timestamp() + k.work_lease_s * interval '1 second', updated_at = clock_timestamp()
+        `update work_package w set lease_until = ${renewed}, updated_at = clock_timestamp()
            from kolab k
           where k.id = w.kolab_id and w.kolab_id = $2 and w.assignee_id = $1 and w.state = 'in_progress'
-            and (w.plan_node_id, w.element_id) = ${which}
-            and w.lease_until >= clock_timestamp()
-            and w.lease_until < clock_timestamp() + (k.work_lease_s - ${LEASE_RENEW_SLACK_S}) * interval '1 second'
-            and not ${archivedKolabSql('w.kolab_id')}`, pkg ? [actor, kolab, pkg.plan, pkg.element] : [actor, kolab]);
+            and (w.plan_node_id, w.element_id) = (select x.plan_node_id, x.element_id from work_package x
+                  where x.assignee_id = $1 and x.kolab_id = $2 and x.state = 'in_progress' and x.lease_until >= clock_timestamp()
+                  order by x.touched_at desc, x.plan_node_id, x.element_id limit 1)
+            and w.lease_until >= clock_timestamp() and ${slack}
+            and not ${archivedKolabSql('w.kolab_id')}`, [actor, kolab]);
     } catch (e) {
       log.warn('could not renew a work lease', { actor, kolab, error: e });
     }
@@ -6822,7 +6842,7 @@ export class Kolab {
           and ($3::text is null or (ev.at, ev.id) > (($3::timestamp at time zone 'UTC'), $4::text))
         order by ev.at, ev.id limit $5`, [plan.id, id, after?.[0] ?? null, after?.[1] ?? null, size + 1])).rows);
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.at_key, r.id]);
-    const events = await this.workEventViews(shown);
+    const events = await this.workEventViews(shown, s.access.layers.length > 0);
     // Its evidence, oldest first (PLN16), and its reviews, as every session of the kolab reads them.
     const { evidence, reviews } = await this.read({ session: sessionId }, async (q) => ({
       evidence: (await q.query<EvidenceRow>(`select ${EVIDENCE_COLUMNS} from evidence e where e.plan_node_id = $1 and e.element_id = $2 order by e.at, e.id`, [plan.id, id])).rows.map(evidenceView),
@@ -6840,15 +6860,19 @@ export class Kolab {
     };
   }
 
-  /** Events as readers see them: each names the plan version it stood in (kj:<plan>@<seq>). */
-  private async workEventViews(rows: WorkEventRow[]): Promise<(WorkEventView & { assignee_from?: string; assignee_to?: string })[]> {
+  /**
+   * Events as readers see them: each names the plan version it stood in (kj:<plan>@<seq>). A session
+   * that doesn't belong (it holds only Read) reads no note on a `confirmed` or `reopened` event,
+   * which names the marks cleared or settled and why: row-level security holds marks from it (D58).
+   */
+  private async workEventViews(rows: WorkEventRow[], belongs: boolean): Promise<(WorkEventView & { assignee_from?: string; assignee_to?: string })[]> {
     const ids = [...new Set(rows.map((r) => r.plan_version_id))];
     const seqs = new Map((await this.db.query<{ id: string; seq: number; name: string }>(
       `select v.id, v.seq, n.name from version v join node n on n.id = v.node_id where v.id = any($1::text[])`, [ids])).rows.map((r) => [r.id, r]));
     return rows.map((r) => ({
       id: r.id, kind: r.kind, from: r.from_state, to: r.to_state, actor: r.actor_id, at: iso(r.at)!,
       plan_version: seqs.get(r.plan_version_id) ? formatAddress({ node: seqs.get(r.plan_version_id)!.name, version: seqs.get(r.plan_version_id)!.seq }) : r.plan_version_id,
-      concerned: r.concerned, note: r.note,
+      concerned: r.concerned, note: !belongs && MARK_NOTES.has(r.kind) ? null : r.note,
       ...(r.assignee_from ? { assignee_from: r.assignee_from } : {}), ...(r.assignee_to ? { assignee_to: r.assignee_to } : {}),
     }));
   }
@@ -6901,15 +6925,19 @@ export class Kolab {
     }
     const event = (id: string, kind: WorkEventKind, from: WorkState | null, to: WorkState | null, actor: string, extra: { assigneeFrom?: string | null; assigneeTo?: string | null; note?: string } = {}) =>
       this.workEventIn(tx, { plan: plan.id, element: id, kind, from, to, actor, planVersion: v.id, concerned: delivers.get(id) ?? [], ...extra });
-    // PLN10 as D98 amends it: a Done package at risk (an open mark on its element) that this version
-    // revises is opened again, so a plan edit never settles its mark on its own (an exception to
-    // LNK6 for work packages): the cascade still settles the mark, and the package is To do.
+    // PLN10 as D98 amends it: a Done package at risk that this version revises is opened again, so a
+    // plan edit never settles its mark on its own (an exception to LNK6 for work packages). At risk,
+    // here, by the marks LNK6 would settle for the revision: open when the version was drafted, of
+    // the reasons it settles (clearAddressed). They settle with the reopening, as konjir_reopen_work
+    // settles them; a mark raised after the draft was written stays open, as LNK6 leaves it.
     const prev = (await tx.query<VersionRow>(`select * from version where node_id = $1 and seq < $2 and state = 'committed' order by seq desc limit 1`, [v.node_id, v.seq])).rows[0];
     const was = new Map((prev ? await this.elements(prev.id, tx) : []).map((e) => [e.element_id, e]));
+    const drafted = (await tx.query<{ at: Date }>(`select created_at as at from version where id = $1`, [v.id])).rows[0].at;
     const atRisk = new Set((await tx.query<{ element_id: string }>(
       `select distinct i.element_id from invalidation i join version x on x.id = i.version_id
-        where x.node_id = $1 and x.id <> $2 and x.state = 'committed' and i.state = 'open' and i.delta_id is null and i.element_id is not null`,
-      [v.node_id, v.id])).rows.map((r) => r.element_id));
+        where x.node_id = $1 and x.id <> $2 and x.state = 'committed' and i.state = 'open' and i.delta_id is null and i.element_id is not null
+          and i.reason in (${SETTLED_BY_NEW_WORK}) and i.created_at < $3`,
+      [v.node_id, v.id, drafted])).rows.map((r) => r.element_id));
     const revised = (e: ElementRow) => {
       const w = was.get(e.element_id);
       return !!w && (w.fingerprint !== e.fingerprint || w.parent_element_id !== e.parent_element_id);
@@ -6936,8 +6964,11 @@ export class Kolab {
         continue;
       }
       if (!milestone && !r.milestone && r.state === 'done' && atRisk.has(e.element_id) && revised(e)) {
+        const at = formatAddress({ node: plan.name, version: v.seq });
+        const settled = await this.settlePackageMarksIn(tx, signal, plan, e.element_id, `settled: ${at} revised it while at risk, which opens new work (PLN10)`, drafted);
         await this.reopenIn(tx, signal, plan, v, r, v.actor_id, delivers.get(e.element_id) ?? [],
-          `revised in ${formatAddress({ node: plan.name, version: v.seq })} while at risk: a plan edit opens new work, and never settles its mark on its own (PLN10, D98)`);
+          `revised in ${at} while at risk: a plan edit opens new work, and never settles its mark on its own (PLN10, D98)`
+          + (settled.length ? ` (settled ${settled.map((m) => `mark ${m}`).join(', ')})` : ''));
         continue;
       }
       if (r.milestone === milestone) continue;
@@ -7334,7 +7365,7 @@ export class Kolab {
       `select ${WORK_EVENT_COLUMNS}, n.name as plan from work_event ev join node n on n.id = ev.plan_node_id
         where ev.kolab_id = $1 and (ev.assignee_from = $2 or ev.assignee_to = $2) and ev.actor_id <> $2
         order by ev.at desc, ev.id desc limit 20`, [s.kolab, s.actor_id])).rows);
-    const views = await this.workEventViews(rows);
+    const views = await this.workEventViews(rows, s.access.layers.length > 0);
     return {
       holding, ...(items.length > 1 ? { also_holding: items.slice(1) } : {}),
       events: views.map((v, i) => ({ work: formatAddress({ node: rows[i].plan, element: rows[i].element_id }), ...v })),
@@ -7403,7 +7434,9 @@ export class Kolab {
   private async evidenceIn(tx: Q, plan: string, element: string, items: CheckedEvidence[], eventId: string, actor: string): Promise<{ recorded: string[]; already: number }> {
     const have = await this.roundEvidence(tx, plan, element);
     const seen = new Set(have.map((e) => evidenceKey(e.kind, e.ref, e.url, e.title)));
-    const total = (await tx.query<{ n: number }>(`select count(*)::int as n from evidence where plan_node_id = $1 and element_id = $2`, [plan, element])).rows[0].n;
+    // The cap is per round (since the package was last To do), so a package reopened, released or
+    // restored can always be delivered again; earlier rounds stay as history.
+    const total = have.length;
     const fresh = items.filter((e) => {
       const k = evidenceKey(e.kind, e.ref, e.url, e.title);
       if (seen.has(k)) return false;
@@ -7411,7 +7444,7 @@ export class Kolab {
       return true;
     });
     if (total + fresh.length > MAX_EVIDENCE_PER_PACKAGE) {
-      throw new LimitError(`that would give ${formatAddress({ node: (await nameIn(tx, plan)), element })} ${total + fresh.length} items of evidence; the limit is ${MAX_EVIDENCE_PER_PACKAGE} a work package. Give the pull request, and the commits it holds, rather than every commit`);
+      throw new LimitError(`that would give ${formatAddress({ node: (await nameIn(tx, plan)), element })} ${total + fresh.length} items of evidence since it was last To do; the limit is ${MAX_EVIDENCE_PER_PACKAGE} a round of work. Give the pull request, and the commits it holds, rather than every commit`);
     }
     const recorded: string[] = [];
     for (const e of fresh) {
@@ -7468,7 +7501,7 @@ export class Kolab {
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.plan_node_id = $1 and w.element_id = $2 for update of w`, [plan.id, id])).rows[0];
         this.requireHolding(r, s, at, 'records its evidence');
         const until = (await tx.query<{ lease_until: Date }>(
-          `update work_package set lease_until = clock_timestamp() + $3 * interval '1 second', updated_at = clock_timestamp()
+          `update work_package set lease_until = clock_timestamp() + $3 * interval '1 second', touched_at = clock_timestamp(), updated_at = clock_timestamp()
             where plan_node_id = $1 and element_id = $2 returning lease_until`, [plan.id, id, lease])).rows[0].lease_until;
         const c = await this.concernedIn(tx, plan.id, id);
         const ev = await this.workEventIn(tx, { plan: plan.id, element: id, kind: 'evidence', from: 'in_progress', to: 'in_progress', actor: s.actor_id,
@@ -7528,6 +7561,9 @@ export class Kolab {
           await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
           await this.useRate(tx, hold);
           return { state: 'done' as const, writers, recorded: 0, already: 0 };
+        }
+        if (r.state === 'in_review' && r.assignee_id === s.actor_id && !r.removed_in_version_id) {
+          throw new GateError(`${at} waits in review, so it takes no evidence now: submit it with no evidence to ask its reviewers again, or wait for the verdict; a request for changes returns it to you`);
         }
         this.requireHolding(r, s, at, 'submits it');
         if (r.milestone) throw new GateError(`${at} is a milestone: it has no work of its own, and is Done when its members are (PLN3)`);
@@ -7679,12 +7715,12 @@ export class Kolab {
    * link into another kolab, an orphaned link, a ruling, a layer leak and a lost access are left:
    * each is settled its own way. Returns the marks settled.
    */
-  private async settlePackageMarksIn(tx: Q, signal: Signal, plan: NodeRow, element: string, by: string): Promise<string[]> {
+  private async settlePackageMarksIn(tx: Q, signal: Signal, plan: NodeRow, element: string, by: string, before?: Date | string): Promise<string[]> {
     const marks = (await tx.query<MarkRow>(
       `select i.* from invalidation i join version x on x.id = i.version_id
         where x.node_id = $1 and x.state = 'committed' and i.element_id = $2 and i.state = 'open' and i.delta_id is null
-          and i.reason in ('changed', 'fuzzy_reanchor', 'upstream_dirty', 'query_answered')
-        order by i.created_at, i.id`, [plan.id, element])).rows;
+          and i.reason in (${SETTLED_BY_NEW_WORK}) and ($3::timestamptz is null or i.created_at < $3)
+        order by i.created_at, i.id for update of i`, [plan.id, element, before ?? null])).rows;
     const settled: string[] = [];
     for (const m of marks) {
       if (m.edge_id && (m.reason === 'changed' || m.reason === 'fuzzy_reanchor')) {
@@ -8645,6 +8681,12 @@ const evidenceView = (e: EvidenceRow): EvidenceView => ({
   ...(e.url ? { url: e.url } : {}), ...(e.title ? { title: e.title } : {}), ...(e.files ? { files: e.files } : {}),
   recorded_by: e.recorded_by, at: iso(e.at)!, event: e.event_id,
 });
+
+/** The marks new work on a package answers, as a revision answers them (LNK6, clearAddressed): settled by a reopening (PLN10). */
+const SETTLED_BY_NEW_WORK = `'changed', 'fuzzy_reanchor', 'upstream_dirty', 'query_answered'`;
+
+/** Event kinds whose notes name marks, which a session that holds only Read doesn't read (D58). */
+const MARK_NOTES = new Set<WorkEventKind>(['confirmed', 'reopened']);
 
 /** A state as a sentence says it. */
 const STATE_WORDS: Record<WorkState, string> = { todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
