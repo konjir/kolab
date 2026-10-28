@@ -262,8 +262,9 @@ export interface WebSubmit {
    */
   base: number | null;
   /**
-   * An override changes an element's text and keeps its work fields; an add may carry them (`work`),
-   * as a draft revised on the page does for the work packages it added (D98).
+   * An override changes an element's text and keeps its work fields; only an add may carry them
+   * (`work`), as a draft revised on the page does for the work packages it added (D98). An override
+   * or a remove that carries `work` is refused (400).
    */
   changes: { kind: 'add' | 'override' | 'remove'; element: string; text?: string; parent?: string; work?: WorkFields }[];
   /** Links of the base version to drop (konjir_draft's unlink), by their edge: the commit settles their open marks. */

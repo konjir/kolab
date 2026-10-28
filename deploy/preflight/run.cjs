@@ -14,6 +14,9 @@
 // The file's first query lists the migration's refusals: none means it applies cleanly. Any
 // further queries are what it will do, which this prints too. It prints one line per row, never a
 // URL or password, and last `RESULT {json}`; it exits 1 only if it couldn't run the check.
+//
+// A file whose first line is `-- advisory` (0029's) gates nothing: the migration can't fail, and its
+// query lists what to look at before deploying. Its rows print as `advise`, and it says advisory.
 const fs = require('fs');
 const path = require('path');
 
@@ -39,7 +42,9 @@ const statements = (sql) => sql.split(/;\s*\n/).map((s) => s.trim()).filter((s) 
 async function main() {
   if (!dir || !/^\d{4}$/.test(migration || '')) throw new Error('usage: node run.cjs <dir> <NNNN>');
   const url = fs.readFileSync(path.join(dir, 'url'), 'utf8').trim();
-  const [refusals, ...plans] = statements(fs.readFileSync(path.join(dir, 'preflight.sql'), 'utf8'));
+  const sql = fs.readFileSync(path.join(dir, 'preflight.sql'), 'utf8');
+  const advisory = /^-- advisory\s*$/m.test(sql.split('\n')[0]);
+  const [refusals, ...plans] = statements(sql);
   const c = new pg.Client({ connectionString: readOnly(url), application_name: `konjir-preflight-${migration}`, connectionTimeoutMillis: 20000 });
   await c.connect();
   try {
@@ -54,8 +59,14 @@ async function main() {
         return;
       }
       if (at !== want) throw new Error(`the database is at ${String(at).padStart(4, '0')}, not ${String(want).padStart(4, '0')}: this preflight checks a database at the migration before ${migration}`);
-      console.log(`preflight ${migration}, read-only, on a database at ${String(at).padStart(4, '0')}`);
+      console.log(`preflight ${migration}, read-only, on a database at ${String(at).padStart(4, '0')}${advisory ? ': advisory, it gates nothing' : ''}`);
       const found = (await c.query(refusals)).rows;
+      if (advisory) {
+        for (const r of found) console.log(`advise ${r.ord} ${r.why}: ${r.nodes}`);
+        if (!found.length) console.log(`ok     ${migration}: advisory, nothing to look at`);
+        console.log(`RESULT ${JSON.stringify({ migration, at, advisory: true, findings: found.length })}`);
+        return;
+      }
       for (const r of found) console.log(`refuse ${r.ord} ${r.why}: ${r.nodes}`);
       if (!found.length) console.log(`ok     ${migration} applies cleanly: nothing to refuse`);
       let planned = 0;

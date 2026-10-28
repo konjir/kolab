@@ -7,7 +7,7 @@ import { expect, test } from '@jest/globals';
 import { fingerprint } from '@konjir/address';
 import { elementFingerprint, sessionKey } from '@konjir/engine';
 import { els, marksOn, rejection, setup } from '@konjir/engine/testing';
-import { MAX_DEPENDS_ON, MAX_DONE_WHEN, WORK_SIZES, type ElementInput } from '@konjir/types';
+import { ADMIN_DOER, MAX_DEPENDS_ON, MAX_DONE_WHEN, WORK_SIZES, type ElementInput } from '@konjir/types';
 
 /** The kolab's spec, a binding of it with three elements, and its plan, made but empty. */
 async function planned() {
@@ -41,8 +41,9 @@ async function submitPlan(ctx: Awaited<ReturnType<typeof planned>>, elements: El
 test('a plan\'s work packages carry their fields: stored in one form, read back, and a valid plan commits on its checks alone (PLN1, PLN2, PLN3)', async () => {
   const ctx = await planned();
   const { kolab, delivers } = ctx;
-  // Fields given in any order, with a done-when to trim and a milestone that isn't one, are stored in one form.
-  const given: ElementInput[] = PLAN.map((e) => (e.id === 'W1.2' ? { ...e, work: { milestone: false, size: 'S', done_when: '  ' } } : e));
+  // Fields given in any order, and a done-when to trim, are stored in one form.
+  const given: ElementInput[] = PLAN.map((e) => (e.id === 'W1.10' ? { ...e, work: { done_when: '  A customer sees where the order is. ' } }
+    : e.id === 'M1' ? { ...e, work: { target_date: '2026-12-01', milestone: true, done_when: 'Every member is Done.', depends_on: ['W1.1', 'W1.2', 'W1.10', 'W2.1'] } } : e));
   const r = await submitPlan(ctx, given, [delivers('W1.1', 'b1'), delivers('W1.2', 'b2'), delivers('W1.10', 'b3'), delivers('W2.1', 'b1')]);
   expect(r).toMatchObject({ ok: true, version: r.id });
   expect(r.note).toMatch(/A plan version commits after structural checks, without review \(PLN2\)/);
@@ -75,7 +76,7 @@ test('an element with no work fields keeps the fingerprint it always had, on a p
   expect(w1).toStrictEqual({ element_id: 'W1', parent_element_id: null, ord: 0, text: 'Build the cancel endpoint.', fingerprint: fingerprint('Build the cancel endpoint.') });
 });
 
-test('deltas keep an element\'s work fields unless they give new ones; a full element list is the whole of each; and changing a field is a change (D98)', async () => {
+test('deltas and full element lists alike keep an element\'s work fields unless they give new ones, and null clears them; changing a field is a change (D98, review M1)', async () => {
   const ctx = await planned();
   const { kolab, engineer } = ctx;
   const v1 = (await submitPlan(ctx, PLAN)).id;
@@ -105,10 +106,20 @@ test('deltas keep an element\'s work fields unless they give new ones; a full el
   })) });
   expect((await kolab.db.query(`select 1 from delta where version_id = $1`, [same])).rows).toStrictEqual([]);
   await kolab.abandon(engineer, same);
-  // A full element list with no fields on an element leaves it none.
-  const v3 = await kolab.commit(engineer, 'orders-plan', { elements: (await kolab.elements(v2)).map((e) => ({ id: e.element_id, text: e.text, ...(e.element_id === 'W1.1' ? {} : { work: e.work }) })) });
-  expect((await work(v3))['W1.1']).toBeUndefined();
-  expect((await work(v3))['W2.1']).toStrictEqual(PLAN[3].work);
+  // A full element list built from the text alone keeps every element's fields: nothing is wiped.
+  const v3 = await kolab.commit(engineer, 'orders-plan', { elements: (await kolab.elements(v2)).map((e) => ({ id: e.element_id, text: e.text })) });
+  expect(await work(v3)).toStrictEqual(await work(v2));
+  expect((await kolab.db.query(`select 1 from delta where version_id = $1`, [v3])).rows).toStrictEqual([]);
+  // null clears an element's fields; fields given replace them whole.
+  const v4 = await kolab.commit(engineer, 'orders-plan', { elements: (await kolab.elements(v3)).map((e) => ({
+    id: e.element_id, text: e.text, ...(e.element_id === 'W1.1' ? { work: null } : e.element_id === 'W1.2' ? { work: { size: 'M' as const } } : {}),
+  })) });
+  expect((await work(v4))['W1.1']).toBeUndefined();
+  expect((await work(v4))['W1.2']).toStrictEqual({ size: 'M' });
+  expect((await work(v4))['W2.1']).toStrictEqual(PLAN[3].work);
+  // A ruling applied to a plan (the D37 mirror's path) keeps them the same way.
+  await kolab.applyRuling('orders-plan', { elements: (await kolab.elements(v4)).map((e) => ({ id: e.element_id, text: e.text })) }, { id: 'D98', actor: 'bob', by: ADMIN_DOER });
+  expect(await work((await kolab.latestCommitted('orders-plan'))!.id)).toStrictEqual(await work(v4));
 });
 
 test('a plan version that breaks PLN2 goes back to its author, still drafted, naming PLN2 and each problem', async () => {
@@ -131,7 +142,9 @@ test('a plan version that breaks PLN2 goes back to its author, still drafted, na
   await refused([w('W1', { depends_on: ['W3'] }), w('W2', { depends_on: ['W1'] }), w('W3', { depends_on: ['W2'] })], 'Depends on has a cycle: W1 → W3 → W2 → W1');
   // A milestone depends on its members, and delivers nothing.
   await refused([w('M1', { milestone: true })], 'M1 is a milestone, and depends on no members');
-  await refused([w('W1', null), w('M1', { milestone: true, depends_on: ['W1'] })], 'M1 is a milestone, and delivers orders-pg@1#b1: a milestone delivers nothing (PLN2, PLN3)', [delivers('M1', 'b1')]);
+  // A milestone's Delivers is refused as the draft declares it, against the draft's own elements (review L3).
+  expect(await rejection(kolab.draft(ctx.engineer, 'orders-plan', { elements: [w('W1', null), w('M1', { milestone: true, depends_on: ['W1'] })], links: [delivers('M1', 'b1')] })))
+    .toBe('GateError: M1 is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers orders-pg@1#b1, and make the milestone depend on it');
   // All of them at once, each named.
   const r = await submitPlan(ctx, [w('W1', { depends_on: ['W2', 'W7'] }), w('W2', { depends_on: ['W1'] }), w('M1', { milestone: true })]);
   expect(r.note).toBe("Plan checks failed (PLN2): W1 depends on W7, which isn't a work package of this version; M1 is a milestone, and depends on no members: a milestone depends on the work packages it gathers (PLN3); Depends on has a cycle: W1 → W2 → W1.");
@@ -151,6 +164,16 @@ test('only a milestone carries a target date: a dated work package is refused as
   expect(await draft({ depends_on: ['W0', 'W0'] })).toMatch(/W1's depends_on names W0 more than once/);
   expect(await draft({ depends_on: 'W0' })).toMatch(/W1's depends_on lists work packages by their element ids/);
   expect(await draft(['W0'])).toMatch(/W1's work is an object of/);
+  // Nothing given is dropped quietly: an empty field is refused, saying to leave it out (review nits).
+  expect(await draft({ done_when: '   ' })).toBe("GateError: W1's done_when is empty: say when it is done, or leave done_when out.");
+  expect(await draft({ depends_on: [] })).toBe("GateError: W1's depends_on is empty: name the work packages it depends on, or leave depends_on out.");
+  expect(await draft({ milestone: false, size: 'S' })).toBe("GateError: W1's milestone is false: a milestone says milestone: true, and a work package that isn't one leaves milestone out.");
+  expect(await draft({})).toBe("GateError: W1's work is empty: give its fields, or null to clear them.");
+  // A work field beside the text, not inside work, is refused, not dropped (review M1).
+  expect(await rejection(kolab.draft(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.', done_when: 'Built.' } as ElementInput] })))
+    .toBe('GateError: W1 has done_when beside its text: work fields go inside work, as {"work":{"done_when":…}}.');
+  expect(await rejection(kolab.draft(engineer, 'orders-plan', { deltas: [{ kind: 'add', element: 'W1', text: 'Build it.', size: 'S' } as never] })))
+    .toMatch(/W1 has size beside its text: work fields go inside work/);
   // Over a limit, it says which.
   expect(await draft({ done_when: 'x'.repeat(MAX_DONE_WHEN + 1) })).toBe(`LimitError: W1's done_when is ${(MAX_DONE_WHEN + 1).toLocaleString('en')} characters; the limit is ${MAX_DONE_WHEN.toLocaleString('en')}.`);
   expect(await draft({ depends_on: Array.from({ length: MAX_DEPENDS_ON + 1 }, (_, i) => `W${i + 2}`) })).toMatch(new RegExp(`^LimitError: W1 depends on ${MAX_DEPENDS_ON + 1} work packages; the limit is ${MAX_DEPENDS_ON}`));
@@ -245,4 +268,36 @@ test('the plan checks are Kolab\'s own: a substituted check doesn\'t stand in fo
   await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
   const id = await kolab.draft(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.', work: { depends_on: ['W1'] } }] });
   expect(await kolab.submit(engineer, id)).toMatchObject({ ok: false, note: 'Plan checks failed (PLN2): W1 depends on itself.' });
+});
+
+test('an element-scope link into a work package sees a change to its work fields, and none moves for an element without them (D98, review M2)', async () => {
+  const ctx = await planned();
+  const { kolab, engineer } = ctx;
+  const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.', work: { done_when: 'It is built.' } }, { id: 'W2', text: 'Ship it.' }, { id: 'W3', text: 'Tell people.' }])).id;
+  // W2 relies on W1, and W3 on W2 (which has no work fields): links within the plan (D78).
+  await kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W2', target: v1, targetElement: 'W1' });
+  await kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W3', target: v1, targetElement: 'W2' });
+  // A link to an element with no work fields is pinned to its text alone, as it always was.
+  const pinned = (await kolab.db.query<{ target_fingerprint: string; target_element_id: string }>(
+    `select target_fingerprint, target_element_id from edge where source_version_id = $1 order by target_element_id`, [v1])).rows;
+  expect(pinned[1]).toStrictEqual({ target_element_id: 'W2', target_fingerprint: fingerprint('Ship it.') });
+  // Only W1's done-when changes: W2's link to it is marked changed, and W3 only through W2 (its own link to W2 holds).
+  await kolab.commit(engineer, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1', work: { done_when: 'It is built and tested.' } }] });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W2', 'changed'], ['W3', 'upstream_dirty']]);
+});
+
+test('a Delivers from an element that has become a milestone is refused, whichever comes first: the link or the commit (review L4)', async () => {
+  const ctx = await planned();
+  const { kolab, engineer, b1 } = ctx;
+  const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.' }, { id: 'W2', text: 'Ship it.' }])).id;
+  // The link first, on the committed version a draft that makes W1 a milestone is built on: the draft carries it, and is refused.
+  const draft = await kolab.draft(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.' }] });
+  const link = await kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W1', target: b1, targetElement: 'b1' });
+  expect(await kolab.submit(engineer, draft)).toMatchObject({ ok: false, note: expect.stringContaining('W1 is a milestone, and delivers orders-pg@1#b1') });
+  await kolab.abandon(engineer, draft);
+  await kolab.db.query(`delete from edge where id = $1`, [link]);
+  // The commit first: a link added afterwards to the version it superseded is refused, under the node's lock.
+  await kolab.commit(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.' }] });
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W1', target: b1, targetElement: 'b1' })))
+    .toBe('GateError: W1 is a milestone, and a milestone delivers nothing (PLN2, PLN3): link the work package that delivers orders-pg#b1, and make the milestone depend on it');
 });

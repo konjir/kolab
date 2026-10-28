@@ -88,3 +88,28 @@ const N = 'insert into node(id, name, kind, layer, title, kolab_id, created_by) 
   expect(refused.output).toMatch(/^FAIL /m);
   expect(refused.output).not.toContain('not-the-password');
 });
+
+(onPostgres ? test : test.skip)('preflight 0029 is advisory: on a database at 0028 it says so, lists any plan link PLN2 would refuse, and gates nothing', async () => {
+  const { databaseUrl } = await persistentStore();
+  const db = openDb({ databaseUrl });
+  try {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, MIGRATIONS.findIndex((m) => m.name === 'work_fields')) });
+    await db.exec(`insert into account(id, kind, name, created_by) values ('lee', 'user', 'Lee', 'admin');
+      insert into kolab(id, owner_id, title, created_by) values ('shop', 'lee', 'Shop', 'admin');
+      insert into actor(id, name, created_by) values ('lee', 'Lee', 'admin');
+      insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('s', 's', 'spec', 'functional', 'S', 'shop', 'lee');
+      insert into node(id, name, kind, layer, title, kolab_id, created_by, parent_node_id) values ('b', 'b', 'binding', 'technical', 'B', 'shop', 'lee', 's');
+      insert into node(id, name, kind, layer, title, kolab_id, created_by, parent_node_id) values ('w', 'w', 'plan', 'technical', 'W', 'shop', 'lee', 'b');
+      insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role, submitted_by) values
+        ('bv', 'b', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee'), ('wv', 'w', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee');
+      insert into element(version_id, element_id, ord, text, fingerprint) values ('bv', 'b1', 0, 'A table.', 'x'), ('wv', 'W1', 0, 'Build it.', 'y');
+      insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
+        values ('e1', 'derivation', 'wv', 'W1', 'bv', 'b1', 'x', 'lee');`);
+  } finally { await db.close(); }
+  const { code, output } = await preflight(databaseUrl!, '0029');
+  expect(code).toBe(0);
+  expect(output).toContain('preflight 0029, read-only, on a database at 0028: advisory, it gates nothing');
+  expect(output).toContain('advise 2 Delivers of another kind than dependency: shop/w@1#W1 -> shop/b@1#b1 [e1] derivation');
+  expect(output).toMatch(/RESULT \{"migration":"0029","at":28,"advisory":true,"findings":1\}/);
+  expect(output).not.toContain('refuse');
+});

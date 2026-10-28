@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { Kolab, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
-import { commitReviewed, els, marksOn, people, persistentStore, rejection, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, people, persistentStore, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
@@ -1414,4 +1414,49 @@ test('a database at 0028 reaches 0029: nothing is rewritten, every element and l
     // The version before keeps the fingerprint its element always had.
     expect((await kolab.elements('lp1'))[0].fingerprint).toBe(fingerprint('Build the API.'));
   } finally { await kolab.close(); }
+});
+
+/** deploy/preflight/0029.sql, as it ships: advisory, one query, rows (ord, why, nodes). */
+const PREFLIGHT_0029 = readFileSync(new URL('../../../deploy/preflight/0029.sql', import.meta.url), 'utf8');
+
+test('preflight 0029 is advisory, runs on a database at 0028, and names exactly the links PLN2 then refuses a plan\'s next version for (review: production impact)', async () => {
+  expect(PREFLIGHT_0029.split('\n')[0]).toBe('-- advisory');
+  // On a database at 0028, before work fields exist: it runs, and finds nothing in an empty one.
+  const at = MIGRATIONS.findIndex((x) => x.name === 'work_fields');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    expect((await db.query(PREFLIGHT_0029)).rows).toStrictEqual([]);
+  });
+  // A plan with links written before PLN2: a derivation, one from the whole plan, one to the whole binding.
+  const { kolab, product, engineer } = await setup();
+  await kolab.createNode(product, 'spec', 'Orders', 'orders');
+  await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
+  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
+  const b1 = await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.', b2: 'A queue.' }) });
+  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
+  const w1 = await kolab.commit(engineer, 'orders-plan', { elements: els({ W1: 'Build it.', W2: 'Ship it.' }) });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: b1, targetElement: 'b2' });   // a good one
+  const fp = async (el: string | null) => ((await kolab.resolveIn(b1, el, null)) as { fingerprint: string }).fingerprint;
+  await kolab.db.query(`insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
+                        values ('d1', 'derivation', $1, 'W1', $2, 'b1', $3, 'bob'), ('d2', 'dependency', $1, null, $2, 'b1', $3, 'bob'),
+                               ('d3', 'dependency', $1, 'W2', $2, null, $4, 'bob')`, [w1, b1, await fp('b1'), await fp(null)]);
+  expect((await kolab.db.query(PREFLIGHT_0029)).rows).toStrictEqual([
+    { ord: 2, why: 'Delivers of another kind than dependency', nodes: 'test/orders-plan@1#W1 -> test/orders-pg@1#b1 [d1] derivation' },
+    { ord: 3, why: 'Delivers from the whole plan version', nodes: 'test/orders-plan@1 -> test/orders-pg@1#b1 [d2]' },
+    { ord: 4, why: 'Delivers to the whole binding', nodes: 'test/orders-plan@1#W2 -> test/orders-pg@1 [d3]' },
+  ]);
+  // The next version is refused for exactly those three, and nothing else.
+  const draft = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it well.', W2: 'Ship it.' }) });
+  const r = await kolab.submit(engineer, draft);
+  expect(r.note).toBe('Plan checks failed (PLN2): a link from the whole version to orders-pg@1#b1 delivers nothing: a Delivers is from a work package, an element (PLN1); '
+    + 'W1 delivers orders-pg@1#b1 through a derivation link, and a Delivers is a dependency link (PLN1); '
+    + 'W2 delivers orders-pg@1, and a Delivers names one binding element, at element scope, not the whole binding (PLN1, LNK3).');
+  // The draft that unlinks them is what the preflight then finds clean, and it commits.
+  await kolab.abandon(engineer, draft);
+  const fixed = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it well.', W2: 'Ship it.' }), unlink: [{ link: 'd1' }, { link: 'd2' }, { link: 'd3' }] });
+  const rows = (await kolab.db.query<{ ord: number }>(PREFLIGHT_0029)).rows;
+  // Only the committed version, whose next draft would carry them, is still named; the draft is clean.
+  expect(rows.every((x) => !JSON.stringify(x).includes('orders-plan@2'))).toBe(true);
+  expect(await kolab.submit(engineer, fixed)).toMatchObject({ ok: true });
+  expect((await kolab.db.query(PREFLIGHT_0029)).rows).toStrictEqual([]);
 });
