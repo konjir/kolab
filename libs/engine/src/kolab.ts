@@ -5631,11 +5631,16 @@ export class Kolab {
       `select id from version where node_id = $1 and seq < $2 and state = 'committed' order by seq desc limit 1`, [v.node_id, v.seq]);
     const was = new Map((before.rows[0] ? await this.elements(before.rows[0].id) : []).map((e) => [e.element_id, e]));
     const now = await this.elements(v.id);
-    // A plan edit never settles the mark on a work package In review (D102, as D98 ruling 4 has it for
-    // Done): the mark stays open, so its reviewer sees the package is at risk before approving.
+    // A plan edit never settles the mark on a work package In review or Done (D102, D98 ruling 4): the
+    // mark stays open, so its reviewer sees the package is at risk before approving, and its owner after.
+    // Done too: the cascade may run long after the commit (queued behind an earlier one, or a retry,
+    // W1.8), and a package approved meanwhile keeps its mark for its owner to confirm or reopen (D98
+    // ruling 4). One Done and at risk when the version was drafted was reopened, and its mark settled,
+    // in the commit itself (syncWorkIn), so leaving Done ones out loses nothing. A milestone's are
+    // settled as any element's: it is never reopened.
     const reviewing = new Set((await this.db.query<{ element_id: string }>(
       `select w.element_id from work_package w join node n on n.id = w.plan_node_id
-        where w.plan_node_id = $1 and n.kind = 'plan' and w.state = 'in_review'`, [v.node_id])).rows.map((r) => r.element_id));
+        where w.plan_node_id = $1 and n.kind = 'plan' and w.state in ('in_review', 'done') and not w.milestone`, [v.node_id])).rows.map((r) => r.element_id));
     const revised = now
       .filter((e) => was.get(e.element_id)?.fingerprint !== e.fingerprint || was.get(e.element_id)?.parent_element_id !== e.parent_element_id)
       .map((e) => e.element_id)
@@ -5799,6 +5804,10 @@ export class Kolab {
         if (across && await this.unvouchedLink({ ...e, held_by: s.actor_id }, tx)) {
           throw new AccessError(`${s.actor_id} can't read kolab ${e.target_kolab_id}, so can't check this link into it; someone who reads it clears it`);
         }
+        // A mark cleared already (by another clear, a revision or a reopening) stays as it was
+        // settled: who settled it, and how, isn't rewritten.
+        const was = await this.markStateIn(tx, markId);
+        if (was !== 'open') return;
         const latest = (await tx.query<{ id: string }>(
           `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [tNode])).rows[0].id;
         const r = resolveInElements(await this.elements(latest, tx), e.target_element_id, e.target_selector);
@@ -5806,7 +5815,6 @@ export class Kolab {
         const now = (await tx.query<EdgeRow>(
           `update edge set target_version_id = $2, target_fingerprint = $3, held_by = $4 where id = $1 returning *`,
           [e.id, latest, r.fingerprint, s.actor_id])).rows[0];
-        const was = await this.markStateIn(tx, markId);
         await this.closeMarkIn(tx, signal, markId, s.actor_id);
         // On a work package with work, clearing says the work holds (PLN10, D98): once, by whoever
         // cleared it while it was open, however many clears race.
@@ -5818,6 +5826,7 @@ export class Kolab {
     }
     await this.asSystem(async (tx, signal) => {
       const was = await this.markStateIn(tx, markId);
+      if (was !== 'open') return;   // settled already: as it was settled (see above)
       await this.closeMarkIn(tx, signal, markId, s.actor_id);
       await this.confirmIn(tx, signal, { ...m, state: was }, s.actor_id);
     }, v.node_id);
