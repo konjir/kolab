@@ -3,7 +3,7 @@ import {
   KINDS, LAYER_OF_KIND,
   type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods,
 } from '@konjir/types';
-import { api } from '../api.js';
+import { api, pushed } from '../api.js';
 import { addr, ago } from '../util.js';
 import { Addr, Pill } from './bits.js';
 import { QueryBox, type Act } from './Marks.js';
@@ -12,9 +12,10 @@ import { QueryBox, type Act } from './Marks.js';
 export function useRead<T>(path: string, tick: number) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
+  const last = useRef<{ key: string; tick: number }>(undefined);
   useEffect(() => {
     let live = true;
-    api<T>(path).then((d) => { if (live) { setData(d); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
+    api<T>(path, undefined, undefined, { push: pushed(last, path, tick) }).then((d) => { if (live) { setData(d); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
   }, [path, tick]);
   return { data, error };
@@ -31,13 +32,15 @@ export function usePaged<T extends WebPaged>(path: string, tick: number) {
   const shown = useRef({ path, count: 1 });
   if (shown.current.path !== path) shown.current = { path, count: 1 };
   const url = (cursor: string | null) => (cursor ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : path);
+  const last = useRef<{ key: string; tick: number }>(undefined);
   useEffect(() => {
     let live = true;
+    const push = pushed(last, path, tick);
     (async () => {
       const out: T[] = [];
       let cursor: string | null = null;
       do {
-        const p: T = await api<T>(url(cursor));
+        const p: T = await api<T>(url(cursor), undefined, undefined, { push });
         out.push(p);
         cursor = p.next;
       } while (cursor && out.length < shown.current.count);
@@ -72,14 +75,16 @@ export function useMore<T extends WebPaged>(path: string, first: string | null |
   if (shown.current.path !== path) shown.current = { path, count: 0 };
   const key = `${path} ${first ?? ''}`;
   const url = (cursor: string) => `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}`;
+  const last = useRef<{ key: string; tick: number }>(undefined);
   useEffect(() => {
+    const push = pushed(last, key, tick);
     if (!first || !shown.current.count) return undefined;
     let live = true;
     (async () => {
       const out: T[] = [];
       let cursor: string | null = first;
       while (cursor && out.length < shown.current.count) {
-        const p: T = await api<T>(url(cursor));
+        const p: T = await api<T>(url(cursor), undefined, undefined, { push });
         out.push(p);
         cursor = p.next;
       }

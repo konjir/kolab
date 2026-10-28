@@ -1489,10 +1489,13 @@ test('a database at 0029 reaches 0030: each plan\'s latest committed version get
       { kolab_id: 'lab', plan_node_id: 'lab-plan', element_id: 'p1', state: 'todo', assignee_id: null, lease_until: null, milestone: false, removed_in_version_id: null },
     ]);
     // Each with an added event by the version's author, naming what it delivers at the binding's latest committed version.
-    const evs = (await db.query<{ id: string; element_id: string; kind: string; actor_id: string; plan_version_id: string; concerned: unknown; note: string }>(
-      `select id, element_id, kind, actor_id, plan_version_id, concerned, note from work_event order by id`)).rows;
+    // Each dated, and named, by the committed version that brought it in: W1.3 by w1, W4.1 by w2.
+    const evs = (await db.query<{ id: string; element_id: string; kind: string; actor_id: string; plan_version_id: string; concerned: unknown; note: string; dated: boolean }>(
+      `select e.id, e.element_id, e.kind, e.actor_id, e.plan_version_id, e.concerned, e.note, e.at = v.created_at as dated
+         from work_event e join version v on v.id = e.plan_version_id order by e.id`)).rows;
+    expect(evs.every((e) => e.dated)).toBe(true);
     expect(evs.map(({ element_id, kind, actor_id, plan_version_id, concerned }) => ({ element_id, kind, actor_id, plan_version_id, concerned }))).toStrictEqual([
-      { element_id: 'W1.3', kind: 'added', actor_id: 'mirror-engineer', plan_version_id: 'w2', concerned: [{ address: 'kj:kolab-binding@2#TEN-DATA', version_id: 'b2', fingerprint: fingerprint('Every row carries its kolab.') }] },
+      { element_id: 'W1.3', kind: 'added', actor_id: 'mirror-engineer', plan_version_id: 'w1', concerned: [{ address: 'kj:kolab-binding@2#TEN-DATA', version_id: 'b2', fingerprint: fingerprint('Every row carries its kolab.') }] },
       { element_id: 'W4.1', kind: 'added', actor_id: 'mirror-engineer', plan_version_id: 'w2', concerned: [{ address: 'kj:kolab-binding@2#KON-MODEL', version_id: 'b2', fingerprint: fingerprint('Node kinds are free labels.') }] },
       { element_id: 'p1', kind: 'added', actor_id: 'lee', plan_version_id: 'lp1', concerned: [{ address: 'kj:lab-api@1#a1', version_id: 'la1', fingerprint: fingerprint('An API.') }] },
     ]);

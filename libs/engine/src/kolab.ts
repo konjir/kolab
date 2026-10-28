@@ -1723,7 +1723,8 @@ export class Kolab {
     }
     // Every call renews the lease on the work its actor holds here (PLN15), reads included; a
     // read a listen stream prompts doesn't (quietly, D98).
-    if (!QUIET.getStore()) await this.renewLease(s.actor_id, s.kolab);
+    // Only while it may still write the technical layer: an actor that can't write keeps no work (D98).
+    if (!QUIET.getStore() && s.access.layers.includes('technical')) await this.renewLease(s.actor_id, s.kolab);
     return s;
   }
 
@@ -3073,6 +3074,13 @@ export class Kolab {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
       const orgArchived = async (id: string) => (await tx.query(
         `select 1 from account where id = $1 and kind = 'organization' and archived_at is not null`, [id])).rows.length > 0;
+      // Archiving a kolab, or an organization with its kolabs, first gives back the work held In
+      // progress there, while it can still change, so its assignees pull elsewhere meanwhile (PLN18).
+      if (archive && (kind === 'kolab' || kind === 'organization')) {
+        const going = kind === 'kolab' ? [name]
+          : (await tx.query<{ id: string }>(`select id from kolab where owner_id = $1 and archived_at is null`, [name])).rows.map((x) => x.id);
+        await this.releaseArchivedWorkIn(tx, signal, going);
+      }
       let changed: { rows: unknown[] };
       let owner: string | undefined;   // an account whose agents (and, for an organization, kolabs) go or come back with it
       let org = false;
@@ -6612,8 +6620,10 @@ export class Kolab {
     return {
       work: formatAddress({ node: p.plan.name, element: p.id }), plan: p.plan.name, id: p.id, text: p.text, state: p.state,
       assignee: p.assignee, lease_until: p.lease_until, milestone: p.row.milestone, size: p.work?.size ?? null,
-      // A question a mark raised is told only to those who belong to the kolab's work (D58).
-      blocked: p.blocked.map(({ byMark, ...b }) => (byMark && !belongs && b.reason === 'question' ? { reason: b.reason, on: b.on } : b)),
+      // Open case files and the questions marks raised are told only to those who belong to the
+      // kolab's work, as row-level security holds them (0013, 0022; D49, D58): a session that holds
+      // only Read sees neither among the reasons.
+      blocked: p.blocked.filter((b) => belongs || !(b.reason === 'case_file' || b.byMark)).map(({ byMark: _m, ...b }) => b),
       ready: p.state === 'todo' && !p.row.removed_in_version_id && !p.row.milestone && !p.blocked.length && canPull,
       ...(p.row.removed_in_version_id ? { removed_in: formatAddress({ node: p.plan.name, version: p.row.removed_seq ?? undefined }) } : {}),
       ...(p.row.unreviewed ? { unreviewed: true } : {}),
@@ -6756,11 +6766,14 @@ export class Kolab {
     const item = this.workItem(p, canPull, s.access.layers.length > 0);
     const size = pageSize(page.limit);
     const list = `work_events:${plan.id}#${id}`;
-    const [after] = (keyOf(list, page.cursor, ['text']) ?? [null]) as [string | null];
-    const rows = await this.read({ session: sessionId }, async (q) => (await q.query<WorkEventRow>(
-      `select ${WORK_EVENT_COLUMNS} from work_event ev where ev.plan_node_id = $1 and ev.element_id = $2 and ($3::text is null or ev.id > $3)
-        order by ev.id limit $4`, [plan.id, id, after, size + 1])).rows);
-    const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
+    const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
+    // In the database's clock's order, a ULID breaking ties (D98): each process mints its own ids.
+    const rows = await this.read({ session: sessionId }, async (q) => (await q.query<WorkEventRow & { at_key: string }>(
+      `select ${WORK_EVENT_COLUMNS}, ${EVENT_AT_KEY} as at_key from work_event ev
+        where ev.plan_node_id = $1 and ev.element_id = $2
+          and ($3::text is null or (ev.at, ev.id) > (($3::timestamp at time zone 'UTC'), $4::text))
+        order by ev.at, ev.id limit $5`, [plan.id, id, after?.[0] ?? null, after?.[1] ?? null, size + 1])).rows);
+    const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.at_key, r.id]);
     const events = await this.workEventViews(shown);
     return {
       ...item, trailer: workTrailer(s.kolab, plan.name, id),
@@ -6819,6 +6832,14 @@ export class Kolab {
     const rows = new Map((await tx.query<WorkRow>(`${WORK_ROWS} where w.plan_node_id = $1 order by w.element_id for update of w`, [v.node_id])).rows.map((r) => [r.element_id, r]));
     const delivers = await this.deliveries(tx, plan, v, live);
     const told = new Set<string>();
+    // A lease that lapsed and wasn't swept yet lapses first, as Kolab, in the version it stood in, so
+    // what follows starts from To do and the history says how it got there (PLN5, PLN15).
+    const before = v.base_version_id ? (await tx.query<VersionRow>(`select * from version where id = $1`, [v.base_version_id])).rows[0] : undefined;
+    for (const r of rows.values()) {
+      if (!r.lapsed) continue;
+      await this.lapseIn(tx, signal, r, before);
+      Object.assign(r, { state: 'todo', assignee_id: null, lease_until: null, lapsed: false });
+    }
     const event = (id: string, kind: WorkEventKind, from: WorkState | null, to: WorkState | null, actor: string, extra: { assigneeFrom?: string | null; assigneeTo?: string | null; note?: string } = {}) =>
       this.workEventIn(tx, { plan: plan.id, element: id, kind, from, to, actor, planVersion: v.id, concerned: delivers.get(id) ?? [], ...extra });
     for (const e of els) {
@@ -6830,9 +6851,16 @@ export class Kolab {
         continue;
       }
       if (r.removed_in_version_id) {
-        await tx.query(`update work_package set removed_in_version_id = null, state = 'todo', assignee_id = null, lease_until = null, unreviewed = false,
-                               milestone = $3, updated_at = clock_timestamp() where plan_node_id = $1 and element_id = $2`, [plan.id, e.element_id, milestone]);
-        await event(e.element_id, 'restored', r.state, 'todo', v.actor_id, { assigneeFrom: r.assignee_id });
+        // Done comes back Done (its standing is the package's, keyed to its id, PLN4); anything else To do.
+        if (r.state === 'done') {
+          await tx.query(`update work_package set removed_in_version_id = null, milestone = $3, updated_at = clock_timestamp()
+                           where plan_node_id = $1 and element_id = $2`, [plan.id, e.element_id, milestone]);
+          await event(e.element_id, 'restored', 'done', 'done', v.actor_id, { assigneeFrom: r.assignee_id, assigneeTo: r.assignee_id });
+        } else {
+          await tx.query(`update work_package set removed_in_version_id = null, state = 'todo', assignee_id = null, lease_until = null, unreviewed = false,
+                                 milestone = $3, updated_at = clock_timestamp() where plan_node_id = $1 and element_id = $2`, [plan.id, e.element_id, milestone]);
+          await event(e.element_id, 'restored', r.state, 'todo', v.actor_id, { assigneeFrom: r.assignee_id });
+        }
         continue;
       }
       if (r.milestone === milestone) continue;
@@ -7023,48 +7051,62 @@ export class Kolab {
   }
 
   /**
-   * An actor with Maintain or Admin in the kolab gives a work package to `to` (PLN15): To do or In
-   * progress becomes In progress for `to`, with a fresh lease. `to` must hold Write on the technical
-   * layer there, and hold nothing In progress (PLN18). Not a milestone, nor a removed package.
+   * An actor with Maintain or Admin in the kolab gives a work package to `to` (PLN15): In progress,
+   * or To do and not blocked, becomes In progress for `to`, with a fresh lease. `to` must hold Write
+   * on the technical layer there and hold nothing In progress (PLN18). Work To do isn't given to the
+   * caller itself: it pulls it. Not a milestone, nor a removed package. The caller's Maintain is
+   * checked again under the access lock. An actor unknown, one with no Write here and one busy in
+   * another kolab are refused alike, so nothing is learned of who exists or of another kolab's work
+   * (D49, W3.6). A lease that lapsed unswept is recorded as lapsed first, and its assignee told.
    */
   async reassignWork(sessionId: string, ref: string, to: string): Promise<WorkItemView> {
     const { s, plan, id } = await this.packageIn(sessionId, ref);
-    if (rankOf(s.access.level) < rankOf('maintain')) {
-      throw new AccessError(`reassigning work needs Maintain or Admin in kolab ${s.kolab} (PLN15); ${s.actor_id} holds ${describeAccess(s.access)}`);
-    }
-    if (typeof to !== 'string' || !(await this.findActor(to))) throw new ActorError(`no actor ${String(to)}`);
+    const needsMaintain = (a: Access) => new AccessError(`reassigning work needs Maintain or Admin in kolab ${s.kolab} (PLN15); ${s.actor_id} holds ${describeAccess(a)}`);
+    if (rankOf(s.access.level) < rankOf('maintain')) throw needsMaintain(s.access);
+    const target = String(to);
+    const cantGive = () => new AccessError(`${target} can't be given work in kolab ${s.kolab}: give it to someone who holds Write on the technical layer here and holds no work package In progress`);
+    const busy = (held: { kolab: string; plan: string; id: string }) => (held.kolab === s.kolab ? heldError(target, held, s.kolab) : cantGive());
     const at = formatAddress({ node: plan.name, element: id });
     try {
       await this.inTransaction(async (tx, signal) => {
         await tx.query(`select pg_advisory_xact_lock_shared($1)`, [ACCESS_LOCK]);
         const lease = await this.leaseSeconds(tx, s.kolab);
         await tx.exec('set local role kj_system');
-        if (!(await accessIn(tx, to, s.kolab)).layers.includes('technical')) {
-          throw new AccessError(`${to} may not write the technical layer of kolab ${s.kolab}, so it can't be given work there: it holds ${describeAccess(await accessIn(tx, to, s.kolab))}`);
-        }
+        const mine = await accessIn(tx, s.actor_id, s.kolab);
+        if (rankOf(mine.level) < rankOf('maintain')) throw needsMaintain(mine);
+        if (!ACTOR_ID.test(target) || !(await accessIn(tx, target, s.kolab)).layers.includes('technical')) throw cantGive();
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.plan_node_id = $1 and w.element_id = $2 for update of w`, [plan.id, id])).rows[0];
         if (r.removed_in_version_id) throw new GateError(`${at} was removed from the plan (PLN4), so it can't be given to anyone`);
         if (r.milestone) throw new GateError(`${at} is a milestone: it has no work of its own, and is Done when its members are (PLN3)`);
-        const from = r.lapsed ? 'todo' : r.state;
+        if (r.lapsed) {
+          await this.lapseIn(tx, signal, r);
+          Object.assign(r, { state: 'todo', assignee_id: null, lease_until: null, lapsed: false });
+        }
+        const from = r.state;
         if (from !== 'todo' && from !== 'in_progress') throw new GateError(`${at} is ${STATE_WORDS[from]}: only work To do or In progress is reassigned`);
+        if (from === 'todo') {
+          if (target === s.actor_id) throw new GateError(`${at} is To do: pull it (konjir_pull_work) rather than give it to yourself`);
+          const p = (await this.planBoard(tx, plan)).find((x) => x.id === id);
+          if (p?.blocked.length) throw new GateError(`${at} is blocked (PLN19), so it is given to no one until it is ready: konjir_read_work says why`);
+        }
         const was = from === 'in_progress' ? r.assignee_id : null;
-        if (was === to) throw new GateError(`${to} already holds ${at}`);
-        const held = await this.heldBy(tx, to);
-        if (held) throw heldError(to, held, s.kolab);
+        if (was === target) throw new GateError(`${target} already holds ${at}`);
+        const held = await this.heldBy(tx, target);
+        if (held) throw busy(held);
         await tx.query(`update work_package set state = 'in_progress', assignee_id = $3, unreviewed = false, updated_at = clock_timestamp(),
                                lease_until = clock_timestamp() + $4 * interval '1 second'
-                         where plan_node_id = $1 and element_id = $2`, [plan.id, id, to, lease]);
+                         where plan_node_id = $1 and element_id = $2`, [plan.id, id, target, lease]);
         const c = await this.concernedIn(tx, plan.id, id);
         await this.workEventIn(tx, { plan: plan.id, element: id, kind: 'reassigned', from, to: 'in_progress', actor: s.actor_id,
-          assigneeFrom: was, assigneeTo: to, planVersion: c.version.id, concerned: c.delivers,
-          note: was ? `from ${was} to ${to}` : `to ${to}` });
-        for (const a of [was, to]) if (a) await signal({ inbox: 'actor', kolab: s.kolab, actor: a });
+          assigneeFrom: was, assigneeTo: target, planVersion: c.version.id, concerned: c.delivers,
+          note: was ? `from ${was} to ${target}` : `to ${target}` });
+        for (const a of [was, target]) if (a) await signal({ inbox: 'actor', kolab: s.kolab, actor: a });
         await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
       });
     } catch (e) {
       if (isUniqueViolation(e, 'one_in_progress_per_actor')) {
-        const held = await this.heldBy(this.db, to);
-        if (held) throw heldError(to, held, s.kolab);
+        const held = await this.heldBy(this.db, target);
+        throw held ? busy(held) : cantGive();
       }
       throw e;
     }
@@ -7078,14 +7120,17 @@ export class Kolab {
    */
   async setWorkLease(sessionId: string, minutes: number): Promise<{ kolab: string; minutes: number; was: number }> {
     const s = await this.session(sessionId);
-    if (rankOf(s.access.level) < rankOf('maintain')) {
-      throw new AccessError(`setting the lease on work needs Maintain or Admin in kolab ${s.kolab} (PLN15); ${s.actor_id} holds ${describeAccess(s.access)}`);
-    }
+    const needsMaintain = (a: Access) => new AccessError(`setting the lease on work needs Maintain or Admin in kolab ${s.kolab} (PLN15); ${s.actor_id} holds ${describeAccess(a)}`);
+    if (rankOf(s.access.level) < rankOf('maintain')) throw needsMaintain(s.access);
     if (!Number.isInteger(minutes) || minutes < WORK_LEASE_MINUTES.min || minutes > WORK_LEASE_MINUTES.max) {
       throw new LimitError(`minutes is a whole number from ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max} (a day)`);
     }
     await this.requireLiveKolab(s.kolab, 'changes nothing');
     const was = await this.inTransaction(async (tx) => {
+      // Maintain again, under the access lock: a demotion landing meanwhile is honored.
+      await tx.query(`select pg_advisory_xact_lock_shared($1)`, [ACCESS_LOCK]);
+      const mine = await accessIn(tx, s.actor_id, s.kolab);
+      if (rankOf(mine.level) < rankOf('maintain')) throw needsMaintain(mine);
       const before = (await tx.query<{ s: number }>(`select work_lease_s as s from kolab where id = $1 for update`, [s.kolab])).rows[0].s;
       await tx.query(`update kolab set work_lease_s = $2 where id = $1`, [s.kolab, minutes * 60]);
       await audit(tx, s.actor_id, 'work_lease.set', { kolab: s.kolab, subject: s.kolab, detail: { seconds: minutes * 60, was: before } });
@@ -7106,22 +7151,13 @@ export class Kolab {
     let total = 0;
     for (;;) {
       const n = await this.inTransaction(async (tx, signal) => {
-        const rows = (await tx.query<{ kolab_id: string; plan_node_id: string; element_id: string; assignee_id: string; lease_until: Date | string }>(
+        const rows = (await tx.query<LapsedRow>(
           `select w.kolab_id, w.plan_node_id, w.element_id, w.assignee_id, w.lease_until from work_package w
             where w.state = 'in_progress' and w.lease_until < clock_timestamp() and not ${archivedKolabSql('w.kolab_id')}
             order by w.lease_until limit ${SWEEP_BATCH} for update of w skip locked`)).rows;
         if (!rows.length) return 0;
         await tx.exec('set local role kj_system');
-        for (const r of rows) {
-          await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, updated_at = clock_timestamp()
-                           where plan_node_id = $1 and element_id = $2`, [r.plan_node_id, r.element_id]);
-          const c = await this.concernedIn(tx, r.plan_node_id, r.element_id);
-          await this.workEventIn(tx, { plan: r.plan_node_id, element: r.element_id, kind: 'lapsed', from: 'in_progress', to: 'todo', actor: SYSTEM_ACTOR,
-            assigneeFrom: r.assignee_id, planVersion: c.version.id, concerned: c.delivers,
-            note: `${r.assignee_id}'s lease lapsed at ${iso(r.lease_until)}: no call of theirs renewed it (PLN15)` });
-          await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
-        }
-        for (const kolab of new Set(rows.map((r) => r.kolab_id))) await signal({ inbox: 'layer', kolab, layer: 'technical' });
+        for (const r of rows) await this.lapseIn(tx, signal, r);
         return rows.length;
       });
       total += n;
@@ -7130,29 +7166,69 @@ export class Kolab {
   }
 
   /**
+   * One lapsed lease back to To do, in `tx`, which holds its row (PLN15): recorded as Kolab's
+   * (`lapsed`, with whose lease and when), in `version` (the plan version it stood in; by default
+   * the plan's latest committed), and told to its assignee's answers and the technical inbox.
+   */
+  private async lapseIn(tx: Q, signal: Signal, r: LapsedRow, version?: VersionRow) {
+    await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, updated_at = clock_timestamp()
+                     where plan_node_id = $1 and element_id = $2`, [r.plan_node_id, r.element_id]);
+    const c = version
+      ? { version, delivers: (await this.deliveries(tx, (await tx.query<NodeRow>(`select ${NODE_COLUMNS} from node where id = $1`, [r.plan_node_id])).rows[0],
+        version, new Set([r.element_id]))).get(r.element_id) ?? [] }
+      : await this.concernedIn(tx, r.plan_node_id, r.element_id);
+    await this.workEventIn(tx, { plan: r.plan_node_id, element: r.element_id, kind: 'lapsed', from: 'in_progress', to: 'todo', actor: SYSTEM_ACTOR,
+      assigneeFrom: r.assignee_id, planVersion: c.version.id, concerned: c.delivers,
+      note: `${r.assignee_id}'s lease lapsed at ${iso(r.lease_until)}: no call of theirs renewed it (PLN15)` });
+    if (r.assignee_id) await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
+    await signal({ inbox: 'layer', kolab: r.kolab_id, layer: 'technical' });
+  }
+
+  /**
    * Gives back, in `tx`, the work held In progress by anyone who no longer holds Write on the
    * technical layer of its kolab (D98): a change of grants, membership or archive took it away. Run
    * beside endUnreachableIn, in the same transaction, as Kolab's own login: `released`, by Kolab,
-   * noting `access_lost`. An archived kolab's work waits; once it is unarchived, the next change of
-   * access, or the lease, gives it back.
+   * noting `access_lost`. An archived kolab's work was given back as it was archived
+   * (releaseArchivedWorkIn), so none is left there.
    */
   private async releaseLostWorkIn(tx: Q, signal: Signal): Promise<number> {
-    const rows = (await tx.query<{ kolab_id: string; plan_node_id: string; element_id: string; assignee_id: string }>(
+    // Rows locked in plan and element order, as a plan commit's sync locks them, so the two never deadlock.
+    const rows = (await tx.query<HeldRow>(
       `select w.kolab_id, w.plan_node_id, w.element_id, w.assignee_id from work_package w
         where w.state = 'in_progress' and not ${archivedKolabSql('w.kolab_id')}
           and not coalesce((select a.technical from kj_access(w.assignee_id, w.kolab_id) a), false)
+        order by w.plan_node_id, w.element_id
         for update of w`)).rows;
-    for (const r of rows) {
-      await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, updated_at = clock_timestamp()
-                       where plan_node_id = $1 and element_id = $2`, [r.plan_node_id, r.element_id]);
-      const c = await this.concernedIn(tx, r.plan_node_id, r.element_id);
-      await this.workEventIn(tx, { plan: r.plan_node_id, element: r.element_id, kind: 'released', from: 'in_progress', to: 'todo', actor: SYSTEM_ACTOR,
-        assigneeFrom: r.assignee_id, planVersion: c.version.id, concerned: c.delivers,
-        note: `access_lost: ${r.assignee_id} no longer holds Write on the technical layer of kolab ${r.kolab_id}` });
-      await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
-      await signal({ inbox: 'layer', kolab: r.kolab_id, layer: 'technical' });
-    }
+    for (const r of rows) await this.releaseByKolabIn(tx, signal, r, `access_lost: ${r.assignee_id} no longer holds Write on the technical layer of kolab ${r.kolab_id}`);
     return rows.length;
+  }
+
+  /**
+   * Gives back, in `tx`, the work held In progress in `kolabs`, which are about to be archived (D52):
+   * an archived kolab changes nothing, so its assignees would otherwise hold that work, and pull none
+   * anywhere (PLN18), until it is unarchived. Called before the archive is set, as Kolab's own
+   * login: `released`, by Kolab, noting `archived`.
+   */
+  private async releaseArchivedWorkIn(tx: Q, signal: Signal, kolabs: string[]): Promise<number> {
+    if (!kolabs.length) return 0;
+    const rows = (await tx.query<HeldRow>(
+      `select w.kolab_id, w.plan_node_id, w.element_id, w.assignee_id from work_package w
+        where w.state = 'in_progress' and w.kolab_id = any($1::text[])
+        order by w.plan_node_id, w.element_id
+        for update of w`, [kolabs])).rows;
+    for (const r of rows) await this.releaseByKolabIn(tx, signal, r, `archived: kolab ${r.kolab_id} is archived, so the work ${r.assignee_id} held there stops`);
+    return rows.length;
+  }
+
+  /** One package In progress back to To do, as Kolab's (`released`, with `note`), told to its assignee. */
+  private async releaseByKolabIn(tx: Q, signal: Signal, r: HeldRow, note: string) {
+    await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, updated_at = clock_timestamp()
+                     where plan_node_id = $1 and element_id = $2`, [r.plan_node_id, r.element_id]);
+    const c = await this.concernedIn(tx, r.plan_node_id, r.element_id);
+    await this.workEventIn(tx, { plan: r.plan_node_id, element: r.element_id, kind: 'released', from: 'in_progress', to: 'todo', actor: SYSTEM_ACTOR,
+      assigneeFrom: r.assignee_id, planVersion: c.version.id, concerned: c.delivers, note });
+    await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
+    await signal({ inbox: 'layer', kolab: r.kolab_id, layer: 'technical' });
   }
 
   /**
@@ -7171,7 +7247,7 @@ export class Kolab {
     const rows = await this.read({ session: sessionId }, async (q) => (await q.query<WorkEventRow & { plan: string }>(
       `select ${WORK_EVENT_COLUMNS}, n.name as plan from work_event ev join node n on n.id = ev.plan_node_id
         where ev.kolab_id = $1 and (ev.assignee_from = $2 or ev.assignee_to = $2) and ev.actor_id <> $2
-        order by ev.id desc limit 20`, [s.kolab, s.actor_id])).rows);
+        order by ev.at desc, ev.id desc limit 20`, [s.kolab, s.actor_id])).rows);
     const views = await this.workEventViews(rows);
     return { holding, events: views.map((v, i) => ({ work: formatAddress({ node: rows[i].plan, element: rows[i].element_id }), ...v })) };
   }
@@ -8031,6 +8107,11 @@ interface Delivery {
 }
 
 /** A work_package row, with whether its lease has lapsed by the database's clock, and the seq of the plan version that removed it. */
+/** A package held In progress, as a release by Kolab needs it. */
+interface HeldRow { kolab_id: string; plan_node_id: string; element_id: string; assignee_id: string }
+/** What a lapse needs of its package's row. */
+interface LapsedRow { kolab_id: string; plan_node_id: string; element_id: string; assignee_id: string | null; lease_until: Date | string | null }
+
 interface WorkRow {
   plan_node_id: string; element_id: string; kolab_id: string; state: WorkState; assignee_id: string | null;
   lease_until: Date | string | null; unreviewed: boolean; milestone: boolean; removed_in_version_id: string | null;
@@ -8056,6 +8137,8 @@ interface WorkEventRow {
   actor_id: string; assignee_from: string | null; assignee_to: string | null; plan_version_id: string;
   concerned: { address: string; version_id: string | null; fingerprint: string | null }[]; note: string | null; at: Date | string;
 }
+/** An event's time as a cursor's key: UTC, to the microsecond, as Postgres writes it. */
+const EVENT_AT_KEY = `to_char(ev.at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')`;
 const WORK_EVENT_COLUMNS = `ev.id, ev.plan_node_id, ev.element_id, ev.kind, ev.from_state, ev.to_state, ev.actor_id, ev.assignee_from,
         ev.assignee_to, ev.plan_version_id, ev.concerned, ev.note, ev.at`;
 

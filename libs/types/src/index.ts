@@ -294,13 +294,13 @@ export type WorkEventKind = typeof WORK_EVENT_KINDS[number];
 export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;
 /**
  * Why a work package is blocked (PLN19, as D98 amends it): a work package it depends on isn't
- * Done, or an open question or case file sits on a binding element it delivers. A reason a reader
- * may not see (a question a mark raised, for a session that holds only Read, D58) says only its kind.
+ * Done, or an open question or case file sits on a binding element it delivers. A session that
+ * holds only Read is told neither an open case file nor a question a mark raised (0013, 0022; D58).
  */
 export type WorkBlock =
   | { reason: 'depends_on'; work: string; state: WorkState }
-  | { reason: 'question'; on: string; query?: string }
-  | { reason: 'case_file'; on: string; case?: string };
+  | { reason: 'question'; on: string; query: string }
+  | { reason: 'case_file'; on: string; case: string };
 /** One work package on the board (konjir_list_work): what it is, where it stands, and whether it can be pulled. */
 export interface WorkItemView {
   /** Its address: kj:<plan>#<id> in the reader's kolab. */
@@ -509,4 +509,5 @@ export interface CaseFileView {
 }
 /** The web interface's API (W3.1). */
 export type * from './web.js';
+export { REFRESH_HEADER } from './web.js';
 export * from './limits.js';

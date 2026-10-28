@@ -15,7 +15,7 @@ import type {
   WebQueriesView, WebQuery, WebRuling, WebVersionsView,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
-import { nobodyCanReview, THREADS_PER_ELEMENT } from '@konjir/types';
+import { nobodyCanReview, REFRESH_HEADER, THREADS_PER_ELEMENT } from '@konjir/types';
 
 const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
@@ -879,17 +879,30 @@ test('a plan\'s page shows each work package\'s state on its latest version, rea
   ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }] });
   expect((await kolab.submit(engineer, v1)).ok).toBe(true);
   await kolab.pullWork(engineer);
-  const bob = await signIn(await serve(kolab), engineer);
+  const bobBase = await serve(kolab);
+  const bob = await signIn(bobBase, engineer);
   const view = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
   expect(view.elements.map((e) => [e.id, e.work_state?.state, e.work_state?.assignee, e.work_state?.blocked])).toStrictEqual([
     ['W1', 'in_progress', 'bob', []], ['W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-plan#W1', state: 'in_progress' }]], ['M1', 'todo', null, []],
   ]);
   expect(view.elements[0].work_state?.lease_until).toEqual(expect.any(String));
-  // A web request is a call of its own: it renews the lease of the work its person holds (PLN15, D98).
-  await kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '5 minutes' where element_id = 'W1'`);
+  // A request its person makes renews the lease of the work they hold (PLN15, D98); the page's own
+  // re-read after a pushed event, marked so, doesn't (D100), and the mark grants nothing else.
+  const left = async () => Number((await kolab.db.query<{ s: number }>(`select extract(epoch from lease_until - clock_timestamp()) as s from work_package where element_id = 'W1'`)).rows[0].s);
+  const shorten = () => kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '5 minutes' where element_id = 'W1'`);
+  await shorten();
+  for (const path of ['me', 'nodes/orders-plan', 'overview']) {
+    const r = await fetch(`${bobBase}/api/${path}`, { headers: { cookie: bob.jar, origin: bobBase, [REFRESH_HEADER]: 'push' } });
+    expect([path, r.status]).toStrictEqual([path, 200]);
+  }
+  expect(await left()).toBeLessThan(301);
+  // Without its person, the mark is nothing: no session, no read.
+  expect((await fetch(`${bobBase}/api/me`, { headers: { origin: bobBase, [REFRESH_HEADER]: 'push' } })).status).toBe(401);
   await bob.call('me');
-  const left = Number((await kolab.db.query<{ s: number }>(`select extract(epoch from lease_until - clock_timestamp()) as s from work_package where element_id = 'W1'`)).rows[0].s);
-  expect(left).toBeGreaterThan(1790);
+  expect(await left()).toBeGreaterThan(1790);
+  await shorten();
+  await bob.call('nodes/orders-plan');
+  expect(await left()).toBeGreaterThan(1790);
   // An older version has no state: state isn't versioned (PLN4). Nor does a spec's page.
   await kolab.commit(engineer, 'orders-plan', { deltas: [{ kind: 'override', element: 'W2', text: 'Refund on cancel, in full.' }] });
   expect((await bob.call<WebNodeView>('nodes/orders-plan?version=1')).body.elements.every((e) => !('work_state' in e))).toBe(true);
