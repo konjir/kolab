@@ -5,7 +5,7 @@
  */
 import type {
   Access, AccessLevel, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
-  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState,
+  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkFields,
 } from './index.js';
 
 /** How a person may sign in to this Kolab (D55): with its identity provider, named for the button, and with a pasted token (development). */
@@ -113,6 +113,8 @@ export interface WebMark {
 
 export interface WebElement {
   id: string; parent: string | null; text: string; address: string;
+  /** A plan element's work fields (PLN1, D98), shown read-only; absent when it has none. */
+  work?: WorkFields;
   /** Questions and notes on this element, open and answered, from any version (Q5): the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
   /** The cursor to the older ones (GET /api/nodes/:name/queries?element=), or null when that is all (W2.21). */
@@ -259,7 +261,11 @@ export interface WebSubmit {
    * refused as stale (409), and the page keeps the edits.
    */
   base: number | null;
-  changes: { kind: 'add' | 'override' | 'remove'; element: string; text?: string; parent?: string }[];
+  /**
+   * An override changes an element's text and keeps its work fields; an add may carry them (`work`),
+   * as a draft revised on the page does for the work packages it added (D98).
+   */
+  changes: { kind: 'add' | 'override' | 'remove'; element: string; text?: string; parent?: string; work?: WorkFields }[];
   /** Links of the base version to drop (konjir_draft's unlink), by their edge: the commit settles their open marks. */
   unlink?: string[];
   /** A draft of the session's own that this one replaces, abandoned once the new one is written. */

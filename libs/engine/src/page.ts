@@ -127,15 +127,17 @@ export function checkDraftInput(input: { elements?: { id?: string; text: string 
   for (const d of input.deltas ?? []) checkText(`element ${d.element}'s text`, d.text, MAX_ELEMENT_TEXT);
 }
 
-/** Refuses a version, as drafted, of more than MAX_ELEMENTS elements or MAX_VERSION_BYTES of text. */
-export function checkVersion(els: { element_id: string; text: string; parent_element_id: string | null }[]) {
+/** Refuses a version, as drafted, of more than MAX_ELEMENTS elements or MAX_VERSION_BYTES of text, work fields included. */
+export function checkVersion(els: { element_id: string; text: string; parent_element_id: string | null; work?: unknown }[]) {
   if (els.length > MAX_ELEMENTS) {
     throw new LimitError(`that version would hold ${els.length.toLocaleString('en')} elements; the limit is ${MAX_ELEMENTS.toLocaleString('en')}. Split the node into several nodes`);
   }
   let bytes = 0;
   for (const e of els) {
     checkText(`element ${e.element_id}'s text`, e.text, MAX_ELEMENT_TEXT);
-    bytes += Buffer.byteLength(e.element_id) + Buffer.byteLength(e.text) + (e.parent_element_id ? Buffer.byteLength(e.parent_element_id) : 0);
+    bytes += Buffer.byteLength(e.element_id) + Buffer.byteLength(e.text) + (e.parent_element_id ? Buffer.byteLength(e.parent_element_id) : 0)
+      // A work package's fields count too (D98), as they are stored.
+      + (e.work ? Buffer.byteLength(JSON.stringify(e.work)) : 0);
   }
   if (bytes > MAX_VERSION_BYTES) {
     throw new LimitError(`that version would hold ${Math.ceil(bytes / 1024).toLocaleString('en')} KiB of text; the limit is ${MAX_VERSION_BYTES / 1024} KiB. Split the node into several nodes`);

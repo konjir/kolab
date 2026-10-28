@@ -102,3 +102,42 @@ test('in a shell: konjir create_node takes kind and parent, and prints the paren
   await main(['create_node', 'kind=plan', 'title=Plan', 'id=orders-plan', 'parent=orders-pg']);
   expect(out.map((l) => JSON.parse(l))).toStrictEqual([{ node: 'orders-pg', parent: 'orders' }, { node: 'orders-plan', parent: 'orders-pg' }]);
 });
+
+test('work-package fields over MCP and in a shell: drafted on a plan\'s elements, shown by read_node, and a plan that breaks PLN2 refused, naming it (W5.1a, D98)', async () => {
+  const { server, pm, eng } = await kolabWithAgents();
+  await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
+  await call(pm, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });
+  await call(pm, 'submit_for_review', { node: 'orders', version: 1 });
+  await call(eng.c, 'create_node', { kind: 'binding', title: 'On Postgres', id: 'orders-pg' });
+  await call(eng.c, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }] });
+  await call(eng.c, 'submit_for_review', { node: 'orders-pg', version: 1 });
+  await call(eng.c, 'create_node', { kind: 'plan', title: 'Plan', id: 'orders-plan' });
+  // A field Kolab doesn't know is refused, not dropped; a spec's element takes none.
+  await expect(call(eng.c, 'draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build it.', work: { estimate: '3d' } }] })).rejects.toThrow(/estimate/);
+  await expect(call(pm, 'draft', { node: 'orders', deltas: [{ kind: 'override', element: 'R1', work: { size: 'S' } }] }))
+    .rejects.toThrow(/only on a plan's elements, its work packages \(PLN1, D98\), and orders is a spec/);
+  // A cycle is refused at submit, naming PLN2; the draft stays drafted.
+  await call(eng.c, 'draft', { node: 'orders-plan', elements: [
+    { id: 'W1', text: 'Build it.', work: { depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.', work: { depends_on: ['W1'] } },
+  ] });
+  expect(await call(eng.c, 'submit_for_review', { node: 'orders-plan', version: 1 })).toMatchObject({ ok: false, review: expect.stringMatching(/Plan checks failed \(PLN2\): Depends on has a cycle: W1 → W2 → W1/) });
+  await call(eng.c, 'abandon', { node: 'orders-plan', version: 1 });
+  // In a shell, the same draft with its fields as JSON, and its Delivers as a link.
+  const out: string[] = [];
+  jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+  process.env.KONJIR_URL = server.url;
+  process.env.KONJIR_TOKEN = eng.token;
+  const elements = [
+    { id: 'W1', text: 'Build it.', work: { done_when: 'It cancels.', size: 'M' } },
+    { id: 'M1', text: 'Done.', work: { milestone: true, depends_on: ['W1'], target_date: '2026-12-01' } },
+  ];
+  await main(['draft', 'node=orders-plan', 'elements=' + JSON.stringify(elements), 'links=' + JSON.stringify([{ source_element: 'W1', target: 'kj:orders-pg@1#b1' }])]);
+  await main(['submit_for_review', 'node=orders-plan', 'version=2']);
+  expect(JSON.parse(out[1])).toMatchObject({ ok: true, committed: 'kj:orders-plan@2' });
+  const read = await call(eng.c, 'read_node', { node: 'orders-plan' }) as { elements: { id: string; work?: unknown }[] };
+  expect(read.elements.map((e) => [e.id, e.work])).toStrictEqual([
+    ['W1', { done_when: 'It cancels.', size: 'M' }], ['M1', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
+  ]);
+  // A milestone delivers nothing: refused as the link is declared.
+  await expect(call(eng.c, 'link', { kind: 'dependency', source: 'kj:orders-plan@2#M1', target: 'kj:orders-pg@1#b1' })).rejects.toThrow(/M1 is a milestone, and a milestone delivers nothing \(PLN2, PLN3\)/);
+});

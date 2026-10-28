@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView } from '@konjir/types';
+import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WorkFields } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
@@ -18,7 +18,7 @@ const PARENT_WORD: Record<string, string> = { binding: 'binds', plan: 'plans' };
  * the session's own draft that came back with changes requested, being edited: its changes are the
  * edits, made on the version it was built on, and submitting them replaces it with a new version.
  */
-interface Draft { changes: Record<string, string>; added: { id: string; text: string; parent?: string }[]; removed: string[]; unlinked: string[]; replaces?: number }
+interface Draft { changes: Record<string, string>; added: { id: string; text: string; parent?: string; work?: WorkFields }[]; removed: string[]; unlinked: string[]; replaces?: number }
 const EMPTY: Draft = { changes: {}, added: [], removed: [], unlinked: [] };
 
 export interface NodeViewProps {
@@ -113,7 +113,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const save = (id: string, text: string) => {
     setDraft((d) => {
       const added = d.added.find((a) => a.id === id);
-      if (added) return { ...d, added: d.added.map((a) => (a.id === id ? { id, text } : a)) };
+      if (added) return { ...d, added: d.added.map((a) => (a.id === id ? { ...a, text } : a)) };
       const original = view.elements.find((e) => e.id === id)?.text;
       const next = { ...d.changes };
       if (text === original) delete next[id]; else next[id] = text;
@@ -138,7 +138,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
       base: view.node.latest,
       changes: [
         ...Object.entries(draft.changes).map(([element, text]) => ({ kind: 'override' as const, element, text })),
-        ...draft.added.map((a) => ({ kind: 'add' as const, element: a.id, text: a.text, ...(a.parent ? { parent: a.parent } : {}) })),
+        ...draft.added.map((a) => ({ kind: 'add' as const, element: a.id, text: a.text, ...(a.parent ? { parent: a.parent } : {}), ...(a.work ? { work: a.work } : {}) })),
         ...draft.removed.map((element) => ({ kind: 'remove' as const, element })),
       ],
       ...(draft.unlinked.length ? { unlink: draft.unlinked } : {}),
@@ -173,7 +173,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
     const kept = new Set(v.elements.map((e) => e.id));
     setDraft({
       changes: Object.fromEntries(v.elements.filter((e) => before.has(e.id) && before.get(e.id) !== e.text).map((e) => [e.id, e.text])),
-      added: v.elements.filter((e) => !before.has(e.id)).map((e) => ({ id: e.id, text: e.text, ...(e.parent ? { parent: e.parent } : {}) })),
+      added: v.elements.filter((e) => !before.has(e.id)).map((e) => ({ id: e.id, text: e.text, ...(e.parent ? { parent: e.parent } : {}), ...(e.work ? { work: e.work } : {}) })),
       removed: [...before.keys()].filter((id) => !kept.has(id)),
       unlinked: [], replaces: d.seq,
     });
@@ -300,8 +300,26 @@ function pendingSeq(v: WebNodeView, actor: string): number | undefined {
     ?? newest(v.in_review.map((r) => r.seq));
 }
 
-const asElement = (name: string) => (a: { id: string; text: string }): WebElement =>
-  ({ id: a.id, parent: null, text: a.text, address: addr(name, null, a.id), queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [] });
+const asElement = (name: string) => (a: { id: string; text: string; work?: WorkFields }): WebElement =>
+  ({ id: a.id, parent: null, text: a.text, ...(a.work ? { work: a.work } : {}), address: addr(name, null, a.id), queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [] });
+
+/**
+ * A work package's fields (PLN1, D98), read only: the page shows them and keeps them as they are
+ * when the text is edited. They are written through konjir_draft.
+ */
+function Work({ work, name }: { work: WorkFields; name: string }) {
+  const facts: string[] = [];
+  if (work.milestone) facts.push(work.target_date ? `Milestone, due ${work.target_date}` : 'Milestone');
+  if (work.size) facts.push(`Size ${work.size}`);
+  if (work.repo) facts.push(`In ${work.repo}`);
+  return (
+    <dl className="work" aria-label="Work package">
+      {facts.length > 0 && <div><dt className="sr-only">Kind</dt><dd>{facts.join(' · ')}</dd></div>}
+      {work.done_when && <div><dt>Done when</dt><dd>{work.done_when}</dd></div>}
+      {work.depends_on?.length ? <div><dt>{work.milestone ? 'Members' : 'Depends on'}</dt><dd>{work.depends_on.map((d) => <code key={d} title={addr(name, null, d)}>{d}</code>)}</dd></div> : null}
+    </dl>
+  );
+}
 
 interface RowProps {
   /** The node's API path, and the push count: an element's older questions are read from it a page at a time. */
@@ -358,6 +376,7 @@ function ElementRow(p: RowProps) {
         ) : (
           <p style={p.removed ? { textDecoration: 'line-through' } : undefined}>{p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.text}</p>
         )}
+        {e.work && <Work work={e.work} name={p.name} />}
         {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => (
           <span key={l.edge} style={p.unlinked.includes(l.edge) ? { textDecoration: 'line-through' } : undefined}>
             {chip(l, 'target')}

@@ -1371,3 +1371,47 @@ test('0027 refuses a live version that is a variant of another kind: a plan or a
   await refuses0027(`${seed}, ('wv', 'w', 1, 'sv', 'technical', 'committed', 'lee', 'engineer', 'lee');`,
     /A variant is of its parent's kind, and only a prototype may be derived from the spec \(KON3, KON6, D95\), and these live versions aren't: shop\/w@1 \(wbs\) on shop\/s@1 \(functional_spec\)\./);
 });
+
+// ---- 0029: work-package fields (W5.1a; PLN1, PLN2, D98) ------------------------------------------
+
+test('a database at 0028 reaches 0029: nothing is rewritten, every element and link keeps its fingerprint, a plan then takes work fields, and the release before 0029 refuses it (D98)', async () => {
+  const store = await persistentStore();
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  const at = MIGRATIONS.findIndex((x) => x.name === 'work_fields');
+  expect(MIGRATIONS[at].version).toBe(29);
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    const before = await konjirRows(db);
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [29] });
+    // Every element and delta gains an empty work column, and nothing else changes: fingerprints, links, versions.
+    const after = await konjirRows(db);
+    for (const t of ['element', 'delta'] as const) {
+      expect(after[t].every((r) => (r as { work: unknown }).work === null)).toBe(true);
+      after[t] = after[t].map((r) => { const { work: _w, ...rest } = r as Record<string, unknown>; return rest; });
+    }
+    expect(after).toStrictEqual(before);
+    // The release before 0029 refuses the database now: going back means restoring a snapshot (README, "Deploying to AWS").
+    expect(await rejection(migrate(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0029_work_fields\.sql, which this release of Kolab doesn't know/);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0029_work_fields\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => { await migrate(db); return schemaOf(db); }, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await TestKolab.open(store);
+  try {
+    // Lee's lab plan, made before work fields, takes them: its link to the API binding is a Delivers that passes PLN2.
+    const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
+    const r = await kolab.submit(lee, await kolab.draft(lee, 'lab-plan', { elements: [
+      { id: 'p1', text: 'Build the API.', work: { done_when: 'The API answers.', size: 'M' } },
+      { id: 'M1', text: 'Lab ships.', work: { milestone: true, depends_on: ['p1'], target_date: '2026-12-01' } },
+    ] }));
+    expect(r).toMatchObject({ ok: true });
+    const lp2 = (await kolab.latestCommitted('lab-plan'))!.id;
+    expect((await kolab.elements(lp2)).map((e) => [e.element_id, e.work])).toStrictEqual([
+      ['p1', { done_when: 'The API answers.', size: 'M' }], ['M1', { depends_on: ['p1'], milestone: true, target_date: '2026-12-01' }],
+    ]);
+    // The version before keeps the fingerprint its element always had.
+    expect((await kolab.elements('lp1'))[0].fingerprint).toBe(fingerprint('Build the API.'));
+  } finally { await kolab.close(); }
+});
