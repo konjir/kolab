@@ -110,6 +110,10 @@ test('a repository\'s URL and root commit are checked: https only, with no user,
   expect(JSON.stringify(await kolab.auditLog({ kolab: TEST_KOLAB }))).not.toMatch(/ghp_secret/);
   // A SHA-256 root commit is taken.
   await kolab.registerRepository(mia, { url: 'https://gitlab.example.com:8443/group/sub/orders', root_sha: 'a'.repeat(64) });
+  // On a forge with nested groups, no repository's URL sits inside another's: a group would hold
+  // every pull request of the repositories under it (review of #83, verification).
+  expect(await refused('https://gitlab.example.com:8443/group/sub')).toMatch(/^GateError: https:\/\/gitlab\.example\.com:8443\/group\/sub and https:\/\/gitlab\.example\.com:8443\/group\/sub\/orders, registered already, would hold one another's pull requests/);
+  expect(await refused('https://gitlab.example.com:8443/group/sub/orders/api')).toMatch(/would hold one another's pull requests/);
   // One live registration a URL, in any case; the binding takes one implementation, and a binding only.
   const r = await kolab.registerRepository(mia, { url: 'https://github.com./acme/orders', root_sha: testRoot(), binding: 'orders-pg' });
   expect(r.url).toBe(ORDERS);
@@ -391,3 +395,12 @@ test('who confirms is decided in one place: per actor today, per person by chang
   expect(independentOf('actor', lee, [lee, bobBot])).toBe(false);
   expect(independentOf('person', { id: 'bob', principal: 'bob' }, [lee, bobBot])).toBe(false);
 });
+
+test('repositories nest in no kolab, but siblings whose names start alike register, and an archived group frees its repositories (review of #83, verification)', async () => {
+  const { kolab, mia } = await planned();
+  await kolab.registerRepository(mia, { url: 'https://gitlab.com/acme/team', root_sha: testRoot() });
+  expect(await rejection(kolab.registerRepository(mia, { url: 'https://gitlab.com/acme/team/orders', root_sha: testRoot('e') }))).toMatch(/would hold one another's pull requests and commits/);
+  expect((await kolab.registerRepository(mia, { url: 'https://gitlab.com/acme/team-orders', root_sha: testRoot('e') })).url).toBe('https://gitlab.com/acme/team-orders');
+  await kolab.archiveRepository(mia, 'https://gitlab.com/acme/team');
+  expect((await kolab.registerRepository(mia, { url: 'https://gitlab.com/acme/team/orders', root_sha: testRoot('d') })).url).toBe('https://gitlab.com/acme/team/orders');
+}, 60_000);

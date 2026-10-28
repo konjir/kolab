@@ -7852,6 +7852,15 @@ export class Kolab {
         if (live >= MAX_REPOSITORIES_PER_KOLAB) {
           throw new LimitError(`kolab ${s.kolab} has ${live} repositories, the most it registers (${MAX_REPOSITORIES_PER_KOLAB}); archive one it no longer uses first`);
         }
+        // No live repository's URL contains another's: on a forge with nested groups (GitLab's
+        // subgroups), https://gitlab.com/acme/team would otherwise hold every pull request of
+        // acme/team/*, so evidence of one repository would read as inside another (review of #83).
+        const nested = (await tx.query<{ url: string }>(
+          `select url from repository where kolab_id = $1 and archived_at is null
+              and (starts_with(lower($2), lower(url) || '/') or starts_with(lower(url), lower($2) || '/')) order by url limit 1`, [s.kolab, u.url])).rows[0];
+        if (nested) {
+          throw new GateError(`${u.url} and ${nested.url}, registered already, would hold one another's pull requests and commits: one repository's URL never sits inside another's in a kolab (a group, such as a GitLab subgroup, is no repository)`);
+        }
         await tx.query(
           `insert into repository(id, kolab_id, url, root_sha, binding_node_id, registered_by) values ($1, $2, $3, $4, $5, $6)`,
           [id, s.kolab, u.url, root, binding?.id ?? null, s.actor_id]);

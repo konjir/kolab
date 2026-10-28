@@ -128,8 +128,10 @@ const N = 'insert into node(id, name, kind, layer, title, kolab_id, created_by) 
       insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role, submitted_by) values
         ('wv', 'w', 1, null, 'technical', 'committed', 'lee', 'engineer', 'lee');
       insert into element(version_id, element_id, ord, text, fingerprint, work) values
-        ('wv', 'W1', 0, 'Build it.', 'y', '{"repo": "orders-api"}'), ('wv', 'W2', 1, 'Queue it.', 'z', '{"repo": "https://github.com/acme/queue"}'), ('wv', 'W3', 2, 'Track it.', 'q', null);
-      insert into work_package(plan_node_id, element_id) values ('w', 'W1'), ('w', 'W2'), ('w', 'W3');
+        ('wv', 'W1', 0, 'Build it.', 'y', '{"repo": "orders-api"}'), ('wv', 'W2', 1, 'Queue it.', 'z', '{"repo": "https://github.com/acme/queue"}'), ('wv', 'W3', 2, 'Track it.', 'q', null),
+        ('wv', 'W4', 3, 'Page it.', 'p', '{"repo": "https://github.com/acme/orders/tree/main"}'), ('wv', 'W5', 4, 'Ship it.', 's', '{"repo": "HTTPS://GitHub.com./acme/ship.git/"}'),
+        ('wv', 'W6', 5, 'Group it.', 'g', '{"repo": "https://gitlab.com/acme/team/orders"}'), ('wv', 'W7', 6, 'Twice.', 't', '{"repo": "https://gitlab.com/acme/x.git.git"}');
+      insert into work_package(plan_node_id, element_id) values ('w', 'W1'), ('w', 'W2'), ('w', 'W3'), ('w', 'W4'), ('w', 'W5'), ('w', 'W6'), ('w', 'W7');
       update work_package set state = 'in_progress', assignee_id = 'lee', lease_until = now() + interval '30 minutes', touched_at = now() where element_id = 'W3';
       insert into work_event(id, plan_node_id, element_id, kind, from_state, to_state, actor_id, plan_version_id, concerned)
         values ('ev1', 'w', 'W3', 'evidence', 'in_progress', 'in_progress', 'lee', 'wv', '[]');
@@ -138,7 +140,10 @@ const N = 'insert into node(id, name, kind, layer, title, kolab_id, created_by) 
   const { code, output } = await preflight(databaseUrl!, '0032');
   expect(code).toBe(0);
   expect(output).toContain('preflight 0032, read-only, on a database at 0031: advisory, it gates nothing');
-  expect(output).toContain('advise 1 a package\'s repo names no registered repository: shop/w@1#W1: orders-api (not an https URL of owner/name); shop/w@1#W2: https://github.com/acme/queue');
+  // Annotated by the engine's own URL rules (repositoryUrl): a page of a GitHub repository and .git twice never register; case, a trailing dot, .git and a slash are fine, and so is a GitLab subgroup's repository.
+  expect(output).toContain('advise 1 a package\'s repo names no registered repository: shop/w@1#W1: orders-api (not a URL Kolab registers: https://host/owner/name); '
+    + 'shop/w@1#W2: https://github.com/acme/queue; shop/w@1#W4: https://github.com/acme/orders/tree/main (not a URL Kolab registers: https://host/owner/name); '
+    + 'shop/w@1#W5: HTTPS://GitHub.com./acme/ship.git/; shop/w@1#W6: https://gitlab.com/acme/team/orders; shop/w@1#W7: https://gitlab.com/acme/x.git.git (not a URL Kolab registers: https://host/owner/name)');
   expect(output).toContain('advise 2 a plan with work under way whose binding has no registered implementation: shop/w (binding b): W3 in_progress');
   expect(output).toContain('advise 3 evidence 0032 marks as from before repositories (unconfirmed, never confirming): 1 commits and pull requests, 0 test runs');
   expect(output).toMatch(/RESULT \{"migration":"0032","at":31,"advisory":true,"findings":3\}/);

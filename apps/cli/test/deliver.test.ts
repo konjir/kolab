@@ -237,6 +237,9 @@ test('a commit\'s message can\'t reach git\'s arguments: a hostile subject neith
   // A hostile --since is no option either.
   expect(await rejection(deliverWork(eng.call, gitIn(dir), { since: `--output=${victim}` }))).toMatch(/isn't a revision/);
   expect(await rejection(deliverWork(eng.call, gitIn(dir), { since: 'no-such-branch' }))).toMatch(/names no commit in this checkout/);
+  for (const since of ['^HEAD', 'HEAD~2..HEAD', 'HEAD...main']) {
+    expect(await rejection(deliverWork(eng.call, gitIn(dir), { since }))).toMatch(/is a range or an exclusion: --since takes one commit/);
+  }
   expect(readFileSync(victim, 'utf8')).toBe('important\n');
 }, 120_000);
 
@@ -290,4 +293,31 @@ test('remotes and registrations take a repository\'s own URL: a trailing dot, an
   // The trailing dot is dropped, so the same repository isn't registered twice.
   expect(await lee.call('register_repository', { url: 'https://GitHub.com./acme/orders', root_sha: 'f'.repeat(40) })).toMatchObject({ repository: { url: 'https://github.com/acme/orders' } });
   expect(await rejection(lee.call('register_repository', { url: 'https://github.com/acme/orders', root_sha: 'f'.repeat(40) }))).toMatch(/is already registered/);
+}, 120_000);
+
+test('a folded trailer counts only as its whole value, and a partial clone fetches nothing: no lazy fetch runs an ext:: remote from its config (review of #83, verification)', async () => {
+  const { eng, lee } = await planned();
+  const { dir, c1, c5 } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  await eng.call('pull_work', {});
+  // A trailer folded over two lines is one value, which isn't the package's address.
+  const folded = commit(dir, 'Folded\n\nKonjir-Work: kj:test/orders-plan#W1\n  --output=/tmp/x', { 'f.txt': 'f\n' });
+  const r = await deliverWork(eng.call, gitIn(dir), { dryRun: true }) as { commits: { sha: string }[] };
+  expect(r.commits.map((c) => c.sha)).toStrictEqual([c1, c5]);
+  expect(r.commits.map((c) => c.sha)).not.toContain(folded);
+  // A partial clone (its trees missing) whose promisor remote is an ext:: command.
+  git(dir, 'config', 'uploadpack.allowFilter', 'true');
+  const partial = mkdtempSync(join(tmpdir(), 'konjir-partial-'));
+  git(partial, 'clone', '-q', '--filter=tree:0', '--no-checkout', `file://${dir}`, '.');
+  const marker = join(mkdtempSync(join(tmpdir(), 'konjir-ext-')), 'ran');
+  git(partial, 'config', 'remote.origin.url', `ext::sh -c touch% ${marker}`);
+  git(partial, 'config', 'protocol.ext.allow', 'always');
+  // The fixture works: plain git, reading a missing tree, fetches it lazily and runs the command.
+  try { git(partial, 'diff-tree', '--no-commit-id', '--name-only', '-r', c1); } catch { /* the fetch fails */ }
+  expect(existsSync(marker)).toBe(true);
+  const { rmSync } = await import('node:fs');
+  rmSync(marker);
+  // Deliver, naming the repository by hand (its remote is the command): nothing runs, and it fails cleanly.
+  expect(await rejection(deliverWork(eng.call, gitIn(partial), { repo: 'https://github.com/acme/orders', dryRun: true }))).toMatch(/^Error: git (log|diff-tree|rev-list)/);
+  expect(existsSync(marker)).toBe(false);
 }, 120_000);
