@@ -18,7 +18,7 @@ konjir whoami
 konjir logout                # revokes the sign-in
 ```
 
-The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command uses it while `KONJIR_TOKEN` is unset.
+The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command uses it while `KONJIR_TOKEN` is unset or empty.
 
 Or point it at a Kolab server with a session token:
 

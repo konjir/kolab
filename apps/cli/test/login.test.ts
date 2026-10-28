@@ -123,6 +123,34 @@ async function signedIn(label = 'cli') {
   return { kolab, server, again };
 }
 
+test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in is used; a real token still wins', async () => {
+  const { server } = await signedIn();
+  // konjir connect claude writes KONJIR_TOKEN: "" in .mcp.json; those settings copied into a shell.
+  for (const blank of ['', '   ']) {
+    process.env.KONJIR_TOKEN = blank;
+    out = [];
+    await main(['whoami']);
+    expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
+  }
+  out = [];
+  await main(['--token', '', 'whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
+  // A real token wins over the kept sign-in, from KONJIR_TOKEN or --token.
+  const admin = await connect(server.url, 'login-admin');
+  closeAtEnd(admin);
+  await call(admin, 'admin_add_actor', { id: 'bot' });
+  await call(admin, 'admin_grant', { kolab: 'anns', to: 'bot', level: 'write', layers: ['functional'] });
+  const { token } = (await call(admin, 'admin_open_session', { actor: 'bot', role: 'product', kolab: 'anns' })) as { token: string };
+  process.env.KONJIR_TOKEN = token;
+  out = [];
+  await main(['whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'bot' });
+  process.env.KONJIR_TOKEN = ' ';
+  out = [];
+  await main(['--token', token, 'whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'bot' });
+});
+
 test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
   // konjir's own default folder already exists, more open than it should be: konjir closes it.
   delete process.env.KONJIR_CREDENTIALS;

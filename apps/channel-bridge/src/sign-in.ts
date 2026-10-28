@@ -78,11 +78,13 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   open?: (u: URL) => void | Promise<void>;
   timeoutMs?: number;
 }): Promise<BridgeAuth> {
-  // An empty KONJIR_TOKEN is unset: the plugin's .mcp.json passes ${KONJIR_TOKEN:-}.
+  // An empty or blank KONJIR_TOKEN is unset: the plugin's .mcp.json passes ${KONJIR_TOKEN:-}, and
+  // konjir connect claude writes KONJIR_TOKEN: "".
   // KONJIR_AGENT: this entry's agent keeps its own sign-in, apart from the CLI's (konjir connect claude, W3.8).
   // With KONJIR_TOKEN too, the token must work as that agent, or the bridge serves nothing.
   const agent = env.KONJIR_AGENT?.trim() || undefined;
-  if (env.KONJIR_TOKEN) return { token: env.KONJIR_TOKEN, agent };
+  const token = env.KONJIR_TOKEN?.trim() || undefined;
+  if (token) return { token, agent };
   checkKolabUrl(url);
   const shown = safeUrl(url);
   const path = agent ? agentCredentials(agent, env) : undefined;

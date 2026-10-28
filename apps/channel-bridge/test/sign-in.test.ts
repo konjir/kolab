@@ -321,6 +321,8 @@ test('one bridge signs in at a time; none signs in over http to another host, or
 
   await expect(bridgeAuth('http://kolab.example/mcp', {}, io)).rejects.toThrow(/only over https, or http on this machine: http:\/\/kolab\.example\/mcp is http to another host/);
   expect((await bridgeAuth('http://kolab.example/mcp', { KONJIR_TOKEN: 'kjs_t' }, io)).token).toBe('kjs_t');   // a hand-issued token, as before
+  // An empty or blank KONJIR_TOKEN is unset (konjir connect claude writes ""): the bridge goes on to sign in, here refused.
+  for (const blank of ['', '   ']) await expect(bridgeAuth('http://kolab.example/mcp', { KONJIR_TOKEN: blank }, io)).rejects.toThrow(/only over https/);
 
   logs.length = 0;
   await bridgeAuth(server.url, { CI: 'true' }, { ...io, open: undefined });
