@@ -98,7 +98,13 @@ test('a tool call renews the lease; a resource read, what a listen stream prompt
   await shorten();
   for (const uri of ['konjir://inbox/test/technical', 'konjir://answers/test/eng']) await eng.c.readResource({ uri });
   expect(await left()).toBeLessThan(301);
-  await call(eng.c, 'whoami', {});
+  // konjir_whoami is the listen clients' liveness check (the channel bridge's, every 30 s; konjir
+  // watch's, on each reconnect): it renews nothing, so an idle agent with its channel open lapses.
+  await kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '20 seconds' where element_id = 'W1'`);
+  for (let i = 0; i < 3; i++) await call(eng.c, 'whoami', {});
+  expect(await left()).toBeLessThan(21);
+  // Any other tool call renews it.
+  await call(eng.c, 'list_nodes', {});
   expect(await left()).toBeGreaterThan(1790);
   // The answers show the package held, with its lease.
   const answers = async () => JSON.parse(((await eng.c.readResource({ uri: 'konjir://answers/test/eng' })).contents[0] as { text: string }).text) as {

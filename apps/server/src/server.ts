@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
 import { JsonNestLogger, serverErrors } from './json-logger.js';
-import { MAX_REQUEST_BYTES, MAX_SMALL_REQUEST_BYTES } from '@konjir/types';
+import { MAX_REQUEST_BYTES, MAX_SMALL_REQUEST_BYTES, REFRESH_HEADER } from '@konjir/types';
 import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
 import { KonjirAuth } from './auth.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -80,6 +80,13 @@ export async function startServer(opts: {
   const large = [json({ limit: MAX_REQUEST_BYTES }), urlencoded({ limit: MAX_REQUEST_BYTES, extended: true })];
   app.use('/api/session', ...small);
   app.use('/api', ...large);
+  // A read the web page makes by itself after a pushed event says so (REFRESH_HEADER: push), and
+  // renews no lease on its person's work (D100): only requests a person initiates do. The mark can
+  // only withhold a renewal; everything else about the request is as without it.
+  app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
+    if (req.headers[REFRESH_HEADER] === 'push') kolab.quietly(async () => next()).catch(next);
+    else next();
+  });
   const auth = app.get(KonjirAuth);
   app.use('/mcp', (req: Request, res: Response, next: NextFunction) => {
     signedIn(auth, req).then((ok) => {

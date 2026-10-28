@@ -266,11 +266,17 @@ test('reassign: Maintain or Admin gives a package to someone who writes the tech
   await kolab.pullWork(bob);
   await kolab.pullWork(frank);
   expect(await rejection(kolab.reassignWork(eve, 'kj:orders-plan#W1.1', 'eve'))).toMatch(/AccessError: reassigning work needs Maintain or Admin in kolab test \(PLN15\); eve holds Write/);
-  expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'carol'))).toMatch(/AccessError: carol may not write the technical layer of kolab test/);
+  // One refusal for whoever can't be given work, so nothing is learned of who exists (W3.6).
+  const cant = (who: string) => `AccessError: ${who} can't be given work in kolab test: give it to someone who holds Write on the technical layer here and holds no work package In progress`;
+  expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'carol'))).toBe(cant('carol'));
+  expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'nobody'))).toBe(cant('nobody'));
+  // Busy in this kolab: named, since the caller reads it anyway.
   expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'frank'))).toMatch(/GateError: frank already holds kj:orders-plan#W1\.2 In progress/);
   expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#M1', 'eve'))).toMatch(/is a milestone/);
-  expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'nobody'))).toMatch(/ActorError: no actor nobody/);
-  await lapse(kolab, 'W1.1', '25 minutes');
+  // Work To do that is blocked goes to no one; and To do work isn't given to oneself: one pulls it.
+  expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W2.1', 'eve'))).toMatch(/GateError: kj:orders-plan#W2\.1 is blocked \(PLN19\)/);
+  await kolab.releaseWork(frank, 'kj:orders-plan#W1.2');
+  expect(await rejection(kolab.reassignWork(mia, 'kj:orders-plan#W1.2', 'mia'))).toMatch(/GateError: kj:orders-plan#W1\.2 is To do: pull it/);
   await kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '1 minute' where element_id = 'W1.1'`);
   expect(await kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'eve')).toMatchObject({ state: 'in_progress', assignee: 'eve' });
   expect(Number((await kolab.db.query<{ s: number }>(`select extract(epoch from lease_until - clock_timestamp()) as s from work_package where element_id = 'W1.1'`)).rows[0].s)).toBeGreaterThan(1790);
@@ -279,10 +285,49 @@ test('reassign: Maintain or Admin gives a package to someone who writes the tech
   // Both are told; bob may pull again.
   expect((await kolab.workNotices(bob)).events.map((e) => e.kind)).toStrictEqual(['reassigned']);
   expect((await kolab.workNotices(eve)).holding).toMatchObject({ id: 'W1.1' });
-  expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { id: 'W1.10' } });
-  // A package To do can be given too.
+  expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { id: 'W1.2' } });
+  // A package To do and ready can be given too.
   await people(kolab, 'gus', { layers: ['technical'] });
-  expect(await kolab.reassignWork(mia, 'kj:orders-plan#W2.1', 'gus')).toMatchObject({ state: 'in_progress', assignee: 'gus' });
+  expect(await kolab.reassignWork(mia, 'kj:orders-plan#W1.10', 'gus')).toMatchObject({ state: 'in_progress', assignee: 'gus' });
+});
+
+test('reassigning a package whose lease lapsed unswept records the lapse first, as Kolab, and tells its old assignee (PLN5, PLN15)', async () => {
+  const { kolab, bob, eve } = await planned();
+  const mia = await kolab.openSession('mia', 'engineer');
+  await kolab.pullWork(bob);
+  await lapse(kolab, 'W1.1');
+  expect(await kolab.reassignWork(mia, 'kj:orders-plan#W1.1', 'eve')).toMatchObject({ state: 'in_progress', assignee: 'eve' });
+  const ev = (await kolab.readWork(eve, 'kj:orders-plan#W1.1')).events;
+  expect(ev.map((e) => [e.kind, e.actor, e.from, e.to, e.assignee_from ?? null, e.assignee_to ?? null])).toStrictEqual([
+    ['added', 'bob', null, 'todo', null, null], ['pulled', 'bob', 'todo', 'in_progress', null, 'bob'],
+    ['lapsed', 'kolab', 'in_progress', 'todo', 'bob', null], ['reassigned', 'mia', 'todo', 'in_progress', null, 'eve'],
+  ]);
+  expect((await kolab.workNotices(bob)).events.map((e) => e.kind)).toStrictEqual(['lapsed']);
+});
+
+test('reassign tells nothing of another kolab\'s work, nor of who exists: one refusal for an unknown actor, one with no Write here, and one busy elsewhere (D49, W3.6)', async () => {
+  const { kolab, bob } = await planned();
+  // bob holds X1 in kolab `secret`, which mia's maintainer zed can't read.
+  await kolab.createKolab('secret', { owner: 'test-org' });
+  await kolab.grant('secret', 'bob', 'write', { layers: ['technical'] });
+  await kolab.grant('secret', 'alice', 'write', { layers: ['functional'] });
+  await kolab.endSession({ actor: 'bob' });
+  await kolab.endSession({ actor: 'alice' });
+  const sb = await kolab.openSession('bob', 'engineer', { kolab: 'secret' });
+  const sa = await kolab.openSession('alice', 'product', { kolab: 'secret' });
+  await kolab.createNode(sa, 'spec', 'S', 's');
+  await kolab.commit(sa, 's', { elements: els({ R1: 'Hush.' }) });
+  await kolab.createNode(sb, 'binding', 'B', 'b');
+  await kolab.commit(sb, 'b', { elements: els({ b1: 'Hush.' }) });
+  await kolab.createNode(sb, 'plan', 'Hush plan', 'hush-plan');
+  await kolab.commit(sb, 'hush-plan', { elements: els({ X1: 'Hush it.' }) });
+  expect(await kolab.pullWork(sb)).toMatchObject({ pulled: true });
+  await people(kolab, 'zed', { level: 'maintain' });
+  const zed = await kolab.openSession('zed', 'engineer');
+  const refusals = await Promise.all(['bob', 'carol', 'no-such-actor'].map((to) => rejection(kolab.reassignWork(zed, 'kj:orders-plan#W1.2', to))));
+  expect(refusals.map((r) => r.replace(/^AccessError: \S+ /, 'AccessError: X '))).toStrictEqual(Array(3).fill(
+    "AccessError: X can't be given work in kolab test: give it to someone who holds Write on the technical layer here and holds no work package In progress"));
+  for (const r of refusals) expect(r).not.toMatch(/secret|hush|X1/);
 });
 
 test('set_work_lease: Maintain sets the kolab\'s lease, 1 to 1,440 minutes, audited; the next pull takes it (PLN15)', async () => {
@@ -366,16 +411,69 @@ test('losing Write on the technical layer gives work back, as Kolab, noting acce
   expect((await kolab.readWork(bob, 'kj:orders-plan#W1.1')).events.at(-1)).toMatchObject({ kind: 'released', actor: 'kolab', note: 'access_lost: eve no longer holds Write on the technical layer of kolab test' });
 });
 
-test('an archived kolab\'s leases wait, and lapse once it is unarchived', async () => {
+test('archiving a kolab gives back its work In progress, as Kolab, in the archive\'s transaction, so its assignees pull elsewhere (D52, PLN18)', async () => {
   const { kolab, bob } = await planned();
+  await kolab.createKolab('other', { owner: 'test-org' });
+  await kolab.grant('other', 'bob', 'write', { layers: ['technical'] });
+  await kolab.pullWork(bob);
+  await kolab.archive({ kolab: TEST_KOLAB });
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'todo', assignee_id: null, lease_until: null });
+  const last = (await kolab.db.query<{ kind: string; actor_id: string; assignee_from: string; note: string }>(
+    `select kind, actor_id, assignee_from, note from work_event where element_id = 'W1.1' order by at desc, id desc limit 1`)).rows[0];
+  expect(last).toStrictEqual({ kind: 'released', actor_id: 'kolab', assignee_from: 'bob', note: 'archived: kolab test is archived, so the work bob held there stops' });
+  expect(await kolab.sweepLapsedLeases()).toBe(0);
+  // bob holds nothing anywhere now: in `other`, a pull isn't refused for test's package.
+  const bob2 = await kolab.openSession('bob', 'engineer', { kolab: 'other' });
+  expect(await rejection(kolab.pullWork(bob2))).toMatch(/kolab other has no plan/);
+  // An organization's archive does the same for each of its kolabs.
+  await kolab.unarchive({ kolab: TEST_KOLAB });
+  await kolab.endSession({ actor: 'bob' });
+  const bob3 = await kolab.openSession('bob', 'engineer', { kolab: TEST_KOLAB });
+  await kolab.pullWork(bob3);
+  await kolab.archive({ organization: 'test-org' });
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'todo', assignee_id: null });
+});
+
+test('a commit that removes a package whose lease lapsed unswept records the lapse first; a Done package removed and brought back stays Done (PLN4, PLN5)', async () => {
+  const { kolab, bob, eve, delivers } = await planned();
   await kolab.pullWork(bob);
   await lapse(kolab, 'W1.1');
-  await kolab.archive({ kolab: TEST_KOLAB });
-  expect(await kolab.sweepLapsedLeases()).toBe(0);
-  expect((await row(kolab, 'W1.1')).state).toBe('in_progress');
-  await kolab.unarchive({ kolab: TEST_KOLAB });
-  expect(await kolab.sweepLapsedLeases()).toBe(1);
-  expect((await row(kolab, 'W1.1')).state).toBe('todo');
+  await kolab.db.query(`update work_package set state = 'done', assignee_id = 'eve' where element_id = 'W1.2'`);
+  await kolab.commit(eve, 'orders-plan', { deltas: [{ kind: 'remove', element: 'W1.1' }, { kind: 'remove', element: 'W1.2' },
+    { kind: 'override', element: 'W2.1', work: { size: 'L' } }, { kind: 'override', element: 'M1', work: { milestone: true, depends_on: ['W1.10', 'W2.1'] } }] });
+  expect((await kolab.readWork(eve, 'kj:orders-plan#W1.1')).events.map((e) => [e.kind, e.actor, e.from, e.to])).toStrictEqual([
+    ['added', 'bob', null, 'todo'], ['pulled', 'bob', 'todo', 'in_progress'], ['lapsed', 'kolab', 'in_progress', 'todo'], ['removed', 'eve', 'todo', 'todo'],
+  ]);
+  const v = await kolab.draft(eve, 'orders-plan', { deltas: [{ kind: 'add', element: 'W1.2', text: 'Build the shipping queue.' }], links: [delivers('W1.2', 'b2')] });
+  expect((await kolab.submit(eve, v)).ok).toBe(true);
+  expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'done', assignee_id: 'eve', removed_in_version_id: null });
+  expect((await kolab.readWork(eve, 'kj:orders-plan#W1.2')).events.at(-1)).toMatchObject({ kind: 'restored', from: 'done', to: 'done' });
+});
+
+test('a lease is renewed only for an actor that may still write the technical layer (D98)', async () => {
+  const { kolab, bob } = await planned();
+  await kolab.pullWork(bob);
+  // Read only now, as by a change made outside Kolab's verbs, which would otherwise release it.
+  await kolab.db.transaction(async (tx) => {
+    await tx.query(`insert into audit_event(action, kolab_id, subject, done_by) values ('grant.set', 'test', 'bob', 'admin')`);
+    await tx.query(`update kolab_grant set level = 'read', functional = false, technical = false where user_id = 'bob'`);
+  });
+  await kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '5 minutes' where element_id = 'W1.1'`);
+  await kolab.sessionInfo(bob);
+  expect(Number((await kolab.db.query<{ s: number }>(`select extract(epoch from lease_until - clock_timestamp()) as s from work_package where element_id = 'W1.1'`)).rows[0].s)).toBeLessThan(301);
+});
+
+test('events read in the database clock\'s order, a ULID breaking ties, whatever process minted their ids (D98)', async () => {
+  const { kolab, bob } = await planned();
+  await kolab.pullWork(bob);
+  // An event whose id sorts first, though it happened last (another process's clock, behind).
+  await kolab.db.query(`insert into work_event(id, plan_node_id, element_id, kind, from_state, to_state, actor_id, assignee_from, plan_version_id, concerned, note)
+    select '00000000000000000000000000', plan_node_id, element_id, 'released', 'in_progress', 'todo', 'bob', 'bob', plan_version_id, '[]', 'late'
+      from work_event where element_id = 'W1.1' and kind = 'pulled'`);
+  expect((await kolab.readWork(bob, 'kj:orders-plan#W1.1')).events.map((e) => e.kind)).toStrictEqual(['added', 'pulled', 'released']);
+  const one = await kolab.readWork(bob, 'kj:orders-plan#W1.1', { limit: 2 });
+  expect(one.events.map((e) => e.kind)).toStrictEqual(['added', 'pulled']);
+  expect((await kolab.readWork(bob, 'kj:orders-plan#W1.1', { limit: 2, cursor: one.events_next })).events.map((e) => e.kind)).toStrictEqual(['released']);
 });
 
 test('work stays in its kolab: another kolab\'s session reads none of it, and one actor holds one package across kolabs (D49, PLN18, D98)', async () => {
@@ -439,18 +537,26 @@ test('only Kolab\'s trusted role writes work state: an agent\'s raw writes are r
   expect(await rejection(asSystem(`update work_event set redacted_at = now() where kind = 'pulled'`))).toMatch(/never edited/);
 });
 
-test('a session that holds only Read sees the board, and no question a mark raised (D58)', async () => {
+test('a session that holds only Read sees the board, but no open case file and no question a mark raised, as row-level security holds them (0013, 0022; D49, D58)', async () => {
   const { kolab, product, bob } = await planned();
   const carol = await kolab.openSession('carol', 'engineer');
-  // A spec change marks b1, which raises nothing yet; a question raised by a person is shown in full.
+  const blockedFor = async (s: string, id: string) => (await kolab.listWork(s)).items.find((i) => i.id === id)!.blocked;
+  // A question a person raised is shown in full.
   const q = await kolab.raiseQuery(product, 'kj:orders-pg#b3', 'Which courier?');
-  const item = (await kolab.listWork(carol)).items.find((i) => i.id === 'W1.10')!;
-  expect(item).toMatchObject({ ready: false, blocked: [{ reason: 'question', query: q }] });
-  // A question with a mark behind it is told without its id.
-  await kolab.db.query(`update query set invalidation_id = (select id from invalidation limit 1) where id = $1 and exists (select 1 from invalidation)`, [q]);
-  const marked = (await kolab.db.query(`select invalidation_id from query where id = $1`, [q])).rows[0].invalidation_id;
-  if (marked) expect((await kolab.listWork(carol)).items.find((i) => i.id === 'W1.10')!.blocked).toStrictEqual([{ reason: 'question', on: 'kj:orders-pg@1#b3' }]);
-  expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.10')!.blocked[0]).toMatchObject({ query: q });
+  expect(await blockedFor(carol, 'W1.10')).toStrictEqual([{ reason: 'question', on: 'kj:orders-pg@1#b3', query: q }]);
+  // An open case file: those who belong see it; carol sees nothing of it, as she reads no case file.
+  const c = await kolab.openCase(bob, 'kj:orders-pg#b2', { question: 'Can it ship in a day?', claim: 'No.', evidence: ['the contract'], seeks: 'change_intent' });
+  expect(await blockedFor(bob, 'W1.2')).toStrictEqual([{ reason: 'case_file', on: 'kj:orders-pg@1#b2', case: c }]);
+  expect(await blockedFor(carol, 'W1.2')).toStrictEqual([]);
+  expect(await kolab.readAs(carol, async (q2) => (await q2.query(`select * from case_file`)).rows.length)).toBe(0);
+  expect(JSON.stringify(await kolab.readWork(carol, 'kj:orders-plan#W1.2'))).not.toContain(c);
+  // A question with a mark behind it is hidden from her too.
+  const s1 = (await kolab.latestCommitted('orders'))!.id;
+  const m = (await kolab.db.query<{ id: string }>(`insert into invalidation(id, version_id, element_id, triggered_by, reason, state)
+    select 'mk1', id, 'b3', $1, 'changed', 'open' from version where node_id = 'orders-pg' and state = 'committed' returning id`, [s1])).rows[0].id;
+  await kolab.db.query(`update query set invalidation_id = $2 where id = $1`, [q, m]);
+  expect(await blockedFor(carol, 'W1.10')).toStrictEqual([]);
+  expect(await blockedFor(bob, 'W1.10')).toStrictEqual([{ reason: 'question', on: 'kj:orders-pg@1#b3', query: q }]);
 });
 
 // ---- concurrency ---------------------------------------------------------------
@@ -538,3 +644,21 @@ test('a renewal racing the sweep never revives a lapsed lease, in either order, 
     await other.end();
   }
 }, 60_000);
+
+test('a plan commit and a change of access that both give back work never deadlock: both lock rows in plan and element order (review 6)', async () => {
+  const { kolab, bob, eve, frank } = await planned();
+  for (let round = 0; round < 6; round++) {
+    await kolab.pullWork(eve);
+    await kolab.pullWork(frank);
+    // The commit locks the plan's rows in element order; the grant changes release both, in the same order.
+    const results = await Promise.allSettled([
+      kolab.commit(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W2.1', text: `Cancel from the tracking page (${round}).` }] }),
+      kolab.grant(TEST_KOLAB, 'eve', 'write', { layers: ['functional'] }),
+      kolab.grant(TEST_KOLAB, 'frank', 'write', { layers: ['functional'] }),
+    ]);
+    expect(results.filter((r) => r.status === 'rejected').map((r) => String((r as PromiseRejectedResult).reason))).toStrictEqual([]);
+    expect((await kolab.db.query(`select 1 from work_package where state = 'in_progress'`)).rows).toStrictEqual([]);
+    await kolab.grant(TEST_KOLAB, 'eve', 'write', { layers: ['technical'] });
+    await kolab.grant(TEST_KOLAB, 'frank', 'write', { layers: ['technical'] });
+  }
+}, 120_000);

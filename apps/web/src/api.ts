@@ -1,4 +1,24 @@
-import type { InvitePreview, WebError, WebMe } from '@konjir/types';
+import { REFRESH_HEADER, type InvitePreview, type WebError, type WebMe } from '@konjir/types';
+
+/**
+ * The page's re-reads a push caused (D100): `tick` values the event stream, or Kolab's own check
+ * after it dropped, moved to, never one a person's action moved to. Only the last few are kept.
+ */
+const pushTicks = new Set<number>();
+export function markPushTick(tick: number) {
+  pushTicks.add(tick);
+  if (pushTicks.size > 100) pushTicks.delete(pushTicks.values().next().value!);
+}
+
+/**
+ * Whether a read keyed by `key` (what it reads) runs now because a push moved `tick`: the same read
+ * as last time, with only the tick moved, to one a push made. `last` is the read's own memory.
+ */
+export function pushed(last: { current: { key: string; tick: number } | undefined }, key: string, tick: number): boolean {
+  const was = last.current;
+  last.current = { key, tick };
+  return !!was && was.key === key && was.tick !== tick && pushTicks.has(tick);
+}
 
 /** A refusal from Kolab's API: its HTTP status and its message, which says what to do. */
 export class ApiError extends Error {
@@ -10,11 +30,15 @@ export class ApiError extends Error {
  * this page never holds the token; the browser sends the page's own origin, which Kolab requires
  * for changes.
  */
-export async function api<T>(path: string, body?: unknown, method?: string): Promise<T> {
+export async function api<T>(path: string, body?: unknown, method?: string, opts: { push?: boolean } = {}): Promise<T> {
+  const headers: Record<string, string> = body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' };
+  // A read the page makes by itself, after a pushed event, says so: it renews no lease on the
+  // person's work (D100). The mark only withholds a renewal; it never grants anything.
+  if (opts.push) headers[REFRESH_HEADER] = 'push';
   const res = await fetch(`/api/${path}`, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     credentials: 'same-origin',
-    headers: body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -63,9 +87,9 @@ export const RECHECK_401_MS = 1000;
  * refreshed the session (D55) and its new cookie be on its way. Null only when Kolab says twice,
  * each time after its own try at a refresh, that there is no session.
  */
-export async function whoAmI(p: Patience = {}): Promise<WebMe | null> {
+export async function whoAmI(p: Patience & { push?: boolean } = {}): Promise<WebMe | null> {
   for (let i = 0; i < 2; i++) {
-    try { return await patiently(() => api<WebMe>('me'), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
+    try { return await patiently(() => api<WebMe>('me', undefined, undefined, { push: p.push }), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
     if (i === 0) await clock.wait(RECHECK_401_MS);
   }
   return null;

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WebWorkState, type WorkFields } from '@konjir/types';
-import { api } from '../api.js';
+import { api, pushed } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
 import { Addr, Diff, Pill } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
@@ -52,14 +52,17 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   // Older versions, and older questions on the node as a whole, a page at a time (W2.21).
   const older = useMore<WebVersionsView>(`${path}/versions`, view?.versions_next, tick);
   const olderQueries = useMore<WebQueriesView>(`${path}/queries`, view?.queries_next, tick);
+  const lastRead = useRef<{ key: string; tick: number }>(undefined);
   useEffect(() => {
     let live = true;
-    api<WebNodeView>(`${path}${version ? `?version=${version}` : ''}`)
+    // A re-read a push prompted renews no lease on its person's work (D100).
+    const push = pushed(lastRead, JSON.stringify([path, version, me.actor, revising]), tick);
+    api<WebNodeView>(`${path}${version ? `?version=${version}` : ''}`, undefined, undefined, { push })
       // Nothing committed yet: read the version waiting instead, so its requirements aren't missing.
       // Not while a returned draft is being edited: its edits are made on nothing, and shown as added.
       .then((v) => {
         const waiting = !version && !kolab && !revising && v.reading === null ? pendingSeq(v, me.actor) : undefined;
-        return waiting === undefined ? v : api<WebNodeView>(`${path}?version=${waiting}`);
+        return waiting === undefined ? v : api<WebNodeView>(`${path}?version=${waiting}`, undefined, undefined, { push });
       })
       .then((v) => { if (live) { setView(v); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };

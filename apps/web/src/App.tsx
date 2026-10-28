@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { InvitePreview, WebMe, WebNodesView, WebOverview, WebSignInMethods } from '@konjir/types';
-import { ApiError, acceptInvite, api, createKolab, dropInvite, openInvite, pageUpdated, patiently, signIn, signOut, switchTo, whoAmI } from './api.js';
+import { ApiError, acceptInvite, api, createKolab, dropInvite, markPushTick, openInvite, pageUpdated, patiently, pushed, signIn, signOut, switchTo, whoAmI } from './api.js';
 import { useLive } from './live.js';
 import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
@@ -71,6 +71,8 @@ export function App() {
   });
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
   const [tick, setTick] = useState(0);
+  // A re-read Kolab's push prompts, not a person's action: its reads renew no lease on work (D100).
+  const pushTick = useCallback(() => setTick((t) => { markPushTick(t + 1); return t + 1; }), []);
   const [toast, setToast] = useState<string>();
   const [theme, setTheme] = useState<Theme>(() => (store.get('konjir.theme') as Theme) ?? undefined);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -112,20 +114,22 @@ export function App() {
    */
   const checking = useRef<Promise<boolean>>(undefined);
   const recheck = useCallback(() => {
-    checking.current ??= whoAmI({ onWait: () => setAway(true) }).then(
+    // Kolab's own check, after its stream dropped or a call came back 401: no person's request (D100).
+    checking.current ??= whoAmI({ onWait: () => setAway(true), push: true }).then(
       (now) => {
         if (!now) { signedOut('Your session ended. Sign in again.'); return false; }
         setMe((was) => (was && JSON.stringify(was) === JSON.stringify(now) ? was : now));
-        setTick((t) => t + 1);
+        pushTick();
         return true;
       },
       (e: unknown) => { signedOut((e as Error).message); return false; },
     ).finally(() => { setAway(false); checking.current = undefined; });
     return checking.current;
-  }, [signedOut]);
+  }, [signedOut, pushTick]);
+  const lastOverview = useRef<{ key: string; tick: number }>(undefined);
   useEffect(() => {
     if (!me) return;
-    api<WebOverview>('overview').then((o) => { setOverview(o); setMoreNodes(undefined); }, (e: unknown) => { if (e instanceof ApiError && e.status === 401) void recheck(); });
+    api<WebOverview>('overview', undefined, undefined, { push: pushed(lastOverview, JSON.stringify(me), tick) }).then((o) => { setOverview(o); setMoreNodes(undefined); }, (e: unknown) => { if (e instanceof ApiError && e.status === 401) void recheck(); });
   }, [me, tick, recheck]);
   // The rail's documents past the overview's first page (W2.21), read on asking; a new overview starts again.
   const [moreNodes, setMoreNodes] = useState<WebNodesView>();
@@ -160,11 +164,11 @@ export function App() {
   // Live: every signal re-reads what the page shows (API8).
   // A stream that closes, as when Kolab restarts, is not the session's end: Kolab's `ended` is.
   useLive(!!me, {
-    onChange: () => setTick((t) => t + 1),
+    onChange: pushTick,
     onEnded: () => signedOut('Your session ended. Sign in again.'),
     onDropped: recheck,
     onResumed: () => {
-      setTick((t) => t + 1);
+      pushTick();
       void pageUpdated().then((u) => { if (u) setUpdated(true); });
     },
   });

@@ -169,9 +169,10 @@ alter table audit_event add constraint audit_event_action_check check (action in
    'work_lease.set'));   -- AUDIT_ACTIONS in @konjir/types
 
 -- The plans that exist: a To do package for each element of each plan's latest committed version,
--- and its `added` event, by that version's author, naming the binding elements it delivers there
--- (its dependency links into the plan's binding, at element scope) at the binding's latest
--- committed version. Nothing else is written; an archived kolab's plans too (the migration runner
+-- and its `added` event, dated when the committed version that brought the element in was made
+-- (so scope over time, PLN9, starts where the plan did) and by that version's author, naming the
+-- binding elements it delivers in the latest version (its dependency links into the plan's
+-- binding, at element scope) at the binding's latest committed version. Nothing else is written; an archived kolab's plans too (the migration runner
 -- may write them).
 insert into work_package(kolab_id, plan_node_id, element_id, milestone)
 select v.kolab_id, v.node_id, e.element_id, coalesce((e.work->>'milestone')::boolean, false)
@@ -180,9 +181,9 @@ select v.kolab_id, v.node_id, e.element_id, coalesce((e.work->>'milestone')::boo
   join element e on e.version_id = v.id
  where n.kind = 'plan';
 
-insert into work_event(id, kolab_id, plan_node_id, element_id, kind, from_state, to_state, actor_id, plan_version_id, concerned, note)
+insert into work_event(id, kolab_id, plan_node_id, element_id, kind, from_state, to_state, actor_id, plan_version_id, concerned, note, at)
 select '0030' || lpad((row_number() over (order by v.node_id, e.ord, e.element_id))::text, 22, '0'),
-       v.kolab_id, v.node_id, e.element_id, 'added', null, 'todo', v.actor_id, v.id,
+       v.kolab_id, v.node_id, e.element_id, 'added', null, 'todo', iv.actor_id, iv.id,
        coalesce((select jsonb_agg(jsonb_build_object(
                           'address', 'kj:' || bn.name || '@' || bl.seq || '#' || d.target_element_id,
                           'version_id', bl.id,
@@ -195,8 +196,13 @@ select '0030' || lpad((row_number() over (order by v.node_id, e.ord, e.element_i
                    join node bn on bn.id = n.parent_node_id
                    join lateral (select * from version x where x.node_id = bn.id and x.state = 'committed' order by x.seq desc limit 1) bl on true),
                 '[]'::jsonb),
-       'recorded by migration 0030: the work package was in the plan before Kolab kept work state'
+       'recorded by migration 0030: the work package was in the plan before Kolab kept work state',
+       iv.created_at
   from node n
   join lateral (select * from version lv where lv.node_id = n.id and lv.state = 'committed' order by lv.seq desc limit 1) v on true
   join element e on e.version_id = v.id
+  -- The first committed version of the plan that held the element.
+  join lateral (select fv.* from version fv join element fe on fe.version_id = fv.id
+                 where fv.node_id = n.id and fv.state = 'committed' and fe.element_id = e.element_id
+                 order by fv.seq limit 1) iv on true
  where n.kind = 'plan';

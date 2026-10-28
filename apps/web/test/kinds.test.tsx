@@ -3,7 +3,8 @@
 // plans. Kolab's own refusals are libs/engine/test/kinds.test.ts's.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import type { WebMe, WebNodeSummary, WebNodeView, WebOverview } from '@konjir/types';
+import { REFRESH_HEADER, type WebMe, type WebNodeSummary, type WebNodeView, type WebOverview } from '@konjir/types';
+import { markPushTick } from '../src/api.js';
 import { KolabsView } from '../src/components/Pages.js';
 import { NodeView } from '../src/components/NodeView.js';
 import type { Act } from '../src/components/Marks.js';
@@ -79,6 +80,29 @@ test('a plan\'s page shows where each work package stands, read only: its state,
   const states = await screen.findAllByLabelText('Work package');
   expect(states[0].textContent).toMatch(/^StateIn progress · eng-agent, lease until /);
   expect(states[1].textContent).toMatch(/^StateTo do · Blocked by W1 \(In progress\)/);
+});
+
+test('the page marks a re-read a pushed event prompted, and only that one, so it renews no lease (D100)', async () => {
+  const plan: WebNodeView = {
+    node: node('accounts-api-plan', 'plan', 'accounts-api'),
+    reading: { seq: 1, state: 'committed', author: 'eng-agent', role: 'engineer', at: new Date().toISOString(), note: null, mine: true },
+    versions: [], versions_next: null, elements: [], queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true,
+    rulings: [], kolab: 'accounts', foreign: false,
+  };
+  const seen: (string | undefined)[] = [];
+  globalThis.fetch = jest.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    seen.push((init?.headers as Record<string, string> | undefined)?.[REFRESH_HEADER]);
+    return { ok: true, status: 200, text: async () => JSON.stringify(plan) } as unknown as Response;
+  }) as typeof fetch;
+  const view = (tick: number) => <NodeView me={eng} name="accounts-api-plan" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
+  const { rerender } = render(view(500));
+  await screen.findByText('Plan');
+  // A push moved the tick: the re-read says so.
+  markPushTick(501);
+  await act(async () => { rerender(view(501)); });
+  // A person's action moved it: no mark.
+  await act(async () => { rerender(view(502)); });
+  expect(seen).toStrictEqual([undefined, 'push', undefined]);
 });
 
 test('a plan\'s page says which binding it plans', async () => {

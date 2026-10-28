@@ -15,6 +15,12 @@ import type {
  */
 export interface WebWorkState { state: WorkState; assignee: string | null; lease_until: string | null; blocked: WorkBlock[]; milestone: boolean }
 
+/**
+ * The header the web page sets, to `push`, on a read it makes by itself after a pushed event
+ * (D100): such a read renews no lease on its person's work. It can only withhold a renewal.
+ */
+export const REFRESH_HEADER = 'x-konjir-refresh';
+
 /** How a person may sign in to this Kolab (D55): with its identity provider, named for the button, and with a pasted token (development). */
 export interface WebSignInMethods { provider: string | null; token: boolean }
 

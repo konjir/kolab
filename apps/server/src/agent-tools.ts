@@ -161,14 +161,16 @@ export class AgentTools {
     annotations: { readOnlyHint: true },
   })
   whoami(_: unknown, context?: McpToolContext) {
-    return asAgent(context, async (s) => {
+    // Read quietly: it is the listen clients' identity and liveness check (the channel bridge's,
+    // every 30 s; konjir watch's, on each reconnect), not the agent working, so it renews no lease (D98).
+    return asAgent(context, (s) => this.kolab.quietly(async () => {
       const me = await this.kolab.sessionInfo(s);
       // A Konjir admin's own session says so, and whether it is raised to run the admin verbs (W2.22).
       const scopes = context?.authInfo?.scopes ?? [];
       // No hint how to raise it: only its person's browser can (Lee's ruling of 2026-10-23).
       const admin = scopes.includes('konjir-admin') ? { konjir_admin: { raised: scopes.includes('admin') } } : {};
       return { ...me, ...admin, subscribe: [inboxUri(me.kolab, me.layer), answersUri(me.kolab, me.actor)] };
-    });
+    }));
   }
 
   @McpTool({
@@ -648,7 +650,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_pull_work',
-    description: 'Pull work: Kolab gives you the first ready work package of your kolab\'s plan in natural ID order, makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<plan>#<id>). Every call you make to Kolab renews the lease; if you make none for its length, the package goes back to To do and you are told in your answers. You hold one work package In progress at a time, in any kolab: finish or release it before pulling another. From an engineer session that may write the technical layer. plan is needed only when your kolab has more than one. With nothing ready, it says why (blocked by dependencies, questions or case files). A pull counts as a draft against your hourly budget.',
+    description: 'Pull work: Kolab gives you the first ready work package of your kolab\'s plan in natural ID order, makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<plan>#<id>). Every tool call you make to Kolab renews the lease, but konjir_whoami and reading your inbox or answers, which your channel does by itself; if you make none for its length, the package goes back to To do and you are told in your answers. You hold one work package In progress at a time, in any kolab: finish or release it before pulling another. From an engineer session that may write the technical layer. plan is needed only when your kolab has more than one. With nothing ready, it says why (blocked by dependencies, questions or case files). A pull counts as a draft against your hourly budget.',
     schema: pullWork,
   })
   pullWork({ plan }: z.infer<typeof pullWork>, context?: McpToolContext) {
