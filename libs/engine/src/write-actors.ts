@@ -142,12 +142,21 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
   addPosition: { recorded: ['position.actor_id'] },
   rule: { recorded: ['ruling.actor_id'] },
+
+  // ---- work packages (W5.1b, D98): every change is an event naming who made it ----
+  pullWork: { recorded: ['work_event.actor_id', 'work_package.assignee_id'] },
+  releaseWork: { recorded: ['work_event.actor_id'] },
+  reassignWork: { recorded: ['work_event.actor_id', 'work_package.assignee_id'] },
+  setWorkLease: { recorded: ['audit_event:work_lease.set'] },
+  // A lease that lapsed goes back as Kolab's (PLN15): its event names `kolab`.
+  sweepLapsedLeases: { recorded: ['work_event.actor_id'] },
 };
 
 /**
  * Kolab's private helpers whose writes are its own, wherever they are called from: ending the
- * sessions that can no longer reach their kolab, recorded as by `kolab` (session.ended_by), and
- * freeing this process's outbox claims as it closes. A method that writes only through these
- * needs no entry in WRITE_ACTORS.
+ * sessions that can no longer reach their kolab, recorded as by `kolab` (session.ended_by),
+ * freeing this process's outbox claims as it closes, and renewing the lease on the work a
+ * session's own actor holds as it calls Kolab (PLN15, D98), which changes no state and so records
+ * no event. A method that writes only through these needs no entry in WRITE_ACTORS.
  */
-export const SYSTEM_WRITES = ['endUnreachable', 'freeClaims'] as const;
+export const SYSTEM_WRITES = ['endUnreachable', 'freeClaims', 'renewLease'] as const;

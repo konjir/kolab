@@ -76,7 +76,12 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     description: `Open questions and notes the layer owns in your session\'s kolab, open marks on its work there, the review requests waiting for you on it, and the open case files about its elements, waiting for a position or a ruling: the first ${PAGE_DEFAULT} of each, oldest first (case files newest opened first). more names each list that has more, and the verb that pages through it. Subscribe to your own layer\'s inbox, as konjir_whoami lists it; it is updated whenever that queue changes. Only your own kolab\'s inboxes can be read or subscribed to.`,
     mimeType: 'application/json',
   })
-  async inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
+  inbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
+    // A resource read, which a listen stream prompts, renews no lease on work (D98).
+    return this.kolab.quietly(() => this.readInbox(uri, vars, context));
+  }
+
+  private async readInbox(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
     const layer = String(vars.layer) as Layer;
     const session = sessionOf(context?.authInfo);
     if (!session) throw new RoleError('reading an inbox needs an agent session token');
@@ -113,10 +118,15 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://answers/{kolab}/{actor}',
     isTemplate: true,
     title: 'Answers to what you raised in your kolab',
-    description: `Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, and the case files you opened or hold a position on there, with their rulings: the newest ${PAGE_DEFAULT} questions and notes, and the 20 most recent submissions and case files. Updated whenever one of them is answered, reviewed, argued or ruled on. konjir_list_queries mine=true, konjir_list_reviews and konjir_list_cases mine=true page through the rest. Only your own answers, in your own kolab, can be read or subscribed to.`,
+    description: `Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, the case files you opened or hold a position on there, with their rulings, and your work there: the package you hold In progress, with its lease, and the newest changes others made to your work (a lease that lapsed, a reassignment, a removal): the newest ${PAGE_DEFAULT} questions and notes, and the 20 most recent submissions and case files. Updated whenever one of them is answered, reviewed, argued or ruled on. konjir_list_queries mine=true, konjir_list_reviews and konjir_list_cases mine=true page through the rest. Only your own answers, in your own kolab, can be read or subscribed to.`,
     mimeType: 'application/json',
   })
-  async answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
+  answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
+    // A resource read, which a listen stream prompts, renews no lease on work (D98).
+    return this.kolab.quietly(() => this.readAnswers(uri, vars, context));
+  }
+
+  private async readAnswers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
     const session = sessionOf(context?.authInfo);
     if (!session) throw new RoleError('reading answers needs an agent session token');
     const me = await this.kolab.sessionInfo(session);
@@ -127,6 +137,9 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     const body = { kolab: me.kolab, actor: me.actor, queries: await this.kolab.queriesFor(session, { raisedBy: me.actor, newest: PAGE_DEFAULT }), submissions: await this.kolab.submissions(me.actor, { kolab: me.kolab }),
       // Most recently changed first, so a case file just argued or ruled on is always among them.
       cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20, touched: true }),
+      // The work package you hold here, with its lease, and the newest changes others made to your
+      // work: a lease that lapsed, a reassignment, a removal from the plan (PLN15, D98).
+      work: await this.kolab.workNotices(session),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }

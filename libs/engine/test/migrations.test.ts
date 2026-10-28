@@ -14,7 +14,7 @@ import { fingerprint } from '@konjir/address';
 import { commitReviewed, els, marksOn, people, persistentStore, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
-  REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES,
+  REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES,
 } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
@@ -92,7 +92,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS and KINDS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS, KINDS, WORK_STATES and WORK_EVENT_KINDS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -122,6 +122,8 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, Q
     expect(await check('position_seeks_check')).toStrictEqual([...RULING_EFFECTS].sort());
     expect(await check('kolab_invite_level_check')).toStrictEqual([...INVITE_LEVELS].sort());
     expect(await check('node_kind_check')).toStrictEqual([...KINDS].sort());
+    expect(await check('work_package_state_check')).toStrictEqual([...WORK_STATES].sort());
+    expect(await check('work_event_kind_check')).toStrictEqual([...WORK_EVENT_KINDS].sort());
   });
 });
 
@@ -1459,4 +1461,53 @@ test('preflight 0029 is advisory, runs on a database at 0028, and names exactly 
   expect(rows.every((x) => !JSON.stringify(x).includes('orders-plan@2'))).toBe(true);
   expect(await kolab.submit(engineer, fixed)).toMatchObject({ ok: true });
   expect((await kolab.db.query(PREFLIGHT_0029)).rows).toStrictEqual([]);
+});
+
+// ---- 0030: work state, events and the lease (W5.1b; PLN4, PLN5, PLN12–PLN15, D98) ----------------
+
+test('a database at 0029 reaches 0030: each plan\'s latest committed version gets a To do package per element, added by its author, nothing else changes, and the release before 0030 refuses it (D98)', async () => {
+  const store = await persistentStore();
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  const at = MIGRATIONS.findIndex((x) => x.name === 'work_state');
+  expect(MIGRATIONS[at].version).toBe(30);
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    const before = await konjirRows(db);
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [30] });
+    // Nothing is rewritten: each kolab only gains its lease length, 30 minutes.
+    const after = await konjirRows(db);
+    expect(after.kolab.every((k) => (k as { work_lease_s: number }).work_lease_s === 1800)).toBe(true);
+    after.kolab = after.kolab.map((k) => { const { work_lease_s: _l, ...rest } = k as Record<string, unknown>; return rest; });
+    expect(after).toStrictEqual(before);
+    // Each plan's latest committed version: kolab-plan@2 (W1.3, W4.1) and lab-plan@1 (p1); old-plan has none.
+    expect((await db.query(`select kolab_id, plan_node_id, element_id, state, assignee_id, lease_until, milestone, removed_in_version_id
+                              from work_package order by plan_node_id, element_id`)).rows).toStrictEqual([
+      { kolab_id: 'kolab', plan_node_id: 'kolab-plan', element_id: 'W1.3', state: 'todo', assignee_id: null, lease_until: null, milestone: false, removed_in_version_id: null },
+      { kolab_id: 'kolab', plan_node_id: 'kolab-plan', element_id: 'W4.1', state: 'todo', assignee_id: null, lease_until: null, milestone: false, removed_in_version_id: null },
+      { kolab_id: 'lab', plan_node_id: 'lab-plan', element_id: 'p1', state: 'todo', assignee_id: null, lease_until: null, milestone: false, removed_in_version_id: null },
+    ]);
+    // Each with an added event by the version's author, naming what it delivers at the binding's latest committed version.
+    const evs = (await db.query<{ id: string; element_id: string; kind: string; actor_id: string; plan_version_id: string; concerned: unknown; note: string }>(
+      `select id, element_id, kind, actor_id, plan_version_id, concerned, note from work_event order by id`)).rows;
+    expect(evs.map(({ element_id, kind, actor_id, plan_version_id, concerned }) => ({ element_id, kind, actor_id, plan_version_id, concerned }))).toStrictEqual([
+      { element_id: 'W1.3', kind: 'added', actor_id: 'mirror-engineer', plan_version_id: 'w2', concerned: [{ address: 'kj:kolab-binding@2#TEN-DATA', version_id: 'b2', fingerprint: fingerprint('Every row carries its kolab.') }] },
+      { element_id: 'W4.1', kind: 'added', actor_id: 'mirror-engineer', plan_version_id: 'w2', concerned: [{ address: 'kj:kolab-binding@2#KON-MODEL', version_id: 'b2', fingerprint: fingerprint('Node kinds are free labels.') }] },
+      { element_id: 'p1', kind: 'added', actor_id: 'lee', plan_version_id: 'lp1', concerned: [{ address: 'kj:lab-api@1#a1', version_id: 'la1', fingerprint: fingerprint('An API.') }] },
+    ]);
+    expect(evs.every((e) => /^0030\d{22}$/.test(e.id) && /migration 0030/.test(e.note))).toBe(true);
+    // The release before 0030 refuses the database now: going back means restoring a snapshot (README, "Deploying to AWS").
+    expect(await rejection(migrate(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0030_work_state\.sql, which this release of Kolab doesn't know/);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0030_work_state\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => { await migrate(db); return schemaOf(db); }, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await TestKolab.open(store);
+  try {
+    // Lee pulls the lab plan's one package; its events follow the one the migration recorded.
+    const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
+    expect(await kolab.pullWork(lee)).toMatchObject({ pulled: true, item: { work: 'kj:lab-plan#p1', assignee: 'lee' } });
+    expect((await kolab.readWork(lee, 'kj:lab-plan#p1')).events.map((e) => [e.kind, e.actor])).toStrictEqual([['added', 'lee'], ['pulled', 'lee']]);
+  } finally { await kolab.close(); }
 });

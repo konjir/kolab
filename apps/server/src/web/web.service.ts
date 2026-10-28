@@ -14,7 +14,7 @@ import {
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
   type WebSubmit, type WebVerdict, type WebVersion, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
-  type WebVersionsView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT,
+  type WebVersionsView, type WebWorkState, type WorkItemView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT,
 } from '@konjir/types';
 import { KOLAB } from '../tokens.js';
 
@@ -104,6 +104,8 @@ export class WebService {
     let nodeRulings: WebRuling[] = [];
     if (row) {
       const read = await k.readNode(s, n.name, row.seq, { threads: false });
+      // A plan's work state, on its latest committed version only: state isn't versioned (PLN4).
+      const board = n.kind === 'plan' && live ? await k.workBoard(s, n.name) : undefined;
       // Precedent and open case files beside the element they concern, from any version (CASE4):
       // read as kj_agent, so a session that holds only Read gets none (D49).
       const rulings = read.rulings.map(ruling);
@@ -114,6 +116,7 @@ export class WebService {
         cases: cases.filter((c) => c.element === e.element_id),
         id: e.element_id, parent: e.parent_element_id, text: e.text,
         ...(e.work ? { work: e.work } : {}),
+        ...(board?.get(e.element_id) ? { work_state: workState(board.get(e.element_id)!) } : {}),
         address: formatAddress({ node: n.name, version: row.seq, element: e.element_id }),
         queries: (threads.get(e.element_id)?.items ?? []).map(query),
         queries_next: threads.get(e.element_id)?.next ?? null,
@@ -831,6 +834,10 @@ export function httpError(e: unknown): HttpException {
   logger.error(`the web API failed: ${message}`);
   return new HttpException({ error: 'error', message: 'Kolab could not do that. It has been logged; try again, or tell whoever runs Kolab.' }, 500);
 }
+
+/** A work package's state as its plan's page shows it (W5.1b), read only. */
+const workState = (w: WorkItemView): WebWorkState =>
+  ({ state: w.state, assignee: w.assignee, lease_until: w.lease_until, blocked: w.blocked, milestone: w.milestone });
 
 const version = (v: VersionHistoryRow, me: string): WebVersion =>
   ({ seq: v.seq, state: v.state, author: v.actor, role: v.role, at: v.at, note: v.note, mine: v.actor === me, base: v.base_seq });

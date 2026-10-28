@@ -60,6 +60,27 @@ test('a binding is made with no parent named: Kolab names the kolab\'s spec', as
   expect(calls.at(-1)).toStrictEqual({ url: '/api/nodes', body: { kind: 'binding', title: 'Mobile', name: 'accounts-mobile' } });
 });
 
+test('a plan\'s page shows where each work package stands, read only: its state, who holds it, and what blocks it (W5.1b)', async () => {
+  const el = (id: string, extra: Partial<WebNodeView['elements'][number]>) => ({
+    id, parent: null, text: `Package ${id}.`, address: `kj:accounts-api-plan@1#${id}`, queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [], ...extra,
+  });
+  const plan: WebNodeView = {
+    node: node('accounts-api-plan', 'plan', 'accounts-api'),
+    reading: { seq: 1, state: 'committed', author: 'eng-agent', role: 'engineer', at: new Date().toISOString(), note: null, mine: true },
+    versions: [], versions_next: null, queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true,
+    rulings: [], kolab: 'accounts', foreign: false,
+    elements: [
+      el('W1', { work_state: { state: 'in_progress', assignee: 'eng-agent', lease_until: new Date(Date.now() + 1_800_000).toISOString(), blocked: [], milestone: false } }),
+      el('W2', { work: { depends_on: ['W1'] }, work_state: { state: 'todo', assignee: null, lease_until: null, blocked: [{ reason: 'depends_on', work: 'kj:accounts-api-plan#W1', state: 'in_progress' }], milestone: false } }),
+    ],
+  };
+  globalThis.fetch = jest.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify(plan) }) as unknown as Response) as typeof fetch;
+  render(<NodeView me={eng} name="accounts-api-plan" tick={0} act={runner} go={() => undefined} read={() => undefined} />);
+  const states = await screen.findAllByLabelText('Work package');
+  expect(states[0].textContent).toMatch(/^StateIn progress · eng-agent, lease until /);
+  expect(states[1].textContent).toMatch(/^StateTo do · Blocked by W1 \(In progress\)/);
+});
+
 test('a plan\'s page says which binding it plans', async () => {
   const plan: WebNodeView = {
     node: node('accounts-api-plan', 'plan', 'accounts-api'),
