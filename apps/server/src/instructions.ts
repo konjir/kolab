@@ -188,7 +188,8 @@ export class InstructionsAccess {
   }
 
   private async resource(uri: URL, kind: InstructionKind, context?: McpHandlerContext) {
-    const text = await instructionsText(this.kolab, kind, sessionOf(context?.authInfo));
+    // A resource read, as a client makes by itself, renews no lease on work, as the inbox's doesn't (D98, D100).
+    const text = await this.kolab.quietly(() => instructionsText(this.kolab, kind, sessionOf(context?.authInfo)));
     return { contents: [{ uri: uri.href, mimeType: 'text/plain', text }] };
   }
 }

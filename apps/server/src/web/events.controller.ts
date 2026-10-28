@@ -73,7 +73,8 @@ export class WebStreams implements OnModuleDestroy {
       for (const s of [...k.streams]) {
         let now: string;
         try {
-          now = await versionsRevision(this.kolab, s.token);
+          // Kolab's own poll, for the page's stream: no person's request, so it renews no lease (D100).
+          now = await this.kolab.quietly(() => versionsRevision(this.kolab, s.token));
         } catch (e) {
           // That session ended or lost its access, or its token expired: tell its page, and try the next stream's.
           const state = await tokenState(this.kolab, s).catch(() => 'live' as const);

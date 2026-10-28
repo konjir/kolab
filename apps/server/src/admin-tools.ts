@@ -267,7 +267,8 @@ export class AdminTools {
       const token = await this.kolab.openSession(actor, role, { kolab, ...admin(context) });
       // The only time the token is shown: Kolab stores only its hash (P1). It expires (W2.22).
       const expires = (await this.kolab.liveSession(token))?.expiresAt;
-      return ok({ token, session: sessionKey(token), actor, role, kolab: await this.kolab.sessionKolab(token), expires_at: expires ? expires.toISOString() : null });
+      // Read quietly: the admin opening it isn't its actor working, so no lease of theirs is renewed (D98).
+      return ok({ token, session: sessionKey(token), actor, role, kolab: await this.kolab.quietly(() => this.kolab.sessionKolab(token)), expires_at: expires ? expires.toISOString() : null });
     } catch (e) { return fail(e); }
   }
 

@@ -96,7 +96,7 @@ test('a tool call renews the lease; a resource read, what a listen stream prompt
   const left = async () => Number((await kolab.db.query<{ s: number }>(`select extract(epoch from lease_until - clock_timestamp()) as s from work_package where element_id = 'W1'`)).rows[0].s);
   const shorten = () => kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '5 minutes' where element_id = 'W1'`);
   await shorten();
-  for (const uri of ['konjir://inbox/test/technical', 'konjir://answers/test/eng']) await eng.c.readResource({ uri });
+  for (const uri of ['konjir://inbox/test/technical', 'konjir://answers/test/eng', 'konjir://instructions']) await eng.c.readResource({ uri });
   expect(await left()).toBeLessThan(301);
   // konjir_whoami is the listen clients' liveness check (the channel bridge's, every 30 s; konjir
   // watch's, on each reconnect): it renews nothing, so an idle agent with its channel open lapses.

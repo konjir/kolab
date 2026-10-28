@@ -903,6 +903,26 @@ test('a plan\'s page shows each work package\'s state on its latest version, rea
   await shorten();
   await bob.call('nodes/orders-plan');
   expect(await left()).toBeGreaterThan(1790);
+  // An open tab, idle: its event stream, opened and reopened by EventSource, and Kolab's poll of the
+  // kolab's versions for it every 100 ms here, renew nothing (D100). A short lease lapses.
+  await shorten();
+  const open = async () => {
+    const r = await fetch(`${bobBase}/api/events`, { headers: { cookie: bob.jar } });
+    expect(r.status).toBe(200);
+    const reader = r.body!.getReader();
+    let seen = '';
+    while (!seen.includes('"ready"')) seen += new TextDecoder().decode((await reader.read()).value);
+    return reader;
+  };
+  const first = await open();
+  await new Promise((r) => setTimeout(r, 1500));   // fifteen polls
+  await first.cancel();
+  const again = await open();                       // a reconnect, as after an access token's expiry
+  await new Promise((r) => setTimeout(r, 500));
+  expect(await left()).toBeLessThan(301);
+  await kolab.db.query(`update work_package set lease_until = clock_timestamp() - interval '1 second' where element_id = 'W1'`);
+  expect(await kolab.sweepLapsedLeases()).toBe(1);
+  await again.cancel();
   // An older version has no state: state isn't versioned (PLN4). Nor does a spec's page.
   await kolab.commit(engineer, 'orders-plan', { deltas: [{ kind: 'override', element: 'W2', text: 'Refund on cancel, in full.' }] });
   expect((await bob.call<WebNodeView>('nodes/orders-plan?version=1')).body.elements.every((e) => !('work_state' in e))).toBe(true);
