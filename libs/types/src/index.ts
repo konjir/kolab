@@ -446,6 +446,8 @@ export type GateResult = ReviewVerdict & {
 export interface ReviewRequestView {
   request: string; subject: string; subject_kind: 'version' | 'work'; author: string; reviewer: string;
   requested_at: string; next: string;
+  /** A work package's: how many open marks make it at risk (PLN10, D102), which its reviewer sees before approving. */
+  open_marks?: number;
 }
 /** A version an author submitted, with the review it has had, as the author's answers show it. */
 export interface SubmissionView {
