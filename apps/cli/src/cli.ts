@@ -16,6 +16,10 @@
  *   konjir connect opencode|claude [--kolab K] [--agent label[:role]]… [--global] [--force] [--yes] [--no-auth] [--http]
  *                                        -> one MCP entry per agent of yours in the harness's config (W3.7, D59);
  *                                           for Claude Code, the Konjir channel bridge (W3.8, D61), or with --http its HTTP entry
+ *   konjir repo register [--binding B] [--url U] [--root SHA] [-C dir]
+ *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
+ *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
+ *                                        -> records the commits carrying the package's Konjir-Work trailer (W5.2a, D98)
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -27,9 +31,11 @@ import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
+import { deliverWork, gitIn, registerRepository } from './deliver.js';
 import { ASK_AGAIN, CHANNEL_CLIENT_NAME, HARNESSES, WrongAgentError, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
+export { canonicalRemote, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
 export { ASK_AGAIN, WrongAgentError, connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -142,6 +148,13 @@ const usage = (canServe: boolean) => `konjir — Kolab from a shell. Same verbs 
   konjir <verb> --json '{...}' the same, with all arguments as one JSON object
 
 Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir stale [all] · konjir queries [all]
+Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--note <text>] [--since <rev>]
+           [--repo <url>] [--dry-run] [-C <dir>], in a checkout: finds the commits whose trailer is the package's
+           (Konjir-Work: kj:<kolab>/<plan>#<id>, from pull_work or read_work), checks the checkout is the registered
+           repository (its root commit and a remote), and records them as evidence; --submit submits the package.
+           Run again, it records only what is new. Kolab itself never reads git.
+           konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a
+           person with Maintain or Admin (never an agent): registers its repository, pinned by its root commit.
 Pages:     every list (and a long read) returns a page and next; while next isn't null, call it again with
            cursor=<next>, e.g. konjir list_queries cursor=… (limit=<n> sets the page, at most 200)
 Push:      konjir watch prints your inbox, then a JSON line each time it changes (questions, notes,
@@ -436,6 +449,35 @@ export async function main(argv: string[]) {
     });
     try {
       await done;
+    } finally {
+      stored?.releaseLock();
+      await client.close();
+    }
+    return;
+  }
+  if ((cmd === 'work' && rest[0] === 'deliver') || (cmd === 'repo' && rest[0] === 'register')) {
+    try {
+      const args = rest.slice(1);
+      const at = args.indexOf('-C');
+      const dir = at >= 0 ? args.splice(at, 2)[1] : process.cwd();
+      if (dir === undefined) throw new Error('-C names a directory');
+      const git = gitIn(dir);
+      const callIt = (verb: string, a: Record<string, unknown>) => call(client, verb, a);
+      let result: unknown;
+      if (cmd === 'repo') {
+        const opts = { binding: flag(args, 'binding'), url: flag(args, 'url'), root: flag(args, 'root') };
+        if (args.length) throw new Error(`konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>]: unknown ${args.join(' ')}`);
+        result = await registerRepository(callIt, git, opts);
+      } else {
+        const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
+        const tests: string[] = [];
+        for (let t = flag(args, 'test'); t !== undefined; t = flag(args, 'test')) tests.push(t);
+        const opts = { submit: on('submit'), dryRun: on('dry-run'), pr: flag(args, 'pr'), note: flag(args, 'note'), since: flag(args, 'since'), repo: flag(args, 'repo'), tests };
+        const work = args[0] !== undefined && !args[0].startsWith('-') ? args.shift() : undefined;
+        if (args.length) throw new Error(`konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--note <text>] [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]: unknown ${args.join(' ')}`);
+        result = await deliverWork(callIt, git, { work, ...opts });
+      }
+      console.log(JSON.stringify(result, null, 2));
     } finally {
       stored?.releaseLock();
       await client.close();

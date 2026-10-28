@@ -153,8 +153,9 @@ const evidenceItem = z.strictObject({
   url: z.string().optional().describe(`An https link: to the commit, the pull request (required for one) or the test run. At most ${MAX_EVIDENCE_URL} characters, with no user, password or credential-bearing query parameter (token, sig, key, X-Amz-…) in it`),
   title: z.string().optional().describe(`A commit's subject, a pull request's title, or a test run's summary ("npm test: 120 passed"). At most ${MAX_TEXT} characters`),
   files: z.array(z.string()).optional().describe(`A commit's: the paths it touched, at most ${MAX_EVIDENCE_FILES}`),
+  repo: z.string().optional().describe('A commit\'s or pull request\'s repository: the URL of one registered in your kolab (konjir_list_repositories). Leave it out to use the package\'s own (its repo, or its binding\'s implementation); another repository than the package\'s own is refused. A pull request\'s url, and a commit\'s, must sit under it'),
 });
-const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","title":"npm test: 120 passed"}]`);
+const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","title":"npm test: 120 passed"}]; a commit or pull request may name its repo`);
 const addEvidence = z.object({ work, evidence: evidenceList });
 const submitWork = z.object({
   work,
@@ -162,6 +163,13 @@ const submitWork = z.object({
   note: z.string().optional().describe(`What you did, for the reviewer. At most ${MAX_TEXT} characters`),
 });
 const reopenWork = z.object({ work, note: z.string().describe(`Why the work is opened again. At most ${MAX_TEXT} characters`) });
+const registerRepository = z.object({
+  url: z.string().describe('The repository\'s https URL, such as https://github.com/acme/orders: no user, password, query or fragment. Kolab stores it lower-cased in the host, without a trailing slash or .git'),
+  root_sha: z.string().describe('Its root commit: the full sha `git rev-list --max-parents=0 HEAD` prints in a checkout of it. Every delivery from a checkout is checked against it'),
+  binding: node.optional().describe('The binding this repository implements, one repository per binding: its work packages are done here unless one names another repo'),
+});
+const archiveRepository = z.object({ repo: z.string().describe('The repository, by its URL or id') });
+const listRepositories = z.object({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
 const setWorkLease = z.object({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
 
@@ -419,7 +427,7 @@ export class AgentTools {
         const r = await this.kolab.reviewWork(s, a.work, { verdict: a.verdict, note: a.note });
         return {
           ...r,
-          next: r.state === 'done' ? 'Done. Its assignee is told in their answers.'
+          next: r.state === 'done' ? `Done. Its assignee is told in their answers.${r.confirmed_repositories.length ? ` Your approval confirms ${r.confirmed_repositories.join(', ')} (D98).` : ''}`
             : r.state === 'in_progress' ? `Returned to ${r.assignee}, In progress, with a fresh lease; they are told in their answers. Nothing more to do.`
             : 'Its assignee can no longer write the technical layer, so it is To do, for anyone to pull. Nothing more to do.',
         };
@@ -689,7 +697,7 @@ export class AgentTools {
       if (!r.pulled) return { pulled: false, why: r.why, counts: r.counts, next: 'Nothing to do now: konjir_list_work shows each package\'s reasons. Answer or ask the open questions, or wait for the work it depends on.' };
       return {
         pulled: true, ...r.item, trailer: r.trailer, context: r.context,
-        next: `Build it to its done-when. Put "${r.trailer}" as a trailer in every commit for it. Your calls to Kolab keep your lease; release it (konjir_release_work work=${r.item.work}) if you stop.`,
+        next: `Build it to its done-when. Put "${r.trailer}" as a trailer in every commit for it, and record them as you push: konjir work deliver ${r.item.work} in your checkout (--submit to submit it), or konjir_add_evidence. Your calls to Kolab keep your lease; release it (konjir_release_work work=${r.item.work}) if you stop.`,
       };
     });
   }
@@ -714,7 +722,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_add_evidence',
-    description: `Record evidence of the work package you hold In progress, kj:<plan>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. A link carrying a user, a password or a credential in its query (token, sig, X-Amz-…) is refused: evidence is kept, and every session of the kolab reads it. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
+    description: `Record evidence of the work package you hold In progress, kj:<plan>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). A commit or pull request is in a registered repository: the package's own (its repo, or its binding's implementation) unless it has none, when repo names one; its link sits under the repository's URL. In a shell, konjir work deliver reads the commits that carry the package's trailer from your checkout and sends them, after checking the checkout is the registered repository. Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. A link carrying a user, a password or a credential in its query (token, sig, X-Amz-…) is refused: evidence is kept, and every session of the kolab reads it. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
     schema: addEvidence,
   })
   addEvidence({ work, evidence }: z.infer<typeof addEvidence>, context?: McpToolContext) {
@@ -753,6 +761,43 @@ export class AgentTools {
       ...(await this.kolab.reopenWork(s, work, { note })),
       next: 'To do again: konjir_pull_work gives it to the next engineer who pulls.',
     }));
+  }
+
+  // ---- repositories (W5.2a; KON7, D98) ----------------------------------------------
+
+  @McpTool({
+    name: 'konjir_register_repository',
+    description: 'For a person with Maintain or Admin in your kolab, never an agent: register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding\'s implementation (one per binding). Kolab never reads git: the root commit pins which checkout `konjir work deliver` accepts, and the repository counts as confirmed once a work package that cites it is approved by someone other than you and the package\'s assignee. Audited. konjir repo register, run in a checkout, works both out for you.',
+    schema: registerRepository,
+  })
+  registerRepository({ url, root_sha, binding }: z.infer<typeof registerRepository>, context?: McpToolContext) {
+    return asAgent(context, async (s) => ({
+      repository: await this.kolab.registerRepository(s, { url, root_sha, binding }),
+      next: 'Registered, unconfirmed: the first approval of a work package that cites it, by someone other than you and its assignee, confirms it. Engineers deliver to it with konjir work deliver, from a checkout whose root commit is this one.',
+    }));
+  }
+
+  @McpTool({
+    name: 'konjir_archive_repository',
+    description: 'For a person with Maintain or Admin in your kolab, never an agent: archive a repository (by URL or id). No new evidence names it, and a binding it implemented may name another; its evidence keeps naming it. Audited.',
+    schema: archiveRepository,
+    annotations: { destructiveHint: true },
+  })
+  archiveRepository({ repo }: z.infer<typeof archiveRepository>, context?: McpToolContext) {
+    return asAgent(context, async (s) => ({ repository: await this.kolab.archiveRepository(s, repo) }));
+  }
+
+  @McpTool({
+    name: 'konjir_list_repositories',
+    description: `Your kolab's registered repositories, by URL: each with its root commit, the binding it implements, who registered it, and whether it is confirmed (by whom, and by which work package's approval). Archived ones only with archived=true.${PAGED}`,
+    schema: listRepositories,
+    annotations: { readOnlyHint: true },
+  })
+  listRepositories({ archived, cursor, limit }: z.infer<typeof listRepositories>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const { items, next } = await this.kolab.listRepositories(s, { archived }, { cursor, limit });
+      return { repositories: items, next };
+    });
   }
 
   @McpTool({

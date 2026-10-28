@@ -30,5 +30,6 @@
   "0029_work_fields.sql": "f3bd7c917848920e7155b852cd2f07e62d484dfd9b4fe8b817e47d178e651ae3",
   "0030_work_state.sql": "d57b0483ee70ded46edefa7815756c0a4cfea3e153cae761edae22d9394a30ba",
   "0031_work_review.sql": "ceae9979c10e52a8dbea152d57ad44cc47980092b83885fa4bd6abd6a5d0c3cc",
+  "0032_repositories.sql": "62f705fdb09ef9c773a0e1f571fbd3de428f5aaf3fdf86f0f664b43f192b966f",
   "baseline.sql": "3ab66da74bf73854aa176a50468f14e7c40504ed70f93d31437a1749209ea750"
 }

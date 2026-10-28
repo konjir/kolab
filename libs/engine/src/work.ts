@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
 import {
-  EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_TEXT, MAX_WORK_REPO,
+  EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_REPOSITORY_URL, MAX_TEXT, MAX_WORK_REPO,
   WORK_FIELDS, WORK_SIZES, textLength, type EvidenceKind, type WorkFields,
 } from '@konjir/types';
 
@@ -214,15 +214,50 @@ export function milestoneStates(milestones: { id: string; members: string[] }[],
   return changed;
 }
 
-/** One item of evidence as Kolab stores it (migration 0031's evidence): checked, normalized, ready to write. */
+/** One item of evidence as Kolab stores it (migrations 0031 and 0032's evidence): checked, normalized, ready to write. */
 export interface CheckedEvidence {
   kind: EvidenceKind;
   /** A commit's sha, lowercase; a pull request's number, as text. */
   ref: string | null;
   url: string | null; title: string | null; files: string[] | null;
+  /** A commit's or pull request's repository as given (repositoryUrl's canonical form), or null to use the package's own (W5.2a). */
+  repo: string | null;
 }
 
-const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'files'] as const;
+const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'files', 'repo'] as const;
+
+/**
+ * A repository's URL in the one form Kolab stores and compares (W5.2a; migration 0032's repository_url):
+ * https://host[:port]/path, the host in lower case, with no trailing slash and no `.git`. Refused, not
+ * stripped, with why: another scheme, a user or password (a token in a remote URL is a credential,
+ * D98), a query or a fragment, a host with no path, and anything over MAX_REPOSITORY_URL characters.
+ * `konjir work deliver` reads a checkout's remotes and canonicalizes them alike, after dropping any
+ * credential locally, so it never sends one.
+ */
+export function repositoryUrl(given: unknown): { url?: string; problem?: string } {
+  if (typeof given !== 'string' || !given.trim()) return { problem: 'a repository is named by its https URL, such as https://github.com/acme/orders' };
+  const t = given.trim();
+  if (t.length > MAX_EVIDENCE_URL) return { problem: `that repository URL is ${t.length.toLocaleString('en')} characters; the limit is ${MAX_REPOSITORY_URL}` };
+  let u: URL;
+  try { u = new URL(t); } catch { return { problem: `${JSON.stringify(t.slice(0, 200))} isn't a URL: name a repository by its https URL, such as https://github.com/acme/orders` }; }
+  if (u.protocol !== 'https:') return { problem: `a repository is named by its https URL, not ${u.protocol.replace(/:$/, '')}: such as https://${u.host || 'github.com'}${u.pathname === '/' ? '/acme/orders' : u.pathname}` };
+  if (u.username || u.password) return { problem: 'that repository URL carries a user or password, which may be a credential: give the URL without it, such as https://github.com/acme/orders' };
+  if (u.search || u.hash || /[?#]/.test(t)) return { problem: "a repository URL has no query or fragment: give the repository's own URL, such as https://github.com/acme/orders" };
+  const path = u.pathname.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  if (!path || path === '/' || path.split('/').slice(1).some((seg) => !seg) || /[@\s%]/.test(path)) {
+    return { problem: `${JSON.stringify(t.slice(0, 200))} names no repository: give its path too, such as https://github.com/acme/orders` };
+  }
+  if (!/^[a-z0-9.-]+$/.test(u.hostname)) return { problem: `${JSON.stringify(u.hostname)} isn't a host name a repository URL takes` };
+  const url = `https://${u.host.toLowerCase()}${path}`;
+  if (url.length > MAX_REPOSITORY_URL) return { problem: `that repository URL is ${url.length} characters; the limit is ${MAX_REPOSITORY_URL}` };
+  return { url };
+}
+
+/** Whether `link` (a pull request's or a commit's) sits inside the repository at `repo` (a canonical URL): under its path, whatever the case. */
+export function insideRepository(link: string, repo: string): boolean {
+  return sameLink(link).toLowerCase().startsWith(`${repo.toLowerCase()}/`);
+}
+
 const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
@@ -292,7 +327,11 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
       const there = keys.filter(given);
       if (there.length) problems.push(`${what} is a ${kind.replace('_', ' ')}, which takes no ${there.join(' or ')}`);
     };
-    const out: CheckedEvidence = { kind, ref: null, url: null, title: null, files: null };
+    const out: CheckedEvidence = { kind, ref: null, url: null, title: null, files: null, repo: null };
+    if (given('repo')) {
+      const r = repositoryUrl(o.repo);
+      if (r.problem) problems.push(`${what}'s repo: ${r.problem}`); else out.repo = r.url!;
+    }
     if (given('url')) {
       const u = evidenceUrl(what, o.url);
       if (u.problem) { problems.push(u.problem); if (u.limit) limit = true; } else out.url = u.url!;
@@ -321,7 +360,7 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
         else out.ref = String(o.pr);
       }
     } else {
-      refuse(['sha', 'pr', 'files']);
+      refuse(['sha', 'pr', 'files', 'repo']);
       if (!given('url') && !given('title')) problems.push(`${what} is a test run: give its url, or a summary as title ("npm test: 120 passed")`);
     }
     items.push(out);
@@ -329,9 +368,14 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
   return { items: problems.length ? [] : items, problems, limit };
 }
 
-/** What makes two items of a package's evidence the same: a commit's sha, a pull request's link (sameLink), a test run's link or else its summary. */
-export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null): string {
-  return kind === 'commit' ? `commit:${ref}` : kind === 'pull_request' ? `pr:${sameLink(url ?? '')}` : url ? `test:${sameLink(url)}` : `test-summary:${title ?? ''}`;
+/**
+ * What makes two items of a package's evidence the same: a commit's sha in its repository (`repository`,
+ * its id; none for one recorded before repositories, W5.2a), a pull request's link (sameLink), a test
+ * run's link or else its summary.
+ */
+export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null, repository: string | null = null): string {
+  return kind === 'commit' ? `commit:${repository ?? ''}:${ref}` : kind === 'pull_request' ? `pr:${sameLink(url ?? '').toLowerCase()}`
+    : url ? `test:${sameLink(url)}` : `test-summary:${title ?? ''}`;
 }
 
 /** A line naming evidence, for an event's note: each commit's short sha, each pull request's link, each test run. */

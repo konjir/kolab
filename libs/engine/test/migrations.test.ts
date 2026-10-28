@@ -1553,8 +1553,68 @@ test('a database at 0030 reaches 0031: review requests and work state are kept a
 
   const kolab = await TestKolab.open(store);
   try {
-    // Lee, alone on the lab's technical layer, submits the package it holds: Done, unreviewed.
+    // Lee, alone on the lab's technical layer, submits the package it holds: Done, unreviewed. Its
+    // commit is in the lab API's repository, which Lee, its owner, registers first (0032, W5.2a).
     const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
+    await kolab.registerRepository(lee, { url: 'https://github.com/acme/lab', root_sha: 'f'.repeat(40), binding: 'lab-api' });
     expect(await kolab.submitWork(lee, 'kj:lab-plan#p1', { evidence: [{ kind: 'commit', sha: 'c'.repeat(40) }] })).toMatchObject({ state: 'done', unreviewed: true });
+  } finally { await kolab.close(); }
+});
+
+// ---- 0032: repositories, and evidence tied to them (W5.2a; KON7, D98 rulings 1 and 2) -----------------
+
+test('a database at 0031 reaches 0032: evidence recorded before keeps every column, names no repository and is marked as before repositories, which never confirms one; the release before 0032 refuses it (D98)', async () => {
+  const store = await persistentStore();
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  const at = MIGRATIONS.findIndex((x) => x.name === 'repositories');
+  expect(MIGRATIONS[at].version).toBe(32);
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // Lee submitted the lab plan's package before repositories existed: a commit and a test run.
+    await db.exec(`update work_package set state = 'in_review', assignee_id = 'lee', updated_at = '2026-10-28 10:00:00+00' where plan_node_id = 'lab-plan' and element_id = 'p1';
+                   insert into work_event(id, plan_node_id, element_id, kind, from_state, to_state, actor_id, assignee_from, assignee_to, plan_version_id, concerned)
+                     values ('ev1', 'lab-plan', 'p1', 'submitted', 'in_progress', 'in_review', 'lee', 'lee', 'lee', 'lp1', '[]');
+                   insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, url, title, files, recorded_by) values
+                     ('e1', 'lab-plan', 'p1', 'ev1', 'commit', '${'c'.repeat(40)}', 'https://github.com/acme/lab/commit/${'c'.repeat(40)}', 'Old commit', '{src/a.ts}', 'lee'),
+                     ('e2', 'lab-plan', 'p1', 'ev1', 'test_run', null, null, 'npm test: 1 passed', null, 'lee');`);
+    const before = await konjirRows(db);
+    const evidence = (await db.query(`select * from evidence order by id`)).rows;
+    const audit = (await db.query(`select * from audit_event order by id`)).rows;
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [32] });
+    expect(await konjirRows(db)).toStrictEqual(before);
+    // Evidence keeps every column, names no repository, and is marked as recorded before repositories.
+    expect((await db.query(`select * from evidence order by id`)).rows)
+      .toStrictEqual(evidence.map((e) => ({ ...(e as object), repository_id: null, before_repositories: true })));
+    expect((await db.query(`select * from audit_event order by id`)).rows).toStrictEqual(audit);
+    expect((await db.query(`select count(*)::int as n from repository`)).rows).toStrictEqual([{ n: 0 }]);
+    // Nothing recorded from now on is marked so, whatever an insert says, and a commit then names its repository.
+    expect(await rejection(db.query(`insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, recorded_by, before_repositories)
+                                     values ('e3', 'lab-plan', 'p1', 'ev1', 'commit', '${'d'.repeat(40)}', 'lee', true)`)))
+      .toMatch(/evidence_repository/);
+    // The release before 0032 refuses the database now: going back means restoring a snapshot (README, "Deploying to AWS").
+    expect(await rejection(migrate(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0032_repositories\.sql, which this release of Kolab doesn't know/);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0032_repositories\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => { await migrate(db); return schemaOf(db); }, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await TestKolab.open(store);
+  try {
+    // Lee, the lab's owner, registers the lab API's repository; Kim, an engineer there, approves the
+    // package submitted before it. Its evidence names no repository and is from before repositories,
+    // so the approval confirms nothing (Q1 of #82).
+    const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
+    const repo = await kolab.registerRepository(lee, { url: 'https://github.com/acme/lab', root_sha: 'f'.repeat(40), binding: 'lab-api' });
+    await kolab.addActor('kim');
+    await kolab.grant('lab', 'kim', 'write', { layers: ['technical'] });
+    const kim = await kolab.openSession('kim', 'engineer', { kolab: 'lab' });
+    expect(await kolab.reviewWork(kim, 'kj:lab-plan#p1', { verdict: 'approve' })).toMatchObject({ state: 'done', confirmed_repositories: [] });
+    expect((await kolab.listRepositories(kim)).items).toStrictEqual([expect.objectContaining({ id: repo.id, confirmed: false, confirmed_by: null })]);
+    // read_work labels it: a commit with no repository, unconfirmed, from before repositories; a test run has neither.
+    const w = await kolab.readWork(kim, 'kj:lab-plan#p1');
+    expect(w.evidence.map((e) => [e.kind, e.repository, e.confirmed, e.before_repositories])).toStrictEqual([
+      ['commit', null, false, true], ['test_run', undefined, undefined, undefined],
+    ]);
   } finally { await kolab.close(); }
 });
