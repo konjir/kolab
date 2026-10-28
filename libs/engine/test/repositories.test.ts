@@ -234,9 +234,11 @@ test('a package Done unreviewed confirms nothing, and an approval by the registr
   await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
   await kolab.createNode(bob, 'binding', 'Orders on Postgres', 'orders-pg');
   const spec = (await kolab.latestCommitted('orders'))!.id;
-  const bv = await kolab.commit(bob, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.' }), links: [{ kind: 'dependency', sourceElement: 'b1', target: spec, targetElement: 'R1' }] });
+  const bv = await kolab.draft(bob, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.' }), links: [{ kind: 'dependency', sourceElement: 'b1', target: spec, targetElement: 'R1' }] });
+  expect((await kolab.submit(bob, bv)).ok).toBe(true);
   await kolab.createNode(bob, 'plan', 'Plan', 'orders-plan');
-  await kolab.commit(bob, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }], links: [{ kind: 'dependency', sourceElement: 'W1', target: bv, targetElement: 'b1' }] });
+  const pv = await kolab.draft(bob, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }], links: [{ kind: 'dependency', sourceElement: 'W1', target: bv, targetElement: 'b1' }] });
+  expect((await kolab.submit(bob, pv)).ok).toBe(true);
   // The registrar's grant is removed once it registers, so bob is alone on the technical layer.
   const r = await registeredRepository(kolab, { binding: 'orders-pg' });
   await pull(kolab, bob);
