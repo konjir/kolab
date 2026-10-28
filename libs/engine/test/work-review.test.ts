@@ -529,6 +529,34 @@ test('a plan version drafted before a mark was raised doesn\'t reopen for it: th
   expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).not.toContain('reopened');
 });
 
+test('D102: a plan edit never settles the mark on an at-risk package In review: it stays open, and its reviewer sees it before approving', async () => {
+  const { kolab, bob, eve } = await planned();
+  await pull(kolab, bob);
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  // b1 changes while W1.1 waits in review: W1.1 is marked.
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
+  const [mark] = (await marksOn(kolab, 'orders-plan')).filter((m) => m.element_id === 'W1.1');
+  expect(mark.reason).toBe('changed');
+  // A plan version revises W1.1: the cascade leaves its mark open, and the package In review.
+  await kolab.commit(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1.1', text: 'Build the cancel endpoint, idempotent.' }] });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'in_review' });
+  // Its reviewer sees it at risk, in the request and in the package.
+  const [req] = await kolab.reviewRequests({ reviewer: 'eve' });
+  expect(req).toMatchObject({ subject: W('W1.1'), open_marks: 1, next: expect.stringMatching(/^It is at risk: an open mark says something it delivers changed since its work began \(PLN10, D102\)/) });
+  expect((await kolab.readWork(eve, W('W1.1'))).open_marks).toStrictEqual([{ mark: expect.any(String), reason: 'changed', at: expect.any(String) }]);
+  // A session that holds only Read reads no mark (D58).
+  expect((await kolab.readWork(await kolab.openSession('carol', 'engineer'), W('W1.1'))).open_marks).toBeUndefined();
+  // Approved anyway: Done, still at risk, its mark open for its owner to confirm or reopen.
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' });
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'done' });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => m.element_id)).toStrictEqual(['W1.1']);
+  // A package not In review is settled by a revision as LNK6 has it: W1.2, To do, marked, then revised.
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, durable.' }] });
+  await kolab.commit(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1.2', text: 'Build the shipping queue, durable.' }] });
+  expect((await marksOn(kolab, 'orders-plan')).map((m) => m.element_id)).toStrictEqual(['W1.1']);
+});
+
 test('an assignee submitting evidence on its package In review is told it waits in review (review 7)', async () => {
   const { kolab, bob } = await planned();
   await pull(kolab, bob);
