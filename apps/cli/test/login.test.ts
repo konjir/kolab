@@ -123,7 +123,7 @@ async function signedIn(label = 'cli') {
   return { kolab, server, again };
 }
 
-test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in is used; a real token still wins', async () => {
+test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in is used; a real token still wins, and a blank --token beats an exported one', async () => {
   const { server } = await signedIn();
   // konjir connect claude writes KONJIR_TOKEN: "" in .mcp.json; those settings copied into a shell.
   for (const blank of ['', '   ']) {
@@ -149,6 +149,11 @@ test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in 
   out = [];
   await main(['--token', token, 'whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'bot' });
+  // A flag beats the environment: a blank --token means no token, so the kept sign-in, even with a real KONJIR_TOKEN exported.
+  process.env.KONJIR_TOKEN = token;
+  out = [];
+  await main(['--token', '', 'whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
 });
 
 test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
