@@ -237,7 +237,26 @@ function evidenceUrl(what: string, u: unknown): { url?: string; problem?: string
   try { parsed = new URL(t); } catch { return { problem: `${what}'s url isn't a link: give an https link` }; }
   if (parsed.username || parsed.password) return { problem: `${what}'s url carries a user or password: give the link without it` };
   if (parsed.protocol !== 'https:' || !/^https:\/\/[^/@\s]+(\/\S*)?$/.test(t)) return { problem: `${what}'s url is an https link, with no spaces in it` };
+  // Evidence is readable by every session of the kolab, and kept: a link that carries a credential
+  // (a pre-signed or token-bearing link to a CI run, an artifact or a log) is refused, not stored.
+  const secret = [...parsed.searchParams.keys()].filter((k) => CREDENTIAL_PARAM.test(k));
+  if (secret.length) {
+    return { problem: `${what}'s url carries ${secret.map((k) => `"${k}"`).join(', ')}, which may be a credential, and evidence is kept and read by everyone in the kolab: give the link without its query string, or a summary as title` };
+  }
   return { url: t };
+}
+
+/** Query parameters that carry credentials in pre-signed and token-bearing links (S3, Azure SAS, OAuth, CI artifact links). */
+const CREDENTIAL_PARAM = /^(token|access_token|id_token|refresh_token|auth|sig|signature|key|api_key|apikey|code|password|secret|x-amz-.*|x-goog-.*)$/i;
+
+/** A link as two items of evidence compare it: host in lower case, no trailing slash, no fragment. */
+export function sameLink(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}${u.search}`;
+  } catch {
+    return url;
+  }
 }
 
 /**
@@ -306,9 +325,9 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
   return { items: problems.length ? [] : items, problems, limit };
 }
 
-/** What makes two items of a package's evidence the same: a commit's sha, a pull request's link, a test run's link or else its summary. */
+/** What makes two items of a package's evidence the same: a commit's sha, a pull request's link (sameLink), a test run's link or else its summary. */
 export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null): string {
-  return kind === 'commit' ? `commit:${ref}` : kind === 'pull_request' ? `pr:${url}` : url ? `test:${url}` : `test-summary:${title ?? ''}`;
+  return kind === 'commit' ? `commit:${ref}` : kind === 'pull_request' ? `pr:${sameLink(url ?? '')}` : url ? `test:${sameLink(url)}` : `test-summary:${title ?? ''}`;
 }
 
 /** A line naming evidence, for an event's note: each commit's short sha, each pull request's link, each test run. */
