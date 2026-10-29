@@ -14,7 +14,7 @@
 //   B   binding           b1 -> P.E1, b2 -> P.E2 (its subtree), b3 -> V1.E1, b4 -> V2.E3,
 //                         b5 -> P (whole), b6 -> V2.X1     (b6 and V2.X1 form a cycle)
 //   W   binding           w1 -> B.b1, w2 -> B.b3, w3 -> B.b4, w4 -> B.b6  (a binding relying on B)
-//   X   plan of W         x1 -> W.w1, x2 -> W.w3           (a third hop: its work packages)
+//   X   binding           x1 -> W.w1, x2 -> W.w3           (a third hop: once W's plan, D104 retired the kind)
 //
 // What it encodes, from the spec (LNK, OVR) and the binding (CAS):
 // - CAS1, LNK4: a commit resolves each link into the node. Content that still fingerprints the
@@ -394,9 +394,8 @@ export class Model {
 
   /** The engineer commits B, W or X with `el` rewritten. Text that fingerprints the same is no edit: Kolab keeps the old text. */
   edit(key: 'B' | 'W' | 'X', el: string, text: string): boolean {
-    // The plan (X, W's plan) commits after structural checks only, so the reviewer's veto reaches
-    // only the bindings, B and W (VER3, PLN2, W1.6).
-    if (vetoed(text) && key !== 'X') return false;
+    // Every binding, X included, passes the reviewer's veto (VER3, W1.6; D104: no plan commits on its checks alone).
+    if (vetoed(text)) return false;
     const before = this.mat(key);
     if (fp(this.plain[key].get(el)!) !== fp(text)) this.plain[key].set(el, text);
     this.revised(key, before);

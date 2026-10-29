@@ -9,12 +9,12 @@ import { expect, test } from '@jest/globals';
 import {
   BASELINE, MIGRATIONS, checkMigrations, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
-import { Kolab, sessionKey } from '@konjir/engine';
+import { Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
 import { commitReviewed, els, marksOn, people, persistentStore, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
-  EVIDENCE_KINDS, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES,
+  EVIDENCE_KINDS, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
 } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
@@ -1145,19 +1145,23 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     const pm = await kolab.openSession('mirror-product', 'product', { kolab: 'kolab' });
     const eng = await kolab.openSession('mirror-engineer', 'engineer', { kolab: 'kolab' });
     expect(await rejection(kolab.createNode(pm, 'spec', 'A second spec', 'kolab-2'))).toMatch(/kolab kolab already holds its spec, kolab/);
-    expect(await rejection(kolab.createNode(eng, 'plan', 'A second plan', 'kolab-plan-2'))).toMatch(/binding kolab-binding already has its plan, kolab-plan/);
-    // A spec change flags the binding element that serves it, the work package that delivers that,
-    // and the prototype's screen that shows it (M4's done-when, D93).
+    // No plan is made any more (D104, 0033).
+    expect(await rejection(kolab.createNode(eng, 'plan', 'A second plan', 'kolab-plan-2'))).toMatch(/the plan kind is retired \(D104\)/);
+    // A spec change flags the binding element that serves it, the work package that relies on that
+    // (in the binding since 0033, D104), and the prototype's screen that shows it (M4's done-when, D93).
     await kolab.commit(pm, 'kolab', { elements: els({ TEN1: 'Konjir is one hosted service, at kolab.konjir.com.', KON1: 'A kolab holds exactly one functional spec.' }) });
     const on = async (node: string) => (await marksOn(kolab, node)).map((m) => [m.element_id, m.reason]);
-    // The binding's committed version, and its version in review, which carries the same link.
-    expect((await marksOn(kolab, 'kolab-binding')).map((m) => [m.version_id, m.element_id, m.reason]).sort()).toStrictEqual([['b2', 'TEN-DATA', 'changed'], ['b3', 'TEN-DATA', 'changed']]);
-    expect(await on('kolab-plan')).toStrictEqual([['W1.3', 'upstream_dirty']]);
+    // The binding's committed version, which 0033 wrote. Its version in review, built on b2, was
+    // overtaken by that one: stale, it takes no mark, and its next review redrafts it.
+    const b4 = (await kolab.latestCommitted('kolab-binding'))!.id;
+    expect((await marksOn(kolab, 'kolab-binding')).map((m) => [m.version_id, m.element_id, m.reason]).sort()).toStrictEqual(
+      [[b4, 'TEN-DATA', 'changed'], [b4, 'W1.3', 'upstream_dirty']]);
+    expect(await on('kolab-plan')).toStrictEqual([]);
     expect(await on('kolab-page')).toStrictEqual([['home', 'changed']]);
-    // The plan delivers the binding's elements, never the spec (KON6, D78).
+    // A plan, retired, takes no new link (D104).
     const plan = (await kolab.latestCommitted('kolab-plan'))!.id;
     expect(await rejection(kolab.link(eng, { kind: 'dependency', source: plan, sourceElement: 'W4.1', target: (await kolab.latestCommitted('kolab'))!.id, targetElement: 'KON1' })))
-      .toMatch(/kolab-plan is a plan: its work packages deliver elements of its own binding, never the spec/);
+      .toMatch(/kolab-plan is a plan, and the plan kind is retired \(D104\)/);
     // The binding's version in review is as it was.
     expect((await kolab.version('b3')).state).toBe('in_review');
     // Listings and reads name each node's parent.
@@ -1304,14 +1308,14 @@ test('an abandoned plan draft that linked the spec is history: 0027 applies, and
   const kolab = await TestKolab.open(store);
   try {
     const pm = await kolab.openSession('lee', 'product', { kolab: 'shop' });   // lee owns shop
-    // R1 changes and R2 doesn't: the abandoned draft's link to R2 is re-pinned to s@2, an update the trigger lets through.
+    // R1 changes and R2 doesn't. The abandoned draft's link to R2 is history: since 0033 a plan's
+    // links are no cascade's (D104), and it stays where it was. The cascade finishes.
     await kolab.commit(pm, 's', { elements: els({ R1: 'S runs fast.', R2: 'S ships.' }) });
-    const s2 = (await kolab.latestCommitted('s'))!.id;
-    expect((await kolab.db.query(`select target_version_id from edge where id = 'e-w2'`)).rows).toStrictEqual([{ target_version_id: s2 }]);
+    expect((await kolab.db.query(`select target_version_id from edge where id = 'e-w2'`)).rows).toStrictEqual([{ target_version_id: 'sv' }]);
     expect(await kolab.outboxJobs()).toStrictEqual([]);
-    // The binding element is marked, and the plan's work package through it.
-    expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason])).toStrictEqual([['b1', 'changed']]);
-    expect((await marksOn(kolab, 'w')).filter((m) => m.version_id === 'wv1').map((m) => [m.element_id, m.reason])).toStrictEqual([['W1', 'upstream_dirty']]);
+    // The binding element is marked, and the plan's work package through it, in the binding it moved to (0033).
+    expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['W1', 'upstream_dirty'], ['b1', 'changed']]);
+    expect(await marksOn(kolab, 'w')).toStrictEqual([]);
     // A link can't be moved onto another source to get outside its parent, for any role.
     expect(await rejection(kolab.db.query(`update edge set source_version_id = 'wv1' where id = 'e-w2'`))).toMatch(/a plan's links deliver its own binding's elements/);
   } finally { await kolab.close(); }
@@ -1403,16 +1407,18 @@ test('a database at 0028 reaches 0029: nothing is rewritten, every element and l
 
   const kolab = await TestKolab.open(store);
   try {
-    // Lee's lab plan, made before work fields, takes them: its link to the API binding is a Delivers that passes PLN2.
+    // Lee's lab plan, made before work fields, is lab-api's since 0033 (D104), and takes them there:
+    // its link to the API's decision passes PLN2.
     const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
-    const r = await kolab.submit(lee, await kolab.draft(lee, 'lab-plan', { elements: [
+    const r = await kolab.submit(lee, await kolab.draft(lee, 'lab-api', { elements: [
+      { id: 'a1', text: 'An API.' },
       { id: 'p1', text: 'Build the API.', work: { done_when: 'The API answers.', size: 'M' } },
       { id: 'M1', text: 'Lab ships.', work: { milestone: true, depends_on: ['p1'], target_date: '2026-12-01' } },
     ] }));
     expect(r).toMatchObject({ ok: true });
-    const lp2 = (await kolab.latestCommitted('lab-plan'))!.id;
-    expect((await kolab.elements(lp2)).map((e) => [e.element_id, e.work])).toStrictEqual([
-      ['p1', { done_when: 'The API answers.', size: 'M' }], ['M1', { depends_on: ['p1'], milestone: true, target_date: '2026-12-01' }],
+    const la3 = (await kolab.latestCommitted('lab-api'))!.id;
+    expect((await kolab.elements(la3)).map((e) => [e.element_id, e.work])).toStrictEqual([
+      ['a1', undefined], ['p1', { done_when: 'The API answers.', size: 'M' }], ['M1', { depends_on: ['p1'], milestone: true, target_date: '2026-12-01' }],
     ]);
     // The version before keeps the fingerprint its element always had.
     expect((await kolab.elements('lp1'))[0].fingerprint).toBe(fingerprint('Build the API.'));
@@ -1430,38 +1436,23 @@ test('preflight 0029 is advisory, runs on a database at 0028, and names exactly 
     await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
     expect((await db.query(PREFLIGHT_0029)).rows).toStrictEqual([]);
   });
-  // A plan with links written before PLN2: a derivation, one from the whole plan, one to the whole binding.
-  const { kolab, product, engineer } = await setup();
-  await kolab.createNode(product, 'spec', 'Orders', 'orders');
-  await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
-  await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
-  const b1 = await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.', b2: 'A queue.' }) });
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  const w1 = await kolab.commit(engineer, 'orders-plan', { elements: els({ W1: 'Build it.', W2: 'Ship it.' }) });
-  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: b1, targetElement: 'b2' });   // a good one
-  const fp = async (el: string | null) => ((await kolab.resolveIn(b1, el, null)) as { fingerprint: string }).fingerprint;
-  await kolab.db.query(`insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
-                        values ('d1', 'derivation', $1, 'W1', $2, 'b1', $3, 'bob'), ('d2', 'dependency', $1, null, $2, 'b1', $3, 'bob'),
-                               ('d3', 'dependency', $1, 'W2', $2, null, $4, 'bob')`, [w1, b1, await fp('b1'), await fp(null)]);
-  expect((await kolab.db.query(PREFLIGHT_0029)).rows).toStrictEqual([
-    { ord: 2, why: 'Delivers of another kind than dependency', nodes: 'test/orders-plan@1#W1 -> test/orders-pg@1#b1 [d1] derivation' },
-    { ord: 3, why: 'Delivers from the whole plan version', nodes: 'test/orders-plan@1 -> test/orders-pg@1#b1 [d2]' },
-    { ord: 4, why: 'Delivers to the whole binding', nodes: 'test/orders-plan@1#W2 -> test/orders-pg@1 [d3]' },
-  ]);
-  // The next version is refused for exactly those three, and nothing else.
-  const draft = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it well.', W2: 'Ship it.' }) });
-  const r = await kolab.submit(engineer, draft);
-  expect(r.note).toBe('Plan checks failed (PLN2): a link from the whole version to orders-pg@1#b1 delivers nothing: a Delivers is from a work package, an element (PLN1); '
-    + 'W1 delivers orders-pg@1#b1 through a derivation link, and a Delivers is a dependency link (PLN1); '
-    + 'W2 delivers orders-pg@1, and a Delivers names one binding element, at element scope, not the whole binding (PLN1, LNK3).');
-  // The draft that unlinks them is what the preflight then finds clean, and it commits.
-  await kolab.abandon(engineer, draft);
-  const fixed = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it well.', W2: 'Ship it.' }), unlink: [{ link: 'd1' }, { link: 'd2' }, { link: 'd3' }] });
-  const rows = (await kolab.db.query<{ ord: number }>(PREFLIGHT_0029)).rows;
-  // Only the committed version, whose next draft would carry them, is still named; the draft is clean.
-  expect(rows.every((x) => !JSON.stringify(x).includes('orders-plan@2'))).toBe(true);
-  expect(await kolab.submit(engineer, fixed)).toMatchObject({ ok: true });
-  expect((await kolab.db.query(PREFLIGHT_0029)).rows).toStrictEqual([]);
+  // A plan with links written before PLN2, on a database at 0029: a derivation, one from the whole
+  // plan, one to the whole binding. (Plans are retired since 0033, D104, so it is written as 0029 left them.)
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) });
+    expect((await db.query(PREFLIGHT_0029)).rows).toStrictEqual([]);
+    await db.exec(`insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by) values
+                     ('d1', 'derivation', 'lp1', 'p1', 'la1', 'a1', 'x', 'lee'), ('d2', 'dependency', 'lp1', null, 'la1', 'a1', 'x', 'lee'),
+                     ('d3', 'dependency', 'lp1', 'p1', 'la1', null, 'x', 'lee')`);
+    expect((await db.query(PREFLIGHT_0029)).rows).toStrictEqual([
+      { ord: 2, why: 'Delivers of another kind than dependency', nodes: 'lab/lab-plan@1#p1 -> lab/lab-api@1#a1 [d1] derivation' },
+      { ord: 3, why: 'Delivers from the whole plan version', nodes: 'lab/lab-plan@1 -> lab/lab-api@1#a1 [d2]' },
+      { ord: 4, why: 'Delivers to the whole binding', nodes: 'lab/lab-plan@1#p1 -> lab/lab-api@1 [d3]' },
+    ]);
+  });
 });
 
 // ---- 0030: work state, events and the lease (W5.1b; PLN4, PLN5, PLN12–PLN15, D98) ----------------
@@ -1509,9 +1500,10 @@ test('a database at 0029 reaches 0030: each plan\'s latest committed version get
 
   const kolab = await TestKolab.open(store);
   try {
-    // Lee pulls the lab plan's one package; its events follow the one the migration recorded.
+    // Lee pulls the lab plan's one package, lab-api's since 0033 (D104); its events follow the one the
+    // migration recorded, and its old address still names it.
     const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
-    expect(await kolab.pullWork(lee)).toMatchObject({ pulled: true, item: { work: 'kj:lab-plan#p1', assignee: 'lee' } });
+    expect(await kolab.pullWork(lee)).toMatchObject({ pulled: true, item: { work: 'kj:lab-api#p1', assignee: 'lee' } });
     expect((await kolab.readWork(lee, 'kj:lab-plan#p1')).events.map((e) => [e.kind, e.actor])).toStrictEqual([['added', 'lee'], ['pulled', 'lee']]);
   } finally { await kolab.close(); }
 });
@@ -1618,3 +1610,185 @@ test('a database at 0031 reaches 0032: evidence recorded before keeps every colu
     ]);
   } finally { await kolab.close(); }
 });
+
+// ---- 0033: work planned in the binding (W5.1d; KON5, PLN1, PLN2, PLN4, D104) -----------------------------
+
+/**
+ * The lab plan as 0032 leaves it, grown: a second committed version whose W1 (In progress, with
+ * evidence and an at-risk mark on its link) relies on lab-api's a1; an `a1` of its own, which the
+ * binding has too, so it moves as lab-plan.a1, with a child of no work field; and a milestone over both.
+ * A draft of the plan, which 0033 rejects.
+ */
+const LAB_PLAN_0032 = (() => {
+  const W = (version: string, id: string, ord: number, text: string, work: WorkFields | null, parent: string | null = null) =>
+    `('${version}', '${id}', ${parent === null ? 'null' : `'${parent}'`}, ${ord}, '${text}', '${elementFingerprint(text, work)}', ${work === null ? 'null' : `'${JSON.stringify(work)}'`})`;
+  return `
+  insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role, submitted_by) values
+    ('lp2', 'lab-plan', 2, 'lp1', 'technical', 'committed', 'lee', 'engineer', 'lee'),
+    ('lp3', 'lab-plan', 3, 'lp2', 'technical', 'drafted', 'lee', 'engineer', null);
+  insert into element(version_id, element_id, parent_element_id, ord, text, fingerprint, work) values
+    ${W('lp2', 'W1', 0, 'Build the API.', { done_when: 'It  answers\nfast.' })},
+    ${W('lp2', 'a1', 1, 'Write the docs.', { depends_on: ['W1'], size: 'S' })},
+    ${W('lp2', 'a1.1', 2, 'Document the errors.', null, 'a1')},
+    ${W('lp2', 'M1', 3, 'The API ships.', { depends_on: ['a1', 'W1'], milestone: true, target_date: '2026-12-01' })},
+    ${W('lp3', 'W1', 0, 'Build the API.', null)};
+  insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by) values
+    ('e-lp2', 'dependency', 'lp2', 'W1', 'la1', 'a1', '${fingerprint('An API.')}', 'lee'),
+    ('e-lp2w', 'dependency', 'lp2', null, 'la1', null, 'whole', 'lee'),
+    ('e-lp2a', 'dependency', 'lp2', 'a1', 'lp1', 'p1', '${fingerprint('Build the API.')}', 'lee');
+  insert into invalidation(id, version_id, element_id, edge_id, triggered_by, reason) values ('m-w1', 'lp2', 'W1', 'e-lp2', 'la1', 'changed');
+  insert into work_package(plan_node_id, element_id, state, assignee_id, lease_until, touched_at) values
+    ('lab-plan', 'W1', 'in_progress', 'lee', now() + interval '30 minutes', now());
+  insert into work_package(plan_node_id, element_id) values ('lab-plan', 'a1'), ('lab-plan', 'a1.1');
+  insert into work_package(plan_node_id, element_id, milestone) values ('lab-plan', 'M1', true);
+  update work_package set removed_in_version_id = 'lp2' where plan_node_id = 'lab-plan' and element_id = 'p1';
+  insert into work_event(id, plan_node_id, element_id, kind, from_state, to_state, actor_id, assignee_to, plan_version_id, concerned) values
+    ('ev-w1', 'lab-plan', 'W1', 'pulled', 'todo', 'in_progress', 'lee', 'lee', 'lp2', '[]');
+  insert into repository(id, kolab_id, url, root_sha, binding_node_id, registered_by) values ('r1', 'lab', 'https://github.com/acme/lab', '${'f'.repeat(40)}', 'lab-api', 'lee');
+  insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, recorded_by, repository_id) values
+    ('ev1', 'lab-plan', 'W1', 'ev-w1', 'commit', '${'c'.repeat(40)}', 'lee', 'r1');`;
+})();
+
+test('a database at 0032 reaches 0033: each plan\'s packages move onto its binding with their state, events, evidence and marks, a colliding id becomes <plan>.<id>, old addresses still resolve, and the plan kind is retired (D104)', async () => {
+  const store = await persistentStore();
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  const at = MIGRATIONS.findIndex((x) => x.name === 'work_in_binding');
+  expect(MIGRATIONS[at].version).toBe(33);
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    await db.exec(LAB_PLAN_0032);
+    // The preflight finds nothing to refuse, and lists each move.
+    const { refusals, moves } = await preflight0033(db);
+    expect(refusals).toStrictEqual([]);
+    expect(moves.filter((m) => m.kolab_id === 'lab').map((m) => [m.plan_element, m.binding, m.element_id, m.renamed])).toStrictEqual([
+      ['M1', 'lab-api', 'M1', false], ['W1', 'lab-api', 'W1', false], ['a1', 'lab-api', 'lab-plan.a1', true], ['a1.1', 'lab-api', 'a1.1', false], ['p1', 'lab-api', 'p1', false],
+    ]);
+    const events = (await db.query(`select * from work_event order by id`)).rows as Record<string, unknown>[];
+    const evidence = (await db.query(`select * from evidence order by id`)).rows as Record<string, unknown>[];
+    const packages = (await db.query(`select * from work_package order by plan_node_id, element_id`)).rows as Record<string, unknown>[];
+    expect(await migrate(db, { migrations: MIGRATIONS.slice(0, at + 1) })).toStrictEqual({ baselined: false, applied: [33] });
+
+    // Each binding with a plan gets one new committed version, by Kolab, its own elements then the plan's.
+    const added = (await db.query<{ node_id: string; seq: number; state: string; actor_id: string; active_role: string; base_version_id: string; parent_version_id: string }>(
+      `select node_id, seq, state, actor_id, active_role, base_version_id, parent_version_id from version where id like '0033%' order by node_id`)).rows;
+    expect(added).toStrictEqual([
+      { node_id: 'kolab-binding', seq: 4, state: 'committed', actor_id: 'kolab', active_role: 'system', base_version_id: 'b2', parent_version_id: 'b2' },
+      { node_id: 'lab-api', seq: 2, state: 'committed', actor_id: 'kolab', active_role: 'system', base_version_id: 'la1', parent_version_id: 'la1' },
+    ]);
+    const lab = (await db.query<{ id: string }>(`select id from version where node_id = 'lab-api' and seq = 2`)).rows[0].id;
+    const els = (await db.query<{ element_id: string; parent_element_id: string | null; ord: number; text: string; fingerprint: string; work: WorkFields | null }>(
+      `select element_id, parent_element_id, ord, text, fingerprint, work from element where version_id = $1 order by ord`, [lab])).rows;
+    expect(els.map((e) => [e.element_id, e.parent_element_id, e.ord, e.work])).toStrictEqual([
+      ['a1', null, 0, null],
+      ['W1', null, 1, { done_when: 'It  answers\nfast.' }],
+      ['lab-plan.a1', null, 2, { depends_on: ['W1'], size: 'S' }],
+      ['a1.1', 'lab-plan.a1', 3, {}],
+      ['M1', null, 4, { depends_on: ['lab-plan.a1', 'W1'], milestone: true, target_date: '2026-12-01' }],
+    ]);
+    // Every fingerprint is the engine's: one renamed Depends on, and a package with no fields yet, are changes.
+    for (const e of els) expect(e.fingerprint).toBe(elementFingerprint(e.text, e.work));
+    expect((await db.query(`select element_id, kind from delta where version_id = $1 order by element_id`, [lab])).rows)
+      .toStrictEqual([{ element_id: 'M1', kind: 'add' }, { element_id: 'W1', kind: 'add' }, { element_id: 'a1.1', kind: 'add' }, { element_id: 'lab-plan.a1', kind: 'add' }]);
+
+    // State, events and evidence are kept, keyed to the binding; events still name the plan version they stood in.
+    const moved: Record<string, string> = { a1: 'lab-plan.a1' };
+    const key = (r: Record<string, unknown>) => (r.plan_node_id === 'lab-plan'
+      ? { binding_node_id: 'lab-api', element_id: moved[r.element_id as string] ?? r.element_id }
+      : r.plan_node_id === 'kolab-plan' ? { binding_node_id: 'kolab-binding', element_id: r.element_id } : { binding_node_id: r.plan_node_id, element_id: r.element_id });
+    const rekey = (r: Record<string, unknown>) => { const { plan_node_id: _p, plan_version_id, ...rest } = r; return { ...rest, ...key(r), ...(plan_version_id ? { version_id: plan_version_id } : {}) }; };
+    const sort = (rows: Record<string, unknown>[]) => rows.sort((x, y) => `${x.binding_node_id}#${x.element_id}`.localeCompare(`${y.binding_node_id}#${y.element_id}`));
+    expect(sort((await db.query(`select * from work_package`)).rows as Record<string, unknown>[])).toStrictEqual(sort(packages.map(rekey)));
+    expect((await db.query(`select * from work_event order by id`)).rows).toStrictEqual(events.map(rekey));
+    expect((await db.query(`select * from evidence order by id`)).rows).toStrictEqual(evidence.map(rekey));
+    // W1's link into the binding moved with it, and so did its open mark; the plan-wide link and the
+    // link between two packages stayed with the plan, as history.
+    expect((await db.query(`select id, source_version_id, source_element_id, target_version_id from edge where id in ('e-lp2', 'e-lp2w', 'e-lp2a') order by id`)).rows).toStrictEqual([
+      { id: 'e-lp2', source_version_id: lab, source_element_id: 'W1', target_version_id: 'la1' },
+      { id: 'e-lp2a', source_version_id: 'lp2', source_element_id: 'a1', target_version_id: 'lp1' },
+      { id: 'e-lp2w', source_version_id: 'lp2', source_element_id: null, target_version_id: 'la1' },
+    ]);
+    expect((await db.query(`select version_id, element_id, edge_id, state from invalidation where id = 'm-w1'`)).rows).toStrictEqual([{ version_id: lab, element_id: 'W1', edge_id: 'e-lp2', state: 'open' }]);
+    // The binding's own links carry forward to its new version.
+    expect((await db.query(`select source_element_id, target_version_id, target_element_id from edge where source_version_id = $1 and id like '0033%'`, [lab])).rows)
+      .toStrictEqual([{ source_element_id: 'a1', target_version_id: 'ls1', target_element_id: 'R1' }]);
+    // The plan's draft is rejected, saying why.
+    expect((await db.query(`select state, review_note from version where id = 'lp3'`)).rows).toStrictEqual([{ state: 'rejected', review_note: expect.stringMatching(/migration 0033: the plan kind is retired \(D104\)/) }]);
+    // Each move is recorded, for old addresses.
+    expect((await db.query(`select plan_element_id, binding_node_id, element_id from work_package_moved where plan_node_id = 'lab-plan' order by plan_element_id`)).rows).toStrictEqual([
+      { plan_element_id: 'M1', binding_node_id: 'lab-api', element_id: 'M1' }, { plan_element_id: 'W1', binding_node_id: 'lab-api', element_id: 'W1' },
+      { plan_element_id: 'a1', binding_node_id: 'lab-api', element_id: 'lab-plan.a1' }, { plan_element_id: 'a1.1', binding_node_id: 'lab-api', element_id: 'a1.1' },
+      { plan_element_id: 'p1', binding_node_id: 'lab-api', element_id: 'p1' },
+    ]);
+    // No role makes a plan, or writes a version of one, any more; work fields are a binding's.
+    expect(await rejection(db.query(`insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ('p2', 'p2', 'plan', 'technical', 'P', 'lab', 'lab-api', 'lee')`)))
+      .toMatch(/the plan kind is retired \(D104\)/);
+    expect(await rejection(db.query(`insert into version(id, node_id, seq, layer, state, actor_id, active_role) values ('lp4', 'lab-plan', 4, 'technical', 'drafted', 'lee', 'engineer')`)))
+      .toMatch(/a plan takes no new version/);
+    expect(await rejection(db.query(`insert into element(version_id, element_id, ord, text, fingerprint, work) values ('ls1', 'R9', 9, 'x', 'x', '{}')`)))
+      .toMatch(/only on a binding's elements/);
+    // The release before 0033 refuses the database now: going back means restoring a snapshot (README, "Deploying to AWS").
+    expect(await rejection(migrate(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0033_work_in_binding\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => { await migrate(db); return schemaOf(db); }, store)).toStrictEqual(await currentSchema());
+
+  const kolab = await TestKolab.open(store);
+  try {
+    const lee = await kolab.openSession('lee', 'engineer', { kolab: 'lab' });
+    // The board is the binding's: its packages, in natural order; a1, a decision, is never work.
+    expect((await kolab.listWork(lee)).items.map((i) => [i.work, i.state, i.assignee])).toStrictEqual([
+      ['kj:lab-api#M1', 'todo', null], ['kj:lab-api#W1', 'in_progress', 'lee'], ['kj:lab-api#a1.1', 'todo', null], ['kj:lab-api#lab-plan.a1', 'todo', null],
+    ]);
+    // An old address, as an old commit's trailer gives it, names the package where it moved.
+    const w1 = await kolab.readWork(lee, 'kj:lab/lab-plan#W1');
+    expect(w1).toMatchObject({ work: 'kj:lab-api#W1', binding: 'lab-api', state: 'in_progress', trailer: 'Konjir-Work: kj:lab/lab-api#W1' });
+    expect(w1.events.map((e) => [e.kind, e.version])).toStrictEqual([['pulled', 'kj:lab-plan@2']]);
+    expect(w1.open_marks).toStrictEqual([expect.objectContaining({ mark: 'm-w1', reason: 'changed' })]);
+    expect((await kolab.readWork(lee, 'kj:lab-plan#a1')).work).toBe('kj:lab-api#lab-plan.a1');
+    // Its work goes on: Lee submits it, alone on the technical layer, so it is Done, unreviewed.
+    expect(await kolab.submitWork(lee, 'kj:lab-plan#W1', { evidence: [{ kind: 'commit', sha: 'd'.repeat(40) }] })).toMatchObject({ work: 'kj:lab-api#W1', state: 'done' });
+    // A plan is made, and drafted, no more.
+    expect(await rejection(kolab.createNode(lee, 'plan', 'Another plan', 'lab-plan-2'))).toMatch(/the plan kind is retired \(D104\)/);
+    expect(await rejection(kolab.draft(lee, 'lab-plan', { elements: els({ W1: 'Build it.' }) }))).toMatch(/lab-plan is a plan, and the plan kind is retired \(D104\).*moved onto its binding, lab-api/);
+  } finally { await kolab.close(); }
+});
+
+test('the preflight runs 0033\'s own check, text for text', () => {
+  const migration = MIGRATIONS.find((x) => x.name === 'work_in_binding')!.sql;
+  const block = (sql: string) => [...sql.matchAll(/-- check:begin\n([\s\S]*?)-- check:end/g)].map((m) => m[1]);
+  expect(block(migration)).toHaveLength(1);
+  expect(block(PREFLIGHT_0033)).toStrictEqual(block(migration));
+});
+
+test('0033 refuses, naming it, a package whose <plan>.<id> is taken too, and a cascade still owed on a plan or its binding; it changes nothing', async () => {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'work_in_binding');
+  const kinds = MIGRATIONS.findIndex((x) => x.name === 'konstruct_kinds');
+  await withDb(async (db) => {
+    await migrate(db, { migrations: MIGRATIONS.slice(0, kinds) });
+    await db.exec(BEFORE_KINDS);
+    await migrate(db, { migrations: MIGRATIONS.slice(0, at) });
+    // lab-api has had both p1 and lab-plan.p1; and kolab-binding@2's cascade is owed.
+    await db.exec(`insert into version(id, node_id, seq, base_version_id, layer, state, actor_id, active_role, submitted_by) values
+                     ('la2', 'lab-api', 2, 'la1', 'technical', 'committed', 'lee', 'engineer', 'lee');
+                   insert into element(version_id, element_id, ord, text, fingerprint) values
+                     ('la2', 'p1', 0, 'A p1.', '${fingerprint('A p1.')}'), ('la2', 'lab-plan.p1', 1, 'Another.', '${fingerprint('Another.')}');
+                   insert into outbox(id, kind, version_id) values ('job1', 'after_commit', 'b2');`);
+    const before = await konjirRows(db);
+    const { refusals } = await preflight0033(db);
+    expect(refusals.map((r) => r.items)).toStrictEqual(['job job1, kolab/kolab-binding@2', 'lab/lab-plan#p1 (lab-api#lab-plan.p1)']);
+    expect(await rejection(migrate(db))).toMatch(/0033_work_in_binding\.sql failed: migration 0033: A cascade Kolab still owes .*job job1, kolab\/kolab-binding@2.* these names are taken too: lab\/lab-plan#p1/);
+    expect((await recorded(db)).map((r) => r.version)).toStrictEqual(versions.slice(0, at));
+    expect(await konjirRows(db)).toStrictEqual(before);
+  });
+});
+
+/** deploy/preflight/0033.sql, run as it ships: its refusals (no rows when 0033 applies) and the moves it lists. */
+const PREFLIGHT_0033 = readFileSync(new URL('../../../deploy/preflight/0033.sql', import.meta.url), 'utf8');
+async function preflight0033(db: Db) {
+  const [refusals, moves] = PREFLIGHT_0033.split(/;\s*\n/).map((s) => s.trim()).filter((s) => s.replace(/^--.*$/gm, '').trim());
+  return {
+    refusals: (await db.query<{ ord: number; items: string }>(refusals)).rows,
+    moves: (await db.query<{ kolab_id: string; plan: string; plan_element: string; binding: string; element_id: string; renamed: boolean }>(moves)).rows,
+  };
+}

@@ -9,7 +9,8 @@
  *                       [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]
  *
  * A commit belongs to a work package when its message carries the trailer
- * `Konjir-Work: kj:<kolab>/<plan>#<id>`, the one konjir_pull_work and konjir_read_work give. Before
+ * `Konjir-Work: kj:<kolab>/<binding>#<id>`, the one konjir_pull_work and konjir_read_work give (a commit from before D104
+ * names its plan, kj:<kolab>/<plan>#<id>, which Kolab still resolves to where the package moved). Before
  * sending anything, deliver checks that the checkout is the registered repository: its root commit
  * (the parentless commit, which every clone shares) is the one registered, and the remote it tracks
  * (HEAD's upstream's, or origin) is the registered URL. A remote's user, password or token never
@@ -183,21 +184,23 @@ function commitOf(git: Git, rev: string): string {
 
 /**
  * The commits reachable from HEAD (or, with `since`, not reachable from it) whose message carries
- * `Konjir-Work: <address>` as a trailer, oldest first, each with its subject and the files it
- * touched. A message that merely mentions the address, outside its trailers, doesn't count.
+ * `Konjir-Work: <address>` as a trailer, for any of `address` (a package's address, and the ones it
+ * had before, D104), oldest first, each with its subject and the files it touched. A message that
+ * merely mentions an address, outside its trailers, doesn't count.
  *
  * Nothing a commit says can reach a git call's arguments (review of #83): the commits are listed by
  * sha alone, NUL-separated (`-z`), and each must be a full sha before it is used; its trailers, its
  * subject and its files are each read in a call of their own, after `--end-of-options`. A subject's
  * control characters are dropped.
  */
-export function taggedCommits(git: Git, address: string, opts: { since?: string } = {}): TaggedCommit[] {
+export function taggedCommits(git: Git, address: string | string[], opts: { since?: string } = {}): TaggedCommit[] {
+  const addresses = Array.isArray(address) ? address : [address];
   const range = opts.since ? [`^${commitOf(git, opts.since)}`, 'HEAD'] : ['HEAD'];
-  const listed = shas(git(['log', '-z', '--no-show-signature', '--reverse', '-F', `--grep=${address}`, '--format=%H', '--end-of-options', ...range, '--']));
+  const listed = shas(git(['log', '-z', '--no-show-signature', '--reverse', '-F', ...addresses.map((a) => `--grep=${a}`), '--format=%H', '--end-of-options', ...range, '--']));
   const commits: TaggedCommit[] = [];
   for (const sha of listed) {
     const trailers = git(['log', '-1', '--no-show-signature', '--format=%(trailers:key=Konjir-Work,valueonly,unfold)', '--end-of-options', sha, '--']);
-    if (!trailers.split('\n').map((x) => x.trim()).includes(address)) continue;
+    if (!trailers.split('\n').map((x) => x.trim()).some((t) => addresses.includes(t))) continue;
     const subject = git(['log', '-1', '--no-show-signature', '--format=%s', '--end-of-options', sha, '--']).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
     const files = git(['diff-tree', '--no-commit-id', '--name-only', '--no-ext-diff', '--no-textconv', '-r', '--root', '-z', '--end-of-options', sha]).split('\0').filter(Boolean);
     commits.push({ sha, subject, files });
@@ -247,7 +250,7 @@ function prNumber(url: string): number | undefined {
 }
 
 export interface DeliverOptions {
-  /** The work package, kj:[<kolab>/]<plan>#<id>; by default the one the session holds In progress. */
+  /** The work package, kj:[<kolab>/]<binding>#<id>; by default the one the session holds In progress. */
   work?: string;
   submit?: boolean; pr?: string; tests?: string[]; note?: string;
   /** Only commits in <since>..HEAD; by default every commit reachable from HEAD. */
@@ -271,12 +274,14 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
     const held = (await call('list_work', { mine: true, state: 'in_progress' }) as { work: { work: string }[] }).work;
     if (held.length !== 1) {
       throw new Error(held.length ? `you hold ${held.map((w) => w.work).join(', ')} In progress: name the one to deliver, konjir work deliver <work>`
-        : 'you hold no work package In progress: name the one to deliver, konjir work deliver kj:<plan>#<id>');
+        : 'you hold no work package In progress: name the one to deliver, konjir work deliver kj:<binding>#<id>');
     }
     work = held[0].work;
   }
-  const pkg = await call('read_work', { work, limit: 1 }) as { work: string; trailer: string; state: string; repository: { url: string } | null };
+  const pkg = await call('read_work', { work, limit: 1 }) as { work: string; trailer: string; former_trailers?: string[]; state: string; repository: { url: string } | null };
   const address = pkg.trailer.replace(/^Konjir-Work:\s*/, '').trim();
+  // A package a plan had before D104 (migration 0033) keeps its commits: their trailers name the plan.
+  const former = (pkg.former_trailers ?? []).map((t) => t.replace(/^Konjir-Work:\s*/, '').trim());
   const checkout = readCheckout(git);
   const registered = await repositories(call);
   const find = (url: string) => registered.find((r) => r.url.toLowerCase() === url.toLowerCase());
@@ -302,7 +307,7 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   }
   requireCheckoutOf(checkout, repo, !!opts.repo);
 
-  const commits = taggedCommits(git, address, { since: opts.since });
+  const commits = taggedCommits(git, [address, ...former], { since: opts.since });
   const warnings: string[] = [];
   const evidence: Record<string, unknown>[] = commits.map((c) => {
     const files = c.files.filter((f) => f.length <= PATH);

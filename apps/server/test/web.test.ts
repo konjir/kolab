@@ -836,62 +836,64 @@ test('the web page says when the person signed in is a Konjir admin, and says no
   expect(bob.me).not.toHaveProperty('konjirAdmin');
 });
 
-test('a plan\'s page shows each work package\'s fields, read only, and an edit of its text in the page keeps them (W5.1a, D98)', async () => {
+test('a binding\'s page shows each work package\'s fields, read only, beside its decisions, and an edit of its text in the page keeps them (W5.1a, D98, D104)', async () => {
   const { kolab, engineer } = await specAndBinding();
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  await kolab.commit(engineer, 'orders-plan', { elements: [
+  await kolab.commit(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
     { id: 'W1', text: 'Build the cancel endpoint.', work: { done_when: 'An Open order can be cancelled.', size: 'M' } },
     { id: 'M1', text: 'Cancelling works.', work: { milestone: true, depends_on: ['W1'], target_date: '2026-12-01' } },
   ] });
   const bob = await signIn(await serve(kolab), engineer);
-  const view = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(view.elements.map((e) => [e.id, e.work])).toStrictEqual([
+    ['b1', undefined], ['b2', undefined],
     ['W1', { done_when: 'An Open order can be cancelled.', size: 'M' }],
     ['M1', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
   ]);
   // The page edits text; the fields stay as they were. An element added in the page may carry them.
-  const out = (await bob.call<WebOutcome>('nodes/orders-plan/submit', { base: 1, changes: [
+  const out = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 2, changes: [
     { kind: 'override', element: 'W1', text: 'Build the cancel endpoint, idempotently.' },
     { kind: 'add', element: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'], size: 'S' } },
   ] })).body;
-  expect(out).toMatchObject({ ok: true, committed: true, seq: 2 });
-  const after = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  expect(out).toMatchObject({ ok: true, committed: true, seq: 3 });
+  const after = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(after.elements.map((e) => [e.id, e.text, e.work])).toStrictEqual([
+    ['b1', 'orders.status allows cancel from Open.', undefined], ['b2', 'Refunds go through the payments queue.', undefined],
     ['W1', 'Build the cancel endpoint, idempotently.', { done_when: 'An Open order can be cancelled.', size: 'M' }],
     ['M1', 'Cancelling works.', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
     ['W2', 'Refund on cancel.', { depends_on: ['W1'], size: 'S' }],
   ]);
   // The page doesn't change work fields: an override that carries them is refused, not ignored (review nit).
-  const refused = await bob.call<{ error: string; message: string }>('nodes/orders-plan/submit', { base: 2, changes: [{ kind: 'override', element: 'W1', text: 'x', work: { size: 'L' } }] });
+  const refused = await bob.call<{ error: string; message: string }>('nodes/orders-pg/submit', { base: 3, changes: [{ kind: 'override', element: 'W1', text: 'x', work: { size: 'L' } }] });
   expect(refused.status).toBe(400);
   expect(refused.body.message).toBe("the page changes W1's text, not its work fields: change those with konjir_draft");
   // A spec's elements carry none.
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work' in e))).toBe(true);
 });
 
-test('a plan\'s page shows each work package\'s state on its latest version, read only: who holds it, until when, and why it is blocked; a web request renews its viewer\'s lease (W5.1b, D98)', async () => {
+test('a binding\'s page shows each work package\'s state on its latest version, read only: who holds it, until when, and why it is blocked; a web request renews its viewer\'s lease (W5.1b, D98, D104)', async () => {
   const { kolab, engineer } = await specAndBinding();
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
   const b = (await kolab.latestCommitted('orders-pg'))!.id;
-  const v1 = await kolab.draft(engineer, 'orders-plan', { elements: [
-    { id: 'W1', text: 'Build the cancel endpoint.' }, { id: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'] } },
+  const v1 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'] } },
     { id: 'M1', text: 'Cancelling works.', work: { milestone: true, depends_on: ['W1', 'W2'] } },
   ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }] });
   expect((await kolab.submit(engineer, v1)).ok).toBe(true);
   await kolab.pullWork(engineer);
   const bobBase = await serve(kolab);
   const bob = await signIn(bobBase, engineer);
-  const view = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
+  // A decision has no state: it is never work (PLN1).
   expect(view.elements.map((e) => [e.id, e.work_state?.state, e.work_state?.assignee, e.work_state?.blocked])).toStrictEqual([
-    ['W1', 'in_progress', 'bob', []], ['W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-plan#W1', state: 'in_progress' }]], ['M1', 'todo', null, []],
+    ['b1', undefined, undefined, undefined], ['b2', undefined, undefined, undefined],
+    ['W1', 'in_progress', 'bob', []], ['W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-pg#W1', state: 'in_progress' }]], ['M1', 'todo', null, []],
   ]);
-  expect(view.elements[0].work_state?.lease_until).toEqual(expect.any(String));
+  expect(view.elements[2].work_state?.lease_until).toEqual(expect.any(String));
   // A request its person makes renews the lease of the work they hold (PLN15, D98); the page's own
   // re-read after a pushed event, marked so, doesn't (D100), and the mark grants nothing else.
   const left = async () => Number((await kolab.db.query<{ s: number }>(`select extract(epoch from lease_until - clock_timestamp()) as s from work_package where element_id = 'W1'`)).rows[0].s);
   const shorten = () => kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '5 minutes' where element_id = 'W1'`);
   await shorten();
-  for (const path of ['me', 'nodes/orders-plan', 'overview']) {
+  for (const path of ['me', 'nodes/orders-pg', 'overview']) {
     const r = await fetch(`${bobBase}/api/${path}`, { headers: { cookie: bob.jar, origin: bobBase, [REFRESH_HEADER]: 'push' } });
     expect([path, r.status]).toStrictEqual([path, 200]);
   }
@@ -901,7 +903,7 @@ test('a plan\'s page shows each work package\'s state on its latest version, rea
   await bob.call('me');
   expect(await left()).toBeGreaterThan(1790);
   await shorten();
-  await bob.call('nodes/orders-plan');
+  await bob.call('nodes/orders-pg');
   expect(await left()).toBeGreaterThan(1790);
   // An open tab, idle: its event stream, opened and reopened by EventSource, and Kolab's poll of the
   // kolab's versions for it every 100 ms here, renew nothing (D100). A short lease lapses.
@@ -924,30 +926,29 @@ test('a plan\'s page shows each work package\'s state on its latest version, rea
   expect(await kolab.sweepLapsedLeases()).toBe(1);
   await again.cancel();
   // An older version has no state: state isn't versioned (PLN4). Nor does a spec's page.
-  await kolab.commit(engineer, 'orders-plan', { deltas: [{ kind: 'override', element: 'W2', text: 'Refund on cancel, in full.' }] });
-  expect((await bob.call<WebNodeView>('nodes/orders-plan?version=1')).body.elements.every((e) => !('work_state' in e))).toBe(true);
+  await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W2', text: 'Refund on cancel, in full.' }] });
+  expect((await bob.call<WebNodeView>('nodes/orders-pg?version=2')).body.elements.every((e) => !('work_state' in e))).toBe(true);
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work_state' in e))).toBe(true);
 });
 
-test('the page resubmits a returned plan draft whose milestone became a work package, carrying its Delivers from it (verification Low 1)', async () => {
+test('the page resubmits a returned binding draft whose milestone became a work package, carrying the link it relies on (verification Low 1)', async () => {
   const { kolab, engineer } = await specAndBinding();
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  await kolab.commit(engineer, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
-  // A draft that makes M1 a work package delivering b2, returned by PLN2 for an unrelated problem.
+  await kolab.commit(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' }, { id: 'W1', text: 'Build it.', work: {} }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
+  // A draft that makes M1 a work package relying on b2, returned by PLN2 for an unrelated problem.
   const b = (await kolab.latestCommitted('orders-pg'))!.id;
-  const draft = await kolab.draft(engineer, 'orders-plan', {
-    elements: [{ id: 'W1', text: 'Build it.', work: { depends_on: ['W9'] } }, { id: 'M1', text: 'Ship it.', work: null }],
+  const draft = await kolab.draft(engineer, 'orders-pg', {
+    elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' }, { id: 'W1', text: 'Build it.', work: { depends_on: ['W9'] } }, { id: 'M1', text: 'Ship it.', work: {} }],
     links: [{ kind: 'dependency', sourceElement: 'M1', target: b, targetElement: 'b2' }],
   });
   expect(await kolab.submit(engineer, draft)).toMatchObject({ ok: false });
-  // The page replaces it: M1 stays a work package (removed and added again, with its fields), and its Delivers is carried.
+  // The page replaces it: M1 stays a work package (removed and added again, with its fields), and its link is carried.
   const bob = await signIn(await serve(kolab), engineer);
-  const out = await bob.call<WebOutcome>('nodes/orders-plan/submit', { base: 1, replaces: 2, changes: [
+  const out = await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 2, replaces: 3, changes: [
     { kind: 'remove', element: 'M1' }, { kind: 'add', element: 'M1', text: 'Ship it.', work: { size: 'S' } },
   ] });
   expect(out.status).toBe(200);
   expect(out.body).toMatchObject({ ok: true, committed: true });
-  const view = (await bob.call<WebNodeView>('nodes/orders-plan')).body;
+  const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(view.elements.find((e) => e.id === 'M1')).toMatchObject({ work: { size: 'S' } });
   expect(view.elements.find((e) => e.id === 'M1')!.relies_on.map((l) => [l.target.node, l.target.element])).toStrictEqual([['orders-pg', 'b2']]);
 });

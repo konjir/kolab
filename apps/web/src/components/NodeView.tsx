@@ -8,10 +8,10 @@ import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 import { More, useMore } from './Pages.js';
 
 const KIND_WORD: Record<string, string> = {
-  spec: 'Functional spec', prototype: 'Prototype', binding: 'Technical binding', plan: 'Plan',
+  spec: 'Functional spec', prototype: 'Prototype', binding: 'Technical binding', plan: 'Plan (retired)',
 };
-/** What a node is to the node it names as its parent (D78). */
-const PARENT_WORD: Record<string, string> = { binding: 'binds', plan: 'plans' };
+/** What a node is to its parent (D78): a binding binds its spec; a plan, retired (D104), saw its work move to its binding. */
+const PARENT_WORD: Record<string, string> = { binding: 'binds', plan: 'its work moved to' };
 
 /**
  * Edits not yet submitted: kept in the page, per node, until submitted or discarded. `replaces` is

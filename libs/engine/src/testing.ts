@@ -277,7 +277,7 @@ export async function textOf(kolab: Kolab, nodeId: string) {
  * (W1.6). Returns the version that committed; throws if it didn't commit.
  */
 export async function commitReviewed(kolab: Kolab, author: string, reviewer: string, nodeId: string,
-  input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string }): Promise<string> {
+  input: Parameters<Kolab['draft']>[2]): Promise<string> {
   const r = await approved(kolab, reviewer, await kolab.submit(author, await kolab.draft(author, nodeId, input)));
   if (!r.ok) throw new Error(`expected ${nodeId} to commit: ${r.note ?? ''}`);
   return r.version;

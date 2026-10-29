@@ -273,22 +273,16 @@ test('an agent can read review requests but never write one, nor move a version 
 
 // ---- PR #26 review -------------------------------------------------------------------
 
-test('a plan version commits after structural checks only, with no review requests (VER3, PLN2, D26)', async () => {
+test('a binding version with work packages is reviewed like any binding version: no plan commits on its checks alone any more (VER3, PLN2, D104)', async () => {
   const { kolab, product, engineer } = await setup();
   await people(kolab, 'erin', { layers: ['technical'] });
-  await kolab.openSession('erin', 'engineer');   // another engineer: a reviewer of bindings, not of plans
+  await kolab.openSession('erin', 'engineer');   // another engineer: a reviewer of bindings, and of their work
   await kolab.createNode(product, 'spec', 'Spec', 'spec');
   const b = await kolab.createNode(engineer, 'binding', 'B', 'b');
-  const plan = await kolab.createNode(engineer, 'plan', 'Plan', 'b-plan');
-  const v = await kolab.draft(engineer, plan, { elements: els({ W1: 'Do a thing.' }) });
+  const v = await kolab.draft(engineer, b, { elements: [{ id: 'b1', text: 'A queue.' }, { id: 'W1', text: 'Do a thing.', work: { done_when: 'It is done.' } }] });
   const r = await kolab.review(v);
-  expect(r).toMatchObject({ ok: true, version: v });
-  expect(r.in_review).toBeUndefined();
-  expect(r.unreviewed).toBeUndefined();
-  expect(r.note).toMatch(/commits after structural checks, without review \(PLN2\)/);
-  expect((await kolab.db.query(`select 1 from review_request`)).rows).toStrictEqual([]);
-  // A binding still waits for erin.
-  expect((await kolab.review(await kolab.draft(engineer, b, { elements: els({ b1: 'A queue.' }) }))).reviewers).toStrictEqual(['erin']);
+  expect(r).toMatchObject({ ok: false, version: v, in_review: true, reviewers: ['erin'] });
+  expect((await kolab.db.query(`select reviewer_id from review_request where version_id = $1`, [v])).rows).toStrictEqual([{ reviewer_id: 'erin' }]);
 });
 
 test('a version approved and then folded ends settled as folded into the fold, which the author\'s answers show with the approval', async () => {

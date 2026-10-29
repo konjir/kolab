@@ -1,6 +1,7 @@
-// Konstruct kinds on the page (W4.1; D77, D78): the new document form offers the kinds a kolab can
-// still take and asks a plan for the binding it plans, and a document's page says what it binds or
-// plans. Kolab's own refusals are libs/engine/test/kinds.test.ts's.
+// Konstruct kinds on the page (W4.1, W5.1d; D77, D78, D104): the new document form offers the kinds a
+// kolab can still take, never a plan, and a document's page says what it binds, or, for a plan made
+// before D104, that it is retired and where its work moved. Kolab's own refusals are
+// libs/engine/test/kinds.test.ts's.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { REFRESH_HEADER, type WebMe, type WebNodeSummary, type WebNodeView, type WebOverview } from '@konjir/types';
@@ -42,15 +43,10 @@ test('a kolab with its spec offers product a prototype, never a second spec (KON
   expect(kinds()).toStrictEqual(['spec', 'prototype']);
 });
 
-test('a plan names the binding it plans, from those without a plan (D78, KON5)', async () => {
+test('the form offers no plan: a binding holds its own work packages (KON5, D104)', () => {
   form(overview(eng));
-  expect(kinds()).toStrictEqual(['binding', 'plan']);
-  fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'plan' } });
-  expect([...(screen.getByLabelText('Plans the binding') as HTMLSelectElement).options].map((o) => o.value)).toStrictEqual(['accounts-web']);
-  fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Web plan' } });
-  fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'accounts-web-plan' } });
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create' })); });
-  expect(calls.at(-1)).toStrictEqual({ url: '/api/nodes', body: { kind: 'plan', title: 'Web plan', name: 'accounts-web-plan', parent: 'accounts-web' } });
+  expect(kinds()).toStrictEqual(['binding']);
+  expect(screen.queryByLabelText('Plans the binding')).toBeNull();
 });
 
 test('a binding is made with no parent named: Kolab names the kolab\'s spec', async () => {
@@ -61,22 +57,22 @@ test('a binding is made with no parent named: Kolab names the kolab\'s spec', as
   expect(calls.at(-1)).toStrictEqual({ url: '/api/nodes', body: { kind: 'binding', title: 'Mobile', name: 'accounts-mobile' } });
 });
 
-test('a plan\'s page shows where each work package stands, read only: its state, who holds it, and what blocks it (W5.1b)', async () => {
+test('a binding\'s page shows where each work package stands, read only: its state, who holds it, and what blocks it (W5.1b, D104)', async () => {
   const el = (id: string, extra: Partial<WebNodeView['elements'][number]>) => ({
-    id, parent: null, text: `Package ${id}.`, address: `kj:accounts-api-plan@1#${id}`, queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [], ...extra,
+    id, parent: null, text: `Package ${id}.`, address: `kj:accounts-api@1#${id}`, queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [], ...extra,
   });
   const plan: WebNodeView = {
-    node: node('accounts-api-plan', 'plan', 'accounts-api'),
+    node: node('accounts-api', 'binding', 'accounts'),
     reading: { seq: 1, state: 'committed', author: 'eng-agent', role: 'engineer', at: new Date().toISOString(), note: null, mine: true },
     versions: [], versions_next: null, queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true,
     rulings: [], kolab: 'accounts', foreign: false,
     elements: [
       el('W1', { work_state: { state: 'in_progress', assignee: 'eng-agent', lease_until: new Date(Date.now() + 1_800_000).toISOString(), blocked: [], milestone: false } }),
-      el('W2', { work: { depends_on: ['W1'] }, work_state: { state: 'todo', assignee: null, lease_until: null, blocked: [{ reason: 'depends_on', work: 'kj:accounts-api-plan#W1', state: 'in_progress' }], milestone: false } }),
+      el('W2', { work: { depends_on: ['W1'] }, work_state: { state: 'todo', assignee: null, lease_until: null, blocked: [{ reason: 'depends_on', work: 'kj:accounts-api#W1', state: 'in_progress' }], milestone: false } }),
     ],
   };
   globalThis.fetch = jest.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify(plan) }) as unknown as Response) as typeof fetch;
-  render(<NodeView me={eng} name="accounts-api-plan" tick={0} act={runner} go={() => undefined} read={() => undefined} />);
+  render(<NodeView me={eng} name="accounts-api" tick={0} act={runner} go={() => undefined} read={() => undefined} />);
   const states = await screen.findAllByLabelText('Work package');
   expect(states[0].textContent).toMatch(/^StateIn progress · eng-agent, lease until /);
   expect(states[1].textContent).toMatch(/^StateTo do · Blocked by W1 \(In progress\)/);
@@ -84,7 +80,7 @@ test('a plan\'s page shows where each work package stands, read only: its state,
 
 test('the page marks a re-read a pushed event prompted, and only that one, so it renews no lease (D100)', async () => {
   const plan: WebNodeView = {
-    node: node('accounts-api-plan', 'plan', 'accounts-api'),
+    node: node('accounts-api', 'binding', 'accounts'),
     reading: { seq: 1, state: 'committed', author: 'eng-agent', role: 'engineer', at: new Date().toISOString(), note: null, mine: true },
     versions: [], versions_next: null, elements: [], queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true,
     rulings: [], kolab: 'accounts', foreign: false,
@@ -94,9 +90,9 @@ test('the page marks a re-read a pushed event prompted, and only that one, so it
     seen.push((init?.headers as Record<string, string> | undefined)?.[REFRESH_HEADER]);
     return { ok: true, status: 200, text: async () => JSON.stringify(plan) } as unknown as Response;
   }) as typeof fetch;
-  const view = (tick: number) => <NodeView me={eng} name="accounts-api-plan" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
+  const view = (tick: number) => <NodeView me={eng} name="accounts-api" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
   const { rerender } = render(view(500));
-  await screen.findByText('Plan');
+  await screen.findByText('Technical binding');
   // A push moved the tick: the re-read says so.
   markPushTick(501);
   await act(async () => { rerender(view(501)); });
@@ -105,7 +101,7 @@ test('the page marks a re-read a pushed event prompted, and only that one, so it
   expect(seen).toStrictEqual([undefined, 'push', undefined]);
 });
 
-test('a plan\'s page says which binding it plans', async () => {
+test('a plan made before D104 reads as retired, and says which binding its work moved to', async () => {
   const plan: WebNodeView = {
     node: node('accounts-api-plan', 'plan', 'accounts-api'),
     reading: { seq: 1, state: 'committed', author: 'eng-agent', role: 'engineer', at: new Date().toISOString(), note: null, mine: true },
@@ -114,6 +110,6 @@ test('a plan\'s page says which binding it plans', async () => {
   };
   globalThis.fetch = jest.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify(plan) }) as unknown as Response) as typeof fetch;
   render(<NodeView me={eng} name="accounts-api-plan" tick={0} act={runner} go={() => undefined} read={() => undefined} />);
-  expect(await screen.findByText('Plan')).toBeTruthy();
-  expect(screen.getByText(/^plans/).textContent).toBe('plans kj:accounts-api');
+  expect(await screen.findByText('Plan (retired)')).toBeTruthy();
+  expect(screen.getByText(/^its work moved to/).textContent).toBe('its work moved to kj:accounts-api');
 });

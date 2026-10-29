@@ -136,12 +136,12 @@ test('a variant\'s rebase a stopped process cut short is finished once by the ne
   const p1 = await commitReviewed(k, alice, dave, 'P', { elements: els({ E1: 'Parent one.', E2: 'Parent two.' }) });
   await k.createNode(alice, 'prototype', 'V', 'V');
   await commitReviewed(k, alice, dave, 'V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'V says two its way.' }] });
-  // Bob's binding relies on E1, and his plan's work package on the binding (a transitive mark's path).
+  // Bob's binding relies on E1, and his second binding's element on the first (a transitive mark's path).
   await k.createNode(bob, 'binding', 'B', 'B');
   const b1 = await k.draft(bob, 'B', { elements: els({ b1: 'An endpoint for E1.' }) });
   await k.link(bob, { kind: 'dependency', source: b1, sourceElement: 'b1', target: p1, targetElement: 'E1' });
   expect((await k.review(b1)).ok).toBe(true);
-  await k.createNode(bob, 'plan', 'W', 'W');
+  await k.createNode(bob, 'binding', 'W', 'W');
   const w1 = await k.draft(bob, 'W', { elements: els({ w1: 'Build the endpoint.' }) });
   await k.link(bob, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   expect((await k.review(w1)).ok).toBe(true);

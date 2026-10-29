@@ -7,7 +7,7 @@
 import { expect, test } from '@jest/globals';
 import { type Kolab } from '@konjir/engine';
 import { independentOf } from '../src/work.js';
-import { els, openKolab, people, registeredRepository, rejection, testRoot, testStore, TEST_KOLAB } from '@konjir/engine/testing';
+import { approved, els, openKolab, people, registeredRepository, rejection, testRoot, testStore, TEST_KOLAB } from '@konjir/engine/testing';
 import { ADMIN_DOER, type ElementInput } from '@konjir/types';
 
 const POSTGRES = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -17,14 +17,17 @@ const COMMIT = (c = 'a', extra: Record<string, unknown> = {}) => ({ kind: 'commi
 
 const PLAN: ElementInput[] = [
   { id: 'W1', text: 'Build the cancel endpoint.', work: { done_when: 'It cancels.' } },
-  { id: 'W2', text: 'Build the shipping queue.' },
-  { id: 'W3', text: 'Build the tracking page.' },
+  { id: 'W2', text: 'Build the shipping queue.', work: {} },
+  { id: 'W3', text: 'Build the tracking page.', work: {} },
 ];
 
+/** The binding's three decisions, each serving one requirement. */
+const DECISIONS = els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.', b3: 'A tracking page.' });
+
 /**
- * A kolab with a spec, its binding orders-pg and a plan of three packages, each delivering one binding
- * element. Mia, a person with Maintain, registers repositories; bob and eve are engineers (persons);
- * carol only reads.
+ * A kolab with a spec, and its binding orders-pg of three decisions and three work packages, each
+ * relying on one decision (D104). Mia, a person with Maintain, registers repositories; bob and eve
+ * are engineers (persons); carol only reads.
  */
 async function planned(opts: { databaseUrl?: string } = {}) {
   const kolab = await openKolab(opts.databaseUrl ? { databaseUrl: opts.databaseUrl } : {});
@@ -37,13 +40,12 @@ async function planned(opts: { databaseUrl?: string } = {}) {
   await kolab.createNode(bob, 'binding', 'Orders on Postgres', 'orders-pg');
   const spec = (await kolab.latestCommitted('orders'))!.id;
   const bv = await kolab.draft(bob, 'orders-pg', {
-    elements: els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.', b3: 'A tracking page.' }),
+    elements: DECISIONS,
     links: ['b1', 'b2', 'b3'].map((b, i) => ({ kind: 'dependency' as const, sourceElement: b, target: spec, targetElement: `R${i + 1}` })),
   });
   expect((await kolab.submit(bob, bv)).ok).toBe(true);
-  await kolab.createNode(bob, 'plan', 'Plan', 'orders-plan');
   const delivers = (from: string, to: string) => ({ kind: 'dependency' as const, sourceElement: from, target: bv, targetElement: to });
-  const pv = await kolab.draft(bob, 'orders-plan', { elements: PLAN, links: [delivers('W1', 'b1'), delivers('W2', 'b2'), delivers('W3', 'b3')] });
+  const pv = await kolab.draft(bob, 'orders-pg', { elements: [...DECISIONS, ...PLAN], links: [delivers('W1', 'b1'), delivers('W2', 'b2'), delivers('W3', 'b3')] });
   expect((await kolab.submit(bob, pv)).ok).toBe(true);
   await people(kolab, 'eve', { layers: ['technical'] });
   await people(kolab, 'mia', { level: 'maintain' });
@@ -54,7 +56,7 @@ async function planned(opts: { databaseUrl?: string } = {}) {
   return { kolab, product, bob, eve, mia, carol, binding: bv };
 }
 
-const W = (id: string) => `kj:orders-plan#${id}`;
+const W = (id: string) => `kj:orders-pg#${id}`;
 
 async function pull(kolab: Kolab, session: string): Promise<string> {
   const r = await kolab.pullWork(session);
@@ -120,8 +122,8 @@ test('a repository\'s URL and root commit are checked: https only, with no user,
   expect(await refused('https://github.com/ACME/Orders')).toBe(`GateError: https://github.com/ACME/Orders is already registered in kolab test (konjir_list_repositories)`);
   expect(await rejection(kolab.registerRepository(mia, { url: 'https://github.com/acme/other', root_sha: testRoot(), binding: 'orders-pg' })))
     .toMatch(/^GateError: binding orders-pg already has its implementation: a binding is implemented in one repository \(D38\)/);
-  expect(await rejection(kolab.registerRepository(mia, { url: 'https://github.com/acme/other', root_sha: testRoot(), binding: 'orders-plan' })))
-    .toBe('GateError: orders-plan is a plan, not a binding: a repository implements a binding (KON7, D38)');
+  expect(await rejection(kolab.registerRepository(mia, { url: 'https://github.com/acme/other', root_sha: testRoot(), binding: 'orders' })))
+    .toBe('GateError: orders is a spec, not a binding: a repository implements a binding (KON7, D38)');
   expect(await rejection(kolab.registerRepository(mia, { url: 'https://github.com/acme/other', root_sha: testRoot(), binding: 'elsewhere/orders-pg' }))).toMatch(/no node|not found|isn't|elsewhere/);
   // Archiving it frees its URL and its binding; it is listed again only when asked. An agent archives nothing.
   await kolab.addActor('mia-bot', { owner: 'mia', by: ADMIN_DOER });
@@ -149,7 +151,7 @@ test('evidence names its repository: the package\'s own by default; none, an unr
   const id = await pull(kolab, bob);
   // No repository yet: the commit has nowhere to be.
   expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()])))
-    .toMatch(/^GateError: evidence 1 \(a commit\) names no repository, and kj:orders-plan#W1 has none of its own/);
+    .toMatch(/^GateError: evidence 1 \(a commit\) names no repository, and kj:orders-pg#W1 has none of its own/);
   expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT('a', { repo: ORDERS })])))
     .toMatch(/^GateError: https:\/\/github\.com\/acme\/orders isn't a repository registered in kolab test, or it is archived/);
   // A test run needs none, and takes none.
@@ -160,7 +162,7 @@ test('evidence names its repository: the package\'s own by default; none, an unr
   const before = await evidenceCount(kolab);
   // Its own repository by default, or named; another is refused, and so is a link outside its own.
   expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT('b'), COMMIT('c', { repo: 'https://github.com/acme/other' })])))
-    .toBe('GateError: evidence 2 (a commit) is in https://github.com/acme/other, and kj:orders-plan#W1 is done in https://github.com/acme/orders (it is its binding\'s implementation, KON7): record that repository\'s commits and pull requests, or change the package\'s repo in the plan');
+    .toBe('GateError: evidence 2 (a commit) is in https://github.com/acme/other, and kj:orders-pg#W1 is done in https://github.com/acme/orders (it is its binding\'s implementation, KON7): record that repository\'s commits and pull requests, or change the package\'s repo in the binding');
   for (const url of ['https://github.com/evil/orders/pull/1', 'https://github.com/acme/orders-evil/pull/1', 'https://github.com/acme/orders']) {
     expect(await rejection(kolab.addEvidence(bob, W(id), [{ kind: 'pull_request', url }]))).toMatch(/^GateError: evidence 1 \(a pull request\)'s url .* isn't inside its repository, https:\/\/github\.com\/acme\/orders/);
   }
@@ -186,27 +188,27 @@ test('evidence names its repository: the package\'s own by default; none, an unr
 }, 60_000);
 
 test('a package\'s repo names a registered repository: PLN2 refuses one that isn\'t, and its evidence goes there, not to the binding\'s (KON7, D38)', async () => {
-  const { kolab, bob, mia } = await planned();
+  const { kolab, bob, eve, mia } = await planned();
   await kolab.registerRepository(mia, { url: ORDERS, root_sha: testRoot(), binding: 'orders-pg' });
   const withRepo = PLAN.map((e) => (e.id === 'W2' ? { ...e, work: { repo: 'https://github.com/acme/queue.git' } } : e));
-  const refused = await kolab.submit(bob, await kolab.draft(bob, 'orders-plan', { elements: withRepo }));
+  const refused = await kolab.submit(bob, await kolab.draft(bob, 'orders-pg', { elements: [...DECISIONS, ...withRepo] }));
   expect(refused.ok).toBe(false);
-  expect(refused.note).toMatch(/^Plan checks failed \(PLN2\): W2's repo https:\/\/github\.com\/acme\/queue\.git isn't a repository registered in kolab test \(KON7\)/);
+  expect(refused.note).toMatch(/^Work checks failed \(PLN2\): W2's repo https:\/\/github\.com\/acme\/queue\.git isn't a repository registered in kolab test \(KON7\)/);
   await kolab.registerRepository(mia, { url: 'https://github.com/acme/queue', root_sha: testRoot('d') });
-  expect((await kolab.submit(bob, refused.version)).ok).toBe(true);
+  expect(await approved(kolab, eve, await kolab.submit(bob, refused.version))).toMatchObject({ ok: true });
   expect(await pull(kolab, bob)).toBe('W1');
   await kolab.releaseWork(bob, W('W1'));
   await kolab.reassignWork(mia, W('W2'), 'bob');
   const w = await kolab.readWork(bob, W('W2'));
   expect(w.repository).toStrictEqual({ url: 'https://github.com/acme/queue', root_sha: testRoot('d'), confirmed: false, via: 'repo' });
   expect(await rejection(kolab.addEvidence(bob, W('W2'), [COMMIT('a', { repo: ORDERS })])))
-    .toMatch(/is in https:\/\/github\.com\/acme\/orders, and kj:orders-plan#W2 is done in https:\/\/github\.com\/acme\/queue \(its repo names it, KON7\)/);
+    .toMatch(/is in https:\/\/github\.com\/acme\/orders, and kj:orders-pg#W2 is done in https:\/\/github\.com\/acme\/queue \(its repo names it, KON7\)/);
   await kolab.addEvidence(bob, W('W2'), [COMMIT('a')]);
   expect((await kolab.readWork(bob, W('W2'))).evidence.map((e) => e.repository)).toStrictEqual(['https://github.com/acme/queue']);
   // Archived, the repo no longer passes PLN2, and the package's context names no repository.
   await kolab.archiveRepository(mia, 'https://github.com/acme/queue');
   expect((await kolab.readWork(bob, W('W2'))).repository).toBeNull();
-  const again = await kolab.submit(bob, await kolab.draft(bob, 'orders-plan', { deltas: [{ kind: 'override', element: 'W1', text: 'Build the cancel endpoint, again.' }] }));
+  const again = await kolab.submit(bob, await kolab.draft(bob, 'orders-pg', { deltas: [{ kind: 'override', element: 'W1', text: 'Build the cancel endpoint, again.' }] }));
   expect(again.note).toMatch(/W2's repo .* isn't a repository registered/);
 }, 60_000);
 
@@ -247,8 +249,7 @@ test('a package Done unreviewed confirms nothing, and an approval by the registr
   const spec = (await kolab.latestCommitted('orders'))!.id;
   const bv = await kolab.draft(bob, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.' }), links: [{ kind: 'dependency', sourceElement: 'b1', target: spec, targetElement: 'R1' }] });
   expect((await kolab.submit(bob, bv)).ok).toBe(true);
-  await kolab.createNode(bob, 'plan', 'Plan', 'orders-plan');
-  const pv = await kolab.draft(bob, 'orders-plan', { elements: [{ id: 'W1', text: 'Build it.' }], links: [{ kind: 'dependency', sourceElement: 'W1', target: bv, targetElement: 'b1' }] });
+  const pv = await kolab.draft(bob, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.' }), { id: 'W1', text: 'Build it.', work: {} }], links: [{ kind: 'dependency', sourceElement: 'W1', target: bv, targetElement: 'b1' }] });
   expect((await kolab.submit(bob, pv)).ok).toBe(true);
   // The registrar's grant is removed once it registers, so bob is alone on the technical layer.
   const r = await registeredRepository(kolab, { binding: 'orders-pg' });
@@ -287,7 +288,7 @@ test('only Kolab\'s trusted role writes repositories; what identifies one never 
   expect(await rejection(kolab.db.query('delete from repository'))).toMatch(/a repository's URL, root commit, binding and registration never change/);
   expect(await rejection(kolab.db.query(`update repository set root_sha = '${testRoot('e')}'`))).toMatch(/never change/);
   // Confirmed by its registrar: refused by the database too.
-  expect(await rejection(asRole('kj_system', `update repository set confirmed_by = 'mia', confirmed_at = now(), confirmed_plan_node_id = 'x', confirmed_element_id = 'W1'`))).toMatch(/repository_confirmed|violates/);
+  expect(await rejection(asRole('kj_system', `update repository set confirmed_by = 'mia', confirmed_at = now(), confirmed_binding_node_id = 'x', confirmed_element_id = 'W1'`))).toMatch(/repository_confirmed|violates/);
   await pull(kolab, bob);
   await kolab.submitWork(bob, W('W1'), { evidence: [COMMIT()] });
   await kolab.reviewWork(eve, W('W1'), { verdict: 'approve' });
@@ -306,8 +307,8 @@ test('only Kolab\'s trusted role writes repositories; what identifies one never 
   // The same URL may be registered there: nobody squats a URL for another kolab.
   expect((await kolab.registerRepository(elsewhere, { url: ORDERS, root_sha: testRoot() })).url).toBe(ORDERS);
   // Evidence never names another kolab's repository (composite key).
-  expect(await rejection(asRole('kj_system', `insert into evidence(id, plan_node_id, element_id, event_id, kind, ref, recorded_by, repository_id)
-      select 'e9', plan_node_id, element_id, event_id, 'commit', '${sha('9')}', 'bob', (select id from repository where kolab_id = 'other') from evidence limit 1`)))
+  expect(await rejection(asRole('kj_system', `insert into evidence(id, binding_node_id, element_id, event_id, kind, ref, recorded_by, repository_id)
+      select 'e9', binding_node_id, element_id, event_id, 'commit', '${sha('9')}', 'bob', (select id from repository where kolab_id = 'other') from evidence limit 1`)))
     .toMatch(/evidence_repository_kolab_fkey|violates foreign key/);
 }, 60_000);
 

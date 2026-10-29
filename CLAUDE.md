@@ -11,7 +11,7 @@
    | [Kolab — Technical Binding](https://claude.ai/code/artifact/5a215bbe-4f2a-4c80-967d-2788bd451437) | How this repository meets the spec, `kj:kolab/kolab-binding`. Its Today column tracks the gaps. |
    | [Conjure — Design Notes](https://claude.ai/code/artifact/cce1d343-2de5-44cb-88d7-cef8d44db17a) | The reasoning behind the spec: pillars, data model, glossary |
    | [Konjir — Open Design Decisions](https://claude.ai/code/artifact/43cd96af-c9f2-4a8c-a2c5-1518a402696b) | The reasoning behind addressing, overrides and role enforcement |
-   | [Kolab — Plan](https://claude.ai/code/artifact/ace3b996-b892-419c-8f85-807686a2301d) | The binding's plan, `kj:kolab/kolab-plan` (D26): work packages that close the binding's gaps, plus proposals not yet accepted |
+   | [Kolab — Plan](https://claude.ai/code/artifact/ace3b996-b892-419c-8f85-807686a2301d) | The binding's plan, `kj:kolab/kolab-plan` (D26): work packages that close the binding's gaps, plus proposals not yet accepted. D104 retires the plan kind: once W5.1d is deployed its work packages move into the Technical Binding and it becomes history |
    | [Konjir — Production Plan](https://claude.ai/code/artifact/cfa2fd0a-2086-4860-92fa-65331e6ffb1e) | History only: converted into the plan (D15) |
    | [Konjir — Prior Art & Honest Utility Assessment](https://claude.ai/code/artifact/ed5652e1-5ca6-4c64-a885-4184b7cb250c) | Reference only |
    | [Konjir Kolab](https://claude.ai/artifact/99doLyY9QFgZZkENDb4GNa) | A prototype of the spec (D15, D18): the intended UI, with simulated data |

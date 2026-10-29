@@ -1,7 +1,7 @@
 /**
- * A work package's fields (W5.1a; PLN1, PLN2, PLN3, D98): how a draft's are checked and stored, how
- * they enter an element's fingerprint, and the checks a plan version passes before it commits.
- * Pure: the engine reads the rows and the links, and these decide.
+ * A work package's fields (W5.1a, W5.1d; PLN1, PLN2, PLN3, D98, D104): how a draft's are checked and
+ * stored, how they enter an element's fingerprint, and the checks a binding version's work packages
+ * pass at submit. Pure: the engine reads the rows and the links, and these decide.
  */
 import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
@@ -23,7 +23,8 @@ function isDate(s: string): boolean {
 /**
  * An element's work fields as Kolab stores them, or why they can't be: keys in WORK_FIELDS order
  * and a done-when trimmed. Nothing given is dropped quietly: an empty done-when, an empty Depends on
- * and `milestone: false` are refused, saying to leave the field out, and so is `{}` (null clears).
+ * and `milestone: false` are refused, saying to leave the field out. `{}` makes the element a work
+ * package whose fields are still to be given (D104); null clears them, making it a decision.
  * `problems` names each refusal, in words a refusal can quote; `limit` is set when one of them is a
  * size limit rather than a malformed field.
  */
@@ -76,19 +77,19 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
   }
   // In WORK_FIELDS order, so the same fields are always stored alike.
   const ordered = Object.fromEntries(WORK_FIELDS.filter((k) => out[k] !== undefined).map((k) => [k, out[k]])) as WorkFields;
-  if (!problems.length && !Object.keys(ordered).length) problems.push(`${element}'s work is empty: give its fields, or null to clear them`);
   return { work: problems.length ? null : ordered, problems, limit };
 }
 
 /**
- * An element's fingerprint (D98): with no work fields, the hash of its normalized text, as it
- * always was, so every element written before work fields existed keeps its fingerprint and every
- * link to it holds; with them, the hash of that text and the work fields' canonical JSON (keys
- * sorted, Depends on sorted, a done-when normalized as text is), so changing a done-when, a
- * dependency, a size or a date is a change, as an edit of the text is.
+ * An element's fingerprint (D98): with no work field, the hash of its normalized text, as it always
+ * was, so every element written before work fields existed keeps its fingerprint and every link to
+ * it holds; with one, the hash of that text and the work fields' canonical JSON (keys sorted, Depends
+ * on sorted, a done-when normalized as text is), so changing a done-when, a dependency, a size or a
+ * date is a change, as an edit of the text is, and so is making a decision a work package (`{}`,
+ * D104). Migration 0033 computes it alike for the packages it moves onto bindings.
  */
 export function elementFingerprint(text: string, work: WorkFields | null | undefined): string {
-  if (!work || !Object.keys(work).length) return fingerprint(text);
+  if (!work) return fingerprint(text);
   return createHash('sha256').update(`${normalize(text)}\n${canonicalWork(work)}`).digest('base64url').slice(0, 22);
 }
 
@@ -107,30 +108,31 @@ export function canonicalWork(work: WorkFields): string {
   return JSON.stringify(canonical);
 }
 
-/** A link from a plan version, as the plan checks see it: carried forward from its base, or its own. */
-export interface PlanLink {
-  kind: string; source_element_id: string | null; target_element_id: string | null; selector: boolean;
-  /** Whether it targets the plan's binding, the plan itself, or something else. */
-  into: 'binding' | 'plan' | 'other'; target_committed: boolean; target: string;
-}
+/** A link from a binding version, as its work checks see it: carried forward from its base, or its own. */
+export interface WorkLink { source_element_id: string | null; target: string }
 
 /**
- * PLN2's checks on a plan version, beyond the structural ones every version passes (no empty or
- * duplicate element): every Depends on names a work package of the same version, and not itself;
- * no cycle in Depends on; a milestone depends on its members and delivers nothing (PLN3); only a
- * milestone carries a target date; every Delivers is a dependency link from a work package to an
- * element of a committed version of the plan's binding, at element scope (PLN1, LNK3). Each problem
- * is named in words a refusal can quote; none means the version may commit.
+ * PLN2's checks on a binding version's work packages (D98, D104), beyond the structural ones every
+ * version passes (no empty or duplicate element), run at submit: every Depends on names a work
+ * package of the same version (an element with a work field, not a decision), and not itself; no
+ * cycle in Depends on; a milestone depends on its members and has no work of its own, so links
+ * nothing (PLN3); only a milestone carries a target date. Each problem is named in words a refusal
+ * can quote; none means the version goes on to review.
  */
-export function planProblems(elements: { element_id: string; work?: WorkFields | null }[], links: PlanLink[]): string[] {
+export function workProblems(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[]): string[] {
   const problems: string[] = [];
-  const work = new Map(elements.map((e) => [e.element_id, e.work ?? undefined]));
+  const work = new Map(elements.filter((e) => e.work).map((e) => [e.element_id, e.work!]));
+  const ids = new Set(elements.map((e) => e.element_id));
   for (const e of elements) {
     const w = e.work;
     if (!w) continue;
     for (const d of w.depends_on ?? []) {
       if (d === e.element_id) problems.push(`${e.element_id} depends on itself`);
-      else if (!work.has(d)) problems.push(`${e.element_id} depends on ${d}, which isn't a work package of this version`);
+      else if (!work.has(d)) {
+        problems.push(ids.has(d)
+          ? `${e.element_id} depends on ${d}, which is a decision, not a work package: a work package depends on work packages, and relies on a decision through a dependency link`
+          : `${e.element_id} depends on ${d}, which isn't a work package of this version`);
+      }
     }
     if (w.target_date && !w.milestone) problems.push(`${e.element_id} carries a target date, and only a milestone does`);
     if (w.milestone && !w.depends_on?.length) problems.push(`${e.element_id} is a milestone, and depends on no members: a milestone depends on the work packages it gathers (PLN3)`);
@@ -150,19 +152,13 @@ export function planProblems(elements: { element_id: string; work?: WorkFields |
     }
     state.set(id, 'done');
   };
-  for (const e of elements) if (!state.has(e.element_id)) walk(e.element_id, [e.element_id]);
-  // Delivers.
+  for (const id of work.keys()) if (!state.has(id)) walk(id, [id]);
+  // A milestone has no work of its own (PLN2, PLN3): it serves and relies on nothing; its members do.
   const said = new Set<string>();
-  const once = (p: string) => { if (!said.has(p)) { said.add(p); problems.push(p); } };
   for (const l of links) {
-    if (l.into === 'plan') continue;
-    const from = l.source_element_id ?? '(the whole version)';
-    if (l.into === 'other') { once(`${from} links ${l.target}, and a plan's work packages deliver elements of its own binding only (KON6, D78)`); continue; }
-    if (l.kind !== 'dependency') once(`${from} delivers ${l.target} through a ${l.kind} link, and a Delivers is a dependency link (PLN1)`);
-    if (!l.source_element_id) once(`a link from the whole version to ${l.target} delivers nothing: a Delivers is from a work package, an element (PLN1)`);
-    if (!l.target_element_id || l.selector) once(`${from} delivers ${l.target}, and a Delivers names one binding element, at element scope, not ${l.selector ? 'a quote inside one' : 'the whole binding'} (PLN1, LNK3)`);
-    if (!l.target_committed) once(`${from} delivers ${l.target}, which isn't committed`);
-    if (l.source_element_id && work.get(l.source_element_id)?.milestone) once(`${l.source_element_id} is a milestone, and delivers ${l.target}: a milestone delivers nothing (PLN2, PLN3); a work package it depends on delivers it`);
+    if (!l.source_element_id || !work.get(l.source_element_id)?.milestone) continue;
+    const p = `${l.source_element_id} is a milestone, and links ${l.target}: a milestone has no work of its own (PLN2, PLN3); a work package it depends on serves or relies on it`;
+    if (!said.has(p)) { said.add(p); problems.push(p); }
   }
   return problems;
 }
@@ -170,7 +166,7 @@ export function planProblems(elements: { element_id: string; work?: WorkFields |
 /**
  * Natural order of work package ids (PLN17): digits compare as numbers, the rest as text, so W1.2
  * comes before W1.10 and W2 before W10. Ids that compare equal so (W01 and W1) fall back to plain
- * text order, so the same plan always gives the same order.
+ * text order, so the same binding always gives the same order.
  */
 export function naturalCompare(a: string, b: string): number {
   const pa = a.match(/\d+|\D+/g) ?? [];

@@ -37,8 +37,8 @@ function commit(dir: string, message: string, files: Record<string, string>) {
   return git(dir, 'rev-parse', 'HEAD');
 }
 
-const T1 = 'Konjir-Work: kj:test/orders-plan#W1';
-const T2 = 'Konjir-Work: kj:test/orders-plan#W2';
+const T1 = 'Konjir-Work: kj:test/orders-pg#W1';
+const T2 = 'Konjir-Work: kj:test/orders-pg#W2';
 
 /** A checkout of acme/orders: a root commit, then commits for W1 (two), W2 (one), none, and one that only mentions W1. */
 function checkout() {
@@ -49,13 +49,13 @@ function checkout() {
   git(dir, 'remote', 'add', 'origin', 'https://x-access-token:ghp_SECRET@github.com/acme/orders.git');
   const c1 = commit(dir, `Cancel orders\n\nAdds the endpoint.\n\n${T1}`, { 'src/cancel.ts': 'export const cancel = 1;\n' });
   commit(dir, 'Unrelated tidy-up', { 'docs/a.md': 'a\n' });
-  commit(dir, 'Mentions it\n\nNot a trailer: Konjir-Work: kj:test/orders-plan#W1 is the work.\n\nMore text.', { 'docs/b.md': 'b\n' });
+  commit(dir, 'Mentions it\n\nNot a trailer: Konjir-Work: kj:test/orders-pg#W1 is the work.\n\nMore text.', { 'docs/b.md': 'b\n' });
   const c4 = commit(dir, `Queue\n\n${T2}`, { 'src/queue.ts': 'export const queue = 1;\n' });
   const c5 = commit(dir, `Refund on cancel\n\nCo-authored-by: Ann <ann@example.com>\n${T1}`, { 'src/cancel.ts': 'export const cancel = 2;\n', 'test/cancel.test.ts': 'test\n' });
   return { dir, root, c1, c4, c5 };
 }
 
-/** A kolab with a spec, a binding and a plan of W1 and W2; eng and eng2 engineers, lee a person with Maintain, pm product, and lee-bot, an agent of lee's. */
+/** A kolab with a spec, and a binding of two decisions and its work packages W1 and W2; eng and eng2 engineers, lee a person with Maintain, pm product, and lee-bot, an agent of lee's. */
 async function planned() {
   process.env = { ...process.env, ...GIT_ENV };
   const kolab = await openKolab();
@@ -81,10 +81,10 @@ async function planned() {
   await eng.call('draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }, { id: 'b2', text: 'A queue.' }],
     links: [{ source_element: 'b1', target: 'kj:orders@1#R1' }, { source_element: 'b2', target: 'kj:orders@1#R2' }] });
   await eng.call('submit_for_review', { node: 'orders-pg', version: 1 });
-  await eng.call('create_node', { kind: 'plan', title: 'Plan', id: 'orders-plan' });
-  await eng.call('draft', { node: 'orders-plan', elements: [{ id: 'W1', text: 'Build the endpoint.' }, { id: 'W2', text: 'Build the queue.' }],
+  await eng.call('draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }, { id: 'b2', text: 'A queue.' },
+    { id: 'W1', text: 'Build the endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }],
     links: [{ source_element: 'W1', target: 'kj:orders-pg@1#b1' }, { source_element: 'W2', target: 'kj:orders-pg@1#b2' }] });
-  await eng.call('submit_for_review', { node: 'orders-plan', version: 1 });
+  await eng.call('submit_for_review', { node: 'orders-pg', version: 2 });
   const eng2 = await actor('eng2', 'engineer');
   const lee = await actor('lee', 'engineer', 'maintain');
   const bot = await actor('lee-bot', 'engineer', 'write', 'lee');
@@ -128,10 +128,10 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   // The package it holds, found by itself: c1 and c5, oldest first, not the commit that only mentions it, nor W2's.
   const first = await deliverWork(eng.call, gitIn(dir)) as Record<string, unknown>;
   expect(first).toMatchObject({
-    work: 'kj:orders-plan#W1', repository: 'https://github.com/acme/orders', root_sha: root, trailer: T1, sent: true, recorded: 2, already: 0, state: 'in_progress',
+    work: 'kj:orders-pg#W1', repository: 'https://github.com/acme/orders', root_sha: root, trailer: T1, sent: true, recorded: 2, already: 0, state: 'in_progress',
     commits: [{ sha: c1, subject: 'Cancel orders', files: 1 }, { sha: c5, subject: 'Refund on cancel', files: 2 }],
   });
-  const read = await eng.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: Record<string, unknown>[] };
+  const read = await eng.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: Record<string, unknown>[] };
   // Recorded in one call, so in no fixed order among themselves.
   const shown = read.evidence.map((e) => [e.sha, e.title, e.files, e.repository, e.confirmed]);
   expect(shown).toHaveLength(2);
@@ -140,7 +140,7 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
     [c5, 'Refund on cancel', ['src/cancel.ts', 'test/cancel.test.ts'], 'https://github.com/acme/orders', false],
   ]));
   // Delivered again: nothing new, both already counted.
-  expect(await deliverWork(eng.call, gitIn(dir), { work: 'kj:orders-plan#W1' })).toMatchObject({ recorded: 0, already: 2 });
+  expect(await deliverWork(eng.call, gitIn(dir), { work: 'kj:orders-pg#W1' })).toMatchObject({ recorded: 0, already: 2 });
 
   // Another repository's checkout at the same URL: its root commit differs. Refused, nothing sent.
   const other = mkdtempSync(join(tmpdir(), 'konjir-other-'));
@@ -157,7 +157,7 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   // merely present isn't enough: the branch tracks origin, so it is refused (review of #83, 5).
   git(fork, 'remote', 'add', 'upstream', 'https://github.com/acme/orders.git');
   expect(await rejection(deliverWork(eng.call, gitIn(fork)))).toMatch(/this checkout tracks origin \(https:\/\/github\.com\/evil\/orders\)/);
-  expect(await rejection(deliverWork(eng.call, gitIn(fork), { work: 'kj:orders-plan#W1', repo: 'https://github.com/evil/orders' }))).toMatch(/https:\/\/github\.com\/evil\/orders isn't a repository registered in this kolab/);
+  expect(await rejection(deliverWork(eng.call, gitIn(fork), { work: 'kj:orders-pg#W1', repo: 'https://github.com/evil/orders' }))).toMatch(/https:\/\/github\.com\/evil\/orders isn't a repository registered in this kolab/);
   expect(await deliverWork(eng.call, gitIn(fork), { repo: 'https://github.com/acme/orders' })).toMatchObject({ recorded: 0, already: 2 });
   // Once its branch tracks the registered remote, it is that repository's checkout.
   git(fork, 'config', 'branch.main.remote', 'upstream');
@@ -167,20 +167,37 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   git(shallow, 'clone', '-q', '--depth', '2', `file://${dir}`, '.');
   git(shallow, 'remote', 'set-url', 'origin', 'https://github.com/acme/orders');
   expect(await rejection(deliverWork(eng.call, gitIn(shallow)))).toMatch(/It is a shallow clone, whose oldest commit stands in for its root: fetch its whole history \(git fetch --unshallow\)/);
-  expect((await eng.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: unknown[] }).evidence).toHaveLength(2);
+  expect((await eng.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: unknown[] }).evidence).toHaveLength(2);
 
   // Submitted, with a pull request outside the repository: refused whole. Then inside it, with a test run.
   expect(await rejection(deliverWork(eng.call, gitIn(dir), { submit: true, pr: 'https://github.com/evil/orders/pull/3' }))).toMatch(/isn't inside its repository, https:\/\/github\.com\/acme\/orders/);
   const submitted = await deliverWork(eng.call, gitIn(dir), { submit: true, pr: 'https://github.com/acme/orders/pull/3', tests: ['npm test: 3 passed'], note: 'Cancels, refunds.' });
   expect(submitted).toMatchObject({ recorded: 2, already: 2, state: 'in_review', in_review: true });
-  const evidence = (await eng2.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: Record<string, unknown>[] }).evidence;
+  const evidence = (await eng2.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: Record<string, unknown>[] }).evidence;
   // Items recorded in one call share their time, so their order among themselves isn't fixed.
   expect(evidence.map((e) => e.kind).sort()).toStrictEqual(['commit', 'commit', 'pull_request', 'test_run']);
   expect(evidence.find((e) => e.kind === 'pull_request')).toMatchObject({ url: 'https://github.com/acme/orders/pull/3', pr: 3, repository: 'https://github.com/acme/orders' });
   // eng2 approves: neither its registrar nor its assignee, so the repository is confirmed.
-  expect(await eng2.call('review', { work: 'kj:orders-plan#W1', verdict: 'approve' })).toMatchObject({ state: 'done', confirmed_repositories: ['https://github.com/acme/orders'] });
-  expect(await eng.call('list_repositories', {})).toMatchObject({ repositories: [{ confirmed: true, confirmed_by: 'eng2', confirmed_by_work: 'kj:orders-plan#W1' }] });
+  expect(await eng2.call('review', { work: 'kj:orders-pg#W1', verdict: 'approve' })).toMatchObject({ state: 'done', confirmed_repositories: ['https://github.com/acme/orders'] });
+  expect(await eng.call('list_repositories', {})).toMatchObject({ repositories: [{ confirmed: true, confirmed_by: 'eng2', confirmed_by_work: 'kj:orders-pg#W1' }] });
 }, 120_000);
+
+test('konjir work deliver finds a package\'s commits by the trailer it had as a plan\'s package, before D104 (migration 0033), as by its own', async () => {
+  const { kolab, eng, lee } = await planned();
+  const { dir, c1 } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  // As 0033 leaves a database whose plan held W1: the plan, read-only, and where its package moved.
+  await kolab.db.transaction(async (tx) => {
+    await tx.exec("set local kj.migrating = 'on'");
+    await tx.query(`insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ('orders-plan', 'orders-plan', 'plan', 'technical', 'Plan', 'test', 'orders-pg', 'eng')`);
+    await tx.query(`insert into work_package_moved(kolab_id, plan_node_id, plan_element_id, binding_node_id, element_id) values ('test', 'orders-plan', 'W1', 'orders-pg', 'W1')`);
+  });
+  await eng.call('pull_work', {});
+  const old = commit(dir, 'Cancel, the old way\n\nKonjir-Work: kj:test/orders-plan#W1', { 'src/old.ts': 'old\n' });
+  expect(await eng.call('read_work', { work: 'kj:orders-plan#W1' })).toMatchObject({ work: 'kj:orders-pg#W1', trailer: T1, former_trailers: ['Konjir-Work: kj:test/orders-plan#W1'] });
+  const r = await deliverWork(eng.call, gitIn(dir)) as { commits: { sha: string }[] };
+  expect(r.commits.map((c) => c.sha)).toStrictEqual([c1, expect.any(String), old]);
+}, 60_000);
 
 test('in a shell: konjir repo register and konjir work deliver, with -C, --dry-run and --since; a package with no tagged commit is refused (D98)', async () => {
   const { server, eng, lee } = await planned();
@@ -193,24 +210,24 @@ test('in a shell: konjir repo register and konjir work deliver, with -C, --dry-r
   expect(JSON.parse(out.pop()!)).toMatchObject({ repository: { url: 'https://github.com/acme/orders', binding: 'orders-pg' } });
   process.env.KONJIR_TOKEN = eng.token;
   await eng.call('pull_work', {});
-  await eng.call('release_work', { work: 'kj:orders-plan#W1' });
+  await eng.call('release_work', { work: 'kj:orders-pg#W1' });
   await main(['pull_work']);
   out.pop();
   // W1 was released, so W1 is pulled again; deliver W2 by name is refused (not held), but a dry run sends nothing.
-  await main(['work', 'deliver', 'kj:orders-plan#W2', '--dry-run', '-C', dir]);
+  await main(['work', 'deliver', 'kj:orders-pg#W2', '--dry-run', '-C', dir]);
   const dry = JSON.parse(out.pop()!);
-  expect(dry).toMatchObject({ work: 'kj:orders-plan#W2', sent: false, commits: [{ sha: c4, subject: 'Queue' }], evidence: [{ kind: 'commit', sha: c4, repo: 'https://github.com/acme/orders', files: ['src/queue.ts'] }] });
-  await expect(main(['work', 'deliver', 'kj:orders-plan#W2', '-C', dir])).rejects.toThrow(/only its assignee records its evidence/);
-  await expect(main(['work', 'deliver', '--since', 'HEAD', '-C', dir])).rejects.toThrow(/no commit reachable from HEAD since HEAD carries the trailer "Konjir-Work: kj:test\/orders-plan#W1"/);
+  expect(dry).toMatchObject({ work: 'kj:orders-pg#W2', sent: false, commits: [{ sha: c4, subject: 'Queue' }], evidence: [{ kind: 'commit', sha: c4, repo: 'https://github.com/acme/orders', files: ['src/queue.ts'] }] });
+  await expect(main(['work', 'deliver', 'kj:orders-pg#W2', '-C', dir])).rejects.toThrow(/only its assignee records its evidence/);
+  await expect(main(['work', 'deliver', '--since', 'HEAD', '-C', dir])).rejects.toThrow(/no commit reachable from HEAD since HEAD carries the trailer "Konjir-Work: kj:test\/orders-pg#W1"/);
   await main(['work', 'deliver', '--test', 'https://ci.example.com/run/1', '-C', dir]);
-  expect(JSON.parse(out.pop()!)).toMatchObject({ work: 'kj:orders-plan#W1', recorded: 3, already: 0 });
+  expect(JSON.parse(out.pop()!)).toMatchObject({ work: 'kj:orders-pg#W1', recorded: 3, already: 0 });
   await expect(main(['work', 'deliver', '--test', 'https://ci.example.com/run/1?token=abc', '-C', dir])).rejects.toThrow(/may be a credential/);
   await expect(main(['work', 'deliver', '--bogus', '-C', dir])).rejects.toThrow(/unknown --bogus/);
 }, 120_000);
 
 /** A commit whose subject carries git log's old record separators, and an argument or another commit's sha after them (review of #83, 1). */
 const hostile = (dir: string, smuggled: string) =>
-  commit(dir, `evil\x1e${smuggled}\x1fSmuggled\x1fkj:test/orders-plan#W1\x1e\n\nIt mentions kj:test/orders-plan#W1 but carries no trailer.`, { [`h/${Math.random()}.txt`]: 'h\n' });
+  commit(dir, `evil\x1e${smuggled}\x1fSmuggled\x1fkj:test/orders-pg#W1\x1e\n\nIt mentions kj:test/orders-pg#W1 but carries no trailer.`, { [`h/${Math.random()}.txt`]: 'h\n' });
 
 test('a commit\'s message can\'t reach git\'s arguments: a hostile subject neither truncates a file, under --dry-run or not, nor forges a tagged commit (review of #83, 1)', async () => {
   const { eng, lee } = await planned();
@@ -231,7 +248,7 @@ test('a commit\'s message can\'t reach git\'s arguments: a hostile subject neith
   const sent = await deliverWork(eng.call, gitIn(dir)) as { commits: { sha: string }[]; recorded: number };
   expect(readFileSync(victim, 'utf8')).toBe('important\n');
   expect(sent.commits.map((c) => c.sha)).toStrictEqual([c1, c5]);
-  const evidence = (await eng.call('read_work', { work: 'kj:orders-plan#W1' }) as { evidence: { sha?: string; title?: string }[] }).evidence;
+  const evidence = (await eng.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: { sha?: string; title?: string }[] }).evidence;
   expect(evidence.map((e) => e.sha).sort()).toStrictEqual([c1, c5].sort());
   expect(evidence.map((e) => e.title)).not.toContain('Smuggled');
   // A hostile --since is no option either.
@@ -259,7 +276,7 @@ test('a checkout\'s own config can\'t make deliver run a program: log.showSignat
   const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
   const parent = git(dir, 'rev-parse', 'HEAD');
   const body = [`tree ${tree}`, `parent ${parent}`, 'author Eng <eng@example.com> 1700000000 +0000', 'committer Eng <eng@example.com> 1700000000 +0000',
-    'gpgsig -----BEGIN PGP SIGNATURE-----', ' ', ' iQEzBAABCAAdFiEE', ' -----END PGP SIGNATURE-----', '', 'Signed', '', 'Konjir-Work: kj:test/orders-plan#W1', ''].join('\n');
+    'gpgsig -----BEGIN PGP SIGNATURE-----', ' ', ' iQEzBAABCAAdFiEE', ' -----END PGP SIGNATURE-----', '', 'Signed', '', 'Konjir-Work: kj:test/orders-pg#W1', ''].join('\n');
   const signed = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: dir, input: body, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } }).trim();
   git(dir, 'update-ref', 'HEAD', signed);
   // The fixture works: plain git, reading that config, runs the program.
@@ -301,7 +318,7 @@ test('a folded trailer counts only as its whole value, and a partial clone fetch
   await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
   await eng.call('pull_work', {});
   // A trailer folded over two lines is one value, which isn't the package's address.
-  const folded = commit(dir, 'Folded\n\nKonjir-Work: kj:test/orders-plan#W1\n  --output=/tmp/x', { 'f.txt': 'f\n' });
+  const folded = commit(dir, 'Folded\n\nKonjir-Work: kj:test/orders-pg#W1\n  --output=/tmp/x', { 'f.txt': 'f\n' });
   const r = await deliverWork(eng.call, gitIn(dir), { dryRun: true }) as { commits: { sha: string }[] };
   expect(r.commits.map((c) => c.sha)).toStrictEqual([c1, c5]);
   expect(r.commits.map((c) => c.sha)).not.toContain(folded);
