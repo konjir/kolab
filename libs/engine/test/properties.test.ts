@@ -82,7 +82,7 @@ type Run = { tag: string; ids: Record<NodeKey, string>; byId: Map<string, NodeKe
 
 let runs = 0;
 
-/** The review gate: structural checks, and a veto on any version that holds a vetoed text. Plan versions skip it (PLN2). */
+/** The review gate: structural checks, and a veto on any version that holds a vetoed text. Every binding passes it (no plan skips it since D104). */
 const reviewer: Parameters<typeof setup>[0] = (ctx) => {
   const veto = ctx.elements.find((e) => vetoed(e.text));
   return veto ? { ok: false, note: `vetoed: ${veto.element_id}` } : structuralChecks(ctx);

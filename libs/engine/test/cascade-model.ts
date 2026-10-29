@@ -409,7 +409,7 @@ export class Model {
    */
   unlink(key: string, text?: string): 'ok' | 'rejected' {
     const e = this.edges.find((x) => x.key === key)!;
-    if (text !== undefined && vetoed(text) && e.src !== 'X') return 'rejected';
+    if (text !== undefined && vetoed(text)) return 'rejected';
     if (e.src === 'V2') {
       const before = this.mat('V2');
       this.removeEdge(e);
