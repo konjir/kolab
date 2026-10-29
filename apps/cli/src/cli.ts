@@ -36,12 +36,12 @@ import { randomBytes } from 'node:crypto';
 const ROLES = ['product', 'engineer'];
 import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
 import { deliverWork, gitIn, registerRepository } from './deliver.js';
-import { formatStatus, runWork, workStatus } from './work.js';
+import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { ASK_AGAIN, CHANNEL_CLIENT_NAME, HARNESSES, WrongAgentError, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
-export { ALLOWED_TOOLS, DENIED_TOOLS, formatStatus, harnessCommand, heartbeatAfter, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
+export { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, harnessCommand, harnessEnv, heartbeatEvery, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
 export { ASK_AGAIN, WrongAgentError, connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -139,7 +139,8 @@ export async function call(client: Client, verb: string, args: Record<string, un
     throw e;
   }
   const text = (r.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('\n');
-  if (r.isError) throw new Error(text);
+  // A refusal is Kolab's own answer, told apart from a call that never reached it (konjir work's heartbeat, M1).
+  if (r.isError) throw new ToolRefusal(text);
   return r.structuredContent ?? text;
 }
 
@@ -168,9 +169,10 @@ Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [
            (under ~/.konjir/jobs), by Claude Code run headless on your own model account, with Kolab as its one MCP
            server and only edits, git, npm, npx, gh and konjir allowed (--allow-all: every permission). A job never
            merges or deploys. It renews each job's lease, ends the job when its harness exits, keeps a worktree with
-           work not pushed, and waits while nothing is ready; Ctrl-C stops every job and gives back what it held.
-           --once takes one round and exits. --machine names this machine (its hostname); --harness (or
-           KONJIR_HARNESS) runs another command in Claude Code's place.
+           work not pushed, and waits while nothing is ready; Ctrl-C (or SIGTERM, SIGHUP) stops every job and gives
+           back what it held, and a second Ctrl-C kills them at once. --once takes one round and exits. --machine
+           names this machine (its hostname); --harness (or KONJIR_HARNESS) runs another command in Claude Code's
+           place, split on spaces (no quoting). macOS and Linux only, not Windows yet.
            konjir status [--json]: the kolab's queue by kind, its live jobs (person, machine, agent, item, since) and
            your room under the caps.
 Pages:     every list (and a long read) returns a page and next; while next isn't null, call it again with
@@ -312,6 +314,14 @@ export async function main(argv: string[]) {
   const url = flag(argv, 'url') ?? process.env.KONJIR_URL ?? 'http://127.0.0.1:7420/mcp';
   const token = sessionToken(flag(argv, 'token'));
   const [cmd, ...rest] = argv;
+  // Inside a Konjir job (W5.4b) konjir works as the job's agent, with KONJIR_TOKEN, and never with a
+  // sign-in kept on this machine: the person's is theirs, not the job's.
+  if (process.env.KONJIR_JOB?.trim() && cmd && cmd !== '--version' && !((cmd === 'help' || cmd === '--help') && !rest[0])) {
+    if (['login', 'logout', 'connect', 'serve'].includes(cmd) || (cmd === 'work' && rest[0] !== 'deliver')) {
+      throw new Error(`konjir ${cmd} doesn't run inside a Konjir job (KONJIR_JOB is set): a job works as its agent, with the token it was given`);
+    }
+    if (!token) throw new Error('this is a Konjir job (KONJIR_JOB is set), which works as its agent with KONJIR_TOKEN, never with a sign-in kept on this machine, and KONJIR_TOKEN is unset or empty');
+  }
 
   if (cmd === '--version') {
     console.log(typeof KONJIR_VERSION === 'string' ? KONJIR_VERSION : 'development (run from source)'); return;
@@ -475,14 +485,21 @@ export async function main(argv: string[]) {
   }
   if (cmd === 'work' && rest[0] !== 'deliver') {
     const stop = new AbortController();
+    const processes = new Set<number>();
     let signals = 0;
     const onSignal = () => {
-      // The first stops every job and ends it as stopped; a second leaves at once.
-      if (signals++) process.exit(130);
-      console.error('konjir work: stopping every job (Ctrl-C again to leave at once)');
+      // The first stops every job and ends it as stopped; a second kills every harness's process
+      // group at once, so none outlives konjir with its job live, and leaves.
+      if (signals++) {
+        for (const pid of processes) { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }
+        process.exit(130);
+      }
+      console.error('konjir work: stopping every job (Ctrl-C again to kill them and leave at once)');
       stop.abort();
     };
-    process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
+    const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+    for (const sig of SIGNALS) process.on(sig, onSignal);
+    let done = false;
     try {
       const args = [...rest];
       const at = args.indexOf('-C');
@@ -494,14 +511,22 @@ export async function main(argv: string[]) {
         ...(jobs !== undefined ? { jobs: Number(jobs) } : {}) };
       if (args.length) throw new Error(`konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>]: unknown ${args.join(' ')}`);
       const callIt = (verb: string, a: Record<string, unknown>) => call(client, verb, a);
-      const reports = await runWork({
-        call: callIt, git: gitIn(dir), signal: stop.signal, jobsDir: process.env.KONJIR_JOBS_DIR || undefined,
-        // The person's inbox changing (a review requested, say) looks for work at once; polling covers the rest.
-        pushed: (wake) => { void watch(client, () => wake()).catch(() => undefined); },
-      }, { ...opts, url });
+      // The person's inbox changing (a review requested, say) looks for work at once, listening again
+      // whenever its stream closes, after a minute if it couldn't open; polling covers the rest.
+      const pushed = (wake: () => void) => {
+        const subscribe = () => {
+          if (done) return;
+          watch(client, () => wake()).then((w) => {
+            void w.subscription.closed.then(() => { stored?.releaseIdleLock(); if (!done) setTimeout(subscribe, 5_000).unref(); });
+          }, () => { stored?.releaseIdleLock(); if (!done) setTimeout(subscribe, 60_000).unref(); });
+        };
+        subscribe();
+      };
+      const reports = await runWork({ call: callIt, git: gitIn(dir), signal: stop.signal, jobsDir: process.env.KONJIR_JOBS_DIR || undefined, pushed, processes }, { ...opts, url });
       console.log(JSON.stringify(reports, null, 2));
     } finally {
-      process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal);
+      done = true;
+      for (const sig of SIGNALS) process.off(sig, onSignal);
       stored?.releaseLock();
       await client.close();
     }
