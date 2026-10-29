@@ -209,7 +209,7 @@ export function taggedCommits(git: Git, address: string | string[], opts: { sinc
 }
 
 /** A repository as konjir_list_repositories gives it. */
-interface Repository { id: string; url: string; root_sha: string; binding: string | null; confirmed: boolean }
+export interface Repository { id: string; url: string; root_sha: string; binding: string | null; confirmed: boolean }
 
 /** A call to Kolab: konjir_<verb> with its arguments, returning its structured result. */
 export type Call = (verb: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -241,6 +241,38 @@ function requireCheckoutOf(checkout: Checkout, repo: Repository, named: boolean)
     throw new Error(`this checkout tracks ${checkout.remote} (${checkout.tracked ?? 'no hosted URL'}), not ${repo.url}, though it has its root commit: it may be a fork, `
       + `whose commits never reached ${repo.url}. Deliver from a clone of ${repo.url}, or a branch that tracks it, or, if this checkout is one under another URL, name it: --repo ${repo.url}. Nothing was sent.`);
   }
+}
+
+/** The registered repository `given` (--repo) names, or a refusal. */
+function namedRepository(registered: Repository[], given: string): Repository {
+  const named = canonicalRemote(given) ?? given;
+  const repo = registered.find((r) => r.url.toLowerCase() === named.toLowerCase());
+  if (!repo) throw new Error(`${named} isn't a repository registered in this kolab (konjir list_repositories); a person with Maintain registers it, konjir repo register. Nothing was sent.`);
+  return repo;
+}
+
+/** The one registered repository whose root commit the checkout has and whose URL it tracks, or a refusal; `besides` adds to why none is. */
+function trackedRepository(registered: Repository[], checkout: Checkout, besides = ''): Repository {
+  const mine = registered.filter((r) => checkout.roots.includes(r.root_sha) && checkout.tracked === r.url.toLowerCase());
+  if (!mine.length) {
+    throw new Error(`this checkout (tracking ${checkout.remote}, ${checkout.tracked ?? 'no hosted URL'}) is no repository registered in this kolab${besides}: `
+      + 'a person with Maintain or Admin registers it, konjir repo register, run in a checkout. Nothing was sent.');
+  }
+  if (mine.length > 1) throw new Error(`this checkout is ${mine.map((r) => r.url).join(' and ')}: name one with --repo <url>. Nothing was sent.`);
+  return mine[0];
+}
+
+/**
+ * The registered repository a checkout is, checked exactly as `konjir work deliver` checks it (W5.4b,
+ * JOB4): `named` (--repo) if given, else the one whose root commit it has and whose URL it tracks;
+ * then its root commit, and, unless named, its tracked remote. Throws why not.
+ */
+export async function checkoutRepository(call: Call, git: Git, named?: string): Promise<{ checkout: Checkout; repo: Repository }> {
+  const checkout = readCheckout(git);
+  const registered = await repositories(call);
+  const repo = named ? namedRepository(registered, named) : trackedRepository(registered, checkout);
+  requireCheckoutOf(checkout, repo, !!named);
+  return { checkout, repo };
 }
 
 /** A pull request's number, from its link, when the link says it (GitHub's /pull/N, GitLab's /merge_requests/N, Bitbucket's /pull-requests/N). */
@@ -284,23 +316,14 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   const former = (pkg.former_trailers ?? []).map((t) => t.replace(/^Konjir-Work:\s*/, '').trim());
   const checkout = readCheckout(git);
   const registered = await repositories(call);
-  const find = (url: string) => registered.find((r) => r.url.toLowerCase() === url.toLowerCase());
   let repo: Repository | undefined;
   if (opts.repo) {
-    const named = canonicalRemote(opts.repo) ?? opts.repo;
-    repo = find(named);
-    if (!repo) throw new Error(`${named} isn't a repository registered in this kolab (konjir list_repositories); a person with Maintain registers it, konjir repo register. Nothing was sent.`);
+    repo = namedRepository(registered, opts.repo);
   } else if (pkg.repository) {
-    repo = find(pkg.repository.url);
+    repo = registered.find((r) => r.url.toLowerCase() === pkg.repository!.url.toLowerCase());
     if (!repo) throw new Error(`${pkg.work} is done in ${pkg.repository.url}, which this session can't find among the kolab's repositories. Nothing was sent.`);
   } else {
-    const mine = registered.filter((r) => checkout.roots.includes(r.root_sha) && checkout.tracked === r.url.toLowerCase());
-    if (!mine.length) {
-      throw new Error(`this checkout (tracking ${checkout.remote}, ${checkout.tracked ?? 'no hosted URL'}) is no repository registered in this kolab, and ${pkg.work} has none of its own: `
-        + 'a person with Maintain or Admin registers it, konjir repo register, run in a checkout. Nothing was sent.');
-    }
-    if (mine.length > 1) throw new Error(`this checkout is ${mine.map((r) => r.url).join(' and ')}: name one with --repo <url>. Nothing was sent.`);
-    repo = mine[0];
+    repo = trackedRepository(registered, checkout, `, and ${pkg.work} has none of its own`);
   }
   if (pkg.repository && pkg.repository.url.toLowerCase() !== repo.url.toLowerCase()) {
     throw new Error(`${pkg.work} is done in ${pkg.repository.url}, not ${repo.url}: deliver it from a checkout of ${pkg.repository.url}. Nothing was sent.`);
