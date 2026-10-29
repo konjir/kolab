@@ -121,11 +121,12 @@ test('submitting needs a commit or a pull request among the evidence; it goes In
   // The read shows its evidence, in order, and its reviews.
   const w = await kolab.readWork(eve, W(id));
   expect(w).toMatchObject({ state: 'in_review', assignee: 'bob', ready: false });
-  expect(w.evidence.map((e) => [e.kind, e.sha ?? e.url ?? e.title, e.recorded_by])).toStrictEqual([
-    ['commit', sha('a'), 'bob'], ['commit', sha('b'), 'bob'], ['pull_request', PR.url, 'bob'], ['test_run', TESTS.title, 'bob'],
-  ]);
+  // Items recorded in one call share their time, so their order among themselves isn't fixed.
+  const shown = w.evidence.map((e) => [e.kind, e.sha ?? e.url ?? e.title, e.recorded_by]);
+  expect(shown.slice(0, 2)).toStrictEqual([['commit', sha('a'), 'bob'], ['commit', sha('b'), 'bob']]);
+  expect(shown.slice(2).sort()).toStrictEqual([['pull_request', PR.url, 'bob'], ['test_run', TESTS.title, 'bob']]);
   expect(w.evidence[0]).toMatchObject({ title: 'Build it (a)', files: ['src/orders.ts', 'test/orders.test.ts'] });
-  expect(w.evidence[2]).toMatchObject({ pr: 7 });
+  expect(w.evidence.find((e) => e.kind === 'pull_request')).toMatchObject({ pr: 7 });
   expect(w.reviews.map((x) => [x.reviewer, x.state])).toStrictEqual([['eve', 'open'], ['frank', 'open']]);
   expect(w.events.map((e) => [e.kind, e.actor, e.from, e.to])).toStrictEqual([
     ['added', 'bob', null, 'todo'], ['pulled', 'bob', 'todo', 'in_progress'], ['evidence', 'bob', 'in_progress', 'in_progress'],

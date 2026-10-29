@@ -30,8 +30,11 @@
 --   - work_package_moved records each move, so kj:<kolab>/<plan>#<id>, in an old address or a commit
 --     trailer (Konjir-Work), still names the package.
 --   - A plan's draft, or its version in review, is rejected, saying why: a plan takes no new version.
---   - A draft of the binding, or its version in review, was built on the version before this one:
---     like any draft a commit overtakes, it is stale, and is redrafted on the new version.
+--     So is a draft or a version in review of a binding that receives packages, or of one of its
+--     variants and forks: a variant's would otherwise be folded onto the new version, dropping them.
+--   - A mark on a link that stays with the plan is settled, its question answered.
+--   - The new version's cascade is queued (an after_commit job), as any commit's is, so its variants
+--     and forks are rebased onto it, and links into the binding catch up, once Kolab starts.
 --
 -- Then the kind is retired: no role creates a node of kind plan, or writes a version of one. Plans
 -- stay, read-only, as history; a binding's at-most-one-plan index goes with them (KON5, D96).
@@ -47,8 +50,8 @@ do $$
 declare bad text;
 begin
   select string_agg(format(case q.ord
-      when 1 then 'A cascade Kolab still owes (an after_commit job in the outbox, waiting or dead) would carry a plan''s or its binding''s links forward after the version 0033 writes, and lose them: %s. Let the outbox drain first, retrying a dead job with konjir_admin_outbox retry=<id>.'
-      when 2 then 'A plan''s package moves onto its binding as <plan>.<id> when the binding has had an element of its id, and these names are taken too: %s. Decide what each package is called, and draft the plan with it renamed, before 0033 applies.'
+      when 1 then 'A job Kolab still owes (in the outbox, waiting or dead) would run on a plan after 0033 retires it, or carry a binding''s links forward after the version 0033 writes, and lose them: %s. Let the outbox drain first, retrying a dead job with konjir_admin_outbox retry=<id>.'
+      when 2 then 'A plan''s package moves onto its binding as <plan>.<id> when the binding has had an element of its id, and these names are taken too, by the binding or by another of the plan''s packages: %s. Decide what each package is called, and draft the plan with it renamed, before 0033 applies.'
     end, q.items), ' ' order by q.ord) into bad
     from (
 -- check:begin
@@ -56,19 +59,22 @@ with
 plans as (
   select p.id, p.name, p.kolab_id, p.parent_node_id as binding from node p where p.kind = 'plan'
 ),
+-- A cascade owed on a plan or its binding, and a rebase or a settle owed on a plan.
 owed as (
-  select o.id, n.kolab_id, n.name, v.seq from outbox o join version v on v.id = o.version_id join node n on n.id = v.node_id
-   where o.kind = 'after_commit' and (n.id in (select id from plans) or n.id in (select binding from plans))
+  select o.id, o.kind, n.kolab_id, n.name, v.seq from outbox o join version v on v.id = o.version_id join node n on n.id = v.node_id
+   where (o.kind = 'after_commit' and (n.id in (select id from plans) or n.id in (select binding from plans)))
+      or (o.kind in ('rebase', 'settle') and n.id in (select id from plans))
 ),
 taken as (
   select p.kolab_id, p.name as plan, w.element_id, b.name as binding
     from plans p join work_package w on w.plan_node_id = p.id join node b on b.id = p.binding
    where exists (select 1 from element e join version v on v.id = e.version_id where v.node_id = p.binding and e.element_id = w.element_id)
-     and exists (select 1 from element e join version v on v.id = e.version_id where v.node_id = p.binding and e.element_id = p.name || '.' || w.element_id)
+     and (exists (select 1 from element e join version v on v.id = e.version_id where v.node_id = p.binding and e.element_id = p.name || '.' || w.element_id)
+          or exists (select 1 from work_package x where x.plan_node_id = p.id and x.element_id = p.name || '.' || w.element_id))
 )
 select r.ord, string_agg(r.detail, ', ' order by r.detail) as items
   from (
-    select 1 as ord, format('job %s, %s/%s@%s', id, kolab_id, name, seq) as detail from owed
+    select 1 as ord, format('%s job %s, %s/%s@%s', kind, id, kolab_id, name, seq) as detail from owed
     union all
     select 2, format('%s/%s#%s (%s#%s.%s)', kolab_id, plan, element_id, binding, plan, element_id) from taken
   ) r
@@ -132,15 +138,38 @@ select w.kolab_id, w.plan_node_id as plan, w.element_id as plan_element, p.bindi
   from work_package w join kj_0033_plan p on p.id = w.plan_node_id;
 
 -- ---------------------------------------------------------------------------
--- A plan takes no new version: its drafts and versions in review are rejected
+-- Open versions that would lose what moves: rejected, saying why
 -- ---------------------------------------------------------------------------
 
+-- A plan's drafts and versions in review: a plan takes no new version. And those of each binding
+-- that receives packages, and of its variants and forks: built on the version before 0033's, a
+-- binding's would go back stale, but a variant's would be folded onto Kolab's newer version, its
+-- own elements kept and the moved packages dropped, flagging them removed. deploy/preflight/0033.sql
+-- lists the same versions, text for text.
+create table kj_0033_rejected as
+-- rejected:begin
+with
+receiving as (
+  select distinct p.parent_node_id as id from node p
+   where p.kind = 'plan' and exists (select 1 from version v where v.node_id = p.id and v.state = 'committed')
+),
+variants as (
+  select distinct c.node_id as id from version c join version pv on pv.id = c.parent_version_id
+   where pv.node_id in (select id from receiving) and c.node_id not in (select id from receiving)
+)
+select v.id, n.kolab_id, n.name, v.seq, v.state, n.kind from version v join node n on n.id = v.node_id
+ where v.state in ('drafted', 'in_review')
+   and (n.kind = 'plan' or n.id in (select id from receiving) or n.id in (select id from variants))
+ order by n.kolab_id, n.name, v.seq
+-- rejected:end
+;
 update review_request r set state = 'withdrawn', decided_at = now()
-  from version v join node n on n.id = v.node_id
- where r.version_id = v.id and n.kind = 'plan' and v.state in ('drafted', 'in_review') and r.state = 'open';
+  from kj_0033_rejected x where r.version_id = x.id and r.state = 'open';
 update version v set state = 'rejected',
-       review_note = 'rejected by migration 0033: the plan kind is retired (D104), so a plan takes no new version. Its work packages moved onto its binding: draft them there'
-  from node n where n.id = v.node_id and n.kind = 'plan' and v.state in ('drafted', 'in_review');
+       review_note = case when x.kind = 'plan'
+         then 'rejected by migration 0033: the plan kind is retired (D104), so a plan takes no new version. Its work packages moved onto its binding: draft them there'
+         else 'rejected by migration 0033: a plan''s work packages moved into a binding this was built on, in a version Kolab wrote (D104), which this one would have dropped: redraft it on the latest version' end
+  from kj_0033_rejected x where v.id = x.id;
 
 -- ---------------------------------------------------------------------------
 -- Work fields are a binding's now
@@ -297,17 +326,37 @@ update invalidation i set version_id = p.new_version
   from kj_0033_plan p
  where i.version_id = p.binding_version and i.state = 'open' and i.delta_id is null and p.new_version is not null;
 
--- Each package's links into its binding move with it, and their open marks, and every open mark on
--- the package itself, to its element in the binding's new version: a package at risk stays so.
-update edge e set source_version_id = p.new_version, source_element_id = m.element_id
-  from kj_0033_plan p, kj_0033_moved m, version t
+-- Each package's links into its binding move with it, and their open marks, and every other open mark
+-- on the package itself, to its element in the binding's new version: a package at risk stays so.
+create table kj_0033_edge_moved as
+select e.id, p.new_version, m.element_id
+  from edge e, kj_0033_plan p, kj_0033_moved m, version t
  where e.source_version_id = p.plan_version and p.new_version is not null
    and m.plan = p.id and m.plan_element = e.source_element_id
    and t.id = e.target_version_id and t.node_id = p.binding;
+update edge e set source_version_id = x.new_version, source_element_id = x.element_id
+  from kj_0033_edge_moved x where e.id = x.id;
 update invalidation i set version_id = p.new_version, element_id = m.element_id
   from kj_0033_plan p, kj_0033_moved m
  where i.version_id = p.plan_version and p.new_version is not null and i.state = 'open' and i.delta_id is null
-   and m.plan = p.id and m.plan_element = i.element_id;
+   and m.plan = p.id and m.plan_element = i.element_id
+   and (i.edge_id is null or i.edge_id in (select id from kj_0033_edge_moved));
+-- A mark on a link that stays with the plan (one between two of its packages, or from the whole plan
+-- version) is settled: the link is history now, and no cascade follows it again. Its question too.
+create table kj_0033_settled as
+select i.id from invalidation i join version v on v.id = i.version_id join node n on n.id = v.node_id
+ where n.kind = 'plan' and i.state = 'open' and i.edge_id is not null and i.edge_id not in (select id from kj_0033_edge_moved);
+update invalidation set state = 'cleared', cleared_by = 'settled by migration 0033: its link stays on the plan, as history, since the plan kind is retired (D104)'
+ where id in (select id from kj_0033_settled);
+update query set state = 'answered', answered_by = 'kolab',
+       answer = 'settled by migration 0033: the mark that asked this was on a link that stays on the plan, as history (D104)'
+ where invalidation_id in (select id from kj_0033_settled) and state = 'open';
+
+-- The version's cascade is owed, as any commit's: its variants' rebases, and the catch-up of every
+-- link into the binding, run once Kolab starts (onCommit).
+insert into outbox(id, kind, version_id)
+select '0033o' || lpad((row_number() over (order by new_version))::text, 21, '0'), 'after_commit', new_version
+  from kj_0033_plan where new_version is not null;
 
 -- ---------------------------------------------------------------------------
 -- Work state, events, evidence and review requests: keyed to the binding
@@ -489,6 +538,9 @@ create trigger version_kind_retired before insert on version for each row execut
 -- A binding holds its own work: no plan, and so no rule of one plan per binding (KON5, D104).
 drop index node_one_plan_per_binding;
 
+drop table kj_0033_rejected;
+drop table kj_0033_edge_moved;
+drop table kj_0033_settled;
 drop table kj_0033_added;
 drop table kj_0033_edge;
 drop table kj_0033_moved;

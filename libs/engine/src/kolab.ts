@@ -3957,6 +3957,26 @@ export class Kolab {
   }
 
   /**
+   * A binding version's elements as work reads them (D104): each with its work field, but in a variant
+   * or a fork (a version whose parent is another node's), a work field it inherits unchanged from its
+   * parent is no work of its own: that element reads as a decision here. A variant holds work only on
+   * the elements its own deltas add or change the work of, so it never takes its parent's packages.
+   */
+  private async ownWork(q: Q, v: Pick<VersionRow, 'id' | 'node_id' | 'parent_version_id'>, els?: ElementRow[]): Promise<ElementRow[]> {
+    const all = els ?? await this.elements(v.id, q);
+    if (!v.parent_version_id || !all.some((e) => e.work)) return all;
+    const parent = (await q.query<{ node_id: string }>(`select node_id from version where id = $1`, [v.parent_version_id])).rows[0];
+    if (!parent || parent.node_id === v.node_id) return all;
+    const theirs = new Map((await this.elements(v.parent_version_id, q)).map((e) => [e.element_id, e.work]));
+    return all.map((e) => {
+      const w = theirs.get(e.element_id);
+      if (!e.work || !w || canonicalWork(w) !== canonicalWork(e.work)) return e;
+      const { work: _inherited, ...rest } = e;
+      return rest;
+    });
+  }
+
+  /**
    * PLN2's checks on a binding version's work packages (W5.1a, W5.1d; D98, D104), on its elements'
    * work fields and on the links it will hold once it commits: its own, and those of the version it
    * was built on that its commit carries forward (supersedePrevious: from elements still there, and
@@ -3965,11 +3985,12 @@ export class Kolab {
    */
   private async workChecks(v: VersionRow, passed: CheckResult, q: Q = this.db): Promise<CheckResult> {
     const binding = (await q.query<{ id: string; kolab_id: string }>(`select id, kolab_id from node where id = $1`, [v.node_id])).rows[0];
-    const els = await this.elements(v.id, q);
+    // A variant's or a fork's own work only: what it inherits unchanged is its parent's (D104).
+    const els = await this.ownWork(q, v);
     if (!els.some((e) => e.work)) return passed;
     const live = new Set(els.map((e) => e.element_id));
-    const rows = (await q.query<{ own: boolean; source_element_id: string | null; target_element_id: string | null; target_seq: number; target_name: string; target_kolab: string }>(
-      `select e.source_version_id = $1 as own, e.source_element_id, e.target_element_id, t.seq as target_seq, n.name as target_name, n.kolab_id as target_kolab
+    const rows = (await q.query<{ own: boolean; source_element_id: string | null; target_element_id: string | null; target_seq: number; target_name: string; target_kolab: string; target_node: string }>(
+      `select e.source_version_id = $1 as own, e.source_element_id, e.target_element_id, t.seq as target_seq, n.name as target_name, n.kolab_id as target_kolab, n.id as target_node
          from edge e join version t on t.id = e.target_version_id join node n on n.id = t.node_id
         where e.source_version_id = $1
            or (e.source_version_id = $2 and not exists (select 1 from link_removal r where r.version_id = $1 and ${REMOVES('r', 'e', 't')}))
@@ -3977,7 +3998,7 @@ export class Kolab {
     const links: WorkLink[] = rows
       .filter((l) => l.own || l.source_element_id === null || live.has(l.source_element_id))
       .map((l) => ({
-        source_element_id: l.source_element_id,
+        source_element_id: l.source_element_id, target_element_id: l.target_element_id, into_self: l.target_node === binding.id,
         target: `${l.target_kolab === binding.kolab_id ? '' : `${l.target_kolab}/`}${l.target_name}@${l.target_seq}${l.target_element_id ? `#${l.target_element_id}` : ''}`,
       }));
     const problems = workProblems(els, links);
@@ -6629,7 +6650,7 @@ export class Kolab {
   private async bindingBoard(q: Q, binding: NodeRow, opts: { removed?: boolean } = {}): Promise<BoardPackage[]> {
     const v = (await q.query<VersionRow>(`select * from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [binding.id])).rows[0];
     if (!v) return [];
-    const els = (await this.elements(v.id, q)).filter((e) => e.work);
+    const els = (await this.ownWork(q, v)).filter((e) => e.work);
     const rows = new Map((await q.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1`, [binding.id])).rows.map((r) => [r.element_id, r]));
     const live = new Set(els.map((e) => e.element_id));
     const delivers = await this.deliveries(q, binding, v, live);
@@ -6688,8 +6709,8 @@ export class Kolab {
   }
 
   /**
-   * The bindings of a session's kolab that hold work, by name: those with a work package, removed or
-   * not (D104). Or the one `name` names, which must be a binding, with work or not.
+   * The bindings of a session's kolab that hold work, by name: those with a work package not removed
+   * (D104). Or the one `name` names, which must be a binding, with work or not.
    */
   private async bindingsWithWork(sessionId: string, name?: string): Promise<NodeRow[]> {
     if (name !== undefined) {
@@ -6704,7 +6725,7 @@ export class Kolab {
     const kolab = await this.sessionKolab(sessionId);
     return (await this.db.query<NodeRow>(
       `select ${NODE_COLUMNS} from node n where kolab_id = $1 and kind = 'binding'
-          and exists (select 1 from work_package w where w.binding_node_id = n.id) order by name`, [kolab])).rows;
+          and exists (select 1 from work_package w where w.binding_node_id = n.id and w.removed_in_version_id is null) order by name`, [kolab])).rows;
   }
 
   /** A board package as a reader sees it (WorkItemView). `canPull`: the reader may write the technical layer now (PLN13). */
@@ -6967,7 +6988,7 @@ export class Kolab {
    */
   private async syncWorkIn(tx: Q, signal: Signal, v: VersionRow) {
     const binding = (await tx.query<NodeRow>(`select ${NODE_COLUMNS} from node where id = $1`, [v.node_id])).rows[0];
-    const all = await this.elements(v.id, tx);
+    const all = await this.ownWork(tx, v);
     const els = all.filter((e) => e.work);
     const live = new Set(els.map((e) => e.element_id));
     const rows = new Map((await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 order by w.element_id for update of w`, [v.node_id])).rows.map((r) => [r.element_id, r]));
@@ -7081,7 +7102,7 @@ export class Kolab {
    * `milestone_reopened`). Called wherever a package of the binding changes state.
    */
   private async settleMilestonesIn(tx: Q, binding: NodeRow, v: VersionRow, delivers?: Map<string, Delivery[]>) {
-    const els = await this.elements(v.id, tx);
+    const els = await this.ownWork(tx, v);
     const milestones = els.filter((e) => e.work?.milestone).map((e) => ({ id: e.element_id, members: e.work?.depends_on ?? [] }));
     if (!milestones.length) return;
     const states = new Map((await tx.query<{ element_id: string; state: string }>(

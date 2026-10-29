@@ -8,7 +8,7 @@
 import { expect, test } from '@jest/globals';
 import pg from 'pg';
 import { naturalCompare, sessionKey, type Kolab } from '@konjir/engine';
-import { commitReviewed, els, openKolab, people, rejection, testStore, TEST_KOLAB } from '@konjir/engine/testing';
+import { commitReviewed, els, openKolab, people, rejection, testRoot, testStore, TEST_KOLAB } from '@konjir/engine/testing';
 import { ADMIN_DOER, type ElementInput } from '@konjir/types';
 
 const POSTGRES = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -418,6 +418,72 @@ test('a job splits a package too big for one job: it drafts child packages that 
   ], unlink: [{ sourceElement: 'W1.10', target: 'kj:orders-pg#b3' }], links: [await delivers('W1.10.a', 'b3')] });
   expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.10')).toMatchObject({ milestone: true, ready: false });
   expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.10.a')).toMatchObject({ state: 'todo', ready: true });
+});
+
+test('a variant or a fork of a binding holds work only on the elements its own deltas give a work field: never its parent\'s packages, through its rebases too (D104)', async () => {
+  const { kolab, bob, frank, commitWork, plan } = await planned();
+  const rows = async (node: string) => (await kolab.db.query<{ element_id: string }>(`select element_id from work_package where binding_node_id = $1 order by element_id`, [node])).rows.map((r) => r.element_id);
+  // A variant in the same kolab, on the binding's version with its packages: it takes none of them.
+  await kolab.createNode(bob, 'binding', 'Orders on DynamoDB', 'orders-ddb');
+  await commitReviewed(kolab, bob, frank, 'orders-ddb', { parent: plan, deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, on a table.' }] });
+  expect(await rows('orders-ddb')).toStrictEqual([]);
+  expect((await kolab.listWork(bob)).items.every((i) => i.binding === 'orders-pg')).toBe(true);
+  // A package the parent adds reaches the variant by its rebase, and is still the parent's alone; a
+  // pull needs no binding=, since the variant holds no work.
+  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W3', text: 'Archive cancelled orders.', work: { size: 'S' } }] });
+  await kolab.drainOutbox();
+  const ddb = (await kolab.latestCommitted('orders-ddb'))!;
+  expect((await kolab.elements(ddb.id)).find((e) => e.element_id === 'W3')?.work).toStrictEqual({ size: 'S' });
+  expect(await rows('orders-ddb')).toStrictEqual([]);
+  expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { binding: 'orders-pg' } });
+  // Its own: an element its delta adds with a work field, or one whose work it changes, is its package.
+  await commitReviewed(kolab, bob, frank, 'orders-ddb', { deltas: [
+    { kind: 'add', element: 'D1', text: 'Provision the table.', work: { size: 'M' } },
+    { kind: 'override', element: 'W1.2', work: { size: 'L' } },
+  ] });
+  expect(await rows('orders-ddb')).toStrictEqual(['D1', 'W1.2']);
+  expect((await kolab.listWork(bob, { binding: 'orders-ddb' })).items.map((i) => i.id)).toStrictEqual(['D1', 'W1.2']);
+  expect(await rejection(kolab.pullWork(frank))).toMatch(/has work in bindings orders-ddb, orders-pg: name the one to pull from/);
+
+  // A fork in another kolab takes none of the upstream packages, and an upstream package whose repo
+  // is registered upstream alone never fails its rebase: no repo check, no PLN2 check, on what it inherits.
+  await kolab.createKolab('other', { owner: 'test-org' });
+  await kolab.grant('other', 'alice', 'write', { layers: ['functional'] });
+  await kolab.grant('other', 'eve', 'write', { layers: ['technical'] });
+  await kolab.grant(TEST_KOLAB, 'eve', 'write', { layers: ['technical'] });
+  await kolab.endSession({ actor: 'alice' });
+  const pm2 = await kolab.openSession('alice', 'product', { kolab: 'other' });
+  await kolab.createNode(pm2, 'spec', 'Their orders', 'theirs');
+  await kolab.commit(pm2, 'theirs', { elements: els({ R1: 'Orders can be cancelled.' }) });
+  await kolab.endSession({ actor: 'eve' });
+  const eve2 = await kolab.openSession('eve', 'engineer', { kolab: 'other' });
+  await kolab.createNode(eve2, 'binding', 'Their orders on Postgres', 'orders-fork');
+  await kolab.commit(eve2, 'orders-fork', { parent: (await kolab.latestCommitted('orders-pg'))!.id, deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, ours.' }] });
+  expect(await rows('orders-fork')).toStrictEqual([]);
+  expect((await kolab.listWork(eve2)).items).toStrictEqual([]);
+  const mia = await kolab.openSession('mia', 'engineer');
+  await kolab.registerRepository(mia, { url: 'https://github.com/acme/queue', root_sha: testRoot('d') });
+  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W4', text: 'Queue in its own repository.', work: { repo: 'https://github.com/acme/queue' } }] });
+  await kolab.drainOutbox();
+  const fork = (await kolab.latestCommitted('orders-fork'))!;
+  expect((await kolab.elements(fork.id)).find((e) => e.element_id === 'W4')?.work).toStrictEqual({ repo: 'https://github.com/acme/queue' });
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
+  expect(await rows('orders-fork')).toStrictEqual([]);
+}, 120_000);
+
+test('a binding whose packages are all removed holds no work, so a pull needs no binding=; and an open question on a spec element a package serves blocks it (PLN19, D104)', async () => {
+  const { kolab, product, bob, eve, commitWork, delivers } = await planned();
+  await kolab.createNode(bob, 'binding', 'Orders on Lambda', 'orders-fn');
+  await commitReviewed(kolab, bob, eve, 'orders-fn', { elements: [...els({ f1: 'A function.' }), { id: 'X1', text: 'Deploy it.', work: {} }] });
+  expect(await rejection(kolab.pullWork(bob))).toMatch(/has work in bindings orders-fn, orders-pg/);
+  // X1 becomes a decision: its row stays, flagged removed, and orders-fn holds no work.
+  await commitReviewed(kolab, bob, eve, 'orders-fn', { deltas: [{ kind: 'override', element: 'X1', work: null }] });
+  expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { binding: 'orders-pg', id: 'W1.1' } });
+  // W1.2 serves R2 of the spec directly: a question open on R2 blocks it, its intent unsettled.
+  const spec = (await kolab.latestCommitted('orders'))!.id;
+  await commitWork(bob, { deltas: [], links: [{ ...(await delivers('W1.2', 'b2')), target: spec, targetElement: 'R2' }] });
+  const q = await kolab.raiseQuery(product, 'kj:orders#R2', 'Within a working day, or a calendar day?');
+  expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.2')).toMatchObject({ ready: false, blocked: [{ reason: 'question', on: 'kj:orders@1#R2', query: q }] });
 });
 
 test('a package that becomes a milestone stops its work; one that stops being a milestone is To do (PLN3)', async () => {
