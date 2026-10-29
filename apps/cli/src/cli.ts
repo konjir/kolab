@@ -20,6 +20,10 @@
  *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
  *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
  *                                        -> records the commits carrying the package's Konjir-Work trailer (W5.2a, D98)
+ *   konjir work [--jobs 4] [--once] [--machine M] [--allow-all] [--harness CMD] [--repo URL] [-C dir]
+ *                                        -> sets this machine to work: takes jobs from Kolab and runs one headless
+ *                                           Claude Code per job, in its own worktree (W5.4b, D103)
+ *   konjir status [--json]               -> the kolab's queue, its live jobs and your room under the caps (W5.4b)
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -32,10 +36,12 @@ import { randomBytes } from 'node:crypto';
 const ROLES = ['product', 'engineer'];
 import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
 import { deliverWork, gitIn, registerRepository } from './deliver.js';
+import { formatStatus, runWork, workStatus } from './work.js';
 import { ASK_AGAIN, CHANNEL_CLIENT_NAME, HARNESSES, WrongAgentError, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
-export { canonicalRemote, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
+export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
+export { ALLOWED_TOOLS, DENIED_TOOLS, formatStatus, harnessCommand, heartbeatAfter, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
 export { ASK_AGAIN, WrongAgentError, connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -155,6 +161,18 @@ Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|sum
            Run again, it records only what is new. Kolab itself never reads git.
            konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a
            person with Maintain or Admin (never an agent): registers its repository, pinned by its root commit.
+Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>],
+           signed in as yourself, in a checkout of the kolab's registered repository: sets this machine to work. It takes
+           jobs from Kolab (a review, then a ready work package), up to --jobs at once (4; Kolab caps you at 4 and the
+           kolab at 8), each done by one of your pool agents in its own git worktree at the default branch's head
+           (under ~/.konjir/jobs), by Claude Code run headless on your own model account, with Kolab as its one MCP
+           server and only edits, git, npm, npx, gh and konjir allowed (--allow-all: every permission). A job never
+           merges or deploys. It renews each job's lease, ends the job when its harness exits, keeps a worktree with
+           work not pushed, and waits while nothing is ready; Ctrl-C stops every job and gives back what it held.
+           --once takes one round and exits. --machine names this machine (its hostname); --harness (or
+           KONJIR_HARNESS) runs another command in Claude Code's place.
+           konjir status [--json]: the kolab's queue by kind, its live jobs (person, machine, agent, item, since) and
+           your room under the caps.
 Pages:     every list (and a long read) returns a page and next; while next isn't null, call it again with
            cursor=<next>, e.g. konjir list_queries cursor=… (limit=<n> sets the page, at most 200)
 Push:      konjir watch prints your inbox, then a JSON line each time it changes (questions, notes,
@@ -449,6 +467,52 @@ export async function main(argv: string[]) {
     });
     try {
       await done;
+    } finally {
+      stored?.releaseLock();
+      await client.close();
+    }
+    return;
+  }
+  if (cmd === 'work' && rest[0] !== 'deliver') {
+    const stop = new AbortController();
+    let signals = 0;
+    const onSignal = () => {
+      // The first stops every job and ends it as stopped; a second leaves at once.
+      if (signals++) process.exit(130);
+      console.error('konjir work: stopping every job (Ctrl-C again to leave at once)');
+      stop.abort();
+    };
+    process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
+    try {
+      const args = [...rest];
+      const at = args.indexOf('-C');
+      const dir = at >= 0 ? args.splice(at, 2)[1] : process.cwd();
+      if (dir === undefined) throw new Error('-C names a directory');
+      const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
+      const jobs = flag(args, 'jobs');
+      const opts = { once: on('once'), allowAll: on('allow-all'), machine: flag(args, 'machine'), harness: flag(args, 'harness'), repo: flag(args, 'repo'),
+        ...(jobs !== undefined ? { jobs: Number(jobs) } : {}) };
+      if (args.length) throw new Error(`konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>]: unknown ${args.join(' ')}`);
+      const callIt = (verb: string, a: Record<string, unknown>) => call(client, verb, a);
+      const reports = await runWork({
+        call: callIt, git: gitIn(dir), signal: stop.signal, jobsDir: process.env.KONJIR_JOBS_DIR || undefined,
+        // The person's inbox changing (a review requested, say) looks for work at once; polling covers the rest.
+        pushed: (wake) => { void watch(client, () => wake()).catch(() => undefined); },
+      }, { ...opts, url });
+      console.log(JSON.stringify(reports, null, 2));
+    } finally {
+      process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal);
+      stored?.releaseLock();
+      await client.close();
+    }
+    return;
+  }
+  if (cmd === 'status') {
+    try {
+      const json = rest.includes('--json');
+      if (rest.some((a) => a !== '--json')) throw new Error(`konjir status [--json]: unknown ${rest.filter((a) => a !== '--json').join(' ')}`);
+      const s = await workStatus((verb, a) => call(client, verb, a));
+      console.log(json ? JSON.stringify(s, null, 2) : formatStatus(s));
     } finally {
       stored?.releaseLock();
       await client.close();
