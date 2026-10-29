@@ -305,9 +305,9 @@ test('an element-scope link into a work package sees a change to its work fields
   const ctx = await planned();
   const { kolab, engineer } = ctx;
   const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.', work: { done_when: 'It is built.' } }, { id: 'W2', text: 'Ship it.', work: {} }, { id: 'W3', text: 'Tell people.', work: {} }])).id;
-  // W2 relies on W1, and W3 on b1 (a decision, with no work fields), and b2 on W1: links written
-  // before D99, which refuses new ones between packages; those already written keep working.
-  for (const [id, from, to] of [['old-w2', 'W2', 'W1'], ['old-w3', 'W3', 'b1'], ['old-b2', 'b2', 'W1']]) {
+  // W3 relies on b1 (a decision, with no work fields), and b2, a decision, on W1: links between
+  // packages are refused (D99), but a decision may rely on a package.
+  for (const [id, from, to] of [['old-w3', 'W3', 'b1'], ['old-b2', 'b2', 'W1']]) {
     const fp = ((await kolab.resolveIn(v1, to, null)) as { fingerprint: string }).fingerprint;
     await kolab.db.query(`insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
                           values ($1, 'dependency', $2, $3, $2, $4, $5, 'bob')`, [id, v1, from, to, fp]);
@@ -315,9 +315,9 @@ test('an element-scope link into a work package sees a change to its work fields
   // A link to an element with no work fields is pinned to its text alone, as it always was.
   const pinned = (await kolab.db.query<{ target_fingerprint: string }>(`select target_fingerprint from edge where id = 'old-w3'`)).rows[0];
   expect(pinned.target_fingerprint).toBe(fingerprint('A cancel endpoint.'));
-  // Only W1's done-when changes: W2's and b2's links to it are marked changed; W3's to b1 holds.
+  // Only W1's done-when changes: b2's link to it is marked changed; W3's to b1 holds.
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W1', work: { done_when: 'It is built and tested.' } }] });
-  expect((await marksOn(kolab, 'orders-pg')).map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['W2', 'changed'], ['b2', 'changed']]);
+  expect((await marksOn(kolab, 'orders-pg')).map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['b2', 'changed']]);
 });
 
 test('a link from an element that has become a milestone is refused, whichever comes first: the link or the commit (review L4)', async () => {
@@ -383,4 +383,20 @@ test('a plan node is made, drafted and linked from no more: the kind is retired 
   // The database refuses it for every role.
   expect(await rejection(kolab.db.query(`insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ('p', 'p', 'plan', 'technical', 'P', 'kolab', 'orders-pg', 'bob')`)))
     .toMatch(/the plan kind is retired \(D104\)/);
+});
+
+test('no work package links another, over the whole version: a decision a package links that becomes a work package is refused at submit, with the link carried or its own (D99, D104)', async () => {
+  const ctx = await planned();
+  const { kolab, engineer } = ctx;
+  const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.', work: {} }], [['W1', 'b1']])).id;
+  // b1, a decision W1 relies on, gains a work field: the link W1 carries is now between two packages.
+  const r = await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', work: {} }] }));
+  expect(r).toMatchObject({ ok: false });
+  expect(r.note).toBe("Work checks failed (PLN2): W1 links orders-pg@2#b1, which is a work package of this version: work packages don't link to each other (D99); name it in W1's depends_on, and remove the link.");
+  await kolab.abandon(engineer, r.version);
+  // Removing the link and naming b1 in W1's depends_on instead: it passes.
+  expect(await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [
+    { kind: 'override', element: 'b1', work: {} }, { kind: 'override', element: 'W1', work: { depends_on: ['b1'] } },
+  ], unlink: [{ sourceElement: 'W1', target: 'kj:orders-pg#b1' }] }))).toMatchObject({ ok: true });
+  void v1;
 });

@@ -108,16 +108,20 @@ export function canonicalWork(work: WorkFields): string {
   return JSON.stringify(canonical);
 }
 
-/** A link from a binding version, as its work checks see it: carried forward from its base, or its own. */
-export interface WorkLink { source_element_id: string | null; target: string }
+/**
+ * A link from a binding version, as its work checks see it: carried forward from its base, or its own;
+ * `into_self` when it targets an element of the binding itself.
+ */
+export interface WorkLink { source_element_id: string | null; target: string; target_element_id?: string | null; into_self?: boolean }
 
 /**
  * PLN2's checks on a binding version's work packages (D98, D104), beyond the structural ones every
  * version passes (no empty or duplicate element), run at submit: every Depends on names a work
  * package of the same version (an element with a work field, not a decision), and not itself; no
  * cycle in Depends on; a milestone depends on its members and has no work of its own, so links
- * nothing (PLN3); only a milestone carries a target date. Each problem is named in words a refusal
- * can quote; none means the version goes on to review.
+ * nothing (PLN3); only a milestone carries a target date; and no work package links another of
+ * the version's, however the link came (D99): a decision it linked may have become a work package.
+ * Each problem is named in words a refusal can quote; none means the version goes on to review.
  */
 export function workProblems(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[]): string[] {
   const problems: string[] = [];
@@ -158,6 +162,14 @@ export function workProblems(elements: { element_id: string; work?: WorkFields |
   for (const l of links) {
     if (!l.source_element_id || !work.get(l.source_element_id)?.milestone) continue;
     const p = `${l.source_element_id} is a milestone, and links ${l.target}: a milestone has no work of its own (PLN2, PLN3); a work package it depends on serves or relies on it`;
+    if (!said.has(p)) { said.add(p); problems.push(p); }
+  }
+  // A work package never links another of its binding's (D99): what one needs of another is its depends_on.
+  for (const l of links) {
+    const from = l.source_element_id;
+    if (!l.into_self || !from || !l.target_element_id || from === l.target_element_id) continue;
+    if (!work.has(from) || work.get(from)!.milestone || !work.has(l.target_element_id)) continue;
+    const p = `${from} links ${l.target}, which is a work package of this version: work packages don't link to each other (D99); name it in ${from}'s depends_on, and remove the link`;
     if (!said.has(p)) { said.add(p); problems.push(p); }
   }
   return problems;
