@@ -138,7 +138,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       // Most recently changed first, so a case file just argued or ruled on is always among them.
       cases: await this.kolab.casesFor(session, { actor: me.actor, limit: 20, touched: true }),
       // The work package you hold here, with its lease, and the newest changes others made to your
-      // work: a verdict, a lease that lapsed, a reassignment, a removal from the plan (PLN15, PLN16, D98).
+      // work: a verdict, a lease that lapsed, a reassignment, a removal from its binding (PLN15, PLN16, D98).
       work: await this.kolab.workNotices(session),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };

@@ -100,26 +100,30 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025), before admins who are people (0026), before typed konstruct kinds (0027), before work-package fields (0029; 0028's columns go with oauth_request), before work state and leases (0030), before work review and evidence (0031) and before repositories (0032),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025), before admins who are people (0026), before typed konstruct kinds (0027), before work-package fields (0029; 0028's columns go with oauth_request), before work state and leases (0030), before work review and evidence (0031), before repositories (0032) and before work in the binding (0033),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop table work_package_moved;
+      drop trigger node_kind_retired on node;
+      drop trigger version_kind_retired on version;
+      drop function kj_plan_retired();
       drop table evidence;
       drop table repository;
       drop function kj_evidence_fixed(), kj_evidence_pinned(), kj_repository_binding(), kj_repository_fixed();
       alter table review_request drop constraint review_request_work_kolab_fkey, drop constraint review_request_subject;
       drop index one_open_work_request_per_reviewer, review_request_work;
-      alter table review_request drop column plan_node_id, drop column element_id;
+      alter table review_request drop column binding_node_id, drop column element_id;
       alter table review_request alter column version_id set not null;
       drop table work_event, work_package;
       drop function kj_work_kolab(), kj_work_package_kept(), kj_work_event_fixed();
       alter table kolab drop column work_lease_s;
-      drop trigger element_work_plan_only on element;
-      drop trigger delta_work_plan_only on delta;
-      drop function kj_element_work_plan_only();
+      drop trigger element_work_binding_only on element;
+      drop trigger delta_work_binding_only on delta;
+      drop function kj_element_work_binding_only();
       alter table element drop constraint element_work_valid, drop column work;
       alter table delta drop constraint delta_work_valid, drop column work;
       drop function kj_work_valid(jsonb);
@@ -131,7 +135,7 @@ test('a database from the previous release is migrated on open', async () => {
       drop function kj_node_kind_fixed();
       drop trigger node_parent_kind on node;
       drop function kj_node_parent_kind();
-      drop index node_one_spec_per_kolab, node_one_plan_per_binding, node_parent;
+      drop index node_one_spec_per_kolab, node_parent;
       alter table node drop constraint node_parent_given, drop constraint node_parent_kolab_fkey, drop constraint node_layer_of_kind;
       alter table node drop column parent_node_id;
       alter table node drop constraint node_kind_check;

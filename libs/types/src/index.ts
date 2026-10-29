@@ -136,17 +136,20 @@ export const LAYERS = ['functional', 'technical'] as const;
 export type Layer = typeof LAYERS[number];
 /**
  * A node's kind, fixed when it is made and checked by the database (D77, D95; migration 0027's
- * node_kind_check): a kolab's one spec (KON1), its prototypes (KON2, D79), its bindings (KON4) and
- * each binding's one plan (KON5), whose elements are its work packages. Implementation is a
- * repository, not a node (KON7).
+ * node_kind_check): a kolab's one spec (KON1), its prototypes (KON2, D79) and its bindings (KON4),
+ * which hold their own work: a work package is a binding element with a work field (KON5, D104).
+ * Implementation is a repository, not a node (KON7). `plan` is retired (D104, migration 0033): plans
+ * made before it are kept, read-only, as history, and no new one is made.
  */
 export const KINDS = ['spec', 'prototype', 'binding', 'plan'] as const;
 export type Kind = typeof KINDS[number];
-/** A binding's plan: a version of one commits after structural checks, without review (VER3, PLN2, D26). */
-export const PLAN_KINDS: readonly Kind[] = ['plan'];
+/** The kinds no node is made of any more, though older nodes keep them (D104). */
+export const RETIRED_KINDS: readonly Kind[] = ['plan'];
+/** Why a plan isn't made, or written, any more (D104), in the words a refusal uses. */
+export const PLAN_RETIRED = 'the plan kind is retired (D104): work is planned in the binding, where a work package is a binding element with a work field (work: { done_when, depends_on, size, milestone, target_date, repo }), and every other element is a decision';
 /**
  * The kind of node each kind names as its parent, set when it is made and never changed (D78): a
- * binding names its kolab's spec, and a plan its binding. A spec and a prototype name none.
+ * binding names its kolab's spec, and a plan, made before D104, its binding. A spec and a prototype name none.
  */
 export const PARENT_KIND: Partial<Record<Kind, Kind>> = { binding: 'spec', plan: 'binding' };
 /**
@@ -161,15 +164,15 @@ export const variantKindAllowed = (child: Kind, parent: Kind) => child === paren
  * and scripts written before W4.1; undefined for anything else.
  */
 export function retiredKind(kind: unknown): string | undefined {
-  if (kind === 'wbs') return 'wbs is now plan (D77): create it with kind plan, naming the binding it plans as its parent';
+  if (kind === 'wbs') return `wbs became plan (D77), and ${PLAN_RETIRED}`;
   if (kind === 'functional_spec') return 'functional_spec is now spec (D95): create it with kind spec';
   if (kind === 'technical_binding') return 'technical_binding is now binding (D95): create it with kind binding';
-  if (kind === 'work_package') return 'a work package is an element of a plan, not a node (KON5, D77): add it to the binding\'s plan (kind plan)';
+  if (kind === 'work_package') return 'a work package is an element of a binding with a work field, not a node (KON5, D104): add it to the binding';
   if (kind === 'implementation') return 'implementation is a repository, not a node (KON7, D77): a work package names the repository it is done in';
   return undefined;
 }
 /** Why `kind` isn't one, in the words a refusal uses. */
-export const notAKind = (kind: unknown) => retiredKind(kind) ?? `a node's kind is one of ${KINDS.join(', ')} (D77, D95), not ${String(kind)}`;
+export const notAKind = (kind: unknown) => retiredKind(kind) ?? `a node's kind is one of ${KINDS.filter((k) => !RETIRED_KINDS.includes(k)).join(', ')} (D77, D95, D104), not ${String(kind)}`;
 /** What each kind is called in prose. */
 export const KIND_WORDS: Record<Kind, string> = { spec: 'spec', prototype: 'prototype', binding: 'binding', plan: 'plan' };
 export const DELTA_KINDS = ['add', 'override', 'remove'] as const;
@@ -263,12 +266,14 @@ export type WorkSize = typeof WORK_SIZES[number];
 /** The fields a work package may carry, in the order Kolab stores and shows them (migration 0029's kj_work_valid). */
 export const WORK_FIELDS = ['done_when', 'depends_on', 'size', 'milestone', 'target_date', 'repo'] as const;
 /**
- * A work package's fields (PLN1, PLN3, D98), on an element of a plan and nowhere else (migration
- * 0029): its definition of done, the work packages of the same plan version it depends on (by
- * element id), its size, whether it is a milestone (no work of its own: its members are what it
- * depends on), a milestone's target date (YYYY-MM-DD; only a milestone carries one, PLN2), and the
- * repository it is done in, when not its binding's own (KON7). What it delivers is not a field: each
- * Delivers is a dependency link to a binding element (PLN1).
+ * A work package's fields (PLN1, PLN3, D98, D104), on an element of a binding and nowhere else
+ * (migrations 0029, 0033): its definition of done, the work packages of the same binding version it
+ * depends on (by element id), its size, whether it is a milestone (no work of its own: its members
+ * are what it depends on), a milestone's target date (YYYY-MM-DD; only a milestone carries one,
+ * PLN2), and the repository it is done in, when not its binding's own (KON7). An element with a work
+ * field is a work package, `{}` for one whose fields are still to be given; one without is a decision.
+ * What it serves and relies on are not fields: they are dependency links, into the spec or its own
+ * binding (PLN1).
  */
 export interface WorkFields {
   done_when?: string; depends_on?: string[]; size?: WorkSize; milestone?: boolean; target_date?: string; repo?: string;
@@ -280,7 +285,7 @@ export interface WorkFields {
 export const WORK_STATES = ['todo', 'in_progress', 'in_review', 'done'] as const;
 export type WorkState = typeof WORK_STATES[number];
 /**
- * What a work package's event records (PLN4, PLN5): its plan adding, removing or restoring it; a
+ * What a work package's event records (PLN4, PLN5): its binding adding, removing or restoring it; a
  * pull, a release, a reassignment and a lease that lapsed (PLN14, PLN15); evidence, submission,
  * review and reopening (PLN16, PLN10, W5.1c and W5.2); and a milestone Kolab finds Done, or no
  * longer Done (PLN3). Migration 0030's work_event_kind_check.
@@ -337,8 +342,8 @@ export interface RepositoryView {
 /** A kolab's lease on In progress work (PLN15), in minutes: 30 by default, from 1 to 1,440 (a day). */
 export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;
 /**
- * Why a work package is blocked (PLN19, as D98 amends it): a work package it depends on isn't
- * Done, or an open question or case file sits on a binding element it delivers. A session that
+ * Why a work package is blocked (PLN19, as D98 and D104 amend it): a work package it depends on
+ * isn't Done, or an open question or case file sits on it or on an element it serves or relies on. A session that
  * holds only Read is told neither an open case file nor a question a mark raised (0013, 0022; D58).
  */
 export type WorkBlock =
@@ -347,8 +352,8 @@ export type WorkBlock =
   | { reason: 'case_file'; on: string; case: string };
 /** One work package on the board (konjir_list_work): what it is, where it stands, and whether it can be pulled. */
 export interface WorkItemView {
-  /** Its address: kj:<plan>#<id> in the reader's kolab. */
-  work: string; plan: string; id: string; text: string;
+  /** Its address: kj:<binding>#<id> in the reader's kolab. */
+  work: string; binding: string; id: string; text: string;
   state: WorkState;
   /** Who holds it, or held it last (null for To do, and for a milestone). */
   assignee: string | null;
@@ -359,7 +364,7 @@ export interface WorkItemView {
   blocked: WorkBlock[];
   /** To do, not blocked and not a milestone, and the reader may write the technical layer (PLN13). */
   ready: boolean;
-  /** Removed from the plan (PLN4): the plan version that removed it. Never ready. */
+  /** Removed from its binding (PLN4), or made a decision: the version that removed it (a plan's, before D104). Never ready. */
   removed_in?: string;
   /** Done on submission with no reviewer (PLN16). */
   unreviewed?: boolean;
@@ -369,13 +374,13 @@ export interface WorkItemView {
 /** One event of a work package (PLN5), oldest first. */
 export interface WorkEventView {
   id: string; kind: WorkEventKind; from: WorkState | null; to: WorkState | null; actor: string; at: string;
-  /** The plan version it stood in. */
-  plan_version: string;
-  /** The binding elements it delivers, at the versions the event concerned. */
+  /** The version it stood in: its binding's (a plan's, for an event before D104, migration 0033). */
+  version: string;
+  /** The elements it serves and relies on, at the versions the event concerned. */
   concerned: { address: string; version_id: string | null; fingerprint: string | null }[];
   note: string | null;
 }
-/** An element as a draft gives it: `work` only on a plan's elements (D98). */
+/** An element as a draft gives it: `work` only on a binding's elements, its work packages (D98, D104). */
 export interface ElementInput { id?: string; text: string; parent?: string; work?: WorkFields | null }
 /**
  * A change to one element. On an add or an override, `work` replaces the element's work fields
@@ -400,7 +405,7 @@ export interface ElementRow {
    * with none keeps the fingerprint it always had, and a change to a done-when is a change.
    */
   fingerprint: string;
-  /** A plan element's work fields (D98); absent on every other element, and on a plan element with none. */
+  /** A work package's fields (D98, D104): present on a binding's work packages (`{}` for one with none yet), absent on every other element. */
   work?: WorkFields;
 }
 export interface VersionRow {
@@ -463,7 +468,7 @@ export type GateResult = ReviewVerdict & {
 
 /**
  * A review request as a reviewer's inbox shows it (VER17): its subject is a version (kj:<node>@<seq>)
- * or a work package (kj:<plan>#<id>), and `subject_kind` says which. A work package's author is its
+ * or a work package (kj:<binding>#<id>), and `subject_kind` says which. A work package's author is its
  * assignee.
  */
 export interface ReviewRequestView {

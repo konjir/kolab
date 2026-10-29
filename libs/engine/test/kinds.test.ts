@@ -1,12 +1,12 @@
-// Typed konstruct kinds (W4.1; KON1–KON6, KON8; D77–D79): a kolab holds one spec, each binding
-// names its spec and each plan its binding, element links point inside that parent, a node's layer
+// Typed konstruct kinds (W4.1, W5.1d; KON1–KON6, KON8; D77–D79, D104): a kolab holds one spec, each
+// binding names its spec and holds its own work (no plan is made), element links point inside that parent, a node's layer
 // follows from its kind, and a prototype's screens are marked when the requirement they show
 // changes. Kolab refuses each break, saying what to do, and the database refuses it for every role
 // (migration 0027).
 import { expect, test } from '@jest/globals';
 import { sessionKey } from '@konjir/engine';
 import { TEST_KOLAB, els, marksOn, people, rejection, setup } from '@konjir/engine/testing';
-import { KINDS, LAYER_OF_KIND, PARENT_KIND } from '@konjir/types';
+import { KINDS, LAYER_OF_KIND, PARENT_KIND, PLAN_RETIRED, RETIRED_KINDS } from '@konjir/types';
 
 /** The kolab's spec with two requirements, and a binding of it, committed. */
 async function specAndBinding() {
@@ -29,8 +29,9 @@ const asAgent = (kolab: Awaited<ReturnType<typeof setup>>['kolab'], session: str
     await tx.query(sql, params);
   });
 
-test('the kinds are four, each in the layer it fixes, and the parent kinds are a binding\'s spec and a plan\'s binding (D77, D78, KON8)', () => {
+test('the kinds are four, each in the layer it fixes, and the parent kinds are a binding\'s spec and a plan\'s binding; plan is retired (D77, D78, KON8, D104)', () => {
   expect([...KINDS]).toStrictEqual(['spec', 'prototype', 'binding', 'plan']);
+  expect([...RETIRED_KINDS]).toStrictEqual(['plan']);
   expect(LAYER_OF_KIND).toStrictEqual({ spec: 'functional', prototype: 'functional', binding: 'technical', plan: 'technical' });
   expect(PARENT_KIND).toStrictEqual({ binding: 'spec', plan: 'binding' });
 });
@@ -84,7 +85,7 @@ test('a binding names the spec it binds, its kolab\'s one spec, set when it is m
     .toMatch(/nowhere\/orders is no spec of kolab test/);
   // A spec and a prototype name none.
   expect(await rejection(kolab.createNode(product, 'prototype', 'Screens', 'y', { parent: 'orders' })))
-    .toBe('GateError: a prototype names no parent: a binding names its spec, and a plan its binding (D78)');
+    .toBe('GateError: a prototype names no parent: a binding names its spec (D78)');
   // The database: a binding with no parent, or one that isn't a spec, or another kolab's.
   const insert = (id: string, kind: string, layer: string, parent: string | null, kolab_ = TEST_KOLAB) => kolab.db.query(
     `insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ($1, $1, $2, $3, 'X', $4, $5, 'admin')`, [id, kind, layer, kolab_, parent]);
@@ -95,45 +96,28 @@ test('a binding names the spec it binds, its kolab\'s one spec, set when it is m
   expect(await rejection(insert('b0', 'binding', 'technical', 'orders', 'other'))).toMatch(/node_parent_kolab_fkey|no spec of its kolab/);
 });
 
-test('a binding has at most one plan, which names it, and starts without one; with several bindings the plan names its own (D78, KON5, D96)', async () => {
+test('a binding holds its own work: no plan is made any more, by Kolab or by any role in the database (KON5, D104)', async () => {
   const { kolab, engineer } = await specAndBinding();
-  // The kolab's only binding, by default.
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  expect((await kolab.listNodes('plan', TEST_KOLAB)).map((n) => [n.name, n.layer, n.parent])).toStrictEqual([['orders-plan', 'technical', 'orders-pg']]);
-  expect(await rejection(kolab.createNode(engineer, 'plan', 'Another plan', 'plan-2')))
-    .toBe('GateError: binding orders-pg already has its plan, orders-plan, and a binding has at most one (KON5, D96)');
-  await kolab.createNode(engineer, 'binding', 'On DynamoDB', 'orders-ddb');
-  // Two bindings: Kolab never picks one.
-  expect(await rejection(kolab.createNode(engineer, 'plan', 'Which?', 'plan-2')))
-    .toBe('GateError: a plan names the binding it plans (D78), and kolab test holds 2 bindings: name one with parent=<binding> (orders-ddb, orders-pg)');
-  expect(await rejection(kolab.createNode(engineer, 'plan', 'Of the spec', 'plan-2', { parent: 'orders' })))
-    .toMatch(/a plan names the binding it plans, in its own kolab \(D78\), and orders is no binding of kolab test: its bindings are orders-ddb, orders-pg/);
-  await kolab.createNode(engineer, 'plan', 'DynamoDB plan', 'ddb-plan', { parent: 'orders-ddb' });
-  // The database holds to one plan per binding, for every role, and to a plan's parent being a binding.
+  expect(await rejection(kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan')))
+    .toBe(`GateError: ${PLAN_RETIRED}. Draft the work packages in the binding itself`);
+  expect(await kolab.listNodes('plan', TEST_KOLAB)).toStrictEqual([]);
   const insert = (id: string, parent: string) => kolab.db.query(
     `insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ($1, $1, 'plan', 'technical', 'X', $2, $3, 'admin')`, [id, TEST_KOLAB, parent]);
-  expect(await rejection(insert('plan-3', 'orders-pg'))).toMatch(/node_one_plan_per_binding/);
-  expect(await rejection(insert('plan-3', 'orders'))).toMatch(/a plan names the binding it plans \(D78\), and orders is no binding of its kolab/);
-});
-
-test('two plans of one binding created at once: one is made, and the other is refused', async () => {
-  const { kolab, engineer } = await specAndBinding();
-  await people(kolab, 'erin', { layers: ['technical'] });
-  const erin = await kolab.openSession('erin', 'engineer');
-  const made = await Promise.allSettled([kolab.createNode(engineer, 'plan', 'A', 'a'), kolab.createNode(erin, 'plan', 'B', 'b')]);
-  expect(made.filter((m) => m.status === 'fulfilled')).toHaveLength(1);
-  expect(String((made.find((m) => m.status === 'rejected') as PromiseRejectedResult).reason)).toMatch(/^GateError: binding orders-pg already has its plan/);
+  expect(await rejection(insert('plan-3', 'orders-pg'))).toMatch(/node: the plan kind is retired \(D104\)/);
+  // Its work packages are its own elements, with a work field.
+  await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }), { id: 'W1', text: 'Build the cancel endpoint.', work: {} }] });
+  expect((await kolab.listWork(engineer)).items.map((i) => [i.work, i.binding])).toStrictEqual([['kj:orders-pg#W1', 'orders-pg']]);
 });
 
 test('a node\'s layer follows from its kind, and its kind, layer and parent never change (D77, KON8)', async () => {
   const { kolab, product, engineer } = await specAndBinding();
   // The engine fixes the layer from the kind, and the role check follows it.
-  expect(await rejection(kolab.createNode(product, 'plan', 'Plan', 'p'))).toMatch(/RoleError/);
+  expect(await rejection(kolab.createNode(product, 'binding', 'Binding', 'p'))).toMatch(/RoleError/);
   expect(await rejection(kolab.createNode(engineer, 'prototype', 'Screens', 'ui'))).toMatch(/RoleError/);
-  // A kind Kolab once took points to what replaces it (D77).
-  expect(await rejection(kolab.createNode(engineer, 'wbs' as never, 'Old label', 'w'))).toBe('GateError: wbs is now plan (D77): create it with kind plan, naming the binding it plans as its parent');
-  expect(await rejection(kolab.createNode(engineer, 'work_package' as never, 'Old label', 'w'))).toMatch(/a work package is an element of a plan, not a node \(KON5, D77\)/);
-  expect(await rejection(kolab.createNode(engineer, 'nonsense' as never, 'X', 'w'))).toBe('GateError: a node\'s kind is one of spec, prototype, binding, plan (D77, D95), not nonsense');
+  // A kind Kolab once took points to what replaces it (D77, D104).
+  expect(await rejection(kolab.createNode(engineer, 'wbs' as never, 'Old label', 'w'))).toBe(`GateError: wbs became plan (D77), and ${PLAN_RETIRED}`);
+  expect(await rejection(kolab.createNode(engineer, 'work_package' as never, 'Old label', 'w'))).toMatch(/a work package is an element of a binding with a work field, not a node \(KON5, D104\)/);
+  expect(await rejection(kolab.createNode(engineer, 'nonsense' as never, 'X', 'w'))).toBe('GateError: a node\'s kind is one of spec, prototype, binding (D77, D95, D104), not nonsense');
   const insert = (id: string, kind: string, layer: string) => kolab.db.query(
     `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ($1, $1, $2, $3, 'X', $4, 'admin')`, [id, kind, layer, TEST_KOLAB]);
   expect(await rejection(insert('u1', 'prototype', 'technical'))).toMatch(/node_layer_of_kind/);
@@ -147,27 +131,17 @@ test('a node\'s layer follows from its kind, and its kind, layer and parent neve
   expect(await rejection(kolab.db.query(`update node set kind = 'spec' where id = 'ui'`))).toMatch(/never change once written|node_one_spec_per_kolab/);
 });
 
-test('a plan\'s work packages deliver its own binding\'s elements, never the spec; a binding serves its own spec (D78, KON6)', async () => {
-  const { kolab, engineer, s1, b1 } = await specAndBinding();
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  const w1 = await kolab.commit(engineer, 'orders-plan', { elements: els({ W1: 'Build the cancel endpoint.', W2: 'Build the queue.' }) });
-  // Delivers: its own binding's element.
-  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: b1, targetElement: 'b1' });
-  // Never the spec, whatever the link's kind.
-  for (const kind of ['dependency', 'derivation', 'equivalence'] as const) {
-    expect(await rejection(kolab.link(engineer, { kind, source: w1, sourceElement: 'W2', target: s1, targetElement: 'R2' })))
-      .toBe('GateError: orders-plan is a plan: its work packages deliver elements of its own binding, never the spec (KON6, D78). Link the binding element that serves it');
-  }
-  // Nor another binding's.
-  await kolab.createNode(engineer, 'binding', 'On DynamoDB', 'orders-ddb');
-  const d1 = await kolab.commit(engineer, 'orders-ddb', { elements: els({ d1: 'A table.' }) });
-  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: d1, targetElement: 'd1' })))
-    .toMatch(/orders-plan is a plan: its work packages deliver elements of its own binding, never binding orders-ddb/);
-  // A work package depends on another of its plan's own through its depends_on work field, not a
-  // new link (D99): the link is refused, pointing there.
-  const w2 = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build the cancel endpoint.', W2: 'Build the queue.' }) });
-  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: w2, sourceElement: 'W2', target: w1, targetElement: 'W1' })))
-    .toMatch(/^GateError: a plan's work packages don't link to each other \(D99\): say what W2 needs in its work field instead, work: \{ depends_on: \["W1"\] \}/);
+test('a binding\'s work packages serve its own spec and rely on its decisions; one never links another; a binding serves its own spec (D78, D99, KON6, D104)', async () => {
+  const { kolab, engineer, s1 } = await specAndBinding();
+  const w1 = await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }),
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }] });
+  // A work package serves its spec's requirement, and relies on its binding's decision.
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: s1, targetElement: 'R1' });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: w1, targetElement: 'b1' });
+  // A work package depends on another through its depends_on work field, not a new link (D99):
+  // the link is refused, pointing there.
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: w1, targetElement: 'W1' })))
+    .toMatch(/^GateError: work packages don't link to each other \(D99\): say what W2 needs in its work field instead, work: \{ depends_on: \["W1"\] \}/);
   // A binding serves its own spec, and no other kolab's.
   await kolab.createKolab('other', { owner: 'test-org' });
   await kolab.grant('other', 'carol', 'write', { layers: ['functional'] });
@@ -175,37 +149,39 @@ test('a plan\'s work packages deliver its own binding\'s elements, never the spe
   const carol = await kolab.openSession('carol', 'product', { kolab: 'other' });
   await kolab.createNode(carol, 'spec', 'Their spec', 'theirs');
   const t1 = await kolab.commit(carol, 'theirs', { elements: els({ T1: 'Theirs.' }) });
-  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b2', target: t1, targetElement: 'T1' })))
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: t1, targetElement: 'T1' })))
     .toBe('GateError: orders-pg is a binding of its kolab\'s spec, and serves that spec alone, not other/theirs (D78)');
   // But it may rely on another kolab's prototype or binding: only Serves is held to the parent.
   await kolab.createNode(carol, 'prototype', 'Their screens', 'their-ui');
   const u1 = await kolab.commit(carol, 'their-ui', { elements: els({ U1: 'https://example.com/their-ui' }) });
-  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b2', target: u1, targetElement: 'U1' });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'b2', target: u1, targetElement: 'U1' });
 });
 
 test('the database refuses a link outside the parent for every role, an agent\'s raw insert and Kolab\'s own login included (D78)', async () => {
-  const { kolab, engineer, s1, b1 } = await specAndBinding();
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  const w1 = await kolab.commit(engineer, 'orders-plan', { elements: els({ W1: 'Build it.' }) });
-  const draft = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it.' }) });
-  const fp = (await kolab.db.query<{ fingerprint: string }>(`select fingerprint from element where version_id = $1 and element_id = 'R1'`, [s1])).rows[0].fingerprint;
+  const { kolab, engineer, b1 } = await specAndBinding();
+  await kolab.createKolab('other', { owner: 'test-org' });
+  await kolab.grant('other', 'carol', 'write', { layers: ['functional'] });
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'other' });
+  await kolab.createNode(carol, 'spec', 'Their spec', 'theirs');
+  const t1 = await kolab.commit(carol, 'theirs', { elements: els({ T1: 'Theirs.' }) });
+  const draft = await kolab.draft(engineer, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }) });
+  const fp = (await kolab.db.query<{ fingerprint: string }>(`select fingerprint from element where version_id = $1 and element_id = 'T1'`, [t1])).rows[0].fingerprint;
   const edge = `insert into edge(id, kind, source_version_id, source_element_id, target_version_id, target_element_id, target_fingerprint, held_by)
-                values ($1, 'dependency', $2, 'W1', $3, 'R1', $4, 'bob')`;
-  // As the engineer's own agent session, past row-level security: refused by the trigger.
-  expect(await rejection(asAgent(kolab, engineer, edge, ['e1', draft, s1, fp]))).toMatch(/a plan's links deliver its own binding's elements, never the spec or another node \(KON6, D78\); orders-plan targets orders/);
-  expect(await rejection(kolab.db.query(edge, ['e2', w1, s1, fp]))).toMatch(/KON6, D78/);
-  // Re-pinning a link onto another node is refused already (0017); onto the same node it is fine.
-  const ok = await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: b1, targetElement: 'b1' });
-  expect(await rejection(kolab.db.query(`update edge set target_version_id = $2 where id = $1`, [ok, s1]))).toMatch(/re-pinned only to another version of the node it names|KON6/);
+                values ($1, 'dependency', $2, 'b1', $3, 'T1', $4, 'bob')`;
+  // As the engineer's own agent session, past row-level security: refused, as another kolab's version it doesn't read.
+  expect(await rejection(asAgent(kolab, engineer, edge, ['e1', draft, t1, fp]))).toMatch(/row-level security|a binding serves its own spec/);
+  // Kolab's own login: refused by the trigger.
+  expect(await rejection(kolab.db.query(edge, ['e2', b1, t1, fp]))).toMatch(/a binding serves its own spec, and no other \(D78\); orders-pg targets theirs/);
 });
 
 test('a prototype\'s screens are marked when the requirement they show changes, beside the binding element and the work package that serve it (D79, KON3, M4)', async () => {
   const { kolab, product, engineer, b1 } = await specAndBinding();
-  // A plan whose work packages deliver the binding's elements.
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  const w1 = await kolab.commit(engineer, 'orders-plan', { elements: els({ W1: 'Build the cancel endpoint.', W2: 'Build the queue.' }) });
-  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: b1, targetElement: 'b1' });
-  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: b1, targetElement: 'b2' });
+  // Work packages of the binding that rely on its decisions.
+  const w1 = await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }),
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }] });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: w1, targetElement: 'b1' });
+  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: w1, targetElement: 'b2' });
+  void b1;
   // A prototype of the spec: each screen a URL, linked by equivalence to the requirement it shows.
   await kolab.createNode(product, 'prototype', 'Orders screens', 'orders-ui');
   const p1 = await kolab.commit(product, 'orders-ui', { elements: els({ cancel: 'https://example.com/orders/cancel', track: 'https://example.com/orders/track' }) });
@@ -215,33 +191,23 @@ test('a prototype\'s screens are marked when the requirement they show changes, 
   expect((await kolab.readNode(product, 'orders-ui')).node).toMatchObject({ kind: 'prototype', layer: 'functional', parent_node_id: null });
 
   // The spec changes R1 alone: the screen that shows it, the binding element that serves it, and
-  // the work package that delivers that element are flagged; nothing of R2's.
+  // the work package that relies on that element are flagged; nothing of R2's.
   await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled until they ship.', R2: 'Orders ship in a day.' }) });
-  const on = async (node: string) => (await marksOn(kolab, node)).map((m) => [m.element_id, m.reason]);
+  const on = async (node: string) => (await marksOn(kolab, node)).map((m) => [m.element_id, m.reason]).sort();
   expect(await on('orders-ui')).toStrictEqual([['cancel', 'changed']]);
-  expect(await on('orders-pg')).toStrictEqual([['b1', 'changed']]);
-  expect(await on('orders-plan')).toStrictEqual([['W1', 'upstream_dirty']]);
+  expect(await on('orders-pg')).toStrictEqual([['W1', 'upstream_dirty'], ['b1', 'changed']]);
   // The product side settles its screen: still holds.
   const [screen] = await marksOn(kolab, 'orders-ui');
   await kolab.clear(product, screen.id);
   expect(await marksOn(kolab, 'orders-ui')).toStrictEqual([]);
 });
 
-test('a variant is of its parent\'s kind, and only a prototype may be derived from the spec: no plan or binding inherits a spec\'s elements (D95, KON3, KON6; review M2)', async () => {
+test('a variant is of its parent\'s kind, and only a prototype may be derived from the spec: no binding inherits a spec\'s elements (D95, KON3, KON6; review M2)', async () => {
   const { kolab, product, engineer, s1, b1 } = await specAndBinding();
-  // The review's reproduction: a plan whose first version takes the spec's as its parent.
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  expect(await rejection(kolab.commit(engineer, 'orders-plan', { parent: s1, deltas: [{ kind: 'add', element: 'W1', text: 'Build it.' }] })))
-    .toBe('GateError: orders-plan is a plan, and its versions build on its own versions (or, as a variant, on another plan\'s), never on a spec\'s: orders is a spec. Write the version without a parent: the plan names its binding, orders-pg, as its parent node, and its work packages deliver that binding\'s elements through links (D78, D95, KON6)');
-  expect((await kolab.db.query(`select 1 from version where node_id = 'orders-plan'`)).rows).toStrictEqual([]);
-  // Nor on its own binding's version: the binding is its parent node, not its parent version. A
-  // ruling applied through the admin verbs is told the same (D47).
-  const onBinding = /^GateError: orders-plan is a plan, and its versions build on its own versions \(or, as a variant, on another plan's\), never on a binding's: orders-pg is a binding\. Write the version without a parent: the plan names its binding, orders-pg, as its parent node/;
-  expect(await rejection(kolab.draft(engineer, 'orders-plan', { parent: b1, deltas: [] }))).toMatch(onBinding);
-  expect(await rejection(kolab.applyRuling('orders-plan', { parent: b1, deltas: [] }, { id: 'D95', actor: 'bob', by: 'admin' }))).toMatch(onBinding);
   // A second binding on the spec's version is refused; on the first binding's, it is a binding's variant.
   await kolab.createNode(engineer, 'binding', 'On DynamoDB', 'orders-ddb');
   expect(await rejection(kolab.draft(engineer, 'orders-ddb', { parent: s1, deltas: [] }))).toMatch(/orders-ddb is a binding, and its versions build on its own versions \(or, as a variant, on another binding's\), never on a spec's: orders is a spec\. Write the version without a parent/);
+  expect(await rejection(kolab.applyRuling('orders-ddb', { parent: s1, deltas: [] }, { id: 'D95', actor: 'bob', by: 'admin' }))).toMatch(/orders-ddb is a binding, and its versions build on its own versions/);
   await kolab.commit(engineer, 'orders-ddb', { parent: b1, deltas: [{ kind: 'override', element: 'b1', text: 'A cancel table.' }] });
   // A prototype may be derived from the spec, and from a prototype; a spec from neither.
   await kolab.createNode(product, 'prototype', 'Screens', 'ui');
@@ -254,33 +220,32 @@ test('a variant is of its parent\'s kind, and only a prototype may be derived fr
   // The database holds to it for every role, Kolab's own login included.
   const insert = (id: string, node: string, parent: string, layer: string) => kolab.db.query(
     `insert into version(id, node_id, seq, parent_version_id, layer, state, actor_id, active_role) values ($1, $2, 9, $3, $4, 'drafted', 'bob', 'engineer')`, [id, node, parent, layer]);
-  expect(await rejection(insert('v-plan', 'orders-plan', s1, 'technical'))).toMatch(/a variant is of its parent's kind, and only a prototype may be derived from the spec \(KON3, KON6, D95\); orders-plan is a plan, and its parent orders a spec/);
   expect(await rejection(insert('v-ddb', 'orders-ddb', s1, 'technical'))).toMatch(/orders-ddb is a binding, and its parent orders a spec/);
 });
 
 test('a draft with links is all or nothing: a link refused leaves no draft, and the links that pass are written with it (D95)', async () => {
-  const { kolab, engineer, s1, b1 } = await specAndBinding();
-  await kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan');
-  const versions = async () => (await kolab.db.query(`select id from version where node_id = 'orders-plan'`)).rows.length;
-  // The second link targets the spec (KON6): nothing is written, the first link included.
-  expect(await rejection(kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it.' }), links: [
+  const { kolab, engineer, b1 } = await specAndBinding();
+  const versions = async () => (await kolab.db.query(`select id from version where node_id = 'orders-pg'`)).rows.length;
+  const elements = [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }), { id: 'W1', text: 'Build it.', work: {} }, { id: 'W2', text: 'Ship it.', work: {} }];
+  // The third link names an element the binding hasn't: nothing is written, the first two included.
+  expect(await rejection(kolab.draft(engineer, 'orders-pg', { elements, links: [
     { kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1' },
-    { kind: 'dependency', sourceElement: 'W1', target: s1, targetElement: 'R1' },
-  ] }))).toMatch(/orders-plan is a plan: its work packages deliver elements of its own binding, never the spec/);
-  expect(await versions()).toBe(0);
-  expect((await kolab.db.query(`select 1 from edge e join version v on v.id = e.source_version_id where v.node_id = 'orders-plan'`)).rows).toStrictEqual([]);
+    { kind: 'dependency', sourceElement: 'W2', target: b1, targetElement: 'b2' },
+    { kind: 'dependency', sourceElement: 'b2', target: b1, targetElement: 'nowhere' },
+  ] }))).toMatch(/orphan/);
+  expect(await versions()).toBe(1);
   // A quote that doesn't resolve refuses it too.
-  await rejection(kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it.' }), links: [
+  await rejection(kolab.draft(engineer, 'orders-pg', { elements, links: [
     { kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1', selector: { exact: 'no such words' } },
   ] }));
-  expect(await versions()).toBe(0);
+  expect(await versions()).toBe(1);
   // All pass: the draft and its links are written together, a link declared twice once.
-  const v = await kolab.draft(engineer, 'orders-plan', { elements: els({ W1: 'Build it.', W2: 'Ship it.' }), links: [
+  const v = await kolab.draft(engineer, 'orders-pg', { elements, links: [
     { kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1' },
     { kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1' },
     { kind: 'dependency', sourceElement: 'W2', target: b1, targetElement: 'b2' },
   ] });
-  expect((await kolab.db.query(`select source_element_id, target_element_id from edge where source_version_id = $1 order by source_element_id`, [v])).rows)
+  expect((await kolab.db.query(`select source_element_id, target_element_id from edge where source_version_id = $1 and source_element_id like 'W%' order by source_element_id`, [v])).rows)
     .toStrictEqual([{ source_element_id: 'W1', target_element_id: 'b1' }, { source_element_id: 'W2', target_element_id: 'b2' }]);
-  expect(await versions()).toBe(1);
+  expect(await versions()).toBe(2);
 });

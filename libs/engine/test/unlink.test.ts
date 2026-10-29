@@ -36,7 +36,7 @@ async function family(ctx: Ctx) {
   for (const [el, r] of [['b1', 'R1'], ['b2', 'R2'], ['b3', 'R3']]) {
     await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: el, target: s1, targetElement: r });
   }
-  await kolab.createNode(engineer, 'plan', 'WBS', 'w');
+  await kolab.createNode(engineer, 'binding', 'WBS', 'w');
   const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   return { s1, b1, w1 };
@@ -434,7 +434,7 @@ test('removing a link settles the transitive marks that reached its element, and
   const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A nightly job expires carts.', b2: 'A check caps carts.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b2', target: s1, targetElement: 'R2' });
-  await kolab.createNode(engineer, 'plan', 'WBS', 'w');
+  await kolab.createNode(engineer, 'binding', 'WBS', 'w');
   const w1 = await kolab.commit(engineer, 'w', { elements: els({ w1: 'Write the expiry job.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
   await kolab.commit(product, 'brief', { elements: els({ X: 'Carts are kept a long while.' }) });

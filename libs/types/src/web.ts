@@ -9,7 +9,7 @@ import type {
 } from './index.js';
 
 /**
- * A work package's state on its plan's page (PLN12, W5.1b), read only: where it stands, who holds
+ * A work package's state on its binding's page (PLN12, W5.1b, D104), read only: where it stands, who holds
  * it and until when, and why it is blocked. Agents pull and release through MCP; the page has no
  * board yet (M6).
  */
@@ -48,7 +48,7 @@ export interface WebKolab {
 
 export interface WebNodeSummary {
   name: string; kind: Kind; layer: Layer; title: string;
-  /** The node it names as its parent (D78): a binding's spec, a plan's binding. Absent for a spec or a prototype. */
+  /** The node it names as its parent (D78): a binding's spec, a plan's binding (a plan made before D104). Absent for a spec or a prototype. */
   parent?: string;
   /** The latest committed version's number, or null before the first commit. */
   latest: number | null; drafts: number; in_review: number;
@@ -126,9 +126,9 @@ export interface WebMark {
 
 export interface WebElement {
   id: string; parent: string | null; text: string; address: string;
-  /** A plan element's work fields (PLN1, D98), shown read-only; absent when it has none. */
+  /** A work package's fields (PLN1, D98, D104), shown read-only; absent on a decision. */
   work?: WorkFields;
-  /** On the plan's latest committed version: the work package's state (W5.1b), read only. */
+  /** On the binding's latest committed version: the work package's state (W5.1b), read only. */
   work_state?: WebWorkState;
   /** Questions and notes on this element, open and answered, from any version (Q5): the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
@@ -266,7 +266,7 @@ export interface WebOutcome {
 // ---- requests ----------------------------------------------------------------
 
 export interface WebSignIn { token: string }
-/** A new node; `parent` names a binding's spec or a plan's binding (D78), defaulting to the kolab's only one. */
+/** A new node; `parent` names a binding's spec (D78), defaulting to the kolab's only one. */
 export interface WebCreateNode { kind: Kind; title: string; name: string; parent?: string }
 /** A change to one node: elements edited, added or removed, against its latest committed version. */
 export interface WebSubmit {

@@ -185,7 +185,7 @@ async function markRows(kolab: Kolab, session: string, only: { node?: string }, 
   }) };
 }
 
-/** A node as a listing gives it; `parent` is the node it names as its parent (D78): a binding's spec, a plan's binding. */
+/** A node as a listing gives it; `parent` is the node it names as its parent (D78): a binding's spec, a plan's binding (a plan made before D104). */
 export interface NodeRowView { name: string; kind: Kind; layer: Layer; title: string; parent: string | null; latest: number | null; drafts: number; in_review: number }
 
 /** The session's kolab's nodes, with their latest committed version and how many drafts and versions in review each has. */

@@ -22,7 +22,7 @@ const elementInput = z.strictObject({
   id: z.string().optional().describe('Stable element ID. Reuse the existing ID when editing an element; omit only for a brand-new element.'),
   text: z.string(),
   parent: z.string().optional().describe('ID of the containing element (e.g. a section).'),
-  work: workInput.nullable().optional().describe('A plan element\'s work fields. Left out, the element keeps its own (as in a delta); null clears them.'),
+  work: workInput.nullable().optional().describe('A binding element\'s work fields, which make it a work package ({} for one with none yet). Left out, the element keeps its own (as in a delta); null clears them, making it a decision.'),
 });
 const deltaInput = z.strictObject({
   kind: z.enum(DELTA_KINDS),
@@ -55,10 +55,10 @@ const listQueries = z.object({
   ...paging,
 });
 const createNode = z.object({
-  kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. binding: how the spec is built on one stack; it names the spec. plan: a binding\'s one plan, its elements the work packages; it names the binding'),
+  kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. binding: how the spec is built on one stack, its decisions and its work packages (elements with a work field); it names the spec. plan is retired (D104): work is planned in the binding, and no plan is made'),
   title: z.string(),
   id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.'),
-  parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab\'s one spec); for a plan, the binding it plans (the default when your kolab has one binding). A spec and a prototype take none.'),
+  parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab\'s one spec). A spec and a prototype take none.'),
 });
 const draft = z.object({
   node,
@@ -82,7 +82,7 @@ const submit = z.object({ node, version: z.number().int() });
 const review = z.object({
   node: node.optional().describe('The node of the version to review, with version. Leave out for a work package (work).'),
   version: z.number().int().optional(),
-  work: z.string().optional().describe('A work package In review to review instead of a version: kj:<plan>#<id>, e.g. kj:checkout-plan#W1.2'),
+  work: z.string().optional().describe('A work package In review to review instead of a version: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2'),
   verdict: z.enum(REVIEW_VERDICTS).describe('For a version: approve commits it (one approval is enough); request_changes returns it to its author as a draft. For a work package: approve makes it Done; request_changes returns it to its assignee, In progress'),
   note: z.string().optional().describe('What you checked, or what must change. Required with request_changes.'),
   findings: z.array(z.object({
@@ -130,9 +130,10 @@ const listCases = z.object({
 });
 const readCase = z.object({ case: z.string() });
 const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab'), ...paging });
-const work = z.string().describe('A work package of your kolab: kj:<plan>#<id>, e.g. kj:checkout-plan#W1.2');
+const work = z.string().describe('A work package of your kolab: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2. An address from before D104, kj:<plan>#<id>, names the package where it moved');
 const listWork = z.object({
-  plan: node.optional().describe('Only this plan\'s work packages'),
+  binding: node.optional().describe('Only this binding\'s work packages'),
+  plan: node.optional().describe('Retired (D104): use binding. A plan\'s name is refused, naming the binding its packages moved to'),
   state: z.enum(WORK_STATES).optional(),
   ready: z.boolean().optional().describe('true: only those you could pull now'),
   mine: z.boolean().optional().describe('true: only those you hold'),
@@ -143,7 +144,10 @@ const readWork = z.object({
   events_cursor: z.string().optional().describe('The events_next a previous read returned, for the events after it'),
   limit: z.number().int().optional().describe('How many events to return: 50 by default, at most 200'),
 });
-const pullWork = z.object({ plan: node.optional().describe('The plan to pull from: needed only when your kolab has more than one') });
+const pullWork = z.object({
+  binding: node.optional().describe('The binding to pull from: needed only when more than one binding of your kolab has work packages'),
+  plan: node.optional().describe('Retired (D104): use binding'),
+});
 const releaseWork = z.object({ work, note: z.string().optional().describe(`Why, for whoever pulls it next. At most ${MAX_TEXT} characters`) });
 const reassignWork = z.object({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
 const evidenceItem = z.strictObject({
@@ -200,7 +204,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_nodes',
-    description: `List the nodes in your kolab: its spec, its prototypes, its bindings (parent: the spec each binds) and their plans (parent: the binding each plans), with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again. By kind, then name.${PAGED}`,
+    description: `List the nodes in your kolab: its spec, its prototypes and its bindings (parent: the spec each binds), and any plan made before D104 retired the kind (parent: the binding its work moved to), with their latest committed version number. rebase_pending says a variant\'s rebase onto its parent\'s newer version is queued: Kolab rebases variants after their parent commits, in the background. rebase_dead says it kept failing and Kolab stopped trying: the variant has a rebase_failed mark, and its next commit or its parent\'s tries again. By kind, then name.${PAGED}`,
     schema: listNodes,
     annotations: { readOnlyHint: true },
   })
@@ -232,7 +236,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a plan's work packages show their work fields (work). Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
+    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
@@ -278,7 +282,7 @@ export class AgentTools {
       const at = (element?: string) => formatAddress({ kolab: n.kolab_id, node: n.name, version: row.seq, element }, { from: here });
       return {
         node: n.kolab_id === here ? n.name : `${n.kolab_id}/${n.name}`, kind: n.kind,
-        // The node it names as its parent (D78), in its own kolab: a binding's spec, a plan's binding.
+        // The node it names as its parent (D78), in its own kolab: a binding's spec, a plan's binding (a plan made before D104).
         ...(read.parent ? { parent: n.kolab_id === here ? read.parent : `${n.kolab_id}/${read.parent}` } : {}),
         version: row.seq, state: row.state, versionId: row.id, author: await kolab.author(row.id),
         // Who made the node (W2.20), for a reader in its own kolab only (D49, D58); null for one
@@ -354,7 +358,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_node',
-    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and prototype are functional; binding and plan are technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds, and each plan the binding it plans (parent, set once), and a binding has at most one plan (a new binding starts without one). A plan\'s links deliver its own binding\'s elements, never the spec; a binding\'s links serve its own spec. Its name (id) is unique in your kolab; other kolabs may use the same one.',
+    description: 'Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and prototype are functional; binding is technical. A kolab holds exactly one spec, so a variant of a spec lives in another kolab, as a fork. Create the spec first: each binding names the spec it binds (parent, set once), and its links serve its own spec. A binding holds its own work: its work packages are its elements with a work field. The plan kind is retired (D104): creating a plan is refused. Its name (id) is unique in your kolab; other kolabs may use the same one.',
     schema: createNode,
     annotations: { readOnlyHint: false, idempotentHint: false },
   })
@@ -368,7 +372,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A plan's elements are its work packages, and each may carry work fields: {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}}; a milestone has "milestone":true, depends on its members, may carry a target_date, and delivers nothing. Work left out of an element or a delta keeps its own; "work":null clears it. Each Delivers is a dependency link from a work package to one binding element (links). Submitting a plan version checks them (PLN2): Depends on names work packages of the same version, without cycles. A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A binding's elements are its decisions and its work packages: a work package is an element with work fields, {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}} ("work":{} for one whose fields are still to come); an element without is a decision, and is never work. A milestone has "milestone":true, depends on its members, may carry a target_date, and links nothing. Work left out of an element or a delta keeps its own; "work":null clears it, making the element a decision. Like any binding element, a work package serves spec elements and relies on the binding's decisions through dependency links at element scope (links); it never links another work package: name it in depends_on. Submitting a binding version checks its work fields first (PLN2): Depends on names work packages of the same version, without cycles; only a milestone carries a target date. Then it is reviewed like any binding version. A job splits a package too big for one job by drafting child packages and making the parent depend on them, or a milestone over them (PLN20). A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {
@@ -401,7 +405,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_submit_for_review',
-    description: 'Submit a draft. Kolab runs its structural checks; if they fail, the draft stays drafted, with the reason. If they pass, the version goes into review, and commits once another actor who holds Write on its layer approves (konjir_review). The review request reaches only those who can review that layer in the role they work in: a person, or an agent signed in with the role that writes the layer (or not signed in there); reviewers lists them, and if it is empty, review says who to bring in. If no one else holds Write on the layer, the checks alone commit it, and it is recorded as unreviewed; a plan or work-package version always commits on the checks alone. The result names the version that committed or waits (a stale draft may be folded into a rebase). Resubmit a draft that came back with changes requested the same way; resubmitting a version still in review asks whoever can review it now, and commits it unreviewed if no one else holds Write on its layer any more.',
+    description: 'Submit a draft. Kolab runs its structural checks; if they fail, the draft stays drafted, with the reason. If they pass, the version goes into review, and commits once another actor who holds Write on its layer approves (konjir_review). The review request reaches only those who can review that layer in the role they work in: a person, or an agent signed in with the role that writes the layer (or not signed in there); reviewers lists them, and if it is empty, review says who to bring in. If no one else holds Write on the layer, the checks alone commit it, and it is recorded as unreviewed. A binding version\'s work packages pass their work checks (PLN2) before it goes into review. The result names the version that committed or waits (a stale draft may be folded into a rebase). Resubmit a draft that came back with changes requested the same way; resubmitting a version still in review asks whoever can review it now, and commits it unreviewed if no one else holds Write on its layer any more.',
     schema: submit,
   })
   submitForReview({ node, version }: z.infer<typeof submit>, context?: McpToolContext) {
@@ -665,20 +669,20 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_work',
-    description: `The board: your kolab's work packages (a plan's elements), plan by plan, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on a binding element it delivers), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. plan: one plan only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
+    description: `The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. binding: one binding only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
     schema: listWork,
     annotations: { readOnlyHint: true },
   })
-  listWork({ plan, state, ready, mine, cursor, limit }: z.infer<typeof listWork>, context?: McpToolContext) {
+  listWork({ binding, plan, state, ready, mine, cursor, limit }: z.infer<typeof listWork>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
-      const { items, next } = await this.kolab.listWork(s, { plan, state, ready, mine }, { cursor, limit });
+      const { items, next } = await this.kolab.listWork(s, { binding: binding ?? plan, state, ready, mine }, { cursor, limit });
       return { work: items, next };
     });
   }
 
   @McpTool({
     name: 'konjir_read_work',
-    description: `Read one work package of your kolab, kj:<plan>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), each binding element it delivers at its latest committed version with that element's links (the spec elements it serves, with their ancestors), questions, notes and rulings, the git trailer for its commits, and its events (who changed its state, when, against which versions), oldest first. A package the plan removed reads too, with removed_in. Events are paged: while events_next isn't null, call again with events_cursor=events_next.`,
+    description: `Read one work package of your kolab, kj:<binding>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), its elements: each spec element it serves and each decision of its binding it relies on, at its latest committed version, with that element's links (a decision's spec elements, with their ancestors), questions, notes and rulings; the git trailer for its commits (and former_trailers, those its commits carried while it was a plan's, before D104), and its events (who changed its state, when, against which versions), oldest first. A package its binding removed, or made a decision, reads too, with removed_in. Events are paged: while events_next isn't null, call again with events_cursor=events_next.`,
     schema: readWork,
     annotations: { readOnlyHint: true },
   })
@@ -688,12 +692,12 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_pull_work',
-    description: 'Pull work: Kolab gives you the first ready work package of your kolab\'s plan in natural ID order, makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<plan>#<id>). Every tool call you make to Kolab renews the lease, but konjir_whoami and reading your inbox or answers, which your channel does by itself; if you make none for its length, the package goes back to To do and you are told in your answers. You hold one work package In progress at a time, in any kolab: finish or release it before pulling another. From an engineer session that may write the technical layer. plan is needed only when your kolab has more than one. With nothing ready, it says why (blocked by dependencies, questions or case files). A pull counts as a draft against your hourly budget.',
+    description: 'Pull work: Kolab gives you the first ready work package of your kolab\'s binding in natural ID order (never a decision, nor a milestone), makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<binding>#<id>). Every tool call you make to Kolab renews the lease, but konjir_whoami and reading your inbox or answers, which your channel does by itself; if you make none for its length, the package goes back to To do and you are told in your answers. You hold one work package In progress at a time, in any kolab: finish or release it before pulling another. From an engineer session that may write the technical layer. binding is needed only when more than one binding of your kolab has work packages. If a package is too big for one job, split it (PLN20): draft child packages in the binding, make it depend on them, and release it. With nothing ready, it says why (blocked by dependencies, questions or case files). A pull counts as a draft against your hourly budget.',
     schema: pullWork,
   })
-  pullWork({ plan }: z.infer<typeof pullWork>, context?: McpToolContext) {
+  pullWork({ binding, plan }: z.infer<typeof pullWork>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
-      const r = await this.kolab.pullWork(s, { plan });
+      const r = await this.kolab.pullWork(s, { binding: binding ?? plan });
       if (!r.pulled) return { pulled: false, why: r.why, counts: r.counts, next: 'Nothing to do now: konjir_list_work shows each package\'s reasons. Answer or ask the open questions, or wait for the work it depends on.' };
       return {
         pulled: true, ...r.item, trailer: r.trailer, context: r.context,
@@ -704,7 +708,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_release_work',
-    description: 'Give back the work package you hold In progress, kj:<plan>#<id>: it returns to To do, for anyone to pull, with your note recorded. Only its assignee releases it, while its lease runs; one whose lease lapsed is To do already.',
+    description: 'Give back the work package you hold In progress, kj:<binding>#<id>: it returns to To do, for anyone to pull, with your note recorded. Only its assignee releases it, while its lease runs; one whose lease lapsed is To do already.',
     schema: releaseWork,
   })
   releaseWork({ work, note }: z.infer<typeof releaseWork>, context?: McpToolContext) {
@@ -713,7 +717,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_reassign_work',
-    description: 'With Maintain or Admin in your kolab: give a work package that is To do or In progress to `to`, who must hold Write on the technical layer there and hold no work package In progress. It becomes In progress for them, with a fresh lease, and both are told in their answers. Not a milestone, nor a package the plan removed.',
+    description: 'With Maintain or Admin in your kolab: give a work package that is To do or In progress to `to`, who must hold Write on the technical layer there and hold no work package In progress. It becomes In progress for them, with a fresh lease, and both are told in their answers. Not a milestone, nor a package its binding removed.',
     schema: reassignWork,
   })
   reassignWork({ work, to }: z.infer<typeof reassignWork>, context?: McpToolContext) {
@@ -722,7 +726,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_add_evidence',
-    description: `Record evidence of the work package you hold In progress, kj:<plan>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). A commit or pull request is in a registered repository: the package's own (its repo, or its binding's implementation) unless it has none, when repo names one; its link sits under the repository's URL. In a shell, konjir work deliver reads the commits that carry the package's trailer from your checkout and sends them, after checking the checkout is the registered repository. Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. A link carrying a user, a password or a credential in its query (token, sig, X-Amz-…) is refused: evidence is kept, and every session of the kolab reads it. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
+    description: `Record evidence of the work package you hold In progress, kj:<binding>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). A commit or pull request is in a registered repository: the package's own (its repo, or its binding's implementation) unless it has none, when repo names one; its link sits under the repository's URL. In a shell, konjir work deliver reads the commits that carry the package's trailer from your checkout and sends them, after checking the checkout is the registered repository. Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most ${MAX_EVIDENCE_PER_CALL} items a call. A link carrying a user, a password or a credential in its query (token, sig, X-Amz-…) is refused: evidence is kept, and every session of the kolab reads it. Counts as a draft against your hourly budget. Refused once your lease has lapsed.`,
     schema: addEvidence,
   })
   addEvidence({ work, evidence }: z.infer<typeof addEvidence>, context?: McpToolContext) {
@@ -734,7 +738,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_submit_work',
-    description: 'Submit the work package you hold In progress, kj:<plan>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
+    description: 'Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
     schema: submitWork,
   })
   submitWork({ work, evidence, note }: z.infer<typeof submitWork>, context?: McpToolContext) {
@@ -753,7 +757,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_reopen_work',
-    description: 'Open new work on a Done work package, kj:<plan>#<id>, from an engineer session with Write on the technical layer: it returns to To do under the same id, for anyone to pull, with its history and evidence kept and your note recorded. Use it when a package is at risk (something it delivers changed since it was done) and the work no longer holds; if the work still holds, clear its mark instead (konjir_clear_mark), which keeps it Done. Its open marks that the new work answers settle with it. Not a milestone, which is Done when its members are.',
+    description: 'Open new work on a Done work package, kj:<binding>#<id>, from an engineer session with Write on the technical layer: it returns to To do under the same id, for anyone to pull, with its history and evidence kept and your note recorded. Use it when a package is at risk (something it serves or relies on changed since it was done) and the work no longer holds; if the work still holds, clear its mark instead (konjir_clear_mark), which keeps it Done. Its open marks that the new work answers settle with it. Not a milestone, which is Done when its members are.',
     schema: reopenWork,
   })
   reopenWork({ work, note }: z.infer<typeof reopenWork>, context?: McpToolContext) {

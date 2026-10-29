@@ -126,9 +126,9 @@ async function build(ctx: Ctx, s: { v1: Partial<Record<string, number>>; v2: Par
   m.placed('V1');
   m.placed('V2');
   const versions: Partial<Record<NodeKey, string>> = { P: p, V1: v1, V2: v2 };
-  for (const [key, kind] of [['B', 'binding'], ['W', 'binding'], ['X', 'plan']] as const) {
+  for (const [key, kind] of [['B', 'binding'], ['W', 'binding'], ['X', 'binding']] as const) {
     for (const el of PLAIN[key]) m.plain[key].set(el, t(el, 0));
-    await kolab.createNode(engineer, kind, key, ids[key], key === 'X' ? { parent: ids.W } : {});
+    await kolab.createNode(engineer, kind, key, ids[key]);
     versions[key] = await kolab.commit(engineer, ids[key], { elements: m.mat(key).map(input) });
   }
 

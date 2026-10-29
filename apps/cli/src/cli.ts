@@ -150,7 +150,7 @@ const usage = (canServe: boolean) => `konjir — Kolab from a shell. Same verbs 
 Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir stale [all] · konjir queries [all]
 Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--note <text>] [--since <rev>]
            [--repo <url>] [--dry-run] [-C <dir>], in a checkout: finds the commits whose trailer is the package's
-           (Konjir-Work: kj:<kolab>/<plan>#<id>, from pull_work or read_work), checks the checkout is the registered
+           (Konjir-Work: kj:<kolab>/<binding>#<id>, from pull_work or read_work), checks the checkout is the registered
            repository (its root commit and a remote), and records them as evidence; --submit submits the package.
            Run again, it records only what is new. Kolab itself never reads git.
            konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a

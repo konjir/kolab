@@ -21,7 +21,7 @@ async function chain() {
 
   const B = await kolab.createNode(engineer, 'binding', 'Binding', 'B');
   const b = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker', b2: 'Cart table' }) });
-  const W = await kolab.createNode(engineer, 'plan', 'Plan', 'W', { parent: 'B' });
+  const W = await kolab.createNode(engineer, 'binding', 'Plan', 'W');
   const w = await kolab.commit(engineer, W, { elements: els({ w1: 'Build order worker', w2: 'Build cart table' }) });
   const link = (source: string, sourceElement: string | undefined, target: string, targetElement?: string) =>
     kolab.link(engineer, { kind: 'dependency', source, sourceElement, target, targetElement });
@@ -34,7 +34,7 @@ async function chain() {
   const c = await kolab.commit(engineer, C, { elements: els({ c1: 'Order worker pool', c2: 'Cart archive' }) });
   await link(c, 'c1', b, 'b1');
   await link(c, 'c2', b, 'b2');
-  const X = await kolab.createNode(engineer, 'plan', 'Workers plan', 'X', { parent: 'C' });
+  const X = await kolab.createNode(engineer, 'binding', 'Workers plan', 'X');
   const x = await kolab.commit(engineer, X, { elements: els({ x1: 'Size the pool', x2: 'Archive carts' }) });
   await link(x, 'x1', c, 'c1');
   await link(x, 'x2', c, 'c2');

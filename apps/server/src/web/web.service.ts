@@ -104,8 +104,8 @@ export class WebService {
     let nodeRulings: WebRuling[] = [];
     if (row) {
       const read = await k.readNode(s, n.name, row.seq, { threads: false });
-      // A plan's work state, on its latest committed version only: state isn't versioned (PLN4).
-      const board = n.kind === 'plan' && live ? await k.workBoard(s, n.name) : undefined;
+      // A binding's work state, on its latest committed version only: state isn't versioned (PLN4).
+      const board = n.kind === 'binding' && live ? await k.workBoard(s, n.name) : undefined;
       // Precedent and open case files beside the element they concern, from any version (CASE4):
       // read as kj_agent, so a session that holds only Read gets none (D49).
       const rulings = read.rulings.map(ruling);
@@ -457,7 +457,7 @@ export class WebService {
     if (!KINDS.includes(b?.kind)) throw bad(notAKind(b?.kind));
     if (!b.title?.trim()) throw bad('give the node a title');
     if (!isNodeName(b.name ?? '')) throw bad('a node\'s name has no spaces and no "/", "@", "#" or "~"');
-    if (b.parent !== undefined && b.parent !== null && typeof b.parent !== 'string') throw bad('parent is the name of the node this one names: a binding\'s spec, a plan\'s binding');
+    if (b.parent !== undefined && b.parent !== null && typeof b.parent !== 'string') throw bad('parent is the name of the node this one names: a binding\'s spec');
     const id = await this.kolab.createNode(s, b.kind, b.title.trim(), b.name, { parent: b.parent || undefined });
     return { node: (await this.kolab.node(id)).name };
   }
@@ -835,7 +835,7 @@ export function httpError(e: unknown): HttpException {
   return new HttpException({ error: 'error', message: 'Kolab could not do that. It has been logged; try again, or tell whoever runs Kolab.' }, 500);
 }
 
-/** A work package's state as its plan's page shows it (W5.1b), read only. */
+/** A work package's state as its binding's page shows it (W5.1b, D104), read only. */
 const workState = (w: WorkItemView): WebWorkState =>
   ({ state: w.state, assignee: w.assignee, lease_until: w.lease_until, blocked: w.blocked, milestone: w.milestone });
 

@@ -81,7 +81,7 @@ const WORK_WORDS: Record<string, string> = {
   approved: 'was approved: it is Done',
   changes_requested: 'came back with changes requested: it is In progress for you again, with a fresh lease',
   lapsed: 'lapsed: no call of yours renewed its lease, so it is To do again',
-  reassigned: 'was reassigned', released: 'was given back by Kolab', removed: 'was removed from its plan',
+  reassigned: 'was reassigned', released: 'was given back by Kolab', removed: 'was removed from its binding',
   reopened: 'was reopened: it is To do again', confirmed: 'was confirmed: its work holds',
 };
 const workLine = (e: WorkNoticeView) => `${e.work} ${WORK_WORDS[e.kind] ?? e.kind.replace(/_/g, ' ')}, by ${e.actor}${e.note ? `: ${quote(e.note)}` : ''}`;

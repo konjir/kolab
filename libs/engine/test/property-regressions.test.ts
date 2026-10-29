@@ -10,7 +10,7 @@ test('a mark spreads downstream through a link that carries a mark of its own (L
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
   const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker.' }) });
-  const W = await kolab.createNode(engineer, 'plan', 'W', 'W');
+  const W = await kolab.createNode(engineer, 'binding', 'W', 'W');
   const w1 = await kolab.commit(engineer, W, { elements: els({ w1: 'Build the order worker.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
@@ -184,7 +184,7 @@ test('revising an element settles its upstream_dirty mark (LNK6, CAS4)', async (
   const s1 = await kolab.commit(product, S, { elements: els({ R1: 'Checkout within 30 seconds.' }) });
   const B = await kolab.createNode(engineer, 'binding', 'B', 'B');
   const b1 = await kolab.commit(engineer, B, { elements: els({ b1: 'Order worker.' }) });
-  const W = await kolab.createNode(engineer, 'plan', 'W', 'W');
+  const W = await kolab.createNode(engineer, 'binding', 'W', 'W');
   const w1 = await kolab.commit(engineer, W, { elements: els({ w1: 'Build the order worker.', w2: 'Test it.' }) });
   await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'w1', target: b1, targetElement: 'b1' });
