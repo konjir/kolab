@@ -837,7 +837,7 @@ export function httpError(e: unknown): HttpException {
 
 /** A work package's state as its binding's page shows it (W5.1b, D104), read only. */
 const workState = (w: WorkItemView): WebWorkState =>
-  ({ state: w.state, assignee: w.assignee, lease_until: w.lease_until, blocked: w.blocked, milestone: w.milestone });
+  ({ state: w.state, assignee: w.assignee, lease_until: w.lease_until, blocked: w.blocked, milestone: w.milestone, ...(w.at_risk ? { at_risk: true as const } : {}) });
 
 const version = (v: VersionHistoryRow, me: string): WebVersion =>
   ({ seq: v.seq, state: v.state, author: v.actor, role: v.role, at: v.at, note: v.note, mine: v.actor === me, base: v.base_seq });

@@ -25,6 +25,7 @@ import {
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
   MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
+  REVISIT_FILES, type WorkRevisit,
 } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
@@ -6493,8 +6494,12 @@ export class Kolab {
     return { items, next };
   }
 
-  /** One page of a session's open marks (W2.21): marksFor's, oldest first. */
-  async marksPage(sessionId: string, filter: { layer?: Layer; node?: string } = {}, page: PageOpts = {}) {
+  /**
+   * One page of a session's open marks (W2.21): marksFor's, oldest first. With `revisit`, a mark
+   * that puts a work package at risk carries what to revisit (konjir_list_stale, a commit's answer);
+   * without it (the inbox, re-read on every push), only that it is at risk.
+   */
+  async marksPage(sessionId: string, filter: { layer?: Layer; node?: string } = {}, page: PageOpts = {}, opts: { revisit?: boolean } = {}) {
     const size = pageSize(page.limit);
     const kolab = await this.sessionKolab(sessionId);
     const list = scoped('marks', { ...filter, kolab });
@@ -6502,9 +6507,32 @@ export class Kolab {
     const picked = await this.pickMarks(sessionId, kolab, filter, after, size + 1);
     const { rows, next } = pageOf(picked, size, list, (r) => [r.at, r.id]);
     const items = rows.length ? await this.describeMarks({
-      ...filter, kolab, ids: rows.map((r) => r.id), unnamed: rows.filter((r) => !r.named).map((r) => r.id),
+      ...filter, kolab, ids: rows.map((r) => r.id), unnamed: rows.filter((r) => !r.named).map((r) => r.id), revisit: opts.revisit,
     }) : [];
     return { items, next };
+  }
+
+  /**
+   * The marks a commit set downstream (P18, W5.2b): the open marks it triggered on other nodes of the
+   * session's kolab, direct and transitive, oldest first, at most `limit` (50 by default), and how
+   * many more there are. Matching `triggered_by` finds the transitive ones too: propagateIn gives
+   * every mark it raises down the walk the triggered_by of the mark it started from, the upstream
+   * commit, never the version the walk passed through. A mark spreads only within its own kolab,
+   * and another kolab's stay its own (D49), so none of those is ever listed, and a version of
+   * another kolab than the session's lists nothing. Picked as the session (row-level security: none
+   * for a session that holds only Read, D58), described as Kolab. Its cascade must have run: one
+   * queued behind an earlier one has set nothing yet.
+   */
+  async downstreamMarks(sessionId: string, versionId: string, opts: { limit?: number } = {}) {
+    const size = pageSize(opts.limit);
+    const kolab = await this.sessionKolab(sessionId);
+    if ((await this.version(versionId)).kolab_id !== kolab) return { items: [], more: false };
+    const picked = await this.read({ session: sessionId }, async (q) => (await q.query<{ id: string }>(
+      `select i.id from invalidation i join version v on v.id = i.version_id join version c on c.id = i.triggered_by
+        where i.state = 'open' and i.kolab_id = $1 and i.triggered_by = $2 and v.node_id <> c.node_id
+        order by i.created_at, i.id limit $3`, [kolab, versionId, size + 1])).rows);
+    const items = picked.length ? await this.describeMarks({ kolab, ids: picked.slice(0, size).map((r) => r.id), revisit: true }) : [];
+    return { items, more: picked.length > size };
   }
 
   private async pickMarks(sessionId: string, kolab: string, filter: { layer?: Layer; node?: string }, after?: [string, string], limit?: number) {
@@ -6692,6 +6720,13 @@ export class Kolab {
       `select c.id, cv.node_id, c.element_id, cv.seq from case_file c join version cv on cv.id = c.version_id
         where cv.node_id = any($1::text[]) and c.state = 'open' and c.element_id = any($2::text[]) order by c.id`,
       [nodes, elementIds])).rows : [];
+    // What a change marks (PLN10): an open mark of a change (AT_RISK_REASONS) on a package's element,
+    // in the binding's committed versions, as packageMarks reads them. With work, it is at risk until
+    // the mark settles.
+    const marked = new Set((await q.query<{ element_id: string }>(
+      `select distinct i.element_id from invalidation i join version x on x.id = i.version_id
+        where x.node_id = $1 and x.state = 'committed' and i.state = 'open' and i.delta_id is null and i.element_id is not null
+          and i.reason in (${AT_RISK_REASONS_SQL})`, [binding.id])).rows.map((r) => r.element_id));
     const stateOf = (r: WorkRow | undefined): WorkState | undefined => (r ? (r.lapsed ? 'todo' : r.state) : undefined);
     const out: BoardPackage[] = [];
     for (const e of els) {
@@ -6716,7 +6751,7 @@ export class Kolab {
         }
       }
       out.push({ binding, version: v, id: e.element_id, text: e.text, work, row, state: stateOf(row)!, delivers: mine, blocked,
-        assignee: row.lapsed ? null : row.assignee_id, lease_until: row.lapsed || !row.lease_until ? null : iso(row.lease_until) });
+        assignee: row.lapsed ? null : row.assignee_id, lease_until: row.lapsed || !row.lease_until ? null : iso(row.lease_until), marked: marked.has(e.element_id) });
     }
     if (opts.removed) {
       for (const row of rows.values()) {
@@ -6726,7 +6761,7 @@ export class Kolab {
           `select e.element_id, e.text, e.work from element e join version lv on lv.id = e.version_id
             where lv.node_id = $1 and lv.state = 'committed' and e.element_id = $2 and e.work is not null order by lv.seq desc limit 1`, [binding.id, row.element_id])).rows[0];
         out.push({ binding, version: v, id: row.element_id, text: last?.text ?? '', work: last?.work ?? null, row, state: stateOf(row)!, delivers: [], blocked: [],
-          assignee: row.lapsed ? null : row.assignee_id, lease_until: null });
+          assignee: row.lapsed ? null : row.assignee_id, lease_until: null, marked: marked.has(row.element_id) });
       }
     }
     return out.sort((a, b) => naturalCompare(a.id, b.id));
@@ -6765,7 +6800,73 @@ export class Kolab {
       ...(p.row.removed_in_version_id ? { removed_in: formatAddress({ node: p.row.removed_node ?? p.binding.name, version: p.row.removed_seq ?? undefined }) } : {}),
       ...(p.row.unreviewed ? { unreviewed: true } : {}),
       ...(p.row.returned && p.state === 'in_progress' ? { returned: true } : {}),
+      // At risk (PLN10): told, as marks are, only to those who belong to the kolab's work (D58).
+      ...(belongs && atRisk(p) ? { at_risk: true as const } : {}),
     };
+  }
+
+  /** A board package as a reader sees it (workItem), with what to revisit while it is at risk (PLN10, WRK6). */
+  private async workItemFull(p: BoardPackage, canPull: boolean, belongs: boolean): Promise<WorkItemView> {
+    const item = this.workItem(p, canPull, belongs);
+    if (!item.at_risk) return item;
+    const key = `${p.binding.id}#${p.id}`;
+    return { ...item, revisit: (await this.revisitsOf(this.db, [{ key, binding: p.binding.id, kolab_id: p.binding.kolab_id, element: p.id }])).get(key)! };
+  }
+
+  /**
+   * The work packages that marks sit on, by `<binding id>#<element>`, read directly (not the whole
+   * board): each one's binding, state (a lapsed lease reads To do), and whether it is at risk (PLN10):
+   * it has work, is a work package of its binding still, not a milestone, and an open mark of a
+   * change (AT_RISK_REASONS) sits on it in its binding's committed versions.
+   */
+  private async packagesAt(q: Q, at: { binding: string; element: string }[]) {
+    const out = new Map<string, { key: string; binding: string; kolab_id: string; name: string; element: string; state: WorkState; at_risk: boolean }>();
+    if (!at.length) return out;
+    const rows = (await q.query<{ binding: string; kolab_id: string; name: string; element: string; state: WorkState; at_risk: boolean }>(
+      `select w.binding_node_id as binding, n.kolab_id, n.name, w.element_id as element,
+              case when w.state = 'in_progress' and w.lease_until < clock_timestamp() then 'todo' else w.state end as state,
+              (not w.milestone and w.removed_in_version_id is null
+               and not (w.state = 'todo' or (w.state = 'in_progress' and w.lease_until < clock_timestamp()))
+               and exists (select 1 from invalidation i join version x on x.id = i.version_id
+                            where x.node_id = w.binding_node_id and x.state = 'committed' and i.element_id = w.element_id
+                              and i.state = 'open' and i.delta_id is null and i.reason in (${AT_RISK_REASONS_SQL}))) as at_risk
+         from work_package w join node n on n.id = w.binding_node_id
+        where (w.binding_node_id, w.element_id) in (select * from unnest($1::text[], $2::text[]))`,
+      [at.map((x) => x.binding), at.map((x) => x.element)])).rows;
+    for (const r of rows) out.set(`${r.binding}#${r.element}`, { key: `${r.binding}#${r.element}`, ...r });
+    return out;
+  }
+
+  /**
+   * What to revisit on each of `packages` (PLN10, WRK6), by its `key`: the work its evidence names
+   * since it was last To do (as roundEvidence reads a round), the round a mark puts at risk: its
+   * commits' SHAs and the files they touched, its pull requests, and the repository they name, or
+   * else the package's own. One query for the evidence of them all. Claims its assignee recorded,
+   * which Kolab never checks against a repository (D36).
+   */
+  private async revisitsOf(q: Q, packages: { key: string; binding: string; kolab_id: string; element: string }[]): Promise<Map<string, WorkRevisit>> {
+    const ev = (await q.query<{ binding: string; element: string; kind: EvidenceKind; ref: string | null; url: string | null; files: string[] | null; repository_url: string | null }>(
+      `select e.binding_node_id as binding, e.element_id as element, e.kind, e.ref, e.url, e.files, er.url as repository_url
+         from ${EVIDENCE_FROM} join work_event ev on ev.id = e.event_id
+        where (e.binding_node_id, e.element_id) in (select * from unnest($1::text[], $2::text[]))
+          and (ev.at, ev.id) > coalesce((select (t.at, t.id) from work_event t where t.binding_node_id = e.binding_node_id and t.element_id = e.element_id
+                                          and t.to_state = 'todo' order by t.at desc, t.id desc limit 1), ('-infinity'::timestamptz, ''::text))
+        order by e.at, e.id`, [packages.map((p) => p.binding), packages.map((p) => p.element)])).rows;
+    const out = new Map<string, WorkRevisit>();
+    for (const p of packages) {
+      const mine = ev.filter((e) => e.binding === p.binding && e.element === p.element);
+      const files = [...new Set(mine.flatMap((e) => (e.kind === 'commit' ? e.files ?? [] : [])))].sort();
+      const named = mine.find((e) => e.kind !== 'test_run' && e.repository_url)?.repository_url ?? null;
+      const own = named ? null : await this.packageRepositoryIn(q, { id: p.binding, kolab_id: p.kolab_id }, await this.packageWorkIn(q, p.binding, p.element))
+        .catch((e: unknown) => { if (e instanceof GateError) return null; throw e; });
+      out.set(p.key, {
+        repository: named ?? own?.url ?? null,
+        commits: [...new Set(mine.filter((e) => e.kind === 'commit' && e.ref).map((e) => e.ref!))],
+        files: files.slice(0, REVISIT_FILES), ...(files.length > REVISIT_FILES ? { files_more: files.length - REVISIT_FILES } : {}),
+        pull_requests: [...new Set(mine.filter((e) => e.kind === 'pull_request' && e.url).map((e) => e.url!))],
+      });
+    }
+    return out;
   }
 
   /**
@@ -6783,6 +6884,7 @@ export class Kolab {
     const canPull = LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical');
     const belongs = s.access.layers.length > 0;
     const items: WorkItemView[] = [];
+    const packages = new Map<WorkItemView, BoardPackage>();
     for (const binding of await this.bindingsWithWork(sessionId, filter.binding)) {
       if (after && binding.name < after[0]) continue;
       for (const p of await this.bindingBoard(this.db, binding)) {
@@ -6792,12 +6894,17 @@ export class Kolab {
         if (filter.ready !== undefined && item.ready !== filter.ready) continue;
         if (filter.mine && item.assignee !== s.actor_id) continue;
         items.push(item);
+        packages.set(item, p);
         if (items.length > size) break;
       }
       if (items.length > size) break;
     }
     const { rows, next } = pageOf(items, size, list, (i) => [i.binding, i.id]);
-    return { items: rows, next };
+    // What to revisit on the page's packages at risk, their evidence read in one query (PLN10, WRK6).
+    const risky = rows.filter((i) => i.at_risk).map((i) => packages.get(i)!)
+      .map((p) => ({ key: `${p.binding.id}#${p.id}`, binding: p.binding.id, kolab_id: p.binding.kolab_id, element: p.id }));
+    const revisits = risky.length ? await this.revisitsOf(this.db, risky) : new Map<string, WorkRevisit>();
+    return { items: rows.map((i) => (i.at_risk ? { ...i, revisit: revisits.get(`${packages.get(i)!.binding.id}#${i.id}`)! } : i)), next };
   }
 
   /**
@@ -6808,7 +6915,10 @@ export class Kolab {
     const s = await this.session(sessionId);
     const [binding] = await this.bindingsWithWork(sessionId, bindingName);
     const canPull = LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical');
-    return new Map((await this.bindingBoard(this.db, binding)).map((p) => [p.id, this.workItem(p, canPull, s.access.layers.length > 0)]));
+    const out = new Map<string, WorkItemView>();
+    // No revisit: the page shows only that a package is at risk.
+    for (const p of await this.bindingBoard(this.db, binding)) out.set(p.id, this.workItem(p, canPull, s.access.layers.length > 0));
+    return out;
   }
 
   /**
@@ -6916,16 +7026,18 @@ export class Kolab {
     const p =(await this.bindingBoard(this.db, binding, { removed: true })).find((x) => x.id === id);
     if (!p) throw new Error(`no work package ${formatAddress({ node: binding.name, element: id })} in kolab ${s.kolab}`);
     const canPull = LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical');
-    const item = this.workItem(p, canPull, s.access.layers.length > 0);
+    const item = await this.workItemFull(p, canPull, s.access.layers.length > 0);
     const size = pageSize(page.limit);
     const list = `work_events:${binding.id}#${id}`;
     const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
     // In the database's clock's order, a ULID breaking ties (D98): each process mints its own ids.
+    // A session that holds only Read reads no at_risk event: it would tell of a mark (D58).
     const rows = await this.read({ session: sessionId }, async (q) => (await q.query<WorkEventRow & { at_key: string }>(
       `select ${WORK_EVENT_COLUMNS}, ${EVENT_AT_KEY} as at_key from work_event ev
         where ev.binding_node_id = $1 and ev.element_id = $2
           and ($3::text is null or (ev.at, ev.id) > (($3::timestamp at time zone 'UTC'), $4::text))
-        order by ev.at, ev.id limit $5`, [binding.id, id, after?.[0] ?? null, after?.[1] ?? null, size + 1])).rows);
+          and ($6 or ev.kind <> 'at_risk')
+        order by ev.at, ev.id limit $5`, [binding.id, id, after?.[0] ?? null, after?.[1] ?? null, size + 1, s.access.layers.length > 0])).rows);
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.at_key, r.id]);
     const events = await this.workEventViews(shown, s.access.layers.length > 0);
     // Its evidence, oldest first (PLN16), and its reviews, as every session of the kolab reads them.
@@ -7267,7 +7379,7 @@ export class Kolab {
   private async workItemOf(sessionId: string, binding: NodeRow, id: string): Promise<WorkItemView> {
     const s = await this.session(sessionId);
     const p = (await this.bindingBoard(this.db, binding, { removed: true })).find((x) => x.id === id)!;
-    return this.workItem(p, LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical'), s.access.layers.length > 0);
+    return this.workItemFull(p, LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical'), s.access.layers.length > 0);
   }
 
   /**
@@ -7473,7 +7585,8 @@ export class Kolab {
     const rows =await this.read({ session: sessionId }, async (q) => (await q.query<WorkEventRow & { binding: string }>(
       `select ${WORK_EVENT_COLUMNS}, n.name as binding from work_event ev join node n on n.id = ev.binding_node_id
         where ev.kolab_id = $1 and (ev.assignee_from = $2 or ev.assignee_to = $2) and ev.actor_id <> $2
-        order by ev.at desc, ev.id desc limit 20`, [s.kolab, s.actor_id])).rows);
+          and ($3 or ev.kind <> 'at_risk')
+        order by ev.at desc, ev.id desc limit 20`, [s.kolab, s.actor_id, s.access.layers.length > 0])).rows);
     const views = await this.workEventViews(rows, s.access.layers.length > 0);
     return {
       holding, ...(items.length > 1 ? { also_holding: items.slice(1) } : {}),
@@ -8882,12 +8995,12 @@ export class Kolab {
    * node's id. Addresses are in the short form of the mark's own kolab. The marks in `unnamed` don't
    * name what triggered them: their reader can't read it (marksFor).
    */
-  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string; ids?: string[]; unnamed?: string[] } = {}) {
+  async describeMarks(filter: { layer?: Layer; node?: string; kolab?: string; ids?: string[]; unnamed?: string[]; revisit?: boolean } = {}) {
     const rows = (await this.db.query<MarkRow & {
       node: string; seq: number; layer: Layer; trig_node: string; trig_kolab: string; trig_seq: number;
-      t_element: string | null; t_selector: QuoteSelector | null; cause_count: number; kolab_id: string;
+      t_element: string | null; t_selector: QuoteSelector | null; cause_count: number; kolab_id: string; node_id: string; node_kind: Kind;
     }>(
-      `select i.*, n.name as node, v.seq, v.layer, tn.name as trig_node, tn.kolab_id as trig_kolab, tv.seq as trig_seq,
+      `select i.*, n.name as node, n.id as node_id, n.kind as node_kind, v.seq, v.layer, tn.name as trig_node, tn.kolab_id as trig_kolab, tv.seq as trig_seq,
               e.target_element_id as t_element, e.target_selector as t_selector,
               (select count(*)::int from invalidation_cause c where c.mark_id = i.id) as cause_count
          from invalidation i
@@ -8903,10 +9016,20 @@ export class Kolab {
           and ($4::text[] is null or i.id = any($4))
         order by i.created_at, i.id`, [filter.layer ?? null, filter.node ?? null, filter.kolab ?? null, filter.ids ?? null])).rows;
     const unnamed = new Set(filter.unnamed ?? []);
-    return rows.map((r) => {
+    // A mark on a binding's work package names the package and its state; a mark that puts it at
+    // risk (AT_RISK_REASONS) says so, and, with `revisit`, what to revisit (PLN10, WRK6). Those who
+    // read marks belong to the kolab's work (D58). Only the packages the marks sit on are read.
+    const onWork = rows.filter((r) => r.node_kind === 'binding' && r.element_id && !r.delta_id);
+    const packages = await this.packagesAt(this.db, onWork.map((r) => ({ binding: r.node_id, element: r.element_id! })));
+    const risky = [...packages.values()].filter((p) => p.at_risk);
+    const revisits = filter.revisit && risky.length ? await this.revisitsOf(this.db, risky) : new Map<string, WorkRevisit>();
+    const out: MarkView[] = [];
+    for (const r of rows) {
       const from = r.kolab_id;
       const trig = (a: Omit<Address, 'node' | 'kolab'>) => formatAddress({ kolab: r.trig_kolab, node: r.trig_node, ...a }, { from });
-      return {
+      const p = r.element_id && !r.delta_id ? packages.get(`${r.node_id}#${r.element_id}`) : undefined;
+      const work = p ? formatAddress({ node: p.name, element: p.element }) : '';
+      out.push({
         mark: r.id,
         reason: r.reason,
         ...(r.edge_id ? { link: r.edge_id } : {}),
@@ -8915,8 +9038,19 @@ export class Kolab {
         because: markBecause(r, (linked) => unnamed.has(r.id) ? undefined
           : trig(linked ? { element: r.t_element ?? undefined, selector: r.t_selector ?? undefined } : {})),
         next: NEXT_STEP[r.reason] ?? '',
-      };
-    });
+        ...(p ? {
+          work, work_state: p.state,
+          // Only a mark of a change puts it at risk; another (ruled, role_boundary…) keeps its own next step.
+          ...(p.at_risk && AT_RISK_REASONS.includes(r.reason) ? {
+            at_risk: true as const, ...(revisits.has(p.key) ? { revisit: revisits.get(p.key)! } : {}),
+            next: p.state === 'done'
+              ? `${work} is Done, and at risk (PLN10): check its work (its revisit: repository, commits and files) against the change. If the work holds, konjir_clear_mark mark=${r.id}, which records confirmed; if it doesn't, konjir_reopen_work work=${work} note=<why>, which returns it to To do.`
+              : `${work} is ${STATE_WORDS[p.state]}, and at risk (PLN10): check its work so far (its revisit) against the change, and konjir_clear_mark mark=${r.id} once it holds.`,
+          } : {}),
+        } : {}),
+      });
+    }
+    return out;
   }
 
   /**
@@ -9177,7 +9311,46 @@ export class Kolab {
        values ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]);
     await this.signalLayerOf(tx, signal, m.version_id);
+    if (m.element_id && !m.delta_id) await this.atRiskNoticeIn(tx, signal, id, m.version_id, m.element_id, m.reason, m.triggered_by);
     return id;
+  }
+
+  /**
+   * The at-risk notice (PLN10, W5.2b): mark `markId`, just raised on element `element` of version
+   * `versionId`, puts a work package at risk if the element is one, still its binding's, with work
+   * (In progress, In review or Done; a lease that lapsed reads To do). Told once for each upstream
+   * commit that reaches it: a mark the same commit raised on it before told them already. Kolab
+   * records an `at_risk` event, its state unchanged, with its last assignee on both sides, so it
+   * reaches them in their answers (workNotices). In `tx`, the mark's transaction, as Kolab's trusted role.
+   *
+   * Only a mark of a change (AT_RISK_REASONS) puts work at risk. The package's row is locked (for
+   * update), as pulling, submitting, reviewing, reopening and the lapse sweep lock it, so a change
+   * of its state lands wholly before or after this: whichever goes second sees the other committed.
+   * A pull that takes it first leaves it In progress, and this tells its new assignee; one that comes
+   * after skips it while it is locked, or sees the mark in its answer.
+   */
+  private async atRiskNoticeIn(tx: Q, signal: Signal, markId: string, versionId: string, element: string, reason: string, triggeredBy: string) {
+    if (!AT_RISK_REASONS.includes(reason)) return;
+    const r = (await tx.query<{ node_id: string; kolab_id: string; name: string; state: WorkState; assignee_id: string | null }>(
+      `select v.node_id, n.kolab_id, n.name, case when w.state = 'in_progress' and w.lease_until < clock_timestamp() then 'todo' else w.state end as state, w.assignee_id
+         from version v join node n on n.id = v.node_id
+         join work_package w on w.binding_node_id = n.id and w.element_id = $2
+        where v.id = $1 and v.state = 'committed' and n.kind = 'binding' and not w.milestone and w.removed_in_version_id is null
+        for update of w`, [versionId, element])).rows[0];
+    if (!r || r.state === 'todo' || !r.assignee_id) return;
+    const others = await tx.query(
+      `select 1 from invalidation i join version x on x.id = i.version_id
+        where x.node_id = $1 and x.state = 'committed' and i.element_id = $2 and i.id <> $3 and i.state = 'open' and i.delta_id is null
+          and i.triggered_by = $4 and i.reason in (${AT_RISK_REASONS_SQL})`, [r.node_id, element, markId, triggeredBy]);
+    if (others.rows.length) return;
+    const c = await this.concernedIn(tx, r.node_id, element);
+    await this.workEventIn(tx, { binding: r.node_id, element, kind: 'at_risk', from: r.state, to: r.state, actor: SYSTEM_ACTOR,
+      assigneeFrom: r.assignee_id, assigneeTo: r.assignee_id, version: c.version.id, concerned: c.delivers,
+      note: `mark ${markId} (${reason}): something it serves or relies on changed, so its work is at risk (PLN10). `
+        + (r.state === 'done' ? 'It stays Done: confirm the work holds (konjir_clear_mark), or open new work (konjir_reopen_work)'
+          : r.state === 'in_review' ? 'It waits in review with the mark open, which its reviewers see in it (D102)'
+          : 'Check the work against the change as you go, and clear the mark once it holds (konjir_clear_mark)') });
+    await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
   }
 
   /**
@@ -9313,6 +9486,15 @@ const waitingFor = (layer: Layer, reviewers: string[]) =>
 /** What a commit with no reviewer says (VER11). */
 const NO_REVIEWER = (layer: Layer) =>
   `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`;
+
+/**
+ * An open mark as describeMarks gives it. One on a binding's work package names it (`work`) and its
+ * state; while the package is at risk (PLN10), `at_risk`, what to `revisit`, and `next` says how to settle it.
+ */
+export interface MarkView {
+  mark: string; reason: string; link?: string; dirty: string; layer: Layer; because: string; next: string;
+  work?: string; work_state?: WorkState; at_risk?: true; revisit?: WorkRevisit;
+}
 
 /**
  * Why a mark is open, in words: konjir_list_stale, the inbox and the web page all say it so.
@@ -9705,7 +9887,13 @@ interface BoardPackage {
   /** Its state as read now: a lapsed lease reads as To do. */
   state: WorkState; assignee: string | null; lease_until: string | null;
   delivers: Delivery[]; blocked: BoardBlock[];
+  /** An open mark sits on it (packageMarks): with work, it is at risk (PLN10). */
+  marked: boolean;
 }
+
+/** Whether a board package is at risk (PLN10, W5.2b): it has work (In progress, In review or Done), an open mark, and is still its binding's. */
+const atRisk = (p: Pick<BoardPackage, 'marked' | 'state' | 'row'>) =>
+  p.marked && !p.row.milestone && !p.row.removed_in_version_id && p.state !== 'todo';
 
 interface WorkEventRow {
   id: string; binding_node_id: string; element_id: string; kind: WorkEventKind; from_state: WorkState | null; to_state: WorkState | null;
@@ -9762,8 +9950,18 @@ interface RepositoryRow {
 /** The marks new work on a package answers, as a revision answers them (LNK6, clearAddressed): settled by a reopening (PLN10). */
 const SETTLED_BY_NEW_WORK = `'changed', 'fuzzy_reanchor', 'upstream_dirty', 'query_answered'`;
 
+/**
+ * The reasons of a mark that puts work at risk (PLN10, W5.2b): something the package serves or
+ * relies on changed, or is gone. Not query_answered (an answer to a question the package asked is
+ * news for it, not a change under its work: its mark says to read the answer), nor ruled,
+ * role_boundary, access_lost or rebase_failed, each of which has its own way to settle
+ * (NEXT_STEP), which clearing alone doesn't, and isn't a change upstream.
+ */
+const AT_RISK_REASONS = ['changed', 'fuzzy_reanchor', 'orphaned', 'upstream_dirty'];
+const AT_RISK_REASONS_SQL = AT_RISK_REASONS.map((r) => `'${r}'`).join(', ');
+
 /** Event kinds whose notes name marks, which a session that holds only Read doesn't read (D58). */
-const MARK_NOTES = new Set<WorkEventKind>(['confirmed', 'reopened']);
+const MARK_NOTES = new Set<WorkEventKind>(['confirmed', 'reopened', 'at_risk']);
 
 /** A state as a sentence says it. */
 const STATE_WORDS: Record<WorkState, string> = { todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done' };

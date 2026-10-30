@@ -287,13 +287,14 @@ export type WorkState = typeof WORK_STATES[number];
 /**
  * What a work package's event records (PLN4, PLN5): its binding adding, removing or restoring it; a
  * pull, a release, a reassignment and a lease that lapsed (PLN14, PLN15); evidence, submission,
- * review and reopening (PLN16, PLN10, W5.1c and W5.2); and a milestone Kolab finds Done, or no
- * longer Done (PLN3). Migration 0030's work_event_kind_check.
+ * review and reopening (PLN16, PLN10, W5.1c and W5.2); a milestone Kolab finds Done, or no
+ * longer Done (PLN3); and a mark that puts work at risk, told to its last assignee (PLN10, W5.2b).
+ * Migration 0035's work_event_kind_check.
  */
 export const WORK_EVENT_KINDS = [
   'added', 'removed', 'restored', 'pulled', 'released', 'reassigned', 'lapsed',
   'evidence', 'submitted', 'approved', 'changes_requested', 'done_unreviewed', 'reopened', 'confirmed',
-  'milestone_done', 'milestone_reopened',
+  'milestone_done', 'milestone_reopened', 'at_risk',
 ] as const;
 export type WorkEventKind = typeof WORK_EVENT_KINDS[number];
 /**
@@ -401,7 +402,32 @@ export interface WorkItemView {
   unreviewed?: boolean;
   /** In progress again after a request for changes (PLN16, PLN18): it doesn't count against its assignee's one pull. */
   returned?: boolean;
+  /**
+   * At risk (PLN10, W5.2b): it has work (In progress, In review or Done) and an open mark says
+   * something it serves or relies on changed since. Done stays Done. Told only to those who belong
+   * to the kolab's work, who read marks (D58).
+   */
+  at_risk?: true;
+  /** While at risk: the work to look at again, from its evidence since it was last To do (PLN10, WRK6). */
+  revisit?: WorkRevisit;
 }
+/**
+ * What to revisit on an at-risk work package (PLN10, WRK6): the work its evidence names since it was
+ * last To do. Kolab reads no repository (D36): these are the claims its assignee recorded.
+ */
+export interface WorkRevisit {
+  /** The repository the work is in: the one its commits and pull requests name, else the package's own; null with neither. */
+  repository: string | null;
+  /** Its commits' SHAs, in the order they were recorded. */
+  commits: string[];
+  /** The paths its commits touched, sorted; at most REVISIT_FILES, with `files_more` counting the rest. */
+  files: string[];
+  files_more?: number;
+  /** Its pull requests' links, in the order they were recorded. */
+  pull_requests: string[];
+}
+/** At most this many files in a revisit (WorkRevisit). */
+export const REVISIT_FILES = 200;
 /** One event of a work package (PLN5), oldest first. */
 export interface WorkEventView {
   id: string; kind: WorkEventKind; from: WorkState | null; to: WorkState | null; actor: string; at: string;

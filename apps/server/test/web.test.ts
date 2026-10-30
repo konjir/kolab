@@ -931,6 +931,32 @@ test('a binding\'s page shows each work package\'s state on its latest version, 
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work_state' in e))).toBe(true);
 });
 
+test('a binding\'s page shows a work package with work at risk while a mark is open on it (W5.2b, PLN10)', async () => {
+  const { kolab, engineer } = await specAndBinding();
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const v1 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Refund on cancel.', work: {} },
+  ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }, { kind: 'dependency', sourceElement: 'W2', target: b, targetElement: 'b2' }] });
+  expect((await kolab.submit(engineer, v1)).ok).toBe(true);
+  await kolab.pullWork(engineer);
+  // b1 and b2 change: W1, In progress, is at risk; W2, To do, isn't.
+  await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'orders.status allows cancel from Open and Packed.' },
+    { kind: 'override', element: 'b2', text: 'Refunds go through the refunds queue.' }] });
+  const base = await serve(kolab);
+  const bob = await signIn(base, engineer);
+  const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
+  expect(view.elements.filter((e) => e.work_state).map((e) => [e.id, e.work_state?.state, e.work_state?.at_risk])).toStrictEqual([
+    ['W1', 'in_progress', true], ['W2', 'todo', undefined],
+  ]);
+  // A person who holds only Read reads no mark (D58), so no package of theirs shows at risk.
+  await people(kolab, 'ria', { level: 'read' });
+  const ria = await signIn(base, await kolab.openSession('ria', 'engineer'));
+  const asRia = (await ria.call<WebNodeView>('nodes/orders-pg')).body;
+  expect(asRia.elements.filter((e) => e.work_state).map((e) => [e.id, e.work_state?.state, e.work_state?.at_risk])).toStrictEqual([
+    ['W1', 'in_progress', undefined], ['W2', 'todo', undefined],
+  ]);
+});
+
 test('the page resubmits a returned binding draft whose milestone became a work package, carrying the link it relies on (verification Low 1)', async () => {
   const { kolab, engineer } = await specAndBinding();
   await kolab.commit(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' }, { id: 'W1', text: 'Build it.', work: {} }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
