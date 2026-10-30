@@ -160,6 +160,13 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   archiveRepository: { recorded: ['repository.archived_by', 'audit_event:repository.archived'] },
   // A lease that lapsed goes back as Kolab's (PLN15): its event names `kolab`.
   sweepLapsedLeases: { recorded: ['work_event.actor_id'] },
+
+  // ---- jobs (W5.4a; D103, D104, JOB1–JOB3): a job names its person; its agent, made, granted and
+  // signed in by that person; what the agent pulls, as itself; and whoever ended it ----
+  takeJob: { recorded: ['job.person_id', 'actor.created_by', 'audit_event:grant.set', 'session.opened_by', 'work_event.actor_id', 'review_request.reviewer_id'] },
+  endJob: { recorded: ['job.ended_by', 'session.ended_by', 'work_event.actor_id'] },
+  // A job whose lease lapsed ends as Kolab's: its end, its session's and its package's event name `kolab`.
+  sweepLapsedJobs: { recorded: ['job.ended_by', 'session.ended_by', 'work_event.actor_id'] },
 };
 
 /**
@@ -167,6 +174,6 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
  * sessions that can no longer reach their kolab, recorded as by `kolab` (session.ended_by),
  * freeing this process's outbox claims as it closes, and renewing the lease on the work a
  * session's own actor holds as it calls Kolab (PLN15, D98), which changes no state and so records
- * no event. A method that writes only through these needs no entry in WRITE_ACTORS.
+ * no event; and so renewing a job's lease, by its agent's calls or its runner's heartbeat (JOB1). A method that writes only through these needs no entry in WRITE_ACTORS.
  */
-export const SYSTEM_WRITES = ['endUnreachable', 'freeClaims', 'renewLease'] as const;
+export const SYSTEM_WRITES = ['endUnreachable', 'freeClaims', 'renewLease', 'renewJobLease'] as const;

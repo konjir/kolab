@@ -192,3 +192,70 @@ test('in a shell: konjir add_evidence and submit_work take evidence as JSON', as
   expect(added).toMatchObject({ work: 'kj:orders-pg#W1', recorded: 1 });
   expect(submitted).toMatchObject({ work: 'kj:orders-pg#W1', state: 'in_review' });
 });
+
+test('over MCP: a person takes a job, its agent works with the token it gives, and the runner renews, lists and ends it (W5.4a; JOB1–JOB3)', async () => {
+  const { server, pm, eng, lead } = await planned();
+  // A session that can't write the technical layer takes no job.
+  expect(await rejection(call(pm.c, 'take_job', { machine: 'x' }))).toMatch(/pm may not write the technical layer of kolab test, so it takes no job/);
+  const job = await call(lead.c, 'take_job', { machine: 'lead-laptop' }) as Record<string, string>;
+  expect(job).toMatchObject({ taken: true, kind: 'build', item: 'kj:orders-pg#W1', agent: 'lead-engineer-1', trailer: 'Konjir-Work: kj:test/orders-pg#W1' });
+  expect(job.instructions).toMatch(/konjir work deliver kj:orders-pg#W1 --submit/);
+  // The agent signs in with its token: it holds W1.
+  const agent = await connect(server.url, job.token);
+  closeAtEnd(agent);
+  expect(await call(agent, 'whoami', {})).toMatchObject({ actor: 'lead-engineer-1', owner: 'lead', role: 'engineer' });
+  expect(await call(agent, 'list_work', { mine: true })).toMatchObject({ work: [{ id: 'W1', assignee: 'lead-engineer-1' }] });
+  // The agent's own session takes no job.
+  expect(await rejection(call(agent, 'take_job', { machine: 'x' }))).toMatch(/lead-engineer-1 is an agent, and an agent takes no job/);
+  expect(await call(lead.c, 'renew_job', { job: job.job })).toMatchObject({ job: job.job, lease_until: expect.any(String) });
+  expect(await call(eng.c, 'list_jobs', { live: true })).toMatchObject({
+    jobs: [{ job: job.job, person: 'lead', machine: 'lead-laptop', agent: 'lead-engineer-1', kind: 'build', item: 'kj:orders-pg#W1' }],
+    queue: { review: 0, build: 1 }, caps: { person: { live: 0, max: 4 }, kolab: { live: 1, max: 8 } }, next: null,
+  });
+  expect(await call(lead.c, 'end_job', { job: job.job, outcome: 'stopped', note: 'Enough for today.' }))
+    .toStrictEqual({ job: job.job, ended: true, outcome: 'stopped', released: 'kj:orders-pg#W1', state: 'todo' });
+  // Its session ended with the job.
+  expect(await rejection(call(agent, 'whoami', {}))).toMatch(/invalid|expired|401|Unauthorized/i);
+});
+
+test('over MCP: the admin token takes no job (JOB2)', async () => {
+  const { server } = await planned();
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(admin);
+  expect(await rejection(call(admin, 'take_job', { machine: 'x' }))).toMatch(/this tool needs an agent session token, not the admin token/);
+});
+
+test('with hand-issued tokens off, a job\'s token stands while its job is live and its runner signed in, and not after it ends, lapses, or its runner signs out (JOB2, JOB3)', async () => {
+  const { kolab, lead } = await planned();
+  const strict = await startServer({ adminToken: ADMIN, kolab, handIssuedTokens: false });
+  closeAtEnd(strict);
+  const works = async (token: string) => {
+    const c = await connect(strict.url, token).catch(() => undefined);
+    if (!c) return false;
+    closeAtEnd(c);
+    return call(c, 'whoami', {}).then(() => true, () => false);
+  };
+  // The runner's own hand-issued token is refused there; its job's agent token stands.
+  expect(await works(lead.token)).toBe(false);
+  const a = await kolab.takeJob(lead.token, { machine: 'lead-laptop' });
+  if (!a.taken) throw new Error(a.why);
+  expect(a.now).toEqual(expect.any(String));
+  expect(await works(a.token)).toBe(true);
+  // Ended: refused.
+  await kolab.endJob(lead.token, { job: a.job, outcome: 'stopped' });
+  expect(await works(a.token)).toBe(false);
+  // Lapsed, even before the sweep: refused.
+  const b = await kolab.takeJob(lead.token, { machine: 'lead-laptop' });
+  if (!b.taken) throw new Error(b.why);
+  expect(await works(b.token)).toBe(true);
+  await kolab.db.query(`update job set lease_until = clock_timestamp() - interval '1 second' where id = $1`, [b.job]);
+  expect(await works(b.token)).toBe(false);
+  await kolab.sweepLapsedJobs();
+  // Its runner signs out: refused, and the job has stopped.
+  const c = await kolab.takeJob(lead.token, { machine: 'lead-laptop' });
+  if (!c.taken) throw new Error(c.why);
+  expect(await works(c.token)).toBe(true);
+  await kolab.endSession(lead.token);
+  expect(await works(c.token)).toBe(false);
+  expect((await kolab.db.query(`select outcome from job where id = $1`, [c.job])).rows).toStrictEqual([{ outcome: 'stopped' }]);
+});

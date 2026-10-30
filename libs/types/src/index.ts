@@ -342,6 +342,37 @@ export interface RepositoryView {
 /** A kolab's lease on In progress work (PLN15), in minutes: 30 by default, from 1 to 1,440 (a day). */
 export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;
 /**
+ * What a job does (JOB1, D103): build a work package, or answer a review request (a work package
+ * In review, or a technical version in review). Migration 0034's job_kind_check.
+ */
+export const JOB_KINDS = ['build', 'review'] as const;
+export type JobKind = typeof JOB_KINDS[number];
+/**
+ * How a job ended (JOB1): its package submitted, its review given, its item released back to the
+ * queue, its lease lapsed, or its runner stopped it with the item untouched. Migration 0034's job_outcome_check.
+ */
+export const JOB_OUTCOMES = ['submitted', 'reviewed', 'released', 'lapsed', 'stopped'] as const;
+export type JobOutcome = typeof JOB_OUTCOMES[number];
+/** What a runner says as it ends a job (konjir_end_job): its agent finished, it stopped it, or the agent failed. Migration 0034's job_said_check. */
+export const JOB_ENDS = ['done', 'stopped', 'failed'] as const;
+export type JobEnd = typeof JOB_ENDS[number];
+/**
+ * How many jobs may be live at once (JOB3; AUT7's defaults, constants until P23 makes them
+ * settings): per person, across every kolab, and per kolab. A job lasts at most `maxHours`, however
+ * often its lease is renewed (JOB1), and a runner's machine label is 1 to `machine` characters.
+ */
+export const JOB_LIMITS = { perPerson: 4, perKolab: 8, maxHours: 4, machine: 64 } as const;
+/** Live jobs against their cap: a person's, and the kolab's (JOB3). */
+export interface JobCaps { person: { live: number; max: number }; kolab: { live: number; max: number } }
+/** One job as konjir_list_jobs shows it (JOB1). */
+export interface JobView {
+  job: string; person: string; machine: string; agent: string; kind: JobKind;
+  /** Its item: a work package, kj:<binding>#<id>, or a version in review, kj:<node>@<seq>. */
+  item: string;
+  started_at: string; lease_until: string;
+  ended_at?: string; outcome?: JobOutcome;
+}
+/**
  * Why a work package is blocked (PLN19, as D98 and D104 amend it): a work package it depends on
  * isn't Done, or an open question or case file sits on it or on an element it serves or relies on. A session that
  * holds only Read is told neither an open case file nor a question a mark raised (0013, 0022; D58).

@@ -13,6 +13,7 @@ import {
   canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, milestoneStates, naturalCompare, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
+import { buildInstructions, jobMachine, jobOutcome, poolLabel, reviewInstructions } from './jobs.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -22,6 +23,7 @@ import {
   type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
+  JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
   MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
 } from '@konjir/types';
 
@@ -1117,11 +1119,12 @@ export class Kolab {
         } catch (e) {
           if (!this.closed) log.error('the outbox worker could not read the outbox', { error: e });
         }
-        // Leases on work that lapsed go back to To do on the same timer (PLN15, D98).
+        // Leases on work that lapsed go back to To do on the same timer (PLN15, D98), and jobs whose lease lapsed end (JOB1).
         try {
+          await this.sweepLapsedJobs();
           await this.sweepLapsedLeases();
         } catch (e) {
-          if (!this.closed) log.error('the outbox worker could not sweep lapsed work leases', { error: e });
+          if (!this.closed) log.error('the outbox worker could not sweep lapsed work leases and jobs', { error: e });
         }
       } while (w.again && !this.closed && !this.stopping);
     })().finally(() => { w.running = undefined; void this.scheduleWorker(); });
@@ -1143,6 +1146,11 @@ export class Kolab {
         `select extract(epoch from min(w.lease_until) - clock_timestamp()) * 1000 as ms
            from work_package w where w.state = 'in_progress' and not ${archivedKolabSql('w.kolab_id')}`)).rows[0]?.ms;
       if (lease !== null && lease !== undefined) ms = Math.min(ms, Math.max(20, Math.ceil(Number(lease)) + 5));
+      // And when the next job's lease lapses (JOB1).
+      const job = (await this.db.query<{ ms: number | string | null }>(
+        `select extract(epoch from min(j.lease_until) - clock_timestamp()) * 1000 as ms
+           from job j where j.ended_at is null and not ${archivedKolabSql('j.kolab_id')}`)).rows[0]?.ms;
+      if (job !== null && job !== undefined) ms = Math.min(ms, Math.max(20, Math.ceil(Number(job)) + 5));
     } catch { /* the next pass reads it again */ }
     if (this.closed || this.stopping || w.running) return;
     clearTimeout(w.timer);
@@ -1576,7 +1584,7 @@ export class Kolab {
    * every write after: it is its own grant, never more than its owner's (D30). `by` is who opened
    * it (W2.20).
    */
-  async openSession(actorId: string, role: Role, opts: { kolab?: string; by: Doer }): Promise<string> {
+  async openSession(actorId: string, role: Role, opts: { kolab?: string; by: Doer; until?: Date | string }): Promise<string> {
     const by = doer(opts?.by);
     const actor = await this.findActor(actorId);
     if (!actor) throw new ActorError(`no actor ${actorId}; add it first`);
@@ -1603,7 +1611,8 @@ export class Kolab {
         // A hand-issued session of theirs that expired is over (W2.22): it is ended now, so it holds no place (ENF4).
         await tx.query(`update session set ended_at = now(), ended_by = $2
           where actor_id = $1 and ended_at is null and grant_id is null and expires_at <= now()`, [actorId, by]);
-        await insertSession(tx, id, { actor: actorId, role, kolab: kolab!, ttlS: this.sessions.handIssuedTtlS, by });
+        // A job's session (JOB3) ends with its job, at the latest when the job's four hours are up.
+        await insertSession(tx, id, { actor: actorId, role, kolab: kolab!, ...(opts.until === undefined ? { ttlS: this.sessions.handIssuedTtlS } : { until: opts.until }), by });
         await this.signalRequestsOf(tx, signal, actorId);
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
@@ -1644,6 +1653,8 @@ export class Kolab {
       const key = r.rows[0]?.id ?? null;
       if (key) await signal({ session: 'ended', id: key });
       if (key) await this.signalRequestsOf(tx, signal, r.rows[0].actor_id);
+      // The jobs it ran end with it, and their agents' sessions (JOB2).
+      if (key) await this.endRunnersJobsIn(tx, signal, [key], by ?? r.rows[0].actor_id);
       return key;
     });
   }
@@ -1677,17 +1688,21 @@ export class Kolab {
    * undefined. `admin` says what admin the session may run (W2.22, D69): none; `eligible`, a
    * Konjir admin's own session, signed in with the identity provider, that may ask to be raised
    * (requestRaise, completed in a browser); or `raised`, such a session raised and not yet lapsed, which runs the admin verbs.
-   * An agent's session, and a hand-issued one, is never either.
+   * An agent's session, and a hand-issued one, is never either. `job`: the session is a live job's
+   * agent's, opened by Kolab for it (JOB3), whose lease still runs and whose runner's session is still
+   * open: a Kolab that turns hand-issued tokens off still takes it, and only then.
    */
-  async liveSession(token: string): Promise<{ id: string; expiresAt: Date | null; granted: boolean; actor: string; admin: 'none' | 'eligible' | 'raised' } | undefined> {
-    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean; actor: string; eligible: boolean; raised: boolean }>(
+  async liveSession(token: string): Promise<{ id: string; expiresAt: Date | null; granted: boolean; job: boolean; actor: string; admin: 'none' | 'eligible' | 'raised' } | undefined> {
+    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean; job: boolean; actor: string; eligible: boolean; raised: boolean }>(
       `select s.id, s.expires_at, s.grant_id is not null as granted, s.actor_id as actor,
+              exists (select 1 from job j join session r on r.id = j.runner_session_id left join oauth_grant rg on rg.id = r.grant_id
+                       where j.session_id = s.id and j.ended_at is null and j.lease_until > now() and ${RUNNER_OPEN}) as job,
               (a.kind = 'person' and s.grant_id is not null and exists (select 1 from konjir_admin k where k.actor_id = s.actor_id)) as eligible,
               coalesce(s.admin_until > now(), false) as raised
          from session s join actor a on a.id = s.actor_id where ${LIVE_SESSION}`, [sessionKey(token)]);
     const row = r.rows[0];
     return row && {
-      id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted, actor: row.actor,
+      id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted, job: row.job, actor: row.actor,
       admin: !row.eligible ? 'none' : row.raised ? 'raised' : 'eligible',
     };
   }
@@ -1730,6 +1745,8 @@ export class Kolab {
     // prompts renews nothing (quietly, D98, D100).
     // Only while it may still write the technical layer: an actor that can't write keeps no work (D98).
     if (!QUIET.getStore() && s.access.layers.includes('technical')) await this.renewLease(s.actor_id, s.kolab);
+    // An agent's call renews its job's lease too (JOB1), as its runner's heartbeat does.
+    if (!QUIET.getStore() && s.kind === 'agent') await this.renewJobLease({ session: s.id });
     return s;
   }
 
@@ -2461,6 +2478,8 @@ export class Kolab {
       for (const { id, actor_id } of (await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now(), ended_by = $2 where grant_id = $1 and ended_at is null returning id, actor_id`, [grantId, by])).rows) {
         await signal({ session: 'ended', id });
         await this.signalRequestsOf(tx, signal, actor_id);
+        // The jobs it ran end with it, and their agents' sessions (JOB2).
+        await this.endRunnersJobsIn(tx, signal, [id], by);
       }
     });
   }
@@ -2471,7 +2490,7 @@ export class Kolab {
    * actor's (D52), and not in another account's namespace, `<their name>-*`; a person has at most
    * `oauth.agentsPerPerson` live agents (archiving one frees its place), and makes at most 3 in 10 minutes.
    */
-  async addOwnAgent(person: string, label: string): Promise<string> {
+  async addOwnAgent(person: string, label: string, opts: { pool?: boolean } = {}): Promise<string> {
     const p = await this.actor(person);
     if (p.kind !== 'person') throw new AccessError(`${person} is an agent: only a person makes agents`);
     if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent name: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
@@ -2503,7 +2522,8 @@ export class Kolab {
           `select count(*) filter (where not kj_actor_archived(id))::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
              from actor where owner_id = $1`, [person])).rows[0];
         if (c.owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}): archive one you no longer use`);
-        if (c.recent >= 3) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
+        // A pool agent a job makes is exempt from the rate (JOB3): the cap still holds.
+        if (c.recent >= 3 && !opts.pool) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
         await tx.query(`insert into actor(id, name, kind, owner_id, created_by) values ($1, $1, 'agent', $2, $2)`, [id, person]);
       });
     } catch (e) {
@@ -3084,6 +3104,8 @@ export class Kolab {
       if (archive && (kind === 'kolab' || kind === 'organization')) {
         const going = kind === 'kolab' ? [name]
           : (await tx.query<{ id: string }>(`select id from kolab where owner_id = $1 and archived_at is null`, [name])).rows.map((x) => x.id);
+        // Its live jobs end first, with their agents' sessions (JOB3): an archived kolab runs none.
+        await this.endArchivedJobsIn(tx, signal, going, by);
         await this.releaseArchivedWorkIn(tx, signal, going);
       }
       let changed: { rows: unknown[] };
@@ -6605,6 +6627,8 @@ export class Kolab {
     return QUIET.run(true, async () => {
       const p = await this.packageIn(sessionId, ref);
       if (loud && p.s.access.layers.includes('technical')) await this.renewLease(p.s.actor_id, p.s.kolab, { binding: p.binding.id, element: p.id });
+      // And its job's, for a job's agent (JOB1): read quietly above, so session() renewed none.
+      if (loud && p.s.kind === 'agent') await this.renewJobLease({ session: p.s.id });
       return fn(p);
     });
   }
@@ -7129,7 +7153,7 @@ export class Kolab {
    * one_pulled_per_actor refuses a second package to one actor pulling twice at once. With
    * nothing ready, it says why. A pull counts as a draft against the actor's hourly budget (W2.21).
    */
-  async pullWork(sessionId: string, opts: { binding?: string } = {}): Promise<
+  async pullWork(sessionId: string, opts: { binding?: string; skip?: ReadonlySet<string> } = {}): Promise<
     | { pulled: true; item: WorkItemView; trailer: string; context: Awaited<ReturnType<Kolab['workContext']>> }
     | { pulled: false; why: string; counts: Record<string, number> }> {
     const s = await this.session(sessionId);
@@ -7163,6 +7187,8 @@ export class Kolab {
         const board = await this.bindingBoard(tx, binding);
         for (const p of board) {
           if (p.state !== 'todo' || p.row.removed_in_version_id || p.row.milestone || p.blocked.length) continue;
+          // A job's pull passes over the packages Kolab holds back from jobs (JOB2: two failed jobs in the last hour).
+          if (opts.skip?.has(`${binding.id}#${p.id}`)) continue;
           const r = (await tx.query<{ state: WorkState; removed_in_version_id: string | null; milestone: boolean }>(
             `select state, removed_in_version_id, milestone from work_package where binding_node_id = $1 and element_id = $2 for update skip locked`,
             [binding.id, p.id])).rows[0];
@@ -7365,7 +7391,9 @@ export class Kolab {
    * (`lapsed`, with whose lease and when), in `version` (the binding version it stood in; by default
    * the binding's latest committed), and told to its assignee's answers and the technical inbox.
    */
-  private async lapseIn(tx: Q, signal: Signal, r: LapsedRow, version?: VersionRow) {
+  private async lapseIn(tx: Q, signal: Signal, r: LapsedRow, version?: VersionRow, note?: string) {
+    // A build job on it ends with it (JOB1): its agent holds the package no longer.
+    await this.endPackageJobIn(tx, signal, r.binding_node_id, r.element_id);
     await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, returned = false, updated_at = clock_timestamp()
                      where binding_node_id = $1 and element_id = $2`, [r.binding_node_id, r.element_id]);
     const c = version
@@ -7374,7 +7402,7 @@ export class Kolab {
       : await this.concernedIn(tx, r.binding_node_id, r.element_id);
     await this.workEventIn(tx, { binding: r.binding_node_id, element: r.element_id, kind: 'lapsed', from: 'in_progress', to: 'todo', actor: SYSTEM_ACTOR,
       assigneeFrom: r.assignee_id, version: c.version.id, concerned: c.delivers,
-      note: `${r.assignee_id}'s lease lapsed at ${iso(r.lease_until)}: no call of theirs renewed it (PLN15)` });
+      note: note ?? `${r.assignee_id}'s lease lapsed at ${iso(r.lease_until)}: no call of theirs renewed it (PLN15)` });
     if (r.assignee_id) await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
     await signal({ inbox: 'layer', kolab: r.kolab_id, layer: 'technical' });
   }
@@ -7415,12 +7443,12 @@ export class Kolab {
     return rows.length;
   }
 
-  /** One package In progress back to To do, as Kolab's (`released`, with `note`), told to its assignee. */
-  private async releaseByKolabIn(tx: Q, signal: Signal, r: HeldRow, note: string) {
+  /** One package In progress back to To do, as Kolab's (`released`, with `note`), or as `actor`'s (a job's runner, JOB2), told to its assignee. */
+  private async releaseByKolabIn(tx: Q, signal: Signal, r: HeldRow, note: string, actor: string = SYSTEM_ACTOR) {
     await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, returned = false, updated_at = clock_timestamp()
                      where binding_node_id = $1 and element_id = $2`, [r.binding_node_id, r.element_id]);
     const c = await this.concernedIn(tx, r.binding_node_id, r.element_id);
-    await this.workEventIn(tx, { binding: r.binding_node_id, element: r.element_id, kind: 'released', from: 'in_progress', to: 'todo', actor: SYSTEM_ACTOR,
+    await this.workEventIn(tx, { binding: r.binding_node_id, element: r.element_id, kind: 'released', from: 'in_progress', to: 'todo', actor,
       assigneeFrom: r.assignee_id, version: c.version.id, concerned: c.delivers, note });
     await signal({ inbox: 'actor', kolab: r.kolab_id, actor: r.assignee_id });
     await signal({ inbox: 'layer', kolab: r.kolab_id, layer: 'technical' });
@@ -8093,6 +8121,687 @@ export class Kolab {
   }
 
   // ---- inspection ----------------------------------------------------------
+
+  // ---- jobs: agents as jobs, Kolab the queue and the ledger (W5.4a; D103, D104, JOB1–JOB3) ----
+
+  /**
+   * How many jobs may be live at once and how long one lasts (JOB1, JOB3; AUT7's defaults, from
+   * JOB_LIMITS): per person, across every kolab, per kolab, and at most four hours a job, however
+   * often its lease is renewed. Constants until P23 makes them settings.
+   */
+  readonly jobLimits: { perPerson: number; perKolab: number; maxS: number } = {
+    perPerson: JOB_LIMITS.perPerson, perKolab: JOB_LIMITS.perKolab, maxS: JOB_LIMITS.maxHours * 3600,
+  };
+
+  /**
+   * A person's own session takes the next item for one of their pool agents to do, and starts a job
+   * on it (JOB2, D103): never an agent's session, and only with Write on the technical layer. In
+   * this order: a work package returned with changes requested to a free pool agent of the person's,
+   * resumed as that agent; then a work package In review or a technical version in review (oldest
+   * first) that a free agent of the person's pool may review, not its author (VER16); then the
+   * first ready work package (PLN17), pulled for the job's agent exactly as konjir_pull_work pulls
+   * (PLN18). An item whose last two jobs, by anyone, ended in the last hour without doing it is held
+   * back, so one that fails every time isn't taken first forever; the refusal counts them.
+   *
+   * Kolab picks the agent (JOB3): a free pool agent, `<person>-engineer-<n>`, with no live job, no
+   * open session and no work package In progress, made on first need (addOwnAgent, within a
+   * person's live agents, exempt from the creation rate) and granted in the kolab as consent grants
+   * one (grantOwnAgent: never more than the person, at most Write). It opens the agent's session
+   * there, its only one (ENF4), which ends with the job; its token is returned here, once. A review
+   * job's agent is given a review request if none addresses it, so it can give the review (VER17).
+   * Refused past JOB3's caps, saying why; with nothing to take, it says why, as a pull does. `now`
+   * is the database's clock, for the runner's heartbeat.
+   */
+  async takeJob(sessionId: string, input: { machine: unknown }): Promise<TakeJobResult> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') {
+      throw new AccessError(`${s.actor_id} is an agent, and an agent takes no job: a person's own session takes jobs, for their pool agents to do (D103, JOB2)`);
+    }
+    const { machine, problem } = jobMachine(input.machine);
+    if (problem) throw new GateError(problem);
+    if (!s.access.layers.includes('technical')) {
+      throw new AccessError(`${s.actor_id} may not write the technical layer of kolab ${s.kolab}, so it takes no job (JOB2): it holds ${describeAccess(s.access)}`);
+    }
+    await this.requireLiveKolab(s.kolab, 'takes no job');
+    // Jobs and leases already lapsed go back first: their items can be taken, and their agents are free.
+    await this.sweepLapsedJobs();
+    await this.sweepLapsedLeases();
+    const held = await this.heldBackIn(this.db, s.kolab);
+    const refuse = async (why: string, extra: Record<string, number> = {}): Promise<TakeJobResult> => ({
+      taken: false,
+      why: held.count ? `${why}; and ${held.count} item${held.count === 1 ? ' is' : 's are'} held back: the last two jobs on ${held.count === 1 ? 'it' : 'each'} ended in the last hour without doing it (JOB2)` : why,
+      counts: { ...(await this.jobQueue(sessionId, s.kolab, held)).counts, ...extra, held_back: held.count },
+      caps: await this.jobCapsIn(this.db, s.actor_id, s.kolab), now: await this.dbNow(),
+    });
+    const full = jobsFull(await this.jobCapsIn(this.db, s.actor_id, s.kolab), s.kolab);
+    if (full) return refuse(full);
+    let busy: string | undefined;
+    // 1. A package returned to a free agent of the person's, with changes requested: resumed as that agent.
+    for (const r of await this.returnedQueueIn(this.db, s.kolab, s.actor_id, held)) {
+      const got = await this.startJob(s, machine!, { kind: 'resume', item: r });
+      if (!got) continue;
+      if ('why' in got) { if (got.full) return refuse(got.why); continue; }
+      return got;
+    }
+    // 2. A review a free agent of the person's may give (VER16: never its author).
+    for (const r of await this.reviewQueueIn(this.db, s.kolab, held)) {
+      const got = await this.startJob(s, machine!, { kind: 'review', item: r });
+      if (!got) continue;
+      if ('why' in got) {
+        if (got.full) return refuse(got.why);
+        busy = `no agent of yours can review ${r.address}: ${got.why}`;
+        continue;
+      }
+      return got;
+    }
+    // 3. The first ready work package, pulled for the job's agent as konjir_pull_work pulls it.
+    const ready = await this.readyToBuild(sessionId, s.kolab, held);
+    if ('why' in ready) return refuse(busy ? `${busy}; and ${ready.why}` : ready.why, ready.counts);
+    const got = await this.startJob(s, machine!, { kind: 'build', binding: ready.binding, skip: held.packages });
+    if (!got) return refuse(`${ready.binding}'s ready work package went to another job starting at the same moment: take again`);
+    if ('why' in got) return refuse(got.why, got.counts);
+    return got;
+  }
+
+  /** The database's clock now, as ISO text: what a runner measures its heartbeat by (JOB1). */
+  private async dbNow(): Promise<string> {
+    return iso((await this.db.query<{ now: Date }>(`select clock_timestamp() as now`)).rows[0].now)!;
+  }
+
+  /**
+   * Starts one job for the person of `s` (JOB2, JOB3): signs in a pool agent (a returned package's
+   * own holder for a resume), pulls the work for a build, and writes the job. Returns the job; why it
+   * can't start one (`full`: past a cap); or undefined when the item or the agent went to another
+   * job meanwhile. Whatever fails after the agent's session opened gives back what it took: the
+   * session, and a package pulled for it.
+   */
+  private async startJob(s: Session, machine: string,
+    what: { kind: 'resume'; item: ReturnedItem } | { kind: 'review'; item: ReviewItem } | { kind: 'build'; binding: string; skip: ReadonlySet<string> }): Promise<
+    Extract<TakeJobResult, { taken: true }> | { why: string; full?: boolean; counts?: Record<string, number> } | undefined> {
+    const person = s.actor_id;
+    let got: { agent: string; session: string; token: string } | { why: string };
+    if (what.kind === 'resume') {
+      const signed = await this.signInPoolAgent(person, s.kolab, what.item.agent);
+      if (!signed) return undefined;
+      got = signed;
+    } else {
+      got = await this.poolAgent(person, s.kolab, what.kind === 'review' ? { not: what.item.author } : {});
+    }
+    if ('why' in got) return got;
+    const a = got;
+    let pulled: { binding: string; element: string } | undefined;
+    const giveBack = async (note: string) => {
+      await this.inTransaction(async (tx, signal) => {
+        await tx.exec('set local role kj_system');
+        await this.endAgentSessionIn(tx, signal, a.agent, a.session, person);
+        if (!pulled) return;
+        const r = (await tx.query<HeldRow>(`select kolab_id, binding_node_id, element_id, assignee_id from work_package
+                                             where binding_node_id = $1 and element_id = $2 and assignee_id = $3 and state = 'in_progress' for update`,
+        [pulled.binding, pulled.element, a.agent])).rows[0];
+        if (r) await this.releaseByKolabIn(tx, signal, r, note, person);
+      }).catch((e: unknown) => log.error('jobs: a session a job opened was not given back; it ends when it expires', { agent: a.agent, error: e }));
+    };
+    const started = (job: { id: string; lease_until: string; now: string }, kind: JobKind, item: string, instructions: string, trailer?: string) => ({
+      taken: true as const, job: job.id, kind, item, agent: a.agent, token: a.token, lease_until: job.lease_until, instructions, ...(trailer ? { trailer } : {}), now: job.now,
+    });
+    try {
+      if (what.kind === 'review') {
+        const r = what.item;
+        const job = await this.insertJob(s, machine, a, { kind: 'review', binding_node_id: r.binding_node_id, element_id: r.element_id, version_id: r.version_id });
+        if (!job) { await giveBack(`${r.address} went to another job, or left review`); return undefined; }
+        if ('why' in job) { await giveBack(job.why); return { why: job.why, full: true }; }
+        return started(job, 'review', r.address, reviewInstructions({
+          kolab: s.kolab, agent: a.agent, person, item: r.address, subject: r.version_id ? 'version' : 'work', author: r.author,
+          ...(r.version_id ? { node: r.node, seq: r.seq! } : {}),
+        }));
+      }
+      let bindingId: string;
+      let element: string;
+      if (what.kind === 'resume') {
+        bindingId = what.item.binding_node_id;
+        element = what.item.element_id;
+      } else {
+        const p = await this.pullWork(a.token, { binding: what.binding, skip: what.skip });
+        if (!p.pulled) { await giveBack('nothing was ready to pull'); return { why: p.why, counts: p.counts }; }
+        bindingId = (await this.findNode(this.db, s.kolab, p.item.binding))!.id;
+        element = p.item.id;
+        pulled = { binding: bindingId, element };
+      }
+      const job = await this.insertJob(s, machine, a, { kind: 'build', binding_node_id: bindingId, element_id: element, version_id: null });
+      const binding = (await this.db.query<NodeRow>(`select ${NODE_COLUMNS} from node where id = $1`, [bindingId])).rows[0];
+      const work = formatAddress({ node: binding.name, element });
+      if (!job) { await giveBack(`${work} went to another job meanwhile`); return undefined; }
+      if ('why' in job) { await giveBack(`its job could not start: ${job.why}`); return { why: job.why, full: true }; }
+      const p = (await this.bindingBoard(this.db, binding)).find((x) => x.id === element)!;
+      const context = await this.workContext(a.token, p, s.kolab);
+      const trailer = workTrailer(s.kolab, binding.name, element);
+      return started(job, 'build', work, buildInstructions({
+        kolab: s.kolab, agent: a.agent, person, work, text: p.text, done_when: context.done_when, trailer,
+        repository: context.repository?.url ?? null, resumed: what.kind === 'resume',
+      }), trailer);
+    } catch (e) {
+      await giveBack('its job could not start');
+      throw e;
+    }
+  }
+
+  /**
+   * A free pool agent of `person`'s, signed in to `kolab` as an engineer for a job (JOB3), with its
+   * session's key and token: the first by number with no live job, no open session and no work
+   * package In progress (one it holds waits for it to resume it, PLN18), never `not` (a review's
+   * author, VER16); or, with none, a new one, `<person>-engineer-<n>`, while the person has room for
+   * another live agent. Granted what consent grants (grantOwnAgent). Two takes at once never share
+   * one: its one open session (ENF4) and its one live job (JOB1) decide.
+   */
+  private async poolAgent(person: string, kolab: string, opts: { not?: string }): Promise<{ agent: string; session: string; token: string } | { why: string }> {
+    let skip = 0;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const pool = await this.poolOf(person);
+      let agent = pool.agents.find((a) => a.free && !a.holding && a.id !== opts.not)?.id;
+      if (!agent) {
+        if (pool.live >= this.oauth.agentsPerPerson) {
+          return { why: `every pool agent of yours that could take it is busy, and you have ${pool.live} live agents, the most a person may have (${this.oauth.agentsPerPerson}): wait for a job to end, or archive an agent you no longer use` };
+        }
+        const label = poolLabel(pool.next + skip);
+        // Another account's namespace, `<its name>-*`, holds every pool name past it (addOwnAgent): say so, not "taken".
+        const owner = (await this.db.query<{ id: string }>(
+          `select id from account where length(id) > length($2) and left(lower($1), length(id) + 1) = lower(id) || '-' order by length(id) limit 1`,
+          [`${person}-${label}`, person])).rows[0]?.id;
+        if (owner) {
+          return { why: `your pool agents are named ${person}-engineer-<n>, and those names lie in the namespace of the account ${owner} (its names start ${owner}-), so Kolab makes no pool agent for you: ask Konjir's admins about ${owner}, or archive an agent of yours to free one already made` };
+        }
+        try {
+          agent = await this.addOwnAgent(person, label, { pool: true });
+        } catch (e) {
+          // A person or organization holds that very name, or another take made it at the same moment: the next number.
+          if (e instanceof NameTakenError) { skip++; continue; }
+          if (e instanceof ActorError && /live agents/.test(e.message)) return { why: e.message };
+          throw e;
+        }
+      }
+      const signed = await this.signInPoolAgent(person, kolab, agent);
+      if (signed) return signed;
+    }
+    return { why: 'your pool agents all went to jobs starting at the same moment: take again' };
+  }
+
+  /**
+   * Grants `agent`, a pool agent of `person`'s, what consent grants in `kolab` (grantOwnAgent) and
+   * opens its session there as an engineer, lasting at most a job's four hours (JOB3); or undefined
+   * if it already has an open session (ENF4), which another take opened first.
+   */
+  private async signInPoolAgent(person: string, kolab: string, agent: string): Promise<{ agent: string; session: string; token: string } | undefined> {
+    await this.grantOwnAgent(person, agent, kolab);
+    const until = (await this.db.query<{ until: Date }>(`select clock_timestamp() + $1 * interval '1 second' as until`, [this.jobLimits.maxS])).rows[0].until;
+    try {
+      const token = await this.openSession(agent, 'engineer', { kolab, by: person, until });
+      return { agent, session: sessionKey(token), token };
+    } catch (e) {
+      if (e instanceof ActorError && /already has an open session/.test(e.message)) return undefined;
+      throw e;
+    }
+  }
+
+  /**
+   * `person`'s pool (JOB3): their live agents `<person>-engineer-<n>`, by number, each with whether
+   * it is free (no live job and no open session) and whether it holds a work package In progress;
+   * how many live agents the person has, of any label; and the next number to make.
+   */
+  private async poolOf(person: string): Promise<{ agents: { id: string; free: boolean; holding: boolean }[]; live: number; next: number }> {
+    const rows = (await this.db.query<{ id: string; n: number; archived: boolean; busy: boolean; holding: boolean }>(
+      `select a.id, substr(a.id, length($1) + 11)::int as n, kj_actor_archived(a.id) as archived, ${POOL_AGENT_BUSY('a.id')} as busy,
+              exists (select 1 from work_package w where w.assignee_id = a.id and w.state = 'in_progress') as holding
+         from actor a
+        where a.owner_id = $1 and a.kind = 'agent' and ${IS_POOL_AGENT('a.id', '$1')}
+        order by n`, [person])).rows;
+    const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [person])).rows[0].n;
+    return {
+      agents: rows.filter((r) => !r.archived).map((r) => ({ id: r.id, free: !r.busy, holding: r.holding })),
+      live, next: Math.max(0, ...rows.map((r) => r.n)) + 1,
+    };
+  }
+
+  /**
+   * Writes a job (JOB1), under the jobs lock with JOB3's caps counted again, so two takes at once
+   * can't both pass one. Its lease is the kolab's work lease (PLN15), never past the job's four
+   * hours. A review's item must still be in review, and not the agent's own; the agent gets a review
+   * request if none addresses it (VER17), which the job records, to withdraw if no verdict comes. A
+   * build's package must be In progress for the agent, and its lease runs at least as long as the
+   * job's; a build job left live on it by an agent that no longer holds it ends first. Returns the
+   * job, why not (a cap), or undefined when the item went elsewhere meanwhile.
+   */
+  private async insertJob(s: Session, machine: string, a: { agent: string; session: string },
+    item: { kind: JobKind; binding_node_id: string | null; element_id: string | null; version_id: string | null }): Promise<{ id: string; lease_until: string; now: string } | { why: string } | undefined> {
+    const id = ulid();
+    try {
+      return await this.inTransaction(async (tx, signal) => {
+        await tx.query(`select pg_advisory_xact_lock($1)`, [JOB_LOCK]);
+        const full = jobsFull(await this.jobCapsIn(tx, s.actor_id, s.kolab), s.kolab);
+        if (full) return { why: full };
+        const lease = await this.leaseSeconds(tx, s.kolab);
+        await tx.exec('set local role kj_system');
+        let request: string | null = null;
+        if (item.version_id) {
+          const v = (await tx.query<{ state: VersionState; actor_id: string }>(`select state, actor_id from version where id = $1 for share`, [item.version_id])).rows[0];
+          if (v?.state !== 'in_review' || v.actor_id === a.agent) return undefined;
+          request = (await tx.query<{ id: string }>(`insert into review_request(id, version_id, reviewer_id) select $1, $2, $3
+                           where not exists (select 1 from review_request where version_id = $2 and reviewer_id = $3 and state = 'open') returning id`,
+          [ulid(), item.version_id, a.agent])).rows[0]?.id ?? null;
+          await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
+        } else {
+          // The package's row before any job's: every path that ends a build job locks them in that order.
+          const w = (await tx.query<{ state: WorkState; assignee_id: string | null }>(
+            `select state, assignee_id from work_package where binding_node_id = $1 and element_id = $2 for update`, [item.binding_node_id, item.element_id])).rows[0];
+          if (item.kind === 'review') {
+            if (w?.state !== 'in_review' || w.assignee_id === a.agent) return undefined;
+            request = (await tx.query<{ id: string }>(`insert into review_request(id, binding_node_id, element_id, reviewer_id) select $1, $2, $3, $4
+                             where not exists (select 1 from review_request where binding_node_id = $2 and element_id = $3 and reviewer_id = $4 and state = 'open') returning id`,
+            [ulid(), item.binding_node_id, item.element_id, a.agent])).rows[0]?.id ?? null;
+            await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
+          } else {
+            if (w?.state !== 'in_progress' || w.assignee_id !== a.agent) return undefined;
+            const stale = (await tx.query<JobRow>(`select ${JOB_COLUMNS} from job j where j.binding_node_id = $1 and j.element_id = $2 and j.kind = 'build' and j.ended_at is null for update`,
+              [item.binding_node_id, item.element_id])).rows;
+            for (const j of stale) {
+              await this.endJobIn(tx, signal, j, { outcome: 'released', by: SYSTEM_ACTOR, note: `its agent ${j.agent_id} no longer held ${j.item}, which another job took` });
+            }
+          }
+        }
+        const r = (await tx.query<{ lease_until: Date; now: Date }>(
+          `with t as (select clock_timestamp() as at)
+           insert into job(id, kolab_id, person_id, runner_session_id, machine, agent_id, session_id, kind, binding_node_id, element_id, version_id, review_request_id, lease_until, started_at)
+           select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, t.at + least($13::int, $14::int) * interval '1 second', t.at from t
+           returning lease_until, started_at as now`,
+        [id, s.kolab, s.actor_id, s.id, machine, a.agent, a.session, item.kind, item.binding_node_id, item.element_id, item.version_id, request, lease, this.jobLimits.maxS])).rows[0];
+        if (item.kind === 'build') {
+          // A package resumed may have little of its lease left: it runs at least as long as its job's.
+          await tx.query(`update work_package set lease_until = greatest(lease_until, $3), touched_at = clock_timestamp(), updated_at = clock_timestamp()
+                           where binding_node_id = $1 and element_id = $2`, [item.binding_node_id, item.element_id, r.lease_until]);
+        }
+        return { id, lease_until: iso(r.lease_until)!, now: iso(r.now)! };
+      });
+    } catch (e) {
+      // The item, or the agent, has a live job already: another take reached it first.
+      if (['one_live_job_per_package', 'one_live_job_per_version', 'one_live_job_per_agent'].some((n) => isUniqueViolation(e, n))) return undefined;
+      throw e;
+    }
+  }
+
+  /**
+   * The items held back from jobs in `kolab` (JOB2): each work package or version whose last two
+   * jobs, by anyone, both ended in the last hour without doing it (anything but submitted or
+   * reviewed), so a take moves on rather than start it a third time. A job lasts at most four hours,
+   * so the jobs that started in the last five are enough to find each item's last two.
+   */
+  private async heldBackIn(q: Q, kolab: string): Promise<HeldBack> {
+    const rows = (await q.query<{ binding_node_id: string | null; element_id: string | null; version_id: string | null }>(
+      `select binding_node_id, element_id, version_id from (
+         select j.binding_node_id, j.element_id, j.version_id, j.outcome, j.ended_at,
+                row_number() over (partition by j.version_id, j.binding_node_id, j.element_id order by j.started_at desc, j.id desc) as n
+           from job j where j.kolab_id = $1 and j.started_at > now() - interval '5 hours') x
+        where x.n <= 2
+        group by binding_node_id, element_id, version_id
+       having count(*) filter (where x.outcome not in ('submitted', 'reviewed') and x.ended_at > now() - interval '1 hour') = 2`, [kolab])).rows;
+    const out: HeldBack = { packages: new Set(), versions: new Set(), count: rows.length };
+    for (const r of rows) {
+      if (r.version_id) out.versions.add(r.version_id); else out.packages.add(`${r.binding_node_id}#${r.element_id}`);
+    }
+    return out;
+  }
+
+  /**
+   * The work packages a job may resume in `kolab` for `person` (JOB2, PLN18): each returned to its
+   * holder by a request for changes, its lease still running, held by a pool agent of the person's
+   * that is free, and not held back; the longest waiting first.
+   */
+  private async returnedQueueIn(q: Q, kolab: string, person: string, held: HeldBack): Promise<ReturnedItem[]> {
+    return (await q.query<ReturnedItem>(
+      `select w.binding_node_id, w.element_id, w.assignee_id as agent from work_package w join actor a on a.id = w.assignee_id join node n on n.id = w.binding_node_id
+        where w.kolab_id = $1 and w.state = 'in_progress' and w.returned and w.lease_until >= clock_timestamp()
+          and a.owner_id = $2 and a.kind = 'agent' and ${IS_POOL_AGENT('a.id', '$2')} and not kj_actor_archived(a.id) and not ${POOL_AGENT_BUSY('a.id')}
+          and not exists (select 1 from job j where j.ended_at is null and j.binding_node_id = w.binding_node_id and j.element_id = w.element_id)
+        order by w.touched_at, n.name, w.element_id`, [kolab, person])).rows
+      .filter((r) => !held.packages.has(`${r.binding_node_id}#${r.element_id}`));
+  }
+
+  /**
+   * The reviews a job may take in `kolab` (JOB2), oldest first: each work package In review and each
+   * technical version in review that no live job holds and that isn't held back, with its author (a
+   * package's assignee, a version's author), whom no job reviews it as (VER16).
+   */
+  private async reviewQueueIn(q: Q, kolab: string, held: HeldBack): Promise<ReviewItem[]> {
+    const rows = (await q.query<Omit<ReviewItem, 'address'>>(
+      `select x.binding_node_id, x.element_id, x.version_id, x.node, x.seq, x.author from (
+         select w.binding_node_id, w.element_id, null::text as version_id, n.name as node, null::int as seq, w.assignee_id as author,
+                coalesce((select min(r.created_at) from review_request r where r.binding_node_id = w.binding_node_id and r.element_id = w.element_id and r.state = 'open'), w.updated_at) as since
+           from work_package w join node n on n.id = w.binding_node_id
+          where w.kolab_id = $1 and w.state = 'in_review' and w.removed_in_version_id is null and w.assignee_id is not null
+            and not exists (select 1 from job j where j.ended_at is null and j.binding_node_id = w.binding_node_id and j.element_id = w.element_id)
+         union all
+         select null, null, v.id, n.name, v.seq, v.actor_id,
+                coalesce((select min(r.created_at) from review_request r where r.version_id = v.id and r.state = 'open'), v.created_at)
+           from version v join node n on n.id = v.node_id
+          where v.kolab_id = $1 and v.state = 'in_review' and v.layer = 'technical'
+            and not exists (select 1 from job j where j.ended_at is null and j.version_id = v.id)
+       ) x order by x.since, x.node, x.element_id nulls first, x.seq`, [kolab])).rows;
+    return rows
+      .filter((r) => (r.version_id ? !held.versions.has(r.version_id) : !held.packages.has(`${r.binding_node_id}#${r.element_id}`)))
+      .map((r) => ({
+        ...r, address: r.version_id ? formatAddress({ node: r.node, version: r.seq! }) : formatAddress({ node: r.node, element: r.element_id! }),
+      }));
+  }
+
+  /**
+   * What a build job would pull in the session's kolab (JOB2): the binding holding the first ready work
+   * package that isn't held back, as the board reads it for an engineer who may pull (PLN13, PLN17),
+   * and how many are ready; or, with none, why, binding by binding, with the counts a pull gives.
+   */
+  private async readyToBuild(sessionId: string, kolab: string, held: HeldBack): Promise<{ binding: string; ready: number } | { why: string; counts: Record<string, number> }> {
+    const bindings = await this.bindingsWithWork(sessionId);
+    if (!bindings.length) return { why: `kolab ${kolab} has no work packages, so there is no work to build: a work package is a binding element with a work field (KON5, PLN1)`, counts: {} };
+    const whys: string[] = [];
+    const counts: Record<string, number> = {};
+    let first: string | undefined;
+    let ready = 0;
+    for (const binding of bindings) {
+      const board = await this.bindingBoard(this.db, binding);
+      const n = board.filter((p) => this.workItem(p, true, true).ready && !held.packages.has(`${binding.id}#${p.id}`)).length;
+      if (n) { first ??= binding.name; ready += n; continue; }
+      const empty = nothingReady(binding.name, board);
+      const holding = board.filter((p) => this.workItem(p, true, true).ready).length;
+      whys.push(holding ? `every ready work package in ${binding.name} is held back` : empty.why);
+      for (const [k, v] of Object.entries(empty.counts)) counts[k] = (counts[k] ?? 0) + v;
+    }
+    return first ? { binding: first, ready } : { why: whys.join('; '), counts };
+  }
+
+  /** What jobs may take in the kolab now (JOB2): reviews waiting with no live job, and ready work packages, neither held back; and, for a refusal, the counts a pull gives. */
+  private async jobQueue(sessionId: string, kolab: string, held?: HeldBack): Promise<{ review: number; build: number; counts: Record<string, number> }> {
+    const h = held ?? await this.heldBackIn(this.db, kolab);
+    const review = (await this.reviewQueueIn(this.db, kolab, h)).length;
+    const ready = await this.readyToBuild(sessionId, kolab, h);
+    const build = 'why' in ready ? 0 : ready.ready;
+    return { review, build, counts: { review, ready: build, ...('why' in ready ? ready.counts : {}) } };
+  }
+
+  /** Live jobs against JOB3's caps: `person`'s, across every kolab, and `kolab`'s; an archived kolab's hold none. */
+  private async jobCapsIn(q: Q, person: string, kolab: string): Promise<JobCaps> {
+    const r = (await q.query<{ person: number; kolab: number }>(
+      `select count(*) filter (where person_id = $1)::int as person, count(*) filter (where kolab_id = $2)::int as kolab
+         from job j where j.ended_at is null and (j.person_id = $1 or j.kolab_id = $2) and not ${archivedKolabSql('j.kolab_id')}`, [person, kolab])).rows[0];
+    return { person: { live: r.person, max: this.jobLimits.perPerson }, kolab: { live: r.kolab, max: this.jobLimits.perKolab } };
+  }
+
+  /**
+   * A job's runner renews its lease (konjir_renew_job; JOB1): its heartbeat, beside its agent's
+   * calls. To the kolab's work lease from now, never past the job's four hours; a build's package
+   * lease with it, while its agent holds the package. Only the person's session that took it, and
+   * only while it runs: a job that ended, or whose lease lapsed, is refused, and so is one in an
+   * archived kolab, whose jobs wait. `now` is the database's clock.
+   */
+  async renewJob(sessionId: string, job: string): Promise<{ job: string; lease_until: string; now: string }> {
+    const s = await this.session(sessionId);
+    const j = await this.runnersJob(s, job);
+    if (j.ended_at) throw jobEnded(j);
+    if ((await this.db.query(`select 1 where ${archivedKolabSql('$1::text')}`, [j.kolab_id])).rows.length) {
+      throw new TenancyError(`kolab ${j.kolab_id} is archived, so job ${j.id} is renewed no more: its work waits until the kolab is unarchived`);
+    }
+    const until = await this.renewJobLease({ job: j.id });
+    if (!until) {
+      throw new GateError(`job ${j.id}'s lease lapsed at ${iso(j.lease_until)}, so it has ended: its item went back to the queue. Take another (konjir_take_job)`);
+    }
+    return { job: j.id, lease_until: iso(until.lease_until)!, now: iso(until.now)! };
+  }
+
+  /**
+   * Renews a live job's lease (JOB1): `session`, its agent's session, made a call (only once some of
+   * the lease is spent, so a burst of calls writes once), or `job`, its runner's heartbeat (always).
+   * To the kolab's work lease from now, never past the job's four hours, and only while it still
+   * runs, so a lapsed job is never revived. A build's package lease goes with the heartbeat, while
+   * its agent holds it and its lease runs. Returns the new lease, and the database's clock. An
+   * archived kolab's jobs wait. A failure on an agent's call is logged and fails no call.
+   */
+  private async renewJobLease(which: { session: string } | { job: string }): Promise<{ lease_until: Date; now: Date } | undefined> {
+    const until = `least(clock_timestamp() + k.work_lease_s * interval '1 second', j.started_at + $2 * interval '1 second')`;
+    if ('session' in which) {
+      try {
+        await this.db.query(
+          `update job j set lease_until = ${until} from kolab k
+            where k.id = j.kolab_id and j.session_id = $1 and j.ended_at is null and j.lease_until >= clock_timestamp()
+              and j.lease_until < ${until} - ${LEASE_RENEW_SLACK_S} * interval '1 second' and not ${archivedKolabSql('j.kolab_id')}`, [which.session, this.jobLimits.maxS]);
+      } catch (e) {
+        log.warn('could not renew a job lease', { error: e });
+      }
+      return undefined;
+    }
+    return this.inTransaction(async (tx) => {
+      const r = (await tx.query<{ lease_until: Date; now: Date; agent_id: string; binding_node_id: string | null; element_id: string | null; kind: JobKind }>(
+        `update job j set lease_until = ${until} from kolab k
+          where k.id = j.kolab_id and j.id = $1 and j.ended_at is null and j.lease_until >= clock_timestamp() and not ${archivedKolabSql('j.kolab_id')}
+         returning j.lease_until, clock_timestamp() as now, j.agent_id, j.binding_node_id, j.element_id, j.kind`, [which.job, this.jobLimits.maxS])).rows[0];
+      if (r?.kind === 'build') {
+        await tx.query(`update work_package set lease_until = greatest(lease_until, $4), updated_at = clock_timestamp()
+                         where binding_node_id = $1 and element_id = $2 and assignee_id = $3 and state = 'in_progress' and lease_until >= clock_timestamp()`,
+        [r.binding_node_id, r.element_id, r.agent_id, r.lease_until]);
+      }
+      return r && { lease_until: r.lease_until, now: r.now };
+    });
+  }
+
+  /**
+   * A job's runner ends it (konjir_end_job; JOB2): `outcome` is what the runner says (done, stopped
+   * or failed), with its note. Its agent's session ends. A build's package, if its agent still holds
+   * it In progress, goes back To do, released by the runner with its note; a review's request Kolab
+   * gave the agent is withdrawn if it gave no verdict. Recorded with how it ended (JOB1): submitted
+   * or reviewed when its agent did its item, else stopped or released. Only the person's session
+   * that took it; a job already ended is refused, and so is one in an archived kolab.
+   */
+  async endJob(sessionId: string, input: { job: string; outcome: JobEnd; note?: string }): Promise<{ job: string; ended: true; outcome: JobOutcome; released?: string; state?: string }> {
+    const s = await this.session(sessionId);
+    if (!(JOB_ENDS as readonly unknown[]).includes(input.outcome)) throw new GateError(`outcome is one of ${JOB_ENDS.join(', ')}`);
+    const note = input.note === undefined || input.note === null || !String(input.note).trim() ? null : requireText(input.note, 'a note');
+    const j0 = await this.runnersJob(s, input.job);
+    if (j0.ended_at) throw jobEnded(j0);
+    if ((await this.db.query(`select 1 where ${archivedKolabSql('$1::text')}`, [j0.kolab_id])).rows.length) {
+      throw new TenancyError(`kolab ${j0.kolab_id} is archived, so job ${j0.id} changes no more: it waits until the kolab is unarchived`);
+    }
+    return this.inTransaction(async (tx, signal) => {
+      const j = (await this.lockJobIn(tx, j0.id))!;
+      if (j.ended_at) throw jobEnded(j);
+      await tx.exec('set local role kj_system');
+      const outcome = jobOutcome(j.kind, await this.didItemIn(tx, j), input.outcome);
+      const released = await this.endJobIn(tx, signal, j, {
+        outcome, said: input.outcome, note, by: s.actor_id,
+        releaseNote: note ?? `job ${j.id} on ${j.machine} ended (${input.outcome}) with the work still In progress`,
+      });
+      const state = (j.version_id
+        ? await tx.query<{ state: string }>(`select state from version where id = $1`, [j.version_id])
+        : await tx.query<{ state: string }>(`select state from work_package where binding_node_id = $1 and element_id = $2`, [j.binding_node_id, j.element_id])).rows[0]?.state;
+      return { job: j.id, ended: true as const, outcome, ...(released ? { released: j.item } : {}), ...(state ? { state } : {}) };
+    });
+  }
+
+  /**
+   * Locks job `id` in `tx`, after its package's row (JOB1): every path that ends a build job, a
+   * package's lapse among them, locks the package first, so two never wait on each other. With
+   * `skipLocked`, a job another transaction is ending is left to it (undefined).
+   */
+  private async lockJobIn(tx: Q, id: string, opts: { skipLocked?: boolean } = {}): Promise<JobRow | undefined> {
+    const peek = (await tx.query<{ binding_node_id: string | null; element_id: string | null }>(`select binding_node_id, element_id from job where id = $1`, [id])).rows[0];
+    if (!peek) return undefined;
+    if (peek.binding_node_id) await tx.query(`select 1 from work_package where binding_node_id = $1 and element_id = $2 for update`, [peek.binding_node_id, peek.element_id]);
+    return (await tx.query<JobRow>(`select ${JOB_COLUMNS} from job j where j.id = $1 for update${opts.skipLocked ? ' skip locked' : ''}`, [id])).rows[0];
+  }
+
+  /** Whether job `j`'s agent did its item since the job started, in `tx`: submitted its package, or gave its review. */
+  private async didItemIn(tx: Q, j: JobRow): Promise<boolean> {
+    return (j.kind === 'build'
+      ? await tx.query(`select 1 from work_event where binding_node_id = $1 and element_id = $2 and actor_id = $3 and at >= $4 and kind in ('submitted', 'done_unreviewed')`,
+        [j.binding_node_id, j.element_id, j.agent_id, j.started_at])
+      : j.version_id
+        ? await tx.query(`select 1 from review_request where version_id = $1 and reviewer_id = $2 and decided_at >= $3 and state in ('approved', 'changes_requested')`,
+          [j.version_id, j.agent_id, j.started_at])
+        : await tx.query(`select 1 from work_event where binding_node_id = $1 and element_id = $2 and actor_id = $3 and at >= $4 and kind in ('approved', 'changes_requested')`,
+          [j.binding_node_id, j.element_id, j.agent_id, j.started_at])).rows.length > 0;
+  }
+
+  /** The job `id` in the session's kolab, if the session took it; else a refusal that says nothing of anyone else's jobs (D49). */
+  private async runnersJob(s: Session, id: unknown): Promise<JobRow> {
+    const j = typeof id === 'string' && id.length <= 64
+      ? (await this.db.query<JobRow>(`select ${JOB_COLUMNS} from job j where j.id = $1 and j.kolab_id = $2`, [id, s.kolab])).rows[0] : undefined;
+    if (!j || j.runner_session_id !== s.id) throw new GateError(`no job ${String(id)} of this session's: only the session that took a job renews or ends it (JOB2)`);
+    return j;
+  }
+
+  /**
+   * Ends job `j`, in `tx`, which holds its row (lockJobIn) (JOB1): recorded with its outcome, who
+   * ended it and the note; its agent's session ended (ENF4), its streams told. A build's own package,
+   * if its agent still holds it In progress, goes back To do: lapsed with the job, by Kolab, or
+   * released by `by` with `releaseNote`; nothing else the agent holds is touched. A review's request
+   * that Kolab gave the agent is withdrawn if it is still open: no verdict came. Returns whether
+   * the package went back.
+   */
+  private async endJobIn(tx: Q, signal: Signal, j: JobRow,
+    e: { outcome: JobOutcome; said?: JobEnd; note: string | null; releaseNote?: string; by: string }): Promise<boolean> {
+    await tx.query(`update job set ended_at = clock_timestamp(), outcome = $2, said = $3, note = $4, ended_by = $5 where id = $1 and ended_at is null`,
+      [j.id, e.outcome, e.said ?? null, e.note, e.by]);
+    await this.endAgentSessionIn(tx, signal, j.agent_id, j.session_id, e.by);
+    if (j.review_request_id) {
+      const w = await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where id = $1 and state = 'open' returning id`, [j.review_request_id]);
+      if (w.rows.length) await signal({ inbox: 'layer', kolab: j.kolab_id, layer: 'technical' });
+    }
+    if (j.kind !== 'build') return false;
+    const r = (await tx.query<HeldRow & { lease_until: Date | string | null }>(
+      `select kolab_id, binding_node_id, element_id, assignee_id, lease_until from work_package
+        where binding_node_id = $1 and element_id = $2 and assignee_id = $3 and state = 'in_progress' for update`, [j.binding_node_id, j.element_id, j.agent_id])).rows[0];
+    if (!r) return false;
+    if (e.outcome === 'lapsed') await this.lapseIn(tx, signal, r, undefined, e.note ?? undefined);
+    else await this.releaseByKolabIn(tx, signal, r, e.releaseNote ?? e.note ?? `job ${j.id} ended`, e.by);
+    return true;
+  }
+
+  /** Ends a job's agent session `session`, in `tx`, by `by`, and tells its streams and the inboxes of its review requests (D41, D65). */
+  private async endAgentSessionIn(tx: Q, signal: Signal, agent: string, session: string, by: string) {
+    const r = await tx.query(`update session set ended_at = now(), ended_by = $2 where id = $1 and ended_at is null returning id`, [session, by]);
+    if (!r.rows.length) return;
+    await signal({ session: 'ended', id: session });
+    await this.signalRequestsOf(tx, signal, agent);
+  }
+
+  /**
+   * Ends, in `tx`, the live build job on a package whose lease lapsed (JOB1), whose row `tx` holds:
+   * its agent holds the package no longer. The job's row is locked after the package's, as
+   * lockJobIn locks them, so a runner ending it at the same moment waits, then finds it ended.
+   */
+  private async endPackageJobIn(tx: Q, signal: Signal, binding: string, element: string) {
+    const j = (await tx.query<JobRow>(`select ${JOB_COLUMNS} from job j where j.binding_node_id = $1 and j.element_id = $2 and j.kind = 'build' and j.ended_at is null
+                                        for update`, [binding, element])).rows[0];
+    if (!j) return;
+    await tx.query(`update job set ended_at = clock_timestamp(), outcome = 'lapsed', note = $2, ended_by = $3 where id = $1 and ended_at is null`,
+      [j.id, `its agent ${j.agent_id}'s lease on ${j.item} lapsed (PLN15)`, SYSTEM_ACTOR]);
+    await this.endAgentSessionIn(tx, signal, j.agent_id, j.session_id, SYSTEM_ACTOR);
+  }
+
+  /**
+   * Ends, in `tx`, the live jobs that the sessions `runners` ran, which have just ended (JOB2): a
+   * job's token never outlives the session that took it. Stopped, by `by`, unless its agent did its
+   * item; its agent's session ends with it. An archived kolab's jobs wait, as its work does.
+   */
+  private async endRunnersJobsIn(tx: Q, signal: Signal, runners: string[], by: string) {
+    const ids = (await tx.query<{ id: string }>(
+      `select j.id from job j where j.runner_session_id = any($1) and j.ended_at is null and not ${archivedKolabSql('j.kolab_id')} order by j.id`, [runners])).rows;
+    for (const { id } of ids) {
+      const j = await this.lockJobIn(tx, id);
+      if (!j || j.ended_at) continue;
+      await this.endJobIn(tx, signal, j, { outcome: jobOutcome(j.kind, await this.didItemIn(tx, j), 'stopped'), said: 'stopped', by, note: 'its runner\'s session ended' });
+    }
+  }
+
+  /** Ends, in `tx`, the live jobs in `kolabs`, which are about to be archived (JOB3): stopped, by `by`, with their agents' sessions. */
+  private async endArchivedJobsIn(tx: Q, signal: Signal, kolabs: string[], by: string) {
+    if (!kolabs.length) return;
+    const ids = (await tx.query<{ id: string }>(`select j.id from job j where j.kolab_id = any($1::text[]) and j.ended_at is null order by j.id`, [kolabs])).rows;
+    for (const { id } of ids) {
+      const j = await this.lockJobIn(tx, id);
+      if (!j || j.ended_at) continue;
+      await this.endJobIn(tx, signal, j, { outcome: jobOutcome(j.kind, await this.didItemIn(tx, j), 'stopped'), said: 'stopped', by, note: `kolab ${j.kolab_id} is archived` });
+    }
+  }
+
+  /**
+   * Ends the live jobs that can run no more, as Kolab's (JOB1, JOB2): each whose lease has lapsed
+   * by the database's clock (`lapsed`: its package back To do, lapsed); each whose runner's session
+   * has ended or lapsed (stopped); and each build whose agent no longer holds its package, which it
+   * released, or which lapsed or went to someone else (released). Its agent's session ends with it.
+   * The outbox worker runs it on its timer, as it sweeps work leases; a take runs it first. Each job
+   * ends in its own transaction, its package's row locked before its own, and one another
+   * transaction is ending is left to it. An archived kolab's jobs wait. Returns how many ended.
+   */
+  async sweepLapsedJobs(): Promise<number> {
+    let total = 0;
+    for (;;) {
+      const due = (await this.db.query<{ id: string; why: 'lapsed' | 'orphaned' | 'stale' }>(
+        `select j.id, case when j.lease_until < clock_timestamp() then 'lapsed' when not (${RUNNER_OPEN}) then 'orphaned' else 'stale' end as why
+           from job j join session r on r.id = j.runner_session_id left join oauth_grant rg on rg.id = r.grant_id
+           left join work_package w on w.binding_node_id = j.binding_node_id and w.element_id = j.element_id
+          where j.ended_at is null and not ${archivedKolabSql('j.kolab_id')}
+            and (j.lease_until < clock_timestamp() or not (${RUNNER_OPEN}) or (j.kind = 'build' and w.assignee_id is distinct from j.agent_id))
+          order by j.lease_until limit ${SWEEP_BATCH}`)).rows;
+      let n = 0;
+      for (const d of due) {
+        n += await this.inTransaction(async (tx, signal) => {
+          const j = await this.lockJobIn(tx, d.id, { skipLocked: true });
+          if (!j || j.ended_at) return 0;
+          await tx.exec('set local role kj_system');
+          if (d.why === 'lapsed') {
+            await this.endJobIn(tx, signal, j, { outcome: 'lapsed', by: SYSTEM_ACTOR,
+              note: `job ${j.id}'s lease lapsed at ${iso(j.lease_until)}: neither its agent's calls nor its runner's heartbeat renewed it (JOB1)` });
+          } else if (d.why === 'orphaned') {
+            await this.endJobIn(tx, signal, j, { outcome: jobOutcome(j.kind, await this.didItemIn(tx, j), 'stopped'), by: SYSTEM_ACTOR,
+              note: 'its runner\'s session ended or lapsed (JOB2)' });
+          } else {
+            await this.endJobIn(tx, signal, j, { outcome: jobOutcome(j.kind, await this.didItemIn(tx, j), 'failed'), by: SYSTEM_ACTOR,
+              note: `its agent ${j.agent_id} no longer holds ${j.item} (JOB1)` });
+          }
+          return 1;
+        });
+      }
+      total += n;
+      if (due.length < SWEEP_BATCH || !n) return total;
+    }
+  }
+
+  /**
+   * The ledger (konjir_list_jobs; JOB1): the session's kolab's jobs, newest first, each with who
+   * started it, on which machine, the agent doing it, its item, its lease and how it ended; with
+   * `live`, only those running (false: only those ended). Beside them, what jobs may take now
+   * (reviews and ready work packages, neither held back) and JOB3's caps for the session's person
+   * (an agent's owner) and the kolab. Any session of the kolab reads it.
+   */
+  async listJobs(sessionId: string, filter: { live?: boolean } = {}, page: PageOpts = {}): Promise<{
+    jobs: JobView[]; queue: { review: number; build: number }; caps: JobCaps; next: string | null;
+  }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('list_jobs', { kolab: s.kolab, live: filter.live });
+    const after = keyOf(list, page.cursor, ['text']) as [string] | undefined;
+    const rows = (await this.db.query<JobRow>(
+      `select ${JOB_COLUMNS} from job j where j.kolab_id = $1
+          and ($2::boolean is null or (j.ended_at is null) = $2) and ($3::text is null or j.id < $3)
+        order by j.id desc limit $4`, [s.kolab, filter.live ?? null, after?.[0] ?? null, size + 1])).rows;
+    const { rows: shown, next } = pageOf(rows, size, list, (j) => [j.id]);
+    const queue = await this.jobQueue(sessionId, s.kolab);
+    return {
+      jobs: shown.map((j) => ({
+        job: j.id, person: j.person_id, machine: j.machine, agent: j.agent_id, kind: j.kind, item: j.item,
+        started_at: iso(j.started_at)!, lease_until: iso(j.lease_until)!,
+        ...(j.ended_at ? { ended_at: iso(j.ended_at)!, outcome: j.outcome! } : {}),
+      })),
+      queue: { review: queue.review, build: queue.build },
+      caps: await this.jobCapsIn(this.db, s.kind === 'person' ? s.actor_id : s.owner ?? s.actor_id, s.kolab),
+      next,
+    };
+  }
 
   async sessionInfo(sessionId: string) {
     const s = await this.session(sessionId);
@@ -9068,6 +9777,70 @@ function heldError(actor: string, held: { kolab: string; binding: string; id: st
   return new GateError(`${actor} already holds ${at} In progress, and pulls no other work until it gives that one up (PLN18): `
     + `finish it, or release it (konjir_release_work work=${at})`);
 }
+
+// ---- jobs (W5.4a) -------------------------------------------------------------
+
+/** The advisory lock under which a job is written, so JOB3's caps are counted with nothing else being written. */
+const JOB_LOCK = 0x4b4a0034;
+
+/** What konjir_take_job gives (JOB2): the job, with its agent's token, shown this once; or why none started. */
+export type TakeJobResult =
+  | { taken: true; job: string; kind: JobKind; item: string; agent: string; token: string; lease_until: string; instructions: string; trailer?: string; now: string }
+  | { taken: false; why: string; counts: Record<string, number>; caps: JobCaps; now: string };
+
+/**
+ * Whether a job's runner session `r`, left joined to its grant as `rg`, is still open (JOB2): not
+ * ended, and a grant's while its grant is neither revoked nor lapsed; a hand-issued one's until it expires.
+ */
+const RUNNER_OPEN = `r.ended_at is null and (rg.id is null and (r.expires_at is null or r.expires_at > now())
+       or rg.id is not null and rg.revoked_at is null and rg.expires_at > now())`;
+
+/** Whether actor `agent` is a pool agent of `person`'s by name (JOB3): `<person>-engineer-<n>`. SQL. */
+const IS_POOL_AGENT = (agent: string, person: string) =>
+  `left(${agent}, length(${person}) + 10) = ${person} || '-engineer-' and substr(${agent}, length(${person}) + 11) ~ '^[1-9][0-9]{0,5}$'`;
+/** Whether pool agent `agent` is busy (JOB3): a live job, or an open session (an expired hand-issued one aside, which openSession ends). SQL. */
+const POOL_AGENT_BUSY = (agent: string) => `(exists (select 1 from job bj where bj.agent_id = ${agent} and bj.ended_at is null)
+       or exists (select 1 from session bx where bx.actor_id = ${agent} and bx.ended_at is null
+                    and (bx.grant_id is not null or bx.expires_at is null or bx.expires_at > now())))`;
+/** A work package returned with changes requested to a pool agent of the person's (JOB2): resumed as that agent. */
+interface ReturnedItem { binding_node_id: string; element_id: string; agent: string }
+
+/** Items Kolab holds back from jobs (JOB2): those whose last two jobs, by anyone, ended in the last hour without doing them. */
+interface HeldBack { packages: Set<string>; versions: Set<string>; count: number }
+
+/** A review a job may take (JOB2): a work package In review, or a technical version in review, with its address and author. */
+interface ReviewItem {
+  binding_node_id: string | null; element_id: string | null; version_id: string | null;
+  node: string; seq: number | null; author: string; address: string;
+}
+
+/** A job row (migration 0034), with its item's address. */
+interface JobRow {
+  id: string; kolab_id: string; person_id: string; runner_session_id: string; machine: string; agent_id: string; session_id: string; kind: JobKind;
+  binding_node_id: string | null; element_id: string | null; version_id: string | null; review_request_id: string | null;
+  lease_until: Date | string; started_at: Date | string; ended_at: Date | string | null; outcome: JobOutcome | null; said: JobEnd | null;
+  note: string | null; ended_by: string | null;
+  /** kj:<binding>#<id> for a work package, kj:<node>@<seq> for a version, as formatAddress writes them. */
+  item: string;
+}
+const JOB_COLUMNS = `j.id, j.kolab_id, j.person_id, j.runner_session_id, j.machine, j.agent_id, j.session_id, j.kind, j.binding_node_id, j.element_id, j.version_id, j.review_request_id,
+        j.lease_until, j.started_at, j.ended_at, j.outcome, j.said, j.note, j.ended_by,
+        (select case when j.version_id is null then 'kj:' || n.name || '#' || j.element_id else 'kj:' || n.name || '@' || iv.seq end
+           from node n left join version iv on iv.id = j.version_id where n.id = coalesce(iv.node_id, j.binding_node_id)) as item`;
+
+/** Why a job can't start past JOB3's caps, or undefined while it can. */
+function jobsFull(caps: JobCaps, kolab: string): string | undefined {
+  if (caps.person.live >= caps.person.max) {
+    return `you have ${caps.person.live} live jobs, the most a person runs at once (${caps.person.max}, JOB3): wait for one to end`;
+  }
+  if (caps.kolab.live >= caps.kolab.max) {
+    return `kolab ${kolab} has ${caps.kolab.live} live jobs, the most a kolab runs at once (${caps.kolab.max}, JOB3): wait for one to end`;
+  }
+  return undefined;
+}
+
+/** The refusal of a renewal or an end of a job that has ended (JOB1). */
+const jobEnded = (j: JobRow) => new GateError(`job ${j.id} ended ${j.outcome === 'lapsed' ? 'when its lease lapsed' : `(${j.outcome})`} at ${iso(j.ended_at)}${j.outcome === 'lapsed' ? ', and its item went back to the queue' : ''}: take another (konjir_take_job)`);
 
 /** A pull that found nothing ready: thrown inside its transaction, so its rate hold is given back. */
 class NothingReady extends Error { name = 'NothingReady'; }
