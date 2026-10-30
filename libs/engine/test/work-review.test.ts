@@ -657,12 +657,12 @@ test('W5.2b, M5 (6): a spec change reaching the spec element W1.2 serves marks e
   expect(notice).toMatchObject({ work: W('W1.2'), kind: 'at_risk', actor: 'kolab', from: 'done', to: 'done', assignee_from: 'bob', assignee_to: 'bob',
     note: expect.stringMatching(/^mark \w+ \(upstream_dirty\): something it serves or relies on changed, so its work is at risk \(PLN10\)\. It stays Done: confirm the work holds \(konjir_clear_mark\), or open new work \(konjir_reopen_work\)$/) });
   expect((await kolab.readWork(bob, W('W1.2'))).events.filter((e) => e.kind === 'at_risk')).toHaveLength(1);
-  // A session that holds only Read reads no mark (D58): no at_risk, no revisit, and the event without its note.
+  // A session that holds only Read reads no mark (D58): no at_risk, no revisit, and no at_risk event.
   const carol = await kolab.openSession('carol', 'engineer');
   expect((await kolab.listWork(carol)).items.some((i) => i.at_risk || i.revisit)).toBe(false);
   const asCarol = await kolab.readWork(carol, W('W1.2'));
   expect([asCarol.at_risk, asCarol.revisit]).toStrictEqual([undefined, undefined]);
-  expect(asCarol.events.find((e) => e.kind === 'at_risk')!.note).toBeNull();
+  expect(asCarol.events.map((e) => e.kind)).not.toContain('at_risk');
   expect((await kolab.downstreamMarks(carol, v)).items).toStrictEqual([]);
   // eve checks the work, and clears the mark: it holds, recorded as confirmed by eve, no longer at risk.
   const [m] = (await workMarks(kolab)).filter((x) => x.element_id === 'W1.2');
@@ -703,6 +703,43 @@ test('W5.2b: a package To do is never at risk, and its assignee is told nothing;
   // A mark on a package with no work, To do, tells no one: W1.2, marked through b2.
   await commitWork(bob, { deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, durable.' }] });
   expect((await kolab.readWork(eve, W('W1.2'))).events.map((e) => e.kind)).toStrictEqual(['added']);
+});
+
+test('W5.2b: only a mark of a change puts work at risk: a ruling that changes a Done package\'s intent keeps its own next step, and tells no one it is at risk (PLN10, D51)', async () => {
+  const { kolab, bob, eve } = await planned();
+  await built(kolab, bob, eve, 'W1.1');
+  await built(kolab, bob, eve, 'W1.2');
+  // bob, a person with Write on the technical layer, rules directly on W1.2: a ruled mark, with its question.
+  await kolab.rule(bob, { address: W('W1.2'), text: 'The queue is durable.', effect: 'change_intent', replaces: 'Build the shipping queue.' });
+  const [m] = (await workMarks(kolab)).filter((x) => x.element_id === 'W1.2');
+  expect(m.reason).toBe('ruled');
+  // Not at risk: not on the board, not in the package, and no notice.
+  expect((await kolab.readWork(eve, W('W1.2'))).at_risk).toBeUndefined();
+  expect((await kolab.listWork(eve)).items.some((i) => i.at_risk)).toBe(false);
+  expect((await kolab.readWork(bob, W('W1.2'))).events.map((e) => e.kind)).not.toContain('at_risk');
+  // Its mark names the package, but says what a ruled mark asks, not to clear it (clearing is refused).
+  const [view] = (await kolab.marksPage(eve, { layer: 'technical' }, {}, { revisit: true })).items.filter((x) => x.mark === m.id);
+  expect(view).toMatchObject({ reason: 'ruled', work: W('W1.2'), work_state: 'done' });
+  expect([view.at_risk, view.revisit]).toStrictEqual([undefined, undefined]);
+  expect(view.next).not.toMatch(/konjir_clear_mark/);
+  expect(await rejection(kolab.clear(eve, m.id))).toMatch(/a ruling changed this element's intent/);
+});
+
+test('W5.2b: one commit that marks a package with work twice tells its assignee once; list_stale gives the revisit, the inbox\'s marks don\'t (PLN10)', async () => {
+  const { kolab, bob, eve, commitWork } = await planned();
+  // W1.1 relies on b2 as well as b1.
+  const latest = (await kolab.latestCommitted('orders-pg'))!.id;
+  await kolab.link(bob, { kind: 'dependency', source: latest, sourceElement: 'W1.1', target: latest, targetElement: 'b2' });
+  await built(kolab, bob, eve, 'W1.1');
+  // One binding version changes both: two marks on W1.1, one notice.
+  await commitWork(bob, { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }, { kind: 'override', element: 'b2', text: 'A shipping queue, durable.' }] });
+  expect((await workMarks(kolab)).filter((x) => x.element_id === 'W1.1').map((x) => x.reason)).toStrictEqual(['changed', 'changed']);
+  expect((await kolab.readWork(bob, W('W1.1'))).events.filter((e) => e.kind === 'at_risk')).toHaveLength(1);
+  // list_stale's marks carry the revisit; the inbox's (no revisit asked) only say it is at risk.
+  const full = (await kolab.marksPage(eve, { layer: 'technical' }, {}, { revisit: true })).items.filter((x) => x.work === W('W1.1'));
+  expect(full.map((x) => [x.at_risk, x.revisit?.commits.length])).toStrictEqual([[true, 2], [true, 2]]);
+  const brief = (await kolab.marksPage(eve, { layer: 'technical' })).items.filter((x) => x.work === W('W1.1'));
+  expect(brief.map((x) => [x.at_risk, x.revisit])).toStrictEqual([[true, undefined], [true, undefined]]);
 });
 
 test('an assignee submitting evidence on its package In review is told it waits in review (review 7)', async () => {
@@ -928,6 +965,42 @@ test('a submission racing the sweep of its lapsing lease: either it is submitted
     expect(done).toBe(false);
     await other.query('commit');
     expect(await verdict).toMatchObject({ state: 'done' });
+  } finally {
+    await other.end();
+  }
+}, 60_000);
+
+(POSTGRES ? test : test.skip)('on Postgres: a mark\'s notice waits on a pull that holds the package, and tells the new assignee; one that waits on an approval says it stays Done (W5.2b, PLN10)', async () => {
+  const store = await testStore();
+  const { kolab, product, bob } = await planned(store);
+  const other = new pg.Client({ connectionString: store.databaseUrl });
+  await other.connect();
+  try {
+    // A pull of W1.1 holds its row (another transaction stands in for it) while R1 changes: the
+    // notice waits for it, then finds W1.1 In progress, bob's, and tells him.
+    await other.query('begin');
+    await other.query(`select 1 from work_package where element_id = 'W1.1' for update`);
+    await other.query(`update work_package set state = 'in_progress', assignee_id = 'bob', touched_at = clock_timestamp(),
+                         lease_until = clock_timestamp() + interval '30 minutes' where element_id = 'W1.1'`);
+    let done = false;
+    const change = kolab.commit(product, 'orders', { deltas: [{ kind: 'override', element: 'R1', text: 'Orders can be cancelled until they ship.' }] })
+      .then((v) => { done = true; return v; });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(done).toBe(false);
+    await other.query('commit');
+    await change;
+    expect((await kolab.workNotices(bob)).events[0]).toMatchObject({ work: W('W1.1'), kind: 'at_risk', from: 'in_progress', to: 'in_progress' });
+    expect((await kolab.readWork(bob, W('W1.1'))).at_risk).toBe(true);
+    // An approval holds W1.2's row, In review, as R2 changes: the notice, after it, says it stays Done.
+    await other.query(`update work_package set state = 'in_review', assignee_id = 'bob', lease_until = null where element_id = 'W1.2'`);
+    await other.query('begin');
+    await other.query(`select 1 from work_package where element_id = 'W1.2' for update`);
+    await other.query(`update work_package set state = 'done' where element_id = 'W1.2'`);
+    const change2 = kolab.commit(product, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Orders ship in a day, tracked.' }] });
+    await new Promise((r) => setTimeout(r, 400));
+    await other.query('commit');
+    await change2;
+    expect((await kolab.readWork(bob, W('W1.2'))).events.at(-1)).toMatchObject({ kind: 'at_risk', from: 'done', to: 'done', note: expect.stringMatching(/It stays Done/) });
   } finally {
     await other.end();
   }

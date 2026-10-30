@@ -942,10 +942,18 @@ test('a binding\'s page shows a work package with work at risk while a mark is o
   // b1 and b2 change: W1, In progress, is at risk; W2, To do, isn't.
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'orders.status allows cancel from Open and Packed.' },
     { kind: 'override', element: 'b2', text: 'Refunds go through the refunds queue.' }] });
-  const bob = await signIn(await serve(kolab), engineer);
+  const base = await serve(kolab);
+  const bob = await signIn(base, engineer);
   const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(view.elements.filter((e) => e.work_state).map((e) => [e.id, e.work_state?.state, e.work_state?.at_risk])).toStrictEqual([
     ['W1', 'in_progress', true], ['W2', 'todo', undefined],
+  ]);
+  // A person who holds only Read reads no mark (D58), so no package of theirs shows at risk.
+  await people(kolab, 'ria', { level: 'read' });
+  const ria = await signIn(base, await kolab.openSession('ria', 'engineer'));
+  const asRia = (await ria.call<WebNodeView>('nodes/orders-pg')).body;
+  expect(asRia.elements.filter((e) => e.work_state).map((e) => [e.id, e.work_state?.state, e.work_state?.at_risk])).toStrictEqual([
+    ['W1', 'in_progress', undefined], ['W2', 'todo', undefined],
   ]);
 });
 
