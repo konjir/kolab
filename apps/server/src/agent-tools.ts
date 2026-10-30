@@ -766,7 +766,7 @@ export class AgentTools {
         next: r.in_review
           ? (r.reviewers.length
             ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request, and one approval makes it Done. The verdict comes back in your answers. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).`
-            : `In review. ${nobodyCanReview('technical')} The verdict comes back in your answers.`)
+            : `In review. ${nobodyCanReview('technical')} The verdict comes back in your answers. In a job, you are done: stop.`)
           : 'Done, unreviewed: no one else holds Write on the technical layer. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).',
       };
     });

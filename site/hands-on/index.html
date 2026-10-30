@@ -122,7 +122,7 @@ tools: mcp__konjir-spec-writer__*
 ---
 You are the product writer for Linkly. You work in Konjir only through your konjir-spec-writer tools.</code></pre></figure>
 <p>Make <code>spec-reviewer.md</code> the same way with <code>mcp__konjir-spec-reviewer__*</code>, and <code>builder.md</code> with <code>mcp__konjir-builder__*, Read, Write, Edit, Bash</code>. Start one session with all three servers and approve them when Claude Code asks:</p>
-<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>claude --dangerously-load-development-channels \
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>. ~/linkly/konjir.sh &amp;&amp; cd ~/linkly &amp;&amp; claude --dangerously-load-development-channels \
   server:konjir-spec-writer server:konjir-spec-reviewer server:konjir-builder</code></pre></figure>
 <p>Then give each prompt below to its subagent: <code>Use the spec-writer subagent: &lt;the prompt&gt;</code>.</p>
 <h2 id="3-write-the-spec-review-it-approve-it">3. Write the spec, review it, approve it</h2>
@@ -175,7 +175,7 @@ Engineering asked a question about the spec short-links (konjir_list_queries). O
 &quot;dirty&quot;: &quot;kj:short-links-binding@1#b7&quot;,
 &quot;next&quot;: &quot;A question this element was waiting on has been answered. Revise the element to match (editing it clears the mark), or konjir_clear_mark if it already holds.&quot;</code></pre></figure>
 <h2 id="6-build-it">6. Build it</h2>
-<p>Work is built in a git repository that the kolab knows. Kolab never reads git: you register the repository, pinned by its first commit, and Konjir refuses work delivered from any other checkout. Only a person registers one, never an agent. In your own terminal:</p>
+<p>Work is built in a git repository that the kolab knows. Kolab never reads git: you register the repository, pinned by its first commit, and <code>konjir work deliver</code> refuses to deliver from any other checkout. Only a person registers one, never an agent. In your own terminal:</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>. ~/linkly/konjir.sh &amp;&amp; cd ~/linkly
 git add .gitignore &amp;&amp; git commit -m &quot;Start Linkly&quot;
 git remote add origin https://github.com/$ME/linkly.git
@@ -189,8 +189,7 @@ First run konjir_list_stale and settle every mark on your layer: if the element 
 
 Then build the next work package, following the build loop in the instructions: pull it with konjir_pull_work and read it with konjir_read_work. Build Linkly in this repository exactly as the committed short-links-binding says: put the server in server.js and the tests in test/linkly.test.js, with a package.json whose &quot;test&quot; script runs node --test. Above the code that implements each element, write a one-line comment naming its address, for example // kj:short-links-binding#b3. Don't copy spec or binding text into the repository. Run npm test until it passes, then commit on a new branch, with the package's trailer. This repository has nowhere to push to, so don't push. Deliver and submit it with konjir work deliver --submit and a --test for the test run, running konjir as yourself: put KONJIR_CREDENTIALS=&quot;$KJ_AGENTS/$ME-builder.json&quot; before the command. Before you finish, run konjir_list_stale again. Tell me what you built, the test result and the work package's state.</code></pre></figure>
 <p>Approve its file edits and commands as it asks. It clears the <code>query_answered</code> mark (the binding already counts every visit), pulls <code>W1</code>, writes <code>server.js</code>, <code>package.json</code> and the tests, runs <code>npm test</code> until it passes, and commits on the branch it names, with the trailer that ties the commit to the package, <code>Konjir-Work: kj:linkly-ada/short-links-binding#W1</code> in our run. <code>konjir work deliver</code> then finds the commits that carry it, checks that this checkout is the registered repository, records them as the package's evidence and submits it. <code>W1</code> is In review, waiting on you. The code points at the binding by address, never by copying it:</p>
-<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>git checkout &lt;the builder's branch&gt;
-grep -n &quot;kj:&quot; server.js
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>grep -n &quot;kj:&quot; server.js
 git log -1 --format='%h %s%n%(trailers:key=Konjir-Work)'</code></pre></figure>
 <p>Review it as an engineer would: read the change, run the tests, then give your verdict with the CLI (the web page doesn't list work to review yet):</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>npm test
