@@ -164,14 +164,18 @@ function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; ite
       }
       case 'end_job': {
         const j = jobs.get(String(args.job));
-        if (!j || j.ended || lost.has(j.job)) throw new ToolRefusal(`job ${args.job} is over`);
+        // As Kolab says it of a job it ended already (its agent released its package, say).
+        if (j?.ended) throw new ToolRefusal(`GateError: job ${j.job} ended (${j.ended.outcome}) at 2026-10-29T12:00:00.000Z: take another (konjir_take_job)`);
+        if (!j || lost.has(j.job)) throw new ToolRefusal(`job ${args.job} is over`);
         j.ended = { outcome: String(args.outcome), ...(args.note ? { note: String(args.note) } : {}) };
-        return { job: j.job, ended: true, ...(args.outcome !== 'done' ? { released: true } : {}) };
+        return { job: j.job, ended: true, outcome: args.outcome === 'done' ? 'submitted' : 'released' };
       }
       default: throw new Error(`the fake has no ${verb}`);
     }
   };
-  return { call, calls, jobs, items, state, lose: (job: string) => lost.add(job) };
+  return { call, calls, jobs, items, state, lose: (job: string) => lost.add(job),
+    /** Kolab ends a job itself, as when its agent releases its package: the runner's end_job is then refused. */
+    release: (job: string) => { jobs.get(job)!.ended = { outcome: 'released' }; } };
 }
 
 /** Waits until `ok()` holds, polling. */
@@ -230,15 +234,18 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   h.go('J1');
   await until(() => !!ended(kolab, 'J1'));
   expect(ended(kolab, 'J2')).toBeUndefined();
+  // J2's agent gives its package back, which ends its job in Kolab, and then exits.
+  kolab.release('J2');
   h.go('J2');
   const reports = await running;
   expect(reports.sort((a, b) => a.job.localeCompare(b.job))).toEqual([
-    expect.objectContaining({ job: 'J1', outcome: 'done', exit: 0, kept: '1 commit(s) not pushed', worktree: j1.cwd }),
-    expect.objectContaining({ job: 'J2', outcome: 'done', exit: 0, worktree: j2.cwd }),
+    expect.objectContaining({ job: 'J1', outcome: 'done', ledger: 'submitted', exit: 0, kept: '1 commit(s) not pushed', worktree: j1.cwd }),
+    expect.objectContaining({ job: 'J2', outcome: 'done', ledger: 'released', exit: 0, worktree: j2.cwd }),
   ]);
   expect(reports[1].kept).toBeUndefined();
   expect(ended(kolab, 'J1')).toEqual({ outcome: 'done', note: 'working on kj:test/orders-plan#W1' });
-  expect(ended(kolab, 'J2')).toMatchObject({ outcome: 'done' });
+  expect(ended(kolab, 'J2')).toEqual({ outcome: 'released' });
+  expect(out.lines).toContain('job J2: Kolab had ended it already (released)');
   expect(existsSync(j1.cwd)).toBe(true);
   expect(existsSync(j2.cwd)).toBe(false);
   expect(git(r.dir, 'worktree', 'list')).not.toContain(j2.cwd);
@@ -419,6 +426,8 @@ test('the harness\'s command: Claude Code headless, Kolab its only MCP server, e
   expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir']));
   expect(deniedTools('main', '/home/lee/.config/konjir')).toEqual(expect.arrayContaining(['Bash(gh api*)', 'Bash(gh pr merge*)', 'Bash(git -c*)', 'Bash(git push --force*)', 'Bash(git push * +*)',
     'Bash(git push *:main)', 'Bash(git push * main)', 'Read(//home/lee/.config/konjir/**)', 'Edit(//home/lee/.config/konjir/**)']));
+  // Rules Claude Code warns of and ignores (found running it): a trailing :* is its old prefix syntax, and only Edit(path) covers editing tools.
+  expect(deniedTools('main', '/x').filter((r) => /:\*\)$/.test(r) || /^(Write|MultiEdit)\(/.test(r))).toEqual([]);
   expect(c.args).not.toContain('--dangerously-skip-permissions');
   expect(c.env).toEqual({ PATH: '/bin', HOME: '/home/lee', LC_ALL: 'C', ANTHROPIC_API_KEY: 'k', CLAUDE_CONFIG_DIR: '/c', GIT_SSH_COMMAND: 'ssh',
     KONJIR_URL: 'https://kolab.example.com/mcp', KONJIR_TOKEN: 'kjs_secret', KONJIR_CREDENTIALS: '/jobs/.no-credentials/J9/credentials.json', KONJIR_JOB: 'J9', KONJIR_ITEM: 'kj:k/p#W1', KONJIR_JOB_KIND: 'build' });
