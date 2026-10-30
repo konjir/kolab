@@ -20,8 +20,9 @@
  * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set).
  *
  * The runner renews each job's lease (konjir_renew_job) from the moment it is taken, well within it:
- * Kolab refusing a renewal means the job is over, and its harness is stopped; Kolab out of reach is
- * tried again, briefly, until the lease is nearly gone. It ends the job when its harness exits
+ * Kolab refusing a renewal means the job is over, and its harness, if it hasn't exited already, is
+ * stopped (lost, with how Kolab ended it); Kolab out of reach is tried again, briefly, until the
+ * lease is nearly gone. It ends the job when its harness exits
  * (konjir_end_job: done on exit code 0, failed otherwise, the output's tail as the note), keeps a
  * worktree with work not yet pushed and removes the rest, and, while nothing is ready or Kolab can't
  * be reached, waits: polling with backoff, and woken early by a job ending or the person's inbox
@@ -129,7 +130,7 @@ export interface WorkDeps {
 /** How one job ended, as `konjir work` reports it. */
 export interface JobReport {
   job: string; kind: string; item: string; agent: string;
-  /** How the harness ended, as the runner saw it. */
+  /** How the harness ended, as the runner saw it: lost when the runner stopped it because Kolab had ended its job. */
   outcome: 'done' | 'failed' | 'stopped' | 'lost';
   /** How Kolab's ledger has it, when it said: submitted, reviewed, released, stopped… */
   ledger?: string;
@@ -275,6 +276,8 @@ function remoteOf(git: Git, tracked: { remote: string; tracked: string | undefin
 /** A job the runner is running. */
 interface Live {
   taken: TakenJob; child?: ChildProcess; stopping: boolean; lost?: 'refused' | 'unreachable'; finished: boolean;
+  /** How Kolab ended the job, as its refusal of a renewal said (released, stopped, lapsed…). */
+  endedAs?: string;
   tail: string; beat?: NodeJS.Timeout; kill?: NodeJS.Timeout; done: Promise<JobReport>;
 }
 
@@ -349,11 +352,16 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
     waiting = done;
   });
 
-  /** Stops a job's harness: SIGTERM to its process group, then SIGKILL if it hasn't exited (a timer that holds the runner open until it has). */
+  /**
+   * Stops a job's harness: SIGTERM to its process group, then SIGKILL if it hasn't exited (a timer
+   * that holds the runner open until it has). A harness that has exited already, though its output
+   * may not have closed yet, ended by itself: its exit, not this stop, says how its job ended.
+   */
   const stop = (l: Live, why: 'stopped' | 'refused' | 'unreachable') => {
-    if (why === 'stopped') l.stopping = true; else l.lost ??= why;
     const child = l.child;
-    if (!child || l.finished || child.exitCode !== null || child.signalCode !== null) return;
+    if (l.finished || (child && (child.exitCode !== null || child.signalCode !== null))) return;
+    if (why === 'stopped') l.stopping = true; else l.lost ??= why;
+    if (!child) return;
     const kill = (sig: NodeJS.Signals) => { try { process.kill(-child.pid!, sig); } catch { try { child.kill(sig); } catch { /* gone */ } } };
     kill('SIGTERM');
     l.kill ??= setTimeout(() => { if (!l.finished) kill('SIGKILL'); }, KILL_AFTER_MS);
@@ -372,7 +380,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
    * refused to renew it) is only reported.
    */
   const end = async (l: Live, outcome: 'done' | 'failed' | 'stopped', note: string): Promise<string | undefined> => {
-    if (l.lost === 'refused') return undefined;
+    if (l.lost === 'refused') return l.endedAs;
     try {
       const r = await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: redacted(note, l.taken.token).slice(-NOTE_TAIL) } : {}) }) as { outcome?: string };
       return typeof r?.outcome === 'string' ? clean(r.outcome) : undefined;
@@ -408,6 +416,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         if (l.finished) return;
         const msg = clean((e as Error).message);
         if (e instanceof ToolRefusal) {
+          l.endedAs = /\bended \(([a-z_]+)\)/.exec(msg)?.[1] ?? (/\blease lapsed\b/.test(msg) ? 'lapsed' : undefined);
           log(`job ${clean(job)}: Kolab ended it (${msg}); stopping its harness.`);
           stop(l, 'refused');
           return;

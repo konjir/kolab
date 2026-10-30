@@ -134,6 +134,12 @@ function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; ite
   const jobs = new Map<string, TakenJob & { ended?: { outcome: string; note?: string }; machine: string }>();
   const lost = new Set<string>();
   const state = { takeThrows: false, renewThrows: 0, slowRefuse: new Set<string>() };
+  // Jobs whose renewals Kolab answers only once their runner has ended them, each with what lets them go.
+  const held = new Map<string, () => void>();
+  const gates = new Map<string, Promise<void>>();
+  // As Kolab refuses to renew or end a job it ended already (its agent released its package, say).
+  const endedAlready = (j: { job: string; ended?: { outcome: string } }) =>
+    new ToolRefusal(`GateError: job ${j.job} ended (${j.ended!.outcome}) at 2026-10-29T12:00:00.000Z: take another (konjir_take_job)`);
   let n = 0;
   const cap = opts.cap ?? 4;
   const liveCount = () => [...jobs.values()].filter((j) => !j.ended && !lost.has(j.job)).length;
@@ -156,16 +162,18 @@ function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; ite
         return { taken: true, ...j };
       }
       case 'renew_job': {
+        await gates.get(String(args.job));
         const j = jobs.get(String(args.job));
         if (state.renewThrows > 0) { state.renewThrows--; throw new Error('fetch failed'); }
         if (j && state.slowRefuse.has(j.job)) { await new Promise((r) => setTimeout(r, 300)); throw new ToolRefusal(`job ${args.job} is over`); }
-        if (!j || j.ended || lost.has(j.job)) throw new ToolRefusal(`job ${args.job} is over`);
+        if (j?.ended) throw endedAlready(j);
+        if (!j || lost.has(j.job)) throw new ToolRefusal(`job ${args.job} is over`);
         return { job: j.job, lease_until: new Date(Date.now() + 30 * 60_000).toISOString() };
       }
       case 'end_job': {
+        held.get(String(args.job))?.();
         const j = jobs.get(String(args.job));
-        // As Kolab says it of a job it ended already (its agent released its package, say).
-        if (j?.ended) throw new ToolRefusal(`GateError: job ${j.job} ended (${j.ended.outcome}) at 2026-10-29T12:00:00.000Z: take another (konjir_take_job)`);
+        if (j?.ended) throw endedAlready(j);
         if (!j || lost.has(j.job)) throw new ToolRefusal(`job ${args.job} is over`);
         j.ended = { outcome: String(args.outcome), ...(args.note ? { note: String(args.note) } : {}) };
         return { job: j.job, ended: true, outcome: args.outcome === 'done' ? 'submitted' : 'released' };
@@ -175,7 +183,9 @@ function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; ite
   };
   return { call, calls, jobs, items, state, lose: (job: string) => lost.add(job),
     /** Kolab ends a job itself, as when its agent releases its package: the runner's end_job is then refused. */
-    release: (job: string) => { jobs.get(job)!.ended = { outcome: 'released' }; } };
+    release: (job: string) => { jobs.get(job)!.ended = { outcome: 'released' }; },
+    /** From now on, Kolab answers `job`'s renewals only once its runner has called end_job for it. */
+    hold: (job: string) => { gates.set(job, new Promise<void>((r) => held.set(job, r))); } };
 }
 
 /** Waits until `ok()` holds, polling. */
@@ -234,7 +244,9 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   h.go('J1');
   await until(() => !!ended(kolab, 'J1'));
   expect(ended(kolab, 'J2')).toBeUndefined();
-  // J2's agent gives its package back, which ends its job in Kolab, and then exits.
+  // J2's agent gives its package back, which ends its job in Kolab, and then exits. Its exit, not a
+  // renewal refused meanwhile, is what the runner sees first (the other order is the next test's).
+  kolab.hold('J2');
   kolab.release('J2');
   h.go('J2');
   const reports = await running;
@@ -250,6 +262,24 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   expect(existsSync(j2.cwd)).toBe(false);
   expect(git(r.dir, 'worktree', 'list')).not.toContain(j2.cwd);
   expect(out.lines.join('\n')).not.toContain('kjs_job_token');
+}, 60_000);
+
+test('a job Kolab ended while its harness still runs is stopped, and reported lost with how Kolab ended it, without ending it again (JOB4)', async () => {
+  const r = repository();
+  process.env = { ...process.env, ...GIT_ENV };
+  const h = standIn(r.top);
+  const kolab = fakeKolab(r.root, { items: [{ kind: 'build', item: 'kj:test/orders-plan#W1' }] });
+  const out = quiet();
+  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, signal: stopper().signal },
+    { once: true, jobs: 1, machine: 'lee-laptop', harness: h.path, url: MCP });
+  await until(() => h.started('J1'));
+  // Another job took J1's package after its agent let it go: Kolab ended J1, and its harness runs on.
+  kolab.release('J1');
+  const [report] = await running;
+  expect(existsSync(join(h.dir, 'J1.stopped'))).toBe(true);
+  expect(report).toMatchObject({ job: 'J1', outcome: 'lost', ledger: 'released', exit: 143 });
+  expect(kolab.calls.filter(([v]) => v === 'end_job')).toEqual([]);
+  expect(out.lines.some((l) => /^job J1: Kolab ended it \(.*ended \(released\)/.test(l))).toBe(true);
 }, 60_000);
 
 test('done-when: on Ctrl-C every harness is stopped and its job ended as stopped, giving back what it held; only Kolab refusing a renewal stops a job\'s harness (JOB4)', async () => {
