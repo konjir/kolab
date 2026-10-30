@@ -14,7 +14,7 @@ import { fingerprint } from '@konjir/address';
 import { commitReviewed, els, marksOn, people, persistentStore, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
-  EVIDENCE_KINDS, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
+  EVIDENCE_KINDS, JOB_ENDS, JOB_KINDS, JOB_OUTCOMES, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
 } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
@@ -92,7 +92,7 @@ test('a fresh database reaches the current schema through the files, and Kolab w
   } finally { await kolab.close(); }
 });
 
-test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS, KINDS, WORK_STATES, WORK_EVENT_KINDS and EVIDENCE_KINDS", async () => {
+test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, QUERY_STATES, ACTOR_KINDS, ACCOUNT_KINDS, ORG_ROLES, ACCESS_LEVELS, VISIBILITIES, VERSION_STATES, REVIEW_REQUEST_STATES, OUTBOX_KINDS, OUTBOX_STATES, CASE_FILE_STATES, POSITION_VERDICTS, RULING_EFFECTS, ARCHIVABLE, AUDIT_ACTIONS, KINDS, WORK_STATES, WORK_EVENT_KINDS, EVIDENCE_KINDS, JOB_KINDS, JOB_OUTCOMES and JOB_ENDS", async () => {
   // A new value in either list needs a migration that redefines the check (README.md, "Changing the schema").
   await withDb(async (db) => {
     await migrate(db);
@@ -125,6 +125,9 @@ test("the database's value lists are @konjir/types' MARK_REASONS, QUERY_KINDS, Q
     expect(await check('work_package_state_check')).toStrictEqual([...WORK_STATES].sort());
     expect(await check('work_event_kind_check')).toStrictEqual([...WORK_EVENT_KINDS].sort());
     expect(await check('evidence_kind_check')).toStrictEqual([...EVIDENCE_KINDS].sort());
+    expect(await check('job_kind_check')).toStrictEqual([...JOB_KINDS].sort());
+    expect(await check('job_outcome_check')).toStrictEqual([...JOB_OUTCOMES].sort());
+    expect(await check('job_said_check')).toStrictEqual([...JOB_ENDS].sort());
   });
 });
 

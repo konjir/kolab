@@ -3,3 +3,4 @@ export * from './views.js';
 export * from './write-actors.js';
 export * from './page.js';
 export * from './work.js';
+export * from './jobs.js';

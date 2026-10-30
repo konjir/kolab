@@ -60,7 +60,8 @@ export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
     }
     const s = await this.kolab.liveSession(token);
     if (!s) throw new OAuthError(OAuthErrorCode.InvalidToken, 'missing, expired or invalid Konjir token');
-    if (!s.granted && this.options.handIssuedTokens === false) {
+    // A job's agent session (JOB3) is Kolab's own issue, handed to its runner once: it stands when hand-issued tokens don't.
+    if (!s.granted && !s.job && this.options.handIssuedTokens === false) {
       throw new OAuthError(OAuthErrorCode.InvalidToken, 'hand-issued Konjir tokens are turned off here: connect with OAuth');
     }
     const expiresAt = Math.min(now + 300, s.expiresAt ? Math.floor(s.expiresAt.getTime() / 1000) : Infinity);

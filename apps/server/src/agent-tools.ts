@@ -4,7 +4,7 @@ import * as z from 'zod/v4';
 import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  CASE_FILE_STATES, DELTA_KINDS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   nobodyCanReview, notAKind,
 } from '@konjir/types';
@@ -175,6 +175,15 @@ const registerRepository = z.object({
 const archiveRepository = z.object({ repo: z.string().describe('The repository, by its URL or id') });
 const listRepositories = z.object({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
 const setWorkLease = z.object({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
+const takeJob = z.object({ machine: z.string().describe(`A label for the machine the job runs on, 1 to ${JOB_LIMITS.machine} characters, such as lee-laptop: it names the machine in the ledger`) });
+const job = z.string().describe('The job\'s id, as konjir_take_job gave it');
+const renewJob = z.object({ job });
+const endJob = z.object({
+  job,
+  outcome: z.enum(JOB_ENDS).describe('done: the agent finished and exited; stopped: you stopped it; failed: the agent failed or crashed'),
+  note: z.string().optional().describe(`What happened, for the ledger and for whoever takes its item next. At most ${MAX_TEXT} characters`),
+});
+const listJobs = z.object({ live: z.boolean().optional().describe('true: only live jobs; false: only ended ones'), ...paging });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
@@ -811,6 +820,45 @@ export class AgentTools {
   })
   setWorkLease({ minutes }: z.infer<typeof setWorkLease>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.setWorkLease(s, minutes));
+  }
+
+  // ---- jobs: a person's machine runs agents as jobs (W5.4a; D103, D104, JOB1–JOB3) -----------
+
+  @McpTool({
+    name: 'konjir_take_job',
+    description: `For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which \`konjir work\` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls. An item whose last two jobs ended in the last hour without doing it is held back. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build or review), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions, and now, Kolab's clock. At most ${JOB_LIMITS.perPerson} live jobs a person and ${JOB_LIMITS.perKolab} a kolab. With nothing to take, or past a cap, taken is false and why says why.`,
+    schema: takeJob,
+  })
+  takeJob({ machine }: z.infer<typeof takeJob>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.takeJob(s, { machine }));
+  }
+
+  @McpTool({
+    name: 'konjir_renew_job',
+    description: `The heartbeat of a job you took: renews its lease to the kolab's work lease from now, and a build's work package lease with it, never past ${JOB_LIMITS.maxHours} hours from the job's start, with now, Kolab's clock. The agent's own calls renew it too. Only the session that took the job; refused once the job has ended or its lease has lapsed (its item then went back to the queue).`,
+    schema: renewJob,
+  })
+  renewJob({ job: id }: z.infer<typeof renewJob>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.renewJob(s, id));
+  }
+
+  @McpTool({
+    name: 'konjir_end_job',
+    description: 'End a job you took, once its agent has exited (done or failed) or you stopped it: its agent\'s session ends; a build\'s work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. The ledger records how it ended: submitted or reviewed when the agent did its item, else released or stopped. Only the session that took the job.',
+    schema: endJob,
+  })
+  endJob({ job: id, outcome, note }: z.infer<typeof endJob>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.endJob(s, { job: id, outcome, note }));
+  }
+
+  @McpTool({
+    name: 'konjir_list_jobs',
+    description: `The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended. live=true: only those running. With the queue (reviews and ready work packages a job may take now) and the caps on live jobs, yours and the kolab's.${PAGED}`,
+    schema: listJobs,
+    annotations: { readOnlyHint: true },
+  })
+  listJobs({ live, cursor, limit }: z.infer<typeof listJobs>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.listJobs(s, { live }, { cursor, limit }));
   }
 
   // ---- a person's own agents (D59) -----------------------------------------------
