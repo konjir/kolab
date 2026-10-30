@@ -50,13 +50,19 @@ esac
 export TF_DATA_DIR="$TF/.terraform-$ENV"
 
 tf() {
-  if [ ! -f "$TF_DATA_DIR/terraform.tfstate" ]; then
+  # An init that stopped partway leaves the backend settings without the providers; init again then.
+  if [ ! -f "$TF_DATA_DIR/terraform.tfstate" ] || [ ! -d "$TF_DATA_DIR/providers" ]; then
     terraform -chdir="$TF" init -input=false -backend-config="environments/$ENV.s3.tfbackend" >&2 \
       || die "terraform init failed for $ENV"
   fi
   terraform -chdir="$TF" "$@"
 }
-out() { tf output -raw "$1" 2>/dev/null || die "no Terraform output '$1' in $ENV; has it been deployed?"; }
+out() {
+  local err
+  err="$(mktemp)"
+  tf output -raw "$1" 2>"$err" || { cat "$err" >&2; rm -f "$err"; die "no Terraform output '$1' in $ENV; Terraform's error is above"; }
+  rm -f "$err"
+}
 
 admin_token() {
   aws ssm get-parameter --name "$(out admin_token_parameter)" --with-decryption --query Parameter.Value --output text
