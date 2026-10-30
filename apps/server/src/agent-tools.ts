@@ -342,7 +342,7 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       const me = await this.kolab.sessionInfo(s);
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing marks')).id;
-      const { items, next } = await this.kolab.marksPage(s, { layer: all_layers ? undefined : me.layer, node: id }, { cursor, limit });
+      const { items, next } = await this.kolab.marksPage(s, { layer: all_layers ? undefined : me.layer, node: id }, { cursor, limit }, { revisit: true });
       return { marks: items, next };
     });
   }
@@ -499,7 +499,7 @@ export class AgentTools {
       ...(r.cascade ? { cascade: r.cascade } : {}),
       ...(r.rebases ? { rebases_queued: r.rebases } : {}),
       ...(r.ok ? await (async () => {
-        const marks = await kolab.marksPage(session, { node: n.id });
+        const marks = await kolab.marksPage(session, { node: n.id }, {}, { revisit: true });
         // P18: and the marks it set on other nodes of this kolab, once its cascade has run.
         const downstream = r.cascade ? null : await kolab.downstreamMarks(session, r.version);
         return {

@@ -77,6 +77,23 @@ test('a link into another kolab needs Read there, follows its commits, and keeps
   expect((await kolab.db.query(`select v.seq from edge e join version v on v.id = e.target_version_id where e.id = $1`, [edge])).rows).toStrictEqual([{ seq: 3 }]);
 });
 
+test('a commit\'s marks downstream are its own kolab\'s: none a link puts in another kolab, and another kolab\'s session is told none (P18, D49)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  // alice's spec in orders relies on checkout#R1; so does bob's FAQ, in billing.
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced with the monthly invoice.' }) });
+  await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.createNode(bob, 'prototype', 'Invoice FAQ', 'invoice-faq');
+  const f1 = await kolab.commit(bob, 'invoice-faq', { elements: els({ F1: 'Invoices come once a month.' }) });
+  await kolab.link(bob, { kind: 'dependency', source: f1, sourceElement: 'F1', target: (await kolab.latestCommitted(checkout))!.id, targetElement: 'R1' });
+  const v = await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
+  await kolab.drainOutbox();
+  expect(await marks(kolab, 'orders')).toStrictEqual([['changed', 'kj:orders-spec@1#O1']]);
+  // bob's commit lists only billing's mark; alice, in orders, is told none of it, though her kolab's mark has the same trigger.
+  expect((await kolab.downstreamMarks(bob, v)).items.map((m) => [m.reason, m.dirty])).toStrictEqual([['changed', 'kj:invoice-faq@1#F1']]);
+  expect(await kolab.downstreamMarks(alice, v)).toStrictEqual({ items: [], more: false });
+});
+
 test('revoking Read marks the link access_lost in the same change; its target\'s commits stop reaching it until Read comes back', async () => {
   const { kolab, alice, bob, checkout } = await twoKolabs();
   await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
