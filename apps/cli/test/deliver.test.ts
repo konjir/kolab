@@ -182,6 +182,26 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   expect(await eng.call('list_repositories', {})).toMatchObject({ repositories: [{ confirmed: true, confirmed_by: 'eng2', confirmed_by_work: 'kj:orders-pg#W1' }] });
 }, 120_000);
 
+test('after a reopen, konjir work deliver sends only the new round\'s commits: the earlier round\'s are named, not sent again, and alone they are refused (W5.3, PLN10)', async () => {
+  const { eng, eng2, lee } = await planned();
+  const { dir, c1, c5 } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  await eng.call('pull_work', {});
+  await deliverWork(eng.call, gitIn(dir), { submit: true });
+  await eng2.call('review', { work: 'kj:orders-pg#W1', verdict: 'approve' });
+  await eng.call('reopen_work', { work: 'kj:orders-pg#W1', note: 'R1 changed.' });
+  await eng.call('pull_work', {});
+  // Round 2 with no new commit yet: the round-1 commits alone are refused, and nothing is sent.
+  expect(await rejection(deliverWork(eng.call, gitIn(dir)))).toMatch(/was recorded in an earlier round of kj:orders-pg#W1, before it was last To do/);
+  const c6 = commit(dir, `Cancel within a day\n\n${T1}`, { 'src/cancel.ts': 'export const cancel = 3;\n' });
+  const r = await deliverWork(eng.call, gitIn(dir), { submit: true }) as Record<string, unknown>;
+  expect(r).toMatchObject({ commits: [{ sha: c6 }], earlier_rounds: [c1, c5], recorded: 1, state: 'in_review' });
+  // The revisit a later change would show names this round's commit, not round 1's.
+  const ev = (await eng.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: { sha?: string }[] }).evidence.map((e) => e.sha);
+  expect(ev.filter((s) => s === c1)).toHaveLength(1);
+  expect(ev).toContain(c6);
+}, 120_000);
+
 test('konjir work deliver finds a package\'s commits by the trailer it had as a plan\'s package, before D104 (migration 0033), as by its own', async () => {
   const { kolab, eng, lee } = await planned();
   const { dir, c1 } = checkout();

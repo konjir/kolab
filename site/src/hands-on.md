@@ -144,7 +144,7 @@ You are the product writer for Linkly. You work in Konjir only through your konj
 Make `spec-reviewer.md` the same way with `mcp__konjir-spec-reviewer__*`, and `builder.md` with `mcp__konjir-builder__*, Read, Write, Edit, Bash`. Start one session with all three servers and approve them when Claude Code asks:
 
 ```sh
-claude --dangerously-load-development-channels \
+. ~/linkly/konjir.sh && cd ~/linkly && claude --dangerously-load-development-channels \
   server:konjir-spec-writer server:konjir-spec-reviewer server:konjir-builder
 ```
 
@@ -237,7 +237,7 @@ The answer comes back to the element that waited on it, as a `query_answered` ma
 
 ## 6. Build it
 
-Work is built in a git repository that the kolab knows. Kolab never reads git: you register the repository, pinned by its first commit, and Konjir refuses work delivered from any other checkout. Only a person registers one, never an agent. In your own terminal:
+Work is built in a git repository that the kolab knows. Kolab never reads git: you register the repository, pinned by its first commit, and `konjir work deliver` refuses to deliver from any other checkout. Only a person registers one, never an agent. In your own terminal:
 
 ```sh
 . ~/linkly/konjir.sh && cd ~/linkly
@@ -262,7 +262,6 @@ Then build the next work package, following the build loop in the instructions: 
 Approve its file edits and commands as it asks. It clears the `query_answered` mark (the binding already counts every visit), pulls `W1`, writes `server.js`, `package.json` and the tests, runs `npm test` until it passes, and commits on the branch it names, with the trailer that ties the commit to the package, `Konjir-Work: kj:linkly-ada/short-links-binding#W1` in our run. `konjir work deliver` then finds the commits that carry it, checks that this checkout is the registered repository, records them as the package's evidence and submits it. `W1` is In review, waiting on you. The code points at the binding by address, never by copying it:
 
 ```sh
-git checkout <the builder's branch>
 grep -n "kj:" server.js
 git log -1 --format='%h %s%n%(trailers:key=Konjir-Work)'
 ```

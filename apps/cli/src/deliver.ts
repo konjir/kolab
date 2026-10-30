@@ -281,6 +281,28 @@ function prNumber(url: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
+/** What deliver reads of a package: its trailer and repository, and the commits its earlier rounds of work recorded. */
+interface Round { work: string; trailer: string; former_trailers?: string[]; state: string; repository: { url: string } | null; earlier: Set<string> }
+
+/**
+ * The package `work` as deliver needs it, from konjir_read_work: its events paged to the last, so the
+ * last one that made it To do (a reopening, a release, a lapse) is found, and `earlier`, the commits
+ * of its evidence recorded before then, which belong to an earlier round of work (PLN10).
+ */
+async function readRound(call: Call, work: string): Promise<Round> {
+  type Page = Omit<Round, 'earlier'> & { evidence?: { kind: string; sha?: string; at: string }[]; events?: { to: string | null; at: string }[]; events_next?: string | null };
+  const first = await call('read_work', { work, limit: 200 }) as Page;
+  let lastTodo: number | undefined;
+  for (let page = first; ;) {
+    for (const e of page.events ?? []) if (e.to === 'todo') lastTodo = Date.parse(e.at);
+    if (!page.events_next) break;
+    page = await call('read_work', { work, limit: 200, events_cursor: page.events_next }) as Page;
+  }
+  const earlier = new Set((first.evidence ?? [])
+    .filter((e) => e.kind === 'commit' && e.sha && lastTodo !== undefined && Date.parse(e.at) <= lastTodo).map((e) => e.sha!));
+  return { work: first.work, trailer: first.trailer, former_trailers: first.former_trailers, state: first.state, repository: first.repository, earlier };
+}
+
 export interface DeliverOptions {
   /** The work package, kj:[<kolab>/]<binding>#<id>; by default the one the session holds In progress. */
   work?: string;
@@ -298,7 +320,9 @@ export interface DeliverOptions {
  * checks the checkout is the package's registered repository (its root commit, and a remote), and
  * records them as the package's evidence, with a pull request and test runs if given, `PER_CALL` at
  * a time; with `submit`, the last call submits it. Kolab counts a commit it already has, in this
- * round of work, in `already`, so running it again records only what is new.
+ * round of work, in `already`, so running it again records only what is new. A commit an earlier
+ * round recorded, before the package was last To do (reopened, released or lapsed), isn't sent
+ * again: the summary names it under `earlier_rounds`.
  */
 export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {}) {
   let work = opts.work;
@@ -310,7 +334,7 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
     }
     work = held[0].work;
   }
-  const pkg = await call('read_work', { work, limit: 1 }) as { work: string; trailer: string; former_trailers?: string[]; state: string; repository: { url: string } | null };
+  const pkg = await readRound(call, work);
   const address = pkg.trailer.replace(/^Konjir-Work:\s*/, '').trim();
   // A package a plan had before D104 (migration 0033) keeps its commits: their trailers name the plan.
   const former = (pkg.former_trailers ?? []).map((t) => t.replace(/^Konjir-Work:\s*/, '').trim());
@@ -330,7 +354,11 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   }
   requireCheckoutOf(checkout, repo, !!opts.repo);
 
-  const commits = taggedCommits(git, [address, ...former], { since: opts.since });
+  // A reopened or released package starts a new round of work (PLN10): the commits an earlier round
+  // recorded are that round's evidence, so they aren't sent again as this one's.
+  const tagged = taggedCommits(git, [address, ...former], { since: opts.since });
+  const commits = tagged.filter((c) => !pkg.earlier.has(c.sha));
+  const earlier = tagged.filter((c) => pkg.earlier.has(c.sha)).map((c) => c.sha);
   const warnings: string[] = [];
   const evidence: Record<string, unknown>[] = commits.map((c) => {
     const files = c.files.filter((f) => f.length <= PATH);
@@ -344,6 +372,10 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
     evidence.push({ kind: 'pull_request', url: opts.pr, repo: repo.url, ...(n ? { pr: n } : {}) });
   }
   for (const t of opts.tests ?? []) evidence.push(/^https:\/\//i.test(t.trim()) ? { kind: 'test_run', url: t.trim() } : { kind: 'test_run', title: t });
+  if (!commits.length && !opts.pr && earlier.length) {
+    throw new Error(`every commit reachable from HEAD${opts.since ? ` since ${opts.since}` : ''} that carries the trailer "Konjir-Work: ${address}" (${earlier.map((x) => x.slice(0, 12)).join(', ')}) `
+      + `was recorded in an earlier round of ${pkg.work}, before it was last To do: commit this round's work with the trailer and run it again. Nothing was sent.`);
+  }
   if (!commits.length && !opts.pr) {
     throw new Error(`no commit reachable from HEAD${opts.since ? ` since ${opts.since}` : ''} carries the trailer "Konjir-Work: ${address}", and no pull request was given (--pr): `
       + `add the trailer to its commits (git commit --trailer "Konjir-Work: ${address}") and run it again. Nothing was sent.`);
@@ -351,6 +383,7 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   const summary = {
     work: pkg.work, repository: repo.url, root_sha: repo.root_sha, trailer: `Konjir-Work: ${address}`,
     commits: commits.map((c) => ({ sha: c.sha, subject: c.subject, files: c.files.length })),
+    ...(earlier.length ? { earlier_rounds: earlier } : {}),
     ...(warnings.length ? { warnings } : {}),
   };
   if (opts.dryRun) return { ...summary, sent: false, evidence };
