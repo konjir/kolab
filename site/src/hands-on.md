@@ -1,6 +1,6 @@
 # Write a spec, then build it with a team of agents
 
-In about an hour you put a small product on Konjir and build it with three AI agents: one writes the functional spec, one reviews it, and one binds it to a stack and writes the code. Then you change one requirement and watch Konjir mark exactly the part of the binding that relied on it.
+In about an hour you put a small product on Konjir and build it with three AI agents: one writes the functional spec, one reviews it, and one binds it to a stack, plans the work and builds it. Then you change one requirement and watch Konjir mark exactly the part of the binding, and the finished work, that relied on it.
 
 The product is **Linkly**, a link shortener whose links expire. Every command and prompt here is meant to be pasted as it is. Each step says what you should see. The agents' wording will differ from run to run, but what Konjir does won't.
 
@@ -23,7 +23,7 @@ The CLI is also on npm (`npx konjir@0.5.0`). That build runs every verb, `konjir
 
 ## 1. Sign up and make a private kolab
 
-A kolab holds one project: its one spec, the bindings built on it, each with at most one plan, and the questions between them.
+A kolab holds one project: its one spec, the bindings built on it, each holding its decisions and the work packages that build it, and the questions between them.
 
 1. Open [kolab.konjir.com](https://kolab.konjir.com) and choose **Sign in with GitHub**.
 2. Kolab's page says “you are `ada` here”: that is your Konjir name, usually your GitHub login, lowercased. Under **In the kolab**, choose **A new private kolab of your own**. Name it `linkly-` and your GitHub login, for example `linkly-ada`; names are unique across Konjir. Give it the title `Linkly: short links that expire`. Under **As**, leave **Product**.
@@ -31,7 +31,7 @@ A kolab holds one project: its one spec, the bindings built on it, each with at 
 
 You land in your empty kolab, signed in as yourself, with Admin.
 
-Now make the code repository, and a small file that sets up each terminal you'll use: your names, Kolab's URL, the `konjir` command, and the `agent` command that starts an agent's session (step 2):
+Now make the code repository, and a small file that sets up each terminal you'll use: your names, Kolab's URL, the `konjir` command (for you, and for the agents' shells), and the `agent` command that starts an agent's session (step 2):
 
 ```sh
 mkdir ~/linkly && cd ~/linkly && git init
@@ -40,7 +40,9 @@ cat > konjir.sh <<'EOF'
 export ME=ada              # your Konjir name
 export KOLAB=linkly-ada    # your kolab
 export KONJIR_URL=https://kolab.konjir.com/mcp
-konjir() { ~/kolab/bin/konjir "$@"; }
+export PATH="$HOME/kolab/bin:$PATH"   # konjir, here and in the agents' shells
+# Where konjir connect keeps each agent's sign-in, one file per agent
+export KJ_AGENTS="${XDG_CONFIG_HOME:-$HOME/.config}/konjir/agents"
 # agent <label>: Claude Code with only that agent's Konjir server, and its channel
 agent() {
   cd ~/linkly || return
@@ -198,10 +200,12 @@ In the **builder** session:
 ```text
 You are the engineer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
 
-Bind the committed spec short-links to our stack. Create a binding node (kind binding; it binds the kolab's one spec) named short-links-binding, titled "Linkly on Node.js", for this stack: Node.js 22 or later with no npm dependencies, node:http for the server, node:sqlite for storage, node:test for the tests. Write one element per implementation decision (b1, b2, ...). Link each element (source_element) to exactly the requirements it serves and no others; don't link a stack-wide choice to every requirement. Every requirement must be served by at least one element. Add no behavior the spec doesn't state. Submit the binding for review, then tell me its version and each element with the requirements it links to.
+Bind the committed spec short-links to our stack. Create a binding node (kind binding; it binds the kolab's one spec) named short-links-binding, titled "Linkly on Node.js", for this stack: Node.js 22 or later with no npm dependencies, node:http for the server, node:sqlite for storage, node:test for the tests. Write one element per implementation decision (b1, b2, ...). Link each element (source_element) to exactly the requirements it serves and no others; don't link a stack-wide choice to every requirement. Every requirement must be served by at least one element. Add no behavior the spec doesn't state.
+
+Plan the build in the same binding, as one work package: an element W1, "Build Linkly as this binding says", with a work field whose done_when is "server.js and test/linkly.test.js implement every requirement as this binding says, and npm test passes", and whose size is M. Link W1 to every requirement of short-links, since it builds them all. Submit the binding for review, then tell me its version and each element with the requirements it links to.
 ```
 
-It lists the elements, `b1` to `b8` in our run, each linked to the requirement it serves, and says version 1 waits on your approval. Each link is pinned to the version of the requirement it was written against.
+It lists the decisions, `b1` to `b8` in our run, each linked to the requirement it serves, and the work package `W1`, linked to every requirement, and says version 1 waits on your approval. Each link is pinned to the version of the requirement it was written against. A binding's elements are its decisions and its work packages: an element with a work field is work to do, which an agent pulls and builds; a decision never is.
 
 The reviewer is you: you hold Write on the technical layer as the kolab's owner, and no other agent works as an engineer. In [kolab.konjir.com](https://kolab.konjir.com), sign in with GitHub and choose your kolab. Next to **Working as**, switch to **engineer**. Open **Reviews**, then `short-links-binding` under **Waiting for your review**, read it, and choose **Approve**. It commits.
 
@@ -233,6 +237,18 @@ The answer comes back to the element that waited on it, as a `query_answered` ma
 
 ## 6. Build it
 
+Work is built in a git repository that the kolab knows. Kolab never reads git: you register the repository, pinned by its first commit, and Konjir refuses work delivered from any other checkout. Only a person registers one, never an agent. In your own terminal:
+
+```sh
+. ~/linkly/konjir.sh && cd ~/linkly
+git add .gitignore && git commit -m "Start Linkly"
+git remote add origin https://github.com/$ME/linkly.git
+konjir login --kolab $KOLAB --role engineer
+konjir repo register --binding short-links-binding
+```
+
+On Kolab's page, under **Work as**, choose **Yourself**, then **Allow**. The remote needn't exist on GitHub, and nothing is pushed to it: `konjir work deliver` checks only that your checkout tracks the URL you registered. If your Konjir name isn't your GitHub login, put your login in the URL. `konjir repo register` answers with the repository, `"binding": "short-links-binding"` and `"confirmed": false`.
+
 In the **builder** session:
 
 ```text
@@ -240,14 +256,26 @@ You are the engineer for Linkly. You work in Konjir through your konjir tools, a
 
 First run konjir_list_stale and settle every mark on your layer: if the element still holds, konjir_clear_mark it; if not, revise the binding and submit it.
 
-Then build Linkly in this repository exactly as the committed short-links-binding says: read it with konjir_read_node, and implement each element. Put the server in server.js and the tests in test/linkly.test.js, with a package.json whose "test" script runs node --test. Above the code that implements each element, write a one-line comment naming its address, for example // kj:short-links-binding#b3. Don't copy spec or binding text into the repository. Run npm test until it passes, then commit with git. Before you finish, run konjir_list_stale again. Tell me what you built and the test result.
+Then build the next work package, following the build loop in the instructions: pull it with konjir_pull_work and read it with konjir_read_work. Build Linkly in this repository exactly as the committed short-links-binding says: put the server in server.js and the tests in test/linkly.test.js, with a package.json whose "test" script runs node --test. Above the code that implements each element, write a one-line comment naming its address, for example // kj:short-links-binding#b3. Don't copy spec or binding text into the repository. Run npm test until it passes, then commit on a new branch, with the package's trailer. This repository has nowhere to push to, so don't push. Deliver and submit it with konjir work deliver --submit and a --test for the test run, running konjir as yourself: put KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-builder.json" before the command. Before you finish, run konjir_list_stale again. Tell me what you built, the test result and the work package's state.
 ```
 
-Approve its file edits and commands as it asks. It clears the `query_answered` mark (the binding already counts every visit), writes `server.js`, `package.json` and the tests, runs `npm test` until it passes, and commits. The code points at the binding by address, never by copying it:
+Approve its file edits and commands as it asks. It clears the `query_answered` mark (the binding already counts every visit), pulls `W1`, writes `server.js`, `package.json` and the tests, runs `npm test` until it passes, and commits on the branch it names, with the trailer that ties the commit to the package, `Konjir-Work: kj:linkly-ada/short-links-binding#W1` in our run. `konjir work deliver` then finds the commits that carry it, checks that this checkout is the registered repository, records them as the package's evidence and submits it. `W1` is In review, waiting on you. The code points at the binding by address, never by copying it:
 
 ```sh
+git checkout <the builder's branch>
 grep -n "kj:" server.js
+git log -1 --format='%h %s%n%(trailers:key=Konjir-Work)'
 ```
+
+Review it as an engineer would: read the change, run the tests, then give your verdict with the CLI (the web page doesn't list work to review yet):
+
+```sh
+npm test
+konjir read_work work=kj:short-links-binding#W1
+konjir review work=kj:short-links-binding#W1 verdict=approve note="Read the change and ran npm test: it passes."
+```
+
+It answers `"state": "done"`. The repository stays unconfirmed, because you registered it: an approval by someone other than its registrant and the package's builder confirms it.
 
 ## 7. Change the spec
 
@@ -262,26 +290,46 @@ Product decision: a link the person doesn't choose a duration for now lasts 1 da
 Give the **spec-reviewer** its review prompt from step 3. When it approves, the new version commits, and Kolab checks every link into the spec against it. The builder's session gets, in our run:
 
 ```output
-← konjir: Your technical inbox in linkly-ada changed: 0 open questions and notes, 1 open mark.
-New mark on your work:
-- mark … on kj:short-links-binding@1#b3 (changed): kj:short-links#R3 changed in version 3. Next: …
+← konjir: Your technical inbox in linkly-ada changed: 0 open questions and notes, 3 open marks.
+New marks on your work:
+- mark … on kj:short-links-binding@1#b5 (changed): kj:short-links#R3 changed in version 3. Next: …
+- mark … on kj:short-links-binding@1#b6 (changed): kj:short-links#R3 changed in version 3. Next: …
+- mark … on kj:short-links-binding@1#W1 (changed): kj:short-links#R3 changed in version 3. Next: kj:short-links-binding#W1 is Done, and at risk (PLN10): …
 ```
 
-Only the element linked to the requirement that changed is marked. Every other link re-pinned to the new version without a mark. In the web page, as engineer, the mark sits beside its element with the requirement's text before and after.
+Only what links to the requirement that changed is marked: the decisions that serve it, and the work package that built it. Every other link re-pinned to the new version without a mark. `W1` stays Done, but at risk, and its mark carries a revisit: the repository, the commits and the files its work touched, so whoever picks it up knows where to look. In the web page, as engineer, each mark sits beside its element with the requirement's text before and after.
 
-## 8. Resolve the mark
+## 8. Resolve the marks
 
 In the **builder** session:
 
 ```text
 You are the engineer for Linkly. You work in Konjir through your konjir tools, and in this repository. Call konjir_instructions first and follow it.
 
-The spec changed. Run konjir_list_stale and settle every mark on your layer: read what changed with konjir_read_node; where a binding element still holds, konjir_clear_mark it; where it doesn't, revise the element with a delta that keeps its ID, and submit the new version of short-links-binding for review. Then change the code and tests to match the binding, run npm test until it passes, and commit. Tell me, for each mark, whether you cleared it or revised the element, and why.
+The spec changed. Run konjir_list_stale and settle every mark on your layer. For a binding element, read what changed with konjir_read_node; where it still holds, konjir_clear_mark it; where it doesn't, revise it with a delta that keeps its ID, and submit the new version of short-links-binding for review. For a work package that is Done and at risk, look at the files its revisit names: if the code still holds, clear its mark; if it doesn't, reopen it with konjir_reopen_work, and don't rebuild it until the binding it builds is committed. Tell me, for each mark, what you did and why.
 ```
 
-The marked element said the default was 7 days, so it revises that element, keeping its ID, submits `short-links-binding` version 2, changes the default in the code and its test, and commits. In the web page, approve version 2 under **Reviews**. The mark settles as it commits; ask the builder to run `konjir_list_stale`, and it finds none.
+A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 in your terminal:
 
-That's the loop: intent stated once, a binding pinned to it, questions routed to whoever owns the answer, and a change that reaches exactly what depends on it.
+```sh
+konjir review node=short-links-binding version=2 verdict=approve note="The default is now 1 day, as R3 says."
+```
+
+Then, in the **builder** session:
+
+```text
+You are the engineer for Linkly. You work in Konjir through your konjir tools, and in this repository. Call konjir_instructions first and follow it.
+
+short-links-binding version 2 is committed. Build the work package you reopened, following the build loop: pull it first with konjir_pull_work, then change the code and tests to match the binding, run npm test until it passes, commit with its trailer, and deliver it with konjir work deliver --submit as before, with KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-builder.json" before the command. Then run konjir_list_stale. Tell me what you changed and the work package's state.
+```
+
+It pulls `W1` again, changes the default and its test, commits with the same trailer and delivers it: `W1` is In review again, and its stale list is empty. Check the change as in step 6, then approve it:
+
+```sh
+konjir review work=kj:short-links-binding#W1 verdict=approve note="Read the change and ran npm test: it passes."
+```
+
+That's the loop: intent stated once, a binding pinned to it, work packages built and delivered with their commits, questions routed to whoever owns the answer, and a change that reaches exactly what depends on it, finished work included.
 
 ## Troubleshooting
 
@@ -297,6 +345,11 @@ That's the loop: intent stated once, a binding pinned to it, questions routed to
 - **An agent says its channel has no sign-in.** It names the command that signs it in, `KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent <agent>`. Run it in another terminal; the channel picks the sign-in up by itself.
 - **Agents keep signing each other out.** An agent holds one session at a time. Don't also add Kolab's HTTP server (`claude mcp add … /mcp`) as the same agent, and don't run `konjir login` as an agent that a session uses.
 - **No `← konjir:` messages arrive.** Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with `konjir_list_reviews`, `konjir_list_queries` and `konjir_list_stale`.
+- **`this checkout tracks …, not …` or `is no repository registered in this kolab`.** `konjir work deliver` runs only in a checkout whose first commit and `origin` are the registered repository's. Check `git remote -v` shows the URL you registered in step 6, and that the builder ran it in `~/linkly`.
+- **`no commit reachable from HEAD … carries the trailer`.** The builder committed without the package's trailer, or deliver ran on another branch. Ask it to commit with `git commit --trailer "Konjir-Work: …"`, the trailer `konjir_read_work` gives, and deliver from that branch.
+- **The builder's `konjir work deliver` opens a browser, or works as you.** It ran without `KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-builder.json"` before it, so konjir used your own sign-in, or none. Ask it to run it again with that in front.
+- **`a person with Maintain or Admin registers it` when an agent tries.** Registering a repository is always a person's act. Run `konjir repo register` yourself, signed in as yourself (step 6).
+- **The builder asks you a question about the spec instead of building.** The instructions tell it to ask in Konjir, with `konjir_ask`, so the question reaches the spec-writer's inbox as in step 5. Answer it there, and an open question blocks pulling the work that serves its requirement until it is answered.
 - **`konjir connect` says it has no bridge.** It runs the channel from a checkout. Use `~/kolab/bin/konjir`, or add `--http` for plain HTTP entries that each sign in through `/mcp` in Claude Code, without a channel.
 
 ## Clean up
@@ -306,7 +359,7 @@ First quit the three Claude Code sessions (`/exit` in each), so no channel is le
 ```sh
 . ~/linkly/konjir.sh && cd ~/linkly
 for a in spec-writer spec-reviewer builder; do
-  KONJIR_CREDENTIALS="${XDG_CONFIG_HOME:-$HOME/.config}/konjir/agents/$ME-$a.json" konjir logout
+  KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-$a.json" konjir logout
 done
 ```
 

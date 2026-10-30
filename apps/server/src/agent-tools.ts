@@ -598,7 +598,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_open_case',
-    description: 'Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can\'t be met as written. Give the question in dispute and your position: a claim, its evidence, and the side it takes (seeks keep_intent or change_intent). Only those with Write on a layer of the kolab may. It waits in the inbox of the element\'s layer for the other side\'s position (konjir_add_position) and then a person\'s ruling (konjir_rule), and blocks nothing meanwhile. Ask first (konjir_ask): most questions need an answer, not a ruling. Never patch the behavior instead.',
+    description: 'Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can\'t be met as written. Give the question in dispute and your position: a claim, its evidence, and the side it takes (seeks keep_intent or change_intent). Only those with Write on a layer of the kolab may. It waits in the inbox of the element\'s layer for the other side\'s position (konjir_add_position) and then a person\'s ruling (konjir_rule). Work under way goes on meanwhile, but until it is ruled no one can pull a work package that serves or relies on its element. Ask first (konjir_ask) when the element is unclear: most questions need an answer, not a ruling. When building shows the spec can\'t be met as written, open one against the spec element with your evidence (commits, file and line, test runs), and never patch the behavior instead.',
     schema: openCase,
   })
   openCase(a: z.infer<typeof openCase>, context?: McpToolContext) {
@@ -765,9 +765,9 @@ export class AgentTools {
         ...r,
         next: r.in_review
           ? (r.reviewers.length
-            ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request, and one approval makes it Done. Pull your next work package (konjir_pull_work); the verdict comes back in your answers.`
+            ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request, and one approval makes it Done. The verdict comes back in your answers. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).`
             : `In review. ${nobodyCanReview('technical')} The verdict comes back in your answers.`)
-          : 'Done, unreviewed: no one else holds Write on the technical layer. Pull your next work package (konjir_pull_work).',
+          : 'Done, unreviewed: no one else holds Write on the technical layer. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).',
       };
     });
   }
