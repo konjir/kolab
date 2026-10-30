@@ -340,7 +340,7 @@ function WorkStateLine({ state, name }: { state: WebWorkState; name: string }) {
   return (
     <div className="work-state">
       <dt>State</dt>
-      <dd><Pill tone={state.state === 'done' ? 'clean' : why.length && !state.milestone ? 'question' : 'stale'}>{STATE_LABEL[state.state]}</Pill>{held}
+      <dd><Pill tone={state.state === 'done' ? 'clean' : why.length && !state.milestone ? 'question' : 'stale'}>{STATE_LABEL[state.state]}</Pill>{state.at_risk && <> <Pill tone="stale">At risk</Pill></>}{held}
         {why.length > 0 && !state.milestone && <span className="blocked"> · Blocked by {why.join(', ')}</span>}</dd>
     </div>
   );

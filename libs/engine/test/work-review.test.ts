@@ -600,7 +600,7 @@ test('D102 with a delayed cascade: a package approved between a plan edit\'s com
   expect((await kolab.db.query(`select 1 from outbox where kind = 'after_commit'`)).rows).toStrictEqual([]);
   expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'done' });
   expect((await workMarks(kolab)).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
-  expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).toStrictEqual(['added', 'pulled', 'submitted', 'approved']);
+  expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).toStrictEqual(['added', 'pulled', 'submitted', 'at_risk', 'approved']);
 });
 
 test('clearing a mark already cleared changes nothing: who settled it, and how, stays (verification 3)', async () => {
@@ -616,6 +616,93 @@ test('clearing a mark already cleared changes nothing: who settled it, and how, 
   await kolab.clear(bob, m.id);
   expect((await kolab.db.query(`select state, cleared_by from invalidation where id = $1`, [m.id])).rows).toStrictEqual(before);
   expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).not.toContain('confirmed');
+});
+
+/** Builds `id` as bob, with two commits and a pull request, approved by eve: Done. */
+async function built(kolab: Kolab, bob: string, eve: string, id: string) {
+  expect(await pull(kolab, bob)).toBe(id);
+  await kolab.addEvidence(bob, W(id), [COMMIT('a'), { ...COMMIT('b'), files: ['src/orders.ts', 'src/queue.ts'] }]);
+  await kolab.submitWork(bob, W(id), { evidence: [PR] });
+  await kolab.reviewWork(eve, W(id), { verdict: 'approve' });
+}
+
+test('W5.2b, M5 (6): a spec change reaching the spec element W1.2 serves marks exactly W1.2, Done and at risk with a revisit naming its repository, commits and files; its assignee is told; clearing records confirmed; reopening another returns it to To do (PLN10, WRK6, P18)', async () => {
+  const { kolab, product, bob, eve } = await planned();
+  await built(kolab, bob, eve, 'W1.1');
+  await built(kolab, bob, eve, 'W1.2');
+  // R2, which b2 serves and W1.2 relies on through it, changes.
+  const v = await kolab.commit(product, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Orders ship in a day, tracked.' }] });
+  expect((await workMarks(kolab)).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.2', 'upstream_dirty']]);
+  expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'done', assignee_id: 'bob' });
+  const revisit = {
+    repository: 'https://github.com/acme/orders', commits: expect.arrayContaining([sha('a'), sha('b')]),
+    files: ['src/orders.ts', 'src/queue.ts', 'test/orders.test.ts'], pull_requests: [PR.url],
+  };
+  // P18: the commit's marks downstream, the decision's and, through it, the package's, named and at risk.
+  const down = await kolab.downstreamMarks(product, v);
+  expect(down.more).toBe(false);
+  expect(down.items.map((m) => [m.dirty, m.reason, m.work ?? null, m.at_risk ?? false])).toStrictEqual([
+    ['kj:orders-pg@2#b2', 'changed', null, false], ['kj:orders-pg@2#W1.2', 'upstream_dirty', W('W1.2'), true],
+  ]);
+  expect(down.items[1]).toMatchObject({ work_state: 'done', revisit, next: expect.stringMatching(/^kj:orders-pg#W1\.2 is Done, and at risk \(PLN10\).*konjir_clear_mark mark=\w+, which records confirmed.*konjir_reopen_work work=kj:orders-pg#W1\.2/) });
+  // The board, the package and list_stale say so; only W1.2 is at risk.
+  const board = (await kolab.listWork(eve)).items;
+  expect(board.filter((i) => i.at_risk).map((i) => [i.id, i.state])).toStrictEqual([['W1.2', 'done']]);
+  expect(board.find((i) => i.id === 'W1.2')!.revisit).toStrictEqual(revisit);
+  expect(await kolab.readWork(eve, W('W1.2'))).toMatchObject({ state: 'done', at_risk: true, revisit, open_marks: [{ reason: 'upstream_dirty' }] });
+  expect((await kolab.readWork(eve, W('W1.1'))).at_risk).toBeUndefined();
+  expect((await kolab.marksPage(eve, { layer: 'technical' })).items.filter((m) => m.at_risk).map((m) => m.work)).toStrictEqual([W('W1.2')]);
+  // Its last assignee is told, once, in their answers: an event, Kolab's, its state unchanged.
+  const notice = (await kolab.workNotices(bob)).events[0];
+  expect(notice).toMatchObject({ work: W('W1.2'), kind: 'at_risk', actor: 'kolab', from: 'done', to: 'done', assignee_from: 'bob', assignee_to: 'bob',
+    note: expect.stringMatching(/^mark \w+ \(upstream_dirty\): something it serves or relies on changed, so its work is at risk \(PLN10\)\. It stays Done: confirm the work holds \(konjir_clear_mark\), or open new work \(konjir_reopen_work\)$/) });
+  expect((await kolab.readWork(bob, W('W1.2'))).events.filter((e) => e.kind === 'at_risk')).toHaveLength(1);
+  // A session that holds only Read reads no mark (D58): no at_risk, no revisit, and the event without its note.
+  const carol = await kolab.openSession('carol', 'engineer');
+  expect((await kolab.listWork(carol)).items.some((i) => i.at_risk || i.revisit)).toBe(false);
+  const asCarol = await kolab.readWork(carol, W('W1.2'));
+  expect([asCarol.at_risk, asCarol.revisit]).toStrictEqual([undefined, undefined]);
+  expect(asCarol.events.find((e) => e.kind === 'at_risk')!.note).toBeNull();
+  expect((await kolab.downstreamMarks(carol, v)).items).toStrictEqual([]);
+  // eve checks the work, and clears the mark: it holds, recorded as confirmed by eve, no longer at risk.
+  const [m] = (await workMarks(kolab)).filter((x) => x.element_id === 'W1.2');
+  await kolab.clear(eve, m.id);
+  expect(await row(kolab, 'W1.2')).toMatchObject({ state: 'done' });
+  expect((await kolab.readWork(bob, W('W1.2'))).events.at(-1)).toMatchObject({ kind: 'confirmed', actor: 'eve' });
+  expect((await kolab.readWork(eve, W('W1.2'))).at_risk).toBeUndefined();
+  // R1 changes: W1.1 is at risk, and reopened, To do again; no longer at risk, its work to come built against the change.
+  await kolab.commit(product, 'orders', { deltas: [{ kind: 'override', element: 'R1', text: 'Orders can be cancelled until they ship.' }] });
+  expect((await kolab.listWork(eve)).items.filter((i) => i.at_risk).map((i) => i.id)).toStrictEqual(['W1.1']);
+  await kolab.reopenWork(eve, W('W1.1'), { note: 'Cancelling now stops at shipping.' });
+  expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'todo', assignee_id: null });
+  expect((await kolab.listWork(eve)).items.filter((i) => i.at_risk)).toStrictEqual([]);
+});
+
+test('W5.2b: a package To do is never at risk, and its assignee is told nothing; pulled with its mark open it is at risk until the mark settles; a commit whose mark reaches it In progress tells its assignee once (PLN10)', async () => {
+  const { kolab, product, bob, eve, commitWork } = await planned();
+  // W1.1 is marked while To do: not at risk, no notice.
+  await commitWork(bob, { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
+  expect((await workMarks(kolab)).map((m) => m.element_id)).toStrictEqual(['W1.1']);
+  expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.1')!.at_risk).toBeUndefined();
+  // Pulled with the mark open: at risk, said in the pull itself, until whoever builds it checks the change and clears the mark.
+  const pulled = await kolab.pullWork(bob);
+  expect(pulled).toMatchObject({ pulled: true, item: { id: 'W1.1', at_risk: true } });
+  expect((await kolab.readWork(bob, W('W1.1'))).events.map((e) => e.kind)).toStrictEqual(['added', 'pulled']);
+  // R1 changes under the work In progress: bob is told, its revisit empty but for the repository.
+  await kolab.commit(product, 'orders', { deltas: [{ kind: 'override', element: 'R1', text: 'Orders can be cancelled until they ship.' }] });
+  expect(await kolab.readWork(bob, W('W1.1'))).toMatchObject({ state: 'in_progress', at_risk: true,
+    revisit: { repository: 'https://github.com/acme/orders', commits: [], files: [], pull_requests: [] } });
+  expect((await kolab.workNotices(bob)).events[0]).toMatchObject({ work: W('W1.1'), kind: 'at_risk', actor: 'kolab', from: 'in_progress', to: 'in_progress',
+    note: expect.stringMatching(/clear the mark once it holds \(konjir_clear_mark\)$/) });
+  // Submitted, it stays at risk In review, its revisit its evidence. R1 changing again, while the mark on b1 that its first change raised is open, raises no new mark, so tells no one again.
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
+  await kolab.commit(product, 'orders', { deltas: [{ kind: 'override', element: 'R1', text: 'Orders can be cancelled until they are packed.' }] });
+  const w = await kolab.readWork(eve, W('W1.1'));
+  expect(w).toMatchObject({ state: 'in_review', at_risk: true, revisit: { commits: [sha('a')], files: ['src/orders.ts', 'test/orders.test.ts'] } });
+  expect(w.events.filter((e) => e.kind === 'at_risk').map((e) => e.from)).toStrictEqual(['in_progress']);
+  // A mark on a package with no work, To do, tells no one: W1.2, marked through b2.
+  await commitWork(bob, { deltas: [{ kind: 'override', element: 'b2', text: 'A shipping queue, durable.' }] });
+  expect((await kolab.readWork(eve, W('W1.2'))).events.map((e) => e.kind)).toStrictEqual(['added']);
 });
 
 test('an assignee submitting evidence on its package In review is told it waits in review (review 7)', async () => {

@@ -179,6 +179,45 @@ test('over MCP: evidence, submitting, a work package\'s review beside a version\
   expect(read.events.map((e) => e.kind)).toStrictEqual(['added', 'pulled', 'evidence', 'submitted', 'changes_requested', 'submitted', 'approved', 'reopened']);
 });
 
+test('over MCP: a spec change\'s commit lists the marks it set downstream (P18); the package Done under it is at risk, in list_stale, list_work and read_work with its revisit, and its assignee is told (W5.2b; PLN10, WRK6)', async () => {
+  const { server, pm, eng, eng2 } = await planned();
+  const W1 = 'kj:orders-pg#W1';
+  await call(eng.c, 'pull_work', {});
+  await call(eng.c, 'submit_work', { work: W1, evidence: [{ kind: 'commit', sha: 'a'.repeat(40), title: 'Cancel orders', files: ['src/cancel.ts'] },
+    { kind: 'pull_request', url: 'https://github.com/acme/orders/pull/3' }] });
+  await call(eng2.c, 'review', { work: W1, verdict: 'approve' });
+  // R1 changes: b1, which serves it, is marked, and W1, which relies on b1, through it.
+  await call(pm.c, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled until they ship.' }, { id: 'R2', text: 'Orders ship in a day.' }] });
+  expect(await call(pm.c, 'submit_for_review', { node: 'orders', version: 2 })).toMatchObject({ in_review: 'kj:orders@2', reviewers: ['lead'] });
+  // lead, who holds Maintain, approves it as product: its answer is the commit's.
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(admin);
+  await call(admin, 'admin_end_session', { actor: 'lead' });
+  const leadPm = await connect(server.url, ((await call(admin, 'admin_open_session', { actor: 'lead', role: 'product' })) as { token: string }).token);
+  closeAtEnd(leadPm);
+  const committed = await call(leadPm, 'review', { node: 'orders', version: 2, verdict: 'approve' }) as {
+    committed: string; stale_after_commit: unknown[]; marked_downstream: { dirty: string; reason: string; work?: string; at_risk?: boolean; revisit?: unknown; next: string }[];
+  };
+  expect(committed.committed).toBe('kj:orders@2');
+  expect(committed.stale_after_commit).toStrictEqual([]);
+  const revisit = { repository: 'https://github.com/acme/orders', commits: ['a'.repeat(40)], files: ['src/cancel.ts'], pull_requests: ['https://github.com/acme/orders/pull/3'] };
+  expect(committed.marked_downstream.map((m) => [m.dirty, m.reason, m.work ?? null, m.at_risk ?? false])).toStrictEqual([
+    ['kj:orders-pg@2#b1', 'changed', null, false], ['kj:orders-pg@2#W1', 'upstream_dirty', W1, true],
+  ]);
+  expect(committed.marked_downstream[1]).toMatchObject({ work_state: 'done', revisit, next: expect.stringMatching(/^kj:orders-pg#W1 is Done, and at risk/) });
+  // list_stale, list_work and read_work say so.
+  const stale = await call(eng.c, 'list_stale', {}) as { marks: { work?: string; at_risk?: boolean; revisit?: unknown }[] };
+  expect(stale.marks.filter((m) => m.at_risk)).toMatchObject([{ work: W1, revisit }]);
+  const board = await call(eng.c, 'list_work', {}) as { work: { id: string; state: string; at_risk?: boolean; revisit?: unknown }[] };
+  expect(board.work.filter((w) => w.at_risk)).toStrictEqual([expect.objectContaining({ id: 'W1', state: 'done', revisit })]);
+  expect(await call(eng2.c, 'read_work', { work: W1 })).toMatchObject({ state: 'done', at_risk: true, revisit });
+  // eng, its assignee, is told in its answers.
+  const answers = JSON.parse(((await eng.c.readResource({ uri: 'konjir://answers/test/eng' })).contents[0] as { text: string }).text) as {
+    work: { events: { work: string; kind: string; actor: string }[] };
+  };
+  expect(answers.work.events[0]).toMatchObject({ work: W1, kind: 'at_risk', actor: 'kolab' });
+});
+
 test('in a shell: konjir add_evidence and submit_work take evidence as JSON', async () => {
   const { server, eng } = await planned();
   const out: string[] = [];

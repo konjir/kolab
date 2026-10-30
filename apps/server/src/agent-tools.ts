@@ -334,7 +334,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_stale',
-    description: `List open dirty marks: what is dirty, why, and the next step. Defaults to your own layer. Oldest first.${PAGED}`,
+    description: `List open dirty marks: what is dirty, why, and the next step. Defaults to your own layer. Oldest first. A mark on a work package names it (work, work_state); if the package has work (In progress, In review or Done), it is at risk (at_risk), with a revisit: its repository, commit SHAs, files and pull requests to check against the change (PLN10).${PAGED}`,
     schema: listStale,
     annotations: { readOnlyHint: true },
   })
@@ -500,7 +500,15 @@ export class AgentTools {
       ...(r.rebases ? { rebases_queued: r.rebases } : {}),
       ...(r.ok ? await (async () => {
         const marks = await kolab.marksPage(session, { node: n.id });
-        return { stale_after_commit: marks.items, ...(marks.next ? { stale_after_commit_more: `More marks than these: konjir_list_stale node=${node} all_layers=true lists them all.` } : {}) };
+        // P18: and the marks it set on other nodes of this kolab, once its cascade has run.
+        const downstream = r.cascade ? null : await kolab.downstreamMarks(session, r.version);
+        return {
+          stale_after_commit: marks.items, ...(marks.next ? { stale_after_commit_more: `More marks than these: konjir_list_stale node=${node} all_layers=true lists them all.` } : {}),
+          ...(downstream ? {
+            marked_downstream: downstream.items,
+            ...(downstream.more ? { marked_downstream_more: 'More marks downstream than these: konjir_list_stale all_layers=true lists every open mark of this kolab.' } : {}),
+          } : {}),
+        };
       })() : { stale_after_commit: [] }),
       next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
         : r.in_review ? (r.reviewers?.length
@@ -678,7 +686,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_work',
-    description: `The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. binding: one binding only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
+    description: `The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), at_risk and its revisit (repository, commits, files, pull requests) while an open mark on it says something it serves or relies on changed (a Done package stays Done, PLN10), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. binding: one binding only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
     schema: listWork,
     annotations: { readOnlyHint: true },
   })
@@ -691,7 +699,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_work',
-    description: `Read one work package of your kolab, kj:<binding>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), its elements: each spec element it serves and each decision of its binding it relies on, at its latest committed version, with that element's links (a decision's spec elements, with their ancestors), questions, notes and rulings; the git trailer for its commits (and former_trailers, those its commits carried while it was a plan's, before D104), and its events (who changed its state, when, against which versions), oldest first. A package its binding removed, or made a decision, reads too, with removed_in. Events are paged: while events_next isn't null, call again with events_cursor=events_next.`,
+    description: `Read one work package of your kolab, kj:<binding>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), its elements: each spec element it serves and each decision of its binding it relies on, at its latest committed version, with that element's links (a decision's spec elements, with their ancestors), questions, notes and rulings; the git trailer for its commits (and former_trailers, those its commits carried while it was a plan's, before D104), its open_marks, at_risk and revisit (the repository, commit SHAs, files and pull requests of its work since it was last To do) while an open mark on it says something it serves or relies on changed (PLN10), and its events (who changed its state, when, against which versions), oldest first. A package its binding removed, or made a decision, reads too, with removed_in. Events are paged: while events_next isn't null, call again with events_cursor=events_next.`,
     schema: readWork,
     annotations: { readOnlyHint: true },
   })
