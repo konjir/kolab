@@ -155,7 +155,14 @@ const usage = (canServe: boolean) => `konjir — Kolab from a shell. Same verbs 
   konjir <verb> --json '{...}' the same, with all arguments as one JSON object
 
 Shortcuts: konjir resolve <address> · konjir read <node> [version] · konjir stale [all] · konjir queries [all]
-Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--note <text>] [--since <rev>]
+Build:     the loop for an engineer (konjir instructions has it step by step): konjir pull_work, then konjir read_work
+           work=kj:<binding>#<id> for its done-when, what it serves and its trailer; build and test it in a checkout of
+           its repository; git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"; push and open a pull request if
+           you can; konjir work deliver <work> --submit. Another engineer checks the evidence and runs konjir review
+           work=<work> verdict=approve (or request_changes note=…). Ask about an unclear element (konjir ask), open a case
+           file when the spec can't be met as written (konjir open_case), never patch around it. A Done package at risk:
+           konjir clear_mark mark=… if the work holds, else konjir reopen_work work=… note=….
+Git:      konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--note <text>] [--since <rev>]
            [--repo <url>] [--dry-run] [-C <dir>], in a checkout: finds the commits whose trailer is the package's
            (Konjir-Work: kj:<kolab>/<binding>#<id>, from pull_work or read_work), checks the checkout is the registered
            repository (its root commit and a remote), and records them as evidence; --submit submits the package.

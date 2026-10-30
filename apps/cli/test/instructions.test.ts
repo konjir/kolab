@@ -6,6 +6,7 @@ import type { Client } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
 import { connect, call, main } from '../src/cli.js';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
+import { buildInstructions } from '@konjir/engine';
 
 const ADMIN = 'instructions-test-admin';
 
@@ -249,4 +250,78 @@ test('the CLI: konjir instructions, konjir instructions reviewer and konjir inst
     process.env = env;
   }
   await server.close();
+});
+
+test('the served instructions carry the build loop (W5.3; PLN11, CASE5): pull, build, the trailer, deliver, submit, review, at risk and revisit, as the tools and a job\'s instructions say', async () => {
+  const { server, admin, open } = await boot();
+  const ann = await open('ann', 'anns');
+  // The server instructions every MCP session gets with its connection carry the loop in short (rule 9).
+  const served = ann.client.getInstructions() ?? '';
+  const rule9 = served.slice(served.indexOf('\n9. '));
+  expect(rule9).toMatch(/^\n9\. Build work packages, never decisions \(engineer\)\./);
+  for (const step of ['konjir_pull_work', 'konjir_read_work', 'git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"', 'konjir work deliver <work> --submit',
+    'konjir_submit_work', 'konjir_review work=<work>', 'konjir_reopen_work']) {
+    expect(rule9).toContain(step);
+  }
+  // In that order: pull, read, commit with the trailer, deliver, review.
+  const at = (s: string) => rule9.indexOf(s);
+  expect(at('konjir_pull_work')).toBeLessThan(at('konjir_read_work'));
+  expect(at('konjir_read_work')).toBeLessThan(at('git commit --trailer'));
+  expect(at('git commit --trailer')).toBeLessThan(at('konjir work deliver'));
+  expect(at('konjir work deliver')).toBeLessThan(at('konjir_review work='));
+  // PLN11: work with nothing behind it is a question to the binding layer, not a work package.
+  expect(rule9).toMatch(/Work with no spec element to serve and no decision to rely on is a question to the binding layer \(konjir_ask the binding\), not a work package/);
+  // CASE5: a spec that can't be met as written gets a case file with evidence, never a patch; and ask in Konjir, not the person.
+  expect(served).toMatch(/If, building it, you find the spec can't be met as written, raise a case file against the spec element with your evidence \(konjir_open_case: commits, file and line, test runs\), and don't patch the behavior\./);
+  expect(served).toMatch(/don't stop to ask whoever runs you instead/);
+  expect(served).toMatch(/an open question or case file blocks pulling the work packages that serve or rely on its element/);
+
+  // The full operating instructions spell the loop out step by step, with reviewing work and at risk.
+  const text = await toolText(ann.client);
+  const loop = text.slice(text.indexOf('The build loop (engineer), step by step:'));
+  for (let n = 1; n <= 7; n++) expect(loop).toMatch(new RegExp(`\\n {2}${n}\\. `));
+  expect(loop).toMatch(/konjir work deliver <work> --submit, adding --pr <url> for a pull request and --test "<the test command: its result>"/);
+  expect(loop).toMatch(/Submitting needs at least one commit or pull request\./);
+  expect(loop).toMatch(/konjir_ask the element now, with from=<the package>/);
+  expect(loop).toMatch(/konjir_open_case on the spec element with your evidence and don't patch the behavior/);
+  expect(loop).toMatch(/a job stops after its one item/);
+  expect(text).toMatch(/Reviewing work: .*konjir_review work=<work> verdict=approve note=.*verdict=request_changes note=/);
+  expect(text).toMatch(/At risk and revisit: .*konjir_clear_mark the mark \(recorded as confirmed, and it stays Done\).*konjir_reopen_work work=<work> note=/);
+  expect(text).toMatch(/marked_downstream/);
+  expect(text).toMatch(/work you would propose with neither behind it is a question to the binding layer \(konjir_ask on the binding\), not a work package; Kolab doesn't check this, so its reviewer does/);
+  // The reviewer instructions send such a package back.
+  expect(await toolText(ann.client, { which: 'reviewer' })).toMatch(/request changes for a work package that serves no spec element and relies on no decision/);
+
+  // The tools say the same: open_case no longer says it blocks nothing, and a submit's next step tells a job to stop.
+  const tools = (await ann.client.listTools()).tools;
+  const describe = (name: string) => tools.find((t) => t.name === name)!.description!;
+  expect(describe('konjir_open_case')).not.toMatch(/blocks nothing/);
+  expect(describe('konjir_open_case')).toMatch(/until it is ruled no one can pull a work package that serves or relies on its element/);
+  // A job's own instructions agree with the served loop: the same trailer, deliver --submit, and a case file rather than a patch.
+  const job = buildInstructions({ kolab: 'anns', agent: 'ann-engineer-1', person: 'ann', work: 'kj:b#W1', text: 'Do it.', trailer: 'Konjir-Work: kj:anns/b#W1', repository: 'https://github.com/a/b' });
+  expect(job).toContain('git commit --trailer "Konjir-Work: kj:anns/b#W1"');
+  expect(job).toContain('konjir work deliver kj:b#W1 --submit');
+  expect(job).toMatch(/a commit alone is evidence enough/);
+  expect(job).toMatch(/konjir_ask \(from=kj:b#W1\)/);
+  expect(job).toMatch(/open a case file on its element with your evidence \(konjir_open_case\) and don't patch the behavior/);
+  expect(await toolText(admin)).toContain('The build loop (engineer), step by step:');
+  await server.close();
+});
+
+test('konjir help shows the build loop, in the order the served instructions give it (W5.3)', async () => {
+  const out: string[] = [];
+  const log = jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+  try {
+    await main(['help']);
+  } finally {
+    log.mockRestore();
+  }
+  const help = out.join('\n');
+  const build = help.slice(help.indexOf('Build:'), help.indexOf('Git:'));
+  expect(build).toMatch(/^Build: {5}the loop for an engineer \(konjir instructions has it step by step\)/);
+  const flat = build.replace(/\n +/g, ' ');
+  const steps = ['konjir pull_work', 'konjir read_work', 'git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"', 'konjir work deliver <work> --submit',
+    'konjir review', 'konjir open_case', 'konjir reopen_work'];
+  for (const s of steps) expect(flat).toContain(s);
+  for (let i = 1; i < steps.length; i++) expect(flat.indexOf(steps[i - 1])).toBeLessThan(flat.indexOf(steps[i]));
 });
