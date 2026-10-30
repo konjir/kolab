@@ -127,7 +127,14 @@ export interface WorkDeps {
 }
 
 /** How one job ended, as `konjir work` reports it. */
-export interface JobReport { job: string; kind: string; item: string; agent: string; outcome: 'done' | 'failed' | 'stopped' | 'lost'; exit?: number | null; worktree?: string; kept?: string }
+export interface JobReport {
+  job: string; kind: string; item: string; agent: string;
+  /** How the harness ended, as the runner saw it. */
+  outcome: 'done' | 'failed' | 'stopped' | 'lost';
+  /** How Kolab's ledger has it, when it said: submitted, reviewed, released, stopped… */
+  ledger?: string;
+  exit?: number | null; worktree?: string; kept?: string;
+}
 
 /** Tools Claude Code may use without asking, beyond edits in its worktree (acceptEdits): git, npm, npx, gh and konjir, and Kolab's own tools (JOB4). */
 export const ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'TodoWrite',
@@ -136,7 +143,8 @@ export const ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Writ
 /**
  * What a job is kept from trying, even with --allow-all: merging, `gh api` (which can merge, or
  * change the repository's settings), pushing to the default branch, forcing or deleting a push, a
- * mirror or --all push, git pointed elsewhere or reconfigured (`-c`, `-C`, `--git-dir`), terraform,
+ * mirror or --all push (a `:<branch>` delete refspec isn't a pattern Claude Code can write: its
+ * trailing `:*` reads as the old prefix syntax), git pointed elsewhere or reconfigured (`-c`, `-C`, `--git-dir`), terraform,
  * and reading or writing the person's konjir credentials. Claude Code's patterns are prefix globs, so
  * this is a fence, not a wall: main's branch protection, which requires CI and binds admins (D89), is
  * what keeps a job from merging or deploying.
@@ -149,9 +157,10 @@ export function deniedTools(branch: string, credentialsDir: string): string[] {
     'Bash(git -c*)', 'Bash(git -C*)', 'Bash(git --git-dir*)', 'Bash(git --work-tree*)', 'Bash(git --exec-path*)', 'Bash(git config*)',
     'Bash(git push --force*)', 'Bash(git push -f*)', 'Bash(git push * --force*)', 'Bash(git push * -f*)',
     'Bash(git push +*)', 'Bash(git push * +*)', 'Bash(git push --mirror*)', 'Bash(git push * --mirror*)', 'Bash(git push --all*)', 'Bash(git push * --all*)',
-    'Bash(git push --delete*)', 'Bash(git push * --delete*)', 'Bash(git push -d*)', 'Bash(git push * -d *)', 'Bash(git push * :*)',
+    'Bash(git push --delete*)', 'Bash(git push * --delete*)', 'Bash(git push -d*)', 'Bash(git push * -d *)',
     `Bash(git push *:${b})`, `Bash(git push *:${b} *)`, `Bash(git push *:refs/heads/${b}*)`, `Bash(git push * ${b})`, `Bash(git push * ${b} *)`,
-    `Read(${dir})`, `Edit(${dir})`, `Write(${dir})`, `MultiEdit(${dir})`,
+    // Edit(path) covers every tool that edits a file; Write(path) and MultiEdit(path) match nothing.
+    `Read(${dir})`, `Edit(${dir})`,
   ];
 }
 
@@ -357,13 +366,22 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   deps.signal?.addEventListener('abort', stopAll, { once: true });
   deps.pushed?.(() => wake());
 
-  /** Ends a job in Kolab, saying how; one Kolab refused to renew is over already, and only reported. */
-  const end = async (l: Live, outcome: 'done' | 'failed' | 'stopped', note: string) => {
-    if (l.lost === 'refused') return;
+  /**
+   * Ends a job in Kolab, saying how, and returns how the ledger has it (submitted, reviewed,
+   * released, stopped…). One Kolab already ended (its agent released its package, say, or Kolab
+   * refused to renew it) is only reported.
+   */
+  const end = async (l: Live, outcome: 'done' | 'failed' | 'stopped', note: string): Promise<string | undefined> => {
+    if (l.lost === 'refused') return undefined;
     try {
-      await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: redacted(note, l.taken.token).slice(-NOTE_TAIL) } : {}) });
+      const r = await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: redacted(note, l.taken.token).slice(-NOTE_TAIL) } : {}) }) as { outcome?: string };
+      return typeof r?.outcome === 'string' ? clean(r.outcome) : undefined;
     } catch (e) {
-      log(`job ${clean(l.taken.job)}: konjir_end_job failed (${clean((e as Error).message)}); its lease lapses by itself.`);
+      const msg = clean((e as Error).message);
+      const already = /\bended \(([a-z_]+)\)/.exec(msg);
+      if (e instanceof ToolRefusal && already) { log(`job ${clean(l.taken.job)}: Kolab had ended it already (${already[1]})`); return already[1]; }
+      log(`job ${clean(l.taken.job)}: konjir_end_job failed (${msg}); its lease lapses by itself.`);
+      return undefined;
     }
   };
 
@@ -445,7 +463,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         if (!JOB_ID.test(taken.job)) throw new Error(`Kolab gave the job id ${JSON.stringify(clean(taken.job).slice(0, 140))}, which konjir work won't make a directory of`);
         const worktree = join(jobsDir, taken.job);
         const { base, branch } = await round;
-        if (l.stopping || l.lost) { report.outcome = 'stopped'; await end(l, 'stopped', 'stopped before it started'); return report; }
+        if (l.stopping || l.lost) { report.outcome = 'stopped'; report.ledger = await end(l, 'stopped', 'stopped before it started'); return report; }
         await inTurn(() => shell(checkout.top, ['worktree', 'add', '--detach', '--quiet', worktree, base]));
         report.worktree = worktree;
         const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env,
@@ -478,19 +496,20 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         report.exit = exit;
         report.outcome = l.lost ? 'lost' : l.stopping ? 'stopped' : exit === 0 ? 'done' : 'failed';
         if (!started) setupFailed(`${h.command} didn't start`);
-        await end(l, report.outcome === 'lost' ? 'failed' : report.outcome, l.lost ? `konjir work stopped it: Kolab ${l.lost === 'refused' ? 'ended it' : 'couldn\'t be reached to renew it'}\n${l.tail.trim()}` : l.tail.trim());
+        report.ledger = await end(l, report.outcome === 'lost' ? 'failed' : report.outcome, l.lost ? `konjir work stopped it: Kolab ${l.lost === 'refused' ? 'ended it' : 'couldn\'t be reached to renew it'}\n${l.tail.trim()}` : l.tail.trim());
       } catch (e) {
         l.finished = true;
         clearTimeout(l.beat);
         const msg = clean((e as Error).message);
         report.outcome = l.stopping ? 'stopped' : 'failed';
         if (!l.stopping) setupFailed(msg);
-        await end(l, report.outcome, `konjir work couldn't start it: ${msg}`);
+        report.ledger = await end(l, report.outcome, `konjir work couldn't start it: ${msg}`);
         log(`job ${clean(taken.job)}: couldn't start it: ${msg}`);
       }
       const kept = report.worktree ? await tidy(report.worktree) : undefined;
       if (kept) report.kept = kept;
-      log(`job ${clean(taken.job)}: ${report.outcome}${report.exit !== undefined && report.exit !== null ? ` (exit ${report.exit})` : ''}${kept ? `; kept ${report.worktree}: ${kept}` : ''}`);
+      if (report.ledger === undefined) delete report.ledger;
+      log(`job ${clean(taken.job)}: ${report.outcome}${report.ledger ? ` (Kolab: ${report.ledger})` : ''}${report.exit !== undefined && report.exit !== null ? ` (exit ${report.exit})` : ''}${kept ? `; kept ${report.worktree}: ${kept}` : ''}`);
       return report;
     })().finally(() => { live.delete(taken.job); wake(); });
     l.done.then((r) => reports.push(r));
