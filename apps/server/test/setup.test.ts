@@ -22,7 +22,7 @@ async function serve(kolab: Kolab) {
 
 /** A browser: cookies kept, Kolab's redirects followed, stopping at one that leaves it. */
 class Browser {
-  private readonly cookies = new Map<string, string>();
+  readonly cookies = new Map<string, string>();
   constructor(readonly base: string) {}
   async go(url: string | URL, init: RequestInit = {}): Promise<{ res: Response; html: string; left?: URL }> {
     let at = new URL(url, this.base);
@@ -57,12 +57,13 @@ async function setupPage(base: string, idp: StubIdentity, client: string, scope:
   u.search = new URLSearchParams({ response_type: 'code', client_id: client, redirect_uri: o.redirect ?? CB, state: 'st', code_challenge: s256(VERIFIER), code_challenge_method: 'S256', resource: `${base}/mcp`, scope }).toString();
   const page = await browser.go(u);
   const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(page.html)?.[1] ?? '';
-  if (!o.decision) return { page };
-  const done = await browser.go('/oauth/consent', {
+  // The form as the page sends it: its sign-in, its token, and the digest of what it showed.
+  const post = (decision: 'allow' | 'deny', extra: Record<string, string> = {}) => browser.go('/oauth/consent', {
     method: 'POST', headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf: field('csrf'), sign_in: field('sign_in'), decision: o.decision }).toString(),
+    body: new URLSearchParams({ csrf: field('csrf'), sign_in: field('sign_in'), shown: field('shown'), decision, ...extra }).toString(),
   });
-  return { page, done };
+  if (!o.decision) return { page, post, browser, field };
+  return { page, post, browser, field, done: await post(o.decision) };
 }
 
 const tokenFor = async (base: string, client: string, code: string, verifier = VERIFIER) => {
@@ -152,9 +153,18 @@ test('a setup: one page names the new kolab and each new agent, nothing to choos
   const refresh = (c: string) => fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: used.body.agents[0].refresh_token!, client_id: c }).toString() }).then((r) => r.status);
   expect(await refresh(other)).toBe(400);
   expect(await refresh(client)).toBe(200);
-  // Used up: never again, and revoking it changes nothing for the agents.
+  // Used up: never again; the agents' sign-ins stand.
   expect((await useSetup(base, t.body.access_token, client)).body.error).toBe('invalid_grant');
-  expect((await fetch(`${base}/oauth/revoke`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: t.body.access_token, client_id: client }).toString() })).status).toBe(200);
+  expect(await initialize(mcp, used.body.agents[1].access_token!)).toBe(200);
+
+  // A setup token revoked before its use does nothing: /oauth/revoke takes it, by its own client.
+  const { done: again } = await setupPage(base, idp, client, scope, { decision: 'allow' });
+  const fresh = await tokenFor(base, client, again!.left!.searchParams.get('code')!);
+  const revoke = (c: string) => fetch(`${base}/oauth/revoke`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: fresh.body.access_token, client_id: c }).toString() });
+  await revoke(other);   // another client's revoke changes nothing (RFC 7009 §2.1)
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_setup where revoked_at is not null`)).rows[0]).toStrictEqual({ n: 0 });
+  await revoke(client);
+  expect((await useSetup(base, fresh.body.access_token, client)).body.error).toBe('invalid_grant');
   expect(await initialize(mcp, used.body.agents[1].access_token!)).toBe(200);
 });
 
@@ -221,7 +231,7 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
   const denied = await setupPage(base, idp, client, setupScope('raes', ['pm:product']), { decision: 'deny' });
   expect(denied.done!.left!.searchParams.get('error')).toBe('access_denied');
-  expect(denied.done!.left!.searchParams.get('error_description')).toBe('the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. You reach no kolab yet.');
+  expect(denied.done!.left!.searchParams.get('error_description')).toBe('the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Kolab\'s page in your browser lists the kolabs you do reach: run konjir connect again with one of their names');
   const plain = await setupPage(base, idp, client, setupScope('anns', ['pm:product']), { decision: 'deny' });
   expect(plain.done!.left!.searchParams.get('error_description')).toBe('the person declined');
   expect((await kolab.db.query(`select count(*)::int as n from kolab where id = 'anns'`)).rows[0]).toStrictEqual({ n: 0 });
@@ -289,10 +299,16 @@ test('a name and title swapped when the kolab was made (Lee\'s m5-check): the se
   expect(note).toBe('You have no kolab named m5-check-ann, so allowing this makes a new one. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. If you did, choose Deny and run konjir connect again with --kolab m5-check.');
   expect(page.html).not.toContain('raes-secret');
 
-  // Someone else's kolab of that name: refused, naming hers, with the one titled so first.
+  // Someone else's kolab of that name: refused. Her page names hers, the one titled so first;
+  // the app, at its redirect URI, is told only that, never her list.
   await kolab.createKolab('m5-check-ann', { owner: 'rae', by: 'kolab' });
-  const refused = await setupPage(base, idp, client, setupScope('m5-check-ann', ['pm:product']), { decision: 'deny' });
-  expect(refused.done!.left!.searchParams.get('error_description')).toBe('the setup can\'t be allowed: a kolab named m5-check-ann already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. Yours: brisket, m5-check (titled "m5-check-ann").');
+  const refused = await setupPage(base, idp, client, setupScope('m5-check-ann', ['pm:product']));
+  const why = /<p class="err" role="alert">([^<]*)<\/p>/.exec(refused.page.html)?.[1].replace(/&#39;/g, '\'').replace(/&quot;/g, '"');
+  expect(why).toBe('a kolab named m5-check-ann already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. Yours: brisket, m5-check (titled "m5-check-ann").');
+  const denied = await refused.post('deny');
+  const told = denied.left!.searchParams.get('error_description')!;
+  expect(told).toBe('the setup can\'t be allowed: a kolab named m5-check-ann already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Kolab\'s page in your browser lists the kolabs you do reach, and one whose title is that name: run konjir connect again with one of their names');
+  expect(told).not.toMatch(/brisket|m5-check[^-]|Yours/);
 });
 
 test('the web sign-in page\'s new-kolab form says which box is the name konjir connect --kolab takes, and an empty title takes the name', async () => {
@@ -315,4 +331,98 @@ test('the web sign-in page\'s new-kolab form says which box is the name konjir c
   });
   expect(done.left?.searchParams.get('code')).toBeTruthy();
   expect((await kolab.db.query(`select title from kolab where id = 'linkly-ann'`)).rows).toStrictEqual([{ title: 'linkly-ann' }]);
+});
+
+test('a Deny while Allow is being carried out is refused, and a setup that made agents always counts toward the rate: Deny and Allow at once, either way', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  for (let round = 0; round < 3; round++) {
+    const scope = setupScope(`race-${round}`, [`r${round}:product`]);
+    const { page, browser, field } = await setupPage(base, idp, client, scope);
+    const binding = [...browser.cookies].find(([k]) => k.startsWith('konjir_oauth_'))![1];
+    const [allow, deny] = await Promise.allSettled([kolab.consentSetup(binding, field('csrf'), field('shown')), kolab.declineAuthorization(binding, field('csrf'))]);
+    expect(page.html).toContain('value="allow"');
+    const made = (await kolab.listActors({ owner: 'ann' })).some((a) => a.id === `ann-r${round}`);
+    if (allow.status === 'fulfilled') {
+      // Allowed: the Deny found it claimed, and declined nothing; the setup is recorded.
+      expect(deny).toStrictEqual({ status: 'fulfilled', value: undefined });
+      expect(made).toBe(true);
+    } else {
+      // Denied first: nothing made, and no setup recorded.
+      expect(deny.status === 'fulfilled' && deny.value).toBeTruthy();
+      expect(made).toBe(false);
+    }
+    // Whatever happened, every agent a setup made is in a setup's row, so the rate sees it.
+    expect((await kolab.db.query(`select count(*)::int as n from actor a where a.owner_id = 'ann' and not exists (select 1 from oauth_setup s where s.person_id = 'ann' and s.agents @> jsonb_build_array(jsonb_build_object('agent', a.id)))`)).rows[0]).toStrictEqual({ n: 0 });
+  }
+  // A claimed sign-in, as one being allowed: no Deny, no page for it, and the browser is told so.
+  const { browser, field, post } = await setupPage(base, idp, client, setupScope('claimed', ['c:product']));
+  const binding = [...browser.cookies].find(([k]) => k.startsWith('konjir_oauth_'))![1];
+  await kolab.db.query(`update oauth_request set claimed_at = now()`);
+  expect(await kolab.declineAuthorization(binding, field('csrf'))).toBeUndefined();
+  expect(await kolab.pendingAuthorization(binding)).toBeUndefined();
+  const refused = await post('deny');
+  expect(refused.res.status).toBe(400);
+  expect(refused.html).toContain('This sign-in is being allowed right now');
+});
+
+test('two setups at once can\'t both pass the rate: at the third, of two posted together one makes its agent and the other is refused', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  for (const k of ['one', 'two']) expect((await allowSetup(base, idp, client, setupScope(k, [`${k}:product`]))).used.status).toBe(200);
+  const a = await setupPage(base, idp, client, setupScope('one', ['x:product']));
+  const b = await setupPage(base, idp, client, setupScope('one', ['y:product']));
+  const both = await Promise.all([a.post('allow'), b.post('allow')]);
+  expect(both.filter((d) => d.left?.searchParams.get('code'))).toHaveLength(1);
+  const other = both.find((d) => !d.left)!;
+  expect(other.res.status).toBe(400);
+  expect(other.html).toContain('you ran 3 setups that made agents in the last 10 minutes');
+  expect((await kolab.listActors({ owner: 'ann' })).map((x) => x.id).filter((id) => id === 'ann-x' || id === 'ann-y')).toHaveLength(1);
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_setup where made_agents > 0`)).rows[0]).toStrictEqual({ n: 3 });
+});
+
+test('Allow carries out what the page showed: a setup that changed since (its kolab made meanwhile) is refused, and nothing is made', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  const { page, post } = await setupPage(base, idp, client, setupScope('anns', ['pm:product']));
+  expect(listed(page.html)).toStrictEqual(['anns: New: made now, private, yours', 'ann-pm: New: made now']);
+  // Meanwhile the kolab is made, in another tab, say: the page showed it new.
+  await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
+  const done = await post('allow');
+  expect(done.res.status).toBe(400);
+  expect(done.html).toContain('the setup changed since this page was shown: deny it, and run konjir connect again');
+  expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+  // Without the digest at all (a hand-made form): refused the same.
+  const bare = await setupPage(base, idp, client, setupScope('anns', ['pm:product']));
+  expect((await bare.post('allow', { shown: '' })).html).toContain('the setup changed since this page was shown');
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_setup`)).rows[0]).toStrictEqual({ n: 0 });
+});
+
+test('Allow posted for a hosted client\'s setup is refused at consent too, and makes nothing', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const hosted = await register(base, ['https://app.example/cb']);
+  const { page, post } = await setupPage(base, idp, hosted, setupScope('anns', ['pm:product']), { redirect: 'https://app.example/cb' });
+  expect(page.html).not.toContain('value="allow"');
+  const done = await post('allow');
+  expect(done.res.status).toBe(400);
+  expect(done.html).toContain('a setup is only for an app on your own computer');
+  expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+  expect((await kolab.db.query(`select count(*)::int as n from kolab where id = 'anns'`)).rows[0]).toStrictEqual({ n: 0 });
+});
+
+test('a setup\'s code replayed before its token is used: the token it bought does nothing, and no agent is signed in', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  const { done } = await setupPage(base, idp, client, setupScope('anns', ['pm:product']), { decision: 'allow' });
+  const code = done!.left!.searchParams.get('code')!;
+  const first = await tokenFor(base, client, code);
+  expect(first.status).toBe(200);
+  expect((await tokenFor(base, client, code)).status).toBe(400);
+  expect((await useSetup(base, first.body.access_token, client)).body.error).toBe('invalid_grant');
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant`)).rows[0]).toStrictEqual({ n: 0 });
 });

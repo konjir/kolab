@@ -18,7 +18,8 @@ create table oauth_setup (
   code_challenge   text not null check (code_challenge ~ '^[A-Za-z0-9_-]{43}$'),
   resource         text,
   person_id        text not null references actor(id),
-  kolab            text not null references kolab(id),
+  -- No reference to kolab: the row is made first, to count toward the rate, before a new kolab is.
+  kolab            text not null,
   kolab_made       boolean not null,
   -- The agents the person allowed, in order: [{"label", "agent", "role", "made"}].
   agents           jsonb not null check (jsonb_typeof(agents) = 'array'),
