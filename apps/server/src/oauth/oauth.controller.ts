@@ -1,11 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, scopeLock, signInStep, type ConsentChoice } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ADMIN_ELEVATION_S, ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
-import { consentPage, formActionSource, lockAllowed, lockedTitle, raisedPage, raisePage, sendError, sendPage, type ConsentView } from './pages.js';
+import { consentPage, formActionSource, lockAllowed, lockedTitle, raisedPage, raisePage, sendError, sendPage, setupPage, type ConsentView, type SetupView } from './pages.js';
 
 /** The web interface's own client: first party, never registered, and only ever a person (W3.1). */
 export const WEB_CLIENT = 'konjir-web';
@@ -227,6 +227,8 @@ export class OAuthController {
    */
   private readonly callbacks = new Limit(30, Infinity, 60_000);
   private readonly consents = new Limit(30, Infinity, 60_000);
+  /** A setup token's one use (POST /oauth/setup): 30 a minute from one address, as consents. */
+  private readonly setupUses = new Limit(30, Infinity, 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -506,6 +508,7 @@ export class OAuthController {
     if (!pending?.person) return this.stopped(res, { binding }, id);
     const client = await this.client(pending.clientId, '');
     const web = pending.clientId === WEB_CLIENT;
+    if (!web && setupScope(pending.scope)) return this.setupConsent(res, status, id, csrf, pending, client, extra);
     const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
@@ -535,6 +538,34 @@ export class OAuthController {
     sendPage(res, status, view.lock ? lockedTitle(view.lock, lockAllowed(view)) : 'Sign in', consentPage(view), { formTargets: target ? [target] : [] });
   }
 
+  /**
+   * Why a setup (setupScope) can't be allowed, or undefined when it can: a scope that names it
+   * badly, a client that isn't on the person's own machine (a setup is only for konjir connect and
+   * its like: every redirect URI loopback), or what setupPlan refuses. With the plan, for the page.
+   */
+  private async setupCheck(person: string, scope: string | null, client: { redirectUris: string[] } | undefined) {
+    const setup = setupScope(scope);
+    if (!setup) return { refused: 'this sign-in isn\'t a setup' };
+    if ('error' in setup) return { refused: `the app asked for a setup Kolab can't do: ${setup.error}. Run konjir connect again` };
+    if (!client || !client.redirectUris.every(onLoopback)) return { refused: 'a setup is only for an app on your own computer, such as konjir connect, and this one receives its answer elsewhere' };
+    const plan = await this.kolab.setupPlan(person, setup);
+    return { plan, refused: plan.refused };
+  }
+
+  /** The setup page (konjir connect): locked to what the app asked, Allow or Deny; or why it can't be allowed, with Deny alone. */
+  private async setupConsent(res: Response, status: number, id: string, csrf: string, pending: NonNullable<Awaited<ReturnType<Kolab['pendingAuthorization']>>>,
+    client: { name: string; redirectUris: string[] } | undefined, extra: { login?: string; created?: boolean; error?: string }) {
+    const person = pending.person!;
+    const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
+    const check = await this.setupCheck(person, pending.scope, client);
+    const view: SetupView = {
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      plan: check.plan, refused: extra.error ?? check.refused,
+    };
+    const target = formActionSource(pending.redirectUri);
+    sendPage(res, status, view.refused ? 'Setup can\'t be allowed' : 'Set up Konjir', setupPage(view), { formTargets: target ? [target] : [] });
+  }
+
   /** The person's choice, from the consent page's form: same origin only, with the form's token and the browser's binding. */
   @Post('oauth/consent')
   async consented(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
@@ -553,13 +584,30 @@ export class OAuthController {
     if (!pending?.person) return this.stopped(res, { binding }, id);
     // An admin raise's confirmation (W2.22): checked as every consent form is, above, then completed here, by its own person only.
     if (pending.raiseKey) return this.raiseConfirmed(res, id, binding, csrf, str('decision') === 'allow', pending.person);
+    const setup = pending.clientId !== WEB_CLIENT && !!setupScope(pending.scope);
     if (str('decision') !== 'allow') {
+      // A setup denied because it can't be allowed: the app is told why, so konjir connect can say it.
+      const why = setup ? (await this.setupCheck(pending.person, pending.scope, await this.client(pending.clientId, ''))).refused : undefined;
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return this.stopped(res, { binding }, id);
       clearBinding(res, this.options, id);
       // Declining drops the invite too, so no later sign-in in this browser offers it (W3.4).
       if (pending.inviteKey) clearInviteCookie(res, this.options);
-      return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: 'the person declined', state: r.clientState ?? undefined, iss: base }));
+      return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: why ? `the setup can't be allowed: ${why}` : 'the person declined', state: r.clientState ?? undefined, iss: base }));
+    }
+    if (setup) {
+      // Nothing posted changes a setup: the scope names it all.
+      try {
+        const r = await this.kolab.consentSetup(binding, csrf);
+        clearBinding(res, this.options, id);
+        return res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
+      } catch (e) {
+        if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
+        if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) {
+          return this.consent(res, 400, id, binding, csrf, { error: maskTokens(e) });
+        }
+        throw e;
+      }
     }
     // A form with no `as` is the web interface's (which works only as the person) or a hand-made one:
     // it never defaults to the person for an MCP client, only to a new agent of theirs.
@@ -629,6 +677,9 @@ export class OAuthController {
       if (grant === 'authorization_code') {
         const code = str('code'); const redirectUri = str('redirect_uri'); const verifier = str('code_verifier');
         if (!code || !redirectUri || !verifier) return oauthError(res, 400, 'invalid_request', 'send code, redirect_uri and code_verifier');
+        // A setup's code (konjir connect) is exchanged for its setup token alone: no refresh token, no session.
+        const setup = await this.kolab.exchangeSetupCode({ code, clientId, redirectUri, codeVerifier: verifier, resource: str('resource') });
+        if (setup) return json(res, 200, { access_token: setup.accessToken, token_type: 'Bearer', expires_in: setup.expiresIn, scope: setup.scope });
         t = await this.kolab.exchangeCode({ code, clientId, redirectUri, codeVerifier: verifier, resource: str('resource') });
       } else if (grant === 'refresh_token') {
         const refresh = str('refresh_token');
@@ -640,6 +691,38 @@ export class OAuthController {
       json(res, 200, { access_token: t.accessToken, token_type: 'Bearer', expires_in: t.expiresIn, refresh_token: t.refreshToken, scope: t.scope });
     } catch (e) {
       if (e instanceof OAuthGrantError) return oauthError(res, 400, e.code === 'access_denied' ? 'invalid_grant' : e.code, e.message);
+      throw e;
+    }
+  }
+
+  /**
+   * A setup token's one use (konjir connect, Lee's instruction of 2026-11-01): `Authorization:
+   * Bearer <setup token>`, and the client it was issued to, `client_id`. With `mint` (the default),
+   * Kolab issues each agent the person allowed on the setup's page its own grant and refresh token,
+   * to that client, as that agent's own sign-in would; with `mint: false`, it only says what was set
+   * up. The token is used up either way. No CORS: it is for a program on the person's machine,
+   * never a web page. Nothing else reaches it: not a session token, not an ordinary sign-in's.
+   */
+  @Post('oauth/setup')
+  async useSetup(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
+    if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!this.setupUses.take(clientAddress(req, this.options))) return oauthError(res, 429, 'temporarily_unavailable', 'too many setups from here just now; try again in a minute');
+    const header = req.headers.authorization ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
+    const clientId = typeof body?.client_id === 'string' ? body.client_id : '';
+    if (!token || !clientId) return oauthError(res, 400, 'invalid_request', 'send the setup token as a bearer token, and the client_id it was issued to');
+    try {
+      const r = await this.kolab.useSetup(token, clientId, { mint: body.mint !== false });
+      json(res, 200, {
+        person: r.person, kolab: r.kolab,
+        agents: r.agents.map((a) => ({
+          label: a.label, agent: a.agent, role: a.role, made: a.made,
+          ...(a.tokens ? { access_token: a.tokens.accessToken, token_type: 'Bearer', expires_in: a.tokens.expiresIn, refresh_token: a.tokens.refreshToken, scope: a.tokens.scope } : {}),
+        })),
+      });
+    } catch (e) {
+      if (e instanceof OAuthGrantError) return oauthError(res, 400, e.code === 'access_denied' ? 'invalid_grant' : e.code, e.message);
+      if (e instanceof AccessError) return oauthError(res, 403, 'access_denied', e.message);
       throw e;
     }
   }

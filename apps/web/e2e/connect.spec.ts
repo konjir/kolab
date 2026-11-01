@@ -1,7 +1,7 @@
-// `konjir connect opencode` from a real browser (W3.7, D59): the person signs in as herself, in memory
-// only, on Kolab's page, where she chooses Yourself by hand, as the terminal tells her (no client
-// preselects it, D60); konjir connect makes her two agents
-// and writes opencode.json; then each entry signs in as OpenCode's `opencode mcp auth` does (the MCP
+// `konjir connect opencode` from a real browser (W3.7, D59; one page, Lee's instruction of
+// 2026-11-01): Ann, new here, signs in on Kolab's setup page, which names her new kolab and two new
+// agents with nothing to choose, and clicks Allow; konjir connect writes opencode.json; then each
+// entry signs in as OpenCode's `opencode mcp auth` does (the MCP
 // SDK's auth(), the entry's oauth.scope as its client metadata's scope, a loopback listener for the
 // code), and Kolab's page arrives with that entry's agent, kolab and role chosen: she only clicks
 // Allow. Needs the konjir CLI built (`npx nx run konjir:build`), which this imports.
@@ -19,14 +19,13 @@ interface Client { close(): Promise<void> }
 interface Cli {
   connectHarness(opts: Record<string, unknown>, io: Record<string, unknown>): Promise<unknown>;
   parseAgents(values: string[]): unknown;
-  personSession(url: string, token: undefined, opts: { log: (l: string) => void; open: (u: URL) => Promise<void> }): Promise<unknown>;
+  setup(url: string, opts: { scope: string; mint: boolean; clientName: string; log: (l: string) => void; open: (u: URL) => Promise<void> }): Promise<unknown>;
   connect(url: string, token: string): Promise<Client>;
   call(client: Client, verb: string, args?: Record<string, unknown>): Promise<unknown>;
 }
 const KONJIR: string = 'konjir';
 const cli = () => import(KONJIR) as Promise<Cli>;
 
-const checked = (page: Page) => page.$$eval('input[type=radio]:checked', (els) => els.map((e) => (e as HTMLInputElement).value));
 /** A page locked to one agent (D97): its fixed fields, and no choices at all. */
 const locked = async (page: Page) => {
   await expect(page.locator('input[type=radio]')).toHaveCount(0);
@@ -81,40 +80,31 @@ async function opencodeAuth(page: Page, cwd: string, name: string, store: Map<st
   }
 }
 
-test('konjir connect opencode: Ann signs the CLI in as herself, choosing Yourself by hand, gets two agents and two entries, and each entry signs in as its own agent on a page locked to it', async ({ page }) => {
-  const { call, connect, connectHarness, parseAgents, personSession } = await cli();
+test('konjir connect opencode: Ann allows one setup page, which makes her kolab and two agents, and each entry then signs in as its own agent on a page locked to it', async ({ page }) => {
+  const { call, connect, connectHarness, parseAgents, setup } = await cli();
   process.env.KONJIR_CREDENTIALS = join(mkdtempSync(join(tmpdir(), 'konjir-e2e-')), 'credentials.json');
   const mcp = `${SIGNIN_ANN}/mcp`;
   const project = mkdtempSync(join(tmpdir(), 'konjir-e2e-project-'));
   const store = new Map<string, StoredOAuthTokens>();
   const shown = new Map<string, string[]>();
   const lines: string[] = [];
-  let login: string[] = [];
 
-  await connectHarness({ harness: 'opencode', url: mcp, agents: parseAgents([]), global: false, force: false, yes: true, auth: true, cwd: project, env: {} }, {
+  await connectHarness({ harness: 'opencode', url: mcp, kolab: 'anns', agents: parseAgents([]), global: false, force: false, auth: true, cwd: project, env: {} }, {
     log: (l: string) => lines.push(l),
-    interactive: false,
-    confirm: async () => true,
     run: (_cmd: string, args: string[], { cwd }: { cwd: string }) => opencodeAuth(page, cwd, args[2], store, shown),
-    // konjir login first, as herself: new here, she makes her first kolab on the way.
-    person: () => personSession(mcp, undefined, {
-      log: (l: string) => lines.push(l),
+    // The one setup page: new here, her kolab and both agents are made on it. Nothing to choose.
+    setup: (r: { url: string; scope: string; mint: boolean; clientName: string }) => setup(r.url, {
+      ...r, log: (l: string) => lines.push(l),
       open: async (u) => {
         await page.goto(u.toString());
-        login = await checked(page);
-        await expect(page.getByText('asks to act as you')).toHaveCount(0);
-        // The terminal told her to choose Yourself by hand; the page says what that means.
-        expect(lines.join('\n')).toContain('under "Work as", choose "Yourself" by hand');
-        await page.getByRole('radio', { name: /^Yourself/ }).check();
-        await expect(page.getByText('Ends any other session you hold open')).toBeVisible();
-        await page.locator('input[name=new_kolab_name]').fill('anns');
-        await page.locator('input[name=new_kolab_title]').fill('Ann\'s');
+        await expect(page.getByRole('heading', { name: 'Set up 2 agents in anns' })).toBeVisible();
+        await expect(page.getByText('New: made now, private, yours')).toBeVisible();
+        await expect(page.locator('input[type=radio], input[type=text]')).toHaveCount(0);
         await page.getByRole('button', { name: 'Allow' }).click();
       },
     }),
   });
 
-  expect(login).toStrictEqual(['new-agent', '@new', 'product']);   // a new agent by default: never Yourself (D60)
   expect(shown.get('konjir-product')).toStrictEqual(['agent:ann-product', 'kolab:anns', 'product']);
   expect(shown.get('konjir-engineer')).toStrictEqual(['agent:ann-engineer', 'kolab:anns', 'engineer']);
   expect(lines).toContain('Connected: each entry works as its own agent in anns.');
@@ -128,9 +118,8 @@ test('konjir connect opencode: Ann signs the CLI in as herself, choosing Yoursel
     await product.close();
     await engineer.close();
   }
-  // The sign-in as Ann was kept nowhere: konjir connect revoked it once her agents were made.
+  // No sign-in as Ann is kept anywhere: the setup's token was used once, then revoked.
   expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);
-  expect(lines).toContain('Revoked the sign-in as you.');
   const text = readFileSync(join(project, 'opencode.json'), 'utf8');
   for (const t of store.values()) { expect(text).not.toContain(t.access_token); expect(text).not.toContain(t.refresh_token!); }
 });

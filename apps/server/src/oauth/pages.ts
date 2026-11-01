@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
+import type { SetupPlan } from '@konjir/engine';
 import type { Access, InvitePreview, Role } from '@konjir/types';
 
 /** Text made safe for HTML, in content and in attribute values. */
@@ -203,6 +204,63 @@ ${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value
 <label class="opt"><input type="radio" name="role" value="product"${checked(role === 'product')}><span>Product<small>Writes the functional layer: what it does</small></span></label>
 <label class="opt"><input type="radio" name="role" value="engineer"${checked(role === 'engineer')}><span>Engineer<small>Writes the technical layer: how it's built</small></span></label>
 </fieldset>
+<div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
+}
+
+/** What the setup page shows (konjir connect, Lee's instruction of 2026-11-01). */
+export interface SetupView {
+  signIn: string;
+  csrf: string;
+  client: string;
+  redirect: string;
+  person: string; login: string; provider: string; created: boolean;
+  /** What allowing it does: the kolab and each agent. Absent when the request itself can't be a setup. */
+  plan?: SetupPlan;
+  /** Why it can't be allowed: then the page offers only Deny. */
+  refused?: string;
+}
+
+/**
+ * The setup page: one page for everything `konjir connect` asks, locked to it. It names the kolab
+ * (made now, private and theirs, or theirs already, with what they hold there), each agent with its
+ * role (made now, or theirs already, and whether allowing this ends a session it holds elsewhere,
+ * ENF4), and the app asking. Nothing on it to choose: Allow or Deny. A setup that can't be allowed
+ * says why, plainly, and offers only Deny; the app is told why when the person denies it.
+ */
+export function setupPage(v: SetupView): string {
+  const hidden = `<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
+<input type="hidden" name="csrf" value="${esc(v.csrf)}">`;
+  const intro = `<p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>`;
+  const asks = `<p><strong>${esc(v.client)}</strong> on this computer asks to set up Konjir, and gets its answer at <code>${esc(v.redirect)}</code>. Allow it only if you just ran <code>konjir connect</code>.</p>`;
+  const plan = v.plan;
+  const list = plan && !v.refused ? `<dl class="locked">
+<dt>Kolab</dt><dd><code>${esc(plan.kolab.id)}</code>${plan.kolab.made || plan.kolab.title === plan.kolab.id ? '' : ` ${esc(plan.kolab.title)}`}<small>${plan.kolab.made ? 'New: made now, private, yours' : `Yours, existing: you hold ${plan.kolab.access ? esc(describe(plan.kolab.access)) : 'access'}`}</small></dd>
+<dt>Agents</dt>${plan.agents.map((a) => {
+    const [roleName] = ROLE_SHOWN[a.role];
+    const status = a.made ? 'New: made now' : a.signedIn ? '<strong>Yours, existing, signed in elsewhere now: allowing this ends that session.</strong>' : 'Yours, existing';
+    return `<dd><code>${esc(a.agent)}</code> as ${roleName}<small>${status}</small></dd>`;
+  }).join('\n')}
+<dt>For</dt><dd>${esc(v.client)}<small>Each agent signs in here, as itself, with no more access than you hold in <code>${esc(plan.kolab.id)}</code>, at most Write (D30). Its sign-in renews itself until you revoke it or archive the agent.</small></dd>
+</dl>` : '';
+  if (v.refused) {
+    return `<h1>This setup can't be allowed</h1>
+${intro}
+<form class="card" method="post" action="/oauth/consent">
+${asks}
+<p class="err" role="alert">${esc(v.refused)}</p>
+<p class="muted">Nothing was made. Deny it; <code>konjir connect</code> says the same in your terminal.</p>
+${hidden}
+<div class="row"><button class="primary" type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
+  }
+  const n = plan!.agents.length;
+  return `<h1>Set up ${n === 1 ? 'an agent' : `${n} agents`} in <code>${esc(plan!.kolab.id)}</code></h1>
+${intro}
+<form class="card" method="post" action="/oauth/consent">
+${asks}
+${list}
+${hidden}
 <div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
 }
