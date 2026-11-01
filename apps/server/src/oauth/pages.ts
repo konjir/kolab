@@ -197,8 +197,10 @@ ${who}
 ${v.invite ? `<label class="opt"><input type="radio" name="kolab" value="@invite"${checked(kolab === '@invite')}><span>Join <code>${esc(v.invite.kolab)}</code> ${esc(v.invite.title)}<small>${esc(v.invite.invited_by)} invites you, with ${esc(describe(v.invite))}, owned by ${esc(v.invite.owner)}. Choose it only if you expected this invite.</small></span></label>` : ''}
 ${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value="kolab:${esc(k.id)}"${checked(kolab === `kolab:${k.id}`)}><span><code>${esc(k.id)}</code> ${esc(k.title)}<small>You hold ${esc(describe(k.access))}</small></span></label>`).join('\n')}
 <label class="opt"><input type="radio" name="kolab" value="@new"${checked(kolab === '@new')}><span>A new private kolab of your own
-<input type="text" name="new_kolab_name" value="${esc(v.pick.newName ?? '')}" maxlength="40" placeholder="short-name" aria-label="The new kolab's short name">
-<input type="text" name="new_kolab_title" value="${esc(v.pick.newTitle ?? '')}" maxlength="100" placeholder="A name people read" aria-label="The new kolab's title"></span></label>
+<small><strong>Name</strong>: its address, unique across Konjir, the one <code>konjir connect --kolab</code> takes. Lowercase letters, digits and '-'.</small>
+<input type="text" name="new_kolab_name" value="${esc(v.pick.newName ?? '')}" maxlength="40" placeholder="for example linkly-ada" aria-label="The new kolab's name, its address: what konjir connect --kolab takes">
+<small><strong>Title</strong>: what people read. Leave it empty to use the name.</small>
+<input type="text" name="new_kolab_title" value="${esc(v.pick.newTitle ?? '')}" maxlength="100" placeholder="for example Linkly: short links that expire" aria-label="The new kolab's title, what people read; empty uses the name"></span></label>
 </fieldset>
 <fieldset><legend>As</legend>
 <label class="opt"><input type="radio" name="role" value="product"${checked(role === 'product')}><span>Product<small>Writes the functional layer: what it does</small></span></label>
@@ -259,6 +261,7 @@ ${hidden}
 ${intro}
 <form class="card" method="post" action="/oauth/consent">
 ${asks}
+${(plan!.notes ?? []).map((n) => `<p class="err" role="alert">${esc(n)}</p>`).join('\n')}
 ${list}
 ${hidden}
 <div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="deny">Deny</button></div>

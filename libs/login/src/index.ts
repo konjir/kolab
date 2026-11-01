@@ -711,7 +711,7 @@ export async function setup(url: string, opts: { scope: string; mint: boolean; c
     // Said as what it is: refused on Kolab's page (it names why), or denied there.
     const said = /^Kolab didn't sign you in: (.*)$/s.exec(String(e?.message ?? ''))?.[1];
     if (said === undefined) throw e;
-    throw new Error(said === 'the person declined' ? 'you denied the setup on Kolab\'s page: nothing was made or written' : `${said}. Nothing was made or written`);
+    throw new Error(said === 'the person declined' ? 'you denied the setup on Kolab\'s page: nothing was made or written' : `${said.replace(/\.$/, '')}. Nothing was made or written`);
   });
   const client = memory.clientInformation();
   const token = memory.tokens()?.access_token;

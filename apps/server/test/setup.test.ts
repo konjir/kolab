@@ -206,7 +206,7 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
     expect(page.html).not.toContain('value="allow"');
     return /<p class="err" role="alert">([^<]*)<\/p>/.exec(page.html)?.[1].replace(/&#39;/g, '\'');
   };
-  expect(await why(setupScope('raes', ['pm:product']))).toBe('a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you');
+  expect(await why(setupScope('raes', ['pm:product']))).toBe('a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. You reach no kolab yet.');
   expect(await why(setupScope('konjir-site', ['pm:product']))).toBe('the kolab name konjir-site is reserved for Konjir\'s own kolabs: choose another');
   expect(await why(setupScope('x'.repeat(41), ['pm:product']))).toMatch(/can't be a new kolab's name: up to 40/);
   expect(await why('konjir kolab:anns setup:pm:product agent:rae-x role:product')).toMatch(/the app asked for a setup Kolab can't do: it mixes a setup with a single sign-in/);
@@ -221,7 +221,7 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
   const denied = await setupPage(base, idp, client, setupScope('raes', ['pm:product']), { decision: 'deny' });
   expect(denied.done!.left!.searchParams.get('error')).toBe('access_denied');
-  expect(denied.done!.left!.searchParams.get('error_description')).toBe('the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you');
+  expect(denied.done!.left!.searchParams.get('error_description')).toBe('the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. You reach no kolab yet.');
   const plain = await setupPage(base, idp, client, setupScope('anns', ['pm:product']), { decision: 'deny' });
   expect(plain.done!.left!.searchParams.get('error_description')).toBe('the person declined');
   expect((await kolab.db.query(`select count(*)::int as n from kolab where id = 'anns'`)).rows[0]).toStrictEqual({ n: 0 });
@@ -269,4 +269,50 @@ test('a setup\'s code used twice revokes the setup and every sign-in it issued; 
   const t = await tokenFor(base, client, done!.left!.searchParams.get('code')!);
   await kolab.db.query(`update oauth_setup set token_expires_at = now() - interval '1 second'`);
   expect((await useSetup(base, t.body.access_token, client)).body.error).toBe('invalid_grant');
+});
+
+test('a name and title swapped when the kolab was made (Lee\'s m5-check): the setup page points it out, naming the person\'s own kolabs and nobody else\'s', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  await kolab.signInWith({ provider: 'stub', ...ANN });
+  // On the web form, the name and title went into each other's boxes.
+  await kolab.makeOwnKolab('ann', 'm5-check', 'm5-check-ann');
+  await kolab.makeOwnKolab('ann', 'brisket', 'brisket');
+  await kolab.addActor('rae', { by: 'kolab' });
+  await kolab.createKolab('raes-secret', { owner: 'rae', title: 'm5-check-ann', by: 'kolab' });
+
+  // A new kolab of that name would be made: the page says which of hers is titled so, before Allow.
+  const { page } = await setupPage(base, idp, client, setupScope('m5-check-ann', ['pm:product']));
+  expect(page.html).toContain('value="allow"');
+  const note = /<p class="err" role="alert">([^<]*)<\/p>/.exec(page.html)?.[1].replace(/&#39;/g, '\'').replace(/&quot;/g, '"');
+  expect(note).toBe('You have no kolab named m5-check-ann, so allowing this makes a new one. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. If you did, choose Deny and run konjir connect again with --kolab m5-check.');
+  expect(page.html).not.toContain('raes-secret');
+
+  // Someone else's kolab of that name: refused, naming hers, with the one titled so first.
+  await kolab.createKolab('m5-check-ann', { owner: 'rae', by: 'kolab' });
+  const refused = await setupPage(base, idp, client, setupScope('m5-check-ann', ['pm:product']), { decision: 'deny' });
+  expect(refused.done!.left!.searchParams.get('error_description')).toBe('the setup can\'t be allowed: a kolab named m5-check-ann already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. Yours: brisket, m5-check (titled "m5-check-ann").');
+});
+
+test('the web sign-in page\'s new-kolab form says which box is the name konjir connect --kolab takes, and an empty title takes the name', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  const { page } = await setupPage(base, idp, client, 'konjir');
+  expect(page.html).toContain('<strong>Name</strong>: its address, unique across Konjir, the one <code>konjir connect --kolab</code> takes.');
+  expect(page.html).toContain('<strong>Title</strong>: what people read. Leave it empty to use the name.');
+  // A new kolab with its title left empty, from a sign-in of its own.
+  const browser = new Browser(base);
+  idp.next(ANN);
+  const u = new URL('/oauth/authorize', base);
+  u.search = new URLSearchParams({ response_type: 'code', client_id: client, redirect_uri: CB, state: 'st', code_challenge: s256(VERIFIER), code_challenge_method: 'S256', resource: `${base}/mcp`, scope: 'konjir' }).toString();
+  const shown = await browser.go(u);
+  const f = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(shown.html)?.[1] ?? '';
+  const done = await browser.go('/oauth/consent', {
+    method: 'POST', headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ csrf: f('csrf'), sign_in: f('sign_in'), decision: 'allow', as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'linkly-ann', new_kolab_title: '', role: 'product' }).toString(),
+  });
+  expect(done.left?.searchParams.get('code')).toBeTruthy();
+  expect((await kolab.db.query(`select title from kolab where id = 'linkly-ann'`)).rows).toStrictEqual([{ title: 'linkly-ann' }]);
 });

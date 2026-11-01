@@ -248,6 +248,8 @@ export interface SetupPlan {
   kolab: { id: string; title: string; made: boolean; access?: Access };
   agents: { label: string; agent: string; role: Role; made: boolean; signedIn: boolean }[];
   refused?: string;
+  /** Worth saying before Allow: a new kolab's name that is the title of a kolab the person has, as if the two were swapped. */
+  notes?: string[];
 }
 
 /** What useSetup hands the client: who set up what, and each agent's own sign-in, issued to the client, unless it asked for none. */
@@ -2398,11 +2400,25 @@ export class Kolab {
     const p = await this.findActor(person);
     if (!p || p.kind !== 'person') return refuse(`${person} isn't a person here: only a person sets up agents`);
     if (await this.archivedActor(person)) return refuse(`${person} is archived, so it sets nothing up`);
+    // The kolabs the person reaches, their own list (nothing of anyone else's): named when the one
+    // asked for isn't among them, and checked for a title equal to the name asked for, the mistake
+    // of a name and title swapped when the kolab was made.
+    const theirs: { id: string; title: string }[] = [];
+    for (const id of await this.reachable(person)) {
+      const r = (await this.db.query<{ title: string; archived: boolean }>(`select title, kj_kolab_archived(id) as archived from kolab where id = $1`, [id])).rows[0];
+      if (r && !r.archived) theirs.push({ id, title: r.title });
+    }
+    const asTitle = theirs.filter((t) => t.id !== setup.kolab && t.title.trim().toLowerCase() === setup.kolab);
+    const shown = (t: { id: string; title: string }) => (t.title && t.title !== t.id ? `${t.id} (titled "${t.title}")` : t.id);
+    const yours = theirs.length
+      ? ` Yours: ${theirs.slice(0, 12).map(shown).join(', ')}${theirs.length > 12 ? `, and ${theirs.length - 12} more` : ''}.`
+      : ' You reach no kolab yet.';
+    const meant = asTitle.length ? ` Did you mean ${asTitle.map((t) => t.id).join(' or ')}? Its title is ${setup.kolab}; its name is what --kolab takes.` : '';
     const k = (await this.db.query<{ title: string }>(`select title from kolab where id = $1`, [setup.kolab])).rows[0];
     if (k) {
       // Access first, so an archived kolab reads as any other the person can't reach (D52).
       const access = await accessIn(this.db, person, setup.kolab);
-      if (!access.level) return refuse(`a kolab named ${setup.kolab} already exists, and you can't reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you`);
+      if (!access.level) return refuse(`a kolab named ${setup.kolab} already exists, and you can't reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you.${meant}${yours}`);
       if (!(await ownerAccess(this.db, person, setup.kolab)).level) {
         return refuse(`you read kolab ${setup.kolab} only because it is public, which gives your agents nothing there (D56): ask its owners for a grant, or choose another kolab`);
       }
@@ -2416,6 +2432,7 @@ export class Kolab {
       if (c.owned >= this.ownKolabs.max) return refuse(`you own ${c.owned} kolabs, the most a person may own here (${this.ownKolabs.max}), so a new kolab ${setup.kolab} can't be made: choose one you have`);
       if (c.recent >= this.ownKolabs.burst) return refuse(`you made ${c.recent} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
       plan.kolab = { id: setup.kolab, title: setup.kolab, made: true };
+      if (asTitle.length) plan.notes = [`You have no kolab named ${setup.kolab}, so allowing this makes a new one.${meant} If you did, choose Deny and run konjir connect again with --kolab ${asTitle[0].id}.`];
     }
     const ids = setup.agents.map((a) => `${person}-${a.label}`);
     const open = new Set((await this.db.query<{ actor_id: string }>(

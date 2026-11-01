@@ -512,7 +512,7 @@ test('a kolab someone else holds: the page says so with Deny alone, and konjir c
   const project = scratch();
   const pages: string[] = [];
   const err = await rejection(connectHarness(options(server, project, { harness: 'claude', kolab: 'raes', agents: parseAgents(['pm:product']) }), world(server, idp, async () => 0, { pages, decision: 'deny' })));
-  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Nothing was made or written');
+  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. You reach no kolab yet. Nothing was made or written');
   expect(pages[0]).toContain('<h1>This setup can\'t be allowed</h1>');
   expect(pages[0]).not.toContain('value="allow"');
   expect(existsSync(join(project, '.mcp.json'))).toBe(false);
