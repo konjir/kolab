@@ -554,6 +554,8 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
 /** How a browser sign-in is started and finished: its scope, how the browser opens, where it says so, how long it may take. */
 interface BrowserOpts {
   scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; again?: string;
+  /** What is said as the browser opens, before the link; by default, that it signs in to Kolab. */
+  opening?: string;
 }
 
 /**
@@ -573,7 +575,7 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
       if (opts.scope) u.searchParams.set('scope', opts.scope);
       // Only Kolab's own sign-in page is ever printed or opened.
       checkAuthorizeUrl(u, url);
-      log(`Opening your browser to sign in to Kolab. If it doesn't open, go to:\n  ${u.toString()}`);
+      log(`${opts.opening ?? 'Opening your browser to sign in to Kolab.'} If it doesn't open, go to:\n  ${u.toString()}`);
       await (opts.open ?? ((v: URL) => openBrowser(v, url)))(u);
     });
     const back = new Promise<URLSearchParams>((resolve, reject) => {
@@ -755,6 +757,22 @@ export async function setup(url: string, opts: { scope: string; mint: boolean; c
       body: new URLSearchParams({ token, token_type_hint: 'access_token', client_id: client.client_id }).toString(),
     }).then((r) => r.body?.cancel(), () => undefined);
   }
+}
+
+/**
+ * Revokes sign-ins a setup issued (konjir connect, when something after the setup fails): each
+ * refresh token, which revokes its grant and ends its session, at Kolab's own /oauth/revoke, by the
+ * client it was issued to. Returns how many Kolab confirmed; never throws.
+ */
+export async function revokeIssued(url: string, client: StoredOAuthClientInformation, tokens: StoredOAuthTokens[]): Promise<number> {
+  let n = 0;
+  for (const t of tokens) {
+    if (!t.refresh_token) continue;
+    try {
+      if ((await revoke(url, { client, tokens: t })) === 'revoked') n++;
+    } catch { /* counted as not revoked */ }
+  }
+  return n;
 }
 
 /**

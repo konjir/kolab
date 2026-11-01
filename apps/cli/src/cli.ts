@@ -302,8 +302,8 @@ const STUB_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
  * KONJIR_STUB_IDENTITY=<login>, for local development and browser tests only: the identity
  * provider is the stub tests use, which signs whoever opens Kolab's sign-in in as <login>, with no
  * check at all and no GitHub. So it is refused with a public host (`publicHost`: every deployed
- * Kolab has one, behind its TLS proxy) and beside GitHub's settings, and `konjir serve` listens on
- * 127.0.0.1 alone; it checks that too once it listens.
+ * Kolab has one, behind its TLS proxy) and beside GitHub's settings, and its Kolab binds 127.0.0.1,
+ * which `konjir serve` names when it starts the server.
  */
 export function signInSettings(env: Record<string, string | undefined>, opts: { publicHost?: string } = {}) {
   const id = env.KONJIR_GITHUB_CLIENT_ID?.trim();
@@ -402,14 +402,10 @@ export async function main(argv: string[]) {
     // migration (a database that needs one is refused) and no outbox worker.
     const migrate = !rest.includes('--no-migrate');
     const worker = !rest.includes('--no-worker');
-    const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
+    // The stub signs anyone in: its Kolab binds 127.0.0.1, named here, before it listens.
+    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
     if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
     if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
-    // The stub signs anyone in: only ever on this machine's loopback, which konjir serve always listens on.
-    if (sign.stub && new URL(s.url).hostname !== '127.0.0.1') {
-      await s.close();
-      throw new Error(`KONJIR_STUB_IDENTITY is only for a Kolab listening on 127.0.0.1, not ${s.url}`);
-    }
     if (sign.stub) log.warn(`sign-in: ${sign.describe}`, { event: 'stub_identity' });
     else log.info(`sign-in: ${sign.describe}`);
     log.info(`Kolab listening on ${s.url}`, { event: 'listening', url: s.url });
@@ -438,7 +434,7 @@ export async function main(argv: string[]) {
     if (token) console.error('konjir connect signs you in in your browser, at Kolab\'s setup page: KONJIR_TOKEN and --token aren\'t used for it.');
     const mcp = mcpUrl(url);
     await connectHarness({ harness: harness as Harness, url: mcp, kolab, agents: parseAgents(agents), cwd: process.cwd(), env: process.env, ...opts },
-      terminalIO((r) => setup(r.url, { scope: r.scope, mint: r.mint, clientName: r.clientName }).catch((e: unknown) => { throw unreachable(e, r.url) ?? e; })));
+      terminalIO((r) => setup(r.url, { scope: r.scope, mint: r.mint, clientName: r.clientName, opening: r.opening, log: (l) => console.log(l) }).catch((e: unknown) => { throw unreachable(e, r.url) ?? e; })));
     return;
   }
 

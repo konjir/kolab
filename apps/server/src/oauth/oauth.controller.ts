@@ -100,6 +100,7 @@ const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 const lasting = (ttlS: number) => (ttlS % 60 ? `${ttlS} seconds` : `${ttlS / 60} minutes`);
 /** What the person is told when a sign-in can't go on, by what became of it (Kolab.signInStatus). */
 const EXPIRED = (ttlS: number) => `This sign-in expired: it lasts ${lasting(ttlS)} from when the app opened it. Start again from the app you were connecting.`;
+const CLAIMED = 'This sign-in is being allowed right now: it can\'t be denied or allowed again meanwhile. Return to the app you were connecting, which says how it went.';
 const USED = 'This sign-in was already used: it was allowed, denied or cancelled. If the app you were connecting isn\'t signed in, start again from there.';
 const NOT_HERE = `This sign-in didn't start in this browser, or the browser let it go: it holds ${OPEN_SIGN_INS} sign-ins at most, and newer ones took its place. Finish it in the browser the app opened, or start again from the app you were connecting.`;
 
@@ -499,8 +500,8 @@ export class OAuthController {
    */
   private async stopped(res: Response, by: Parameters<Kolab['signInStatus']>[0], id?: string) {
     const status = await this.kolab.signInStatus(by);
-    if (id && status !== 'open') clearBinding(res, this.options, id);
-    return sendError(res, 400, status === 'expired' ? EXPIRED(this.kolab.oauth.requestTtlS) : status === 'open' ? NOT_HERE : USED);
+    if (id && status !== 'open' && status !== 'claimed') clearBinding(res, this.options, id);
+    return sendError(res, 400, status === 'expired' ? EXPIRED(this.kolab.oauth.requestTtlS) : status === 'open' ? NOT_HERE : status === 'claimed' ? CLAIMED : USED);
   }
 
   private async consent(res: Response, status: number, id: string, binding: string, csrf: string, extra: { login?: string; created?: boolean; error?: string; pick?: ConsentView['pick'] }) {
@@ -549,7 +550,7 @@ export class OAuthController {
     if ('error' in setup) return { refused: `the app asked for a setup Kolab can't do: ${setup.error}. Run konjir connect again` };
     if (!client || !client.redirectUris.every(onLoopback)) return { refused: 'a setup is only for an app on your own computer, such as konjir connect, and this one receives its answer elsewhere' };
     const plan = await this.kolab.setupPlan(person, setup);
-    return { plan, refused: plan.refused };
+    return { plan, refused: plan.refused, forApp: plan.refusedForApp ?? plan.refused };
   }
 
   /** The setup page (konjir connect): locked to what the app asked, Allow or Deny; or why it can't be allowed, with Deny alone. */
@@ -587,7 +588,9 @@ export class OAuthController {
     const setup = pending.clientId !== WEB_CLIENT && !!setupScope(pending.scope);
     if (str('decision') !== 'allow') {
       // A setup denied because it can't be allowed: the app is told why, so konjir connect can say it.
-      const why = setup ? (await this.setupCheck(pending.person, pending.scope, await this.client(pending.clientId, ''))).refused : undefined;
+      // Without the person's list of kolabs, which only their own page shows: this goes to the app's redirect URI.
+      const check = setup ? await this.setupCheck(pending.person, pending.scope, await this.client(pending.clientId, '')) : undefined;
+      const why = check && ('forApp' in check ? check.forApp : check.refused);
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return this.stopped(res, { binding }, id);
       clearBinding(res, this.options, id);
@@ -598,7 +601,8 @@ export class OAuthController {
     if (setup) {
       // Nothing posted changes a setup: the scope names it all.
       try {
-        const r = await this.kolab.consentSetup(binding, csrf);
+        // Bound to what the page showed (setupDigest): a setup that changed since is refused.
+        const r = await this.kolab.consentSetup(binding, csrf, str('shown'));
         clearBinding(res, this.options, id);
         return res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
       } catch (e) {

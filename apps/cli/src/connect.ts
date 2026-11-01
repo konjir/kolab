@@ -21,7 +21,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsoncError, commentsOf, member, parseTree, tokens, valueOf, type JsonNode } from './jsonc.js';
-import { agentCredentials, agentCredentialsPath, keepSignIn, type SetupDone } from './login.js';
+import { agentCredentials, agentCredentialsPath, keepSignIn, revokeIssued, type SetupDone } from './login.js';
 
 export const HARNESSES = ['opencode', 'claude'] as const;
 export type Harness = typeof HARNESSES[number];
@@ -403,6 +403,8 @@ export interface SetupRequest {
   mint: boolean;
   /** The name konjir registers under, which Kolab's page shows, and which each agent's sign-in is issued to. */
   clientName: string;
+  /** What the terminal says as the browser opens (the link follows it). */
+  opening: string;
 }
 
 /** The world `konjir connect` acts on, so tests can stand in for the browser, the harnesses and Kolab. */
@@ -534,6 +536,8 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       io.log(`${draft.change.path} is a link to ${target.real}, which konjir connect would change.`);
     }
     if (draft.change.before === draft.change.after) io.log(`${draft.change.path} already says exactly this.`);
+    // A new file in one line; the diff for a file that is there already, or with --dry-run.
+    else if (!draft.change.exists && !opts.dryRun) io.log(`Will write ${draft.change.path}: ${draft.entries.length === 1 ? 'one entry' : `${draft.entries.length} entries`}, ${draft.entries.map((e) => e.name).join(', ')}.`);
     else io.log(unifiedDiff(draft.change.path, draft.change.before, draft.change.after, draft.change.exists));
   } else {
     io.log('Claude Code\'s own command will write them to your user settings:');
@@ -547,35 +551,58 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
 
   // The one page: the person signs in, and allows exactly this. Kolab makes and grants it all.
   const mint = channel && opts.auth;
-  io.log(`Opening your browser at Kolab's setup page: sign in, check it names kolab ${kolab} and ${draft.entries.length === 1 ? 'this agent' : `these ${draft.entries.length} agents`}, then Allow.`);
-  const done = await io.setup({ url: opts.url, scope: setupScopeOf(kolab, opts.agents), mint, clientName: channel ? CHANNEL_CLIENT_NAME : CONNECT_CLIENT_NAME });
-  const plan = planFor(done.person);
+  const done = await io.setup({
+    url: opts.url, scope: setupScopeOf(kolab, opts.agents), mint, clientName: channel ? CHANNEL_CLIENT_NAME : CONNECT_CLIENT_NAME,
+    opening: `Opening your browser at Kolab's setup page: sign in, check it names kolab ${kolab} and ${draft.entries.length === 1 ? 'this agent' : `these ${draft.entries.length} agents`}, then Allow.`,
+  });
+  const issued = done.agents.flatMap((a) => (a.tokens ? [a.tokens] : []));
+  // Anything that fails from here revokes the sign-ins the setup just issued, so none is left standing unused.
+  let kept = 0;
+  const failed = async (e: unknown): Promise<never> => {
+    const revoked = issued.length ? await revokeIssued(opts.url, done.client, issued) : 0;
+    // Never "nothing written" once an agent's credentials file was.
+    const said = String((e as Error)?.message ?? e).replace(/\.$/, '').replace(kept ? /[;,] nothing (is )?written\b/g : /$^/, '');
+    const signIns = !issued.length ? ''
+      : revoked === issued.length ? `. The ${issued.length === 1 ? 'agent\'s new sign-in was' : `agents' ${issued.length} new sign-ins were`} revoked`
+        : `. ${issued.length - revoked} of the agents' ${issued.length} new sign-ins couldn't be revoked; unused, they lapse within 30 days`;
+    const files = kept ? `; ${kept === 1 ? 'one agent\'s credentials file was' : `${kept} agents' credentials files were`} written before it failed, and ${kept === 1 ? 'holds' : 'hold'} a sign-in that no longer works` : '';
+    throw new Error(`${said}${signIns}${files}. Run konjir connect again`);
+  };
+
+  // Everything checked before anything is kept or written: the plan for the person who signed in,
+  // that Kolab set up exactly what was asked, and that the config file hasn't changed meanwhile.
+  let plan: ReturnType<typeof planFor>;
+  try {
+    plan = planFor(done.person);
+    if (done.kolab.id !== kolab || done.agents.length !== plan.entries.length || done.agents.some((a, k) => a.agent !== plan.entries[k].agent || a.role !== plan.entries[k].role || (mint && !a.tokens))) {
+      throw new Error('Kolab set up something other than konjir connect asked for, so nothing is written');
+    }
+    if (plan.change && readText(plan.change.path) !== draft.change!.before) throw new Error(`${plan.change.path} changed while konjir connect was waiting; nothing written`);
+  } catch (e) { return failed(e); }
   const { entries } = plan;
-  // What Kolab set up is exactly what was asked, in order: anything else is refused, and nothing written.
-  if (done.kolab.id !== kolab || done.agents.length !== entries.length || done.agents.some((a, k) => a.agent !== entries[k].agent || a.role !== entries[k].role || (mint && !a.tokens))) {
-    throw new Error('Kolab set up something other than konjir connect asked for, so nothing is written: run konjir connect again');
-  }
   io.log(`Set up for ${done.person}: kolab ${kolab}${done.kolab.made ? ' (made now, private, yours)' : ''}; ${done.agents.map((a) => `${a.agent}${a.made ? ' (made now)' : ''}`).join(', ')}.`);
 
-  // Each agent's own sign-in, kept where the bridge started with KONJIR_AGENT finds it.
-  if (mint) {
-    for (const a of done.agents) await keepSignIn(opts.url, agentCredentials(a.agent, opts.env), { client: done.client, tokens: a.tokens!, discovery: done.discovery });
-  }
-
-  if (plan.change) {
-    // Written only if nobody changed it since it was read: never over an edit made meanwhile.
-    if (readText(plan.change.path) !== draft.change!.before) throw new Error(`${plan.change.path} changed while konjir connect was waiting; nothing written. Run konjir connect again`);
-    if (plan.change.after === plan.change.before) io.log(`${plan.change.path} already says this; left as it is.`);
-    else {
-      writeAtomically(plan.change.path, plan.change.after, opts.forcePath ? {} : { within: opts.global ? dirname(plan.change.path) : opts.cwd });
-      io.log(`Wrote ${plan.change.path}. It holds no token.`);
+  try {
+    // Each agent's own sign-in, kept where the bridge started with KONJIR_AGENT finds it.
+    if (mint) {
+      for (const a of done.agents) {
+        await keepSignIn(opts.url, agentCredentials(a.agent, opts.env), { client: done.client, tokens: a.tokens!, discovery: done.discovery });
+        kept++;
+      }
     }
-  } else {
-    for (const c of plan.commands) {
-      if (await io.run(c[0], c.slice(1), { cwd: opts.cwd }) !== 0) throw new Error(`${c.slice(0, 3).join(' ')} didn't succeed${c[0] === 'claude' ? ' (is Claude Code installed, and claude on your PATH?)' : ''}`);
+    if (plan.change) {
+      if (plan.change.after === plan.change.before) io.log(`${plan.change.path} already says this; left as it is.`);
+      else {
+        writeAtomically(plan.change.path, plan.change.after, opts.forcePath ? {} : { within: opts.global ? dirname(plan.change.path) : opts.cwd });
+        io.log(`Wrote ${plan.change.path}. It holds no token.`);
+      }
+    } else {
+      for (const c of plan.commands) {
+        if (await io.run(c[0], c.slice(1), { cwd: opts.cwd }) !== 0) throw new Error(`${c.slice(0, 3).join(' ')} didn't succeed${c[0] === 'claude' ? ' (is Claude Code installed, and claude on your PATH?)' : ''}`);
+      }
+      io.log('Claude Code has them in your user settings. They hold no token.');
     }
-    io.log('Claude Code has them in your user settings. They hold no token.');
-  }
+  } catch (e) { return failed(e); }
 
   if (channel) {
     if (mint) io.log(`Each agent is signed in, in its own file under ${dirname(agentCredentialsPath(entries[0].agent, opts.env))}.`);

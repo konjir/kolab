@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
-import type { SetupPlan } from '@konjir/engine';
+import { setupDigest, type SetupPlan } from '@konjir/engine';
 import type { Access, InvitePreview, Role } from '@konjir/types';
 
 /** Text made safe for HTML, in content and in attribute values. */
@@ -158,7 +158,7 @@ ${hidden}
 <input type="hidden" name="kolab" value="kolab:${esc(lock.kolab)}">
 <input type="hidden" name="role" value="${esc(lock.role)}">
 <dl class="locked">
-<dt>Work as</dt><dd><code>${esc(lock.agent)}</code><small>${v.signedIn?.includes(lock.agent) ? '<strong>Signed in elsewhere now: allowing this ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you (D30)'}</small></dd>
+<dt>Work as</dt><dd><code>${esc(lock.agent)}</code><small>${v.signedIn?.includes(lock.agent) ? '<strong>Signed in elsewhere now: allowing this ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></dd>
 <dt>In the kolab</dt><dd><code>${esc(kolab!.id)}</code> ${esc(kolab!.title)}<small>You hold ${esc(describe(kolab!.access))}</small></dd>
 <dt>As</dt><dd>${roleName}<small>${roleSays}</small></dd>
 </dl>
@@ -181,7 +181,7 @@ export function consentPage(v: ConsentView): string {
   const as = v.pick.as ?? (v.web ? 'self' : 'new-agent');
   const role = v.pick.role ?? 'product';
   const who = v.web ? '' : `<fieldset><legend>Work as</legend>
-${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you (D30)'}</small></span></label>`).join('\n')}
+${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></span></label>`).join('\n')}
 <label class="opt"><input type="radio" name="as" value="new-agent"${checked(as === 'new-agent')}><span>A new agent of yours, <code>${esc(v.person)}-</code><input type="text" name="agent_label" value="${esc(v.pick.label ?? 'agent')}" maxlength="24" aria-label="The new agent's name" pattern="[a-z0-9][a-z0-9\\-]*"></span></label>
 <label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>Ends any other session you hold open, such as Kolab's web page: one session per person</small></span></label>
 </fieldset>`;
@@ -243,7 +243,7 @@ export function setupPage(v: SetupView): string {
     const status = a.made ? 'New: made now' : a.signedIn ? '<strong>Yours, existing, signed in elsewhere now: allowing this ends that session.</strong>' : 'Yours, existing';
     return `<dd><code>${esc(a.agent)}</code> as ${roleName}<small>${status}</small></dd>`;
   }).join('\n')}
-<dt>For</dt><dd>${esc(v.client)}<small>Each agent signs in here, as itself, with no more access than you hold in <code>${esc(plan.kolab.id)}</code>, at most Write (D30). Its sign-in renews itself until you revoke it or archive the agent.</small></dd>
+<dt>For</dt><dd>${esc(v.client)}<small>Each agent signs in here, as itself, with no more access than you hold in <code>${esc(plan.kolab.id)}</code>, at most Write. Its sign-in renews itself until you revoke it or archive the agent.</small></dd>
 </dl>` : '';
   if (v.refused) {
     return `<h1>This setup can't be allowed</h1>
@@ -264,6 +264,7 @@ ${asks}
 ${(plan!.notes ?? []).map((n) => `<p class="err" role="alert">${esc(n)}</p>`).join('\n')}
 ${list}
 ${hidden}
+<input type="hidden" name="shown" value="${esc(setupDigest(plan!))}">
 <div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
 }

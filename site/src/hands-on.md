@@ -86,11 +86,10 @@ konjir connect claude: kolab linkly-ada at https://kolab.konjir.com/mcp, 3 agent
   konjir-spec-reviewer  as <you>-spec-reviewer, product
   konjir-builder  as <you>-builder, engineer
 
---- /dev/null
-+++ /Users/ada/linkly/.mcp.json
-...
-Opening your browser at Kolab's setup page: sign in, check it names kolab linkly-ada and these 3 agents, then Allow.
-...
+Will write /Users/ada/linkly/.mcp.json: 3 entries, konjir-spec-writer, konjir-spec-reviewer, konjir-builder.
+
+Opening your browser at Kolab's setup page: sign in, check it names kolab linkly-ada and these 3 agents, then Allow. If it doesn't open, go to:
+  https://kolab.konjir.com/oauth/authorize?…
 Set up for ada: kolab linkly-ada (made now, private, yours); ada-spec-writer (made now), ada-spec-reviewer (made now), ada-builder (made now).
 Wrote /Users/ada/linkly/.mcp.json. It holds no token.
 Each agent is signed in, in its own file under /Users/ada/.config/konjir/agents.
@@ -326,7 +325,7 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 
 - **The browser didn't open.** konjir prints the sign-in URL; open it yourself.
 - **`--kolab …: a kolab's name is lowercase letters, digits and '-'`.** konjir refuses a name no kolab can have before it opens anything. Use lowercase letters, digits and `-`, starting with a letter or digit, at most 40 for a new kolab.
-- **The setup page says `This setup can't be allowed`, with only Deny.** It says why, and so does `konjir connect` once you choose **Deny**; nothing is made or written. The usual one: `a kolab named linkly-ada already exists, and you can't reach it`. Kolab names are unique across Konjir, so someone has it: choose another name, put it in `konjir.sh` as `KOLAB`, and run `konjir connect` again.
+- **The setup page says `This setup can't be allowed`, with only Deny.** It says why, and so does `konjir connect` once you choose **Deny**; nothing is made or written. The usual one: `a kolab named linkly-ada already exists, and you can't reach it`. Kolab names are unique across Konjir, so someone has it. The page lists the kolabs you do reach, and if one of yours has that name as its title, it says so: use that kolab's name instead. Otherwise choose another name, put it in `konjir.sh` as `KOLAB`, and run `konjir connect` again.
 - **`you denied the setup on Kolab's page`.** You chose **Deny**. Nothing was made or written; run `konjir connect` again and choose **Allow**.
 - **`you have … live agents, and this would make … more`.** A person holds at most 10 live agents. Archive ones you no longer use (`konjir archive_agent label=<label>`, signed in as yourself), or name fewer.
 - **`you ran 3 setups that made agents in the last 10 minutes`.** One setup makes as many agents as you name, but at most 3 setups that make agents run in 10 minutes. Wait, then run it again: it reuses what it already made.

@@ -18,7 +18,7 @@ import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main, setup } from '../src/cli.js';
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
-import { MAX_CONFIG_BYTES, bridgeCommand, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
+import { MAX_CONFIG_BYTES, bridgeCommand, claudeBridgeEntry, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
 const entry = (label: string, role: 'product' | 'engineer', over: Partial<Entry> = {}): Entry =>
@@ -246,7 +246,7 @@ async function consentAt(start: URL, form: Record<string, string> | ((html: stri
   const shown = Object.fromEntries([...html.matchAll(/name="(as|kolab|role)" value="([^"]+)" checked/g), ...html.matchAll(/type="hidden" name="(as|kolab|role)" value="([^"]+)"/g)].map((m) => [m[1], m[2]]));
   const done = await go(new URL('/oauth/consent', url), {
     method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf, sign_in: field('sign_in') ?? '', decision: 'allow', ...shown, ...(typeof form === 'function' ? form(html) : form) }).toString(),
+    body: new URLSearchParams({ csrf, sign_in: field('sign_in') ?? '', ...(field('shown') ? { shown: field('shown')! } : {}), decision: 'allow', ...shown, ...(typeof form === 'function' ? form(html) : form) }).toString(),
   });
   if (done.status !== 303) throw new Error(`the consent was refused: ${done.status} ${(await done.text()).slice(0, 4000)}`);
   const back = new URL(done.headers.get('location')!);
@@ -327,7 +327,7 @@ function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run']
     log: (l) => lines.push(l),
     run,
     setup: (r) => setup(r.url, {
-      scope: r.scope, mint: r.mint, clientName: r.clientName, log: (l) => lines.push(l),
+      scope: r.scope, mint: r.mint, clientName: r.clientName, opening: r.opening, log: (l) => lines.push(l),
       open: (u) => {
         o.opened?.push(u);
         idp.next({ subject: '41', login: 'ann' });
@@ -371,8 +371,11 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   const said = io.lines.join('\n');
   expect(said).toContain('konjir connect opencode: kolab anns at');
   expect(said).toContain('  konjir-product  as <you>-product, product');
-  expect(said).toContain(`--- /dev/null\n+++ ${join(project, 'opencode.json')}`);
-  expect(said.indexOf('+    "konjir-product": {')).toBeLessThan(said.indexOf('Opening your browser at Kolab\'s setup page'));
+  // A new file in one line, not its whole diff; then the browser, said once.
+  expect(said).not.toContain('--- /dev/null');
+  expect(said.indexOf(`Will write ${join(project, 'opencode.json')}: 2 entries, konjir-product, konjir-engineer.`)).toBeLessThan(said.indexOf('Opening your browser at Kolab\'s setup page'));
+  expect(said.match(/Opening your browser/g)).toHaveLength(1);
+  expect(said).toContain('Opening your browser at Kolab\'s setup page: sign in, check it names kolab anns and these 2 agents, then Allow. If it doesn\'t open, go to:');
   expect(said).toContain('Set up for ann: kolab anns (made now, private, yours); ann-product (made now), ann-engineer (made now).');
   // Each harness sign-in, one at a time, each as its own agent, on a page locked to it (D97).
   expect(auths).toStrictEqual(['opencode mcp auth konjir-product', 'opencode mcp auth konjir-engineer']);
@@ -512,7 +515,7 @@ test('a kolab someone else holds: the page says so with Deny alone, and konjir c
   const project = scratch();
   const pages: string[] = [];
   const err = await rejection(connectHarness(options(server, project, { harness: 'claude', kolab: 'raes', agents: parseAgents(['pm:product']) }), world(server, idp, async () => 0, { pages, decision: 'deny' })));
-  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. You reach no kolab yet. Nothing was made or written');
+  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Kolab\'s page in your browser lists the kolabs you do reach: run konjir connect again with one of their names. Nothing was made or written');
   expect(pages[0]).toContain('<h1>This setup can\'t be allowed</h1>');
   expect(pages[0]).not.toContain('value="allow"');
   expect(existsSync(join(project, '.mcp.json'))).toBe(false);
@@ -524,6 +527,31 @@ test('a kolab someone else holds: the page says so with Deny alone, and konjir c
     .toBe('Error: you denied the setup on Kolab\'s page: nothing was made or written');
   expect(existsSync(join(project, '.mcp.json'))).toBe(false);
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+});
+
+test('a failure after the setup revokes the sign-ins it issued: entries that name someone else are refused before any file is kept; a failure after files were kept says so, never "nothing written"', async () => {
+  const { kolab, idp, server } = await local();
+  const project = scratch();
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
+  // .mcp.json as konjir connect wrote it for Bob: the plan reads him from it, so nothing is refused before the browser.
+  const bob: Entry = { name: 'konjir-pm', agent: 'bob-pm', label: 'pm', role: 'product', kolab: 'anns', url: server.url };
+  const before = mergeClaude('.mcp.json', '', [bob], false, (e) => claudeBridgeEntry(e, bridgeCommand()!));
+  writeFileSync(join(project, '.mcp.json'), before);
+  const io = world(server, idp, async () => 0);
+  // Ann signs in: her plan differs from Bob's entry, which isn't replaced without --force.
+  const err = await rejection(connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), env }), io));
+  expect(err).toBe(`Error: ${join(project, '.mcp.json')} already has konjir-pm. konjir connect won't overwrite it: pass --force to replace it, or choose other labels with --agent. The agent's new sign-in was revoked. Run konjir connect again`);
+  expect(io.lines).toContain('  konjir-pm  as bob-pm, product');
+  expect(readFileSync(join(project, '.mcp.json'), 'utf8')).toBe(before);
+  expect(existsSync(agentCredentialsPath('ann-pm', env))).toBe(false);
+  expect((await kolab.db.query(`select count(*)::int as n, count(revoked_at)::int as revoked from oauth_grant where actor_id = 'ann-pm'`)).rows[0]).toStrictEqual({ n: 1, revoked: 1 });
+
+  // --global: the files are kept, then Claude Code's own command fails. Said as it is.
+  const failing = world(server, idp, async () => 1);
+  const late = await rejection(connectHarness(options(server, scratch(), { harness: 'claude', global: true, agents: parseAgents(['pm:product', 'dev:engineer']), env: { ...env, HOME: scratch() } }), failing));
+  expect(late).toBe('Error: claude mcp add-json didn\'t succeed (is Claude Code installed, and claude on your PATH?). The agents\' 2 new sign-ins were revoked; 2 agents\' credentials files were written before it failed, and hold a sign-in that no longer works. Run konjir connect again');
+  expect(late).not.toMatch(/nothing (is )?written/);
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id in ('ann-pm', 'ann-dev') and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
 });
 
 test('konjir connect refuses what it can before any browser opens: no --kolab, a name no kolab can have, a config it won\'t touch; --dry-run prints the plan and stops', async () => {

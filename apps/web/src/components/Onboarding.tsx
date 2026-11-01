@@ -92,7 +92,7 @@ export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; 
     <>
       <section className="summary" aria-label="Connect a harness">
         <h1>Connect a harness</h1>
-        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you (D30). Connect it with one command, over MCP by hand, or through the konjir CLI in a shell.</span>
+        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you. Connect it with one command, over MCP by hand, or through the konjir CLI in a shell.</span>
       </section>
       <section className="newk" aria-labelledby="c-connect">
         <h2 className="section-title" id="c-connect">One command: konjir connect</h2>
