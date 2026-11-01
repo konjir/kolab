@@ -873,7 +873,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_agent',
-    description: 'For a person\'s own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect calls this). An agent of yours already called that is reused. A person has at most 10 live agents (konjir_archive_agent frees a place), and makes at most 3 in 10 minutes. A name that isn\'t free to you is refused, whoever holds it. It grants nothing: the agent reaches a kolab once you choose it on Kolab\'s sign-in page there, with no more access than you hold, at most Write. An agent\'s session and the admin token are refused.',
+    description: 'For a person\'s own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect sets agents up on Kolab\'s setup page instead, several at once). An agent of yours already called that is reused. A person has at most 10 live agents (konjir_archive_agent frees a place), and makes at most 3 in 10 minutes. A name that isn\'t free to you is refused, whoever holds it. It grants nothing: the agent reaches a kolab once you choose it on Kolab\'s sign-in page there, with no more access than you hold, at most Write. An agent\'s session and the admin token are refused.',
     schema: createAgent,
   })
   createAgent({ label }: z.infer<typeof createAgent>, context?: McpToolContext) {

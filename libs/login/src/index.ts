@@ -554,11 +554,6 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
 /** How a browser sign-in is started and finished: its scope, how the browser opens, where it says so, how long it may take. */
 interface BrowserOpts {
   scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; again?: string;
-  /**
-   * Which of several sign-ins this is, for Kolab's page to say "agent N of M" (`konjir connect`):
-   * sent as `step` and `steps`, apart from the scope, so it grants nothing.
-   */
-  step?: { n: number; of: number };
 }
 
 /**
@@ -576,7 +571,6 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
     const provider = make(`http://127.0.0.1:${port}/callback`, async (u) => {
       // What to preselect on Kolab's page: the kolab and role (Kolab reads them from the scope).
       if (opts.scope) u.searchParams.set('scope', opts.scope);
-      if (opts.step) { u.searchParams.set('step', String(opts.step.n)); u.searchParams.set('steps', String(opts.step.of)); }
       // Only Kolab's own sign-in page is ever printed or opened.
       checkAuthorizeUrl(u, url);
       log(`Opening your browser to sign in to Kolab. If it doesn't open, go to:\n  ${u.toString()}`);
@@ -653,8 +647,8 @@ export async function login(url: string, opts: { path?: string; clientName?: str
 }
 
 /**
- * A sign-in kept in this process's memory only, never written anywhere: for `konjir connect`, which
- * signs in as the person just long enough to make their agents (D59), then revokes it.
+ * A sign-in kept in this process's memory only, never written anywhere: `konjir connect`'s setup
+ * (setup), whose token is used once, then revoked.
  */
 export class MemoryLogin implements OAuthClientProvider {
   private client?: StoredOAuthClientInformation;
@@ -662,10 +656,10 @@ export class MemoryLogin implements OAuthClientProvider {
   private discovery?: OAuthDiscoveryState;
   private verifier = '';
   readonly expectedState = randomBytes(24).toString('base64url');
-  constructor(private readonly opts: { redirectUrl: string; onAuthorize?: (u: URL) => Promise<void> }) {}
+  constructor(private readonly opts: { redirectUrl: string; onAuthorize?: (u: URL) => Promise<void>; clientName?: string }) {}
   get redirectUrl() { return this.opts.redirectUrl; }
   get clientMetadata(): OAuthClientMetadata {
-    return { client_name: 'konjir CLI', redirect_uris: [REDIRECT], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' };
+    return { client_name: this.opts.clientName ?? 'konjir CLI', redirect_uris: [REDIRECT], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' };
   }
   state() { return this.expectedState; }
   clientInformation() { return this.client; }
@@ -686,21 +680,95 @@ export class MemoryLogin implements OAuthClientProvider {
     if (scope === 'all' || scope === 'verifier') this.verifier = '';
     if (scope === 'all' || scope === 'discovery') this.discovery = undefined;
   }
-  /** Revokes this sign-in at Kolab and forgets it: its grant ends, and its session with it. */
-  async revoke(url: string): Promise<void> {
-    const saved = { client: this.client, tokens: this.kept };
-    this.kept = undefined;
-    await revoke(url, saved);
+}
+
+/** One agent a setup set up (konjir connect): made now or found again, and, when its sign-in was issued, its tokens. */
+export interface SetupAgent { label: string; agent: string; role: string; made: boolean; tokens?: StoredOAuthTokens }
+
+/**
+ * What a setup gives konjir connect: who allowed it, the kolab (made now or theirs already), each
+ * agent, and the client its agents' sign-ins were issued to, with what was discovered of Kolab, so
+ * each agent's credentials file holds what that agent's own browser sign-in would have kept.
+ */
+export interface SetupDone {
+  person: string; kolab: { id: string; made: boolean }; agents: SetupAgent[];
+  client: StoredOAuthClientInformation; discovery?: OAuthDiscoveryState;
+}
+
+/**
+ * `konjir connect`'s one sign-in (Lee's instruction of 2026-11-01): the browser opens once, at
+ * Kolab's setup page, whose scope (`konjir kolab:<k> setup:<label>:<role> …`) names the kolab and
+ * the agents; the person signs in and allows it there. Its code is exchanged, as any code is, for a
+ * setup token, kept in memory only and used once, at Kolab's POST /oauth/setup: with `mint`, Kolab
+ * issues each agent the person allowed its own grant and refresh token, to this sign-in's own
+ * client (registered as `clientName`). The setup token is then revoked, whatever happened. Denied,
+ * or refused on the page, it throws, saying why.
+ */
+export async function setup(url: string, opts: { scope: string; mint: boolean; clientName?: string } & Omit<BrowserOpts, 'scope'>): Promise<SetupDone> {
+  checkKolabUrl(url);
+  const memory = await signInWithBrowser(url, (redirectUrl, onAuthorize) => new MemoryLogin({ redirectUrl, onAuthorize, clientName: opts.clientName }),
+    { again: 'run konjir connect again', ...opts }).catch((e: Error) => {
+    // Said as what it is: refused on Kolab's page (it names why), or denied there.
+    const said = /^Kolab didn't sign you in: (.*)$/s.exec(String(e?.message ?? ''))?.[1];
+    if (said === undefined) throw e;
+    throw new Error(said === 'the person declined' ? 'you denied the setup on Kolab\'s page: nothing was made or written' : `${said}. Nothing was made or written`);
+  });
+  const client = memory.clientInformation();
+  const token = memory.tokens()?.access_token;
+  if (!client || !token) throw new Error('Kolab didn\'t finish the setup: run konjir connect again');
+  // Kolab is its own authorization server, on its own origin: the token goes nowhere else.
+  const endpoint = new URL('/oauth/setup', url).toString();
+  try {
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ client_id: client.client_id, mint: opts.mint }),
+      });
+    } catch (e) {
+      throw new Error(`couldn't reach Kolab at ${safeUrl(endpoint)} (${String((e as { cause?: { code?: string } }).cause?.code ?? (e as Error).message)})`);
+    }
+    type Answer = {
+      error_description?: string; person?: string; kolab?: { id: string; made: boolean };
+      agents?: { label: string; agent: string; role: string; made: boolean; access_token?: string; token_type?: string; expires_in?: number; refresh_token?: string; scope?: string }[];
+    };
+    const body = await res.json().catch(() => ({})) as Answer;
+    if (!res.ok || !body.person || !body.kolab || !Array.isArray(body.agents)) {
+      throw new Error(`Kolab didn't finish the setup: ${body.error_description ?? `it answered ${res.status}`}. Run konjir connect again`);
+    }
+    // What the MCP SDK stamps on tokens it saves (the issuer they came from, SEP-2352), from the
+    // setup's own: each agent's tokens carry the same, as its own sign-in's would.
+    const { access_token: _a, refresh_token: _r, expires_in: _e, scope: _s, token_type: _t, ...stamp } = memory.tokens() ?? {} as StoredOAuthTokens;
+    return {
+      person: body.person, kolab: body.kolab, client, discovery: memory.discoveryState(),
+      agents: body.agents.map((a) => ({
+        label: a.label, agent: a.agent, role: a.role, made: a.made,
+        ...(a.access_token && a.refresh_token
+          ? { tokens: { access_token: a.access_token, token_type: a.token_type ?? 'Bearer', expires_in: a.expires_in, refresh_token: a.refresh_token, scope: a.scope, ...stamp } as StoredOAuthTokens }
+          : {}),
+      })),
+    };
+  } finally {
+    // Used up already when it worked; revoked anyway, so a setup token never outlives konjir connect.
+    await fetch(new URL('/oauth/revoke', url), {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token, token_type_hint: 'access_token', client_id: client.client_id }).toString(),
+    }).then((r) => r.body?.cancel(), () => undefined);
   }
 }
 
 /**
- * Signs in through the browser into memory only (`konjir connect`): nothing is written to the
- * credentials file, and the caller revokes it (MemoryLogin.revoke) once it is done with it.
+ * Keeps an agent's sign-in, from a setup, in its credentials file (agentCredentials), as that
+ * agent's own browser sign-in would have kept it: for the URL, the client its grant was issued to,
+ * its tokens and what was discovered of Kolab. Whatever was kept there before is replaced under the
+ * file's lock, and revoked at Kolab, best effort, so no grant of an earlier run lingers.
  */
-export function ephemeralLogin(url: string, opts: BrowserOpts = {}): Promise<MemoryLogin> {
+export async function keepSignIn(url: string, path: string, saved: { client: StoredOAuthClientInformation; tokens: StoredOAuthTokens; discovery?: OAuthDiscoveryState }): Promise<void> {
   checkKolabUrl(url);
-  return signInWithBrowser(url, (redirectUrl, onAuthorize) => new MemoryLogin({ redirectUrl, onAuthorize }), { again: 'run konjir connect again', ...opts });
+  const store = new Store(path, false);
+  let before: Saved = {};
+  await store.set(url, (s) => { before = s; return { client: saved.client, tokens: saved.tokens, ...(saved.discovery ? { discovery: saved.discovery } : {}) }; });
+  if (before.tokens?.refresh_token && before.tokens.refresh_token !== saved.tokens.refresh_token) await revoke(url, before).catch(() => undefined);
 }
 
 /**

@@ -196,6 +196,67 @@ export function signInStep(step: unknown, steps: unknown): { n: number; of: numb
   return n !== undefined && of !== undefined && n <= of ? { n, of } : null;
 }
 
+/** The most agents one setup names: a person has at most as many live agents (`oauth.agentsPerPerson`). */
+export const SETUP_MAX_AGENTS = 10;
+
+/** One agent a setup names: its label, which names it `<person>-<label>`, and the role it works in. */
+export interface SetupAgent { label: string; role: Role }
+
+/**
+ * A setup's scope, as `konjir connect` asks for it (Lee's instruction of 2026-11-01):
+ * `konjir kolab:<name> setup:<label>:<role> …`, one `setup:` word per agent. It names labels,
+ * never agent ids: the CLI doesn't know who will sign in. Such a sign-in is a setup: one page,
+ * locked to what it names, that makes the kolab if it is new and each agent that is, grants each
+ * agent in the kolab, and lets the client have each agent's own sign-in issued (useSetup).
+ * Undefined for a scope with no `setup:` word; `error` for one that names its kolab or agents badly,
+ * or mixes a setup with a single sign-in's words.
+ */
+export function setupScope(scope: string | null | undefined): { kolab: string; agents: SetupAgent[] } | { error: string } | undefined {
+  const words = (scope ?? '').split(/\s+/).filter(Boolean);
+  const setups = words.filter((w) => w.startsWith('setup:'));
+  if (!setups.length) return undefined;
+  if (words.some((w) => /^(agent|role|as):/.test(w))) return { error: 'it mixes a setup with a single sign-in\'s agent, role or person' };
+  const kolabs = words.filter((w) => w.startsWith('kolab:')).map((w) => w.slice('kolab:'.length));
+  if (kolabs.length !== 1 || !isKolabName(kolabs[0])) return { error: 'it names no valid kolab, or more than one' };
+  if (setups.length > SETUP_MAX_AGENTS) return { error: `it names ${setups.length} agents, and a setup names at most ${SETUP_MAX_AGENTS}` };
+  const agents: SetupAgent[] = [];
+  for (const w of setups) {
+    const [, label, role, extra] = w.split(':');
+    if (extra !== undefined || !/^[a-z0-9][a-z0-9-]{0,23}$/.test(label ?? '') || !ROLES.includes(role as Role)) return { error: `${w.slice(0, 60)} isn't setup:<label>:<role>` };
+    if (agents.some((a) => a.label === label)) return { error: `it names the agent ${label} twice` };
+    agents.push({ label, role: role as Role });
+  }
+  return { kolab: kolabs[0], agents };
+}
+
+/** Whether a redirect URI is on the person's own machine: http on 127.0.0.1 or [::1], any port, as konjir's own are. */
+export function loopbackRedirect(uri: string): boolean {
+  try {
+    const u = new URL(uri);
+    return u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === '[::1]');
+  } catch { return false; }
+}
+
+/**
+ * What a setup will do, for its page and for the consent that carries it out: the kolab (made now,
+ * or the person's existing one with what they hold there), and each agent (made now, or the
+ * person's existing one, and whether it is signed in elsewhere now, which the setup ends, ENF4).
+ * `refused` says plainly why it can't be allowed; then nothing is made, and the page offers only Deny.
+ */
+export interface SetupPlan {
+  person: string;
+  kolab: { id: string; title: string; made: boolean; access?: Access };
+  agents: { label: string; agent: string; role: Role; made: boolean; signedIn: boolean }[];
+  refused?: string;
+}
+
+/** What useSetup hands the client: who set up what, and each agent's own sign-in, issued to the client, unless it asked for none. */
+export interface SetupResult {
+  person: string;
+  kolab: { id: string; made: boolean };
+  agents: { label: string; agent: string; role: Role; made: boolean; tokens?: { accessToken: string; refreshToken: string; expiresIn: number; scope: string } }[];
+}
+
 /** The scope a grant carries: Konjir's, with the kolab and role its session works in. */
 export const grantedScope = (kolab: string, role: Role) => `konjir kolab:${kolab} role:${role}`;
 
@@ -2162,6 +2223,7 @@ export class Kolab {
     await this.db.query(`update oauth_request set client_state = null, scope = null, resource = null, invite_key = null, redirect_uri = ''
       where expires_at < now() and (redirect_uri <> '' or client_state is not null or scope is not null or resource is not null or invite_key is not null)`);
     await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
+    await this.db.query(`delete from oauth_setup where created_at < now() - interval '1 day'`);
     await this.db.query(
       `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key, raise_id, step, steps)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10 * interval '1 second', $11, $12, $13, $14)`,
@@ -2315,6 +2377,250 @@ export class Kolab {
   }
 
   /**
+   * How many setups that made agents a person may run in `windowMs` (counted in the database, from
+   * oauth_setup). Agents made in one setup count once against this, not each against addOwnAgent's
+   * 3 in 10 minutes; the cap on live agents (`oauth.agentsPerPerson`) holds as always.
+   */
+  readonly setups = { burst: 3, windowMs: 10 * 60_000, tokenTtlS: 300 };
+
+  /**
+   * What a setup (setupScope) would do for `person`, checked as the consent that carries it out
+   * checks it, so its page shows exactly that, or why it can't be allowed (`refused`): a kolab of
+   * that name that the person can't reach (names are unique across Konjir, TEN4, so it is taken),
+   * one they read only because it is public (which lends their agents nothing, D56), a new kolab's
+   * name that isn't allowed or past makeOwnKolab's limits, an agent name that isn't free to them or
+   * is an archived agent of theirs, more live agents than `oauth.agentsPerPerson`, or more setups
+   * that make agents than `setups.burst` in its window. It makes nothing.
+   */
+  async setupPlan(person: string, setup: { kolab: string; agents: SetupAgent[] }): Promise<SetupPlan> {
+    const plan: SetupPlan = { person, kolab: { id: setup.kolab, title: setup.kolab, made: false }, agents: [] };
+    const refuse = (why: string): SetupPlan => ({ ...plan, refused: why });
+    const p = await this.findActor(person);
+    if (!p || p.kind !== 'person') return refuse(`${person} isn't a person here: only a person sets up agents`);
+    if (await this.archivedActor(person)) return refuse(`${person} is archived, so it sets nothing up`);
+    const k = (await this.db.query<{ title: string }>(`select title from kolab where id = $1`, [setup.kolab])).rows[0];
+    if (k) {
+      // Access first, so an archived kolab reads as any other the person can't reach (D52).
+      const access = await accessIn(this.db, person, setup.kolab);
+      if (!access.level) return refuse(`a kolab named ${setup.kolab} already exists, and you can't reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you`);
+      if (!(await ownerAccess(this.db, person, setup.kolab)).level) {
+        return refuse(`you read kolab ${setup.kolab} only because it is public, which gives your agents nothing there (D56): ask its owners for a grant, or choose another kolab`);
+      }
+      plan.kolab = { id: setup.kolab, title: k.title, made: false, access };
+    } else {
+      if (setup.kolab.length > 40) return refuse(`"${setup.kolab}" can't be a new kolab's name: up to 40 lowercase letters, digits and '-', starting with a letter or digit`);
+      if (isReservedKolabName(setup.kolab)) return refuse(`the kolab name ${setup.kolab} is reserved for Konjir's own kolabs: choose another`);
+      const c = (await this.db.query<{ owned: number; recent: number }>(
+        `select count(*)::int as owned, count(*) filter (where created_at > now() - $2 * interval '1 millisecond')::int as recent
+           from kolab where owner_id = $1`, [person, this.ownKolabs.windowMs])).rows[0];
+      if (c.owned >= this.ownKolabs.max) return refuse(`you own ${c.owned} kolabs, the most a person may own here (${this.ownKolabs.max}), so a new kolab ${setup.kolab} can't be made: choose one you have`);
+      if (c.recent >= this.ownKolabs.burst) return refuse(`you made ${c.recent} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
+      plan.kolab = { id: setup.kolab, title: setup.kolab, made: true };
+    }
+    const ids = setup.agents.map((a) => `${person}-${a.label}`);
+    const open = new Set((await this.db.query<{ actor_id: string }>(
+      `select distinct s.actor_id from session s left join oauth_grant g on g.id = s.grant_id where s.actor_id = any($1) and ${OPEN_SESSION}`, [ids])).rows.map((r) => r.actor_id));
+    for (const a of setup.agents) {
+      const id = `${person}-${a.label}`;
+      const found = await this.findActor(id);
+      if (found) {
+        // One message for any name not free to this person, whoever holds it (createOwnAgent's).
+        if (found.kind !== 'agent' || found.owner !== person) return refuse(`the name ${id} isn't available: choose another label for that agent`);
+        if (await this.archivedActor(id)) return refuse(`your agent ${id} is archived, and its name stays its own (D52): choose another label for it`);
+        plan.agents.push({ ...a, agent: id, made: false, signedIn: open.has(id) });
+        continue;
+      }
+      // Free as addOwnAgent requires: no actor or account of that name in any case, and not in
+      // another account's namespace, `<their name>-*` (D30).
+      const held = (await this.db.query(
+        `select 1 from actor where lower(id) = lower($1)
+         union all select 1 from account where lower(id) = lower($1)
+         union all select 1 from account where length(id) > length($2) and left(lower($1), length(id) + 1) = lower(id) || '-'
+         limit 1`, [id, person])).rows.length > 0;
+      if (held) return refuse(`the name ${id} isn't available: choose another label for that agent`);
+      plan.agents.push({ ...a, agent: id, made: true, signedIn: false });
+    }
+    const making = plan.agents.filter((a) => a.made).length;
+    if (making) {
+      const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [person])).rows[0].n;
+      if (live + making > this.oauth.agentsPerPerson) {
+        return refuse(`you have ${live} live agents, and this would make ${making} more: a person has at most ${this.oauth.agentsPerPerson} here. Archive agents you no longer use (konjir archive_agent label=<label>), or name fewer`);
+      }
+      const recent = (await this.db.query<{ n: number }>(
+        `select count(*)::int as n from oauth_setup where person_id = $1 and made_agents > 0 and created_at > now() - $2 * interval '1 millisecond'`,
+        [person, this.setups.windowMs])).rows[0].n;
+      if (recent >= this.setups.burst) return refuse(`you ran ${recent} setups that made agents in the last ${Math.round(this.setups.windowMs / 60_000)} minutes; wait a while before making more`);
+    }
+    return plan;
+  }
+
+  /**
+   * The person allows a setup (POST /oauth/consent, with the form's `csrf` token): its sign-in's
+   * scope names the kolab and agents (setupScope), and nothing posted changes them. Only for a
+   * registered client on the person's own machine (every redirect URI loopback, as konjir's are),
+   * so no hosted app can have agents made and signed in for it. Checked again as setupPlan checks
+   * it, then: the kolab is made if it is new (makeOwnKolab, with its limits, D54), each agent made
+   * if it is new (addOwnAgent, counted once for the setup, not against its 3 in 10 minutes, the cap
+   * holding) or reused, and each granted in the kolab what the person holds there, at most Write
+   * (grantOwnAgent, D30). The kolab, the agents and the grants are each made in a transaction of
+   * their own, as those methods make them, not one transaction: every step is checked first, and a
+   * setup run again reuses whatever an interrupted one made. Then, in one transaction, the
+   * authorization is used up and the setup's code issued (oauth_setup), one use, as any code is.
+   */
+  async consentSetup(binding: string, csrf: string): Promise<{ code: string; redirectUri: string; clientState: string | null; plan: SetupPlan }> {
+    const req = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string | null }>(
+      `update oauth_request set claimed_at = now()
+        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null and raise_id is null
+       returning client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+    if (!req?.actor_id) throw new OAuthGrantError('access_denied', 'this sign-in expired or was already used; start again');
+    try {
+      return await this.setupClaimed(binding, csrf, { ...req, actor_id: req.actor_id });
+    } catch (e) {
+      await this.db.query(`update oauth_request set claimed_at = null where id = $1 and csrf_key = $2`, [sessionKey(binding), sessionKey(csrf)]).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  private async setupClaimed(binding: string, csrf: string,
+    req: { client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string }) {
+    const setup = setupScope(req.scope);
+    if (!setup) throw new AccessError('this sign-in isn\'t a setup');
+    if ('error' in setup) throw new AccessError(`this setup can't be allowed: ${setup.error}`);
+    const client = await this.oauthClient(req.client_id);
+    if (!client || !client.redirectUris.every(loopbackRedirect)) {
+      throw new AccessError('a setup is only for an app on your own machine, such as konjir connect: this one receives its answer elsewhere');
+    }
+    const person = req.actor_id;
+    const plan = await this.setupPlan(person, setup);
+    if (plan.refused) throw new AccessError(plan.refused);
+    if (plan.kolab.made) await this.makeOwnKolab(person, setup.kolab, setup.kolab);
+    for (const a of plan.agents) {
+      if (a.made) {
+        try {
+          await this.addOwnAgent(person, a.label, { setup: true });
+        } catch (e) {
+          // Made by a setup at the same moment: it is that agent, found again, if it is theirs.
+          const again = e instanceof NameTakenError ? await this.findActor(a.agent) : undefined;
+          if (!again || again.kind !== 'agent' || again.owner !== person) throw e;
+        }
+      }
+      await this.grantOwnAgent(person, a.agent, setup.kolab);
+      if (!(await accessIn(this.db, a.agent, setup.kolab)).level) throw new AccessError(`${a.agent} has no access to kolab ${setup.kolab}`);
+    }
+    const code = `kjc_${randomBytes(24).toString('base64url')}`;
+    await this.db.transaction(async (tx) => {
+      const used = await tx.query(`delete from oauth_request where id = $1 and csrf_key = $2 returning id`, [sessionKey(binding), sessionKey(csrf)]);
+      if (!used.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in was already used; start again');
+      await tx.query(
+        `insert into oauth_setup(id, client_id, redirect_uri, code_challenge, resource, person_id, kolab, kolab_made, agents, made_agents, code_expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, now() + $11 * interval '1 second')`,
+        [sessionKey(code), req.client_id, req.redirect_uri, req.code_challenge, req.resource, person, setup.kolab, plan.kolab.made,
+          JSON.stringify(plan.agents.map((a) => ({ label: a.label, agent: a.agent, role: a.role, made: a.made }))), plan.agents.filter((a) => a.made).length, this.oauth.codeTtlS]);
+    });
+    return { code, redirectUri: req.redirect_uri, clientState: req.client_state, plan };
+  }
+
+  /**
+   * Exchanges a setup's code (POST /oauth/token) for its setup token: once, by the client it was
+   * issued to, at the same redirect URI, with the PKCE verifier of its challenge, as exchangeCode
+   * does any code. Undefined when `code` isn't a setup's (exchangeCode's then). The token is no
+   * session: /mcp refuses it. It lasts `setups.tokenTtlS` and does one thing, useSetup. A code
+   * used a second time revokes the setup, and every grant it issued.
+   */
+  async exchangeSetupCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string }): Promise<{ accessToken: string; expiresIn: number; scope: string } | undefined> {
+    const key = sessionKey(p.code);
+    if (!(await this.db.query(`select 1 from oauth_setup where id = $1`, [key])).rows.length) return undefined;
+    const token = newSessionToken();
+    let replayed = false;
+    const out = await this.db.transaction(async (tx) => {
+      const s = (await tx.query<{ client_id: string; redirect_uri: string; code_challenge: string; resource: string | null; expired: boolean; code_used_at: Date | null; kolab: string; agents: { label: string; role: Role }[] }>(
+        `select client_id, redirect_uri, code_challenge, resource, code_expires_at <= now() as expired, code_used_at, kolab, agents from oauth_setup where id = $1 for update`, [key])).rows[0];
+      if (!s || s.client_id !== p.clientId) return undefined;
+      if (s.code_used_at) { replayed = true; return undefined; }
+      if (s.expired || s.redirect_uri !== p.redirectUri || !PKCE_VERIFIER.test(p.codeVerifier)
+          || createHash('sha256').update(p.codeVerifier).digest('base64url') !== s.code_challenge) return undefined;
+      if (p.resource !== undefined && s.resource !== null && p.resource !== s.resource) return undefined;
+      await tx.query(`update oauth_setup set code_used_at = now(), exchanged_by = person_id, token_key = $2, token_expires_at = now() + $3 * interval '1 second' where id = $1`,
+        [key, sessionKey(token), this.setups.tokenTtlS]);
+      return { accessToken: token, expiresIn: this.setups.tokenTtlS, scope: `konjir kolab:${s.kolab} ${s.agents.map((a) => `setup:${a.label}:${a.role}`).join(' ')}` };
+    });
+    if (replayed) await this.revokeSetup(key, true);
+    if (!out) throw new OAuthGrantError('invalid_grant', 'that authorization code is unknown, expired, already used, or was issued to another client, redirect URI or PKCE verifier');
+    return out;
+  }
+
+  /**
+   * The setup token's one use (POST /oauth/setup): by the client it was issued to, once, while it
+   * lasts. With `mint`, each agent the person allowed on the setup's page, and only those, is
+   * issued its own grant and refresh token, to that same client, in the setup's kolab and the
+   * agent's role, exactly as exchangeCode issues an agent's sign-in (its session replaces any it
+   * holds, ENF4): each agent is checked again to be a live agent of the setup's person, reaching the
+   * kolab. All of them or none, in one transaction under the access lock. Without `mint`, it only
+   * says what was set up (OpenCode's entries, which sign in by themselves). Either way the setup
+   * token is used up. Nothing here takes an ordinary session, nor names an agent the page didn't.
+   */
+  async useSetup(token: string, clientId: string, opts: { mint: boolean }): Promise<SetupResult> {
+    const key = sessionKey(token);
+    const refused = () => new OAuthGrantError('invalid_grant', 'that setup token is unknown, expired, revoked or already used, or was issued to another client; run konjir connect again');
+    const out = await this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      const s = (await tx.query<{ id: string; client_id: string; person_id: string; kolab: string; kolab_made: boolean; resource: string | null; agents: { label: string; agent: string; role: Role; made: boolean }[]; live: boolean }>(
+        `select id, client_id, person_id, kolab, kolab_made, resource, agents,
+                (token_expires_at > now() and used_at is null and revoked_at is null) as live
+           from oauth_setup where token_key = $1 for update`, [key])).rows[0];
+      if (!s || s.client_id !== clientId || !s.live) return undefined;
+      await tx.query(`update oauth_setup set used_at = now() where id = $1`, [s.id]);
+      const result: SetupResult = { person: s.person_id, kolab: { id: s.kolab, made: s.kolab_made }, agents: [] };
+      // Through `tx` alone: on PGlite the transaction holds the one connection.
+      if ((await tx.query<{ archived: boolean }>(`select kj_actor_archived($1) as archived`, [s.person_id])).rows[0].archived) throw new AccessError(`${s.person_id} is archived, so no agent of theirs signs in`);
+      const grants: string[] = [];
+      for (const a of s.agents) {
+        if (!opts.mint) { result.agents.push({ label: a.label, agent: a.agent, role: a.role, made: a.made }); continue; }
+        const actor = (await tx.query<{ kind: string; owner_id: string | null; archived: boolean }>(`select kind, owner_id, kj_actor_archived(id) as archived from actor where id = $1`, [a.agent])).rows[0];
+        if (!actor || actor.kind !== 'agent' || actor.owner_id !== s.person_id || actor.archived) throw new AccessError(`${a.agent} is no longer a live agent of ${s.person_id}'s`);
+        const grantId = randomBytes(24).toString('base64url');
+        const t = await this.openGrant(tx, signal, { grantId, clientId: s.client_id, actor: a.agent, person: s.person_id, kolab: s.kolab, role: a.role, scope: grantedScope(s.kolab, a.role), resource: s.resource });
+        grants.push(grantId);
+        result.agents.push({ label: a.label, agent: a.agent, role: a.role, made: a.made, tokens: { accessToken: t.accessToken, refreshToken: t.refreshToken, expiresIn: this.oauth.accessTtlS, scope: t.scope } });
+      }
+      if (grants.length) await tx.query(`update oauth_setup set grants = $2 where id = $1`, [s.id, grants]);
+      return result;
+    });
+    if (!out) throw refused();
+    return out;
+  }
+
+  /**
+   * Opens a grant's session for `actor`, in `tx` under the access lock: the actor's one open
+   * session ends (ENF4: the newest sign-in wins), and its streams close (D41); the grant, its
+   * session and its first refresh token are made; its access is checked as any session's is.
+   */
+  private async openGrant(tx: Db, signal: Signal, g: { grantId: string; clientId: string; actor: string; person: string; kolab: string; role: Role; scope: string; resource: string | null }) {
+    const access = newSessionToken();
+    const refresh = `kjr_${randomBytes(32).toString('base64url')}`;
+    for (const { id } of (await tx.query<{ id: string }>(`update session set ended_at = now(), ended_by = $2 where actor_id = $1 and ended_at is null returning id`, [g.actor, g.person])).rows) {
+      await signal({ session: 'ended', id });
+    }
+    await tx.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, resource, expires_at)
+                    values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second')`,
+      [g.grantId, g.clientId, g.actor, g.person, g.scope, g.resource, this.oauth.refreshTtlS]);
+    const session = await insertSession(tx, access, { actor: g.actor, role: g.role, kolab: g.kolab, grant: g.grantId, ttlS: this.oauth.accessTtlS, by: g.person });
+    await this.signalRequestsOf(tx, signal, g.actor);
+    if (!(await accessIn(tx, g.actor, g.kolab)).level) throw new OAuthGrantError('access_denied', `${g.actor} can no longer reach kolab ${g.kolab}`);
+    await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
+      [sessionKey(refresh), g.grantId, this.oauth.refreshTtlS]);
+    return { accessToken: access, refreshToken: refresh, scope: g.scope, session };
+  }
+
+  /** Ends a setup: its token works no more; `andGrants` (a replayed code) revokes every grant it issued too. */
+  private async revokeSetup(key: string, andGrants: boolean, by: { token?: boolean } = {}) {
+    const r = (await this.db.query<{ grants: string[]; person_id: string }>(
+      `update oauth_setup set revoked_at = coalesce(revoked_at, now()) where ${by.token ? 'token_key' : 'id'} = $1 returning grants, person_id`, [key])).rows[0];
+    if (r && andGrants) for (const g of r.grants) await this.revokeGrant(g, SYSTEM_ACTOR);
+    return !!r;
+  }
+
+  /**
    * The identity provider answered with an error (the person cancelled there): the authorization
    * whose binding and state these are is dropped. Returns where to tell the client.
    */
@@ -2371,8 +2677,6 @@ export class Kolab {
    */
   async exchangeCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string }): Promise<OAuthTokens> {
     const key = sessionKey(p.code);
-    const access = newSessionToken();
-    const refresh = `kjr_${randomBytes(32).toString('base64url')}`;
     const grantId = randomBytes(24).toString('base64url');
     let replayed: string | null = null;
     const out = await this.inTransaction(async (tx, signal) => {
@@ -2386,20 +2690,10 @@ export class Kolab {
           || createHash('sha256').update(p.codeVerifier).digest('base64url') !== c.code_challenge) return undefined;
       if (p.resource !== undefined && c.resource !== null && p.resource !== c.resource) return undefined;
       // The newest sign-in wins: the actor's one open session ends (ENF4), and its streams close (D41).
-      // The person signing in ends it, and opens the new one (W2.20).
-      for (const { id } of (await tx.query<{ id: string }>(`update session set ended_at = now(), ended_by = $2 where actor_id = $1 and ended_at is null returning id`, [c.actor_id, c.person_id])).rows) {
-        await signal({ session: 'ended', id });
-      }
-      await tx.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, resource, expires_at)
-                      values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second')`,
-        [grantId, c.client_id, c.actor_id, c.person_id, c.scope, c.resource, this.oauth.refreshTtlS]);
+      // The person signing in ends it, and opens the new one (W2.20). The grant goes in first, then the code names it.
+      const t = await this.openGrant(tx, signal, { grantId, clientId: c.client_id, actor: c.actor_id, person: c.person_id, kolab: c.kolab, role: c.role, scope: c.scope, resource: c.resource });
       await tx.query(`update oauth_code set used_at = now(), grant_id = $2 where key = $1`, [key, grantId]);
-      const session = await insertSession(tx, access, { actor: c.actor_id, role: c.role, kolab: c.kolab, grant: grantId, ttlS: this.oauth.accessTtlS, by: c.person_id });
-      await this.signalRequestsOf(tx, signal, c.actor_id);
-      if (!(await accessIn(tx, c.actor_id, c.kolab)).level) throw new OAuthGrantError('access_denied', `${c.actor_id} can no longer reach kolab ${c.kolab}`);
-      await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
-        [sessionKey(refresh), grantId, this.oauth.refreshTtlS]);
-      return { accessToken: access, refreshToken: refresh, expiresIn: this.oauth.accessTtlS, scope: c.scope, session, actor: c.actor_id, kolab: c.kolab, role: c.role };
+      return { accessToken: t.accessToken, refreshToken: t.refreshToken, expiresIn: this.oauth.accessTtlS, scope: c.scope, session: t.session, actor: c.actor_id, kolab: c.kolab, role: c.role };
     }).catch((e) => {
       if (/is archived/.test(String(e))) throw new OAuthGrantError('access_denied', String((e as Error).message ?? e));
       throw e;
@@ -2464,7 +2758,14 @@ export class Kolab {
       token.startsWith('kjr_')
         ? `select g.id, g.client_id, g.person_id from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where t.key = $1`
         : `select g.id, g.client_id, g.person_id from session s join oauth_grant g on g.id = s.grant_id where s.token_key = $1`, [key])).rows[0];
-    if (!g || (opts.clientId !== undefined && opts.clientId !== g.client_id)) return false;
+    if (!g) {
+      // A setup token (useSetup): it works no more. The agents' sign-ins it issued stand.
+      if (token.startsWith('kjr_')) return false;
+      const s = (await this.db.query<{ client_id: string }>(`select client_id from oauth_setup where token_key = $1`, [key])).rows[0];
+      if (!s || (opts.clientId !== undefined && opts.clientId !== s.client_id)) return false;
+      return this.revokeSetup(key, false, { token: true });
+    }
+    if (opts.clientId !== undefined && opts.clientId !== g.client_id) return false;
     await this.revokeGrant(g.id, g.person_id);
     return true;
   }
@@ -2491,7 +2792,7 @@ export class Kolab {
    * actor's (D52), and not in another account's namespace, `<their name>-*`; a person has at most
    * `oauth.agentsPerPerson` live agents (archiving one frees its place), and makes at most 3 in 10 minutes.
    */
-  async addOwnAgent(person: string, label: string, opts: { pool?: boolean } = {}): Promise<string> {
+  async addOwnAgent(person: string, label: string, opts: { pool?: boolean; setup?: boolean } = {}): Promise<string> {
     const p = await this.actor(person);
     if (p.kind !== 'person') throw new AccessError(`${person} is an agent: only a person makes agents`);
     if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new ActorError(`"${label}" isn't a valid agent name: up to 24 lowercase letters, digits and '-', starting with a letter or digit`);
@@ -2523,8 +2824,9 @@ export class Kolab {
           `select count(*) filter (where not kj_actor_archived(id))::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
              from actor where owner_id = $1`, [person])).rows[0];
         if (c.owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}): archive one you no longer use`);
-        // A pool agent a job makes is exempt from the rate (JOB3): the cap still holds.
-        if (c.recent >= 3 && !opts.pool) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
+        // A pool agent a job makes is exempt from the rate (JOB3), and so is one a setup makes, whose
+        // setup counts once against a rate of its own (setupPlan): the cap still holds.
+        if (c.recent >= 3 && !opts.pool && !opts.setup) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
         await tx.query(`insert into actor(id, name, kind, owner_id, created_by) values ($1, $1, 'agent', $2, $2)`, [id, person]);
       });
     } catch (e) {

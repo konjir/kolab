@@ -4,6 +4,7 @@
  *
  *   konjir serve [--port 7420] [--data .konjir] [--admin-token T]
  *                [--database-url postgres://…] [--no-migrate] [--no-worker]
+ *                (KONJIR_STUB_IDENTITY=<login>: a local Kolab signs everyone in as <login>, no GitHub)
  *   konjir tools
  *   konjir instructions [reviewer]
  *   konjir resolve <address>
@@ -13,9 +14,10 @@
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
  *   konjir login [--kolab K] [--role R] [--agent A] -> sign in with the browser (OAuth, D55); later commands use it
  *   konjir logout [--forget]
- *   konjir connect opencode|claude [--kolab K] [--agent label[:role]]… [--global] [--force] [--yes] [--no-auth] [--http]
- *                                        -> one MCP entry per agent of yours in the harness's config (W3.7, D59);
- *                                           for Claude Code, the Konjir channel bridge (W3.8, D61), or with --http its HTTP entry
+ *   konjir connect opencode|claude --kolab K [--agent label[:role]]… [--global] [--force] [--dry-run] [--no-auth] [--http]
+ *                                        -> one browser page sets up the kolab and your agents; one MCP entry per agent
+ *                                           in the harness's config (W3.7, D59); for Claude Code, the Konjir channel
+ *                                           bridge (W3.8, D61), each agent signed in, or with --http its HTTP entry
  *   konjir repo register [--binding B] [--url U] [--root SHA] [-C dir]
  *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
  *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
@@ -34,15 +36,15 @@ import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from 
 import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
-import { MemoryLogin, StoredLogin, credentialsPath, ephemeralLogin, login, logout } from './login.js';
+import { StoredLogin, credentialsPath, login, logout, setup } from './login.js';
 import { deliverWork, gitIn, registerRepository } from './deliver.js';
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
-import { ASK_AGAIN, CHANNEL_CLIENT_NAME, HARNESSES, WrongAgentError, connectHarness, entryScope, mcpUrl, parseAgents, terminalIO, type Entry, type Harness, type PersonSession } from './connect.js';
+import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 
-export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout } from './login.js';
+export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
 export { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, harnessCommand, harnessEnv, heartbeatEvery, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
-export { ASK_AGAIN, WrongAgentError, connectHarness, mergeClaude, mergeOpencode, parseAgents, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
+export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
 // commands that need it, so the client verbs start without loading it. The published
@@ -192,14 +194,18 @@ Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--agent <age
            (GitHub, through Kolab): you choose who this CLI works as (an agent of yours, by default; --agent
            preselects one, and refuses a sign-in as anyone else), the kolab and the role.
            Every later command uses that sign-in, renewing it by itself. konjir logout revokes it.
-Harnesses: konjir connect opencode|claude [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--yes]
-           [--no-auth] [--http] connects a harness to a kolab, one agent per entry (by default product and engineer):
-           it makes or reuses your agents <you>-<label> (signed in as yourself for a moment, in memory only, then
-           revoked: on Kolab's page, choose Yourself by hand), shows the change to opencode.json or .mcp.json (with --global, your own settings) and asks
-           first, then signs each entry in as its agent. --force replaces konjir-<label> entries already there;
-           --force-path writes a config file that links outside the project. For Claude Code each entry is the
-           Konjir channel (from this checkout): Kolab's tools and the inbox pushed into the session, on one sign-in;
-           --http writes Claude Code's plain HTTP entry instead, with no channel.
+Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--dry-run]
+           [--no-auth] [--http] connects a harness to a kolab, one agent per entry (by default product and engineer).
+           It prints the plan (the entries, your agents <you>-<label>, the change to opencode.json or .mcp.json, or with
+           --global your own settings) and opens your browser once, at Kolab's setup page: sign in, check the kolab and
+           agents it names, and Allow. Kolab makes the kolab if no kolab has that name (private, yours) and each agent
+           that is new, and grants each in the kolab in its role, never more than you hold. --dry-run prints the plan
+           and stops. --force replaces konjir-<label> entries already there; --force-path writes a config file that
+           links outside the project. For Claude Code each entry is the Konjir channel (from this checkout): Kolab's
+           tools and the inbox pushed into the session, each agent already signed in; it ends with the claude command
+           to run. --http writes Claude Code's plain HTTP entry instead, with no channel; OpenCode's and --http's entries
+           each sign in by themselves, on a page locked to their agent. Run it again: the same kolab and agents, signed
+           in afresh.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
            token, the sign-in konjir login keeps for that URL.
 Version:   konjir --version
@@ -210,7 +216,9 @@ ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-ur
         The admin token (or KONJIR_ADMIN_TOKEN) is a break-glass only: Konjir's admins are people who sign in, run
         konjir admin_elevate and confirm the raise in their browser (W2.22). off disables it.
         Sign-in with GitHub (D55): KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET, a GitHub OAuth app's,
-        whose callback is <origin>/oauth/callback/github. KONJIR_WEB_TOKEN_SIGN_IN=on keeps pasting a token in the
+        whose callback is <origin>/oauth/callback/github. For local development and browser tests only,
+        KONJIR_STUB_IDENTITY=<login> signs anyone who opens Kolab's sign-in in as <login>, with no GitHub and no
+        check; refused with a public host or beside GitHub's settings. KONJIR_WEB_TOKEN_SIGN_IN=on keeps pasting a token in the
         web page (on by default without GitHub); KONJIR_HAND_ISSUED_TOKENS=off turns admin-issued session tokens off;
         they last KONJIR_HAND_ISSUED_TOKEN_DAYS (30 by default).
         KONJIR_CLI_NPM_SPEC=konjir@<version> (an exact version, once published) lets the web page show npx <spec>.` : `Server: this konjir is the client only. Kolab runs from a checkout of github.com/konjir/kolab.`}`;
@@ -282,24 +290,46 @@ export function breakGlassToken(given: string | undefined, opts: { publicHost?: 
   return given;
 }
 
+/** A login KONJIR_STUB_IDENTITY may name: GitHub's shape, letters, digits and '-'. */
+const STUB_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+
 /**
  * How `konjir serve` signs people in (D55): with GitHub when KONJIR_GITHUB_CLIENT_ID and
  * KONJIR_GITHUB_CLIENT_SECRET are both set (one alone is refused); a pasted token in the web page
  * when KONJIR_WEB_TOKEN_SIGN_IN is on, or by default without GitHub; hand-issued session tokens
  * unless KONJIR_HAND_ISSUED_TOKENS is off. Never prints a secret.
+ *
+ * KONJIR_STUB_IDENTITY=<login>, for local development and browser tests only: the identity
+ * provider is the stub tests use, which signs whoever opens Kolab's sign-in in as <login>, with no
+ * check at all and no GitHub. So it is refused with a public host (`publicHost`: every deployed
+ * Kolab has one, behind its TLS proxy) and beside GitHub's settings, and `konjir serve` listens on
+ * 127.0.0.1 alone; it checks that too once it listens.
  */
-export function signInSettings(env: Record<string, string | undefined>) {
+export function signInSettings(env: Record<string, string | undefined>, opts: { publicHost?: string } = {}) {
   const id = env.KONJIR_GITHUB_CLIENT_ID?.trim();
   const secret = env.KONJIR_GITHUB_CLIENT_SECRET?.trim();
   if (!!id !== !!secret) throw new Error('set both KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET for sign-in with GitHub, or neither');
   const github = !!id && !!secret;
+  const stub = env.KONJIR_STUB_IDENTITY?.trim() || undefined;
+  if (stub) {
+    if (opts.publicHost) throw new Error('KONJIR_STUB_IDENTITY signs anyone who opens Kolab\'s sign-in in, with no check: it is only for a local Kolab, never one with a public host (--public-host or KONJIR_PUBLIC_HOST). Unset it');
+    if (github) throw new Error('KONJIR_STUB_IDENTITY is for a local Kolab without GitHub: unset it, or KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET');
+    if (!STUB_LOGIN.test(stub)) throw new Error('KONJIR_STUB_IDENTITY is the login everyone signs in as: letters, digits and \'-\', as a GitHub login');
+  }
   const webTokenSignIn = onOff(env, 'KONJIR_WEB_TOKEN_SIGN_IN') ?? !github;
   const handIssuedTokens = onOff(env, 'KONJIR_HAND_ISSUED_TOKENS') ?? true;
   return {
-    github, webTokenSignIn, handIssuedTokens,
-    describe: [github ? 'GitHub' : 'no identity provider (set KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET)',
+    github, stub, webTokenSignIn, handIssuedTokens,
+    describe: [stub ? `the stub identity provider (KONJIR_STUB_IDENTITY): anyone who opens Kolab's sign-in is signed in as ${stub}, with no check; local development only`
+      : github ? 'GitHub' : 'no identity provider (set KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET)',
       webTokenSignIn ? 'a pasted token in the web page' : '', handIssuedTokens ? 'hand-issued session tokens' : ''].filter(Boolean).join('; '),
-    async identity(load: () => Promise<{ GitHubIdentity: new (c: { clientId: string; clientSecret: string }) => unknown }>) {
+    async identity(load: () => Promise<{ GitHubIdentity: new (c: { clientId: string; clientSecret: string }) => unknown; StubIdentity: new () => { as?: { subject: string; login: string } } }>) {
+      if (stub) {
+        const { StubIdentity } = await load();
+        const idp = new StubIdentity();
+        idp.as = { subject: `stub-${stub.toLowerCase()}`, login: stub };
+        return { identity: idp as never };
+      }
       if (!github) return {};
       const { GitHubIdentity } = await load();
       return { identity: new GitHubIdentity({ clientId: id!, clientSecret: secret! }) as never };
@@ -365,7 +395,7 @@ export async function main(argv: string[]) {
     const days = process.env.KONJIR_HAND_ISSUED_TOKEN_DAYS;
     const handIssuedTokenDays = days === undefined || days === '' ? undefined : Number(days);
     if (handIssuedTokenDays !== undefined && !(handIssuedTokenDays > 0 && handIssuedTokenDays <= 365)) throw new Error('KONJIR_HAND_ISSUED_TOKEN_DAYS is a number of days, more than 0 and at most 365');
-    const sign = signInSettings(process.env);
+    const sign = signInSettings(process.env, { publicHost });
     // The published konjir CLI, pinned (W3.7): the web page shows `npx <spec>` only when this is set.
     const cliNpmSpec = process.env.KONJIR_CLI_NPM_SPEC?.trim() || undefined;
     // A restore's smoke check (W2.24) opens the restored database without changing it: no
@@ -375,7 +405,13 @@ export async function main(argv: string[]) {
     const s = await startServer({ port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
     if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
     if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
-    log.info(`sign-in: ${sign.describe}`);
+    // The stub signs anyone in: only ever on this machine's loopback, which konjir serve always listens on.
+    if (sign.stub && new URL(s.url).hostname !== '127.0.0.1') {
+      await s.close();
+      throw new Error(`KONJIR_STUB_IDENTITY is only for a Kolab listening on 127.0.0.1, not ${s.url}`);
+    }
+    if (sign.stub) log.warn(`sign-in: ${sign.describe}`, { event: 'stub_identity' });
+    else log.info(`sign-in: ${sign.describe}`);
     log.info(`Kolab listening on ${s.url}`, { event: 'listening', url: s.url });
     log.info(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     // Not a log line: the generated admin token, shown once to whoever started a local Kolab by
@@ -389,16 +425,20 @@ export async function main(argv: string[]) {
 
   if (cmd === 'connect') {
     const harness = rest.shift();
-    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} [--kolab <k>] [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--yes] [--no-auth] [--http] [--url <kolab>]`);
+    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--url <kolab>]`);
     const kolab = flag(rest, 'kolab');
     const agents: string[] = [];
     for (let a = flag(rest, 'agent'); a !== undefined; a = flag(rest, 'agent')) agents.push(a);
     const on = (name: string) => { const i = rest.indexOf(`--${name}`); if (i >= 0) rest.splice(i, 1); return i >= 0; };
-    const opts = { global: on('global'), force: on('force'), forcePath: on('force-path'), yes: on('yes'), auth: !on('no-auth'), http: on('http') };
+    // --yes is kept, and does nothing: konjir connect asks nothing in the terminal now (one page, in the browser).
+    on('yes');
+    const opts = { global: on('global'), force: on('force'), forcePath: on('force-path'), dryRun: on('dry-run'), auth: !on('no-auth'), http: on('http') };
     if (rest.length) throw new Error(`konjir connect: unknown ${rest.join(' ')}`);
+    // It sets up as the person, in the browser: a token given (KONJIR_TOKEN or --token) isn't used for it.
+    if (token) console.error('konjir connect signs you in in your browser, at Kolab\'s setup page: KONJIR_TOKEN and --token aren\'t used for it.');
     const mcp = mcpUrl(url);
     await connectHarness({ harness: harness as Harness, url: mcp, kolab, agents: parseAgents(agents), cwd: process.cwd(), env: process.env, ...opts },
-      terminalIO(() => personSession(mcp, token, { kolab }), (e, credentials, step) => signInAgent(e, credentials, step ? { step } : {})));
+      terminalIO((r) => setup(r.url, { scope: r.scope, mint: r.mint, clientName: r.clientName }).catch((e: unknown) => { throw unreachable(e, r.url) ?? e; })));
     return;
   }
 
@@ -620,60 +660,8 @@ export async function main(argv: string[]) {
   }
 }
 
-/**
- * The CLI signed in as the person, for `konjir connect` (D59), never kept: `token` if one is given;
- * or the sign-in `konjir login` keeps for `url`, but only if it already works as the person, and
- * then it is left as it is; otherwise a sign-in in memory alone (ephemeralLogin, preselecting the
- * kolab on Kolab's page; the person chooses Yourself there by hand, since no client may preselect
- * it, D60), revoked on close(), or at once if the person chose anyone else. A kept sign-in that works as an
- * agent stays kept, untouched. So connect never leaves an uncapped sign-in as the person on disk.
- * `open` is how the browser is sent there (tests).
- */
-export async function personSession(url: string, token: string | undefined, opts: { kolab?: string; open?: (u: URL) => void | Promise<void>; path?: string; log?: (line: string) => void } = {}): Promise<PersonSession> {
-  const log = opts.log ?? ((l: string) => console.error(l));
-  const open = async (auth: string | OAuthClientProvider) => {
-    let client: Client;
-    try { client = await connect(url, auth); } catch (e) { if (auth instanceof StoredLogin) auth.releaseIdleLock(); throw unreachable(e, url) ?? e; }
-    try {
-      return { client, me: await call(client, 'whoami') as PersonSession['me'] };
-    } catch (e) {
-      if (auth instanceof StoredLogin) auth.releaseIdleLock();
-      await client.close();
-      throw e;
-    }
-  };
-  if (token) {
-    const { client, me } = await open(token);
-    return { me, call: (verb, args) => call(client, verb, args), close: () => client.close() };
-  }
-  const stored = new StoredLogin(url, { path: opts.path });
-  if (stored.signedIn) {
-    const s = await open(stored).catch(() => undefined);
-    if (s?.me.kind === 'person') {
-      return { me: s.me, call: (verb, args) => call(s.client, verb, args), close: async () => { stored.releaseIdleLock(); await s.client.close(); } };
-    }
-    if (s) { stored.releaseIdleLock(); await s.client.close(); }
-  }
-  log(`Signing you in as yourself for a moment, only to make your agents. On Kolab's page, under "Work as", choose "Yourself" by hand: it isn't chosen for you. konjir keeps none of it, and revokes it once they are made.`);
-  let memory: MemoryLogin;
-  try {
-    memory = await ephemeralLogin(url, { scope: ['konjir', opts.kolab && `kolab:${opts.kolab}`].filter(Boolean).join(' '), open: opts.open, log });
-  } catch (e) {
-    throw unreachable(e, url) ?? e;
-  }
-  const end = async () => {
-    await memory.revoke(url).then(() => log('Revoked the sign-in as you.'),
-      (e: Error) => log(`warning: the sign-in as you wasn't revoked (${e.message}); konjir kept none of it, and it lapses within 30 days unused.`));
-  };
-  let s;
-  try { s = await open(memory); } catch (e) { await end(); throw e; }
-  if (s.me.kind !== 'person') {
-    await s.client.close();
-    await end();
-    throw new Error(`on Kolab's page you chose ${s.me.actor}, not Yourself, and konjir connect makes your agents as you. Run it again, and under "Work as" choose "Yourself"`);
-  }
-  return { me: s.me, call: (verb, args) => call(s.client, verb, args), close: async () => { await s.client.close(); await end(); } };
-}
+/** How many more times `konjir login --agent` asks again for the same agent, at once, after a sign-in that came back as anyone else and was revoked (D97). */
+export const ASK_AGAIN = 2;
 
 /**
  * `konjir login`: signs in with the browser and keeps it. With `agent` (--agent), a sign-in that
@@ -706,23 +694,6 @@ export async function loginAs(url: string, scope: string, agent: string | undefi
     }
     log(`You signed in as ${me.actor}, not ${agent}, so that sign-in was revoked and nothing is kept. Asking again for ${agent}, try ${tries + 1} of ${ASK_AGAIN + 1}: on Kolab's page, check it names ${agent}, then Allow.`);
   }
-}
-
-/**
- * Signs a Claude Code channel entry in as its agent (W3.8), with the browser, kept in the agent's own
- * credentials file, where the bridge started with KONJIR_AGENT finds it. Its scope names the agent,
- * kolab and role, which locks Kolab's page to them; never Yourself (D60). `step` is which of
- * several entries this is, which the page says. A sign-in as anyone else is revoked, forgotten, and
- * a WrongAgentError.
- */
-export async function signInAgent(e: Entry, credentials: string, opts: { open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; step?: { n: number; of: number } } = {}): Promise<string> {
-  const who = await login(e.url, { path: credentials, clientName: CHANNEL_CLIENT_NAME, scope: entryScope(e.kolab, e.role, e.agent), open: opts.open, log: opts.log, ...(opts.step ? { step: opts.step } : {}) });
-  if (who.actor !== e.agent) {
-    // Chosen otherwise on Kolab's page (another agent, or Yourself): never kept as this entry's sign-in.
-    const r = await logout(e.url, { path: credentials, forget: true });
-    throw new WrongAgentError(who.actor, e.agent, r.revoked, `it signed in as ${who.actor}, not ${e.agent}, so that sign-in was ${r.revoked ? 'revoked' : 'forgotten, unrevoked,'} and nothing is kept for ${e.name}`);
-  }
-  return who.actor;
 }
 
 /** The error for a Kolab that isn't there, or undefined for any other failure. */

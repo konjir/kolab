@@ -60,7 +60,7 @@ test('the page shows konjir connect first: one command per harness, naming this 
   expect(one.textContent).toMatch(/one Konjir server with Kolab’s tools, which also pushes your inbox into the session/);
   expect(one.textContent).toMatch(/Channels need Claude Code signed in with a claude.ai account/);
   expect(within(one).getByText(`${eli.actor}-product`)).toBeTruthy();
-  expect(one.textContent).toMatch(/then revokes that sign-in and keeps none of it\..*writes no token/);
+  expect(one.textContent).toMatch(/opens your browser once, at Kolab’s setup page.*Nothing to choose there, and nothing asked in the terminal\. It writes no token/);
 });
 
 test('until this Kolab names a published, pinned CLI, the page never shows npx: a checkout\'s bin/konjir, and says npm publishing is pending (W3.7)', () => {

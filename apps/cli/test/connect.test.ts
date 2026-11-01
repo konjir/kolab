@@ -9,13 +9,13 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { auth, type OAuthClientProvider, type StoredOAuthClientInformation, type StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
-import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main, personSession, signInAgent } from '../src/cli.js';
+import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main, setup } from '../src/cli.js';
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
 import { MAX_CONFIG_BYTES, bridgeCommand, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
@@ -188,7 +188,9 @@ test('Claude Code: .mcp.json exactly as `claude mcp add --scope project --transp
   const merged = JSON.parse(mergeClaude('.mcp.json', before, [entry('engineer', 'engineer')], false));
   expect(Object.keys(merged.mcpServers)).toStrictEqual(['sentry', 'konjir-engineer']);
   expect(merged.other).toBe(1);
-  expect(() => mergeClaude('.mcp.json', fresh, [entry('product', 'product')], false)).toThrow(/already has konjir-product. konjir connect won't overwrite it/);
+  expect(() => mergeClaude('.mcp.json', fresh, [entry('product', 'engineer')], false)).toThrow(/already has konjir-product. konjir connect won't overwrite it/);
+  // An entry that already says exactly this (konjir connect run again) isn't replaced: it passes, unchanged.
+  expect(mergeClaude('.mcp.json', fresh, [entry('product', 'product')], false)).toBe(fresh);
   expect(JSON.parse(mergeClaude('.mcp.json', fresh, [entry('product', 'engineer')], true)).mcpServers['konjir-product'].oauth.scopes).toBe('konjir kolab:anns role:engineer agent:ann-product');
   expect(() => mergeClaude('.mcp.json', '{ // no', [entry('product', 'product')], false)).toThrow(/isn't JSON/);
   expect(fresh).not.toMatch(/kj[src]_|token|bearer|authorization|headers/i);
@@ -314,24 +316,22 @@ async function local() {
 }
 
 /**
- * konjir connect's world: a terminal that says yes (or `answer`), the harnesses as `run`, and Ann's
- * sign-in as herself, in memory: on the page she chooses Yourself by hand, as the terminal tells
- * her (no client preselects it, D60), or `as` if given (Ann, new here, makes her first kolab on the
- * way). `logins` gets each of those consent pages, as they arrived.
+ * konjir connect's world: the harnesses as `run`, and the setup through the real @konjir/login
+ * setup(), with Ann's browser: she signs in, and on Kolab's setup page clicks `decision` (Allow by
+ * default). `pages` gets each setup page as it arrived, and `opened` each URL the browser was sent to.
  */
-function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run'], o: { answer?: boolean; interactive?: boolean; asked?: string[]; logins?: string[]; as?: Record<string, string> } = {}): ConnectIO & { lines: string[] } {
+function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run'], o: { decision?: 'allow' | 'deny'; pages?: string[]; opened?: URL[] } = {}): ConnectIO & { lines: string[] } {
   const lines: string[] = [];
   return {
     lines,
     log: (l) => lines.push(l),
-    interactive: o.interactive ?? true,
-    confirm: async (q) => { o.asked?.push(q); return o.answer ?? true; },
     run,
-    person: () => personSession(server.url, undefined, {
-      log: (l) => lines.push(l),
+    setup: (r) => setup(r.url, {
+      scope: r.scope, mint: r.mint, clientName: r.clientName, log: (l) => lines.push(l),
       open: (u) => {
+        o.opened?.push(u);
         idp.next({ subject: '41', login: 'ann' });
-        void consentAt(u, (html): Record<string, string> => { o.logins?.push(html); return { ...(o.as ?? { as: 'self' }), ...(html.includes('value="kolab:anns"') ? {} : { kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' }) }; }, true);
+        void consentAt(u, (html): Record<string, string> => { o.pages?.push(html); return o.decision === 'deny' ? { decision: 'deny' } : {}; }, true);
       },
     }),
   };
@@ -339,50 +339,46 @@ function world(server: { url: string }, idp: StubIdentity, run: ConnectIO['run']
 
 const options = (server: { url: string }, cwd: string, over: Partial<ConnectOptions> = {}): ConnectOptions => ({
   // A scratch config folder by default: no test ever reaches the person's own ~/.config.
-  harness: 'opencode', url: server.url, agents: parseAgents([]), global: false, force: false, yes: false, auth: true, cwd, env: { XDG_CONFIG_HOME: scratch() }, ...over,
+  harness: 'opencode', url: server.url, kolab: 'anns', agents: parseAgents([]), global: false, force: false, auth: true, cwd, env: { XDG_CONFIG_HOME: scratch() }, ...over,
 });
 
-test('done when: one command sets up two OpenCode agents, product and engineer, in a project, and each signs in as its own agent, with no hand-edited config', async () => {
+/** What a setup page lists: the kolab and each agent, each with what it says of it. */
+const listed = (html: string) => [...html.matchAll(/<dd><code>([^<]+)<\/code>(?:[^<]*)<small>(.*?)<\/small><\/dd>/g)].map((m) => `${m[1]}: ${m[2].replace(/<[^>]+>/g, '')}`);
+
+test('done when: one command sets up two OpenCode agents, product and engineer, on one setup page, and each entry signs in as its own agent, with no hand-edited config', async () => {
   const { kolab, idp, server } = await local();
   const project = scratch();
   const store = new Map<string, StoredOAuthTokens>();
   const pages = new Map<string, string>();
   const auths: string[] = [];
   const signIn = opencode(server, idp, store, pages);
-  const asked: string[] = [];
-  const logins: string[] = [];
+  const setups: string[] = [];
   const io = world(server, idp, async (cmd, args, { cwd }) => {
     auths.push([cmd, ...args].join(' '));
     expect(cmd).toBe('opencode');
-    // The sign-in as Ann ended before any harness signs in.
-    expect((await kolab.db.query(`select 1 from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows).toStrictEqual([]);
     return signIn(cwd, args[2]);
-  }, { asked, logins });
+  }, { pages: setups });
 
-  // konjir connect opencode: Ann signs in as herself, in memory only. The page arrives with a new
-  // agent chosen, never Yourself (D60): the terminal tells her to choose Yourself, and she does.
+  // konjir connect opencode --kolab anns: Ann, new to Kolab, on one page; nothing to choose there.
   const entries = await connectHarness(options(server, project), io);
-  expect(logins).toHaveLength(1);
-  expect(logins[0]).toMatch(/name="as" value="new-agent" checked/);
-  expect(logins[0]).not.toMatch(/name="as" value="self" checked/);
-  expect(logins[0]).not.toContain('asks to act as you');
-  expect(io.lines.join('\n')).toContain('under "Work as", choose "Yourself" by hand');
+  expect(setups).toHaveLength(1);
+  expect(setups[0]).not.toContain('type="radio"');
+  expect(setups[0]).not.toContain('type="text"');
+  expect(listed(setups[0])).toStrictEqual(['anns: New: made now, private, yours', 'ann-product: New: made now', 'ann-engineer: New: made now']);
+  expect(setups[0]).toContain('<strong>konjir connect</strong> on this computer asks to set up Konjir');
   expect(entries.map((e) => [e.name, e.agent, e.role, e.kolab])).toStrictEqual([['konjir-product', 'ann-product', 'product', 'anns'], ['konjir-engineer', 'ann-engineer', 'engineer', 'anns']]);
-  // It showed the diff and asked before writing.
-  expect(asked).toStrictEqual([`Make these agents and write ${join(project, 'opencode.json')}?`]);
-  const diff = io.lines.join('\n');
-  expect(diff).toContain(`--- /dev/null\n+++ ${join(project, 'opencode.json')}`);
-  expect(diff).toContain('+    "konjir-product": {');
-  expect(diff).toContain('Made your agent ann-product.');
-  expect(diff).toContain('Made your agent ann-engineer.');
-  // Each harness sign-in, one at a time, each as its own agent.
+  // The plan came first, with the diff, and asked nothing in the terminal.
+  const said = io.lines.join('\n');
+  expect(said).toContain('konjir connect opencode: kolab anns at');
+  expect(said).toContain('  konjir-product  as <you>-product, product');
+  expect(said).toContain(`--- /dev/null\n+++ ${join(project, 'opencode.json')}`);
+  expect(said.indexOf('+    "konjir-product": {')).toBeLessThan(said.indexOf('Opening your browser at Kolab\'s setup page'));
+  expect(said).toContain('Set up for ann: kolab anns (made now, private, yours); ann-product (made now), ann-engineer (made now).');
+  // Each harness sign-in, one at a time, each as its own agent, on a page locked to it (D97).
   expect(auths).toStrictEqual(['opencode mcp auth konjir-product', 'opencode mcp auth konjir-engineer']);
-  expect(diff).toContain('Connected: each entry works as its own agent in anns.');
-
-  // Kolab's page arrived locked to each entry's agent, kolab and role: nothing else to choose.
+  expect(said).toContain('Connected: each entry works as its own agent in anns.');
   expect(locked(pages.get('konjir-product')!)).toStrictEqual(['agent:ann-product', 'kolab:anns', 'product']);
   expect(locked(pages.get('konjir-engineer')!)).toStrictEqual(['agent:ann-engineer', 'kolab:anns', 'engineer']);
-  expect(pages.get('konjir-product')).toContain('<strong>OpenCode</strong>');
 
   // Both work at once, each as its own agent, with what its owner lent it there (D30).
   const product = await connect(server.url, store.get('konjir-product')!.access_token);
@@ -392,8 +388,6 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   expect(await call(engineer, 'whoami')).toMatchObject({ actor: 'ann-engineer', kind: 'agent', owner: 'ann', kolab: 'anns', role: 'engineer' });
   await call(product, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
   expect(JSON.stringify(await call(engineer, 'list_nodes'))).toContain('checkout');
-  // An agent's session makes no agents (D59).
-  expect(await rejection(call(product, 'create_agent', { label: 'more' }))).toMatch(/ann-product is an agent: only a person makes agents/);
 
   // The project's config: the two entries, and no token anywhere in it, nor any secret Kolab issued.
   const text = readFileSync(join(project, 'opencode.json'), 'utf8');
@@ -401,44 +395,175 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
     'konjir-product': { type: 'remote', url: server.url, oauth: { scope: 'konjir kolab:anns role:product agent:ann-product' } },
     'konjir-engineer': { type: 'remote', url: server.url, oauth: { scope: 'konjir kolab:anns role:engineer agent:ann-engineer' } },
   });
-  const secrets = [...store.values()].flatMap((t) => [t.access_token, t.refresh_token!]);
-  for (const s of secrets) expect(text).not.toContain(s);
+  for (const s of [...store.values()].flatMap((t) => [t.access_token, t.refresh_token!])) expect(text).not.toContain(s);
   expect(text).not.toMatch(/kj[sr]_/);
-  // The sign-in as Ann was kept nowhere, and was revoked once the agents were made, before anything was written.
+  // OpenCode's setup issued no agent sign-in (its entries sign in by themselves), kept nothing, and
+  // left no grant as Ann: the setup token is used up and revoked.
   expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);
-  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is not null`)).rows[0]).toStrictEqual({ n: 1 });
-  expect(io.lines.indexOf('Revoked the sign-in as you.')).toBeGreaterThan(io.lines.indexOf('Made your agent ann-engineer.'));
-  expect(io.lines.indexOf('Revoked the sign-in as you.')).toBeLessThan(io.lines.findIndex((l) => l.startsWith('Wrote ')));
+  expect(existsSync(join(dirname(process.env.KONJIR_CREDENTIALS!), 'agents'))).toBe(false);
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann'`)).rows[0]).toStrictEqual({ n: 0 });
+  expect((await kolab.db.query(`select (used_at is not null) as used, (revoked_at is not null) as revoked from oauth_setup`)).rows).toStrictEqual([{ used: true, revoked: true }]);
 
-  // Again: refused without --force, nothing changed and nothing made.
-  expect(await rejection(connectHarness(options(server, project), world(server, idp, async () => 0)))).toMatch(/already has konjir-product, konjir-engineer. konjir connect won't overwrite them: pass --force/);
-  expect(readFileSync(join(project, 'opencode.json'), 'utf8')).toBe(text);
-  // With --force and --yes (a script): the same agents, found again, and the same file.
+  // Again, the same command: the same kolab and agents, found again; the file already says it all.
   const again = world(server, idp, async () => 0);
-  await connectHarness(options(server, project, { force: true, yes: true, auth: false }), again);
-  expect(again.lines).toContain('Using your agent ann-product.');
+  await connectHarness(options(server, project, { auth: false }), again);
+  expect(again.lines).toContain('Set up for ann: kolab anns; ann-product, ann-engineer.');
+  expect(again.lines).toContain('  konjir-product  as ann-product, product');   // named, from the entries already there
   expect(again.lines).toContain(`${join(project, 'opencode.json')} already says exactly this.`);
   expect(again.lines.join('\n')).toContain('opencode mcp auth konjir-engineer');
+  expect(readFileSync(join(project, 'opencode.json'), 'utf8')).toBe(text);
   expect((await kolab.listActors({ owner: 'ann' })).map((a) => a.id)).toStrictEqual(['ann-engineer', 'ann-product']);
+  // An entry that says something else is refused without --force, before any browser opens.
+  writeFileSync(join(project, 'opencode.json'), text.replace('role:product agent:ann-product', 'role:engineer agent:ann-product'));
+  const opened: URL[] = [];
+  expect(await rejection(connectHarness(options(server, project), world(server, idp, async () => 0, { opened })))).toMatch(/already has konjir-product. konjir connect won't overwrite it: pass --force/);
+  expect(opened).toStrictEqual([]);
 });
 
-test('nothing is written and no agent made until the person says yes: declined, or no terminal without --yes', async () => {
+test('W3.8: konjir connect claude, five agents in one go: one page, each agent signed in in its own file, as the bridge keeps it, and the claude command last', async () => {
   const { kolab, idp, server } = await local();
   const project = scratch();
-  writeFileSync(join(project, 'opencode.json'), '{\n  // mine\n  "theme": "dark"\n}\n');
-  const no = world(server, idp, async () => 0, { answer: false });
-  expect(await connectHarness(options(server, project), no)).toStrictEqual([]);
-  expect(no.lines).toContain('Nothing written, and no agent made.');
-  expect(await rejection(connectHarness(options(server, project), world(server, idp, async () => 0, { interactive: false })))).toMatch(/asks before it writes anything: run it in a terminal, or pass --yes/);
-  expect(readFileSync(join(project, 'opencode.json'), 'utf8')).toBe('{\n  // mine\n  "theme": "dark"\n}\n');
+  const start = bridgeCommand()!;
+  expect(start).toMatch(/apps\/channel-bridge\/scripts\/start\.sh$/);   // this checkout's bridge
+  const pages: string[] = [];
+  const io = world(server, idp, async () => { throw new Error('nothing to run for Claude Code'); }, { pages });
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };   // never the person's own ~/.config
+  const agents = parseAgents(['writer:product', 'reviewer:product', 'builder:engineer', 'engineer', 'approver:engineer']);
+  const entries = await connectHarness(options(server, project, { harness: 'claude', kolab: 'm5-check', agents, env }), io);
+  expect(entries.map((e) => e.agent)).toStrictEqual(['ann-writer', 'ann-reviewer', 'ann-builder', 'ann-engineer', 'ann-approver']);
+  // Five agents in one setup: past the 3 in 10 minutes one at a time, counted once.
+  expect(pages).toHaveLength(1);
+  expect(/<title>([^<]*)<\/title>/.exec(pages[0])?.[1]).toBe('Set up Konjir · Kolab');
+  expect(pages[0]).toContain('<strong>konjir channel (Claude Code)</strong> on this computer asks to set up Konjir');
+  expect(listed(pages[0]).slice(0, 6)).toStrictEqual(['m5-check: New: made now, private, yours', ...entries.map((e) => `${e.agent}: New: made now`)]);
+
+  // .mcp.json: a stdio server per agent, the bridge from this checkout; no token, no HTTP entry.
+  const text = readFileSync(join(project, '.mcp.json'), 'utf8');
+  expect(JSON.parse(text).mcpServers['konjir-writer']).toStrictEqual({
+    type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:m5-check role:product agent:ann-writer' },
+  });
+  expect(Object.keys(JSON.parse(text).mcpServers)).toStrictEqual(entries.map((e) => e.name));
+  expect(text.replaceAll('"KONJIR_TOKEN": ""', '')).not.toMatch(/kj[src]_|token|bearer|authorization|as:self/i);
+
+  // Each agent's own sign-in, in its own file, where the bridge started with KONJIR_AGENT finds it:
+  // its client (the bridge's name), its tokens and what was discovered, as its own sign-in keeps them.
+  const clients = new Set<string>();
+  for (const e of entries) {
+    const kept = new StoredLogin(server.url, { path: agentCredentialsPath(e.agent, env) });
+    expect(kept.signedIn).toBe(true);
+    const saved = kept.saved();
+    expect(saved.client).toMatchObject({ client_name: 'konjir channel (Claude Code)', redirect_uris: ['http://127.0.0.1/callback'] });
+    expect(saved.tokens).toMatchObject({ token_type: 'Bearer', expires_in: 900, scope: `konjir kolab:m5-check role:${e.role}` });
+    expect(saved.discovery?.authorizationServerUrl).toBe(new URL(server.url).origin);
+    clients.add(saved.client!.client_id);
+    expect(statSync(agentCredentialsPath(e.agent, env)).mode & 0o777).toBe(0o600);
+    const c = await connect(server.url, kept);
+    closeAtEnd(c);
+    expect(await call(c, 'whoami')).toMatchObject({ actor: e.agent, kind: 'agent', owner: 'ann', kolab: 'm5-check', role: e.role });
+    kept.releaseIdleLock();
+  }
+  expect(clients.size).toBe(1);   // one registration, the setup's, which each agent's grant was issued to
+  // Its token refreshes by itself, as any sign-in's: the bridge's StoredLogin, with the agent's file.
+  await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-writer' and ended_at is null`);
+  const writer = new StoredLogin(server.url, { path: agentCredentialsPath('ann-writer', env) });
+  const before = writer.saved().tokens!.refresh_token;
+  const c = await connect(server.url, writer);
+  closeAtEnd(c);
+  expect(await call(c, 'whoami')).toMatchObject({ actor: 'ann-writer' });
+  expect(writer.saved().tokens!.refresh_token).not.toBe(before);
+  writer.releaseIdleLock();
+  expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);   // the CLI's own sign-in: none, as before
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where person_id = 'ann' and actor_id = 'ann'`)).rows[0]).toStrictEqual({ n: 0 });
+  // The last line is the command to run.
+  expect(io.lines.at(-1)).toBe(`claude --dangerously-load-development-channels ${entries.map((e) => `server:${e.name}`).join(' ')}`);
+  expect(io.lines.join('\n')).toContain('Each agent is signed in, in its own file under');
+
+  // Run again: the same agents, signed in afresh in place of the sign-ins kept, which are revoked.
+  const kept = Object.fromEntries(entries.map((e) => [e.agent, new StoredLogin(server.url, { path: agentCredentialsPath(e.agent, env) }).saved().tokens!.refresh_token]));
+  const again = world(server, idp, async () => 0, { pages });
+  await connectHarness(options(server, project, { harness: 'claude', kolab: 'm5-check', agents, env }), again);
+  expect(listed(pages[1]).slice(0, 2)).toStrictEqual(['m5-check: Yours, existing: you hold Admin', 'ann-writer: Yours, existing, signed in elsewhere now: allowing this ends that session.']);
+  expect(again.lines).toContain(`${join(project, '.mcp.json')} already says this; left as it is.`);
+  expect(readFileSync(join(project, '.mcp.json'), 'utf8')).toBe(text);
+  for (const e of entries) {
+    const now = new StoredLogin(server.url, { path: agentCredentialsPath(e.agent, env) }).saved().tokens!.refresh_token;
+    expect(now).not.toBe(kept[e.agent]);
+  }
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id like 'ann-%' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 5 });
+  expect((await kolab.listActors({ owner: 'ann' }))).toHaveLength(5);
+
+  // --global: Claude Code's own command writes the same entry to the person's settings.
+  const ran: string[][] = [];
+  const g = world(server, idp, async (cmd, args) => { ran.push([cmd, ...args]); return 0; });
+  await connectHarness(options(server, project, { harness: 'claude', kolab: 'm5-check', global: true, auth: false, agents: parseAgents(['writer:product']), env: { ...env, HOME: scratch() } }), g);
+  expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-writer', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:m5-check role:product agent:ann-writer' } })]]);
+  expect(g.lines.join('\n')).toContain('Each entry signs in by itself in your browser when Claude Code first starts it');
+
+  // From a konjir with no checkout beside it (the published package), the channel can't be set up: --http can.
+  expect(await rejection(connectHarness(options(server, scratch(), { harness: 'claude', bridge: '' }), world(server, idp, async () => 0))))
+    .toMatch(/runs from a checkout of github.com\/konjir\/kolab, and this konjir isn't running from one.*or pass --http/);
+  expect(await rejection(connectHarness(options(server, scratch(), { http: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
+});
+
+test('a kolab someone else holds: the page says so with Deny alone, and konjir connect fails saying why; nothing made or written. Denied, the same', async () => {
+  const { kolab, idp, server } = await local();
+  await kolab.addActor('rae', { by: 'kolab' });
+  await kolab.createKolab('raes', { owner: 'rae', by: 'kolab' });
+  const project = scratch();
+  const pages: string[] = [];
+  const err = await rejection(connectHarness(options(server, project, { harness: 'claude', kolab: 'raes', agents: parseAgents(['pm:product']) }), world(server, idp, async () => 0, { pages, decision: 'deny' })));
+  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Nothing was made or written');
+  expect(pages[0]).toContain('<h1>This setup can\'t be allowed</h1>');
+  expect(pages[0]).not.toContain('value="allow"');
+  expect(existsSync(join(project, '.mcp.json'))).toBe(false);
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+
+  // Ann's own kolab, but she denies it: the same, and nothing made.
+  await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
+  expect(await rejection(connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']) }), world(server, idp, async () => 0, { decision: 'deny' }))))
+    .toBe('Error: you denied the setup on Kolab\'s page: nothing was made or written');
+  expect(existsSync(join(project, '.mcp.json'))).toBe(false);
+  expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+});
+
+test('konjir connect refuses what it can before any browser opens: no --kolab, a name no kolab can have, a config it won\'t touch; --dry-run prints the plan and stops', async () => {
+  const { kolab, idp, server } = await local();
+  const project = scratch();
+  const opened: URL[] = [];
+  const io = () => world(server, idp, async () => 0, { opened });
+  expect(await rejection(connectHarness(options(server, project, { kolab: undefined }), io()))).toMatch(/konjir connect needs --kolab <name>/);
+  for (const bad of ['Anns', 'a_b', '-a', 'a b', 'x'.repeat(101)]) {
+    expect(await rejection(connectHarness(options(server, project, { kolab: bad }), io()))).toMatch(/a kolab's name is lowercase letters, digits and '-'/);
+  }
+  writeFileSync(join(project, 'opencode.json'), '{ "mcp": [] }');
+  expect(await rejection(connectHarness(options(server, project), io()))).toMatch(/its "mcp" is not an object/);
+  expect(opened).toStrictEqual([]);
+
+  const plain = scratch();
+  const dry = io();
+  expect((await connectHarness(options(server, plain, { harness: 'claude', http: true, dryRun: true, agents: parseAgents(['pm:product']) }), dry)).map((e) => e.agent)).toStrictEqual(['<you>-pm']);
+  expect(dry.lines.join('\n')).toContain('+      "type": "http",');
+  expect(dry.lines.at(-1)).toBe('Dry run: nothing made, written or signed in.');
+  expect(opened).toStrictEqual([]);
+  expect(existsSync(join(plain, '.mcp.json'))).toBe(false);
+  expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+
+  // And from the shell: --dry-run, --yes kept as a no-op, a harness it doesn't know, a URL with credentials in it.
+  process.chdir(plain);
+  await main(['connect', 'claude', '--url', server.url, '--kolab', 'anns', '--http', '--dry-run', '--yes', '--agent', 'pm:product']);
+  expect(out.join('\n')).toContain('Dry run: nothing made, written or signed in.');
+  expect(await rejection(main(['connect', 'codex']))).toMatch(/konjir connect opencode\|claude --kolab <k>/);
+  expect(await rejection(main(['connect', 'claude', '--kolab', 'Bad']))).toMatch(/--kolab Bad: a kolab's name is/);
+  expect(() => mcpUrl('https://ann:secret@kolab.example.com')).toThrow(/without a user name or password/);
+  expect(() => mcpUrl('https://kolab.example.com/?token=x')).toThrow(/without a query or fragment/);
+  expect(mcpUrl('https://kolab.example.com')).toBe('https://kolab.example.com/mcp');
 });
 
 test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to sign each entry in; and --global OpenCode writes the person\'s own config', async () => {
   const { idp, server } = await local();
   const project = scratch();
   const io = world(server, idp, async () => { throw new Error('nothing to run for Claude Code'); });
-  await connectHarness(options(server, project, { harness: 'claude', http: true, agents: parseAgents(['pm:product']), yes: true }), io);
+  await connectHarness(options(server, project, { harness: 'claude', http: true, agents: parseAgents(['pm:product']) }), io);
   expect(JSON.parse(readFileSync(join(project, '.mcp.json'), 'utf8'))).toStrictEqual({
     mcpServers: { 'konjir-pm': { type: 'http', url: server.url, oauth: { scopes: 'konjir kolab:anns role:product agent:ann-pm' } } },
   });
@@ -448,70 +573,8 @@ test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to 
 
   const home = scratch();
   const g = world(server, idp, async () => 0);
-  await connectHarness(options(server, project, { global: true, yes: true, auth: false, env: { XDG_CONFIG_HOME: home } }), g);
+  await connectHarness(options(server, project, { global: true, auth: false, env: { XDG_CONFIG_HOME: home } }), g);
   expect(Object.keys(JSON.parse(readFileSync(join(home, 'opencode', 'opencode.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
-});
-
-test('W3.8: konjir connect claude writes the Konjir channel bridge as Claude Code\'s one Konjir server, one entry per agent, and signs each in as its own agent, kept apart', async () => {
-  const { kolab, idp, server } = await local();
-  const project = scratch();
-  const start = bridgeCommand()!;
-  expect(start).toMatch(/apps\/channel-bridge\/scripts\/start\.sh$/);   // this checkout's bridge
-  const pages: string[] = [];
-  const io: ConnectIO & { lines: string[] } = {
-    ...world(server, idp, async () => { throw new Error('nothing to run for Claude Code'); }),
-    // The entry signs in as its agent, with the browser: Kolab's page arrives with it chosen.
-    signInAgent: (e, credentials, step) => signInAgent(e, credentials, {
-      log: () => undefined, step,
-      open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, (html) => { pages.push(html); return {}; }, true); },
-    }),
-  };
-  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };   // never the person's own ~/.config
-  const entries = await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product', 'dev:engineer']), yes: true, env }), io);
-  expect(entries.map((e) => e.agent)).toStrictEqual(['ann-pm', 'ann-dev']);
-
-  // .mcp.json: a stdio server per agent, the bridge from this checkout; no token, no HTTP entry.
-  const text = readFileSync(join(project, '.mcp.json'), 'utf8');
-  expect(JSON.parse(text)).toStrictEqual({
-    mcpServers: {
-      'konjir-pm': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } },
-      'konjir-dev': { type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-dev', KONJIR_SCOPE: 'konjir kolab:anns role:engineer agent:ann-dev' } },
-    },
-  });
-  // No token: KONJIR_TOKEN is set empty, so one in Claude Code's own environment never overrides the agent's sign-in.
-  expect(text.replaceAll('"KONJIR_TOKEN": ""', '')).not.toMatch(/kj[src]_|token|bearer|authorization|as:self/i);
-
-  // Each signed in as its own agent, on a page locked to it that says which of the two it is, and
-  // kept in that agent's own file, where the bridge looks.
-  expect(pages.map(locked)).toStrictEqual([['agent:ann-pm', 'kolab:anns', 'product'], ['agent:ann-dev', 'kolab:anns', 'engineer']]);
-  expect(pages.map((p) => /<title>([^<]*)<\/title>/.exec(p)?.[1])).toStrictEqual(['Sign in as ann-pm (agent 1 of 2) · Kolab', 'Sign in as ann-dev (agent 2 of 2) · Kolab']);
-  expect(io.lines).toContain('Signing konjir-dev in as ann-dev (agent 2 of 2), in your browser. Kolab\'s page is for ann-dev alone, in kolab anns as engineer: check it names ann-dev, then Allow.');
-  expect(pages[0]).toContain('konjir channel (Claude Code)');
-  for (const agent of ['ann-pm', 'ann-dev']) {
-    const kept = new StoredLogin(server.url, { path: agentCredentialsPath(agent) });
-    expect(kept.signedIn).toBe(true);
-    const c = await connect(server.url, kept);
-    closeAtEnd(c);
-    expect(await call(c, 'whoami')).toMatchObject({ actor: agent, kind: 'agent', owner: 'ann', kolab: 'anns' });
-    kept.releaseIdleLock();
-  }
-  expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);   // the CLI's own sign-in: none, as before
-  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id in ('ann-pm', 'ann-dev') and revoked_at is null`)).rows[0]).toStrictEqual({ n: 2 });
-  const said = io.lines.join('\n');
-  expect(said).toContain('konjir-pm is signed in as ann-pm.');
-  expect(said).toContain('claude --dangerously-load-development-channels server:konjir-pm server:konjir-dev');
-
-  // --global: Claude Code's own command writes the same entry to the person's settings.
-  const ran: string[][] = [];
-  const g = world(server, idp, async (cmd, args) => { ran.push([cmd, ...args]); return 0; });
-  await connectHarness(options(server, project, { harness: 'claude', global: true, yes: true, auth: false, agents: parseAgents(['pm:product']), env: { ...env, HOME: scratch() } }), g);
-  expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-pm', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' } })]]);
-  expect(g.lines.join('\n')).toContain('On first start each entry signs in by itself in your browser, as its own agent');
-
-  // From a konjir with no checkout beside it (the published package), the channel can't be set up: --http can.
-  expect(await rejection(connectHarness(options(server, scratch(), { harness: 'claude', bridge: '', yes: true }), world(server, idp, async () => 0))))
-    .toMatch(/runs from a checkout of github.com\/konjir\/kolab, and this konjir isn't running from one.*or pass --http/);
-  expect(await rejection(connectHarness(options(server, scratch(), { http: true, yes: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
 });
 
 /**
@@ -524,67 +587,6 @@ const unlocked = (u: URL) => {
   old.searchParams.set('scope', (u.searchParams.get('scope') ?? '').split(' ').filter((w) => !w.startsWith('agent:')).join(' '));
   return old;
 };
-const agentOf = (u: URL) => (u.searchParams.get('scope') ?? '').split(' ').find((w) => w.startsWith('agent:'))?.slice(6);
-
-test('W3.8: a channel entry signed in as anyone but its agent is revoked and forgotten, then asked again for the same agent at once, at most twice, before the next (D97)', async () => {
-  const { kolab, idp, server } = await local();
-  const project = scratch();
-  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
-  // ann-pm comes back as Ann every time; ann-dev once, then as itself.
-  const asked: string[] = [];
-  const io: ConnectIO & { lines: string[] } = {
-    ...world(server, idp, async () => 0),
-    signInAgent: (e, credentials, step) => signInAgent(e, credentials, {
-      log: () => undefined, step,
-      open: (u) => {
-        const agent = agentOf(u)!;
-        asked.push(`${agent} ${u.searchParams.get('step')}/${u.searchParams.get('steps')}`);
-        idp.next({ subject: '41', login: 'ann' });
-        const wrong = agent === 'ann-pm' || asked.filter((a) => a.startsWith('ann-dev')).length === 1;
-        void consentAt(wrong ? unlocked(u) : u, wrong ? { as: 'self' } : {}, true);
-      },
-    }),
-  };
-  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product', 'dev:engineer']), yes: true, env }), io);
-  // The same agent asked for again at once, never skipping ahead: three tries for ann-pm, then ann-dev's two.
-  expect(asked).toStrictEqual(['ann-pm 1/2', 'ann-pm 1/2', 'ann-pm 1/2', 'ann-dev 2/2', 'ann-dev 2/2']);
-  const said = io.lines.join('\n');
-  expect(said).toContain('konjir-pm came back signed in as ann, not ann-pm, so that sign-in was revoked. Asking again for ann-pm (agent 1 of 2), try 2 of 3: on Kolab\'s page, check it names ann-pm, then Allow.');
-  expect(said).toContain('Asking again for ann-pm (agent 1 of 2), try 3 of 3');
-  expect(said).not.toContain('try 4');
-  expect(said).toContain('konjir-pm didn\'t sign in (it signed in as ann, not ann-pm, so that sign-in was revoked and nothing is kept for konjir-pm; asked 3 times)');
-  expect(said).toContain('konjir-dev came back signed in as ann, not ann-dev, so that sign-in was revoked. Asking again for ann-dev (agent 2 of 2), try 2 of 3');
-  expect(said).toContain('konjir-dev is signed in as ann-dev.');
-  expect(said).not.toContain('konjir-pm is signed in');
-  expect(said).toContain('On first start each entry signs in by itself in your browser');
-  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-pm', env) }).signedIn).toBe(false);
-  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-dev', env) }).signedIn).toBe(true);
-  // No grant as Ann is left: none of the four wrong ones, nor konjir connect's own sign-in as her.
-  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
-  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is not null`)).rows[0]).toStrictEqual({ n: 5 });
-});
-
-test('W3.8: on a Kolab with the lock, choosing anyone else on the page isn\'t possible: a form posted for another actor is refused, and the sign-in still waits for the agent', async () => {
-  const { idp, server } = await local();
-  const project = scratch();
-  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
-  const refusals: string[] = [];
-  const io: ConnectIO & { lines: string[] } = {
-    ...world(server, idp, async () => 0),
-    signInAgent: (e, credentials, step) => signInAgent(e, credentials, {
-      log: () => undefined, step,
-      open: (u) => {
-        idp.next({ subject: '41', login: 'ann' });
-        // Yourself, posted anyway: refused. Then the page as it is: allowed, as the agent.
-        void consentAt(u, { as: 'self' }, true).catch((err: Error) => { refusals.push(err.message); idp.next({ subject: '41', login: 'ann' }); return consentAt(u, {}, true); });
-      },
-    }),
-  };
-  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), yes: true, env }), io);
-  expect(refusals).toHaveLength(1);
-  expect(refusals[0]).toMatch(/^the consent was refused: 400 .*this sign-in is for ann-pm only, in kolab anns as product: allow that, or deny it/s);
-  expect(io.lines.join('\n')).toContain('konjir-pm is signed in as ann-pm.');
-});
 
 /** Makes Kolab's revoke endpoint unreachable while `on()` says so: as a network that drops it would. */
 function failingRevoke(on: () => boolean) {
@@ -595,42 +597,6 @@ function failingRevoke(on: () => boolean) {
     return real(input, init);
   });
 }
-
-test('W3.8: a wrong sign-in that couldn\'t be revoked is said to be forgotten, not revoked, and konjir connect stops asking for that agent, then goes on to the next (D97)', async () => {
-  const { kolab, idp, server } = await local();
-  const project = scratch();
-  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
-  let failing = false;
-  failingRevoke(() => failing);
-  const asked: string[] = [];
-  const io: ConnectIO & { lines: string[] } = {
-    ...world(server, idp, async () => 0),
-    signInAgent: (e, credentials, step) => {
-      // Only ann-pm's wrong sign-in finds Kolab's revoke unreachable.
-      failing = e.agent === 'ann-pm';
-      return signInAgent(e, credentials, {
-        log: () => undefined, step,
-        open: (u) => {
-          const agent = agentOf(u)!;
-          asked.push(agent);
-          idp.next({ subject: '41', login: 'ann' });
-          const wrong = agent === 'ann-pm';
-          void consentAt(wrong ? unlocked(u) : u, wrong ? { as: 'self' } : {}, true);
-        },
-      }).finally(() => { failing = false; });
-    },
-  };
-  await connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product', 'dev:engineer']), yes: true, env }), io);
-  expect(asked).toStrictEqual(['ann-pm', 'ann-dev']);   // never asked again for ann-pm
-  const said = io.lines.join('\n');
-  expect(said).toContain('konjir-pm came back signed in as ann, not ann-pm, and that sign-in couldn\'t be revoked: it is forgotten, not revoked, and lapses within 30 days unused. konjir connect doesn\'t ask again for ann-pm');
-  expect(said).not.toContain('so that sign-in was revoked');
-  expect(said).not.toContain('Asking again');
-  expect(said).toContain('konjir-dev is signed in as ann-dev.');
-  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-pm', env) }).signedIn).toBe(false);
-  // The one grant as Ann left standing is that one: no more piled up behind it.
-  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id = 'ann' and revoked_at is null`)).rows[0]).toStrictEqual({ n: 1 });
-});
 
 test('konjir login --agent: a wrong sign-in that couldn\'t be revoked stops it at once, its error naming every try (D97)', async () => {
   const { kolab, idp, server } = await local();
@@ -707,84 +673,37 @@ test('W3.8: the bridge is found only in the checkout this konjir runs from; a ko
   expect(bridgeCommand('file:///$bunfs/root/konjir')).toBeUndefined();
 });
 
-test('a kept konjir login is never made the person: one that works as an agent stays as it is, untouched; one already the person\'s is used, and left alone', async () => {
+test('konjir connect never touches the CLI\'s own sign-in: a konjir login kept, as an agent or as the person, stays exactly as it was, and still works', async () => {
   const { kolab, idp, server } = await local();
   await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
   await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
   // konjir login, choosing a new agent of hers, as it offers by default.
   await login(server.url, { log: () => undefined, open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'new-agent', agent_label: 'cli', kolab: 'kolab:anns' }, true); } });
   const kept = readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8');
-  const project = scratch();
+  const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
   const io = world(server, idp, async () => 0);
-  await connectHarness(options(server, project, { yes: true, auth: false, agents: parseAgents(['pm:product']) }), io);
-  expect(io.lines).toContain('Made your agent ann-pm.');
-  expect(io.lines).toContain('Revoked the sign-in as you.');
-  // The CLI's own sign-in, ann-cli's, is exactly as it was, and still works as ann-cli.
+  await connectHarness(options(server, scratch(), { harness: 'claude', agents: parseAgents(['pm:product']), env }), io);
+  expect(io.lines).toContain('Set up for ann: kolab anns; ann-pm (made now).');
   expect(readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8')).toBe(kept);
   const cli = await connect(server.url, new StoredLogin(server.url));
   closeAtEnd(cli);
   expect(await call(cli, 'whoami')).toMatchObject({ actor: 'ann-cli', kind: 'agent' });
-
-  // A kept sign-in that is already Ann's own (she chose Yourself at konjir login): used, never revoked.
-  await login(server.url, { log: () => undefined, open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'self', kolab: 'kolab:anns' }, true); } });
-  const mine = readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8');
-  const quiet = world(server, idp, async () => { throw new Error('no browser this time'); });
-  quiet.person = () => personSession(server.url, undefined, { log: (l) => quiet.lines.push(l), open: () => { throw new Error('no browser this time'); } });
-  await connectHarness(options(server, project, { yes: true, auth: false, force: true, agents: parseAgents(['pm:product']) }), quiet);
-  expect(quiet.lines).toContain('Using your agent ann-pm.');
-  expect(quiet.lines).not.toContain('Revoked the sign-in as you.');
-  expect(readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8')).toBe(mine);
-  const still = await connect(server.url, new StoredLogin(server.url));
-  closeAtEnd(still);
-  expect(await call(still, 'whoami')).toMatchObject({ actor: 'ann', kind: 'person' });
+  // The agent's sign-in is beside it, in its own file.
+  expect(new StoredLogin(server.url, { path: agentCredentialsPath('ann-pm', env) }).signedIn).toBe(true);
 });
 
-test('konjir connect\'s own sign-in must be Yourself: if the person chooses an agent instead, it is revoked at once and connect stops, saying to choose Yourself; nothing is written (D60)', async () => {
-  const { kolab, idp, server } = await local();
-  await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
-  await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
-  const project = scratch();
-  const io = world(server, idp, async () => 0, { as: { as: 'new-agent', agent_label: 'oops' } });
-  await expect(connectHarness(options(server, project, { yes: true, auth: false }), io)).rejects.toThrow('on Kolab\'s page you chose ann-oops, not Yourself, and konjir connect makes your agents as you. Run it again, and under "Work as" choose "Yourself"');
-  expect(io.lines).toContain('Revoked the sign-in as you.');
-  expect((await kolab.db.query(`select 1 from oauth_grant where actor_id = 'ann-oops' and revoked_at is null`)).rows).toStrictEqual([]);
-  expect(existsSync(join(project, 'opencode.json'))).toBe(false);
-});
-
-test('konjir connect makes agents as the person only: an agent\'s token is refused; so is the admin token, at the verb', async () => {
-  const { kolab, server } = await local();
-  await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
-  await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
-  await kolab.addOwnAgent('ann', 'cli');
-  await kolab.grant('anns', 'ann-cli', 'write', { layers: ['functional'] });
-  const token = await kolab.openSession('ann-cli', 'product', { kolab: 'anns' });
-  const io = world(server, new StubIdentity(), async () => 0);
-  io.person = () => personSession(server.url, token);
-  expect(await rejection(connectHarness(options(server, scratch(), { yes: true }), io)))
-    .toMatch(/the token it was given \(KONJIR_TOKEN or --token\) works as ann-cli, an agent of ann's. Unset it/);
-  const admin = await connect(server.url, 'connect-admin');
-  closeAtEnd(admin);
-  expect(await rejection(call(admin, 'create_agent', { label: 'x' }))).toMatch(/needs an agent session token, not the admin token/);
-  expect((await kolab.listActors({ owner: 'ann' })).map((a) => a.id)).toStrictEqual(['ann-cli']);
-  // And from the shell: konjir connect with a harness it doesn't know, or a URL with credentials in it.
-  expect(await rejection(main(['connect', 'codex']))).toMatch(/konjir connect opencode\|claude/);
-  expect(() => mcpUrl('https://ann:secret@kolab.example.com')).toThrow(/without a user name or password/);
-  expect(() => mcpUrl('https://kolab.example.com/?token=x')).toThrow(/without a query or fragment/);
-  expect(mcpUrl('https://kolab.example.com')).toBe('https://kolab.example.com/mcp');
-});
-
-test('a config file that is a link: written where it leads inside the project; refused outside it unless --force-path, even with --yes; a dangling one refused', async () => {
+test('a config file that is a link: written where it leads inside the project; refused outside it unless --force-path; a dangling one refused', async () => {
   const { idp, server } = await local();
   const project = scratch();
   const elsewhere = scratch();
   writeFileSync(join(elsewhere, 'settings.json'), '{\n  "keep": true\n}\n');
   symlinkSync(join(elsewhere, 'settings.json'), join(project, 'opencode.json'));
   const io = world(server, idp, async () => 0);
-  expect(await rejection(connectHarness(options(server, project, { yes: true, auth: false }), io)))
+  expect(await rejection(connectHarness(options(server, project, { auth: false }), io)))
     .toMatch(/opencode.json is a link to .*settings.json, outside .*; konjir connect won't write there. Pass --force-path/);
   expect(readFileSync(join(elsewhere, 'settings.json'), 'utf8')).toBe('{\n  "keep": true\n}\n');
   const forced = world(server, idp, async () => 0);
-  await connectHarness(options(server, project, { yes: true, auth: false, forcePath: true }), forced);
+  await connectHarness(options(server, project, { auth: false, forcePath: true }), forced);
   expect(forced.lines.join('\n')).toContain(`is a link to ${realpathSync(join(elsewhere, 'settings.json'))}, which konjir connect would change`);
   expect(Object.keys(JSON.parse(readFileSync(join(elsewhere, 'settings.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
   expect(lstatSync(join(project, 'opencode.json')).isSymbolicLink()).toBe(true);
@@ -793,12 +712,12 @@ test('a config file that is a link: written where it leads inside the project; r
   mkdirSync(join(inner, 'config'));
   writeFileSync(join(inner, 'config', 'opencode.json'), '{}');
   symlinkSync(join(inner, 'config', 'opencode.json'), join(inner, 'opencode.json'));
-  await connectHarness(options(server, inner, { yes: true, auth: false, force: true }), world(server, idp, async () => 0));
+  await connectHarness(options(server, inner, { auth: false, force: true }), world(server, idp, async () => 0));
   expect(Object.keys(JSON.parse(readFileSync(join(inner, 'config', 'opencode.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
   // A link to nothing: refused, never replaced by a file.
   const dangling = scratch();
   symlinkSync(join(dangling, 'gone.json'), join(dangling, 'opencode.json'));
-  expect(await rejection(connectHarness(options(server, dangling, { yes: true, auth: false, force: true, forcePath: true }), world(server, idp, async () => 0))))
+  expect(await rejection(connectHarness(options(server, dangling, { auth: false, force: true, forcePath: true }), world(server, idp, async () => 0))))
     .toMatch(/is a link to .*gone.json, which isn't there; konjir connect won't write through it/);
   expect(lstatSync(join(dangling, 'opencode.json')).isSymbolicLink()).toBe(true);
 });
@@ -815,13 +734,13 @@ test('konjir connect reads only a regular config file of at most 1 MiB, and refu
   const { idp, server } = await local();
   const fifo = scratch();
   execFileSync('mkfifo', [join(fifo, 'opencode.json')]);
-  expect(await rejection(connectHarness(options(server, fifo, { yes: true, auth: false }), world(server, idp, async () => 0)))).toMatch(/opencode.json isn't a regular file, so konjir connect won't read or write it/);
+  expect(await rejection(connectHarness(options(server, fifo, { auth: false }), world(server, idp, async () => 0)))).toMatch(/opencode.json isn't a regular file, so konjir connect won't read or write it/);
   const dir = scratch();
   mkdirSync(join(dir, 'opencode.json'));
-  expect(await rejection(connectHarness(options(server, dir, { yes: true, auth: false }), world(server, idp, async () => 0)))).toMatch(/isn't a regular file/);
+  expect(await rejection(connectHarness(options(server, dir, { auth: false }), world(server, idp, async () => 0)))).toMatch(/isn't a regular file/);
   const big = scratch();
   writeFileSync(join(big, 'opencode.json'), `{"a": "${'x'.repeat(MAX_CONFIG_BYTES)}"}`);
-  expect(await rejection(connectHarness(options(server, big, { yes: true, auth: false }), world(server, idp, async () => 0)))).toMatch(/is over 1 MiB/);
+  expect(await rejection(connectHarness(options(server, big, { auth: false }), world(server, idp, async () => 0)))).toMatch(/is over 1 MiB/);
   expect(() => mergeClaude('.mcp.json', '{"mcpServers": null}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is null, so konjir connect won't touch it: make it \{\} or remove it/);
   expect(() => mergeClaude('.mcp.json', '{"mcpServers": 3}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is not an object/);
   expect(() => mergeOpencode('opencode.json', '{"mcp": null}', [entry('p', 'product')], false)).toThrow(/its "mcp" is null/);
