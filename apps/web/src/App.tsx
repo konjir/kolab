@@ -174,10 +174,11 @@ export function App() {
   });
 
   const act: Act = {
-    async run(what, done) {
+    async run(what, done, told) {
       try {
-        await what();
-        if (done) say(done);
+        const out = await what();
+        const words = told ? told(out) : done;
+        if (words) say(words);
         setTick((t) => t + 1);
         return true;
       } catch (e) {

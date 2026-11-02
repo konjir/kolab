@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
   KINDS, LAYER_OF_KIND, RETIRED_KINDS,
-  type EvidenceView, type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebWorkOutcome, type WebWorkReview,
+  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago } from '../util.js';
@@ -145,34 +145,64 @@ export function QuestionsView({ me, tick, act, go }: { me: WebMe; tick: number; 
 }
 
 /** A link only to an http(s) URL: evidence is its assignee's claim, so anything else shows as text. */
-const webUrl = (u: string | undefined) => (u && /^https?:\/\//i.test(u) ? u : undefined);
+const webUrl = (u: string | null | undefined) => (u && /^https?:\/\//i.test(u) ? u : undefined);
 
-/** One item of a work package's evidence (PLN16): a commit, linked in its repository; a pull request; a test run. */
-function EvidenceItem({ e, repository }: { e: EvidenceView; repository: string | null }) {
-  const repo = webUrl(e.repository ?? repository ?? undefined);
-  const commit = e.kind === 'commit' && e.sha && /^[0-9a-f]{7,64}$/i.test(e.sha) && repo ? `${repo.replace(/\/+$/, '')}/commit/${e.sha}` : undefined;
-  const href = commit ?? webUrl(e.url);
+/** A link's host, shown beside it, so where it leads is never only in its text. */
+const hostOf = (u: string) => { try { return new URL(u).host; } catch { return ''; } };
+
+/**
+ * One item of a work package's evidence (PLN16): a commit, linked into the repository it was
+ * recorded against (never into another: one recorded before repositories names none, W5.2a); a
+ * pull request; a test run. Each link shows its host.
+ */
+function EvidenceItem({ e }: { e: WebReviewEvidence }) {
+  const repo = e.kind === 'commit' && !e.before_repositories ? webUrl(e.repository) : undefined;
+  const commit = repo && e.sha && /^[0-9a-f]{7,64}$/i.test(e.sha) ? `${repo.replace(/\/+$/, '')}/commit/${e.sha}` : undefined;
+  const href = e.kind === 'commit' ? commit : webUrl(e.url);
   const label = e.kind === 'commit' ? (e.sha ? e.sha.slice(0, 12) : 'commit') : e.kind === 'pull_request' ? (e.pr ? `PR #${e.pr}` : 'pull request') : 'test run';
   return (
     <li>
       <span className="ev-kind">{e.kind === 'commit' ? 'Commit' : e.kind === 'pull_request' ? 'Pull request' : 'Tests'}</span>
       {href ? <a className="mono" href={href} target="_blank" rel="noopener noreferrer">{label}</a> : e.kind === 'test_run' && e.title ? null : <span className="mono">{label}</span>}
       {e.title ? <span>{e.title}</span> : null}
-      {e.kind !== 'test_run' && e.url && !href ? <span className="mono">{e.url}</span> : null}
+      {href && e.kind !== 'commit' ? <span className="why-not">{hostOf(href)}</span> : null}
+      {e.kind !== 'commit' && e.url && !href ? <span className="mono">{e.url}</span> : null}
+      {e.before_repositories ? <span className="why-not">recorded before repositories: names none</span> : null}
     </li>
   );
 }
 
+/** A list of evidence, and how many more there are than it shows. */
+function EvidenceList({ items, more }: { items: WebReviewEvidence[]; more: number }) {
+  return (
+    <>
+      <ul className="evidence">{items.map((e) => <EvidenceItem key={e.id} e={e} />)}</ul>
+      {more > 0 ? <span className="why-not">and {more} more: read them all with konjir read_work.</span> : null}
+    </>
+  );
+}
+
+/** What a verdict on a work package came to, as Kolab answered it. */
+function workOutcome(o: WebWorkOutcome): string {
+  if (o.state === 'done') {
+    const c = o.confirmed_repositories;
+    return `Approved ${o.work}: it is Done.${c.length ? ` Your approval confirms ${c.join(', ')}.` : ''}`;
+  }
+  return o.state === 'in_progress' ? `Changes requested on ${o.work}. It is back with ${o.assignee}, In progress, and they are told.`
+    : `Changes requested on ${o.work}. Its assignee no longer writes the technical layer, so it is To do, for anyone to pull.`;
+}
+
 /**
  * A work package In review that waits for the session's verdict (WRK5, PLN16; W5.8): the package, its
- * done-when, its assignee and evidence, and Approve or Request changes, as konjir_review work=… gives them.
+ * done-when, its assignee and the evidence this submission brought (earlier rounds folded away), the
+ * repository and whether it is confirmed, and Approve or Request changes, as konjir_review work=… gives them.
  */
 function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: string): void }) {
   const [asking, setAsking] = useState(false);
   const [note, setNote] = useState('');
   const verdict = (v: 'approve' | 'request_changes') => act.run(
     () => api<WebWorkOutcome>(`work/${encodeURIComponent(r.binding)}/${encodeURIComponent(r.id)}/review`, v === 'approve' ? { verdict: v } : { verdict: v, note }),
-    v === 'approve' ? `Approved ${r.subject}: it is Done.` : `Changes requested on ${r.subject}. ${r.assignee} is told.`);
+    v === 'approve' ? `Approved ${r.subject}.` : `Changes requested on ${r.subject}.`, workOutcome);
   const noteId = `work-note-${r.binding}-${r.id}`;
   return (
     <li className="qitem workreview" aria-label={`Work package ${r.subject}`}>
@@ -180,16 +210,23 @@ function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: 
         <button type="button" className="chip" onClick={() => go(`node/${r.binding}#${r.id}`)}>{r.subject}</button>
         <span>work package by {r.assignee} · submitted {ago(r.at)}</span>
         {r.open_marks ? <Pill tone="stale">at risk</Pill> : null}</div>
-      <div className="q">{r.title}</div>
+      {r.missing ? <p className="why-not" role="alert">Kolab couldn’t read this package’s details just now. Open it on its binding, or read it with konjir read_work.</p>
+        : <div className="q">{r.title}</div>}
       <dl className="work-fields">
         <dt>Done when</dt><dd>{r.done_when ?? <span className="why-not">Not given: check the work against what it says above.</span>}</dd>
         {r.note ? <><dt>Its note</dt><dd>{r.note}</dd></> : null}
-        <dt>Evidence</dt>
-        <dd>{r.evidence.length ? <ul className="evidence">{r.evidence.map((e) => <EvidenceItem key={e.id} e={e} repository={r.repository} />)}</ul> : <span className="why-not">None recorded.</span>}</dd>
+        <dt>This submission</dt>
+        <dd>{r.evidence.length ? <EvidenceList items={r.evidence} more={r.evidence_more} /> : <span className="why-not">No evidence since it last went In progress.</span>}</dd>
+        {r.earlier_count ? <><dt>Earlier rounds</dt><dd>
+          <details><summary>{r.earlier_count} item{r.earlier_count > 1 ? 's' : ''} of evidence from before it last went In progress</summary>
+            <EvidenceList items={r.earlier} more={r.earlier_count - r.earlier.length} /></details></dd></> : null}
+        <dt>Repository</dt>
+        <dd>{r.repository ? <><span className="mono">{r.repository.url}</span> · {r.repository.confirmed ? 'confirmed'
+          : 'not confirmed yet: approving confirms it, unless you registered it or built this package'}</> : <span className="why-not">None named.</span>}</dd>
       </dl>
       <p className="why-not">
         {r.open_marks ? `${r.open_marks === 1 ? 'An open mark says' : `${r.open_marks} open marks say`} something it serves or relies on changed since its work began: check it against the latest. ` : ''}
-        Evidence is {r.assignee}’s claim. Check it against the done-when in the repository{r.repository ? <> (<span className="mono">{r.repository}</span>)</> : null} before approving.
+        Evidence is {r.assignee}’s claim. Check it against the done-when in the repository before approving.
       </p>
       <div className="edit-row">
         {asking ? (

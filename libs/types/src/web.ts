@@ -237,15 +237,25 @@ export interface WebMarksView extends WebPaged { marks: WebMark[] }
 /** A version in review that waits for the session's verdict. */
 export interface WebVersionReview { kind: 'version'; subject: string; node: string; seq: number; author: string; at: string }
 
+/** An item of a work package's evidence as the review list shows it: no files, and not the event that recorded it. */
+export type WebReviewEvidence = Omit<EvidenceView, 'files' | 'event'>;
+
 /**
  * A work package In review that waits for the session's verdict (WRK5, VER17, PLN16; W5.8): the
- * package on its binding, its done-when, its assignee, when it was last submitted and with what note,
- * the repository it is done in, and its evidence, oldest first: its assignee's claim, which the
- * reviewer checks against the done-when outside Kolab. `open_marks` counts the marks that put it at risk (PLN10).
+ * package on its binding (`title` is its text; null, with `missing`, if it couldn't be read), its
+ * done-when, its assignee, when it was last submitted and with what note, the repository it is done
+ * in and whether it is confirmed (an approval by someone other than its registrant and the assignee
+ * confirms it, D98), and its evidence, oldest first: `evidence` is the current round's (recorded
+ * since it last went In progress), `earlier` the rounds before; each shows at most a few, with
+ * `evidence_more` and `earlier_count` saying how many there are. Evidence is its assignee's claim,
+ * which the reviewer checks against the done-when outside Kolab. `open_marks` counts the marks that
+ * put it at risk (PLN10).
  */
 export interface WebWorkReview {
-  kind: 'work'; subject: string; binding: string; id: string; title: string; done_when: string | null;
-  assignee: string; at: string; note: string | null; repository: string | null; evidence: EvidenceView[]; open_marks: number;
+  kind: 'work'; subject: string; binding: string; id: string; title: string | null; done_when: string | null;
+  assignee: string; at: string; note: string | null; repository: { url: string; confirmed: boolean } | null;
+  evidence: WebReviewEvidence[]; evidence_more: number; earlier: WebReviewEvidence[]; earlier_count: number; open_marks: number;
+  missing?: true;
 }
 
 /** Both lists come a page at a time, and one `next` pages both: a list that has shown its last returns none after it. */
