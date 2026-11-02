@@ -8,6 +8,7 @@ import { expect, test } from '@jest/globals';
 import { fingerprint } from '@konjir/address';
 import { elementFingerprint, sessionKey } from '@konjir/engine';
 import { els, marksOn, people, rejection, setup } from '@konjir/engine/testing';
+import { checkEvidenceInput, workProblems } from '../src/work.js';
 import { ADMIN_DOER, MAX_DEPENDS_ON, MAX_DONE_WHEN, WORK_SIZES, type ElementInput } from '@konjir/types';
 
 /** The binding's decisions, which every version below keeps. */
@@ -194,6 +195,10 @@ test('only a milestone carries a target date: a dated work package is refused as
   expect(await draft({ done_when: '   ' })).toBe("GateError: W1's done_when is empty: say when it is done, or leave done_when out.");
   expect(await draft({ depends_on: [] })).toBe("GateError: W1's depends_on is empty: name the work packages it depends on, or leave depends_on out.");
   expect(await draft({ milestone: false, size: 'S' })).toBe("GateError: W1's milestone is false: a milestone says milestone: true, and a work package that isn't one leaves milestone out.");
+  // A milestone has no work of its own, so no size (PLN2, PLN3; W5.7); its done-when is its members' exit criterion.
+  expect(await draft({ milestone: true, depends_on: ['W0'], size: 'M' })).toBe('GateError: W1 is a milestone, which has no work of its own to size (PLN2, PLN3): size its members, and leave size out.');
+  expect(workProblems([{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'], size: 'S', done_when: 'W0 is done.' } }], []))
+    .toStrictEqual(['M1 is a milestone, and carries a size: a milestone has no work of its own to size (PLN2, PLN3); its members do']);
   // A work field beside the text, not inside work, is refused, not dropped (review M1).
   expect(await rejection(kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'W1', text: 'Build it.', done_when: 'Built.' } as ElementInput] })))
     .toBe('GateError: W1 has done_when beside its text: work fields go inside work, as {"work":{"done_when":…}}.');
@@ -399,4 +404,14 @@ test('no work package links another, over the whole version: a decision a packag
     { kind: 'override', element: 'b1', work: {} }, { kind: 'override', element: 'W1', work: { depends_on: ['b1'] } },
   ], unlink: [{ sourceElement: 'W1', target: 'kj:orders-pg#b1' }] }))).toMatchObject({ ok: true });
   void v1;
+});
+
+test('a test run\'s evidence takes its summary as summary or as title, as konjir_add_evidence says; a commit or pull request takes no summary (WRK5, W5.7)', () => {
+  const summary = checkEvidenceInput([{ kind: 'test_run', summary: ' npm test: 120 passed ' }]);
+  expect(summary).toStrictEqual({ items: [{ kind: 'test_run', ref: null, url: null, title: 'npm test: 120 passed', files: null, repo: null }], problems: [], limit: false });
+  expect(checkEvidenceInput([{ kind: 'test_run', title: 'npm test: 120 passed' }]).items).toStrictEqual(summary.items);
+  expect(checkEvidenceInput([{ kind: 'test_run', title: 'a', summary: 'b' }]).problems).toStrictEqual(['evidence 1 is a test run: give its summary as title or as summary, not both']);
+  expect(checkEvidenceInput([{ kind: 'test_run', summary: '  ' }]).problems).toStrictEqual(["evidence 1's summary is text"]);
+  expect(checkEvidenceInput([{ kind: 'test_run' }]).problems).toStrictEqual(['evidence 1 is a test run: give its url, or its summary ("npm test: 120 passed") as summary or title']);
+  expect(checkEvidenceInput([{ kind: 'commit', sha: 'a'.repeat(40), summary: 'x' }]).problems).toStrictEqual(['evidence 1 is a commit, which takes no summary']);
 });

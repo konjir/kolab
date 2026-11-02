@@ -79,7 +79,7 @@ test('over MCP: the board in natural order, a pull with its context and trailer,
   expect(page.events).toHaveLength(1);
   expect(await call(eng2.c, 'read_work', { work: 'kj:orders-pg#W1', limit: 1, events_cursor: page.events_next })).toMatchObject({ events: [{ kind: 'pulled' }] });
   expect(await rejection(call(eng2.c, 'read_work', { work: 'kj:orders-pg@2#W1' }))).toMatch(/with no @version/);
-  expect(await rejection(call(eng2.c, 'read_work', { work: 'kj:elsewhere/orders-pg#W1' }))).toMatch(/no work package kj:orders-pg#W1 in kolab test/);
+  expect(await rejection(call(eng2.c, 'read_work', { work: 'kj:elsewhere/orders-pg#W1' }))).toMatch(/no work package kj:elsewhere\/orders-pg#W1 in kolab test, the kolab your session works in/);
 
   // Release: the assignee only.
   expect(await rejection(call(eng2.c, 'release_work', { work: 'kj:orders-pg#W1' }))).toMatch(/held by eng: only its assignee releases/);

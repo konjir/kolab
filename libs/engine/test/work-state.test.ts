@@ -580,8 +580,10 @@ test('work stays in its kolab: another kolab\'s session reads none of it, and on
   // eve, working in `other`, holds Read on nothing of test's here: not found, as if it weren't there.
   await kolab.endSession({ actor: 'eve' });
   const eve = await kolab.openSession('eve', 'engineer', { kolab: 'other' });
-  for (const ref of ['kj:test/orders-pg#W1.1', 'kj:orders-pg#W1.1']) {
-    expect(await rejection(kolab.readWork(eve, ref))).toMatch(/^Error: no work package kj:orders-pg#W1\.1 in kolab other$/);
+  // The address as given, its kolab kept (W5.7), and the same refusal whether test has it or not (D49).
+  expect(await rejection(kolab.readWork(eve, 'kj:orders-pg#W1.1'))).toMatch(/^Error: no work package kj:orders-pg#W1\.1 in kolab other$/);
+  for (const ref of ['kj:test/orders-pg#W1.1', 'kj:test/orders-pg#W9']) {
+    expect(await rejection(kolab.readWork(eve, ref))).toBe(`Error: no work package ${ref} in kolab other, the kolab your session works in: work is read and done only in your session's own kolab (sign in to kolab test to work there)`);
   }
   expect((await kolab.listWork(eve)).items).toStrictEqual([]);
   // Row-level security: a session in `other` reads no row of test's work.

@@ -396,6 +396,11 @@ export interface WorkItemView {
   blocked: WorkBlock[];
   /** To do, not blocked and not a milestone, and the reader may write the technical layer (PLN13). */
   ready: boolean;
+  /**
+   * A milestone not Done: why, its members that aren't Done, in the shape of a blocked reason (PLN3,
+   * W5.7). A milestone is never pulled; it is Done, by itself, when every member is.
+   */
+  waiting?: Extract<WorkBlock, { reason: 'depends_on' }>[];
   /** Removed from its binding (PLN4), or made a decision: the version that removed it (a plan's, before D104). Never ready. */
   removed_in?: string;
   /** Done on submission with no reviewer (PLN16). */

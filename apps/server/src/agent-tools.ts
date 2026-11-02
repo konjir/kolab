@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
+import { args } from './args.js';
 import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
@@ -18,13 +19,13 @@ import { answersUri, inboxUri } from './uris.js';
 const address = z.string().describe('A Konjir address, e.g. kj:checkout@3#R1 or kj:checkout#R1~q({"exact":"30 seconds"}): the short form, a node in your kolab. kj:<kolab>/<node>… names the kolab too (kj:shop/checkout@3#R1). Omit @version to use the latest committed version.');
 const node = z.string().describe('A node in your kolab, by name (checkout), or <kolab>/<node>.');
 // Strict, so a field in the wrong place (a done_when beside text, not inside work) is refused, not dropped.
-const elementInput = z.strictObject({
+const elementInput = args({
   id: z.string().optional().describe('Stable element ID. Reuse the existing ID when editing an element; omit only for a brand-new element.'),
   text: z.string(),
   parent: z.string().optional().describe('ID of the containing element (e.g. a section).'),
   work: workInput.nullable().optional().describe('A binding element\'s work fields, which make it a work package ({} for one with none yet). Left out, the element keeps its own (as in a delta); null clears them, making it a decision.'),
 });
-const deltaInput = z.strictObject({
+const deltaInput = args({
   kind: z.enum(DELTA_KINDS),
   element: z.string(),
   text: z.string().optional(),
@@ -33,20 +34,22 @@ const deltaInput = z.strictObject({
 });
 const from = address.optional().describe('Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark.');
 
-const listNodes = z.object({ kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).optional(), ...paging });
-const resolve = z.object({ address });
-const readNode = z.object({
+const noArgs = args({});
+const listNodes = args({ kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).optional(), ...paging });
+const resolve = args({ address });
+const readNode = args({
   node: z.string().describe('A node by name: one in your kolab (checkout), or <kolab>/<node> in any kolab you can read.'),
   version: z.number().int().optional(),
   cursor: z.string().optional().describe(`A version holds at most ${MAX_ELEMENTS} elements, read ${READ_NODE_PAGE} at a time: pass the next a read returned for the elements after them. Omit it for the first.`),
 });
-const lineage = z.object({
+const lineage = args({
   node,
+  version: z.number().int().optional().describe('The version to walk from, e.g. one waiting for your review: its links are the ones it was drafted with. Defaults to the latest committed version.'),
   direction: z.enum(['upstream', 'downstream']).describe('Required. upstream = what this node relies on; downstream = what relies on it.'),
   ...paging,
 });
-const listStale = z.object({ all_layers: z.boolean().optional(), node: node.optional(), ...paging });
-const listQueries = z.object({
+const listStale = args({ all_layers: z.boolean().optional(), node: node.optional(), ...paging });
+const listQueries = args({
   mine: z.boolean().optional().describe('Questions and notes you raised, open and answered'),
   all_layers: z.boolean().optional(),
   state: z.enum(QUERY_STATES).optional(),
@@ -54,18 +57,20 @@ const listQueries = z.object({
   node: node.optional().describe('Only those raised on this node of your kolab'),
   ...paging,
 });
-const createNode = z.object({
+const createNode = args({
   kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. binding: how the spec is built on one stack, its decisions and its work packages (elements with a work field); it names the spec. plan is retired (D104): work is planned in the binding, and no plan is made'),
   title: z.string(),
-  id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID.'),
+  id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID. Set once: no verb renames a node.'),
   parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab\'s one spec). A spec and a prototype take none.'),
+}, {
+  name: 'A node\'s name is its id (id=checkout), given when it is made: no verb renames a node, and a kolab holds one spec, so name it in this call',
 });
-const draft = z.object({
+const draft = args({
   node,
   elements: z.array(elementInput).optional(),
   deltas: z.array(deltaInput).optional(),
   parent: address.optional().describe('For a new variant: the parent spec version to inherit from, e.g. kj:storefront@2, or kj:<kolab>/<node>@2 to fork a committed version of another kolab you can read.'),
-  links: z.array(z.object({
+  links: z.array(args({
     source_element: z.string().optional().describe('Your element in this draft (same name as on konjir_link)'),
     element: z.string().optional().describe('Alias for source_element'),
     target: address.describe('What it relies on (committed): in your kolab, or kj:<kolab>/<node>… in another kolab you can read'),
@@ -73,47 +78,47 @@ const draft = z.object({
   })).optional().describe('Links to declare from this draft\'s elements, in the same call: [{"source_element":"b1","target":"kj:spec#R1"}]. Links on earlier versions carry forward automatically.'),
   unlink: z.array(linkRef).optional().describe('Links of the version this draft is built on that it drops, so its commit doesn\'t carry them forward: [{"source_element":"b1","target":"kj:spec#R1"}] or [{"link":"<id>"}]. Removing a link settles its open mark when the version commits; it is reviewed with the rest of the draft.'),
 });
-const unlink = z.object({
+const unlink = args({
   node,
   version: z.number().int().describe('Your draft of the node: the removal is part of it, reviewed with it'),
   links: z.array(linkRef).min(1).describe('The links to remove: [{"link":"<id>"}], or [{"source_element":"b1","target":"kj:spec#R1"}]'),
 });
-const submit = z.object({ node, version: z.number().int() });
-const review = z.object({
+const submit = args({ node, version: z.number().int() });
+const review = args({
   node: node.optional().describe('The node of the version to review, with version. Leave out for a work package (work).'),
   version: z.number().int().optional(),
   work: z.string().optional().describe('A work package In review to review instead of a version: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2'),
   verdict: z.enum(REVIEW_VERDICTS).describe('For a version: approve commits it (one approval is enough); request_changes returns it to its author as a draft. For a work package: approve makes it Done; request_changes returns it to its assignee, In progress'),
   note: z.string().optional().describe('What you checked, or what must change. Required with request_changes.'),
-  findings: z.array(z.object({
+  findings: z.array(args({
     kind: z.enum(FINDING_KINDS).describe('contradiction: two elements that cannot both hold, or an element that makes what it links to impossible (blocks the commit). layer_leak: implementation in a functional spec, or a binding that changes behavior (commits, and raises a question to the layer that owns the answer).'),
     elements: z.array(z.string()).min(1).describe('The element IDs involved, from this version'),
     explanation: z.string().describe('One or two sentences the author can act on'),
   })).optional(),
 });
-const abandon = z.object({ node, version: z.number().int() });
-const listReviews = z.object({ ...paging });
-const link = z.object({
+const abandon = args({ node, version: z.number().int() });
+const listReviews = args({ ...paging });
+const link = args({
   kind: z.enum(EDGE_KINDS).describe('dependency = relies on; derivation = generated from; equivalence = must stay in sync'),
   source: address.describe('Your element, e.g. kj:checkout-pg@2#b1 (drafts allowed).'),
   source_element: z.string().optional().describe('Alternative to putting #element in source.'),
   target: address.describe('What it relies on; must be committed and resolve exactly. e.g. kj:checkout@3#R1, or kj:<kolab>/<node>… in another kolab you can read (the link rests on your Read there, and is marked access_lost if that goes), or a span: kj:checkout#R1~q({"exact":"30 seconds","prefix":"Checkout completes within","suffix":"of payment confirming"}). For a span, quote only the few words you rely on (at most 1,000 characters), and give several whole words either side as prefix and suffix, not one word: they must still surround the quote in the target.'),
 });
-const clearMark = z.object({ mark: z.string() });
-const resolveOverride = z.object({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });
-const ask = z.object({ address, question: z.string().describe(`At most ${MAX_TEXT} characters`), from });
-const annotate = z.object({ address, note: z.string().describe(`At most ${MAX_TEXT} characters`), from: address.optional().describe('Your own element the note is about') });
-const answerQuery = z.object({ query: z.string(), answer: z.string().describe(`At most ${MAX_TEXT} characters`) });
+const clearMark = args({ mark: z.string() });
+const resolveOverride = args({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });
+const ask = args({ address, question: z.string().describe(`At most ${MAX_TEXT} characters`), from });
+const annotate = args({ address, note: z.string().describe(`At most ${MAX_TEXT} characters`), from: address.optional().describe('Your own element the note is about') });
+const answerQuery = args({ query: z.string(), answer: z.string().describe(`At most ${MAX_TEXT} characters`) });
 const evidence = z.array(z.string()).min(1).describe('What backs the claim: kj: addresses (each must resolve), and anything else as text, such as a commit, a file and line, or a test run. At least one.');
-const openCase = z.object({
+const openCase = args({
   address: address.describe('The element in dispute, e.g. kj:checkout#R1, on a committed version in your kolab'),
   question: z.string().describe('What the two sides disagree on, in one sentence'),
   claim: z.string().describe('Your position'),
   seeks: z.enum(RULING_EFFECTS).describe('The side your position takes: keep_intent (the element stands as written) or change_intent (it must change). The other side takes the opposite.'),
   evidence,
 });
-const addPosition = z.object({ case: z.string().describe('The case file\'s id'), claim: z.string().describe('Your position: the other side, which seeks the opposite of the opener\'s'), evidence });
-const rule = z.object({
+const addPosition = args({ case: z.string().describe('The case file\'s id'), claim: z.string().describe('Your position: the other side, which seeks the opposite of the opener\'s'), evidence });
+const rule = args({
   case: z.string().optional().describe('The case file to rule on. Omit it, and give address, to rule directly.'),
   address: address.optional().describe('For a ruling with no case file behind it: the element or node it rules on, e.g. kj:checkout#R1'),
   text: z.string().describe('The ruling, as agents will be served it as precedent'),
@@ -121,17 +126,17 @@ const rule = z.object({
   verdicts: z.record(z.string(), z.enum(POSITION_VERDICTS)).optional().describe('With case: each position\'s verdict, by position id, sustaining exactly one: {"<position>":"sustained","<position>":"overruled"}'),
   replaces: z.string().optional().describe('What this ruling overrules, in words, if anything'),
 });
-const listCases = z.object({
+const listCases = args({
   state: z.enum(CASE_FILE_STATES).optional().describe('Default: open ones'),
   mine: z.boolean().optional().describe('Case files you opened or hold a position on, open and ruled'),
   all_layers: z.boolean().optional(),
   node: node.optional().describe('Only those about this node of your kolab'),
   ...paging,
 });
-const readCase = z.object({ case: z.string() });
-const listRulings = z.object({ node: node.optional().describe('Only rulings on this node of your kolab'), ...paging });
+const readCase = args({ case: z.string() });
+const listRulings = args({ node: node.optional().describe('Only rulings on this node of your kolab'), ...paging });
 const work = z.string().describe('A work package of your kolab: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2. An address from before D104, kj:<plan>#<id>, names the package where it moved');
-const listWork = z.object({
+const listWork = args({
   binding: node.optional().describe('Only this binding\'s work packages'),
   plan: node.optional().describe('Retired (D104): use binding. A plan\'s name is refused, naming the binding its packages moved to'),
   state: z.enum(WORK_STATES).optional(),
@@ -139,57 +144,58 @@ const listWork = z.object({
   mine: z.boolean().optional().describe('true: only those you hold'),
   ...paging,
 });
-const readWork = z.object({
+const readWork = args({
   work,
   events_cursor: z.string().optional().describe('The events_next a previous read returned, for the events after it'),
   limit: z.number().int().optional().describe('How many events to return: 50 by default, at most 200'),
 });
-const pullWork = z.object({
+const pullWork = args({
   binding: node.optional().describe('The binding to pull from: needed only when more than one binding of your kolab has work packages'),
   plan: node.optional().describe('Retired (D104): use binding'),
 });
-const releaseWork = z.object({ work, note: z.string().optional().describe(`Why, for whoever pulls it next. At most ${MAX_TEXT} characters`) });
-const reassignWork = z.object({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
-const evidenceItem = z.strictObject({
+const releaseWork = args({ work, note: z.string().optional().describe(`Why, for whoever pulls it next. At most ${MAX_TEXT} characters`) });
+const reassignWork = args({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
+const evidenceItem = args({
   kind: z.enum(EVIDENCE_KINDS).describe('commit, pull_request or test_run'),
   sha: z.string().optional().describe('A commit\'s full sha: 40 hexadecimal characters (64 for SHA-256)'),
   pr: z.number().int().optional().describe('A pull request\'s number'),
   url: z.string().optional().describe(`An https link: to the commit, the pull request (required for one) or the test run. At most ${MAX_EVIDENCE_URL} characters, with no user, password or credential-bearing query parameter (token, sig, key, X-Amz-…) in it`),
   title: z.string().optional().describe(`A commit's subject, a pull request's title, or a test run's summary ("npm test: 120 passed"). At most ${MAX_TEXT} characters`),
+  summary: z.string().optional().describe('A test run\'s summary, as title takes it ("npm test: 120 passed"): give one or the other. A test run needs a url or a summary'),
   files: z.array(z.string()).optional().describe(`A commit's: the paths it touched, at most ${MAX_EVIDENCE_FILES}`),
   repo: z.string().optional().describe('A commit\'s or pull request\'s repository: the URL of one registered in your kolab (konjir_list_repositories). Leave it out to use the package\'s own (its repo, or its binding\'s implementation); another repository than the package\'s own is refused. A pull request\'s url, and a commit\'s, must sit under it'),
 });
-const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","title":"npm test: 120 passed"}]; a commit or pull request may name its repo`);
-const addEvidence = z.object({ work, evidence: evidenceList });
-const submitWork = z.object({
+const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","summary":"npm test: 120 passed"}]; a commit or pull request may name its repo`);
+const addEvidence = args({ work, evidence: evidenceList });
+const submitWork = args({
   work,
   evidence: evidenceList.optional().describe('Evidence to record with the submission, as konjir_add_evidence takes it'),
   note: z.string().optional().describe(`What you did, for the reviewer. At most ${MAX_TEXT} characters`),
 });
-const reopenWork = z.object({ work, note: z.string().describe(`Why the work is opened again. At most ${MAX_TEXT} characters`) });
-const registerRepository = z.object({
+const reopenWork = args({ work, note: z.string().describe(`Why the work is opened again. At most ${MAX_TEXT} characters`) });
+const registerRepository = args({
   url: z.string().describe('The repository\'s https URL, such as https://github.com/acme/orders: no user, password, query or fragment. Kolab stores it lower-cased in the host, without a trailing slash or .git'),
   root_sha: z.string().describe('Its root commit: the full sha `git rev-list --max-parents=0 HEAD` prints in a checkout of it. Every delivery from a checkout is checked against it'),
   binding: node.optional().describe('The binding this repository implements, one repository per binding: its work packages are done here unless one names another repo'),
 });
-const archiveRepository = z.object({ repo: z.string().describe('The repository, by its URL or id') });
-const listRepositories = z.object({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
-const setWorkLease = z.object({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
-const takeJob = z.object({ machine: z.string().describe(`A label for the machine the job runs on, 1 to ${JOB_LIMITS.machine} characters, such as lee-laptop: it names the machine in the ledger`) });
+const archiveRepository = args({ repo: z.string().describe('The repository, by its URL or id') });
+const listRepositories = args({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
+const setWorkLease = args({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
+const takeJob = args({ machine: z.string().describe(`A label for the machine the job runs on, 1 to ${JOB_LIMITS.machine} characters, such as lee-laptop: it names the machine in the ledger`) });
 const job = z.string().describe('The job\'s id, as konjir_take_job gave it');
-const renewJob = z.object({ job });
-const endJob = z.object({
+const renewJob = args({ job });
+const endJob = args({
   job,
   outcome: z.enum(JOB_ENDS).describe('done: the agent finished and exited; stopped: you stopped it; failed: the agent failed or crashed'),
   note: z.string().optional().describe(`What happened, for the ledger and for whoever takes its item next. At most ${MAX_TEXT} characters`),
 });
-const listJobs = z.object({ live: z.boolean().optional().describe('true: only live jobs; false: only ended ones'), ...paging });
-const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
-const archiveAgent = z.object({
+const listJobs = args({ live: z.boolean().optional().describe('true: only live jobs; false: only ended ones'), ...paging });
+const createAgent = args({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
+const archiveAgent = args({
   label: z.string().optional().describe('The agent\'s label: archives <you>-<label>.'),
   agent: z.string().optional().describe('The agent\'s whole name, for an agent of yours whose name doesn\'t start <you>- (konjir_list_agents gives each one\'s archive_with). Give label or agent, not both.'),
 });
-const listAgents = z.object({ archived: z.boolean().optional().describe('Include your archived agents too') });
+const listAgents = args({ archived: z.boolean().optional().describe('Include your archived agents too') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
 @Injectable()
@@ -200,6 +206,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_whoami',
+    schema: noArgs,
     description: 'Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the resources to subscribe to for pushed updates: your layer\'s inbox and your answers, both in that kolab. A session can subscribe only to its own kolab\'s. session is the session\'s key, the sha256 of its token: Kolab never shows the token again after it is issued.',
     annotations: { readOnlyHint: true },
   })
@@ -323,15 +330,15 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_lineage',
-    description: `Walk lineage from a node version: upstream = what it depends on; downstream = what depends on it. By link id.${PAGED}`,
+    description: `Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. By link id.${PAGED}`,
     schema: lineage,
     annotations: { readOnlyHint: true },
   })
-  lineage({ node, direction, cursor, limit }: z.infer<typeof lineage>, context?: McpToolContext) {
+  lineage({ node, version, direction, cursor, limit }: z.infer<typeof lineage>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const n = await this.kolab.nodeIn(s, node, 'walking lineage');
-      const v = await this.kolab.latestCommitted(n.id);
-      if (!v) throw new Error(`${n.name} has no committed version`);
+      const v = version === undefined ? await this.kolab.latestCommitted(n.id) : (await this.kolab.locateVersion({ session: s }, { node: n.name, version })).version;
+      if (!v) throw new Error(version === undefined ? `${n.name} has no committed version` : `${n.name} has no version ${version}`);
       const { items, next } = await this.kolab.lineagePage(v.id, direction, { cursor, limit });
       return { node: n.name, version: v.seq, direction, edges: items, next };
     });
@@ -386,7 +393,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_draft',
-    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Or send the full element list and Kolab computes the delta. A binding's elements are its decisions and its work packages: a work package is an element with work fields, {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}} ("work":{} for one whose fields are still to come); an element without is a decision, and is never work. A milestone has "milestone":true, depends on its members, may carry a target_date, and links nothing. Work left out of an element or a delta keeps its own; "work":null clears it, making the element a decision. Like any binding element, a work package serves spec elements and relies on the binding's decisions through dependency links at element scope (links); it never links another work package: name it in depends_on. Submitting a binding version checks its work fields first (PLN2): Depends on names work packages of the same version, without cycles; only a milestone carries a target date. Then it is reviewed like any binding version. A job splits a package too big for one job by drafting child packages and making the parent depend on them, or a milestone over them (PLN20). A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
+    description: `Draft a new version. To change a few elements, send only deltas: [{"kind":"override","element":"R2","text":"new text"}], plus add/remove; everything else carries over, so you never need to copy the whole node. Deltas apply to the latest committed version, never to a draft or a version sent back for changes: after changes are requested on a node's first version, send the full element list again. Or send the full element list and Kolab computes the delta. A binding's elements are its decisions and its work packages: a work package is an element with work fields, {"id":"W1.2","text":"Build the cancel endpoint.","work":{"done_when":"…","depends_on":["W1.1"],"size":"M"}} ("work":{} for one whose fields are still to come); an element without is a decision, and is never work. A milestone has "milestone":true, depends on its members, may carry a target_date and a done_when (its members' exit criterion), and has no size and no links: it has no work of its own. Work left out of an element or a delta keeps its own; "work":null clears it, making the element a decision. Like any binding element, a work package serves spec elements and relies on the binding's decisions through dependency links at element scope (links); it never links another work package: name it in depends_on. Submitting a binding version checks its work fields first (PLN2): Depends on names work packages of the same version, without cycles; only a milestone carries a target date, and a milestone carries no size. Then it is reviewed like any binding version. A job splits a package too big for one job by drafting child packages and making the parent depend on them, or a milestone over them (PLN20). A draft is not truth until konjir_submit_for_review commits it. A version holds at most ${MAX_ELEMENTS} elements and ${MAX_VERSION_BYTES / 1024} KiB of text, each element at most ${MAX_ELEMENT_TEXT} characters; a larger draft is refused, saying which limit it hit. You and your owner's other agents (or, for a person, you and your agents) draft at most ${MAX_DRAFTS_PER_HOUR} versions an hour between you; an organization's agents share ${MAX_ORG_DRAFTS_PER_HOUR}. A draft counts when it is made, whoever submits it and whatever becomes of it: put several changes in one draft.`,
     schema: draft,
   })
   draft(a: z.infer<typeof draft>, context?: McpToolContext) {
@@ -691,7 +698,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_work',
-    description: `The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), at_risk and its revisit (repository, commits, files, pull requests) while an open mark on it says something it serves or relies on changed (a Done package stays Done, PLN10), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. binding: one binding only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
+    description: `The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), what a milestone not Done waits on (waiting: its members that aren't Done, as blocked names them), at_risk and its revisit (repository, commits, files, pull requests) while an open mark on it says something it serves or relies on changed (a Done package stays Done, PLN10), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. binding: one binding only. ready=true: only what konjir_pull_work could give you. mine=true: what you hold.${PAGED}`,
     schema: listWork,
     annotations: { readOnlyHint: true },
   })
@@ -793,7 +800,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_register_repository',
-    description: 'For a person with Maintain or Admin in your kolab, never an agent: register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding\'s implementation (one per binding). Kolab never reads git: the root commit pins which checkout `konjir work deliver` accepts, and the repository counts as confirmed once a work package that cites it is approved by someone other than you and the package\'s assignee. Audited. konjir repo register, run in a checkout, works both out for you.',
+    description: 'For a person with Maintain or Admin in your kolab, never an agent (your session\'s kolab only: for another kolab, sign in there first, konjir login --kolab <kolab>): register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding\'s implementation (one per binding). Kolab never reads git: the root commit pins which checkout `konjir work deliver` accepts, and the repository counts as confirmed once a work package that cites it is approved by someone other than you and the package\'s assignee. Audited. konjir repo register, run in a checkout, works both out for you.',
     schema: registerRepository,
   })
   registerRepository({ url, root_sha, binding }: z.infer<typeof registerRepository>, context?: McpToolContext) {
@@ -828,7 +835,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_set_work_lease',
-    description: `With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max} (${WORK_LEASE_MINUTES.default} by default). Audited. Leases running now keep their time; the next pull or renewal takes the new length.`,
+    description: `With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max} (${WORK_LEASE_MINUTES.default} by default). Audited. Leases running now keep their time; the next pull or renewal takes the new length. Your session's kolab only: for another kolab, sign in there first (konjir login --kolab <kolab>).`,
     schema: setWorkLease,
   })
   setWorkLease({ minutes }: z.infer<typeof setWorkLease>, context?: McpToolContext) {

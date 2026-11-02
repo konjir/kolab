@@ -13,7 +13,7 @@
  * sign-in that finishes after a `konjir login` kept one yields: the other is kept, and the
  * bridge's own grant is revoked.
  */
-import { FileLock, StoredLogin, agentCredentials, checkKolabUrl, login, logout, openBrowser, safeUrl } from '@konjir/login';
+import { FileLock, SIGN_IN_WAIT_MS, StoredLogin, agentCredentials, checkKolabUrl, login, logout, openBrowser, safeUrl } from '@konjir/login';
 import { randomBytes } from 'node:crypto';
 import type { ChannelMessage } from './messages.js';
 
@@ -41,8 +41,8 @@ const shellWord = (w: string) => (/^[A-Za-z0-9_./:=@-]+$/.test(w) ? w : `'${w.re
 /** The name the bridge registers under, which Kolab's consent page shows. */
 export const CLIENT_NAME = 'konjir channel (Claude Code)';
 
-/** How long the bridge's own sign-in waits for the person, by default. */
-const SIGN_IN_MS = 5 * 60_000;
+/** How long the bridge's own sign-in waits for the person, by default: as long as Kolab's sign-in page lasts (W5.7). */
+const SIGN_IN_MS = SIGN_IN_WAIT_MS;
 
 /** Anything shaped like a Kolab secret, masked. */
 export const mask = (text: string) => text.replace(/\bkj[src]_[A-Za-z0-9_-]+/g, '***');

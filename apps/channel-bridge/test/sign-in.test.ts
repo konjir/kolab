@@ -497,9 +497,9 @@ test('W3.8 done when: with only the bridge configured, as konjir connect claude 
   const keptRefresh = () => JSON.parse(readFileSync(agentFile, 'utf8'))[server.url].tokens.refresh_token as string;
   const before = keptRefresh();
   await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-claude' and ended_at is null`);
-  await call(claude, 'ask', { address: 'kj:orders#R8', question: 'Is a note enough here?', kind: 'note' });
+  await call(claude, 'ask', { address: 'kj:orders#R8', question: 'Is a note enough here?' });
   expect(keptRefresh()).not.toBe(before);   // refreshed, and kept in the agent's own file
-  const mine = JSON.stringify(await call(claude, 'list_queries', { all: true }));
+  const mine = JSON.stringify(await call(claude, 'list_queries', {}));
   expect(mine.split('Is a note enough here?').length - 1).toBe(1);   // sent once: one note
   await call(ann, 'ask', { address: 'kj:orders#R8', question: 'And refunds?' });
   await until('the question after the expiry', () => messages.find((m) => m.content.includes('"And refunds?"')), 40_000, more);

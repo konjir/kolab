@@ -4291,7 +4291,11 @@ export class Kolab {
       const byId = new Map(parentEls.map((e) => [e.element_id, e]));
       deltaRows = [...carried, ...(input.deltas ?? []).map((d) => {
         const base = byId.get(d.element);
-        if (d.kind !== 'add' && !base) throw new Error(`cannot ${d.kind} ${d.element}: not in parent`);
+        if (d.kind !== 'add' && !base) {
+          // Deltas apply to the version this draft builds on (W5.7): the latest committed, never a draft
+          // or a version sent back, so after changes are requested on a first version there is none.
+          throw new Error(`cannot ${d.kind} ${d.element}: not in parent. Deltas apply to the version a draft builds on, ${parentId ? `the latest committed version of ${drafted.name} (or of its parent, for a variant)` : `and ${drafted.name} has no committed version yet`}, never to a draft or a version sent back for changes: send the full element list (elements) instead`);
+        }
         return {
           element_id: d.element, kind: d.kind, text: d.text ?? null,
           parent_element_id: d.parent ?? base?.parent_element_id ?? null, ord: null,
@@ -7193,6 +7197,11 @@ export class Kolab {
       const work = e.work ?? null;
       const mine = delivers.get(e.element_id) ?? [];
       const blocked: BoardBlock[] = [];
+      // A milestone waits on its members (PLN3): those not Done, said as a blocked reason is (W5.7).
+      const waiting = work?.milestone ? (work.depends_on ?? []).flatMap((d) => {
+        const st = stateOf(rows.get(d));
+        return st === 'done' ? [] : [{ reason: 'depends_on' as const, work: formatAddress({ node: binding.name, element: d }), state: st ?? 'todo' }];
+      }) : [];
       if (!work?.milestone) {
         for (const d of work?.depends_on ?? []) {
           const st = stateOf(rows.get(d));
@@ -7208,7 +7217,7 @@ export class Kolab {
           if (node) blocked.push({ reason: 'case_file', on: formatAddress({ node, version: x.seq, element: x.element_id }), case: x.id });
         }
       }
-      out.push({ binding, version: v, id: e.element_id, text: e.text, work, row, state: stateOf(row)!, delivers: mine, blocked,
+      out.push({ binding, version: v, id: e.element_id, text: e.text, work, row, state: stateOf(row)!, delivers: mine, blocked, waiting,
         assignee: row.lapsed ? null : row.assignee_id, lease_until: row.lapsed || !row.lease_until ? null : iso(row.lease_until), marked: marked.has(e.element_id) });
     }
     if (opts.removed) {
@@ -7218,7 +7227,7 @@ export class Kolab {
         const last = (await q.query<ElementRow & { work: WorkFields | null }>(
           `select e.element_id, e.text, e.work from element e join version lv on lv.id = e.version_id
             where lv.node_id = $1 and lv.state = 'committed' and e.element_id = $2 and e.work is not null order by lv.seq desc limit 1`, [binding.id, row.element_id])).rows[0];
-        out.push({ binding, version: v, id: row.element_id, text: last?.text ?? '', work: last?.work ?? null, row, state: stateOf(row)!, delivers: [], blocked: [],
+        out.push({ binding, version: v, id: row.element_id, text: last?.text ?? '', work: last?.work ?? null, row, state: stateOf(row)!, delivers: [], blocked: [], waiting: [],
           assignee: row.lapsed ? null : row.assignee_id, lease_until: null, marked: marked.has(row.element_id) });
       }
     }
@@ -7255,6 +7264,7 @@ export class Kolab {
       // only Read sees neither among the reasons.
       blocked: p.blocked.filter((b) => belongs || !(b.reason === 'case_file' || b.byMark)).map(({ byMark: _m, ...b }) => b),
       ready: p.state === 'todo' && !p.row.removed_in_version_id && !p.row.milestone && !p.blocked.length && canPull,
+      ...(p.row.milestone && p.state !== 'done' && !p.row.removed_in_version_id ? { waiting: p.waiting } : {}),
       ...(p.row.removed_in_version_id ? { removed_in: formatAddress({ node: p.row.removed_node ?? p.binding.name, version: p.row.removed_seq ?? undefined }) } : {}),
       ...(p.row.unreviewed ? { unreviewed: true } : {}),
       ...(p.row.returned && p.state === 'in_progress' ? { returned: true } : {}),
@@ -7394,7 +7404,9 @@ export class Kolab {
     if (!a.element || a.selector || a.version !== undefined) {
       throw new GateError(`${ref} isn't a work package's address: give kj:<binding>#<id>, with no @version or quote (a package's state isn't versioned, PLN4)`);
     }
-    const missing = () => new Error(`no work package ${formatAddress({ node: a.node, element: a.element })} in kolab ${s.kolab}`);
+    // The address as given, its kolab kept (W5.7): one in another kolab is refused alike, found or not (D49).
+    const missing = () => new Error(`no work package ${formatAddress({ kolab: a.kolab, node: a.node, element: a.element }, { from: s.kolab })} in kolab ${s.kolab}${
+      a.kolab !== undefined && a.kolab !== s.kolab ? `, the kolab your session works in: work is read and done only in your session's own kolab (sign in to kolab ${a.kolab} to work there)` : ''}`);
     if (a.kolab !== undefined && a.kolab !== s.kolab) throw missing();
     const node = await this.findNode(this.db, s.kolab, a.node);
     if (node?.kind === 'plan') {
@@ -8082,13 +8094,28 @@ export class Kolab {
     return lease;
   }
 
-  /** Refuses, in words its assignee can act on, unless `s`'s actor holds `r` In progress with a lease that still runs (PLN15, D98). */
-  private requireHolding(r: WorkRow, s: Session, at: string, what: string) {
+  /**
+   * Refuses, in words its assignee can act on, unless `s`'s actor holds `r` In progress with a lease
+   * that still runs (PLN15, D98). A package whose lease the actor let lapse says so, swept or not,
+   * with the kolab's lease length, and that nothing of this call was recorded (W5.7).
+   */
+  private async requireHolding(tx: Q, r: WorkRow, s: Session, at: string, what: string, leaseS: number) {
     if (r.removed_in_version_id) throw new GateError(`${at} was removed from the binding (PLN4), so it takes no more work`);
+    const lapsed = (when: Date | string | null) => {
+      const minutes = Math.round(leaseS / 60);
+      return new GateError(`your lease on ${at} lapsed${when ? ` at ${iso(when)}` : ''}, so it went back to To do: nothing was recorded. A lease in kolab ${s.kolab} runs ${minutes} minute${minutes === 1 ? '' : 's'} from your last call on the package (PLN15). Pull it again (konjir_pull_work), then send this again`);
+    };
+    if (r.state === 'todo' && !r.assignee_id) {
+      // Swept already: the package's last event says whose lease lapsed.
+      const last = (await tx.query<{ kind: string; assignee_from: string | null; at: Date }>(
+        `select kind, assignee_from, at from work_event where binding_node_id = $1 and element_id = $2 order by at desc, id desc limit 1`,
+        [r.binding_node_id, r.element_id])).rows[0];
+      if (last?.kind === 'lapsed' && last.assignee_from === s.actor_id) throw lapsed(r.lease_until ?? last.at);
+    }
     if (r.state !== 'in_progress' || r.assignee_id !== s.actor_id) {
       throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}${r.assignee_id && !r.lapsed ? `, held by ${r.assignee_id}` : ''}: only its assignee ${what}, while it holds it In progress`);
     }
-    if (r.lapsed) throw new GateError(`your lease on ${at} lapsed at ${iso(r.lease_until)}, so it is To do again: pull again (konjir_pull_work)`);
+    if (r.lapsed) throw lapsed(r.lease_until);
   }
 
   /** Evidence as a client gives it, checked (checkEvidence), or refused before anything is written. */
@@ -8181,7 +8208,7 @@ export class Kolab {
       const out = await this.rated(s.actor_id, 'draft', (hold) => this.inTransaction(async (tx) => {
         const lease = await this.workTx(tx, s, 'records no evidence');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
-        this.requireHolding(r, s, at, 'records its evidence');
+        await this.requireHolding(tx, r, s, at, 'records its evidence', lease);
         const repositories = await this.pinEvidenceIn(tx, binding, id, items);
         const until = (await tx.query<{ lease_until: Date }>(
           `update work_package set lease_until = clock_timestamp() + $3 * interval '1 second', touched_at = clock_timestamp(), updated_at = clock_timestamp()
@@ -8217,7 +8244,7 @@ export class Kolab {
       const note = opts.note === undefined ? null : requireText(opts.note, 'a note');
       const at = formatAddress({ node: binding.name, element: id });
       const out = await this.rated(s.actor_id, 'draft', (hold) => this.inTransaction(async (tx, signal) => {
-        await this.workTx(tx, s, 'submits no work');
+        const lease = await this.workTx(tx, s, 'submits no work');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
         const c = await this.concernedIn(tx, binding.id, id);
         const writers = await this.workReviewersIn(tx, s.kolab, s.actor_id);
@@ -8248,7 +8275,7 @@ export class Kolab {
         if (r.state === 'in_review' && r.assignee_id === s.actor_id && !r.removed_in_version_id) {
           throw new GateError(`${at} waits in review, so it takes no evidence now: submit it with no evidence to ask its reviewers again, or wait for the verdict; a request for changes returns it to you`);
         }
-        this.requireHolding(r, s, at, 'submits it');
+        await this.requireHolding(tx, r, s, at, 'submits it', lease);
         if (r.milestone) throw new GateError(`${at} is a milestone: it has no work of its own, and is Done when its members are (PLN3)`);
         const repositories = await this.pinEvidenceIn(tx, binding, id, items);
         // The evidence it needs (D98): a commit or a pull request since it was last To do, this call's included.
@@ -9690,7 +9717,7 @@ export class Kolab {
     for (const v of versions) {
       const verdicts = (await this.db.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; findings: Finding[] | null }>(
         `select r.reviewer_id, r.state, r.note, r.findings from review_request r
-          where r.version_id = $1 and (r.state <> 'open' or ${CAN_REVIEW('r.reviewer_id', '$2', '$3')})
+          where r.version_id = $1 and (r.state in ('approved', 'changes_requested') or ${CAN_REVIEW('r.reviewer_id', '$2', '$3')})
           order by r.created_at, r.reviewer_id, r.id`, [v.id, v.kolab_id, v.layer])).rows;
       const name = await this.nameOf(v.node_id);
       const subject = `kj:${name}@${v.seq}`;
@@ -10345,6 +10372,8 @@ interface BoardPackage {
   /** Its state as read now: a lapsed lease reads as To do. */
   state: WorkState; assignee: string | null; lease_until: string | null;
   delivers: Delivery[]; blocked: BoardBlock[];
+  /** A milestone's members that aren't Done (PLN3). */
+  waiting: Extract<WorkBlock, { reason: 'depends_on' }>[];
   /** An open mark sits on it (packageMarks): with work, it is at risk (PLN10). */
   marked: boolean;
 }

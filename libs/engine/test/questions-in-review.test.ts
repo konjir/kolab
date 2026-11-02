@@ -321,6 +321,21 @@ test('a review request skips an agent signed in as engineer but reaches a person
   expect((await kolab.recordReview(pm, v1, { verdict: 'approve' })).ok).toBe(true);
 });
 
+test('a request withdrawn from an agent that never saw it (signed in as engineer) isn\'t listed in its author\'s submissions (W5.7)', async () => {
+  // The M5 check: a spec version committed by one approval listed, under yours, withdrawn requests
+  // to engineer agents that hold Write on both layers, though submit named only who could review.
+  const { kolab, pat, spec } = await leesKolab();
+  const v1 = await kolab.draft(pat, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
+  expect(await kolab.review(v1)).toMatchObject({ reviewers: ['lee'] });
+  const lee = await kolab.openSession('lee', 'product');
+  expect((await kolab.recordReview(lee, v1, { verdict: 'approve' })).ok).toBe(true);
+  // lee-agent's request was open, unseen, and is withdrawn now: it isn't a verdict, and was never shown.
+  expect((await kolab.db.query(`select reviewer_id, state from review_request order by reviewer_id`)).rows)
+    .toStrictEqual([{ reviewer_id: 'lee', state: 'approved' }, { reviewer_id: 'lee-agent', state: 'withdrawn' }]);
+  expect((await kolab.submissions('pat'))[0].verdicts.map((v) => [v.reviewer, v.state])).toStrictEqual([['lee', 'approved']]);
+  expect((await submissionsOf(kolab, pat, 'pat')).items[0].verdicts.map((v) => [v.reviewer, v.state])).toStrictEqual([['lee', 'approved']]);
+});
+
 test('when nobody else can review yet, the version waits in review and says how to get a reviewer; it doesn\'t commit unreviewed (D66)', async () => {
   // Pat's only other writer on the layer is Pat's own agent, signed in as engineer.
   const kolab = await openKolab();

@@ -179,7 +179,7 @@ Back in the **spec-writer** session:
 ```text
 You are the product writer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
 
-Your spec short-links came back with changes requested. Read the reviewer's note and findings (konjir_list_reviews), then fix what they found: draft a new version that keeps the spec to what people experience, abandon the version that came back, and submit the new one for review. Tell me what you changed.
+Your spec short-links came back with changes requested. Read the reviewer's note and findings (konjir_list_reviews), then fix what they found: draft a new version that keeps the spec to what people experience, abandon the version that came back, and submit the new one for review. Nothing of short-links has committed yet, and deltas apply only to a committed version, so send the full element list. Tell me what you changed.
 ```
 
 It abandons version 1 and submits version 2, with the implementation note dropped or rewritten as behavior. Give the reviewer's prompt to the **spec-reviewer** again. If it finds something else (in one of our runs it asked for a requirement to be split in two), run the writer's prompt and the reviewer's again. When it approves, the version commits, and each requirement has an address such as `kj:short-links@2#R3`.
@@ -340,6 +340,9 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 - **`no commit reachable from HEAD … carries the trailer`.** The builder committed without the package's trailer, or deliver ran on another branch. Ask it to commit with `git commit --trailer "Konjir-Work: …"`, the trailer `konjir_read_work` gives, and deliver from that branch.
 - **The builder's `konjir work deliver` opens a browser, or works as you.** It ran without `KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-builder.json"` before it, so konjir used your own sign-in, or none. Ask it to run it again with that in front.
 - **`a person with Maintain or Admin registers it` when an agent tries.** Registering a repository is always a person's act. Run `konjir repo register` yourself, signed in as yourself (step 6).
+- **`konjir repo register` or `konjir set_work_lease` acts on the wrong kolab.** A sign-in works in one kolab, and these act in that one. To act in another, sign in there first, as yourself: `konjir login --kolab <its name>`, then run the step. That sign-in replaces your other one as yourself, so sign back in to `$KOLAB` afterwards.
+- **A deltas draft says `cannot override …: not in parent`.** Deltas apply to the node's latest committed version. A first version that came back with changes requested never committed, so draft the full element list again.
+- **`konjir login` says the sign-in took too long.** It waits 20 minutes for your browser, as long as Kolab's sign-in page lasts. Run it again.
 - **The builder asks you a question about the spec instead of building.** The instructions tell it to ask in Konjir, with `konjir_ask`, so the question reaches the spec-writer's inbox as in step 5. Answer it there, and an open question blocks pulling the work that serves its requirement until it is answered.
 - **`konjir connect` says it has no bridge.** It runs the channel from a checkout. Use `~/kolab/bin/konjir`, or add `--http` for plain HTTP entries that each sign in through `/mcp` in Claude Code, without a channel.
 
