@@ -246,7 +246,9 @@ test('a screen that shows another kolab\'s requirements asks its own kolab\'s pr
   await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat' }) });
   const qs = await screenQuestions(kolab);
   expect(qs.map((q) => [q.node, q.element_id, q.layer, q.from_element_id, q.state])).toStrictEqual([['eu-ui', 'price', 'functional', 'price', 'open']]);
-  expect(qs[0].question).toMatch(/^Screen kj:eu-ui@2#price changed, and it shows kj:eu\/orders-eu@1#EU1 and kj:eu\/orders-eu@1#EU2, which are in another kolab/);
+  expect(qs[0].question).toMatch(/^Screen kj:eu-ui@2#price changed, and it shows 2 requirements in another kolab it is linked to \(an equivalence link, D79\)/);
+  // Its words name nothing of the other kolab: a reader here may not read it (D49, D53).
+  expect(qs[0].question).not.toMatch(/orders-eu|EU1|EU2|kj:eu\//);
   // Nothing reaches the other kolab's queue.
   expect(await kolab.queriesFor(carol, { layer: 'functional', state: 'open' })).toStrictEqual([]);
   expect((await kolab.queriesFor(product, { layer: 'functional', state: 'open' })).map((q) => q.address)).toStrictEqual(['kj:eu-ui@2#price']);
@@ -278,5 +280,83 @@ test('across kolabs, the other kolab\'s change that marks the screen settles its
   await kolab.drainOutbox();
   expect(await marks(kolab, 'eu-ui')).toStrictEqual([['price', 'changed']]);
   expect(await open(kolab)).toStrictEqual([]);
-  expect((await screenQuestions(kolab))[0].answer).toBe('settled: kj:eu/orders-eu@3#EU1 changed, and that marks the screen against it (changed)');
+  expect((await screenQuestions(kolab))[0].answer).toBe('settled: a change in the other kolab marks the screen against a requirement it shows there (changed)');
+});
+
+test('a screen that goes back to what it said before an answered question asks nothing, though its answer\'s mark was cleared by hand, or its revert was drafted before the answer (D79, W4.4)', async () => {
+  const { kolab, product } = await specAndPrototype();
+  // Cleared by hand, then reverted.
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v2` }) });
+  await kolab.answerQuery(product, (await screenQuestions(kolab))[0].id, 'Change it back.');
+  const [m] = await marksOn(kolab, 'orders-ui');
+  await kolab.clear(product, m.id);
+  await kolab.commit(product, 'orders-ui', { elements: screens() });
+  expect(await open(kolab)).toStrictEqual([]);
+  // A change to something new after that asks.
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v3` }) });
+  expect(await open(kolab)).toStrictEqual([['cancel', 'orders', 'R1']]);
+  expect((await screenQuestions(kolab)).at(-1)!.question).toMatch(new RegExp(`it said "${CANCEL}" and now says "${CANCEL}-v3"`));
+
+  // A revert drafted before the answer, committed after: asks nothing; the answer's mark stays,
+  // since the draft predates it.
+  const revert = await kolab.draft(product, 'orders-ui', { elements: screens() });
+  await kolab.answerQuery(product, (await screenQuestions(kolab)).at(-1)!.id, 'Change it back.');
+  expect((await kolab.submit(product, revert)).ok).toBe(true);
+  expect(await open(kolab)).toStrictEqual([]);
+  expect(await marks(kolab, 'orders-ui')).toStrictEqual([['cancel', 'query_answered']]);
+});
+
+test('only the answer to the screen\'s own question about a requirement counts as obeyed: an answered ask of another requirement from the screen doesn\'t (D79, W4.4)', async () => {
+  const { kolab, product } = await specAndPrototype();
+  // Someone asks about R2 from the cancel screen, which shows R1; the answer marks the screen.
+  const asked = await kolab.raiseQuery(product, 'kj:orders#R2', 'Does tracking show the courier?', { from: 'kj:orders-ui#cancel' });
+  await kolab.answerQuery(product, asked, 'Yes.');
+  expect(await marks(kolab, 'orders-ui')).toStrictEqual([['cancel', 'query_answered']]);
+  // The screen's next rewrite settles that mark, and still asks R1.
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v2` }) });
+  expect(await marks(kolab, 'orders-ui')).toStrictEqual([]);
+  expect(await open(kolab)).toStrictEqual([['cancel', 'orders', 'R1']]);
+});
+
+test('across kolabs, only the answer to the screen\'s own question counts as obeyed: an answered ask from the screen about the prototype doesn\'t (D79, W4.4)', async () => {
+  const { kolab, product } = await acrossKolabs();
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price', help: 'https://example.com/help' }) });
+  const asked = await kolab.raiseQuery(product, 'kj:eu-ui#help', 'Is help in every language?', { from: 'kj:eu-ui#price' });
+  await kolab.answerQuery(product, asked, 'Yes.');
+  expect(await marks(kolab, 'eu-ui')).toStrictEqual([['price', 'query_answered']]);
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat', help: 'https://example.com/help' }) });
+  expect(await open(kolab)).toStrictEqual([['price', 'eu-ui', 'price']]);
+});
+
+test('across kolabs, only a requirement the question asks about settles it, and unlinking one of them leaves it asking about the rest (D79, W4.4)', async () => {
+  const { kolab, product, carol } = await acrossKolabs();
+  const e1 = (await kolab.latestCommitted('orders-eu'))!.id;
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat' }) });
+  expect((await screenQuestions(kolab))[0].question).toMatch(/shows 2 requirements in another kolab it is linked to/);
+  // Unlinking EU2: the question asks about EU1 alone.
+  const d = await kolab.draft(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat' }), unlink: [{ sourceElement: 'price', target: 'kj:eu/orders-eu#EU2' }] });
+  expect((await kolab.submit(product, d)).ok).toBe(true);
+  expect(await open(kolab)).toStrictEqual([['price', 'eu-ui', 'price']]);
+  expect((await screenQuestions(kolab))[0].question).toMatch(/shows a requirement in another kolab it is linked to/);
+  // A link added after the question (EU2 again, then a change to it) settles nothing.
+  const live = (await kolab.latestCommitted('eu-ui'))!.id;
+  await kolab.link(product, { kind: 'equivalence', source: live, sourceElement: 'price', target: e1, targetElement: 'EU2' });
+  await kolab.commit(carol, 'orders-eu', { elements: els({ EU1: 'Prices include VAT.', EU2: 'Returns take 30 days.' }) });
+  await kolab.drainOutbox();
+  expect(await marks(kolab, 'eu-ui')).toStrictEqual([['price', 'changed']]);
+  expect(await open(kolab)).toStrictEqual([['price', 'eu-ui', 'price']]);
+  // EU1 changes: that settles it.
+  await kolab.commit(carol, 'orders-eu', { elements: els({ EU1: 'Prices may exclude VAT.', EU2: 'Returns take 30 days.' }) });
+  await kolab.drainOutbox();
+  expect(await open(kolab)).toStrictEqual([]);
+});
+
+test('across kolabs, unlinking every requirement the question asks about withdraws it (D79, W4.4)', async () => {
+  const { kolab, product } = await acrossKolabs();
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat' }) });
+  const d = await kolab.draft(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat' }),
+    unlink: [{ sourceElement: 'price', target: 'kj:eu/orders-eu#EU1' }, { sourceElement: 'price', target: 'kj:eu/orders-eu#EU2' }] });
+  expect((await kolab.submit(product, d)).ok).toBe(true);
+  expect(await open(kolab)).toStrictEqual([]);
+  expect((await screenQuestions(kolab))[0].answer).toBe('withdrawn: eu-ui@3 no longer links the screen to what it asked');
 });

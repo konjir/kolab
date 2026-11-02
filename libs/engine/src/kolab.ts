@@ -6242,27 +6242,32 @@ export class Kolab {
    * as a binding's layer leak asks the spec (raiseLayerLeaks). The screen waits on the answer as an
    * asker's element does (`from`): when product answers, the screen gets a `query_answered` mark
    * carrying the answer (markAsker). If the spec changes instead, and that change marks the
-   * screen's link, the question settles (settleScreenQuestionIn); a screen removed or unlinked
-   * withdraws it (withdrawScreenQuestionsIn).
+   * screen's link to a requirement the question asks about, the question settles
+   * (settleScreenQuestionIn); a screen removed or unlinked withdraws it (withdrawScreenQuestionsIn).
+   * Each such question records what it asks about, `query.about_links` (migration 0038): the
+   * requirements, by node and element, so none of that is read back out of its words.
    *
    * Either can come first:
    * - Kolab's own rebases rewrite nothing a person wrote, so they ask nothing; nor does a new
    *   screen, a moved one, or a link declared in this very version: linking a screen as it is to a
    *   requirement as it is reconciles the two.
    * - A screen revised in answer to the spec asks nothing: it settled its link's `changed` or
-   *   `fuzzy_reanchor` mark, or a `query_answered` mark from that spec (or, across kolabs, from its
-   *   own question).
+   *   `fuzzy_reanchor` mark, or the `query_answered` mark of its own question about that
+   *   requirement. Any revision that settles such a mark counts as obeying it.
+   * - A screen that goes back to what it said before its latest question about a requirement (open,
+   *   or answered by a person) asks nothing: an open one is withdrawn, an answered one stands.
    * - A screen whose link holds an open mark (the spec moved under it, found by the catch-up just
    *   before this, or by the spec's own commit) asks nothing: the spec's change came first, and the
    *   screen reconciles against that mark.
    * - A screen and a requirement have at most one open question. A screen rewritten again before
-   *   the answer withdraws its earlier question and asks afresh, unless it went back to what it
-   *   said before it asked: then the question is withdrawn and nothing is asked.
-   * - A cascade run again finds what it did (a question this version asked, or withdrew as reverted).
+   *   the answer withdraws its earlier question and asks afresh, naming what it said before the first.
+   * - A cascade run again finds what it did.
    *
    * Questions stay in their kolab (TEN12): a requirement in another kolab can't be asked from here,
    * so, as for a layer leak, the screen asks its own kolab's functional layer instead, on the screen
-   * itself, to take up with that kolab: one question for all its requirements there.
+   * itself, to take up with that kolab: one question for all its requirements there. Its words say
+   * only how many there are, never which: a reader here may not read that kolab (D49, D53), and
+   * finds them, if they may, through the screen's links.
    */
   private async screensAskSpec(v: VersionRow, c: Awaited<ReturnType<Kolab['changedSince']>>) {
     if (v.active_role === 'system' || !c.before || !c.rewritten.length) return;
@@ -6286,10 +6291,12 @@ export class Kolab {
     };
     await this.asSystem(async (tx, signal) => {
       // What to ask: of each requirement here; of the screen itself for its requirements elsewhere.
-      const asks = new Map<string, { screen: string; across: boolean; where: { version_id: string; element_id: string | null }; selector: QuoteSelector | null; reqs: string[] }>();
+      const asks = new Map<string, { screen: string; across: boolean; where: { version_id: string; element_id: string | null };
+        selector: QuoteSelector | null; reqs: string[]; about: ScreenShows[] }>();
       for (const e of links) {
         const screen = e.source_element_id!;
         const across = e.tkolab !== v.kolab_id;
+        const shows: ScreenShows = { node: e.tnode, element: e.target_element_id };
         // The spec moved under it, or it follows the spec: no question (see above).
         const followed = (await tx.query(
           `select 1 from invalidation i
@@ -6300,63 +6307,67 @@ export class Kolab {
                 or (i.cleared_by = $4 and i.reason in ('changed', 'fuzzy_reanchor') and xt.node_id = $5
                     and x.target_element_id is not distinct from $6 and x.target_selector is not distinct from $7::jsonb)
                 or (i.cleared_by = $4 and i.reason = 'query_answered'
-                    and exists (select 1 from version tv where tv.id = i.triggered_by and (tv.node_id = $5 or ($8 and tv.node_id = $1)))))
+                    and exists (select 1 from query q join version fv on fv.id = q.from_version_id
+                                 where q.kolab_id = $8 and q.about_links @> $9::jsonb and fv.node_id = $1 and q.from_element_id = $2
+                                   and q.state = 'answered' and position(': you asked "' || q.question || '"; answered: ' in i.note) > 0)))
             limit 1`,
-          [v.node_id, screen, e.id, addressedBy, e.tnode, e.target_element_id, e.target_selector ? JSON.stringify(e.target_selector) : null, across])).rows.length;
+          [v.node_id, screen, e.id, addressedBy, e.tnode, e.target_element_id, e.target_selector ? JSON.stringify(e.target_selector) : null,
+            v.kolab_id, JSON.stringify([shows])])).rows.length;
         if (followed) continue;
-        const req = formatAddress({ kolab: e.tkolab, node: e.tname, version: e.tseq, element: e.target_element_id ?? undefined,
-          selector: e.target_selector ?? undefined }, { from: v.kolab_id });
         const key = across ? `${screen}\0across` : `${screen}\0${e.tnode}\0${e.target_element_id ?? ''}`;
-        const a = asks.get(key);
-        if (a) {
+        const a = asks.get(key) ?? { screen, across, reqs: [], about: [], selector: across ? null : e.target_selector,
+          where: across ? { version_id: v.id, element_id: screen } : { version_id: e.target_version_id, element_id: e.target_element_id } };
+        asks.set(key, a);
+        if (!a.about.some((s) => s.node === shows.node && s.element === shows.element)) a.about.push(shows);
+        if (!across) {
+          const req = formatAddress({ node: e.tname, version: e.tseq, element: e.target_element_id ?? undefined, selector: e.target_selector ?? undefined });
           if (!a.reqs.includes(req)) a.reqs.push(req);
-          continue;
         }
-        asks.set(key, { screen, across, reqs: [req], selector: across ? null : e.target_selector,
-          where: across ? { version_id: v.id, element_id: screen } : { version_id: e.target_version_id, element_id: e.target_element_id } });
       }
       for (const a of asks.values()) {
         const screenAt = formatAddress({ node: node.name, version: v.seq, element: a.screen });
         const reverted = `withdrawn: ${screenAt} went back to what the screen said before it asked`;
         // The questions this screen asks of the same requirement (or, across kolabs, of itself).
-        const same = `q.from_element_id = $2 and q.raised_by is null and q.invalidation_id is null and q.kind = 'question'
+        const same = `q.kolab_id = $5 and q.about_links is not null and q.from_element_id = $2 and q.kind = 'question'
           and q.element_id is not distinct from $4
           and exists (select 1 from version fv where fv.id = q.from_version_id and fv.node_id = $1)
           and exists (select 1 from version qv where qv.id = q.version_id and qv.node_id = (select node_id from version where id = $3))`;
-        const args = [v.node_id, a.screen, a.where.version_id, a.where.element_id];
-        const done = (await tx.query(`select 1 from query q where ${same} and (q.from_version_id = $5 or (q.state = 'withdrawn' and q.answer = $6))`,
+        const args = [v.node_id, a.screen, a.where.version_id, a.where.element_id, v.kolab_id];
+        const done = (await tx.query(`select 1 from query q where ${same} and (q.from_version_id = $6 or (q.state = 'withdrawn' and q.answer = $7))`,
           [...args, v.id, reverted])).rows.length;
         if (done) continue;
         const now = c.now.find((x) => x.element_id === a.screen)!;
-        // The questions it asked before, oldest first. An open one, with those it asked afresh over
-        // (each withdrawn when the screen changed again), is one divergence: from what the screen
-        // said before the first of them, which the new question names, and which a screen that goes
-        // back to it agrees with again.
-        const chain = (await tx.query<{ id: string; state: string; answer: string | null; from_version_id: string }>(
-          `select q.id, q.state, q.answer, q.from_version_id from query q where ${same} order by q.id`, args)).rows;
+        // The divergence still pending: its latest question, open or answered by a person, with the
+        // questions it asked afresh over (each withdrawn when the screen changed again). It runs
+        // from what the screen said before the first of them: the new question names that, and a
+        // screen that goes back to it agrees with the spec again.
+        const chain = (await tx.query<{ id: string; state: string; answer: string | null; answered_by: string | null; from_version_id: string }>(
+          `select q.id, q.state, q.answer, q.answered_by, q.from_version_id from query q where ${same} order by q.id`, args)).rows;
         const afresh = (q: { state: string; answer: string | null }) => q.state === 'withdrawn' && !!q.answer?.endsWith('changed the screen again, and asks afresh');
-        const earlier = chain.filter((q) => q.state === 'open');
-        let first = earlier[0] && chain.indexOf(earlier[0]);
-        while (first > 0 && afresh(chain[first - 1])) first--;
-        const said = first === undefined ? c.was.get(a.screen) : (await tx.query<{ text: string; fingerprint: string }>(
+        const last = chain.at(-1);
+        const pending = last && (last.state === 'open' || (last.state === 'answered' && last.answered_by !== SYSTEM_ACTOR)) ? last : undefined;
+        let first = pending && chain.length - 1;
+        while (first !== undefined && first > 0 && afresh(chain[first - 1])) first--;
+        const before = first === undefined ? undefined : (await tx.query<{ text: string; fingerprint: string }>(
           `select el.text, el.fingerprint from element el join version pv on pv.id = el.version_id
             where pv.node_id = $1 and pv.state = 'committed' and el.element_id = $2 and pv.seq < (select seq from version where id = $3)
             order by pv.seq desc limit 1`, [v.node_id, a.screen, chain[first].from_version_id])).rows[0];
-        const back = !!earlier.length && said?.fingerprint === now.fingerprint;
-        if (earlier.length) {
-          await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = any($1) and state = 'open'`,
-            [earlier.map((q) => q.id), back ? reverted : `withdrawn: ${screenAt} changed the screen again, and asks afresh`]);
+        const back = !!before && before.fingerprint === now.fingerprint;
+        if (pending?.state === 'open') {
+          await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`,
+            [pending.id, back ? reverted : `withdrawn: ${screenAt} changed the screen again, and asks afresh`]);
         }
         if (!back) {
+          const said = pending?.state === 'open' ? before : c.was.get(a.screen);
           const change = `it said "${text(said?.text)}" and now says "${text(now.text)}"`;
           const reqs = a.reqs.join(' and ');
           const question = a.across
-            ? `Screen ${screenAt} changed, and it shows ${reqs}, which ${a.reqs.length > 1 ? 'are' : 'is'} in another kolab (an equivalence link, D79): ${change}. If that kolab's spec should say what the screen now shows, take it up with that kolab: its change settles this once it marks the screen; otherwise answer, and the answer reaches the screen to change it back.`
+            ? `Screen ${screenAt} changed, and it shows ${shownElsewhere(a.about.length)} it is linked to (an equivalence link, D79): ${change}. If that kolab's spec should say what the screen now shows, take it up with that kolab: its change settles this once it marks the screen; otherwise answer, and the answer reaches the screen to change it back.`
             : `Screen ${screenAt} changed, and it shows ${reqs} (an equivalence link, D79): ${change}. If the spec should say what the screen now shows, amend ${reqs}, which settles this; otherwise answer, and the answer reaches the screen to change it back.`;
           await tx.query(
-            `insert into query(id, version_id, asked_version_id, element_id, selector, kind, question, from_version_id, from_element_id)
-             values ($1, $2, $2, $3, $4, 'question', $5, $6, $7)`,
-            [ulid(), a.where.version_id, a.where.element_id, a.selector ? JSON.stringify(a.selector) : null, question, v.id, a.screen]);
+            `insert into query(id, version_id, asked_version_id, element_id, selector, kind, question, from_version_id, from_element_id, about_links)
+             values ($1, $2, $2, $3, $4, 'question', $5, $6, $7, $8)`,
+            [ulid(), a.where.version_id, a.where.element_id, a.selector ? JSON.stringify(a.selector) : null, question, v.id, a.screen, JSON.stringify(a.about)]);
         }
         await this.signalLayerOf(tx, signal, a.where.version_id);
       }
@@ -6365,58 +6376,63 @@ export class Kolab {
 
   /**
    * A spec change that marks a screen's equivalence link settles the open question the screen asked
-   * of that requirement (D79, W4.4): the spec has spoken, and the screen reconciles against the mark
-   * rather than being asked again. Across kolabs, the question the screen asked of itself settles
-   * when the other kolab's change marks any of its links there. Only a mark settles it: a change
-   * that re-pins the link (a move, or quoted words that still stand) leaves the question open. In
-   * the mark's transaction (checkEdgeIn); Kolab answers it, as it does a self-settled override's.
+   * about that requirement (D79, W4.4): the spec has spoken, and the screen reconciles against the
+   * mark rather than being asked again. Only a requirement the question asks about (`about_links`)
+   * settles it, and only a mark: a change that re-pins the link (a move, or quoted words that still
+   * stand) leaves the question open. Across kolabs, the answer says only that the other kolab's
+   * change marked the screen. In the mark's transaction (checkEdgeIn); Kolab answers it, as it does
+   * a self-settled override's.
    */
   private async settleScreenQuestionIn(tx: Q, signal: Signal, e: EdgeRow, against: string, reason: string) {
     if (e.kind !== 'equivalence' || !e.source_element_id) return;
-    const r = (await tx.query<{ snode: string; skind: string; tnode: string; tkind: string; tname: string; tkolab: string; tseq: number }>(
-      `select sv.node_id as snode, sn.kind as skind, tv.node_id as tnode, tn.kind as tkind, tn.name as tname, tn.kolab_id as tkolab, tv.seq as tseq
+    const r = (await tx.query<{ snode: string; skind: string; tnode: string; tkind: string; tname: string; tseq: number }>(
+      `select sv.node_id as snode, sn.kind as skind, tv.node_id as tnode, tn.kind as tkind, tn.name as tname, tv.seq as tseq
          from version sv join node sn on sn.id = sv.node_id, version tv join node tn on tn.id = tv.node_id
         where sv.id = $1 and tv.id = $2`, [e.source_version_id, against])).rows[0];
     if (!r || r.skind !== 'prototype' || r.tkind !== 'spec') return;
-    const across = e.target_kolab_id !== e.kolab_id;
-    const at = formatAddress({ kolab: r.tkolab, node: r.tname, version: r.tseq, element: e.target_element_id ?? undefined }, { from: e.kolab_id });
-    const answer = `settled: ${at} ${reason === 'orphaned' ? 'no longer holds what the screen shows' : 'changed'}, and that marks the screen against it (${reason})`;
+    const answer = e.target_kolab_id !== e.kolab_id
+      ? `settled: a change in the other kolab marks the screen against a requirement it shows there (${reason})`
+      : `settled: ${formatAddress({ node: r.tname, version: r.tseq, element: e.target_element_id ?? undefined })} `
+        + `${reason === 'orphaned' ? 'no longer holds what the screen shows' : 'changed'}, and that marks the screen against it (${reason})`;
     const settled = await tx.query<{ version_id: string }>(
-      `update query q set state = 'answered', answered_by = $6, answer = $7
-         from version fv, version qv
-        where fv.id = q.from_version_id and fv.node_id = $1 and q.from_element_id = $2 and qv.id = q.version_id
-          and q.state = 'open' and q.kind = 'question' and q.raised_by is null and q.invalidation_id is null
-          and (case when $5 then qv.node_id = $1 and q.element_id = $2 else qv.node_id = $3 and q.element_id is not distinct from $4 end)
+      `update query q set state = 'answered', answered_by = $4, answer = $5
+         from version fv
+        where fv.id = q.from_version_id and fv.node_id = $1 and q.from_element_id = $2 and q.kolab_id = $6
+          and q.state = 'open' and q.kind = 'question' and q.about_links @> $3::jsonb
        returning q.version_id`,
-      [r.snode, e.source_element_id, r.tnode, e.target_element_id, across, SYSTEM_ACTOR, answer]);
+      [r.snode, e.source_element_id, JSON.stringify([{ node: r.tnode, element: e.target_element_id }]), SYSTEM_ACTOR, answer, e.kolab_id]);
     for (const q of settled.rows) await this.signalLayerOf(tx, signal, q.version_id);
   }
 
   /**
-   * A prototype version that removes a screen, or its last link to what a question of it asked,
-   * withdraws that question (D79, W4.4): nothing waits on it any more, and an answer would mark a
-   * screen that is gone or no longer shows the requirement. In supersedePrevious's transaction,
-   * once the links are carried forward.
+   * A prototype version that removes a screen, or its links to every requirement a question of it
+   * asks about, withdraws that question (D79, W4.4): nothing waits on it any more, and an answer
+   * would mark a screen that is gone or no longer shows the requirement. A question about several
+   * requirements in another kolab, some of them unlinked, asks about the rest from then on. In
+   * supersedePrevious's transaction, once the links are carried forward.
    */
   private async withdrawScreenQuestionsIn(tx: Q, signal: Signal, v: VersionRow, live: Set<string>, at: string) {
     if ((await tx.query<{ kind: Kind }>(`select kind from node where id = $1`, [v.node_id])).rows[0].kind !== 'prototype') return;
-    const open = (await tx.query<{ id: string; version_id: string; element_id: string | null; from_element_id: string; qnode: string }>(
-      `select q.id, q.version_id, q.element_id, q.from_element_id, qv.node_id as qnode
-         from query q join version fv on fv.id = q.from_version_id join version qv on qv.id = q.version_id
-        where fv.node_id = $1 and q.state = 'open' and q.kind = 'question' and q.raised_by is null and q.invalidation_id is null`, [v.node_id])).rows;
+    const open = (await tx.query<{ id: string; version_id: string; from_element_id: string; question: string; about_links: ScreenShows[] }>(
+      `select q.id, q.version_id, q.from_element_id, q.question, q.about_links
+         from query q join version fv on fv.id = q.from_version_id
+        where fv.node_id = $1 and q.kolab_id = $2 and q.state = 'open' and q.kind = 'question' and q.about_links is not null`, [v.node_id, v.kolab_id])).rows;
     if (!open.length) return;
-    const links = (await tx.query<{ source_element_id: string; tnode: string; target_element_id: string | null; across: boolean }>(
-      `select e.source_element_id, t.node_id as tnode, e.target_element_id, e.target_kolab_id <> e.kolab_id as across
+    const links = (await tx.query<{ source_element_id: string; tnode: string; target_element_id: string | null }>(
+      `select e.source_element_id, t.node_id as tnode, e.target_element_id
          from edge e join version t on t.id = e.target_version_id join node tn on tn.id = t.node_id
         where e.source_version_id = $1 and e.kind = 'equivalence' and tn.kind = 'spec' and e.source_element_id is not null`, [v.id])).rows;
     for (const q of open) {
-      const mine = links.filter((l) => l.source_element_id === q.from_element_id);
-      const why = !live.has(q.from_element_id) ? `withdrawn: ${at} removes the screen`
-        : q.qnode === v.node_id ? (mine.some((l) => l.across) ? undefined : `withdrawn: ${at} no longer links the screen to another kolab's spec`)
-        : mine.some((l) => l.tnode === q.qnode && l.target_element_id === q.element_id) ? undefined
-        : `withdrawn: ${at} no longer links the screen to what it asked`;
-      if (!why) continue;
-      await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`, [q.id, why]);
+      const kept = q.about_links.filter((s) => links.some((l) => l.source_element_id === q.from_element_id && l.tnode === s.node && l.target_element_id === s.element));
+      if (kept.length === q.about_links.length && live.has(q.from_element_id)) continue;
+      if (kept.length && live.has(q.from_element_id)) {
+        const was = ` shows ${shownElsewhere(q.about_links.length)} it is linked to`;
+        await tx.query(`update query set about_links = $2, question = $3 where id = $1 and state = 'open'`,
+          [q.id, JSON.stringify(kept), q.question.replace(was, ` shows ${shownElsewhere(kept.length)} it is linked to`)]);
+      } else {
+        const why = !live.has(q.from_element_id) ? `withdrawn: ${at} removes the screen` : `withdrawn: ${at} no longer links the screen to what it asked`;
+        await tx.query(`update query set state = 'withdrawn', answer = $2, asked_version_id = coalesce(asked_version_id, version_id) where id = $1 and state = 'open'`, [q.id, why]);
+      }
       await this.signalLayerOf(tx, signal, q.version_id);
     }
   }
@@ -10537,6 +10553,11 @@ const NODE_COLUMNS = 'id, name, kind, layer, title, kolab_id, parent_node_id, cr
 export type Where = { session: string } | { system: string };
 
 /** A mark to raise. */
+/** A requirement a question Kolab raised for a prototype's screen asks about (D79, W4.4; `query.about_links`, 0038): its node, and its element (null for the whole spec). */
+interface ScreenShows { node: string; element: string | null }
+/** How a screen's question names requirements in another kolab: by count alone (D49, D53). */
+const shownElsewhere = (n: number) => (n === 1 ? 'a requirement in another kolab' : `${n} requirements in another kolab`);
+
 interface MarkInput {
   version_id: string; element_id: string | null; triggered_by: string; reason: string;
   edge_id?: string; delta_id?: string; note?: string;
