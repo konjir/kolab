@@ -17,7 +17,8 @@
     "rebase-storm": "nx run @konjir/engine:rebase-storm --output-style=stream --",
     "serve": "bin/konjir serve",
     "konjir": "bin/konjir",
-    "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test"
+    "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test",
+    "e2e:connect": "node apps/cli/scripts/e2e-connect.mjs"
   },
   "devDependencies": {
     "@jest/globals": "^30.5.2",
