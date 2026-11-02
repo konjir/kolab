@@ -361,7 +361,7 @@ test('a lock broken while its holder stalled: the break is atomic, the holder no
 test('an abandoned konjir login keeps the sign-in it would have replaced, working', async () => {
   const { kolab, server } = await signedIn();
   const before = JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token;
-  expect(await rejection(login(server.url, { log: () => undefined, open: () => undefined, timeoutMs: 300 }))).toMatch(/took too long/);
+  expect(await rejection(login(server.url, { log: () => undefined, open: () => undefined, timeoutMs: 300 }))).toMatch(/took too long: it waited 300 ms for the browser; /);
   expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token).toBe(before);
   out = [];
   await main(['whoami']);

@@ -611,7 +611,7 @@ Walk lineage from a node version (the latest committed one, or version): upstrea
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `node` | `string` | yes | A node in your kolab, by name (checkout), or <kolab>/<node>. |
-| `version` | `int` | no | The version to walk from, e.g. one waiting for your review: its links are the ones it was drafted with. Defaults to the latest committed version. |
+| `version` | `int` | no | With direction=upstream only: the version to walk from, e.g. one waiting for your review, whose links are the ones it was drafted with. Defaults to the latest committed version. |
 | `direction` | `upstream\|downstream` | yes | Required. upstream = what this node relies on; downstream = what relies on it. |
 | `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
 | `limit` | `int` | no | How many to return: 50 by default, at most 200. |

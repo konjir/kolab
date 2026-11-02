@@ -125,7 +125,9 @@ export interface WorkLink { source_element_id: string | null; target: string; ta
  * the version's, however the link came (D99): a decision it linked may have become a work package.
  * Each problem is named in words a refusal can quote; none means the version goes on to review.
  */
-export function workProblems(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[]): string[] {
+export function workProblems(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[],
+  /** The packages whose work this version adds or changes; checks that are new since a binding committed apply only to these (W5.7). All, when undefined. */
+  changed?: ReadonlySet<string>): string[] {
   const problems: string[] = [];
   const work = new Map(elements.filter((e) => e.work).map((e) => [e.element_id, e.work!]));
   const ids = new Set(elements.map((e) => e.element_id));
@@ -141,7 +143,9 @@ export function workProblems(elements: { element_id: string; work?: WorkFields |
       }
     }
     if (w.target_date && !w.milestone) problems.push(`${e.element_id} carries a target date, and only a milestone does`);
-    if (w.milestone && w.size) problems.push(`${e.element_id} is a milestone, and carries a size: a milestone has no work of its own to size (PLN2, PLN3); its members do`);
+    // New in W5.7, so only on a milestone this version adds or changes: one carried forward unchanged,
+    // from a binding committed before, never stops its next version committing.
+    if (w.milestone && w.size && (!changed || changed.has(e.element_id))) problems.push(`${e.element_id} is a milestone, and carries a size: a milestone has no work of its own to size (PLN2, PLN3); its members do`);
     if (w.milestone && !w.depends_on?.length) problems.push(`${e.element_id} is a milestone, and depends on no members: a milestone depends on the work packages it gathers (PLN3)`);
   }
   // No cycle in Depends on: a walk that comes back to a work package on its own path.

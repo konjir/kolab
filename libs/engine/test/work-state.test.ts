@@ -224,7 +224,7 @@ test('a lapsed lease: reads show To do at once, the assignee\'s calls never revi
   expect(r.state).toBe('in_progress');
   expect(new Date(r.lease_until!).getTime()).toBeLessThan(Date.now() + 1000);
   // Releasing it is refused as lapsed.
-  expect(await rejection(kolab.releaseWork(bob, 'kj:orders-pg#W1.1'))).toMatch(/your lease on kj:orders-pg#W1\.1 lapsed at .*: pull again/);
+  expect(await rejection(kolab.releaseWork(bob, 'kj:orders-pg#W1.1'))).toMatch(/your lease on kj:orders-pg#W1\.1 lapsed at .*, so it is To do again, and there is nothing to release/);
   // The sweep returns it, as Kolab, naming whose lease and when.
   expect(await kolab.sweepLapsedLeases()).toBe(1);
   expect(await kolab.sweepLapsedLeases()).toBe(0);
@@ -759,3 +759,16 @@ test('a binding commit and a change of access that both give back work never dea
     await kolab.grant(TEST_KOLAB, 'frank', 'write', { layers: ['technical'] });
   }
 }, 120_000);
+
+test('a sized milestone carried forward unchanged, from a binding committed before W5.7, doesn\'t stop the next version committing; one the version changes is refused (PLN2, PLN3)', async () => {
+  const { kolab, eve, frank, plan, commitWork } = await planned();
+  // As a binding committed before milestones were refused a size holds it: written as Kolab's own login.
+  await kolab.db.query(`update element set work = jsonb_set(work, '{size}', '"M"') where version_id = $1 and element_id = 'M1'`, [plan]);
+  // A version that changes something else carries M1 forward as it was, and commits.
+  await commitWork(eve, { deltas: [{ kind: 'override', element: 'W2.1', text: 'Ship the tracking page.' }] });
+  // Its text changed alone: its work is carried as it was, and it commits.
+  await commitWork(eve, { deltas: [{ kind: 'override', element: 'M1', text: 'Orders run end to end, tracked.' }] });
+  // One that changes its work and keeps the size is refused, at draft, as checkWork reads it.
+  expect(await rejection(kolab.draft(frank, 'orders-pg', { deltas: [{ kind: 'override', element: 'M1', work: { milestone: true, depends_on: ['W1.1', 'W1.2'], size: 'M' } }] })))
+    .toMatch(/M1 is a milestone, which has no work of its own to size/);
+});

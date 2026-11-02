@@ -591,7 +591,9 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
       await (opts.open ?? ((v: URL) => openBrowser(v, url)))(u);
     });
     const back = new Promise<URLSearchParams>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`the sign-in took too long: a sign-in waits ${SIGN_IN_WAIT_MS / 60_000} minutes for the browser, as long as Kolab's sign-in page lasts; ${opts.again ?? 'run konjir login again'}`)), opts.timeoutMs ?? SIGN_IN_WAIT_MS);
+      const wait = opts.timeoutMs ?? SIGN_IN_WAIT_MS;
+      const waited = !(wait % 60_000) ? `${wait / 60_000} minutes` : !(wait % 1000) ? `${wait / 1000} seconds` : `${wait} ms`;
+      const timer = setTimeout(() => reject(new Error(`the sign-in took too long: it waited ${waited} for the browser${wait === SIGN_IN_WAIT_MS ? ', as long as Kolab\'s sign-in page lasts' : ''}; ${opts.again ?? 'run konjir login again'}`)), wait);
       timer.unref();
       server.on('request', (req, res) => {
         const u = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);

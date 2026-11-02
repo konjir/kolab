@@ -4293,8 +4293,12 @@ export class Kolab {
         const base = byId.get(d.element);
         if (d.kind !== 'add' && !base) {
           // Deltas apply to the version this draft builds on (W5.7): the latest committed, never a draft
-          // or a version sent back, so after changes are requested on a first version there is none.
-          throw new Error(`cannot ${d.kind} ${d.element}: not in parent. Deltas apply to the version a draft builds on, ${parentId ? `the latest committed version of ${drafted.name} (or of its parent, for a variant)` : `and ${drafted.name} has no committed version yet`}, never to a draft or a version sent back for changes: send the full element list (elements) instead`);
+          // or a version sent back. With none, the full list; with one, most likely a mistyped id.
+          if (!parentId) {
+            throw new Error(`cannot ${d.kind} ${d.element}: not in parent. Deltas apply to the latest committed version, and ${drafted.name} has none yet (a version sent back for changes never committed): send the full element list (elements) instead`);
+          }
+          const ids = parentEls.map((e) => e.element_id);
+          throw new Error(`cannot ${d.kind} ${d.element}: not in parent. The version this draft builds on has no element ${d.element}: check its id (it has ${ids.slice(0, 12).join(', ')}${ids.length > 12 ? `, and ${ids.length - 12} more` : ''}). If ${d.element} was new in a draft that came back, add it again (kind add)`);
         }
         return {
           element_id: d.element, kind: d.kind, text: d.text ?? null,
@@ -4486,7 +4490,14 @@ export class Kolab {
         source_element_id: l.source_element_id, target_element_id: l.target_element_id, into_self: l.target_node === binding.id,
         target: `${l.target_kolab === binding.kolab_id ? '' : `${l.target_kolab}/`}${l.target_name}@${l.target_seq}${l.target_element_id ? `#${l.target_element_id}` : ''}`,
       }));
-    const problems = workProblems(els, links);
+    // What this version adds or changes, against the version it was built on (W5.7).
+    const prior = v.parent_version_id ? new Map((await this.elements(v.parent_version_id, q)).map((e) => [e.element_id, e.work])) : new Map<string, WorkFields | null | undefined>();
+    const changed = new Set(els.filter((e) => {
+      if (!e.work) return false;
+      const was = prior.get(e.element_id);
+      return !was || canonicalWork(was) !== canonicalWork(e.work);
+    }).map((e) => e.element_id));
+    const problems = workProblems(els, links, changed);
     // A work package's repo names a repository registered in the binding's kolab, and live (KON7, W5.2a).
     const named = els.filter((e) => e.work?.repo);
     if (named.length) {
@@ -4595,6 +4606,12 @@ export class Kolab {
       await signal({ inbox: 'layer', kolab: x.kolab_id, layer: x.layer });
       await signal({ inbox: 'actor', kolab: x.kolab_id, actor: x.author });
     }
+  }
+
+  /** Which of `actors` are persons, not agents: as WITHDRAWN_SHOWN reads them, for the session's view of submissions. */
+  async personsAmong(actors: string[]): Promise<Set<string>> {
+    if (!actors.length) return new Set();
+    return new Set((await this.db.query<{ id: string }>(`select id from actor where id = any($1::text[]) and kind = 'person'`, [actors])).rows.map((r) => r.id));
   }
 
   /**
@@ -5364,7 +5381,7 @@ export class Kolab {
       found = found.filter((x) => same(x.target_selector?.prefix, selector.prefix) && same(x.target_selector?.suffix, selector.suffix));
       if (found.length !== 1) {
         throw new GateError(`more than one marked link from ${sourceElement ?? 'the whole version'} quotes that element; `
-          + `name the one this replaces: konjir_unlink link=<id> in this draft, then link again`);
+          + `name the one this replaces: konjir_unlink node=<node> version=<this draft> links=[{"link":"<its id>"}] (konjir_lineage gives each link's id), then link again`);
       }
     }
     if (!found.length) return undefined;
@@ -7832,7 +7849,7 @@ export class Kolab {
         if (r.state !== 'in_progress' || r.assignee_id !== s.actor_id) {
           throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}${r.assignee_id && !r.lapsed ? `, held by ${r.assignee_id}` : ''}: only its assignee releases a work package it holds In progress`);
         }
-        if (r.lapsed) throw new GateError(`your lease on ${at} lapsed at ${iso(r.lease_until)}, so it is To do again: pull again (konjir_pull_work)`);
+        if (r.lapsed) throw new GateError(`your lease on ${at} lapsed at ${iso(r.lease_until)}, so it is To do again, and there is nothing to release: it is no longer yours`);
         await tx.query(`update work_package set state = 'todo', assignee_id = null, lease_until = null, returned = false, updated_at = clock_timestamp()
                          where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
         const c = await this.concernedIn(tx, binding.id, id);
@@ -8101,16 +8118,24 @@ export class Kolab {
    */
   private async requireHolding(tx: Q, r: WorkRow, s: Session, at: string, what: string, leaseS: number) {
     if (r.removed_in_version_id) throw new GateError(`${at} was removed from the binding (PLN4), so it takes no more work`);
+    // What to do next: a pull gives the first ready package, not necessarily this one, so say both ways back.
+    const again = `Pull work again (konjir_pull_work: it gives the first ready package, which may be another), or ask someone with Maintain or Admin to give this one back to you (konjir_reassign_work work=${at} to=${s.actor_id}), then send this again`;
     const lapsed = (when: Date | string | null) => {
       const minutes = Math.round(leaseS / 60);
-      return new GateError(`your lease on ${at} lapsed${when ? ` at ${iso(when)}` : ''}, so it went back to To do: nothing was recorded. A lease in kolab ${s.kolab} runs ${minutes} minute${minutes === 1 ? '' : 's'} from your last call on the package (PLN15). Pull it again (konjir_pull_work), then send this again`);
+      return new GateError(`your lease on ${at} lapsed${when ? ` at ${iso(when)}` : ''}, so it went back to To do: nothing was recorded. A lease in kolab ${s.kolab} runs ${minutes} minute${minutes === 1 ? '' : 's'} from your last call on the package (PLN15). ${again}`);
     };
     if (r.state === 'todo' && !r.assignee_id) {
-      // Swept already: the package's last event says whose lease lapsed.
-      const last = (await tx.query<{ kind: string; assignee_from: string | null; at: Date }>(
-        `select kind, assignee_from, at from work_event where binding_node_id = $1 and element_id = $2 order by at desc, id desc limit 1`,
+      // Swept already: the package's last event says whose lease lapsed, when, and whether a job's lapse took it (JOB1).
+      const last = (await tx.query<{ kind: string; assignee_from: string | null; at: Date; note: string | null }>(
+        `select kind, assignee_from, at, note from work_event where binding_node_id = $1 and element_id = $2 order by at desc, id desc limit 1`,
         [r.binding_node_id, r.element_id])).rows[0];
-      if (last?.kind === 'lapsed' && last.assignee_from === s.actor_id) throw lapsed(r.lease_until ?? last.at);
+      if (last?.kind === 'lapsed' && last.assignee_from === s.actor_id) {
+        const lapse = /lapsed at (\d{4}-\d\d-\d\dT[\d:.]+Z)/.exec(last.note ?? '')?.[1] ?? last.at;
+        if (last.note?.startsWith('job ')) {
+          throw new GateError(`the job you held ${at} for ended when its lease lapsed (${last.note}), so the package went back to To do: nothing was recorded. In a job, stop: the runner gives its item to the next job`);
+        }
+        throw lapsed(lapse);
+      }
     }
     if (r.state !== 'in_progress' || r.assignee_id !== s.actor_id) {
       throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}${r.assignee_id && !r.lapsed ? `, held by ${r.assignee_id}` : ''}: only its assignee ${what}, while it holds it In progress`);
@@ -9717,7 +9742,8 @@ export class Kolab {
     for (const v of versions) {
       const verdicts = (await this.db.query<{ reviewer_id: string; state: ReviewRequestState; note: string | null; findings: Finding[] | null }>(
         `select r.reviewer_id, r.state, r.note, r.findings from review_request r
-          where r.version_id = $1 and (r.state in ('approved', 'changes_requested') or ${CAN_REVIEW('r.reviewer_id', '$2', '$3')})
+          where r.version_id = $1 and (r.state in ('approved', 'changes_requested')
+            or (r.state = 'open' and ${CAN_REVIEW('r.reviewer_id', '$2', '$3')}) or (r.state = 'withdrawn' and ${WITHDRAWN_SHOWN('r.reviewer_id')}))
           order by r.created_at, r.reviewer_id, r.id`, [v.id, v.kolab_id, v.layer])).rows;
       const name = await this.nameOf(v.node_id);
       const subject = `kj:${name}@${v.seq}`;
@@ -9959,6 +9985,14 @@ export const structuralChecks: Checks = ({ elements }) => {
  * consent, whether or not its access token has expired. One open session per actor (ENF4), so
  * there is at most one. It says nothing of access: who holds Write is reviewersFor's to say.
  */
+/**
+ * Whether an author's submissions list a withdrawn request (W5.7): only one to a person, whom every
+ * request is shown to (D65). One withdrawn from an agent may never have been shown (it worked in the
+ * other role), and whether it was isn't recorded, so none is: what the author sees of a version's
+ * history never changes with a later sign-in.
+ */
+const WITHDRAWN_SHOWN = (actor: string) => `exists (select 1 from actor wa where wa.id = ${actor} and wa.kind = 'person')`;
+
 const CAN_REVIEW = (actor: string, kolab: string, layer: string) => `not exists (
   select 1 from actor ra join session s on s.actor_id = ra.id left join oauth_grant g on g.id = s.grant_id
    where ra.id = ${actor} and ra.kind = 'agent' and s.kolab_id = ${kolab} and ${OPEN_SESSION}
@@ -10007,7 +10041,7 @@ export function markBecause(r: {
 export const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',
   fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target, then, in a draft of yours, konjir_link your element to the current words with their current context (that replaces this link, and the mark settles when the draft commits), or remove the link with konjir_unlink; or konjir_clear_mark if it still holds.',
-  orphaned: 'The target no longer exists. In a draft of yours, konjir_link your element to the same target element\'s current words (that replaces this link), or remove the link: konjir_unlink link=<this mark\'s link>, or konjir_draft\'s unlink. The mark settles when that version commits. Removing your element settles it too.',
+  orphaned: 'The target no longer exists. In a draft of yours, konjir_link your element to the same target element\'s current words (that replaces this link), or remove the link: konjir_unlink node=<your node> version=<your draft> links=[{"link":"<this mark\'s link>"}], or konjir_draft\'s unlink. The mark settles when that version commits. Removing your element settles it too.',
   upstream_dirty: 'Something this depends on is dirty. Wait for that mark to clear, or check it yourself and clear the upstream mark.',
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',

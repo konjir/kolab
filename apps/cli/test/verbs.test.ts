@@ -2,7 +2,8 @@
 // and the ones it takes; a test run's evidence takes a summary; no served message ends in '..';
 // `konjir tools` and docs/verbs.md list each verb's parameters, from the schemas Kolab serves.
 import { afterEach, expect, jest, test } from '@jest/globals';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '@konjir/server';
 import { call, connect, main } from '../src/cli.js';
@@ -127,10 +128,13 @@ test('a reviewer lists the links of the version waiting for it with lineage vers
   // Changes requested on the spec's first version: nothing has committed, so deltas have nothing to apply to.
   await call(pm2.c, 'review', { node: 'orders', version: 1, verdict: 'request_changes', note: 'Split R2.' });
   expect(await rejection(call(pm.c, 'draft', { node: 'orders', deltas: [{ kind: 'override', element: 'R2', text: 'Orders ship within a day.' }] })))
-    .toMatch(/cannot override R2: not in parent\. Deltas apply to the version a draft builds on, and orders has no committed version yet, never to a draft or a version sent back for changes: send the full element list \(elements\) instead/);
+    .toMatch(/cannot override R2: not in parent\. Deltas apply to the latest committed version, and orders has none yet \(a version sent back for changes never committed\): send the full element list \(elements\) instead/);
   await call(pm.c, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }, { id: 'R2', text: 'Orders ship within a day.' }] });
   await call(pm.c, 'submit_for_review', { node: 'orders', version: 2 });
   await call(pm2.c, 'review', { node: 'orders', version: 2, verdict: 'approve' });
+  // With a committed base, a delta naming no element of it is most likely a mistyped id.
+  expect(await rejection(call(pm.c, 'draft', { node: 'orders', deltas: [{ kind: 'remove', element: 'R3' }] })))
+    .toMatch(/cannot remove R3: not in parent\. The version this draft builds on has no element R3: check its id \(it has R1, R2\)\. If R3 was new in a draft that came back, add it again \(kind add\)/);
 
   await call(eng.c, 'create_node', { kind: 'binding', title: 'On Postgres', id: 'orders-pg' });
   await call(eng.c, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }], links: [{ source_element: 'b1', target: 'kj:orders@2#R1' }] });
@@ -142,4 +146,34 @@ test('a reviewer lists the links of the version waiting for it with lineage vers
   expect(await rejection(call(eng2.c, 'lineage', { node: 'orders-pg', version: 9, direction: 'upstream' }))).toMatch(/orders-pg has no version 9/);
   const reviewer = await call(eng2.c, 'instructions', { which: 'reviewer' }) as string;
   expect(reviewer).toMatch(/konjir_lineage node=<node> version=<version> direction=upstream/);
+  // version= walks one version's own links: upstream only.
+  expect(await rejection(call(eng2.c, 'lineage', { node: 'orders-pg', version: 1, direction: 'downstream' }))).toMatch(/version= walks one version's links upstream/);
+}, 120_000);
+
+test('every `konjir_<verb> key=…` and `konjir <verb> key=…` Kolab serves or documents names only arguments the verb takes (W5.7)', async () => {
+  // What a next step, a refusal, a description, the instructions, the README or the hands-on tells
+  // an agent to type: each key=value example, checked against the schema the verb is served with.
+  const params = new Map((await servedTools()).map((t) => [t.name.replace(/^konjir_/, ''), paramsOf(t).map((p) => p.name)]));
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => {
+    const p = join(d, f);
+    return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
+  });
+  const files = ['apps/server/src', 'libs/engine/src', 'apps/cli/src', 'apps/channel-bridge/src', 'libs/types/src', 'libs/login/src']
+    .flatMap((d) => walk(join(root, d))).concat([join(root, 'site/src/hands-on.md'), join(root, 'README.md')]);
+  const example = /konjir[_ ]([a-z][a-z_]*)((?:[ \t]+[a-z_]+=(?:"[^"]*"|'[^']*'|\[[^\]]*\]|\{[^}]*\}|[^\s`'"]+))+)/g;
+  const wrong: string[] = [];
+  let checked = 0;
+  for (const f of files) {
+    for (const m of readFileSync(f, 'utf8').matchAll(example)) {
+      const takes = params.get(m[1]);
+      if (!takes) continue;
+      checked++;
+      const keys = [...m[2].matchAll(/(?:^|[ \t])([a-z_]+)=/g)].map((k) => k[1]);
+      const bad = keys.filter((k) => !takes.includes(k));
+      if (bad.length) wrong.push(`${f.slice(root.length)}: ${m[0].slice(0, 100)} (${bad.join(', ')})`);
+    }
+  }
+  expect(checked).toBeGreaterThan(50);
+  expect(wrong).toStrictEqual([]);
 }, 120_000);
