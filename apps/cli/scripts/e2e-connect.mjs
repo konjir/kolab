@@ -41,44 +41,69 @@ const xdg = join(home, '.config');
 const bin = join(tmp, 'bin');
 const opened = join(tmp, 'opened.txt');
 let server;
+/** Every command run() has started and not yet seen end, each in its own process group. */
+const live = new Set();
 
 const step = (s) => console.log(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${s}`);
 class Failed extends Error {}
 const fail = (why) => { throw new Failed(why); };
 const check = (ok, why) => { if (!ok) fail(why); };
 
-function cleanup() {
-  if (server && server.exitCode === null) { try { process.kill(-server.pid, 'SIGTERM'); } catch { /* gone */ } }
-  if (process.env.KEEP) console.error(`kept ${tmp}`);
-  else rmSync(tmp, { recursive: true, force: true });
+/** Stops the server and every command still running (their whole groups), waits for them, then removes the temp folder. */
+async function cleanup() {
+  const running = [...live, server].filter((p) => p && p.exitCode === null && p.signalCode === null);
+  const kill = (p, sig) => { try { process.kill(-p.pid, sig); } catch { /* gone */ } };
+  await Promise.all(running.map((p) => new Promise((ok) => {
+    const t = setTimeout(() => { kill(p, 'SIGKILL'); ok(); }, 5_000);
+    p.once('exit', () => { clearTimeout(t); ok(); });
+    kill(p, 'SIGTERM');
+  })));
+  if (process.env.KEEP) { console.error(`kept ${tmp}`); return; }
+  try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { console.error(`couldn't remove ${tmp}: ${e.message}`); }
 }
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanup(); process.exit(130); });
+for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(sig, () => { void cleanup().finally(() => process.exit(code)); });
 
 /** A free port on 127.0.0.1. */
 const freePort = () => new Promise((ok, no) => {
   const s = createServer().once('error', no).listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => ok(port)); });
 });
 
-/** The environment every konjir here runs in: the temp HOME and config, no token, no URL of the person's. */
+/**
+ * The environment every command here runs in: the temp HOME, config and Claude config, and no
+ * KONJIR_* of the person's, only those `extra` names.
+ */
 function env(extra = {}) {
-  const e = { ...process.env, HOME: home, XDG_CONFIG_HOME: xdg, PATH: `${bin}:${process.env.PATH}`, ...extra };
-  for (const k of ['KONJIR_TOKEN', 'KONJIR_URL', 'KONJIR_CREDENTIALS', 'KONJIR_ADMIN_TOKEN', 'KONJIR_PUBLIC_HOST', 'KONJIR_GITHUB_CLIENT_ID', 'KONJIR_DATABASE_URL']) if (!(k in extra)) delete e[k];
-  return e;
+  const e = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('KONJIR_')));
+  return { ...e, HOME: home, XDG_CONFIG_HOME: xdg, CLAUDE_CONFIG_DIR: join(home, '.claude'), PATH: `${bin}:${process.env.PATH}`, ...extra };
 }
 
 /** Runs a command to its end: its exit code, stdout and stderr. */
 function run(cmd, args, opts = {}, timeoutMs = 90_000) {
   return new Promise((ok) => {
-    const p = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Its own process group, so cleanup stops it and whatever it starts.
+    const p = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    live.add(p);
     let out = '', err = '';
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { err += d; });
-    const t = setTimeout(() => { p.kill('SIGKILL'); err += `\n(killed after ${timeoutMs / 1000}s)`; }, timeoutMs);
-    p.on('close', (code) => { clearTimeout(t); ok({ code, out, err }); });
+    const t = setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch { /* gone */ } err += `\n(killed after ${timeoutMs / 1000}s)`; }, timeoutMs);
+    p.on('close', (code) => { clearTimeout(t); live.delete(p); ok({ code, out, err }); });
   });
 }
 
+class PortTaken extends Failed {}
+
+/** A local Kolab on a free port, tried again if another process takes the port first. */
 async function startKolab() {
+  for (let attempt = 1; ; attempt++) {
+    try { return await startKolabOnce(); } catch (e) {
+      if (!(e instanceof PortTaken) || attempt === 3) throw e;
+      step('the port was taken before Kolab bound it; trying another');
+    }
+  }
+}
+
+async function startKolabOnce() {
   const port = await freePort();
   // Its own process group, so cleanup stops tsx and the node it starts.
   server = spawn(KONJIR, ['serve', '--port', String(port), '--data', join(tmp, 'data'), '--admin-token', 'off'], {
@@ -94,7 +119,7 @@ async function startKolab() {
     };
     server.stdout.on('data', seen);
     server.stderr.on('data', seen);
-    server.on('exit', (code) => { clearTimeout(t); no(new Failed(`Kolab exited (${code}) before listening:\n${log}`)); });
+    server.on('exit', (code) => { clearTimeout(t); no(new (/EADDRINUSE/.test(log) ? PortTaken : Failed)(`Kolab exited (${code}) before listening:\n${log}`)); });
   });
 }
 
@@ -149,14 +174,20 @@ async function connect(cwd, mcp, agents) {
   rmSync(opened, { force: true });
   const args = ['connect', 'claude', '--url', mcp, '--kolab', KOLAB, ...agents.flatMap((a) => ['--agent', a])];
   const ran = run(KONJIR, args, { cwd, env: env() });
-  const page = await Promise.race([waitOpened().then((u) => browser(u, mcp)), ran.then((r) => fail(`konjir connect ended (${r.code}) before opening a browser:\n${r.out}${r.err}`))]);
+  // konjir may end as soon as the browser has its answer: a failure only if it ended before
+  // opening the browser at all.
+  const browsing = waitOpened().then((u) => browser(u, mcp));
+  const page = await Promise.race([
+    browsing,
+    ran.then((r) => (existsSync(opened) ? browsing : fail(`konjir connect ended (${r.code}) before opening a browser:\n${r.out}${r.err}`))),
+  ]);
   return { ...(await ran), page };
 }
 
 async function project(name) {
   const dir = join(tmp, name);
   mkdirSync(dir);
-  const g = await run('git', ['init', '-q'], { cwd: dir });
+  const g = await run('git', ['init', '-q'], { cwd: dir, env: env() });
   check(g.code === 0, `git init failed: ${g.err}`);
   return dir;
 }
@@ -193,7 +224,14 @@ async function main() {
     check(e.env?.KONJIR_URL === mcp && e.env.KONJIR_AGENT === agent && e.env.KONJIR_TOKEN === '', `konjir-${label}'s env is wrong: ${JSON.stringify(e.env)}`);
     check(e.env.KONJIR_SCOPE === `konjir kolab:${KOLAB} role:${role} agent:${agent}`, `konjir-${label}'s scope is ${e.env.KONJIR_SCOPE}`);
   }
-  check(!/kj[a-z]*_[A-Za-z0-9]{16,}/.test(written), '.mcp.json holds something like a token');
+
+  // No agent's token in .mcp.json: each is kept in its own credentials file only.
+  const tokens = (v) => (v && typeof v === 'object' ? Object.entries(v).flatMap(([k, x]) => (/_token$/.test(k) && typeof x === 'string' ? [x] : tokens(x))) : []);
+  for (const [label] of agents) {
+    const kept = tokens(JSON.parse(readFileSync(join(xdg, 'konjir', 'agents', `${LOGIN}-${label}.json`), 'utf8')));
+    check(kept.length >= 2, `${LOGIN}-${label}'s credentials file holds no access and refresh token`);
+    check(kept.every((t) => !written.includes(t)), `.mcp.json holds a token of ${LOGIN}-${label}'s`);
+  }
 
   const whoami = async (label, role) => {
     const file = join(xdg, 'konjir', 'agents', `${LOGIN}-${label}.json`);
@@ -230,8 +268,7 @@ async function main() {
   step('passed');
 }
 
-main().then(() => { cleanup(); process.exit(0); }, (e) => {
+main().then(() => 0, (e) => {
   console.error(`e2e-connect FAILED: ${e instanceof Failed ? e.message : e?.stack ?? e}`);
-  cleanup();
-  process.exit(1);
-});
+  return 1;
+}).then(async (code) => { await cleanup(); process.exit(code); });
