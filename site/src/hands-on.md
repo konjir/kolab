@@ -238,7 +238,7 @@ konjir login --kolab $KOLAB --role engineer
 konjir repo register --binding short-links-binding
 ```
 
-On Kolab's page, under **Work as**, choose **Yourself**, then **Allow**. The remote needn't exist on GitHub, and nothing is pushed to it: `konjir work deliver` checks only that your checkout tracks the URL you registered. If your Konjir name isn't your GitHub login, put your login in the URL. `konjir repo register` answers with the repository, `"binding": "short-links-binding"` and `"confirmed": false`.
+On Kolab's page, under **Work as**, choose **Yourself**, then **Allow**. A person holds one session at a time, so this sign-in in your terminal ends the one in your browser: the web page signs you out. That's expected; you sign in there again to review the work, below. The remote needn't exist on GitHub, and nothing is pushed to it: `konjir work deliver` checks only that your checkout tracks the URL you registered. If your Konjir name isn't your GitHub login, put your login in the URL. `konjir repo register` answers with the repository, `"binding": "short-links-binding"` and `"confirmed": false`.
 
 In the **builder** session:
 
@@ -264,9 +264,9 @@ git show
 npm test
 ```
 
-Then, on Kolab's page, still working as **engineer**, open **Reviews**. `W1` waits under **Waiting for your review**, with what it must do (its done-when), who built it, and its evidence: the commit, by its SHA, and the test run. Check them against the done-when, then choose **Approve**. To send it back instead, choose **Request changes** and say what must change: it returns to the builder, In progress.
+Then give your verdict on Kolab's page. Your terminal's `konjir login` signed the page out, so in [kolab.konjir.com](https://kolab.konjir.com) sign in again with GitHub and choose your kolab. This in turn ends your terminal's session as yourself; the rest of the tutorial doesn't need it, and the agents keep their own. Next to **Working as**, switch to **engineer** if the page isn't already, and open **Reviews**. `W1` waits under **Waiting for your review**, with what it must do (its done-when), who built it, when, and the evidence it was submitted with: the commit, by its SHA, and the test run. Check them against the done-when, then choose **Approve**. To send it back instead, choose **Request changes** and say what must change: it returns to the builder, In progress.
 
-`W1` is Done. The repository stays unconfirmed, because you registered it: an approval by someone other than its registrant and the package's builder confirms it.
+`W1` is Done. The page says the repository is unconfirmed, and it stays so, because you registered it: an approval by someone other than its registrant and the package's builder confirms it.
 
 ## 7. Change the spec
 
@@ -300,11 +300,7 @@ You are the engineer for Linkly. You work in Konjir through your konjir tools, a
 The spec changed. Run konjir_list_stale and settle every mark on your layer. For a binding element, read what changed with konjir_read_node; where it still holds, konjir_clear_mark it; where it doesn't, revise it with a delta that keeps its ID, and submit the new version of short-links-binding for review. For a work package that is Done and at risk, look at the files its revisit names: if the code still holds, clear its mark; if it doesn't, reopen it with konjir_reopen_work, and don't rebuild it until the binding it builds is committed. Tell me, for each mark, what you did and why.
 ```
 
-A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 in your terminal:
-
-```sh
-konjir review node=short-links-binding version=2 verdict=approve note="The default is now 1 day, as R3 says."
-```
+A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 on Kolab's page, where you are still signed in as **engineer**: open **Reviews**, then `short-links-binding` version 2 under **Waiting for your review**, read what changed, and choose **Approve**. If the page signed you out (you ran `konjir login` as yourself again, say), sign in again and switch to **engineer** first.
 
 Then, in the **builder** session:
 

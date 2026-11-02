@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, HttpExcepti
 import {
   AccessError, ActorError, ChecksError, GateError, Kolab, LimitError, RoleError, TenancyError, activity, cursorFor, keyOf, kolabNodes,
   kolabNodesPage, liveLinks, markDetails, markDetailsPage, maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetailsPage,
-  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, waitingCounts,
+  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, waitingCounts, workReviewDetails,
   type LinkRow, type MarkDetailRow, type PageOpts, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
 import { formatAddress, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
@@ -402,17 +402,23 @@ export class WebService {
     const [f, y] = (keyOf('web:reviews3', page.cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
     const forMe = f === 'done' ? { items: [], next: null } : await reviewRequestsPage(this.kolab, s, { reviewer: me.actor, layer: me.layer }, { cursor: f, limit: page.limit });
     const mine = y === 'done' ? { items: [], next: null } : await submissionsOf(this.kolab, s, me.actor, { cursor: y, limit: page.limit });
+    // What a reviewer of each work package checks, in one read for them all (views.ts), which renews no
+    // lease. If it fails, the list still comes back, each package flagged as not read.
+    const work = forMe.items.filter((r) => r.kind === 'work');
+    const details = await workReviewDetails(this.kolab, s, work.map((r) => ({ binding: r.binding, element: r.element })))
+      .catch((e: unknown) => { logger.error(`the review list couldn't read its work packages: ${maskTokens(e)}`); return undefined; });
     return {
-      for_me: await Promise.all(forMe.items.map(async (r): Promise<WebVersionReview | WebWorkReview> => {
+      for_me: forMe.items.map((r): WebVersionReview | WebWorkReview => {
         if (r.kind === 'version') return { kind: 'version', subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at };
-        const subject = formatAddress({ node: r.binding, element: r.element });
-        // konjir_read_work's read, as the session reads it (its first event only: the list needs none).
-        const w = await this.kolab.readWork(s, subject, { limit: 1 });
+        const d = details?.get(`${r.binding}#${r.element}`);
         return {
-          kind: 'work', subject, binding: r.binding, id: r.element, title: w.text, done_when: w.done_when ?? null, assignee: r.author,
-          at: r.submitted_at ?? r.at, note: r.submitted_note, repository: w.repository?.url ?? null, evidence: w.evidence, open_marks: w.open_marks?.length ?? 0,
+          kind: 'work', subject: formatAddress({ node: r.binding, element: r.element }), binding: r.binding, id: r.element,
+          title: d?.text ?? null, done_when: d?.done_when ?? null, assignee: r.author, at: r.submitted_at ?? r.at, note: r.submitted_note,
+          repository: d?.repository ?? null, open_marks: d?.open_marks ?? 0,
+          evidence: d?.evidence ?? [], evidence_more: d?.evidence_more ?? 0, earlier: d?.earlier ?? [], earlier_count: d?.earlier_count ?? 0,
+          ...(d && d.text !== null ? {} : { missing: true as const }),
         };
-      })),
+      }),
       mine: mine.items.map((x) => ({
         subject: formatAddress({ node: x.node, version: x.seq }), node: x.node, seq: x.seq, state: x.state, note: x.note, verdicts: x.verdicts,
       })),
@@ -671,6 +677,7 @@ export class WebService {
   /** konjir_review: approve, or request changes with a note. */
   async review(s: string, name: string, seq: number, b: WebVerdict): Promise<WebOutcome> {
     if (!REVIEW_VERDICTS.includes(b?.verdict)) throw bad('the verdict is approve or request_changes');
+    if (b.note !== undefined && b.note !== null && typeof b.note !== 'string') throw bad('the note is text');
     if (b.verdict === 'request_changes' && !b.note?.trim()) throw bad('say what must change: requesting changes needs a note');
     for (const f of b.findings ?? []) if (!FINDING_KINDS.includes(f.kind)) throw bad('a finding is a contradiction or a layer_leak');
     const v = await this.kolab.versionIn(s, { node: name, version: seq }, { allowDraft: true, what: 'reviewing' });
@@ -686,10 +693,12 @@ export class WebService {
    * note, returns it to its assignee.
    */
   async reviewWork(s: string, binding: string, id: string, b: WebVerdict): Promise<WebWorkOutcome> {
+    if (!isNodeName(binding)) throw bad(`not a binding's name: ${binding}`);
+    if (!WORK_ID.test(id)) throw bad(`not a work package's id: ${id}`);
     if (!REVIEW_VERDICTS.includes(b?.verdict)) throw bad('the verdict is approve or request_changes');
+    if (b.note !== undefined && b.note !== null && typeof b.note !== 'string') throw bad('the note is text');
     if (b.verdict === 'request_changes' && !b.note?.trim()) throw bad('say what must change: requesting changes needs a note');
     if (b.findings?.length) throw bad('findings are a version\'s: for a work package, say what must change in the note');
-    if (!isNodeName(binding)) throw bad(`not a binding's name: ${binding}`);
     return this.kolab.reviewWork(s, formatAddress({ node: binding, element: id }), { verdict: b.verdict, note: b.note?.trim() || undefined });
   }
 
@@ -841,6 +850,9 @@ const stale = (node: string, base: number | null, now: number | null) => new Con
   error: 'stale', message: `${node} moved on: your edits were made on ${base === null ? 'no version' : `version ${base}`}, and it is at version ${now ?? 'none'} now. They are still here; read the new version, then apply them again`,
 });
 const logger = new Logger('WebApi');
+
+/** What the page takes as a work package's id, an element's: no space, and none of an address's own marks (/ @ # ~). */
+const WORK_ID = /^[^\s/@#~]{1,64}$/;
 
 /**
  * An engine error as the API returns it: its status and its message, with any token masked.

@@ -4,7 +4,11 @@ import { Addr, Diff, Pill } from './bits.js';
 import { addr, ago } from '../util.js';
 import { api as call } from '../api.js';
 
-export interface Act { run(what: () => Promise<unknown>, done: string): Promise<boolean> }
+/**
+ * Runs an action of the page's: `done` is what it says when it succeeds, or `told`, given what the
+ * action returned, when that depends on Kolab's answer. A refusal says Kolab's message instead.
+ */
+export interface Act { run<T>(what: () => Promise<T>, done: string, told?: (out: T) => string): Promise<boolean> }
 
 const REASON: Record<string, string> = {
   changed: 'stale', fuzzy_reanchor: 'stale', orphaned: 'orphaned', override_stale: 'stale', override_orphaned: 'orphaned',

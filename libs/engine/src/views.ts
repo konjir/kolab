@@ -6,7 +6,7 @@
  */
 import type { QuoteSelector } from '@konjir/address';
 import { formatAddress } from '@konjir/address';
-import type { Kind, Layer, MarkReason, QueryKind, QueryState, ReviewRequestState, VersionState } from '@konjir/types';
+import type { EvidenceKind, Kind, Layer, MarkReason, QueryKind, QueryState, ReviewRequestState, VersionState } from '@konjir/types';
 import { markBecause, NEXT_STEP, type Kolab } from './kolab.js';
 import { cursorFor, keyOf, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 
@@ -350,6 +350,100 @@ async function requestRows(kolab: Kolab, session: string, only: { node?: string;
       submitted_at: r.submitted_at === null ? null : iso(r.submitted_at), submitted_note: r.submitted_note }
     : { kind: 'version', node: r.node, seq: r.seq!, layer: r.layer, author: r.author, reviewer: r.reviewer, at: iso(r.at) })));
   return { items: shown, next };
+}
+
+/** At most this many items of a package's evidence, of each round, show in the review list; the rest are counted. */
+export const REVIEW_EVIDENCE_SHOWN = 20;
+
+/** An item of a work package's evidence, as the review list shows it: no files (W5.8). */
+export interface ReviewEvidenceRow {
+  id: string; kind: EvidenceKind; sha?: string; pr?: number; url?: string; title?: string; recorded_by: string; at: string;
+  /** A commit's or pull request's repository and whether it is confirmed; none for a test run, or for one recorded before repositories (W5.2a). */
+  repository?: string | null; confirmed?: boolean; before_repositories?: true;
+}
+
+/**
+ * What a reviewer of a work package checks, as the review list shows it (W5.8; PLN16): its text and
+ * done-when in its binding's latest committed version; the repository it is done in, and whether it is
+ * confirmed (D98); and its evidence, oldest first, split into the current round (recorded since it
+ * last went In progress: what this submission brought) and earlier rounds, each capped at
+ * REVIEW_EVIDENCE_SHOWN with the rest counted. No files.
+ */
+export interface WorkReviewDetailRow {
+  binding: string; element: string; text: string | null; done_when: string | null;
+  repository: { url: string; confirmed: boolean } | null;
+  /** The open marks on it, which put it at risk (PLN10). */
+  open_marks: number;
+  evidence: ReviewEvidenceRow[]; evidence_more: number; earlier: ReviewEvidenceRow[]; earlier_count: number;
+}
+
+/**
+ * The review details of `packages` (by binding name and element) in the session's kolab, read in
+ * one transaction as the session reads (kj_agent, row-level security): two queries for them all,
+ * whatever their number. Read only: it renews no lease. A package not found is left out.
+ */
+export async function workReviewDetails(kolab: Kolab, session: string, packages: { binding: string; element: string }[]): Promise<Map<string, WorkReviewDetailRow>> {
+  const out = new Map<string, WorkReviewDetailRow>();
+  if (!packages.length) return out;
+  const here = await kolab.sessionKolab(session);
+  const bindings = packages.map((p) => p.binding), elements = packages.map((p) => p.element);
+  await kolab.readAs(session, async (q) => {
+    // Each package, with its element in its binding's latest committed version, and its binding's
+    // implementation, or the repository its repo field names, live.
+    const rows = (await q.query<{ binding: string; element: string; text: string | null; done_when: string | null; repo_url: string | null; repo_confirmed: boolean | null; open_marks: number }>(
+      `select n.name as binding, w.element_id as element, el.text, el.work->>'done_when' as done_when, rp.url as repo_url, rp.confirmed as repo_confirmed,
+              (select count(*)::int from invalidation i join version x on x.id = i.version_id
+                where x.node_id = n.id and x.state = 'committed' and i.element_id = w.element_id and i.state = 'open' and i.delta_id is null) as open_marks
+         from unnest($2::text[], $3::text[]) as p(binding, element)
+         join node n on n.kolab_id = $1 and n.name = p.binding
+         join work_package w on w.binding_node_id = n.id and w.element_id = p.element
+         left join lateral (select e.text, e.work from element e join version v on v.id = e.version_id
+                             where v.node_id = n.id and v.state = 'committed' and e.element_id = w.element_id order by v.seq desc limit 1) el on true
+         left join lateral (select r.url, r.confirmed_at is not null as confirmed from repository r
+                             where r.kolab_id = $1 and r.archived_at is null
+                               and case when el.work->>'repo' is not null then lower(r.url) = lower(regexp_replace(regexp_replace(el.work->>'repo', '/+$', ''), '\\.git$', ''))
+                                        else r.binding_node_id = n.id end
+                             order by r.registered_at limit 1) rp on true`, [here, bindings, elements])).rows;
+    if (!rows.length) return;
+    // Their evidence, the current round's and the earlier rounds' each numbered and counted, so at
+    // most REVIEW_EVIDENCE_SHOWN of each come back. A round starts when the package last went In
+    // progress from another state: pulled, or returned by a request for changes.
+    const ev = (await q.query<{ binding: string; element: string; id: string; kind: EvidenceKind; ref: string | null; url: string | null; title: string | null;
+      recorded_by: string; at: Date | string; repository_url: string | null; confirmed: boolean; before_repositories: boolean; current: boolean; n: number }>(
+      `select * from (
+         select n.name as binding, e.element_id as element, e.id, e.kind, e.ref, e.url, e.title, e.recorded_by, e.at,
+                er.url as repository_url, er.confirmed_at is not null as confirmed, e.before_repositories,
+                (rs.at is null or (ev.at, ev.id) > (rs.at, rs.id)) as current,
+                count(*) over (partition by e.binding_node_id, e.element_id, (rs.at is null or (ev.at, ev.id) > (rs.at, rs.id)))::int as n,
+                row_number() over (partition by e.binding_node_id, e.element_id, (rs.at is null or (ev.at, ev.id) > (rs.at, rs.id)) order by e.at, e.id) as i
+           from unnest($2::text[], $3::text[]) as p(binding, element)
+           join node n on n.kolab_id = $1 and n.name = p.binding
+           join evidence e on e.binding_node_id = n.id and e.element_id = p.element
+           join work_event ev on ev.id = e.event_id
+           left join repository er on er.id = e.repository_id
+           left join lateral (select t.at, t.id from work_event t where t.binding_node_id = e.binding_node_id and t.element_id = e.element_id
+                               and t.to_state = 'in_progress' and t.from_state is distinct from 'in_progress' order by t.at desc, t.id desc limit 1) rs on true
+       ) x where x.i <= $4 order by x.at, x.id`, [here, bindings, elements, REVIEW_EVIDENCE_SHOWN])).rows;
+    for (const r of rows) {
+      const mine = ev.filter((e) => e.binding === r.binding && e.element === r.element);
+      const view = (e: typeof ev[number]): ReviewEvidenceRow => ({
+        id: e.id, kind: e.kind,
+        ...(e.kind === 'commit' && e.ref ? { sha: e.ref } : {}), ...(e.kind === 'pull_request' && e.ref ? { pr: Number(e.ref) } : {}),
+        ...(e.url ? { url: e.url } : {}), ...(e.title ? { title: e.title } : {}), recorded_by: e.recorded_by, at: iso(e.at),
+        ...(e.kind === 'test_run' ? {} : { repository: e.repository_url, confirmed: !!e.confirmed, ...(e.before_repositories ? { before_repositories: true as const } : {}) }),
+      });
+      const current = mine.filter((e) => e.current), earlier = mine.filter((e) => !e.current);
+      // The repository this submission's evidence names, as the approval confirms it (D98), or else the package's own.
+      const named = current.find((e) => e.kind !== 'test_run' && e.repository_url);
+      out.set(`${r.binding}#${r.element}`, {
+        binding: r.binding, element: r.element, text: r.text, done_when: r.done_when,
+        repository: named ? { url: named.repository_url!, confirmed: named.confirmed } : r.repo_url ? { url: r.repo_url, confirmed: !!r.repo_confirmed } : null,
+        open_marks: r.open_marks, evidence: current.map(view), evidence_more: Math.max(0, (current[0]?.n ?? 0) - current.length),
+        earlier: earlier.map(view), earlier_count: earlier[0]?.n ?? 0,
+      });
+    }
+  });
+  return out;
 }
 
 export interface SubmissionRow {
