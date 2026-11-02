@@ -2489,7 +2489,7 @@ export class Kolab {
     if (making) {
       const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [person])).rows[0].n;
       if (live + making > this.oauth.agentsPerPerson) {
-        return refuse(`you have ${live} live agents, and this would make ${making} more: a person has at most ${this.oauth.agentsPerPerson} here. ${await this.liveAgentsShown(person)}. Archive agents you no longer use (konjir archive_agent label=<label>), or name fewer`);
+        return refuse(`you have ${live} live agents, and this would make ${making} more: a person has at most ${this.oauth.agentsPerPerson} here. ${await this.liveAgentsShown(person, 'Archive agents you no longer use')}, or name fewer`);
       }
       const recent = (await this.db.query<{ n: number }>(
         `select count(*)::int as n from oauth_setup where person_id = $1 and made_agents > 0 and created_at > now() - $2 * interval '1 millisecond'`,
@@ -2896,7 +2896,7 @@ export class Kolab {
           `select count(*) filter (where not kj_actor_archived(id))::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
              from actor where owner_id = $1`, [person])).rows[0];
         if (c.owned >= this.oauth.agentsPerPerson) {
-          throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}): archive one you no longer use (konjir archive_agent label=<label>). ${await this.liveAgentsShown(person, tx)}`);
+          throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}). ${await this.liveAgentsShown(person, 'Archive one you no longer use', tx)}`);
         }
         // A pool agent a job makes is exempt from the rate (JOB3), and so is one a setup makes, whose
         // setup counts once against a rate of its own (setupPlan): the cap still holds.
@@ -2949,62 +2949,82 @@ export class Kolab {
   }
 
   /**
-   * A person's own session archives an agent of theirs by label (D59, W3.7): its sessions end, and
-   * it no longer counts toward `oauth.agentsPerPerson`. Its name stays its own (D52); an admin may
-   * unarchive it. Only a person, only their own live agent; anything else is refused alike.
+   * A person's own session archives an agent of theirs (D59, W3.7), by label, `<person>-<label>`,
+   * or by its whole name (`agent`, D106), for an agent of theirs whose name doesn't start
+   * `<person>-`, such as one Konjir's admin added: its sessions end, and it no longer counts toward
+   * `oauth.agentsPerPerson`. Its name stays its own (D52); an admin may unarchive it. Only a person,
+   * only their own live agent; anything else is refused alike, whoever holds the name.
    */
-  async archiveOwnAgent(session: string, label: string): Promise<{ archived: string; ended: number }> {
+  async archiveOwnAgent(session: string, which: string | { label?: string; agent?: string }): Promise<{ archived: string; ended: number }> {
     const me = await this.sessionInfo(session);
     if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person archives their agents`);
-    const id = `${me.actor}-${label}`;
-    const a = /^[a-z0-9][a-z0-9-]{0,23}$/.test(label) ? await this.findActor(id) : undefined;
-    if (!a || a.kind !== 'agent' || a.owner !== me.actor || await this.archivedActor(id)) throw new ActorError(`you have no live agent ${id}`);
+    const w = typeof which === 'string' ? { label: which } : which;
+    if ((w.label === undefined) === (w.agent === undefined)) throw new ActorError('name the agent to archive by label=<label> or agent=<name>, one of them');
+    const id = w.label !== undefined ? `${me.actor}-${w.label}` : w.agent!;
+    const valid = w.label !== undefined ? /^[a-z0-9][a-z0-9-]{0,23}$/.test(w.label) : id.length > 0 && id.length <= 200;
+    const a = valid ? await this.findActor(id) : undefined;
+    if (!a || a.kind !== 'agent' || a.owner !== me.actor || await this.archivedActor(id)) throw new ActorError(`you have no live agent ${id.slice(0, 120)}`);
     const r = await this.archive({ actor: id }, { by: me.actor });
     return { archived: id, ended: r.ended };
   }
 
   /**
-   * A person's agents (D106), each with when it was made, when it last used Kolab, whether a session
-   * of its is open, and whether it is archived (by itself, or through its owner, D52), by name; the
+   * A person's agents (D106), by name, each with when it was made, when it last used Kolab, whether
+   * a session of its is open, whether it is archived (by itself, or through its owner, D52), and how
+   * konjir_archive_agent names it (`label=<label>` for `<person>-<label>`, else `agent=<name>`); the
    * archived ones only with `archived`. When it last used Kolab is derived from what Kolab already
-   * records, with no column of its own: the latest of a session of its opening, a sign-in of its
-   * being issued or renewed (every 15 minutes, the access token's life, while it works), and a job
-   * of its ending; null if none ever was.
+   * records, with no column of its own: the latest of a session of its opening, a grant of its
+   * being issued or renewed (every 15 minutes, the access token's life, while it works: refreshGrant
+   * sets the grant's expiry to then plus `oauth.refreshTtlS`), and a job of its ending; null if none
+   * ever was. All in one query, each part by an index on the agent (0037, and oauth_grant_actor).
    */
   private async ownAgentRows(q: Q, person: string, archived: boolean) {
     const rows = (await q.query<{ id: string; created_at: string; archived: boolean; last_used: string | null; open: boolean }>(
-      `select a.id, a.created_at, kj_actor_archived(a.id) as archived,
-              greatest((select max(s.started_at) from session s where s.actor_id = a.id),
-                       (select max(t.created_at) from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where g.actor_id = a.id),
-                       (select max(j.ended_at) from job j where j.agent_id = a.id)) as last_used,
-              exists (select 1 from session s left join oauth_grant g on g.id = s.grant_id where s.actor_id = a.id and ${OPEN_SESSION}) as open
-         from actor a where a.owner_id = $1 and a.kind = 'agent' order by a.id`, [person])).rows;
-    return rows.filter((r) => archived || !r.archived).map((r) => ({
-      agent: r.id, label: r.id.startsWith(`${person}-`) ? r.id.slice(person.length + 1) : r.id,
-      made: new Date(r.created_at).toISOString(), lastUsed: r.last_used === null ? null : new Date(r.last_used).toISOString(),
-      open: r.open, archived: r.archived,
-    }));
+      `with mine as (select id, created_at, kj_actor_archived(id) as archived from actor where owner_id = $1 and kind = 'agent'),
+            sessions as (select s.actor_id, max(s.started_at) as at, bool_or(${OPEN_SESSION}) as open
+                           from session s left join oauth_grant g on g.id = s.grant_id where s.actor_id in (select id from mine) group by s.actor_id),
+            grants as (select actor_id, max(expires_at) - $2 * interval '1 second' as at from oauth_grant where actor_id in (select id from mine) group by actor_id),
+            jobs as (select agent_id, max(ended_at) as at from job where agent_id in (select id from mine) group by agent_id)
+       select m.id, m.created_at, m.archived, greatest(s.at, g.at, j.at) as last_used, coalesce(s.open, false) as open
+         from mine m left join sessions s on s.actor_id = m.id left join grants g on g.actor_id = m.id left join jobs j on j.agent_id = m.id
+        order by m.id`, [person, this.oauth.refreshTtlS])).rows;
+    return rows.filter((r) => archived || !r.archived).map((r) => {
+      const rest = r.id.startsWith(`${person}-`) ? r.id.slice(person.length + 1) : undefined;
+      const label = rest !== undefined && /^[a-z0-9][a-z0-9-]{0,23}$/.test(rest) ? rest : null;
+      return {
+        agent: r.id, label, archiveWith: label !== null ? `label=${label}` : `agent=${r.id}`,
+        made: new Date(r.created_at).toISOString(), lastUsed: r.last_used === null ? null : new Date(r.last_used).toISOString(),
+        open: r.open, archived: r.archived,
+      };
+    });
   }
 
   /**
-   * A person's live agents, least recently used first (never used before any used, then the oldest
-   * made first), for the refusal at the cap on live agents (D106): `Yours, least recently used
-   * first: pm (last used 2026-10-20), agent-007 (never used), …`, by label.
+   * A person's live agents, least recently used first, for the refusal at the cap on live agents
+   * (D106): those signed in now last, since they are in use whatever their dates say (a hand-issued
+   * session never renews); the rest never used first, then by last use, then the oldest made. Each
+   * by its label, or `agent=<name>` for one whose name doesn't start `<person>-`; and how to archive
+   * one: `Yours, least recently used first (dates UTC): qa (never used), eng (last used 2026-10-20),
+   * pm (signed in now). Archive …`.
    */
-  private async liveAgentsShown(person: string, q: Q = this.db): Promise<string> {
+  private async liveAgentsShown(person: string, archive: string, q: Q = this.db): Promise<string> {
     const live = (await this.ownAgentRows(q, person, false))
-      .sort((a, b) => (a.lastUsed ?? '').localeCompare(b.lastUsed ?? '') || a.made.localeCompare(b.made) || a.agent.localeCompare(b.agent));
-    if (!live.length) return 'You have no live agent of your own';
-    return `Yours, least recently used first: ${live.map((a) => `${a.label} (${a.lastUsed ? `last used ${a.lastUsed.slice(0, 10)}` : 'never used'})`).join(', ')}`;
+      .sort((a, b) => Number(a.open) - Number(b.open) || (a.lastUsed ?? '').localeCompare(b.lastUsed ?? '') || a.made.localeCompare(b.made) || a.agent.localeCompare(b.agent));
+    if (!live.length) return `You have no live agent of your own. ${archive} (konjir archive_agent label=<label>)`;
+    const shown = live.map((a) => `${a.label ?? `agent=${a.agent}`} (${a.open ? 'signed in now' : a.lastUsed ? `last used ${a.lastUsed.slice(0, 10)}` : 'never used'})`);
+    const how = live.some((a) => a.label === null) ? 'konjir archive_agent label=<label>, or agent=<name> for one shown so' : 'konjir archive_agent label=<label>';
+    return `Yours, least recently used first (dates UTC): ${shown.join(', ')}. ${archive} (${how})`;
   }
 
   /**
-   * A person's own session lists their agents (D106, W5.6): each one's name and label, when it was
-   * made, when it last used Kolab (ownAgentRows), the kolabs it is granted in with its access there
-   * now (its grant, cut down to its owner's, D30), whether a session of its is open, and whether it
-   * is archived; archived ones only with `archived`. With how many of the person's places for live
-   * agents are used (`live`), of `limit` (`oauth.agentsPerPerson`). Only a person: an agent's
-   * session lists no agents.
+   * A person's own session lists their agents (D106, W5.6): each one's name and label (null when its
+   * name doesn't start `<person>-`), how konjir_archive_agent names it (`archive_with`), when it was
+   * made, when it last used Kolab (ownAgentRows), the kolabs where it has access now through a grant
+   * of its own, with that access (its grant, cut down to its owner's, D30; a kolab where that gives
+   * nothing now, archived or its owner's access gone, is left out), whether a session of its is
+   * open, and whether it is archived; archived ones only with `archived`. With how many of the
+   * person's places for live agents are used (`live`), of `limit` (`oauth.agentsPerPerson`). Only a
+   * person: an agent's session lists no agents.
    */
   async listOwnAgents(session: string, opts: { archived?: boolean } = {}) {
     const me = await this.sessionInfo(session);
@@ -3015,8 +3035,11 @@ export class Kolab {
     const agents = [];
     for (const r of rows) {
       const kolabs = [];
-      for (const g of grants.filter((x) => x.agent_id === r.agent)) kolabs.push({ kolab: g.kolab_id, access: await accessIn(this.db, r.agent, g.kolab_id) });
-      agents.push({ agent: r.agent, label: r.label, made: r.made, last_used: r.lastUsed, kolabs, session_open: r.open, archived: r.archived });
+      for (const g of grants.filter((x) => x.agent_id === r.agent)) {
+        const access = await accessIn(this.db, r.agent, g.kolab_id);
+        if (access.level) kolabs.push({ kolab: g.kolab_id, access });
+      }
+      agents.push({ agent: r.agent, label: r.label, archive_with: r.archiveWith, made: r.made, last_used: r.lastUsed, kolabs, session_open: r.open, archived: r.archived });
     }
     const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [me.actor])).rows[0].n;
     return { agents, live, limit: this.oauth.agentsPerPerson };

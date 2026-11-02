@@ -309,7 +309,7 @@ test('over MCP, konjir list_agents (D106): a person\'s own session lists their a
   await call(admin, 'admin_grant', { kolab: 'checkout', to: 'alice-pm', level: 'write', layers: ['functional'] });
   const pm = await open('alice-pm');
   expect(await call(alice, 'list_agents')).toStrictEqual({
-    agents: [{ agent: 'alice-pm', label: 'pm', made: expect.any(String), last_used: expect.any(String), kolabs: [{ kolab: 'checkout', access: { level: 'write', layers: ['functional'] } }], session_open: true, archived: false }],
+    agents: [{ agent: 'alice-pm', label: 'pm', archive_with: 'label=pm', made: expect.any(String), last_used: expect.any(String), kolabs: [{ kolab: 'checkout', access: { level: 'write', layers: ['functional'] } }], session_open: true, archived: false }],
     live: 1, limit: 10,
   });
   expect(await rejection(call(pm, 'list_agents'))).toMatch(/alice-pm is an agent: only a person lists their agents/);
@@ -317,4 +317,10 @@ test('over MCP, konjir list_agents (D106): a person\'s own session lists their a
   await call(alice, 'archive_agent', { label: 'pm' });
   expect(await call(alice, 'list_agents')).toMatchObject({ agents: [], live: 0 });
   expect(await call(alice, 'list_agents', { archived: true })).toMatchObject({ agents: [{ agent: 'alice-pm', archived: true, session_open: false }], live: 0 });
+  // An agent of hers the admin named without her prefix: listed with agent=, and archived by it.
+  await call(admin, 'admin_add_actor', { id: 'bot', owner: 'alice' });
+  expect(await call(alice, 'list_agents')).toMatchObject({ agents: [{ agent: 'bot', label: null, archive_with: 'agent=bot' }], live: 1 });
+  expect(await rejection(call(alice, 'archive_agent', { label: 'bot' }))).toMatch(/you have no live agent alice-bot/);
+  expect(await call(alice, 'archive_agent', { agent: 'bot' })).toMatchObject({ archived: 'bot' });
+  expect(await call(alice, 'list_agents')).toMatchObject({ agents: [], live: 0 });
 });

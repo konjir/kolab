@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
-import { StoredLogin, call, connect, credentialsPath, login, logout, main } from '../src/cli.js';
+import { DEFAULT_URL, StoredLogin, call, connect, connectionUrl, credentialsPath, login, logout, main } from '../src/cli.js';
 import { closeAtEnd, els, openKolab, rejection } from '@konjir/engine/testing';
 import { FileLock } from '../src/login.js';
 
@@ -159,9 +159,32 @@ test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in 
 test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; with several, it names them (D106)', async () => {
   const { server } = await signedIn();
   delete process.env.KONJIR_URL;
+  const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   out = [];
   await main(['whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
+  // It says so, on stderr, so the output stays the verb's.
+  expect(errors.mock.calls.map((c) => String(c[0]))).toContain(`konjir: using ${server.url} (the one sign-in kept)`);
+  // Only a verb, konjir work or logout takes it: login and connect sign in afresh, at the local
+  // default; with a token, or inside a job, never; a URL given always wins.
+  const one = () => [server.url];
+  for (const cmd of ['whoami', 'list_agents', 'work', 'logout']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: server.url, implicit: true });
+  for (const cmd of ['login', 'connect', 'serve', '--version', 'help']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
+  expect(connectionUrl({ cmd: 'help', rest: ['whoami'], kept: one })).toStrictEqual({ url: server.url, implicit: true });
+  expect(connectionUrl({ cmd: 'whoami', token: 'kjs_x', kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
+  expect(connectionUrl({ cmd: 'whoami', job: '01JOB', kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
+  expect(connectionUrl({ cmd: 'whoami', given: 'https://kolab.example.com/mcp', kept: one })).toStrictEqual({ url: 'https://kolab.example.com/mcp', implicit: false });
+  expect(connectionUrl({ cmd: 'whoami', kept: () => [] })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
+  // With a token, the kept sign-in isn't used: the default is, and nothing is said of the kept one.
+  errors.mockClear();
+  process.env.KONJIR_TOKEN = 'kjs_not-a-token';
+  await rejection(main(['whoami']));
+  expect(errors.mock.calls.map((c) => String(c[0]))).not.toContain(`konjir: using ${server.url} (the one sign-in kept)`);
+  delete process.env.KONJIR_TOKEN;
+  // Inside a job, konjir refuses with no token, whatever is kept.
+  process.env.KONJIR_JOB = '01JOB';
+  expect(await rejection(main(['whoami']))).toMatch(/this is a Konjir job \(KONJIR_JOB is set\)/);
+  delete process.env.KONJIR_JOB;
   // Another Kolab's sign-in kept beside it: konjir can't choose, so it uses the default, which it
   // keeps nothing for, and names the URLs it does keep.
   const path = credentialsPath();
@@ -174,10 +197,23 @@ test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; wit
   out = [];
   await main(['--url', server.url, 'whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
+  // konjir logout with several kept, and none for the default, names them.
+  out = [];
+  await main(['logout']);
+  expect(out.join('\n')).toBe(`No sign-in kept for ${DEFAULT_URL}. konjir keeps sign-ins for ${server.url}, https://kolab.example.com/mcp: run konjir logout --url <url> for each.`);
   process.env.KONJIR_URL = server.url;
   out = [];
   await main(['whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
+  // konjir logout with no URL, one sign-in kept: that one is revoked and forgotten.
+  const only = JSON.parse(readFileSync(path, 'utf8'));
+  delete only['https://kolab.example.com/mcp'];
+  writeFileSync(path, JSON.stringify(only), { mode: 0o600 });
+  delete process.env.KONJIR_URL;
+  out = [];
+  await main(['logout']);
+  expect(out.join('\n')).toBe(`Signed out of ${server.url}: the sign-in is revoked and forgotten.`);
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toStrictEqual({});
 });
 
 test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {

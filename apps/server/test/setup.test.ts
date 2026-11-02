@@ -249,7 +249,7 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
   // never used, the oldest made first; ann-old, archived, isn't among them.
   await kolab.db.query(`update actor set created_at = timestamptz '2026-10-01' + (ascii(right(id, 1)) - ascii('a')) * interval '1 hour' where owner_id = 'ann' and id <> 'ann-old'`);
   expect(await why(setupScope('anns', ['x:product', 'y:product', 'z:engineer']))).toBe('you have 8 live agents, and this would make 3 more: a person has at most 10 here. '
-    + 'Yours, least recently used first: a (never used), b (never used), c (never used), d (never used), e (never used), f (never used), g (never used), h (never used). '
+    + 'Yours, least recently used first (dates UTC): a (never used), b (never used), c (never used), d (never used), e (never used), f (never used), g (never used), h (never used). '
     + 'Archive agents you no longer use (konjir archive_agent label=<label>), or name fewer');
   // …while a setup that makes only what fits, or reuses them, goes ahead.
   const fits = await allowSetup(base, idp, client, setupScope('anns', ['a:product', 'x:product', 'y:engineer']));
@@ -329,7 +329,7 @@ test('konjir login --kolab with a kolab the person can\'t reach (production\'s m
   // The title, given as --kolab: said so, and no kolab chosen (brisket, her first, used to be).
   const { page, post } = await setupPage(base, idp, client, 'konjir kolab:m5-check-ann role:product');
   expect(said(page.html)).toBe('It asks for the kolab m5-check-ann, and you can\'t reach a kolab of that name. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. '
-    + 'No kolab is chosen for you: choose one below, or deny it and run <code>konjir login --kolab <name></code> again with one of their names.');
+    + 'No kolab is chosen for you: choose one below, or deny it, and ask again with the name of one of the kolabs below.');
   expect(page.html).not.toMatch(/name="kolab" value="[^"]*" checked/);
   expect(page.html).toContain('value="kolab:brisket"');
   // Allowed without choosing: Kolab asks for the kolab, and signs no one in.

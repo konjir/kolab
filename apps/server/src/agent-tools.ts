@@ -185,6 +185,10 @@ const endJob = z.object({
 });
 const listJobs = z.object({ live: z.boolean().optional().describe('true: only live jobs; false: only ended ones'), ...paging });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
+const archiveAgent = z.object({
+  label: z.string().optional().describe('The agent\'s label: archives <you>-<label>.'),
+  agent: z.string().optional().describe('The agent\'s whole name, for an agent of yours whose name doesn\'t start <you>- (konjir_list_agents gives each one\'s archive_with). Give label or agent, not both.'),
+});
 const listAgents = z.object({ archived: z.boolean().optional().describe('Include your archived agents too') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
@@ -883,7 +887,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_agents',
-    description: 'For a person\'s own session only: your agents, by name, each with its label, when it was made, when it last used Kolab (last_used: when a session of its last opened, its sign-in last renewed, every 15 minutes while it works, or a job of its ended; null if never), the kolabs it is granted in with its access there now (never more than yours), whether a session of its is open, and whether it is archived. Archived agents only with archived=true. With live, how many of your places for live agents are used, of limit (10): konjir_archive_agent frees one. An agent\'s session and the admin token are refused.',
+    description: 'For a person\'s own session only: your agents, by name, each with its label (null when its name doesn\'t start <you>-), archive_with (what konjir_archive_agent takes for it: label=<label> or agent=<name>), when it was made, when it last used Kolab (last_used: when a session of its last opened, its sign-in last renewed, every 15 minutes while it works, or a job of its ended; null if never; one with a session open is in use now, whatever its last_used, since a session an admin opened never renews), the kolabs where its own grant gives it access now, with that access (never more than yours), whether a session of its is open, and whether it is archived. Archived agents only with archived=true. With live, how many of your places for live agents are used, of limit (10): konjir_archive_agent frees one. An agent\'s session and the admin token are refused.',
     schema: listAgents,
     annotations: { readOnlyHint: true },
   })
@@ -893,12 +897,12 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_archive_agent',
-    description: 'For a person\'s own session only: archive an agent of yours, <you>-<label>. Its sessions end, and it no longer counts toward the 10 live agents a person may have. Its name stays its own; an admin may unarchive it. An agent\'s session and the admin token are refused.',
-    schema: createAgent,
+    description: 'For a person\'s own session only: archive an agent of yours, <you>-<label> by label=<label>, or by agent=<name> one of yours whose name doesn\'t start <you>- (konjir_list_agents gives each one\'s archive_with). Its sessions end, and it no longer counts toward the 10 live agents a person may have. Its name stays its own; an admin may unarchive it. Anything but a live agent of yours is refused alike. An agent\'s session and the admin token are refused.',
+    schema: archiveAgent,
     annotations: { destructiveHint: true },
   })
-  archiveAgent({ label }: z.infer<typeof createAgent>, context?: McpToolContext) {
-    return asAgent(context, (s) => this.kolab.archiveOwnAgent(s, label));
+  archiveAgent({ label, agent }: z.infer<typeof archiveAgent>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.archiveOwnAgent(s, { label, agent }));
   }
 }
 
