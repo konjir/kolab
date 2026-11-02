@@ -516,7 +516,7 @@ export class OAuthController {
     // A kolab the scope names that the person can't reach (`konjir login --kolab`) is said so, with
     // the setup page's hint, and no other kolab is chosen in its place (D106).
     // Only a name a kolab can have is repeated on the page; anything else is said to be one they can't reach.
-    const unreached = pre.kolab && !kolabs.some((k) => k.id === pre.kolab)
+    const unreached = !invite && pre.kolab && !kolabs.some((k) => k.id === pre.kolab)
       ? (isKolabName(pre.kolab) && pre.kolab.length <= 100
         ? { kolab: pre.kolab, ...(await this.kolab.kolabHint(pending.person, pre.kolab)) }
         : { meant: '', yours: '' })

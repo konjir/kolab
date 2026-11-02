@@ -8,8 +8,9 @@ import { afterAll } from '@jest/globals';
 import { closeOpened } from '@konjir/engine/testing';
 
 // Never the sign-ins kept on this machine: konjir with no URL uses the one it keeps (D106), which
-// may be a deployed Kolab's. A file that doesn't exist keeps none; a test that signs in names its own.
-process.env.KONJIR_CREDENTIALS ??= join(tmpdir(), `konjir-test-${process.pid}-none`, 'credentials.json');
+// may be a deployed Kolab's, and so may a KONJIR_CREDENTIALS exported in the shell, so it is
+// replaced, not kept. A file that doesn't exist keeps none; a test that signs in names its own.
+process.env.KONJIR_CREDENTIALS = join(tmpdir(), `konjir-test-${process.pid}-none`, 'credentials.json');
 
 // Longer than a test's 30 s: one file's teardown can stop a child server (up to 10 s before
 // SIGKILL), close servers that wait on their streams, close Kolabs and drop databases. A hook that

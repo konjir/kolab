@@ -201,7 +201,7 @@ ${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="a
 <form class="card" method="post" action="/oauth/consent">
 <p><strong>${esc(v.client)}</strong> ${v.web ? 'opens a session for you.' : `asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just connected it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.`}</p>
 ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
-${v.unreached ? `<p class="err" role="alert">${esc(unreachedSays(v.unreached, false))} No kolab is chosen for you: choose one below, or deny it and run <code>konjir login --kolab &lt;name&gt;</code> again with one of their names.</p>` : ''}
+${v.unreached ? `<p class="err" role="alert">${esc(unreachedSays(v.unreached, false))} No kolab is chosen for you: choose one below, or deny it, and ask again with the name of one of the kolabs below.</p>` : ''}
 <input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">
 ${who}

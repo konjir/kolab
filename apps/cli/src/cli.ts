@@ -349,14 +349,30 @@ export function sessionToken(given: string | undefined, env: Record<string, stri
   return given !== undefined ? given.trim() || undefined : env.KONJIR_TOKEN?.trim() || undefined;
 }
 
+/** Where a command talks to when no URL is given (`--url`, KONJIR_URL): the local Kolab. */
+export const DEFAULT_URL = 'http://127.0.0.1:7420/mcp';
+
+/**
+ * The Kolab a command talks to (D106): the URL given (`--url`, else KONJIR_URL), else, with no
+ * token and outside a job (KONJIR_JOB), the one sign-in konjir keeps, when it keeps exactly one, for
+ * a verb, konjir work or konjir logout (`implicit`: konjir says so on stderr); else the local
+ * default. konjir login and connect sign in afresh, and serve serves, so they never take it, nor
+ * --version or bare help, which talk to no Kolab.
+ */
+export function connectionUrl(o: { given?: string; token?: string; cmd?: string; rest?: string[]; job?: string; kept: () => string[] }): { url: string; implicit: boolean } {
+  if (o.given !== undefined) return { url: o.given, implicit: false };
+  const local = !o.cmd || o.cmd === '--version' || ((o.cmd === 'help' || o.cmd === '--help') && !o.rest?.[0]);
+  if (o.token || o.job?.trim() || local || ['serve', 'login', 'connect'].includes(o.cmd!)) return { url: DEFAULT_URL, implicit: false };
+  const kept = o.kept();
+  return kept.length === 1 ? { url: kept[0], implicit: true } : { url: DEFAULT_URL, implicit: false };
+}
+
 export async function main(argv: string[]) {
   const given = flag(argv, 'url') ?? process.env.KONJIR_URL;
   const token = sessionToken(flag(argv, 'token'));
   const [cmd, ...rest] = argv;
-  // With no URL given and no token (D106), the one sign-in konjir keeps, when it keeps exactly one:
-  // a verb, konjir work or logout uses it. konjir login and connect sign in afresh, and serve serves.
-  const kept = given === undefined && !token && !process.env.KONJIR_JOB?.trim() && !['serve', 'login', 'connect'].includes(cmd ?? '') ? keptSignIns() : [];
-  const url = given ?? (kept.length === 1 ? kept[0] : 'http://127.0.0.1:7420/mcp');
+  const { url, implicit } = connectionUrl({ given, token, cmd, rest, job: process.env.KONJIR_JOB, kept: keptSignIns });
+  if (implicit) console.error(`konjir: using ${safeUrl(url)} (the one sign-in kept)`);
   // Inside a Konjir job (W5.4b) konjir works as the job's agent, with KONJIR_TOKEN, and never with a
   // sign-in kept on this machine: the person's is theirs, not the job's.
   if (process.env.KONJIR_JOB?.trim() && cmd && cmd !== '--version' && !((cmd === 'help' || cmd === '--help') && !rest[0])) {
@@ -454,12 +470,13 @@ export async function main(argv: string[]) {
     const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`, agent && `agent:${agent}`].filter(Boolean).join(' ');
     const me = await loginAs(url, scope, agent);
     console.log(`Signed in to ${url} as ${me.actor}${me.kind === 'agent' ? ` (an agent of ${me.owner}'s)` : ''}, in kolab ${me.kolab} as ${me.role}.`);
-    console.log(`Kept in ${credentialsPath()}; every konjir command now uses it. Start with: konjir instructions`);
+    console.log(`Kept in ${credentialsPath()}. konjir uses it with KONJIR_URL or --url set to ${safeUrl(url)}, or with neither while it is the only sign-in kept there. Start with: konjir instructions`);
     return;
   }
   if (cmd === 'logout') {
     const r = await logout(url, { forget: rest.includes('--forget') });
-    console.log(!r.had ? `No sign-in kept for ${url}.`
+    const others = r.had ? [] : keptSignIns().filter((u) => u !== url);
+    console.log(!r.had ? `No sign-in kept for ${safeUrl(url)}.${others.length ? ` konjir keeps ${others.length === 1 ? 'one' : 'sign-ins'} for ${others.map(safeUrl).join(', ')}: run konjir logout --url <url> for ${others.length === 1 ? 'it' : 'each'}.` : ''}`
       : r.revoked ? `Signed out of ${url}: the sign-in is revoked and forgotten.`
         : `Forgotten, but not revoked at ${url}${r.why ? ` (${r.why})` : ''}: it lapses within 30 days unused, or an admin can end it.`);
     return;
