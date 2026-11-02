@@ -513,10 +513,18 @@ export class OAuthController {
     const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
+    // A kolab the scope names that the person can't reach (`konjir login --kolab`) is said so, with
+    // the setup page's hint, and no other kolab is chosen in its place (D106).
+    // Only a name a kolab can have is repeated on the page; anything else is said to be one they can't reach.
+    const unreached = pre.kolab && !kolabs.some((k) => k.id === pre.kolab)
+      ? (isKolabName(pre.kolab) && pre.kolab.length <= 100
+        ? { kolab: pre.kolab, ...(await this.kolab.kolabHint(pending.person, pre.kolab)) }
+        : { meant: '', yours: '' })
+      : undefined;
     // An invite the person opened is what they came for: offered first (W3.4). Someone new, with no
     // kolab and no invite, makes their first kolab here, named after them if that name is free to try.
     const pick = extra.pick ?? {
-      kolab: invite ? undefined : pre.kolab && kolabs.some((k) => k.id === pre.kolab) ? `kolab:${pre.kolab}` : undefined, role: pre.role,
+      kolab: invite ? undefined : unreached ? '' : pre.kolab ? `kolab:${pre.kolab}` : undefined, role: pre.role,
       // Who the client works as, only among the person's own choices: an agent the scope names that
       // isn't a live agent of theirs is ignored, never shown and never honoured (D59). Never
       // Yourself: no client preselects the person, who chooses that by hand (D60). Without one named,
@@ -535,6 +543,7 @@ export class OAuthController {
       signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
       kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
       ...(locked ? { lock: { ...locked, step: pending.step } } : {}),
+      ...(unreached ? { unreached: { ...('kolab' in unreached ? { kolab: unreached.kolab } : {}), meant: unreached.meant, yours: unreached.yours } } : {}),
     };
     sendPage(res, status, view.lock ? lockedTitle(view.lock, lockAllowed(view)) : 'Sign in', consentPage(view), { formTargets: target ? [target] : [] });
   }

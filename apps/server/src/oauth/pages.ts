@@ -100,7 +100,18 @@ export interface ConsentView {
    * isn't one they reach, nothing to allow. `step` is which of several sign-ins this is, display only.
    */
   lock?: { agent: string; kolab: string; role: Role; step: { n: number; of: number } | null };
+  /**
+   * The kolab the client's scope names (`konjir login --kolab`) when the person can't reach it
+   * (D106): the page says so, with the hint the setup page gives (Kolab.kolabHint: their own kolabs,
+   * and one whose title is that name), and preselects no other kolab.
+   */
+  unreached?: { kolab?: string; meant: string; yours: string };
 }
+
+/** What the page says of a kolab the sign-in asked for that the person can't reach (D106). */
+const unreachedSays = (u: NonNullable<ConsentView['unreached']>, locked: boolean) =>
+  u.kolab === undefined ? `${locked ? 'it asks to work in' : 'It asks for'} a kolab you can't reach.`
+    : `${locked ? 'it asks to work in' : 'It asks for'} the kolab ${u.kolab}, and you can't reach a kolab of that name.${u.meant}${locked ? u.yours : ''}`;
 
 const ROLE_SHOWN: Record<Role, [string, string]> = {
   product: ['Product', 'Writes the functional layer: what it does'],
@@ -136,13 +147,13 @@ function lockedConsentPage(v: ConsentView & { lock: NonNullable<ConsentView['loc
   const asks = `<p><strong>${esc(v.client)}</strong> asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just connected it.</p>`;
   if (!allowed) {
     const why = !v.agents.includes(lock.agent)
-      ? 'it asks to work as an agent that isn\'t a live agent of yours'
-      : 'it asks to work in a kolab you can\'t reach';
+      ? 'it asks to work as an agent that isn\'t a live agent of yours.'
+      : v.unreached ? esc(unreachedSays(v.unreached, true)) : 'it asks to work in a kolab you can\'t reach.';
     return `<h1>${esc(lockedTitle(lock, false))}</h1>
 ${intro}
 <form class="card" method="post" action="/oauth/consent">
 ${step}${asks}
-<p class="err" role="alert">This sign-in can't be allowed: ${why}. Deny it, then check the app's configuration, or run konjir connect again.</p>
+<p class="err" role="alert">This sign-in can't be allowed: ${why} Deny it, then check the app's configuration, or run konjir connect again.</p>
 ${hidden}
 <div class="row"><button class="primary" type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
@@ -190,6 +201,7 @@ ${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="a
 <form class="card" method="post" action="/oauth/consent">
 <p><strong>${esc(v.client)}</strong> ${v.web ? 'opens a session for you.' : `asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just connected it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.`}</p>
 ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+${v.unreached ? `<p class="err" role="alert">${esc(unreachedSays(v.unreached, false))} No kolab is chosen for you: choose one below, or deny it and run <code>konjir login --kolab &lt;name&gt;</code> again with one of their names.</p>` : ''}
 <input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">
 ${who}

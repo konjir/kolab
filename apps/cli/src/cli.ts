@@ -30,18 +30,19 @@
  *   konjir <verb> --json '{"key": ...}'
  *
  * Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token;
- * or, with no token, the sign-in `konjir login` keeps for that URL (W3.4).
+ * or, with no token, the sign-in `konjir login` keeps for that URL (W3.4); with neither URL nor
+ * token, the one sign-in it keeps, when it keeps exactly one (D106).
  */
 import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from '@modelcontextprotocol/client';
 import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
-import { StoredLogin, credentialsPath, login, logout, setup } from './login.js';
+import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setup } from './login.js';
 import { deliverWork, gitIn, registerRepository } from './deliver.js';
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 
-export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, login, logout, setup } from './login.js';
+export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
 export { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, harnessCommand, harnessEnv, heartbeatEvery, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
@@ -207,7 +208,8 @@ Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]
            each sign in by themselves, on a page locked to their agent. Run it again: the same kolab and agents, signed
            in afresh.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
-           token, the sign-in konjir login keeps for that URL.
+           token, the sign-in konjir login keeps for that URL. With neither URL nor token, the one sign-in konjir
+           keeps, when it keeps exactly one (konjir login and connect still default to the local URL).
 Version:   konjir --version
 ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T|off] [--public-host kolab.example.com]
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
@@ -348,9 +350,13 @@ export function sessionToken(given: string | undefined, env: Record<string, stri
 }
 
 export async function main(argv: string[]) {
-  const url = flag(argv, 'url') ?? process.env.KONJIR_URL ?? 'http://127.0.0.1:7420/mcp';
+  const given = flag(argv, 'url') ?? process.env.KONJIR_URL;
   const token = sessionToken(flag(argv, 'token'));
   const [cmd, ...rest] = argv;
+  // With no URL given and no token (D106), the one sign-in konjir keeps, when it keeps exactly one:
+  // a verb, konjir work or logout uses it. konjir login and connect sign in afresh, and serve serves.
+  const kept = given === undefined && !token && !process.env.KONJIR_JOB?.trim() && !['serve', 'login', 'connect'].includes(cmd ?? '') ? keptSignIns() : [];
+  const url = given ?? (kept.length === 1 ? kept[0] : 'http://127.0.0.1:7420/mcp');
   // Inside a Konjir job (W5.4b) konjir works as the job's agent, with KONJIR_TOKEN, and never with a
   // sign-in kept on this machine: the person's is theirs, not the job's.
   if (process.env.KONJIR_JOB?.trim() && cmd && cmd !== '--version' && !((cmd === 'help' || cmd === '--help') && !rest[0])) {
@@ -460,7 +466,12 @@ export async function main(argv: string[]) {
   }
 
   const stored = token ? undefined : new StoredLogin(url);
-  if (!token && !stored!.signedIn) throw new Error('set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser');
+  if (!token && !stored!.signedIn) {
+    // Several sign-ins kept, none for this URL: named, so the person can choose one.
+    const others = keptSignIns().filter((u) => u !== url);
+    throw new Error(`set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser${others.length
+      ? `. konjir keeps no sign-in for ${safeUrl(url)}${given === undefined ? ', the default' : ''}, but keeps ${others.length === 1 ? 'one' : 'sign-ins'} for ${others.map(safeUrl).join(', ')}: set KONJIR_URL, or pass --url, to ${others.length === 1 ? 'it' : 'one of them'}` : ''}`);
+  }
   let client: Client;
   try {
     client = await connect(url, token ?? stored!);

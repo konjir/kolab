@@ -93,6 +93,18 @@ export function credentialsPath(env: Record<string, string | undefined> = proces
 }
 
 /**
+ * The MCP URLs the credentials file keeps a sign-in for (tokens kept), in the file's order: what
+ * konjir uses when no URL is given (D106). Read without the lock, to choose a URL only; a file that
+ * isn't there keeps none, and one that can't be read is left for StoredLogin to name.
+ */
+export function keptSignIns(path: string = credentialsPath()): string[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch { return []; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  return Object.entries(parsed as Record<string, Saved>).filter(([, s]) => !!s && typeof s === 'object' && !!s.tokens).map(([url]) => url);
+}
+
+/**
  * Where one agent's own sign-in is kept, apart from the CLI's: `agents/<agent>.json` beside the
  * credentials file. `konjir connect claude` signs each Konjir channel entry in there (W3.8), and the
  * channel bridge started with KONJIR_AGENT uses it, so two entries, each its own agent, never share

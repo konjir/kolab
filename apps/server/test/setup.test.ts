@@ -214,7 +214,7 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
     const { page } = await setupPage(base, idp, c, scope, { redirect });
     expect(page.html).toContain('<h1>This setup can\'t be allowed</h1>');
     expect(page.html).not.toContain('value="allow"');
-    return /<p class="err" role="alert">([^<]*)<\/p>/.exec(page.html)?.[1].replace(/&#39;/g, '\'');
+    return /<p class="err" role="alert">([^<]*)<\/p>/.exec(page.html)?.[1].replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
   };
   expect(await why(setupScope('raes', ['pm:product']))).toBe('a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. You reach no kolab yet.');
   expect(await why(setupScope('konjir-site', ['pm:product']))).toBe('the kolab name konjir-site is reserved for Konjir\'s own kolabs: choose another');
@@ -245,7 +245,12 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
   expect(await why(setupScope('anns', ['old:product']))).toBe('your agent ann-old is archived, and its name stays its own (D52): choose another label for it');
   // The cap on live agents holds: 8 live, and 3 more would be past 10.
   for (const l of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) await kolab.addOwnAgent('ann', l, { pool: true });
-  expect(await why(setupScope('anns', ['x:product', 'y:product', 'z:engineer']))).toMatch(/^you have 8 live agents, and this would make 3 more: a person has at most 10 here/);
+  // The refusal names her live agents, least recently used first, and how to free a place (D106):
+  // never used, the oldest made first; ann-old, archived, isn't among them.
+  await kolab.db.query(`update actor set created_at = timestamptz '2026-10-01' + (ascii(right(id, 1)) - ascii('a')) * interval '1 hour' where owner_id = 'ann' and id <> 'ann-old'`);
+  expect(await why(setupScope('anns', ['x:product', 'y:product', 'z:engineer']))).toBe('you have 8 live agents, and this would make 3 more: a person has at most 10 here. '
+    + 'Yours, least recently used first: a (never used), b (never used), c (never used), d (never used), e (never used), f (never used), g (never used), h (never used). '
+    + 'Archive agents you no longer use (konjir archive_agent label=<label>), or name fewer');
   // …while a setup that makes only what fits, or reuses them, goes ahead.
   const fits = await allowSetup(base, idp, client, setupScope('anns', ['a:product', 'x:product', 'y:engineer']));
   expect(fits.used.body.agents.map((a) => [a.agent, a.made])).toStrictEqual([['ann-a', false], ['ann-x', true], ['ann-y', true]]);
@@ -309,6 +314,44 @@ test('a name and title swapped when the kolab was made (Lee\'s m5-check): the se
   const told = denied.left!.searchParams.get('error_description')!;
   expect(told).toBe('the setup can\'t be allowed: a kolab named m5-check-ann already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Kolab\'s page in your browser lists the kolabs you do reach, and one whose title is that name: run konjir connect again with one of their names');
   expect(told).not.toMatch(/brisket|m5-check[^-]|Yours/);
+});
+
+test('konjir login --kolab with a kolab the person can\'t reach (production\'s m5-check-icedlee337): the sign-in page says so, with the setup page\'s hint, and preselects no other kolab (D106)', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const client = await register(base);
+  await kolab.signInWith({ provider: 'stub', ...ANN });
+  await kolab.makeOwnKolab('ann', 'brisket', 'brisket');
+  await kolab.makeOwnKolab('ann', 'm5-check', 'm5-check-ann');
+  await kolab.addOwnAgent('ann', 'pm');
+  const said = (html: string) => /<p class="err" role="alert">(.*?)<\/p>/.exec(html)?.[1].replace(/&#39;/g, '\'').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+
+  // The title, given as --kolab: said so, and no kolab chosen (brisket, her first, used to be).
+  const { page, post } = await setupPage(base, idp, client, 'konjir kolab:m5-check-ann role:product');
+  expect(said(page.html)).toBe('It asks for the kolab m5-check-ann, and you can\'t reach a kolab of that name. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. '
+    + 'No kolab is chosen for you: choose one below, or deny it and run <code>konjir login --kolab <name></code> again with one of their names.');
+  expect(page.html).not.toMatch(/name="kolab" value="[^"]*" checked/);
+  expect(page.html).toContain('value="kolab:brisket"');
+  // Allowed without choosing: Kolab asks for the kolab, and signs no one in.
+  const none = await post('allow', { as: 'new-agent', agent_label: 'cli', role: 'product' });
+  expect(none.res.status).toBe(400);
+  expect(none.html).toContain('Choose the kolab to work in.');
+
+  // A kolab of hers, by name, is chosen as before.
+  const named = await setupPage(base, idp, client, 'konjir kolab:m5-check');
+  expect(named.page.html).toContain('value="kolab:m5-check" checked');
+  expect(named.page.html).not.toContain('you can&#39;t reach');
+
+  // Locked to an agent, kolab and role (konjir login --agent): it can't be allowed, and says why, naming hers.
+  const locked = await setupPage(base, idp, client, 'konjir kolab:m5-check-ann agent:ann-pm role:product');
+  expect(locked.page.html).not.toContain('value="allow"');
+  expect(said(locked.page.html)).toBe('This sign-in can\'t be allowed: it asks to work in the kolab m5-check-ann, and you can\'t reach a kolab of that name. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. '
+    + 'Yours: brisket, m5-check (titled "m5-check-ann"). Deny it, then check the app\'s configuration, or run konjir connect again.');
+  // Someone else's kolab of that name is no different: nothing says it exists.
+  await kolab.addActor('rae', { by: 'kolab' });
+  await kolab.createKolab('raes', { owner: 'rae', by: 'kolab' });
+  const theirs = await setupPage(base, idp, client, 'konjir kolab:raes');
+  expect(said(theirs.page.html)).toMatch(/^It asks for the kolab raes, and you can't reach a kolab of that name\. No kolab is chosen for you/);
 });
 
 test('the web sign-in page\'s new-kolab form says which box is the name konjir connect --kolab takes, and an empty title takes the name', async () => {
