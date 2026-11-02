@@ -1,23 +1,24 @@
 name: Deploy
 
-# Deploys Kolab's production from CI (W2.23, P9, D73, D76, D83): Lee approves applies; the laptop
-# is out of the deploy path. There is no staging for now (D83).
+# Deploys Kolab's production from CI (W2.23, P9, D73, D76, D83): each run is approved in the
+# production environment, by Claude after reading the plan, or Lee (D107); the laptop is out of the
+# deploy path. There is no staging for now (D83).
 #
 # 1. "Build release" packs the commit with deploy/release/pack.sh (git archive of the commit; its id
 #    is the commit's tree id without site/) and uploads the zip with its checksum. Terraform installs exactly
 #    these bytes and packs nothing itself in CI.
-# 2. "Plan production" runs in the production GitHub environment, so it waits for Lee's first
+# 2. "Plan production" runs in the production GitHub environment, so it waits for its first
 #    approval: to plan. It assumes konjir-deploy-production and plans (deploy/plan.sh). The run's
 #    summary lists each change, with the attributes an update changes, and the plan's digest. A
 #    plan that deletes or replaces a protected resource (the instance, its data volume, the
 #    database, a bucket, the snapshot schedule or a role: deploy/plan.sh) fails unless the run was
 #    started by hand with allow_replacement (or, for the instance alone, refresh_os, which replaces
 #    it onto the latest Amazon Linux).
-# 3. "Deploy production" runs in the same environment, so it waits for Lee's second approval: to
-#    apply what he read. It refuses to go on if DEPLOY_FROM_CI has been turned off, if main has
-#    moved past this commit (approving an older run would roll production back), or if a new plan's
-#    digest differs from the one he read. Then it applies and smoke-tests production
-#    (deploy/smoke.sh: /healthz and /mcp).
+# 3. "Deploy production" runs in the same environment, so it waits for its second approval: to
+#    apply the plan the approver read. It refuses to go on if DEPLOY_FROM_CI has been turned off,
+#    if main has moved past this commit (approving an older run would roll production back), or if
+#    a new plan's digest differs from the one the approver read. Then it applies and smoke-tests
+#    production (deploy/smoke.sh: /healthz and /mcp).
 #
 # Only these two jobs can assume the role (deploy/terraform/github-oidc): it trusts the production
 # environment's OIDC subject, GitHub's default for this repository with its immutable ids
@@ -105,8 +106,8 @@ jobs:
     if: vars.DEPLOY_FROM_CI == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
-    # Lee's first approval: to plan. The role trusts only jobs of this workflow, on main, in this
-    # environment, whose deployment branch is main.
+    # The first approval (Claude's or Lee's, D107): to plan. The role trusts only jobs of this
+    # workflow, on main, in this environment, whose deployment branch is main.
     environment:
       name: production
       url: https://kolab.konjir.com
@@ -179,7 +180,7 @@ jobs:
     if: vars.DEPLOY_FROM_CI == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
-    # Lee's second approval: to apply the plan he read in the run's summary.
+    # The second approval: to apply the plan the approver read in the run's summary.
     environment:
       name: production
       url: https://kolab.konjir.com
