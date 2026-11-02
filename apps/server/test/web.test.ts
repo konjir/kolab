@@ -8,11 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { closeAtEnd, els, people, setup, TEST_KOLAB } from '@konjir/engine/testing';
+import { closeAtEnd, els, people, registeredRepository, setup, TEST_KOLAB } from '@konjir/engine/testing';
 import { cursorFor, scoped } from '@konjir/engine';
 import type {
   KolabAccessView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
-  WebQueriesView, WebQuery, WebRuling, WebVersionsView,
+  WebQueriesView, WebQuery, WebReviewsView, WebRuling, WebVersionsView, WebWorkOutcome, WebWorkReview,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
 import { nobodyCanReview, REFRESH_HEADER, THREADS_PER_ELEMENT } from '@konjir/types';
@@ -977,4 +977,81 @@ test('the page resubmits a returned binding draft whose milestone became a work 
   const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(view.elements.find((e) => e.id === 'M1')).toMatchObject({ work: { size: 'S' } });
   expect(view.elements.find((e) => e.id === 'M1')!.relies_on.map((l) => [l.target.node, l.target.element])).toStrictEqual([['orders-pg', 'b2']]);
+});
+
+test('the review list and its badge hold work packages In review beside versions, with the package, its evidence and its done-when; Approve and Request changes go through konjir_review work=…, with its rules (W5.8, WRK5, VER17, PLN16)', async () => {
+  const { kolab, product, engineer } = await specAndBinding();
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const W1 = { id: 'W1', text: 'Build the cancel endpoint.', work: { done_when: 'POST /orders/:id/cancel cancels an Open order.', size: 'M' as const } };
+  const v2 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' }, W1],
+    links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }] });
+  expect((await kolab.submit(engineer, v2)).ok).toBe(true);
+  await registeredRepository(kolab, { binding: 'orders-pg' });
+  await people(kolab, 'eve', { layers: ['technical'] });
+  const eveSession = await kolab.openSession('eve', 'engineer');
+  const base = await serve(kolab);
+  const [alice, bob, eve] = [await signIn(base, product), await signIn(base, engineer), await signIn(base, eveSession)];
+
+  // Bob pulls W1 and submits it, with a commit, a pull request and a test run.
+  await kolab.pullWork(engineer);
+  const sha = 'a'.repeat(40);
+  await kolab.submitWork(engineer, 'kj:orders-pg#W1', { note: 'Cancels, with a test.', evidence: [
+    { kind: 'commit', sha, title: 'Cancel an order', files: ['src/orders.ts'] },
+    { kind: 'pull_request', url: 'https://github.com/acme/orders/pull/7', pr: 7, title: 'Orders: cancel' },
+    { kind: 'test_run', title: 'npm test: 120 passed' },
+  ] });
+  // Then a version of the binding, in review for eve too: one list, in the order they were asked for.
+  const v3 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue, retried.' }, W1] });
+  expect((await kolab.submit(engineer, v3)).in_review).toBe(true);
+
+  const list = (await eve.call<WebReviewsView>('reviews')).body;
+  expect(list.for_me.map((r) => [r.kind, r.subject])).toStrictEqual([['work', 'kj:orders-pg#W1'], ['version', 'kj:orders-pg@3']]);
+  const w = list.for_me[0] as WebWorkReview;
+  expect(w).toMatchObject({
+    binding: 'orders-pg', id: 'W1', title: 'Build the cancel endpoint.', done_when: 'POST /orders/:id/cancel cancels an Open order.', assignee: 'bob',
+    note: 'Cancels, with a test.', repository: 'https://github.com/acme/orders', open_marks: 0, at: expect.any(String),
+  });
+  expect(w.evidence.map((e) => [e.kind, e.sha ?? e.pr ?? e.title]).sort()).toStrictEqual([['commit', sha], ['pull_request', 7], ['test_run', 'npm test: 120 passed']]);
+  expect(w.evidence.find((e) => e.kind === 'commit')).toMatchObject({ repository: 'https://github.com/acme/orders', title: 'Cancel an order' });
+  // One cursor pages both kinds.
+  const first = (await eve.call<WebReviewsView>('reviews?limit=1')).body;
+  expect(first.for_me.map((r) => r.subject)).toStrictEqual(['kj:orders-pg#W1']);
+  expect((await eve.call<WebReviewsView>(`reviews?limit=1&cursor=${encodeURIComponent(first.next!)}`)).body.for_me.map((r) => r.subject)).toStrictEqual(['kj:orders-pg@3']);
+  // The badge counts both; the assignee and a product session see none of the work.
+  expect((await eve.call<WebOverview>('overview')).body.counts.reviews).toBe(2);
+  expect((await bob.call<WebReviewsView>('reviews')).body.for_me).toStrictEqual([]);
+  expect((await alice.call<WebReviewsView>('reviews')).body.for_me).toStrictEqual([]);
+
+  // Refusals, readable: the assignee (PLN16), a product session, no note, findings, no verdict, a package that isn't there.
+  const verdict = (who: typeof eve, body: unknown, id = 'W1') => who.call<WebWorkOutcome & { error: string; message: string }>(`work/orders-pg/${id}/review`, body);
+  const own = await verdict(bob, { verdict: 'approve' });
+  expect([own.status, own.body.message]).toStrictEqual([409, "bob is kj:orders-pg#W1's assignee; another actor with Write on the technical layer must review it (PLN16)"]);
+  const role = await verdict(alice, { verdict: 'approve' });
+  expect(role.status).toBe(403);
+  expect(role.body.message).toMatch(/^a product session reviews no work: work packages are the technical layer's/);
+  expect((await verdict(eve, { verdict: 'request_changes' })).body.message).toBe('say what must change: requesting changes needs a note');
+  expect((await verdict(eve, { verdict: 'request_changes', note: 'x', findings: [{ kind: 'contradiction', elements: ['W1'], explanation: 'x' }] })).status).toBe(400);
+  expect((await verdict(eve, { verdict: 'maybe' })).status).toBe(400);
+  const missing = await verdict(eve, { verdict: 'approve' }, 'W9');
+  expect(missing.status).toBe(404);
+  expect(missing.body.message).toMatch(/^no work package kj:orders-pg#W9/);
+
+  // Changes requested: back with bob, In progress, and gone from eve's list.
+  const back = await verdict(eve, { verdict: 'request_changes', note: 'It cancels a Shipped order too.' });
+  expect([back.status, back.body]).toStrictEqual([200, { work: 'kj:orders-pg#W1', verdict: 'request_changes', state: 'in_progress', assignee: 'bob', confirmed_repositories: [] }]);
+  expect((await eve.call<WebReviewsView>('reviews')).body.for_me.map((r) => r.subject)).toStrictEqual(['kj:orders-pg@3']);
+  expect((await kolab.readWork(engineer, 'kj:orders-pg#W1')).events.at(-1)).toMatchObject({ kind: 'changes_requested', actor: 'eve', note: 'It cancels a Shipped order too.' });
+
+  // Resubmitted, then approved: Done, and the repository its evidence names is confirmed (D98). A second verdict is refused.
+  await kolab.submitWork(engineer, 'kj:orders-pg#W1', { evidence: [{ kind: 'commit', sha: 'b'.repeat(40), title: 'Only Open orders cancel' }] });
+  const again = (await eve.call<WebReviewsView>('reviews')).body.for_me.find((r) => r.kind === 'work') as WebWorkReview;
+  // Asked again, it comes after the version, which was asked for meanwhile.
+  expect((await eve.call<WebReviewsView>('reviews')).body.for_me.map((r) => r.subject)).toStrictEqual(['kj:orders-pg@3', 'kj:orders-pg#W1']);
+  expect(again).toMatchObject({ subject: 'kj:orders-pg#W1', note: null });
+  expect(again.evidence.filter((e) => e.kind === 'commit').map((e) => e.sha)).toStrictEqual([sha, 'b'.repeat(40)]);
+  const done = await verdict(eve, { verdict: 'approve', note: 'Checked the PR and its tests.' });
+  expect(done.body).toStrictEqual({ work: 'kj:orders-pg#W1', verdict: 'approve', state: 'done', assignee: 'bob', confirmed_repositories: ['https://github.com/acme/orders'] });
+  const late = await verdict(eve, { verdict: 'approve' });
+  expect([late.status, late.body.message]).toStrictEqual([409, 'kj:orders-pg#W1 is Done: only a work package In review takes a verdict']);
+  expect((await eve.call<WebOverview>('overview')).body.counts.reviews).toBe(1);
 });

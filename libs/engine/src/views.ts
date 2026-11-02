@@ -230,9 +230,13 @@ export async function waitingCounts(kolab: Kolab, session: string, layer: Layer,
             (select count(*)::int from query q join version v on v.id = q.version_id
               where q.kolab_id = $1 and q.state = 'open' and v.layer = $2) as waiting,
             (select count(*)::int from query q where q.kolab_id = $1 and q.state = 'open') as open`, [here, layer])).rows[0]);
+  // Versions in review on `layer`, and, on the technical layer, work packages In review (VER17, W5.8).
   const requests = await kolab.readAs(session, async (q) => (await q.query<{ reviewer: string; layer: Layer }>(
     `select r.reviewer_id as reviewer, v.layer from review_request r join version v on v.id = r.version_id
-      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and v.layer = $3`, [here, reviewer, layer])).rows);
+      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and v.layer = $3
+     union all
+     select r.reviewer_id, 'technical' from review_request r join work_package w on w.binding_node_id = r.binding_node_id and w.element_id = r.element_id
+      where r.state = 'open' and w.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and $3 = 'technical'`, [here, reviewer, layer])).rows);
   return { ...counts, reviews: (await kolab.shownRequests(here, requests)).length };
 }
 
@@ -278,41 +282,73 @@ export async function ownSide(kolab: Kolab, person: string, actors: string[]): P
     `select id from actor where id = any($1::text[]) and (id = $2 or (kind = 'agent' and owner_id = $2))`, [actors, person])).rows.map((r) => r.id));
 }
 
-export interface ReviewRequestRow { node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }
+export interface ReviewRequestRow { kind: 'version'; node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }
+
+/**
+ * An open review request on a work package In review (VER17, PLN16): its binding and id, its
+ * assignee as `author`, and its latest submission, when and with what note. Work is the technical
+ * layer's.
+ */
+export interface WorkReviewRequestRow {
+  kind: 'work'; binding: string; element: string; layer: 'technical'; author: string; reviewer: string; at: string;
+  submitted_at: string | null; submitted_note: string | null;
+}
 
 /**
  * The open review requests in the session's kolab, on versions still in review, oldest first: only
  * those whose reviewer can review now, in the role it works in (D65, Kolab.shownRequests).
  */
 export async function openReviewRequests(kolab: Kolab, session: string, only: { node?: string } = {}): Promise<ReviewRequestRow[]> {
-  return (await requestRows(kolab, session, only)).items;
+  return (await requestRows(kolab, session, only)).items.filter((r): r is ReviewRequestRow => r.kind === 'version');
 }
 
 /**
  * One page of the open review requests for `reviewer` on `layer` in the session's kolab, oldest first
- * (W2.21). A request whose reviewer can't review now is left out after the read, so a page may
- * hold fewer than its size; `next` still says whether more follow.
+ * (W2.21): on versions and, on the technical layer, on work packages In review, in one list and one
+ * order, as one inbox holds them (VER17, W5.8). A request whose reviewer can't review now is left
+ * out after the read, so a page may hold fewer than its size; `next` still says whether more follow.
  */
-export async function reviewRequestsPage(kolab: Kolab, session: string, only: { reviewer: string; layer: Layer }, page: PageOpts = {}): Promise<RowsPage<ReviewRequestRow>> {
-  return requestRows(kolab, session, only, page);
+export async function reviewRequestsPage(kolab: Kolab, session: string, only: { reviewer: string; layer: Layer }, page: PageOpts = {}): Promise<RowsPage<ReviewRequestRow | WorkReviewRequestRow>> {
+  return requestRows(kolab, session, { ...only, work: true }, page);
 }
 
-async function requestRows(kolab: Kolab, session: string, only: { node?: string; reviewer?: string; layer?: Layer }, page?: PageOpts): Promise<RowsPage<ReviewRequestRow>> {
+async function requestRows(kolab: Kolab, session: string, only: { node?: string; reviewer?: string; layer?: Layer; work?: boolean }, page?: PageOpts): Promise<RowsPage<ReviewRequestRow | WorkReviewRequestRow>> {
   const here = await kolab.sessionKolab(session);
   const size = page ? pageSize(page.limit) : undefined;
-  const list = scoped('web:reviews', { here, ...only });
+  const { work, ...filter } = only;
+  const list = scoped(work ? 'web:reviews-all' : 'web:reviews', { here, ...filter });
   const after = page ? keyOf(list, page.cursor, ['ts', 'text', 'text']) as [string, string, string] | undefined : undefined;
-  const rows = await kolab.readAs(session, async (q) => (await q.query<ReviewRequestRow & { at: Date | string; at_key: string; id: string }>(
-    `select n.name as node, v.seq, v.layer, v.actor_id as author, r.reviewer_id as reviewer, r.created_at as at, r.created_at::text as at_key, r.id
-       from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
-      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1
-        and ($2::text is null or n.name = $2) and ($3::text is null or r.reviewer_id = $3) and ($4::text is null or v.layer = $4)
-        and ($5::text is null or (r.created_at, r.reviewer_id, r.id) > ($5::timestamptz, $6::text, $7::text))
-      order by r.created_at, r.reviewer_id, r.id limit $8`,
-    [here, only.node ?? null, only.reviewer ?? null, only.layer ?? null, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null,
-      size === undefined ? null : size + 1])).rows);
+  const rows = await kolab.readAs(session, async (q) => (await q.query<{
+    kind: 'version' | 'work'; node: string; seq: number | null; element: string | null; layer: Layer; author: string; reviewer: string;
+    at: Date | string; at_key: string; id: string; submitted_at: Date | string | null; submitted_note: string | null;
+  }>(
+    // A work package's requests only with `work`, and never for one node's versions; its latest
+    // submission is the newest event that put it In review.
+    `select * from (
+       select 'version' as kind, n.name as node, v.seq, null::text as element, v.layer, v.actor_id as author, r.reviewer_id as reviewer,
+              r.created_at as at, r.created_at::text as at_key, r.id, null::timestamptz as submitted_at, null::text as submitted_note
+         from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
+        where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1
+          and ($2::text is null or n.name = $2) and ($3::text is null or r.reviewer_id = $3) and ($4::text is null or v.layer = $4)
+       union all
+       select 'work', n.name, null::int, w.element_id, 'technical', w.assignee_id, r.reviewer_id,
+              r.created_at, r.created_at::text, r.id, s.at, s.note
+         from review_request r join work_package w on w.binding_node_id = r.binding_node_id and w.element_id = r.element_id
+         join node n on n.id = w.binding_node_id
+         left join lateral (select e.at, e.note from work_event e where e.binding_node_id = w.binding_node_id and e.element_id = w.element_id
+                             and e.to_state = 'in_review' order by e.at desc, e.id desc limit 1) s on true
+        where $9::boolean and r.state = 'open' and w.state = 'in_review' and r.kolab_id = $1
+          and $2::text is null and ($3::text is null or r.reviewer_id = $3) and ($4::text is null or $4 = 'technical')
+     ) x
+      where ($5::text is null or (x.at, x.reviewer, x.id) > ($5::timestamptz, $6::text, $7::text))
+      order by x.at, x.reviewer, x.id limit $8`,
+    [here, filter.node ?? null, filter.reviewer ?? null, filter.layer ?? null, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null,
+      size === undefined ? null : size + 1, !!work])).rows);
   const { rows: picked, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, list, (r) => [r.at_key, r.reviewer, r.id]);
-  const shown = await kolab.shownRequests(here, picked.map(({ at_key: _k, id: _i, ...r }) => ({ ...r, at: iso(r.at) })));
+  const shown = await kolab.shownRequests(here, picked.map((r): ReviewRequestRow | WorkReviewRequestRow => (r.kind === 'work'
+    ? { kind: 'work', binding: r.node, element: r.element!, layer: 'technical', author: r.author, reviewer: r.reviewer, at: iso(r.at),
+      submitted_at: r.submitted_at === null ? null : iso(r.submitted_at), submitted_note: r.submitted_note }
+    : { kind: 'version', node: r.node, seq: r.seq!, layer: r.layer, author: r.author, reviewer: r.reviewer, at: iso(r.at) })));
   return { items: shown, next };
 }
 

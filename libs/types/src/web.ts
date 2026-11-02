@@ -4,7 +4,7 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  Access, AccessLevel, ActorKind, CaseFileView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
+  Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
   QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkState,
 } from './index.js';
 
@@ -234,9 +234,24 @@ export interface WebRulingsView extends WebPaged { rulings: WebRuling[] }
 export interface WebQueriesView extends WebPaged { queries: WebQuery[] }
 export interface WebMarksView extends WebPaged { marks: WebMark[] }
 
+/** A version in review that waits for the session's verdict. */
+export interface WebVersionReview { kind: 'version'; subject: string; node: string; seq: number; author: string; at: string }
+
+/**
+ * A work package In review that waits for the session's verdict (WRK5, VER17, PLN16; W5.8): the
+ * package on its binding, its done-when, its assignee, when it was last submitted and with what note,
+ * the repository it is done in, and its evidence, oldest first: its assignee's claim, which the
+ * reviewer checks against the done-when outside Kolab. `open_marks` counts the marks that put it at risk (PLN10).
+ */
+export interface WebWorkReview {
+  kind: 'work'; subject: string; binding: string; id: string; title: string; done_when: string | null;
+  assignee: string; at: string; note: string | null; repository: string | null; evidence: EvidenceView[]; open_marks: number;
+}
+
 /** Both lists come a page at a time, and one `next` pages both: a list that has shown its last returns none after it. */
 export interface WebReviewsView extends WebPaged {
-  for_me: { subject: string; node: string; seq: number; author: string; at: string }[];
+  /** Versions in review and work packages In review, in one list, in the order they were asked for (VER17). */
+  for_me: (WebVersionReview | WebWorkReview)[];
   mine: { subject: string; node: string; seq: number; state: VersionState; note: string | null;
     verdicts: { reviewer: string; state: string; note: string | null }[] }[];
 }
@@ -261,6 +276,15 @@ export interface WebOutcome {
   cascade_queued: boolean;
   /** A draft that failed Kolab's checks is abandoned, so the page keeps the edits (POST …/submit only). */
   abandoned: boolean;
+}
+
+/**
+ * What a verdict on a work package came to (konjir_review work=…; PLN16): Done; In progress, back
+ * with its assignee; or To do, when its assignee no longer writes the technical layer. An approval
+ * confirms the repositories its evidence names that weren't confirmed yet (D98).
+ */
+export interface WebWorkOutcome {
+  work: string; verdict: ReviewVerdictKind; state: WorkState; assignee: string | null; confirmed_repositories: string[];
 }
 
 // ---- requests ----------------------------------------------------------------

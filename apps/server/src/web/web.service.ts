@@ -13,7 +13,7 @@ import {
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
-  type WebSubmit, type WebVerdict, type WebVersion, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
+  type WebSubmit, type WebVerdict, type WebVersion, type WebVersionReview, type WebWorkOutcome, type WebWorkReview, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
   type WebVersionsView, type WebWorkState, type WorkItemView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT,
 } from '@konjir/types';
 import { KOLAB } from '../tokens.js';
@@ -392,18 +392,31 @@ export class WebService {
     return { marks: items.map(mark), next };
   }
 
-  /** The review requests for the session, oldest first, and what it submitted, newest first: one cursor pages both. */
+  /**
+   * The review requests for the session, oldest first, and what it submitted, newest first: one
+   * cursor pages both. Requests on versions and on work packages share one list (VER17, W5.8); a
+   * work package's comes with what its reviewer checks: its done-when and its evidence (PLN16).
+   */
   async reviews(s: string, page: PageOpts = {}): Promise<WebReviewsView> {
     const me = await this.me(s);
-    const [f, y] = (keyOf('web:reviews2', page.cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
+    const [f, y] = (keyOf('web:reviews3', page.cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
     const forMe = f === 'done' ? { items: [], next: null } : await reviewRequestsPage(this.kolab, s, { reviewer: me.actor, layer: me.layer }, { cursor: f, limit: page.limit });
     const mine = y === 'done' ? { items: [], next: null } : await submissionsOf(this.kolab, s, me.actor, { cursor: y, limit: page.limit });
     return {
-      for_me: forMe.items.map((r) => ({ subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at })),
+      for_me: await Promise.all(forMe.items.map(async (r): Promise<WebVersionReview | WebWorkReview> => {
+        if (r.kind === 'version') return { kind: 'version', subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at };
+        const subject = formatAddress({ node: r.binding, element: r.element });
+        // konjir_read_work's read, as the session reads it (its first event only: the list needs none).
+        const w = await this.kolab.readWork(s, subject, { limit: 1 });
+        return {
+          kind: 'work', subject, binding: r.binding, id: r.element, title: w.text, done_when: w.done_when ?? null, assignee: r.author,
+          at: r.submitted_at ?? r.at, note: r.submitted_note, repository: w.repository?.url ?? null, evidence: w.evidence, open_marks: w.open_marks?.length ?? 0,
+        };
+      })),
       mine: mine.items.map((x) => ({
         subject: formatAddress({ node: x.node, version: x.seq }), node: x.node, seq: x.seq, state: x.state, note: x.note, verdicts: x.verdicts,
       })),
-      next: forMe.next || mine.next ? cursorFor('web:reviews2', [forMe.next ?? 'done', mine.next ?? 'done']) : null,
+      next: forMe.next || mine.next ? cursorFor('web:reviews3', [forMe.next ?? 'done', mine.next ?? 'done']) : null,
     };
   }
 
@@ -666,6 +679,20 @@ export class WebService {
     return this.outcome(r);
   }
 
+  /**
+   * konjir_review work=…: a verdict on a work package In review (PLN16, VER17; W5.8), through the
+   * engine's own path and rules: not its assignee, from an engineer session with Write on the
+   * technical layer, the package In review. Approve makes it Done; request_changes, which needs a
+   * note, returns it to its assignee.
+   */
+  async reviewWork(s: string, binding: string, id: string, b: WebVerdict): Promise<WebWorkOutcome> {
+    if (!REVIEW_VERDICTS.includes(b?.verdict)) throw bad('the verdict is approve or request_changes');
+    if (b.verdict === 'request_changes' && !b.note?.trim()) throw bad('say what must change: requesting changes needs a note');
+    if (b.findings?.length) throw bad('findings are a version\'s: for a work package, say what must change in the note');
+    if (!isNodeName(binding)) throw bad(`not a binding's name: ${binding}`);
+    return this.kolab.reviewWork(s, formatAddress({ node: binding, element: id }), { verdict: b.verdict, note: b.note?.trim() || undefined });
+  }
+
   /** konjir_clear_mark: the work still holds against what changed. */
   async clear(s: string, mark: string) {
     await this.kolab.clear(s, mark);
@@ -827,7 +854,7 @@ export function httpError(e: unknown): HttpException {
   if (e instanceof GateError || e instanceof ChecksError) return new ConflictException({ error: 'conflict', message });
   if (e instanceof ActorError || e instanceof TenancyError || e instanceof LimitError) return new BadRequestException({ error: 'bad_request', message });
   // Kolab's own "not there" refusals: no node, no version, no query, no mark.
-  if (/^(no (node|version|query|mark|actor|case file|ruling) |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
+  if (/^(no (node|version|query|mark|actor|case file|ruling|work package) |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
   // A malformed address (a quote selector that isn't JSON included), or evidence that doesn't resolve: the request is wrong, not Kolab.
   if (e instanceof SyntaxError) return new BadRequestException({ error: 'bad_request', message: `not a Konjir address: ${message}` });
   if (/^(not a Konjir address|a selector needs an element|evidence \S+ does not resolve)/.test(message)) return new BadRequestException({ error: 'bad_request', message });

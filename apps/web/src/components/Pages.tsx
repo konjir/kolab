@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
   KINDS, LAYER_OF_KIND, RETIRED_KINDS,
-  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods,
+  type EvidenceView, type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebWorkOutcome, type WebWorkReview,
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago } from '../util.js';
@@ -144,7 +144,73 @@ export function QuestionsView({ me, tick, act, go }: { me: WebMe; tick: number; 
   );
 }
 
-export function ReviewsView({ tick, go }: { tick: number; go(r: string): void }) {
+/** A link only to an http(s) URL: evidence is its assignee's claim, so anything else shows as text. */
+const webUrl = (u: string | undefined) => (u && /^https?:\/\//i.test(u) ? u : undefined);
+
+/** One item of a work package's evidence (PLN16): a commit, linked in its repository; a pull request; a test run. */
+function EvidenceItem({ e, repository }: { e: EvidenceView; repository: string | null }) {
+  const repo = webUrl(e.repository ?? repository ?? undefined);
+  const commit = e.kind === 'commit' && e.sha && /^[0-9a-f]{7,64}$/i.test(e.sha) && repo ? `${repo.replace(/\/+$/, '')}/commit/${e.sha}` : undefined;
+  const href = commit ?? webUrl(e.url);
+  const label = e.kind === 'commit' ? (e.sha ? e.sha.slice(0, 12) : 'commit') : e.kind === 'pull_request' ? (e.pr ? `PR #${e.pr}` : 'pull request') : 'test run';
+  return (
+    <li>
+      <span className="ev-kind">{e.kind === 'commit' ? 'Commit' : e.kind === 'pull_request' ? 'Pull request' : 'Tests'}</span>
+      {href ? <a className="mono" href={href} target="_blank" rel="noopener noreferrer">{label}</a> : e.kind === 'test_run' && e.title ? null : <span className="mono">{label}</span>}
+      {e.title ? <span>{e.title}</span> : null}
+      {e.kind !== 'test_run' && e.url && !href ? <span className="mono">{e.url}</span> : null}
+    </li>
+  );
+}
+
+/**
+ * A work package In review that waits for the session's verdict (WRK5, PLN16; W5.8): the package, its
+ * done-when, its assignee and evidence, and Approve or Request changes, as konjir_review work=… gives them.
+ */
+function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: string): void }) {
+  const [asking, setAsking] = useState(false);
+  const [note, setNote] = useState('');
+  const verdict = (v: 'approve' | 'request_changes') => act.run(
+    () => api<WebWorkOutcome>(`work/${encodeURIComponent(r.binding)}/${encodeURIComponent(r.id)}/review`, v === 'approve' ? { verdict: v } : { verdict: v, note }),
+    v === 'approve' ? `Approved ${r.subject}: it is Done.` : `Changes requested on ${r.subject}. ${r.assignee} is told.`);
+  const noteId = `work-note-${r.binding}-${r.id}`;
+  return (
+    <li className="qitem workreview" aria-label={`Work package ${r.subject}`}>
+      <div className="row"><Pill tone="question">in review</Pill>
+        <button type="button" className="chip" onClick={() => go(`node/${r.binding}#${r.id}`)}>{r.subject}</button>
+        <span>work package by {r.assignee} · submitted {ago(r.at)}</span>
+        {r.open_marks ? <Pill tone="stale">at risk</Pill> : null}</div>
+      <div className="q">{r.title}</div>
+      <dl className="work-fields">
+        <dt>Done when</dt><dd>{r.done_when ?? <span className="why-not">Not given: check the work against what it says above.</span>}</dd>
+        {r.note ? <><dt>Its note</dt><dd>{r.note}</dd></> : null}
+        <dt>Evidence</dt>
+        <dd>{r.evidence.length ? <ul className="evidence">{r.evidence.map((e) => <EvidenceItem key={e.id} e={e} repository={r.repository} />)}</ul> : <span className="why-not">None recorded.</span>}</dd>
+      </dl>
+      <p className="why-not">
+        {r.open_marks ? `${r.open_marks === 1 ? 'An open mark says' : `${r.open_marks} open marks say`} something it serves or relies on changed since its work began: check it against the latest. ` : ''}
+        Evidence is {r.assignee}’s claim. Check it against the done-when in the repository{r.repository ? <> (<span className="mono">{r.repository}</span>)</> : null} before approving.
+      </p>
+      <div className="edit-row">
+        {asking ? (
+          <>
+            <label className="sr-only" htmlFor={noteId}>What must change</label>
+            <textarea id={noteId} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What must change, and why?" />
+            <button type="button" className="btn quiet" onClick={() => setAsking(false)}>Cancel</button>
+            <button type="button" className="btn primary" disabled={!note.trim()} onClick={() => verdict('request_changes')}>Request changes</button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="btn quiet" onClick={() => setAsking(true)}>Request changes</button>
+            <button type="button" className="btn primary" onClick={() => verdict('approve')}>Approve</button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
+
+export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: string): void }) {
   const { pages, error, more, busy } = usePaged<WebReviewsView>('reviews', tick);
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!pages) return <p className="empty">Reading the reviews…</p>;
@@ -152,7 +218,7 @@ export function ReviewsView({ tick, go }: { tick: number; go(r: string): void })
   return (
     <>
       <section aria-labelledby="r-mine"><h2 className="section-title" id="r-mine">Waiting for your review</h2>
-        {data.for_me.length ? <ul className="qlist">{data.for_me.map((r) => (
+        {data.for_me.length ? <ul className="qlist">{data.for_me.map((r) => r.kind === 'work' ? <WorkReviewItem key={r.subject} r={r} act={act} go={go} /> : (
           <li key={r.subject} className="qitem"><div className="row"><Pill tone="question">in review</Pill>
             <button type="button" className="chip" onClick={() => go(`node/${r.node}@${r.seq}`)}>{r.subject}</button>
             <span>by {r.author} · {ago(r.at)}</span></div></li>

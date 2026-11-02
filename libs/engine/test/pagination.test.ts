@@ -147,7 +147,7 @@ test('marks, nodes, lineage, review requests and submissions page by cursor to t
   for (const name of ['a', 'b', 'c']) await kolab.submit(product, await kolab.draft(product, name, { elements: els({ X1: `${name} says one thing.` }) }));
   const requests = await all((p) => kolab.reviewRequestsPage({ reviewer: 'dana', kolab: TEST_KOLAB }, p), 2);
   expect(requests.items.map((r) => r.subject)).toStrictEqual(['kj:a@1', 'kj:b@1', 'kj:c@1']);
-  expect((await all((p) => reviewRequestsPage(kolab, dana, { reviewer: 'dana', layer: 'functional' }, p), 2)).items.map((r) => r.node)).toStrictEqual(['a', 'b', 'c']);
+  expect((await all((p) => reviewRequestsPage(kolab, dana, { reviewer: 'dana', layer: 'functional' }, p), 2)).items.map((r) => (r.kind === 'version' ? r.node : r.binding))).toStrictEqual(['a', 'b', 'c']);
   const mine = await all((p) => kolab.submissionsPage('alice', { kolab: TEST_KOLAB }, p), 2);
   expect(mine.items.map((s) => s.subject)).toStrictEqual(['kj:c@1', 'kj:b@1', 'kj:a@1']);
   expect((await all((p) => submissionsOf(kolab, product, 'alice', p), 2)).items.map((s) => s.node)).toStrictEqual(['c', 'b', 'a']);
