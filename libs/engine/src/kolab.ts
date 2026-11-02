@@ -5556,6 +5556,14 @@ export class Kolab {
       await this.checkEdge(e, e.latest);
     }
 
+    // 2b. A prototype and its spec are kept in sync both ways (D79, KON3, W4.4): a spec change
+    //     marked the screens that show it (step 1, on the spec's commit); a screen change asks the
+    //     requirement it shows, after the catch-up above, so a spec that moved under it is seen.
+    //     A spec version that revises a requirement settles the screen questions asked of it.
+    claim.check();
+    await this.screensAskSpec(v);
+    await this.settleScreenQuestions(v);
+
     // 3. Transitive marks: each direct mark's walk ran in the transaction that raised it.
 
     // 4. Children (variants) of an older version of this node rebase onto it, asynchronously
@@ -6143,15 +6151,164 @@ export class Kolab {
    * (LNK6, CAS4), whatever caused it, as clearing it would. A link whose target is gone can't
    * re-pin, so its mark stays open until it is re-linked.
    */
+  /**
+   * What version `v` changed from its node's previous committed version: the elements whose text
+   * or place in the tree differs (`revised`, new ones included), and those it removes. Not every
+   * element with a delta: a variant carries its overrides forward into each version, and an
+   * override it didn't touch changed nothing (W2.5).
+   */
+  private async changedSince(v: VersionRow) {
+    const before = (await this.db.query<{ id: string }>(
+      `select id from version where node_id = $1 and seq < $2 and state = 'committed' order by seq desc limit 1`, [v.node_id, v.seq])).rows[0];
+    const was = new Map((before ? await this.elements(before.id) : []).map((e) => [e.element_id, e]));
+    const now = await this.elements(v.id);
+    const revised = now
+      .filter((e) => was.get(e.element_id)?.fingerprint !== e.fingerprint || was.get(e.element_id)?.parent_element_id !== e.parent_element_id)
+      .map((e) => e.element_id);
+    const removed = [...was.keys()].filter((id) => !now.some((e) => e.element_id === id));
+    return { before: before?.id, was, now, revised, removed };
+  }
+
+  /**
+   * A prototype's change asks the spec, like any other divergence (D79, KON3, W4.4). Each screen
+   * that version `v` of a prototype changed (its text: a URL or a page), and that is linked by
+   * equivalence to a spec requirement, asks that requirement: a question to the spec's layer,
+   * functional, so product reads it beside the requirement, in the same transaction-safe way a
+   * binding's layer leak asks the spec (raiseLayerLeaks). The screen waits on the answer as an
+   * asker's element does (`from`): when product answers, the screen gets a `query_answered` mark
+   * carrying the answer (markAsker), and a spec version that revises or removes the requirement
+   * settles the question instead (settleScreenQuestions), since the spec change marks the screen.
+   *
+   * Either can come first, and neither loops or asks twice:
+   * - Kolab's own rebases change nothing a person wrote, so they ask nothing (clearAddressed).
+   * - A new screen, a removed one, and a link declared in this very version ask nothing: linking a
+   *   screen as it is to a requirement as it is reconciles the two.
+   * - A screen revised in answer to the spec (it settled the link's `changed` or `fuzzy_reanchor`
+   *   mark, or a `query_answered` mark from that spec) asks nothing: it follows the spec.
+   * - A screen whose link holds an open mark (the spec moved under it, found by the catch-up just
+   *   before this, or by the spec's own commit) asks nothing: the spec's change came first, and the
+   *   screen reconciles against that mark.
+   * - A cascade run again finds the question it asked (one per version, screen and requirement).
+   *   A screen changed again before the answer withdraws its earlier open question, and asks afresh.
+   *
+   * Questions stay in their kolab (TEN12): a requirement in another kolab can't be asked from here,
+   * so, as for a layer leak, the screen asks its own kolab's functional layer instead, to take up
+   * with that kolab.
+   */
+  private async screensAskSpec(v: VersionRow) {
+    if (v.active_role === 'system') return;
+    const node = await this.node(v.node_id);
+    if (node.kind !== 'prototype') return;
+    const { before, was, now, revised } = await this.changedSince(v);
+    if (!before) return;
+    const changed = revised.filter((id) => was.has(id));
+    if (!changed.length) return;
+    // The screens' equivalence links to a spec, carried from the version before (a link declared in
+    // this version reconciles, and asks nothing).
+    const links = (await this.db.query<EdgeRow & { tnode: string; tname: string; tseq: number; tkolab: string }>(
+      `select e.*, t.node_id as tnode, tn.name as tname, t.seq as tseq, tn.kolab_id as tkolab
+         from edge e join version t on t.id = e.target_version_id join node tn on tn.id = t.node_id
+        where e.source_version_id = $1 and e.kind = 'equivalence' and e.source_element_id = any($2) and tn.kind = 'spec'
+          and exists (select 1 from edge p join version pt on pt.id = p.target_version_id
+                       where p.source_version_id = $3 and p.kind = e.kind and p.source_element_id = e.source_element_id
+                         and pt.node_id = t.node_id and p.target_element_id is not distinct from e.target_element_id
+                         and p.target_selector is not distinct from e.target_selector)
+        order by e.source_element_id, e.id`, [v.id, changed, before])).rows;
+    if (!links.length) return;
+    const addressedBy = `addressed by version ${v.seq} of ${node.name}`;
+    const text = (s: string | undefined) => {
+      const t = normalize(s ?? '');
+      return t.length > 300 ? `${t.slice(0, 300)}…` : t;
+    };
+    await this.asSystem(async (tx, signal) => {
+      for (const e of links) {
+        const screen = e.source_element_id!;
+        // The spec moved under it, or it follows the spec: no question (see above).
+        const followed = (await tx.query(
+          `select 1 from invalidation i
+             left join edge x on x.id = i.edge_id left join version xt on xt.id = x.target_version_id
+             join version mv on mv.id = i.version_id
+            where mv.node_id = $1 and i.element_id = $2 and i.delta_id is null
+              and ((i.edge_id = $3 and i.state = 'open')
+                or (i.cleared_by = $4 and i.reason in ('changed', 'fuzzy_reanchor') and xt.node_id = $5
+                    and x.target_element_id is not distinct from $6 and x.target_selector is not distinct from $7::jsonb)
+                or (i.cleared_by = $4 and i.reason = 'query_answered'
+                    and exists (select 1 from version tv where tv.id = i.triggered_by and tv.node_id = $5)))
+            limit 1`,
+          [v.node_id, screen, e.id, addressedBy, e.tnode, e.target_element_id, e.target_selector ? JSON.stringify(e.target_selector) : null])).rows.length;
+        if (followed) continue;
+        const ask = e.tkolab === v.kolab_id;
+        const where = ask ? { version_id: e.target_version_id, element_id: e.target_element_id } : { version_id: v.id, element_id: screen };
+        // Asked once, by this version, of this requirement (a cascade run again finds it).
+        const asked = (await tx.query(
+          `select 1 from query q join version qv on qv.id = q.version_id
+            where q.from_version_id = $1 and q.from_element_id = $2 and q.raised_by is null and q.invalidation_id is null
+              and qv.node_id = (select node_id from version where id = $3) and q.element_id is not distinct from $4`,
+          [v.id, screen, where.version_id, where.element_id])).rows.length;
+        if (asked) continue;
+        const screenAt = formatAddress({ node: node.name, version: v.seq, element: screen });
+        const req = formatAddress({ kolab: e.tkolab, node: e.tname, version: e.tseq, element: e.target_element_id ?? undefined,
+          selector: e.target_selector ?? undefined }, { from: v.kolab_id });
+        const change = `it said "${text(was.get(screen)?.text)}" and now says "${text(now.find((x) => x.element_id === screen)?.text)}"`;
+        const question = ask
+          ? `Screen ${screenAt} changed, and it shows ${req} (an equivalence link, D79): ${change}. If the spec should say what the screen now shows, amend ${req}, which settles this; otherwise answer, and the answer reaches the screen to change it back.`
+          : `Screen ${screenAt} changed, and it shows ${req}, which is in another kolab (an equivalence link, D79): ${change}. If that kolab's spec should say what the screen now shows, take it up with that kolab and answer once its spec says so; otherwise answer, and the answer reaches the screen to change it back.`;
+        // One open question per screen and requirement: an earlier one this screen asked is withdrawn.
+        const earlier = await tx.query<{ id: string }>(
+          `update query q set state = 'withdrawn', answer = $5, asked_version_id = coalesce(asked_version_id, version_id)
+             from version fv
+            where fv.id = q.from_version_id and fv.node_id = $1 and q.from_element_id = $2 and q.raised_by is null
+              and q.invalidation_id is null and q.state = 'open' and q.element_id is not distinct from $4
+              and exists (select 1 from version qv where qv.id = q.version_id and qv.node_id = (select node_id from version where id = $3))
+          returning q.id`,
+          [v.node_id, screen, where.version_id, where.element_id, `withdrawn: ${screenAt} changed the screen again, and asks afresh`]);
+        await tx.query(
+          `insert into query(id, version_id, asked_version_id, element_id, selector, kind, question, from_version_id, from_element_id)
+           values ($1, $2, $2, $3, $4, 'question', $5, $6, $7)`,
+          [ulid(), where.version_id, where.element_id, ask && e.target_selector ? JSON.stringify(e.target_selector) : null, question, v.id, screen]);
+        if (earlier.rows.length) await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+        await this.signalLayerOf(tx, signal, where.version_id);
+      }
+    }, v.node_id);
+  }
+
+  /**
+   * A spec version that revises or removes a requirement settles the open questions screens asked
+   * of it (D79, W4.4): the spec has spoken, and its change marks each screen that shows the
+   * requirement through the screen's own link (step 1 of onCommit), so the screen reconciles
+   * against that mark rather than being asked again. Kolab answers each, as it does a self-settled
+   * override's question.
+   */
+  private async settleScreenQuestions(v: VersionRow) {
+    if ((await this.node(v.node_id)).kind !== 'spec') return;
+    const waiting = await this.db.query(
+      `select 1 from query q join version qv on qv.id = q.version_id
+        where qv.node_id = $1 and q.state = 'open' and q.raised_by is null and q.invalidation_id is null and q.from_version_id is not null limit 1`, [v.node_id]);
+    if (!waiting.rows.length) return;
+    const { before, revised, removed } = await this.changedSince(v);
+    if (!before || (!revised.length && !removed.length)) return;
+    const at = `${await this.nameOf(v.node_id)}@${v.seq}`;
+    await this.asSystem(async (tx, signal) => {
+      const settled = await tx.query<{ id: string; element_id: string | null }>(
+        `update query q set state = 'answered', answered_by = $4,
+                answer = 'settled: ' || $3 || case when q.element_id = any($5) then ' removes ' else ' amends ' end || q.element_id
+                         || ', and that change marks the screen against it'
+           from version qv, version fv, node fn
+          where qv.id = q.version_id and qv.node_id = $1 and qv.seq < $2 and q.state = 'open' and q.kind = 'question'
+            and q.raised_by is null and q.invalidation_id is null
+            and fv.id = q.from_version_id and fn.id = fv.node_id and fn.kind = 'prototype'
+            and (q.element_id = any($5) or q.element_id = any($6))
+          returning q.id, q.element_id`,
+        [v.node_id, v.seq, at, SYSTEM_ACTOR, removed, revised]);
+      if (settled.rows.length) await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+    }, v.node_id);
+  }
+
   private async clearAddressed(v: VersionRow) {
     if (v.active_role === 'system') return; // Kolab's own rebases address nothing
     // What this version revised: elements whose text or place in the tree differs from the node's
-    // previous version. Not every element with a delta: a variant carries its overrides forward
-    // into each version, and an override it didn't touch addresses nothing (W2.5).
-    const before = await this.db.query<{ id: string }>(
-      `select id from version where node_id = $1 and seq < $2 and state = 'committed' order by seq desc limit 1`, [v.node_id, v.seq]);
-    const was = new Map((before.rows[0] ? await this.elements(before.rows[0].id) : []).map((e) => [e.element_id, e]));
-    const now = await this.elements(v.id);
+    // previous version (changedSince).
+    const { was, now, revised: changed } = await this.changedSince(v);
     // A binding edit never settles the mark on a work package In review or Done (D102, D98 ruling 4): the
     // mark stays open, so its reviewer sees the package is at risk before approving, and its owner after.
     // Done too: the cascade may run long after the commit (queued behind an earlier one, or a retry,
@@ -6162,10 +6319,7 @@ export class Kolab {
     const reviewing = new Set((await this.db.query<{ element_id: string }>(
       `select w.element_id from work_package w join node n on n.id = w.binding_node_id
         where w.binding_node_id = $1 and n.kind = 'binding' and w.state in ('in_review', 'done') and not w.milestone and w.removed_in_version_id is null`, [v.node_id])).rows.map((r) => r.element_id));
-    const revised = now
-      .filter((e) => was.get(e.element_id)?.fingerprint !== e.fingerprint || was.get(e.element_id)?.parent_element_id !== e.parent_element_id)
-      .map((e) => e.element_id)
-      .filter((id) => !reviewing.has(id));
+    const revised = changed.filter((id) => !reviewing.has(id));
     const removed = [...was.keys()].some((id) => !now.some((e) => e.element_id === id));
     if (!revised.length && !removed) return;
     const addressedBy = `addressed by version ${v.seq} of ${await this.nameOf(v.node_id)}`;
