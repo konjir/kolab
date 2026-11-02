@@ -403,3 +403,37 @@ test('probe B: an answer that quotes the screen\'s own answered question is not 
   await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v3` }) });
   expect(await open(kolab)).toStrictEqual([['cancel', 'orders', 'R1']]);
 });
+
+test('across kolabs, an answer stands on the requirements asked about now: one that moved since, and that the screen follows, doesn\'t re-open the rest (D79, W4.4)', async () => {
+  const { kolab, product, carol } = await acrossKolabs();
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-ex-vat' }) });
+  await kolab.answerQuery(product, (await screenQuestions(kolab))[0].id, 'Change it back.');
+  for (const m of await marksOn(kolab, 'eu-ui')) await kolab.clear(product, m.id);
+  // eu changes EU1: the screen's link to it is marked; EU2 still says what it said.
+  await kolab.commit(carol, 'orders-eu', { elements: els({ EU1: 'Prices may exclude VAT.', EU2: 'Returns take 14 days.' }) });
+  await kolab.drainOutbox();
+  expect(await marks(kolab, 'eu-ui')).toStrictEqual([['price', 'changed']]);
+  // The screen goes back: that follows EU1's mark, and EU2's answer still stands.
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price' }) });
+  expect(await open(kolab)).toStrictEqual([]);
+  // A new change asks.
+  await kolab.commit(product, 'eu-ui', { elements: els({ price: 'https://example.com/price-v3' }) });
+  expect(await open(kolab)).toStrictEqual([['price', 'eu-ui', 'price']]);
+});
+
+test('for a link that quotes words, an answer stands while those words do: an edit around them doesn\'t re-open it, a change to them does (D79, W4.4)', async () => {
+  const { kolab, product, s1 } = await specAndPrototype();
+  const p2 = await kolab.commit(product, 'orders-ui', { elements: screens({ ship: 'https://example.com/ship' }) });
+  await kolab.link(product, { kind: 'equivalence', source: p2, sourceElement: 'ship', target: s1, targetElement: 'R2', selector: { exact: 'ship in a day' } });
+  await kolab.commit(product, 'orders-ui', { elements: screens({ ship: 'https://example.com/ship-v2' }) });
+  await kolab.answerQuery(product, (await screenQuestions(kolab))[0].id, 'Change it back.');
+  for (const m of await marksOn(kolab, 'orders-ui')) await kolab.clear(product, m.id);
+  // R2 is edited around the quoted words: the ship link re-pins, unmarked.
+  await kolab.commit(product, 'orders', { elements: spec({ R2: 'Orders ship in a day, by post.' }) });
+  expect((await marks(kolab, 'orders-ui')).filter(([e]) => e === 'ship')).toStrictEqual([]);
+  await kolab.commit(product, 'orders-ui', { elements: screens({ ship: 'https://example.com/ship' }) });
+  expect(await open(kolab)).toStrictEqual([]);
+  // A new change asks.
+  await kolab.commit(product, 'orders-ui', { elements: screens({ ship: 'https://example.com/ship-v3' }) });
+  expect(await open(kolab)).toStrictEqual([['ship', 'orders', 'R2']]);
+});

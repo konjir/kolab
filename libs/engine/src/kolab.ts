@@ -6290,12 +6290,18 @@ export class Kolab {
       return t.length > 300 ? `${t.slice(0, 300)}…` : t;
     };
     await this.asSystem(async (tx, signal) => {
-      // What a requirement says now: its fingerprint in its spec's latest committed version (the
-      // element's subtree, or the whole version), or undefined if it is gone.
-      const says = async (specNode: string, element: string | null) => {
-        const latest = (await tx.query<{ id: string }>(
-          `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [specNode])).rows[0];
-        const r = latest && resolveInElements(await this.elements(latest.id, tx), element, null);
+      // What a link pins now: its fingerprint in its spec's latest committed version (the quoted
+      // words, the element's subtree, or the whole version), or undefined if it is gone. Each spec's
+      // latest elements are read once, when first needed.
+      const latestEls = new Map<string, ElementRow[] | undefined>();
+      const says = async (x: { node: string; element: string | null; selector?: QuoteSelector | null }) => {
+        if (!latestEls.has(x.node)) {
+          const latest = (await tx.query<{ id: string }>(
+            `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [x.node])).rows[0];
+          latestEls.set(x.node, latest && await this.elements(latest.id, tx));
+        }
+        const els = latestEls.get(x.node);
+        const r = els && resolveInElements(els, x.element, x.selector ?? null);
         return r?.status === 'ok' ? r.fingerprint : undefined;
       };
       // What to ask: of each requirement here; of the screen itself for its requirements elsewhere.
@@ -6304,7 +6310,6 @@ export class Kolab {
       for (const e of links) {
         const screen = e.source_element_id!;
         const across = e.tkolab !== v.kolab_id;
-        const shows: ScreenShows = { node: e.tnode, element: e.target_element_id, fingerprint: await says(e.tnode, e.target_element_id) };
         // The spec moved under it, or it follows the spec: no question (see above).
         const followed = (await tx.query(
           `select 1 from invalidation i
@@ -6320,8 +6325,10 @@ export class Kolab {
                                    and fv.node_id = $1 and q.from_element_id = $2)))
             limit 1`,
           [v.node_id, screen, e.id, addressedBy, e.tnode, e.target_element_id, e.target_selector ? JSON.stringify(e.target_selector) : null,
-            v.kolab_id, JSON.stringify([{ node: shows.node, element: shows.element }])])).rows.length;
+            v.kolab_id, JSON.stringify([{ node: e.tnode, element: e.target_element_id }])])).rows.length;
         if (followed) continue;
+        const pins = { node: e.tnode, element: e.target_element_id, selector: e.target_selector };
+        const shows: ScreenShows = { ...pins, fingerprint: await says(pins) };
         const key = across ? `${screen}\0across` : `${screen}\0${e.tnode}\0${e.target_element_id ?? ''}`;
         const a = asks.get(key) ?? { screen, across, reqs: [], about: [], selector: across ? null : e.target_selector,
           where: across ? { version_id: v.id, element_id: screen } : { version_id: e.target_version_id, element_id: e.target_element_id } };
@@ -6353,13 +6360,13 @@ export class Kolab {
           `select q.id, q.state, q.answer, q.answered_by, q.from_version_id, q.about_links from query q where ${same} order by q.id`, args)).rows;
         const afresh = (q: { state: string; answer: string | null }) => q.state === 'withdrawn' && !!q.answer?.endsWith('changed the screen again, and asks afresh');
         const last = chain.at(-1);
-        // A person's answer stands only while the spec still says what it said when the question
-        // was asked: once a requirement it asked about changes, the answer is about words the spec
-        // no longer has, and the screen is measured against the spec as it is now.
-        let stands = false;
-        if (last?.state === 'answered' && last.answered_by !== SYSTEM_ACTOR) {
-          stands = true;
-          for (const s of last.about_links) if (!s.fingerprint || s.fingerprint !== await says(s.node, s.element)) stands = false;
+        // A person's answer stands only while the spec still says, of each requirement asked about
+        // now, what it said when the question was asked: once one changes, the answer is about words
+        // the spec no longer has, and the screen is measured against the spec as it is now.
+        let stands = !!last && last.state === 'answered' && last.answered_by !== SYSTEM_ACTOR;
+        for (const s of stands ? a.about : []) {
+          const then = last!.about_links.find((x) => x.node === s.node && x.element === s.element);
+          if (!then?.fingerprint || then.fingerprint !== await says(then)) stands = false;
         }
         const pending = last && (last.state === 'open' || stands) ? last : undefined;
         let first = pending && chain.length - 1;
@@ -10570,10 +10577,11 @@ export type Where = { session: string } | { system: string };
 
 /**
  * A requirement a question Kolab raised for a prototype's screen asks about (D79, W4.4;
- * `query.about_links`, 0038): its node, its element (null for the whole spec), and its fingerprint
- * when the question was asked, so Kolab can tell whether the spec still says what it said then.
+ * `query.about_links`, 0038): its node, its element (null for the whole spec), the words the link
+ * quotes, if it does, and the fingerprint of what the link pinned when the question was asked, so
+ * Kolab can tell whether the spec still says what it said then.
  */
-interface ScreenShows { node: string; element: string | null; fingerprint?: string }
+interface ScreenShows { node: string; element: string | null; selector?: QuoteSelector | null; fingerprint?: string }
 /** How a screen's question names requirements in another kolab: by count alone (D49, D53). */
 const shownElsewhere = (n: number) => (n === 1 ? 'a requirement in another kolab' : `${n} requirements in another kolab`);
 
