@@ -290,3 +290,31 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
   expect(await rejection(call(alice, 'ask', { address: 'kj:billing/checkout#R1', question: 'Why weekly?' }))).toMatch(/asking across kolabs isn't supported yet/);
   expect(await rejection(call(alice, 'draft', { node: 'billing/checkout', elements: [{ id: 'R1', text: 'x' }] }))).toMatch(/drafting across kolabs isn't supported yet/);
 });
+
+test('over MCP, konjir list_agents (D106): a person\'s own session lists their agents and the places used; an agent\'s session and the admin token are refused', async () => {
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_actor', { id: 'alice', name: 'Alice' });
+  await call(admin, 'admin_add_kolab', { name: 'checkout', owner: 'alice' });
+  const open = async (actor: string) => {
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product', kolab: 'checkout' }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  const alice = await open('alice');
+  expect(await call(alice, 'list_agents')).toStrictEqual({ agents: [], live: 0, limit: 10 });
+  expect(await call(alice, 'create_agent', { label: 'pm' })).toStrictEqual({ agent: 'alice-pm', created: true, owner: 'alice' });
+  await call(admin, 'admin_grant', { kolab: 'checkout', to: 'alice-pm', level: 'write', layers: ['functional'] });
+  const pm = await open('alice-pm');
+  expect(await call(alice, 'list_agents')).toStrictEqual({
+    agents: [{ agent: 'alice-pm', label: 'pm', made: expect.any(String), last_used: expect.any(String), kolabs: [{ kolab: 'checkout', access: { level: 'write', layers: ['functional'] } }], session_open: true, archived: false }],
+    live: 1, limit: 10,
+  });
+  expect(await rejection(call(pm, 'list_agents'))).toMatch(/alice-pm is an agent: only a person lists their agents/);
+  expect(await rejection(call(admin, 'list_agents'))).toMatch(/this tool needs an agent session token, not the admin token/);
+  await call(alice, 'archive_agent', { label: 'pm' });
+  expect(await call(alice, 'list_agents')).toMatchObject({ agents: [], live: 0 });
+  expect(await call(alice, 'list_agents', { archived: true })).toMatchObject({ agents: [{ agent: 'alice-pm', archived: true, session_open: false }], live: 0 });
+});

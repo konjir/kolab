@@ -461,6 +461,59 @@ test('createOwnAgent refuses an agent\'s session, a bad label, a name someone el
   for (const label of ['pmx', 'nobody', 'pm', 'x', 'Bad']) expect(await rejection(kolab.archiveOwnAgent(s, label))).toMatch(/you have no live agent ann-/);
 });
 
+test('listOwnAgents (D106): a person\'s agents, when each was made and last used Kolab, its kolabs and access, whether a session is open, archived ones only when asked; and the refusal at the cap names the live ones, least recently used first', async () => {
+  const kolab = await openKolab();
+  const { actor: ann } = await kolab.signInWith(github('75', 'ann'));
+  await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
+  const s = await kolab.openSession(ann, 'product', { kolab: 'anns' });
+  for (const label of ['pm', 'eng', 'qa']) await kolab.createOwnAgent(s, label);
+  await kolab.db.query(`update actor set created_at = timestamptz '2026-10-01T00:00:00Z' where owner_id = $1`, [ann]);
+  await kolab.grant('anns', 'ann-pm', 'write', { layers: ['functional'] });
+  await kolab.grant('anns', 'ann-eng', 'write', { layers: ['functional', 'technical'] });
+  // ann-pm works now; ann-eng worked a while ago, its session ended; ann-qa never has.
+  await kolab.openSession('ann-pm', 'product', { kolab: 'anns' });
+  await kolab.endSession(await kolab.openSession('ann-eng', 'engineer', { kolab: 'anns' }));
+  await kolab.db.query(`update session set started_at = timestamptz '2026-10-25T12:00:00Z' where actor_id = 'ann-eng'`);
+
+  const listed = await kolab.listOwnAgents(s);
+  expect(listed).toStrictEqual({
+    agents: [
+      { agent: 'ann-eng', label: 'eng', made: '2026-10-01T00:00:00.000Z', last_used: '2026-10-25T12:00:00.000Z', kolabs: [{ kolab: 'anns', access: { level: 'write', layers: ['functional', 'technical'] } }], session_open: false, archived: false },
+      { agent: 'ann-pm', label: 'pm', made: '2026-10-01T00:00:00.000Z', last_used: expect.any(String), kolabs: [{ kolab: 'anns', access: { level: 'write', layers: ['functional'] } }], session_open: true, archived: false },
+      { agent: 'ann-qa', label: 'qa', made: '2026-10-01T00:00:00.000Z', last_used: null, kolabs: [], session_open: false, archived: false },
+    ],
+    live: 3, limit: 10,
+  });
+  expect(Date.now() - Date.parse(listed.agents[1].last_used!)).toBeLessThan(60_000);
+  // The latest of its sessions opening, and of its sign-in renewing: a refresh token issued after.
+  await kolab.db.query(`update session set started_at = timestamptz '2026-10-20T08:00:00Z' where actor_id = 'ann-pm'`);
+  expect((await kolab.listOwnAgents(s)).agents[1].last_used).toBe('2026-10-20T08:00:00.000Z');
+  await kolab.db.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, created_at, expires_at)
+                        values ('${'g'.repeat(22)}', 'kjcl_${'c'.repeat(22)}', 'ann-eng', $1, 'konjir', timestamptz '2026-10-24T00:00:00Z', now() + interval '1 day')`, [ann]);
+  await kolab.db.query(`insert into oauth_refresh_token(key, grant_id, created_at, expires_at) values ('${'k'.repeat(43)}', '${'g'.repeat(22)}', timestamptz '2026-10-27T09:30:00Z', now() + interval '1 day')`);
+  expect((await kolab.listOwnAgents(s)).agents[0].last_used).toBe('2026-10-27T09:30:00.000Z');
+
+  // At the cap, the refusal names them, least recently used first (never used first), and the way out.
+  kolab.oauth.agentsPerPerson = 3;
+  expect(await rejection(kolab.createOwnAgent(s, 'more'))).toBe('ActorError: you have 3 live agents, the most a person may have here (3): archive one you no longer use (konjir archive_agent label=<label>). '
+    + 'Yours, least recently used first: qa (never used), pm (last used 2026-10-20), eng (last used 2026-10-27)');
+
+  // Archived: left out, and out of live, unless asked for.
+  await kolab.archiveOwnAgent(s, 'qa');
+  const after = await kolab.listOwnAgents(s);
+  expect([after.agents.map((a) => a.agent), after.live]).toStrictEqual([['ann-eng', 'ann-pm'], 2]);
+  const all = await kolab.listOwnAgents(s, { archived: true });
+  expect(all.agents.map((a) => [a.agent, a.archived])).toStrictEqual([['ann-eng', false], ['ann-pm', false], ['ann-qa', true]]);
+  expect(all.live).toBe(2);
+
+  // Only a person's own session: an agent's lists nothing, and another person sees only their own.
+  const pmSession = await kolab.openSession('ann-pm', 'product', { kolab: 'anns' }).catch(() => undefined);
+  if (pmSession) expect(await rejection(kolab.listOwnAgents(pmSession))).toMatch(/AccessError: ann-pm is an agent: only a person lists their agents/);
+  const { actor: bob } = await kolab.signInWith(github('76', 'bob'));
+  await kolab.makeOwnKolab(bob, 'bobs', 'Bob\'s');
+  expect(await kolab.listOwnAgents(await kolab.openSession(bob, 'product', { kolab: 'bobs' }))).toStrictEqual({ agents: [], live: 0, limit: 3 });
+});
+
 test('createOwnAgent at once: one label made once, whoever asks; distinct labels held to 3 in 10 minutes', async () => {
   const kolab = await openKolab();
   const { actor: ann } = await kolab.signInWith(github('73', 'ann'));

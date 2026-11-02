@@ -185,6 +185,7 @@ const endJob = z.object({
 });
 const listJobs = z.object({ live: z.boolean().optional().describe('true: only live jobs; false: only ended ones'), ...paging });
 const createAgent = z.object({ label: z.string().describe('The agent\'s label: up to 24 lowercase letters, digits and \'-\'. The agent is named <you>-<label>, e.g. ann-product.') });
+const listAgents = z.object({ archived: z.boolean().optional().describe('Include your archived agents too') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
 @Injectable()
@@ -873,11 +874,21 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_create_agent',
-    description: 'For a person\'s own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect sets agents up on Kolab\'s setup page instead, several at once). An agent of yours already called that is reused. A person has at most 10 live agents (konjir_archive_agent frees a place), and makes at most 3 in 10 minutes. A name that isn\'t free to you is refused, whoever holds it. It grants nothing: the agent reaches a kolab once you choose it on Kolab\'s sign-in page there, with no more access than you hold, at most Write. An agent\'s session and the admin token are refused.',
+    description: 'For a person\'s own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect sets agents up on Kolab\'s setup page instead, several at once). An agent of yours already called that is reused. A person has at most 10 live agents (konjir_list_agents lists yours, least recently used named in the refusal at the cap; konjir_archive_agent frees a place), and makes at most 3 in 10 minutes. A name that isn\'t free to you is refused, whoever holds it. It grants nothing: the agent reaches a kolab once you choose it on Kolab\'s sign-in page there, with no more access than you hold, at most Write. An agent\'s session and the admin token are refused.',
     schema: createAgent,
   })
   createAgent({ label }: z.infer<typeof createAgent>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.createOwnAgent(s, label));
+  }
+
+  @McpTool({
+    name: 'konjir_list_agents',
+    description: 'For a person\'s own session only: your agents, by name, each with its label, when it was made, when it last used Kolab (last_used: when a session of its last opened, its sign-in last renewed, every 15 minutes while it works, or a job of its ended; null if never), the kolabs it is granted in with its access there now (never more than yours), whether a session of its is open, and whether it is archived. Archived agents only with archived=true. With live, how many of your places for live agents are used, of limit (10): konjir_archive_agent frees one. An agent\'s session and the admin token are refused.',
+    schema: listAgents,
+    annotations: { readOnlyHint: true },
+  })
+  listAgents({ archived }: z.infer<typeof listAgents>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.listOwnAgents(s, { archived }));
   }
 
   @McpTool({

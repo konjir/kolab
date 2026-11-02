@@ -2401,6 +2401,28 @@ export class Kolab {
   readonly setups = { burst: 3, windowMs: 10 * 60_000, tokenTtlS: 300 };
 
   /**
+   * What to tell `person` who asked for the kolab `asked` by name (a setup's or a sign-in's
+   * `--kolab`) when it isn't one they reach: the kolabs they do reach, their own list (nothing of
+   * anyone else's), as ` Yours: …`, and, as ` Did you mean …?`, any of them whose title is the name
+   * asked for, the mistake of a name and title swapped when the kolab was made. Each starts with a
+   * space, or is empty.
+   */
+  async kolabHint(person: string, asked: string): Promise<{ asTitle: { id: string; title: string }[]; yours: string; meant: string }> {
+    const theirs: { id: string; title: string }[] = [];
+    for (const id of await this.reachable(person)) {
+      const r = (await this.db.query<{ title: string; archived: boolean }>(`select title, kj_kolab_archived(id) as archived from kolab where id = $1`, [id])).rows[0];
+      if (r && !r.archived) theirs.push({ id, title: r.title });
+    }
+    const asTitle = theirs.filter((t) => t.id !== asked && t.title.trim().toLowerCase() === asked);
+    const shown = (t: { id: string; title: string }) => (t.title && t.title !== t.id ? `${t.id} (titled "${t.title}")` : t.id);
+    const yours = theirs.length
+      ? ` Yours: ${theirs.slice(0, 12).map(shown).join(', ')}${theirs.length > 12 ? `, and ${theirs.length - 12} more` : ''}.`
+      : ' You reach no kolab yet.';
+    const meant = asTitle.length ? ` Did you mean ${asTitle.map((t) => t.id).join(' or ')}? Its title is ${asked}; its name is what --kolab takes.` : '';
+    return { asTitle, yours, meant };
+  }
+
+  /**
    * What a setup (setupScope) would do for `person`, checked as the consent that carries it out
    * checks it, so its page shows exactly that, or why it can't be allowed (`refused`): a kolab of
    * that name that the person can't reach (names are unique across Konjir, TEN4, so it is taken),
@@ -2415,20 +2437,7 @@ export class Kolab {
     const p = await this.findActor(person);
     if (!p || p.kind !== 'person') return refuse(`${person} isn't a person here: only a person sets up agents`);
     if (await this.archivedActor(person)) return refuse(`${person} is archived, so it sets nothing up`);
-    // The kolabs the person reaches, their own list (nothing of anyone else's): named when the one
-    // asked for isn't among them, and checked for a title equal to the name asked for, the mistake
-    // of a name and title swapped when the kolab was made.
-    const theirs: { id: string; title: string }[] = [];
-    for (const id of await this.reachable(person)) {
-      const r = (await this.db.query<{ title: string; archived: boolean }>(`select title, kj_kolab_archived(id) as archived from kolab where id = $1`, [id])).rows[0];
-      if (r && !r.archived) theirs.push({ id, title: r.title });
-    }
-    const asTitle = theirs.filter((t) => t.id !== setup.kolab && t.title.trim().toLowerCase() === setup.kolab);
-    const shown = (t: { id: string; title: string }) => (t.title && t.title !== t.id ? `${t.id} (titled "${t.title}")` : t.id);
-    const yours = theirs.length
-      ? ` Yours: ${theirs.slice(0, 12).map(shown).join(', ')}${theirs.length > 12 ? `, and ${theirs.length - 12} more` : ''}.`
-      : ' You reach no kolab yet.';
-    const meant = asTitle.length ? ` Did you mean ${asTitle.map((t) => t.id).join(' or ')}? Its title is ${setup.kolab}; its name is what --kolab takes.` : '';
+    const { asTitle, yours, meant } = await this.kolabHint(person, setup.kolab);
     const k = (await this.db.query<{ title: string; owner_id: string }>(`select title, owner_id from kolab where id = $1`, [setup.kolab])).rows[0];
     if (k) {
       // Access first, so an archived kolab reads as any other the person can't reach (D52).
@@ -2480,7 +2489,7 @@ export class Kolab {
     if (making) {
       const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [person])).rows[0].n;
       if (live + making > this.oauth.agentsPerPerson) {
-        return refuse(`you have ${live} live agents, and this would make ${making} more: a person has at most ${this.oauth.agentsPerPerson} here. Archive agents you no longer use (konjir archive_agent label=<label>), or name fewer`);
+        return refuse(`you have ${live} live agents, and this would make ${making} more: a person has at most ${this.oauth.agentsPerPerson} here. ${await this.liveAgentsShown(person)}. Archive agents you no longer use (konjir archive_agent label=<label>), or name fewer`);
       }
       const recent = (await this.db.query<{ n: number }>(
         `select count(*)::int as n from oauth_setup where person_id = $1 and made_agents > 0 and created_at > now() - $2 * interval '1 millisecond'`,
@@ -2886,7 +2895,9 @@ export class Kolab {
         const c = (await tx.query<{ owned: number; recent: number }>(
           `select count(*) filter (where not kj_actor_archived(id))::int as owned, count(*) filter (where created_at > now() - interval '10 minutes')::int as recent
              from actor where owner_id = $1`, [person])).rows[0];
-        if (c.owned >= this.oauth.agentsPerPerson) throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}): archive one you no longer use`);
+        if (c.owned >= this.oauth.agentsPerPerson) {
+          throw new ActorError(`you have ${c.owned} live agents, the most a person may have here (${this.oauth.agentsPerPerson}): archive one you no longer use (konjir archive_agent label=<label>). ${await this.liveAgentsShown(person, tx)}`);
+        }
         // A pool agent a job makes is exempt from the rate (JOB3), and so is one a setup makes, whose
         // setup counts once against a rate of its own (setupPlan): the cap still holds.
         if (c.recent >= 3 && !opts.pool && !opts.setup) throw new ActorError(`you made ${c.recent} agents in the last 10 minutes; wait a while before making another`);
@@ -2950,6 +2961,65 @@ export class Kolab {
     if (!a || a.kind !== 'agent' || a.owner !== me.actor || await this.archivedActor(id)) throw new ActorError(`you have no live agent ${id}`);
     const r = await this.archive({ actor: id }, { by: me.actor });
     return { archived: id, ended: r.ended };
+  }
+
+  /**
+   * A person's agents (D106), each with when it was made, when it last used Kolab, whether a session
+   * of its is open, and whether it is archived (by itself, or through its owner, D52), by name; the
+   * archived ones only with `archived`. When it last used Kolab is derived from what Kolab already
+   * records, with no column of its own: the latest of a session of its opening, a sign-in of its
+   * being issued or renewed (every 15 minutes, the access token's life, while it works), and a job
+   * of its ending; null if none ever was.
+   */
+  private async ownAgentRows(q: Q, person: string, archived: boolean) {
+    const rows = (await q.query<{ id: string; created_at: string; archived: boolean; last_used: string | null; open: boolean }>(
+      `select a.id, a.created_at, kj_actor_archived(a.id) as archived,
+              greatest((select max(s.started_at) from session s where s.actor_id = a.id),
+                       (select max(t.created_at) from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where g.actor_id = a.id),
+                       (select max(j.ended_at) from job j where j.agent_id = a.id)) as last_used,
+              exists (select 1 from session s left join oauth_grant g on g.id = s.grant_id where s.actor_id = a.id and ${OPEN_SESSION}) as open
+         from actor a where a.owner_id = $1 and a.kind = 'agent' order by a.id`, [person])).rows;
+    return rows.filter((r) => archived || !r.archived).map((r) => ({
+      agent: r.id, label: r.id.startsWith(`${person}-`) ? r.id.slice(person.length + 1) : r.id,
+      made: new Date(r.created_at).toISOString(), lastUsed: r.last_used === null ? null : new Date(r.last_used).toISOString(),
+      open: r.open, archived: r.archived,
+    }));
+  }
+
+  /**
+   * A person's live agents, least recently used first (never used before any used, then the oldest
+   * made first), for the refusal at the cap on live agents (D106): `Yours, least recently used
+   * first: pm (last used 2026-10-20), agent-007 (never used), …`, by label.
+   */
+  private async liveAgentsShown(person: string, q: Q = this.db): Promise<string> {
+    const live = (await this.ownAgentRows(q, person, false))
+      .sort((a, b) => (a.lastUsed ?? '').localeCompare(b.lastUsed ?? '') || a.made.localeCompare(b.made) || a.agent.localeCompare(b.agent));
+    if (!live.length) return 'You have no live agent of your own';
+    return `Yours, least recently used first: ${live.map((a) => `${a.label} (${a.lastUsed ? `last used ${a.lastUsed.slice(0, 10)}` : 'never used'})`).join(', ')}`;
+  }
+
+  /**
+   * A person's own session lists their agents (D106, W5.6): each one's name and label, when it was
+   * made, when it last used Kolab (ownAgentRows), the kolabs it is granted in with its access there
+   * now (its grant, cut down to its owner's, D30), whether a session of its is open, and whether it
+   * is archived; archived ones only with `archived`. With how many of the person's places for live
+   * agents are used (`live`), of `limit` (`oauth.agentsPerPerson`). Only a person: an agent's
+   * session lists no agents.
+   */
+  async listOwnAgents(session: string, opts: { archived?: boolean } = {}) {
+    const me = await this.sessionInfo(session);
+    if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person lists their agents. Sign in as yourself to list them`);
+    const rows = await this.ownAgentRows(this.db, me.actor, !!opts.archived);
+    const grants = rows.length ? (await this.db.query<{ agent_id: string; kolab_id: string }>(
+      `select agent_id, kolab_id from kolab_grant where agent_id = any($1) order by kolab_id`, [rows.map((r) => r.agent)])).rows : [];
+    const agents = [];
+    for (const r of rows) {
+      const kolabs = [];
+      for (const g of grants.filter((x) => x.agent_id === r.agent)) kolabs.push({ kolab: g.kolab_id, access: await accessIn(this.db, r.agent, g.kolab_id) });
+      agents.push({ agent: r.agent, label: r.label, made: r.made, last_used: r.lastUsed, kolabs, session_open: r.open, archived: r.archived });
+    }
+    const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [me.actor])).rows[0].n;
+    return { agents, live, limit: this.oauth.agentsPerPerson };
   }
 
   /**

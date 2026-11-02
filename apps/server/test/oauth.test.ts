@@ -219,8 +219,14 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   const made = await bare.browser.consent({ csrf: bare.csrf, decision: 'allow', kolab: 'kolab:test', role: 'product', agent_label: 'bare' });
   expect(made.left?.searchParams.get('code')).toMatch(/^kjc_/);
   expect(await kolab.actor('zed-bare')).toMatchObject({ kind: 'agent', owner: zed });
-  // A kolab the person can't reach isn't preselected either.
-  expect(checked((await shown('konjir kolab:elsewhere agent:zed-product')).html)).toStrictEqual(['agent:zed-product', 'kolab:test', 'product']);
+  // A kolab the person can't reach: the page says so, and preselects no other kolab in its place (D106).
+  const elsewhere = await shown('konjir kolab:elsewhere agent:zed-product');
+  expect(checked(elsewhere.html)).toStrictEqual(['agent:zed-product', 'product']);
+  expect(elsewhere.html).toContain('It asks for the kolab elsewhere, and you can&#39;t reach a kolab of that name. No kolab is chosen for you');
+  // A word that can't be a kolab's name is never repeated on the page.
+  const odd = await shown('konjir kolab:Call-+1-555-0100');
+  expect(odd.html).not.toContain('555');
+  expect(odd.html).toContain('It asks for a kolab you can&#39;t reach. No kolab is chosen for you');
   // Yourself, chosen by hand, is still the person's to choose.
   const byHand = await shown('konjir as:self kolab:test');
   expect(checked(byHand.html)).not.toContain('self');
@@ -315,11 +321,12 @@ test('a scope naming the agent, kolab and role locks the consent page to them: n
     expect(open.html).not.toContain('of 2');
   }
 
-  // An agent that isn't a live agent of theirs, or a kolab they can't reach: never named, and nothing to allow but Deny.
+  // An agent that isn't a live agent of theirs: never named. A kolab they can't reach: said so, with
+  // the kolabs they do reach (D106), never offered. Nothing to allow but Deny.
   for (const [scope, why, hidden] of [
     ['konjir kolab:test role:product agent:bob-eng', 'it asks to work as an agent that isn\'t a live agent of yours', 'bob-eng'],
     ['konjir kolab:test role:product agent:zed-nobody', 'it asks to work as an agent that isn\'t a live agent of yours', 'zed-nobody'],
-    ['konjir kolab:elsewhere role:product agent:zed-writer', 'it asks to work in a kolab you can\'t reach', 'elsewhere'],
+    ['konjir kolab:elsewhere role:product agent:zed-writer', 'it asks to work in the kolab elsewhere, and you can&#39;t reach a kolab of that name. Yours: test', 'kolab:elsewhere'],
   ] as const) {
     const o = await shown(scope, { step: '3', steps: '4' });
     expect([scope, title(o.html)]).toStrictEqual([scope, 'Sign-in can&#39;t be allowed (agent 3 of 4) · Kolab']);

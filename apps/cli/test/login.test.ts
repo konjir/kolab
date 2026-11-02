@@ -156,6 +156,30 @@ test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in 
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
 });
 
+test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; with several, it names them (D106)', async () => {
+  const { server } = await signedIn();
+  delete process.env.KONJIR_URL;
+  out = [];
+  await main(['whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
+  // Another Kolab's sign-in kept beside it: konjir can't choose, so it uses the default, which it
+  // keeps nothing for, and names the URLs it does keep.
+  const path = credentialsPath();
+  const all = JSON.parse(readFileSync(path, 'utf8'));
+  all['https://kolab.example.com/mcp'] = { tokens: { access_token: 'x', token_type: 'Bearer', refresh_token: 'kjr_x' } };
+  writeFileSync(path, JSON.stringify(all), { mode: 0o600 });
+  expect(await rejection(main(['whoami']))).toBe(`Error: set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser. `
+    + `konjir keeps no sign-in for http://127.0.0.1:7420/mcp, the default, but keeps sign-ins for ${server.url}, https://kolab.example.com/mcp: set KONJIR_URL, or pass --url, to one of them`);
+  // A URL given is used, as before.
+  out = [];
+  await main(['--url', server.url, 'whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
+  process.env.KONJIR_URL = server.url;
+  out = [];
+  await main(['whoami']);
+  expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
+});
+
 test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
   // konjir's own default folder already exists, more open than it should be: konjir closes it.
   delete process.env.KONJIR_CREDENTIALS;
