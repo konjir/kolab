@@ -199,6 +199,10 @@ test('only a milestone carries a target date: a dated work package is refused as
   expect(await draft({ milestone: true, depends_on: ['W0'], size: 'M' })).toBe('GateError: W1 is a milestone, which has no work of its own to size (PLN2, PLN3): size its members, and leave size out.');
   expect(workProblems([{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'], size: 'S', done_when: 'W0 is done.' } }], []))
     .toStrictEqual(['M1 is a milestone, and carries a size: a milestone has no work of its own to size (PLN2, PLN3); its members do']);
+  // At submit, only on a milestone the version adds or changes: one carried forward unchanged passes.
+  const sized = [{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'], size: 'S' as const } }];
+  expect(workProblems(sized, [], new Set(['W0']))).toStrictEqual([]);
+  expect(workProblems(sized, [], new Set(['M1']))).toHaveLength(1);
   // A work field beside the text, not inside work, is refused, not dropped (review M1).
   expect(await rejection(kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'W1', text: 'Build it.', done_when: 'Built.' } as ElementInput] })))
     .toBe('GateError: W1 has done_when beside its text: work fields go inside work, as {"work":{"done_when":…}}.');

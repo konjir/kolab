@@ -349,12 +349,12 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
   });
   const out: SubmissionRow[] = [];
   for (const { layer, ...v } of rows) {
-    // A request with no verdict, open or withdrawn, shows only while its reviewer can review (D65):
-    // one withdrawn from an agent signed in with the other role was never shown to anyone (W5.7).
-    const decided = (x: { state: ReviewRequestState }) => x.state === 'approved' || x.state === 'changes_requested';
-    const open = v.verdicts.filter((x) => !decided(x)).map((x) => ({ reviewer: x.reviewer, layer }));
+    // As Kolab.submissions (WITHDRAWN_SHOWN): an open request while its reviewer can review now
+    // (D65); a withdrawn one only for a person, whom every request is shown to (W5.7).
+    const open = v.verdicts.filter((x) => x.state === 'open').map((x) => ({ reviewer: x.reviewer, layer }));
     const shown = new Set((await kolab.shownRequests(here, open)).map((x) => x.reviewer));
-    out.push({ ...v, verdicts: v.verdicts.filter((x) => decided(x) || shown.has(x.reviewer)) });
+    const persons = await kolab.personsAmong(v.verdicts.filter((x) => x.state === 'withdrawn').map((x) => x.reviewer));
+    out.push({ ...v, verdicts: v.verdicts.filter((x) => (x.state === 'open' ? shown.has(x.reviewer) : x.state === 'withdrawn' ? persons.has(x.reviewer) : true)) });
   }
   return { items: out, next };
 }

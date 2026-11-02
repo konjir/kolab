@@ -205,11 +205,14 @@ test('only the assignee, holding the package with a live lease, records evidence
   expect(await rejection(kolab.addEvidence(bob, W('M1'), [COMMIT()]))).toMatch(/kj:orders-pg#M1 is To do/);
   // The lease lapses: bob's evidence and submission are refused before the sweep has run.
   await leaseIn(kolab, id, -1);
-  const lapsed = /^GateError: your lease on kj:orders-pg#W1\.1 lapsed at \S+, so it went back to To do: nothing was recorded\. A lease in kolab test runs \d+ minutes from your last call on the package \(PLN15\)\. Pull it again \(konjir_pull_work\), then send this again$/;
+  const lapsed = /^GateError: your lease on kj:orders-pg#W1\.1 lapsed at \S+, so it went back to To do: nothing was recorded\. A lease in kolab test runs \d+ minutes from your last call on the package \(PLN15\)\. Pull work again \(konjir_pull_work: it gives the first ready package, which may be another\), or ask someone with Maintain or Admin to give this one back to you \(konjir_reassign_work work=kj:orders-pg#W1\.1 to=bob\), then send this again$/;
   expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()]))).toMatch(lapsed);
   expect(await rejection(kolab.submitWork(bob, W(id), { evidence: [COMMIT()] }))).toMatch(lapsed);
   expect((await kolab.db.query(`select 1 from evidence`)).rows).toStrictEqual([]);
+  const when = /lapsed at (\S+), so/.exec(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()])))![1];
   expect(await kolab.sweepLapsedLeases()).toBe(1);
+  // The lapse's own time, not the sweep's.
+  expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()]))).toContain(`lapsed at ${when}, so`);
   // Swept, it says the same to the one whose lease lapsed (W5.7: konjir work deliver said only "only its assignee"); others are told it is To do.
   expect(await rejection(kolab.submitWork(bob, W(id), { evidence: [COMMIT()] }))).toMatch(lapsed);
   expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()]))).toMatch(lapsed);

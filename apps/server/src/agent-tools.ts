@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { args } from './args.js';
-import { Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
+import { GateError, Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
@@ -44,7 +44,7 @@ const readNode = args({
 });
 const lineage = args({
   node,
-  version: z.number().int().optional().describe('The version to walk from, e.g. one waiting for your review: its links are the ones it was drafted with. Defaults to the latest committed version.'),
+  version: z.number().int().optional().describe('With direction=upstream only: the version to walk from, e.g. one waiting for your review, whose links are the ones it was drafted with. Defaults to the latest committed version.'),
   direction: z.enum(['upstream', 'downstream']).describe('Required. upstream = what this node relies on; downstream = what relies on it.'),
   ...paging,
 });
@@ -336,6 +336,7 @@ export class AgentTools {
   })
   lineage({ node, version, direction, cursor, limit }: z.infer<typeof lineage>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
+      if (version !== undefined && direction === 'downstream') throw new GateError('version= walks one version\'s links upstream, the ones it was drafted with; downstream is what relies on the node, whatever version it links: leave version out');
       const n = await this.kolab.nodeIn(s, node, 'walking lineage');
       const v = version === undefined ? await this.kolab.latestCommitted(n.id) : (await this.kolab.locateVersion({ session: s }, { node: n.name, version })).version;
       if (!v) throw new Error(version === undefined ? `${n.name} has no committed version` : `${n.name} has no version ${version}`);

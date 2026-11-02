@@ -334,6 +334,11 @@ test('a request withdrawn from an agent that never saw it (signed in as engineer
     .toStrictEqual([{ reviewer_id: 'lee', state: 'approved' }, { reviewer_id: 'lee-agent', state: 'withdrawn' }]);
   expect((await kolab.submissions('pat'))[0].verdicts.map((v) => [v.reviewer, v.state])).toStrictEqual([['lee', 'approved']]);
   expect((await submissionsOf(kolab, pat, 'pat')).items[0].verdicts.map((v) => [v.reviewer, v.state])).toStrictEqual([['lee', 'approved']]);
+  // Stable: the agent signing in later as product, who could review now, doesn't change the history.
+  await kolab.endSession({ actor: 'lee-agent' });
+  await kolab.openSession('lee-agent', 'product');
+  expect((await kolab.submissions('pat'))[0].verdicts.map((v) => [v.reviewer, v.state])).toStrictEqual([['lee', 'approved']]);
+  expect((await submissionsOf(kolab, pat, 'pat')).items[0].verdicts.map((v) => [v.reviewer, v.state])).toStrictEqual([['lee', 'approved']]);
 });
 
 test('when nobody else can review yet, the version waits in review and says how to get a reviewer; it doesn\'t commit unreviewed (D66)', async () => {
