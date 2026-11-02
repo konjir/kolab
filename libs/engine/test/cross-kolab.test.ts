@@ -422,7 +422,7 @@ test('a fork\'s rebase queued when its holder holds it again keeps its error to 
   await kolab.drainOutbox();
   const seen = (await kolab.readNode(dave, 'eu')).rebase;
   expect(seen).toMatchObject({ state: 'pending', attempts: 1 });
-  expect(JSON.stringify(seen)).not.toMatch(/XYZ|billing/);
+  expect(JSON.stringify(seen)).not.toMatch(/upstream-private-detail|billing/);
   // Dead after its attempts: its rebase_failed mark and question say nothing of it either.
   for (let i = 0; i < 12; i++) {
     await kolab.db.query(`update outbox set run_after = now()`);
@@ -431,7 +431,7 @@ test('a fork\'s rebase queued when its holder holds it again keeps its error to 
   expect((await kolab.outboxJobs()).map((j) => j.state)).toStrictEqual(['dead']);
   const said = JSON.stringify({ marks: await kolab.describeMarks({ kolab: 'orders' }), queries: await kolab.listQueries({ kolab: 'orders' }) });
   expect(said).toMatch(/rebase_failed/);
-  expect(said).not.toMatch(/XYZ/);
+  expect(said).not.toMatch(/upstream-private-detail/);
 });
 
 test('archiving a holder, or bringing back a dependent kolab, marks links and forks in the same transaction (verification review)', async () => {
