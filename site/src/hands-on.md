@@ -257,15 +257,16 @@ grep -n "kj:" server.js
 git log -1 --format='%h %s%n%(trailers:key=Konjir-Work)'
 ```
 
-Review it as an engineer would: read the change, run the tests, then give your verdict with the CLI (the web page doesn't list work to review yet):
+Review it as an engineer would: read the change and run the tests:
 
 ```sh
+git show
 npm test
-konjir read_work work=kj:short-links-binding#W1
-konjir review work=kj:short-links-binding#W1 verdict=approve note="Read the change and ran npm test: it passes."
 ```
 
-It answers `"state": "done"`. The repository stays unconfirmed, because you registered it: an approval by someone other than its registrant and the package's builder confirms it.
+Then, on Kolab's page, still working as **engineer**, open **Reviews**. `W1` waits under **Waiting for your review**, with what it must do (its done-when), who built it, and its evidence: the commit, by its SHA, and the test run. Check them against the done-when, then choose **Approve**. To send it back instead, choose **Request changes** and say what must change: it returns to the builder, In progress.
+
+`W1` is Done. The repository stays unconfirmed, because you registered it: an approval by someone other than its registrant and the package's builder confirms it.
 
 ## 7. Change the spec
 
@@ -313,11 +314,7 @@ You are the engineer for Linkly. You work in Konjir through your konjir tools, a
 short-links-binding version 2 is committed. Build the work package you reopened, following the build loop: pull it first with konjir_pull_work, then change the code and tests to match the binding, run npm test until it passes, commit with its trailer, and deliver it with konjir work deliver --submit as before, with KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-builder.json" before the command. Then run konjir_list_stale. Tell me what you changed and the work package's state.
 ```
 
-It pulls `W1` again, changes the default and its test, commits with the same trailer and delivers it: `W1` is In review again, and its stale list is empty. Check the change as in step 6, then approve it:
-
-```sh
-konjir review work=kj:short-links-binding#W1 verdict=approve note="Read the change and ran npm test: it passes."
-```
+It pulls `W1` again, changes the default and its test, commits with the same trailer and delivers it: `W1` is In review again, and its stale list is empty. Check the change as in step 6, then approve it under **Reviews**, as before.
 
 That's the loop: intent stated once, a binding pinned to it, work packages built and delivered with their commits, questions routed to whoever owns the answer, and a change that reaches exactly what depends on it, finished work included.
 

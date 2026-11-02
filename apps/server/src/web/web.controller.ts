@@ -333,6 +333,12 @@ export class WebController {
     return run(() => this.web.review(s, name, seq, body));
   }
 
+  /** A verdict on a work package In review, `kj:<binding>#<id>` (konjir_review work=…; W5.8). */
+  @Post('work/:binding/:id/review') @HttpCode(200)
+  reviewWork(@WebSession() s: string, @Param('binding') binding: string, @Param('id') id: string, @Body() body: WebVerdict) {
+    return run(() => this.web.reviewWork(s, binding, id, body));
+  }
+
   @Post('marks/:id/clear') @HttpCode(200)
   clear(@WebSession() s: string, @Param('id') id: string) { return run(() => this.web.clear(s, id)); }
 

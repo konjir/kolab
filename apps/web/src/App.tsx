@@ -266,7 +266,7 @@ export function App() {
             : <ForeignKolabView kolab={nodeRoute.kolab} tick={tick} go={go} onOpen={(k) => move(k, me.role)} />)}
           {r.view === 'questions' && <QuestionsView me={me} tick={tick} act={act} go={go} />}
           {r.view === 'cases' && <CasesView me={me} tick={tick} act={act} go={go} />}
-          {r.view === 'reviews' && <ReviewsView tick={tick} go={go} />}
+          {r.view === 'reviews' && <ReviewsView tick={tick} act={act} go={go} />}
           {r.view === 'lineage' && <LineageView tick={tick} go={go} />}
           {r.view === 'activity' && <ActivityView tick={tick} />}
           {r.view === 'start' && <GettingStarted me={me} go={go} />}
@@ -308,7 +308,7 @@ function Summary({ overview: o }: { overview: WebOverview }) {
   const parts = [
     stale ? `${stale} element${stale > 1 ? 's are' : ' is'} stale on your layer` : '',
     waiting ? `${waiting} question${waiting > 1 ? 's wait' : ' waits'} on you` : '',
-    reviews ? `${reviews} version${reviews > 1 ? 's wait' : ' waits'} for your review` : '',
+    reviews ? `${reviews} review${reviews > 1 ? 's wait' : ' waits'} for you` : '',
   ].filter(Boolean);
   const lead = !o.nodes.length ? 'Nothing written yet. Start with the spec.' : parts.length ? `${parts.join(', ')}.` : 'Everything holds.';
   return (
