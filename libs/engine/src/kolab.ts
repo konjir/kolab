@@ -6290,13 +6290,21 @@ export class Kolab {
       return t.length > 300 ? `${t.slice(0, 300)}…` : t;
     };
     await this.asSystem(async (tx, signal) => {
+      // What a requirement says now: its fingerprint in its spec's latest committed version (the
+      // element's subtree, or the whole version), or undefined if it is gone.
+      const says = async (specNode: string, element: string | null) => {
+        const latest = (await tx.query<{ id: string }>(
+          `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [specNode])).rows[0];
+        const r = latest && resolveInElements(await this.elements(latest.id, tx), element, null);
+        return r?.status === 'ok' ? r.fingerprint : undefined;
+      };
       // What to ask: of each requirement here; of the screen itself for its requirements elsewhere.
       const asks = new Map<string, { screen: string; across: boolean; where: { version_id: string; element_id: string | null };
         selector: QuoteSelector | null; reqs: string[]; about: ScreenShows[] }>();
       for (const e of links) {
         const screen = e.source_element_id!;
         const across = e.tkolab !== v.kolab_id;
-        const shows: ScreenShows = { node: e.tnode, element: e.target_element_id };
+        const shows: ScreenShows = { node: e.tnode, element: e.target_element_id, fingerprint: await says(e.tnode, e.target_element_id) };
         // The spec moved under it, or it follows the spec: no question (see above).
         const followed = (await tx.query(
           `select 1 from invalidation i
@@ -6308,11 +6316,11 @@ export class Kolab {
                     and x.target_element_id is not distinct from $6 and x.target_selector is not distinct from $7::jsonb)
                 or (i.cleared_by = $4 and i.reason = 'query_answered'
                     and exists (select 1 from query q join version fv on fv.id = q.from_version_id
-                                 where q.kolab_id = $8 and q.about_links @> $9::jsonb and fv.node_id = $1 and q.from_element_id = $2
-                                   and q.state = 'answered' and position(': you asked "' || q.question || '"; answered: ' in i.note) > 0)))
+                                 where q.id = i.query_id and q.kolab_id = $8 and q.about_links @> $9::jsonb
+                                   and fv.node_id = $1 and q.from_element_id = $2)))
             limit 1`,
           [v.node_id, screen, e.id, addressedBy, e.tnode, e.target_element_id, e.target_selector ? JSON.stringify(e.target_selector) : null,
-            v.kolab_id, JSON.stringify([shows])])).rows.length;
+            v.kolab_id, JSON.stringify([{ node: shows.node, element: shows.element }])])).rows.length;
         if (followed) continue;
         const key = across ? `${screen}\0across` : `${screen}\0${e.tnode}\0${e.target_element_id ?? ''}`;
         const a = asks.get(key) ?? { screen, across, reqs: [], about: [], selector: across ? null : e.target_selector,
@@ -6341,11 +6349,19 @@ export class Kolab {
         // questions it asked afresh over (each withdrawn when the screen changed again). It runs
         // from what the screen said before the first of them: the new question names that, and a
         // screen that goes back to it agrees with the spec again.
-        const chain = (await tx.query<{ id: string; state: string; answer: string | null; answered_by: string | null; from_version_id: string }>(
-          `select q.id, q.state, q.answer, q.answered_by, q.from_version_id from query q where ${same} order by q.id`, args)).rows;
+        const chain = (await tx.query<{ id: string; state: string; answer: string | null; answered_by: string | null; from_version_id: string; about_links: ScreenShows[] }>(
+          `select q.id, q.state, q.answer, q.answered_by, q.from_version_id, q.about_links from query q where ${same} order by q.id`, args)).rows;
         const afresh = (q: { state: string; answer: string | null }) => q.state === 'withdrawn' && !!q.answer?.endsWith('changed the screen again, and asks afresh');
         const last = chain.at(-1);
-        const pending = last && (last.state === 'open' || (last.state === 'answered' && last.answered_by !== SYSTEM_ACTOR)) ? last : undefined;
+        // A person's answer stands only while the spec still says what it said when the question
+        // was asked: once a requirement it asked about changes, the answer is about words the spec
+        // no longer has, and the screen is measured against the spec as it is now.
+        let stands = false;
+        if (last?.state === 'answered' && last.answered_by !== SYSTEM_ACTOR) {
+          stands = true;
+          for (const s of last.about_links) if (!s.fingerprint || s.fingerprint !== await says(s.node, s.element)) stands = false;
+        }
+        const pending = last && (last.state === 'open' || stands) ? last : undefined;
         let first = pending && chain.length - 1;
         while (first !== undefined && first > 0 && afresh(chain[first - 1])) first--;
         const before = first === undefined ? undefined : (await tx.query<{ text: string; fingerprint: string }>(
@@ -6752,7 +6768,7 @@ export class Kolab {
       // A boundary question is settled by the layer that owns the answer; its mark goes with it.
       const open = mark && (await tx.query(`select 1 from invalidation where id = $1 and state = 'open'`, [mark.id])).rows.length;
       if (open) await this.closeMarkIn(tx, signal, mark.id, `answered by ${s.actor_id}: ${answer}`);
-      if (q.kind === 'question' && q.from_version_id) await this.markAsker(tx, signal, q, v, answer);
+      if (q.kind === 'question' && q.from_version_id) await this.markAsker(tx, signal, { ...q, id: queryId }, v, answer);
     });
   }
 
@@ -6835,7 +6851,7 @@ export class Kolab {
    * no mark is raised, and the asker still has the outcome in its answers.
    */
   private async markAsker(tx: Q, signal: Signal,
-    q: { element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
+    q: { id: string; element_id: string | null; question: string; from_version_id: string | null; from_element_id: string | null },
     asked: VersionRow, answer: string, outcome: 'answered' | 'withdrawn' = 'answered') {
     const latest = async (node: string) => (await tx.query<{ id: string }>(
       `select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [node])).rows[0]?.id;
@@ -6848,7 +6864,7 @@ export class Kolab {
     const on = formatAddress({ node: askedName, element: q.element_id ?? undefined });
     await this.markIn(tx, signal, {
       version_id: live, element_id: q.from_element_id, reason: 'query_answered',
-      triggered_by: trigger,
+      triggered_by: trigger, query_id: q.id,
       note: outcome === 'answered' ? `${on}: you asked "${q.question}"; answered: "${answer}"` : `${on}: you asked "${q.question}"; ${answer}`,
     });
   }
@@ -10043,9 +10059,9 @@ export class Kolab {
   private async markIn(tx: Q, signal: Signal, m: MarkInput): Promise<string> {
     const id = ulid();
     await tx.query(
-      `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null]);
+      `insert into invalidation(id, version_id, element_id, edge_id, delta_id, triggered_by, reason, note, query_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, m.version_id, m.element_id, m.edge_id ?? null, m.delta_id ?? null, m.triggered_by, m.reason, m.note ?? null, m.query_id ?? null]);
     await this.signalLayerOf(tx, signal, m.version_id);
     if (m.element_id && !m.delta_id) await this.atRiskNoticeIn(tx, signal, id, m.version_id, m.element_id, m.reason, m.triggered_by);
     return id;
@@ -10552,15 +10568,21 @@ const NODE_COLUMNS = 'id, name, kind, layer, title, kolab_id, parent_node_id, cr
  */
 export type Where = { session: string } | { system: string };
 
-/** A mark to raise. */
-/** A requirement a question Kolab raised for a prototype's screen asks about (D79, W4.4; `query.about_links`, 0038): its node, and its element (null for the whole spec). */
-interface ScreenShows { node: string; element: string | null }
+/**
+ * A requirement a question Kolab raised for a prototype's screen asks about (D79, W4.4;
+ * `query.about_links`, 0038): its node, its element (null for the whole spec), and its fingerprint
+ * when the question was asked, so Kolab can tell whether the spec still says what it said then.
+ */
+interface ScreenShows { node: string; element: string | null; fingerprint?: string }
 /** How a screen's question names requirements in another kolab: by count alone (D49, D53). */
 const shownElsewhere = (n: number) => (n === 1 ? 'a requirement in another kolab' : `${n} requirements in another kolab`);
 
+/** A mark to raise. */
 interface MarkInput {
   version_id: string; element_id: string | null; triggered_by: string; reason: string;
   edge_id?: string; delta_id?: string; note?: string;
+  /** For a `query_answered` mark: the question whose answer it carries (0038). */
+  query_id?: string;
 }
 
 /** An open session: its actor, role and kolab, and the actor's access there now. */

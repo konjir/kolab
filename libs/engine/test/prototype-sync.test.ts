@@ -360,3 +360,46 @@ test('across kolabs, unlinking every requirement the question asks about withdra
   expect(await open(kolab)).toStrictEqual([]);
   expect((await screenQuestions(kolab))[0].answer).toBe('withdrawn: eu-ui@3 no longer links the screen to what it asked');
 });
+
+test('probe A: an answer stands only while the spec still says what it said when asked; once the requirement changes, going back to the old text asks again (D79, W4.4)', async () => {
+  const { kolab, product } = await specAndPrototype();
+  // Asked, answered "change it back", reverted; the spec then changes R1, the screen follows it,
+  // and later goes back to the original text, which the spec no longer says.
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v2` }) });
+  await kolab.answerQuery(product, (await screenQuestions(kolab))[0].id, 'Change it back.');
+  await kolab.commit(product, 'orders-ui', { elements: screens() });
+  expect(await open(kolab)).toStrictEqual([]);
+  await kolab.commit(product, 'orders', { elements: spec({ R1: 'Orders can be cancelled until they ship.' }) });
+  expect(await marks(kolab, 'orders-ui')).toStrictEqual([['cancel', 'changed']]);
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-until-shipped` }) });
+  expect(await open(kolab)).toStrictEqual([]);
+  await kolab.commit(product, 'orders-ui', { elements: screens() });
+  expect(await open(kolab)).toStrictEqual([['cancel', 'orders', 'R1']]);
+  expect((await screenQuestions(kolab)).at(-1)!.question).toContain(`it said "${CANCEL}-until-shipped" and now says "${CANCEL}"`);
+});
+
+test('probe A2: answered, then the spec changes and its marks are cleared by hand; the screen going back asks again (D79, W4.4)', async () => {
+  const { kolab, product } = await specAndPrototype();
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v2` }) });
+  await kolab.answerQuery(product, (await screenQuestions(kolab))[0].id, 'Change it back.');
+  await kolab.commit(product, 'orders', { elements: spec({ R1: 'Orders can be cancelled until they ship.' }) });
+  for (const m of await marksOn(kolab, 'orders-ui')) await kolab.clear(product, m.id);
+  expect(await marks(kolab, 'orders-ui')).toStrictEqual([]);
+  await kolab.commit(product, 'orders-ui', { elements: screens() });
+  expect(await open(kolab)).toStrictEqual([['cancel', 'orders', 'R1']]);
+});
+
+test('probe B: an answer that quotes the screen\'s own answered question is not that question\'s answer, so a real divergence still asks (D79, W4.4)', async () => {
+  const { kolab, product } = await specAndPrototype();
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v2` }) });
+  await kolab.answerQuery(product, (await screenQuestions(kolab))[0].id, 'Change it back.');
+  const [own] = await marksOn(kolab, 'orders-ui');
+  await kolab.commit(product, 'orders-ui', { elements: screens() });
+  // Someone asks about R2 from the screen, and the answer quotes the earlier mark's note.
+  const asked = await kolab.raiseQuery(product, 'kj:orders#R2', 'What did product say last time?', { from: 'kj:orders-ui#cancel' });
+  await kolab.answerQuery(product, asked, `It said: ${own.note}`);
+  expect(await marks(kolab, 'orders-ui')).toStrictEqual([['cancel', 'query_answered']]);
+  // A real rewrite settles that mark, and still asks R1.
+  await kolab.commit(product, 'orders-ui', { elements: screens({ cancel: `${CANCEL}-v3` }) });
+  expect(await open(kolab)).toStrictEqual([['cancel', 'orders', 'R1']]);
+});
