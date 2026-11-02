@@ -10,7 +10,7 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
 import { DEFAULT_URL, StoredLogin, call, connect, connectionUrl, credentialsPath, login, logout, main } from '../src/cli.js';
 import { closeAtEnd, els, openKolab, rejection } from '@konjir/engine/testing';
-import { FileLock } from '../src/login.js';
+import { FileLock, SIGN_IN_WAIT_MS } from '../src/login.js';
 
 /** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on the CLI's loopback callback. */
 async function browse(start: URL, form: Record<string, string>): Promise<string> {
@@ -432,3 +432,9 @@ test('konjir watch, as its stream closes at token expiry and listens again, lets
   expect(() => statSync(`${credentialsPath()}.lock`)).toThrow();
   await server.close();
 }, 90_000);
+
+test('konjir login waits for the browser as long as Kolab\'s sign-in page lasts, 20 minutes (W5.7)', async () => {
+  const kolab = await openKolab();
+  expect(SIGN_IN_WAIT_MS).toBe(kolab.oauth.requestTtlS * 1000);
+  expect(SIGN_IN_WAIT_MS).toBe(20 * 60_000);
+});

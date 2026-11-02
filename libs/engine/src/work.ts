@@ -65,6 +65,8 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
     if (o.milestone !== true) problems.push(`${element}'s milestone is ${JSON.stringify(o.milestone)}: a milestone says milestone: true, and a work package that isn't one leaves milestone out`);
     else out.milestone = true;
   }
+  // A milestone has no work of its own (PLN2, PLN3), so nothing to size: its members carry the sizes (W5.7).
+  if (out.milestone && out.size) problems.push(`${element} is a milestone, which has no work of its own to size (PLN2, PLN3): size its members, and leave size out`);
   if (o.target_date !== undefined && o.target_date !== null) {
     if (typeof o.target_date !== 'string' || !isDate(o.target_date)) problems.push(`${element}'s target_date is a date, YYYY-MM-DD, not ${JSON.stringify(o.target_date)}`);
     else if (!out.milestone) problems.push(`${element} carries a target date, and only a milestone carries one (PLN2): make it a milestone (milestone: true), or leave the date out`);
@@ -119,7 +121,7 @@ export interface WorkLink { source_element_id: string | null; target: string; ta
  * version passes (no empty or duplicate element), run at submit: every Depends on names a work
  * package of the same version (an element with a work field, not a decision), and not itself; no
  * cycle in Depends on; a milestone depends on its members and has no work of its own, so links
- * nothing (PLN3); only a milestone carries a target date; and no work package links another of
+ * nothing and carries no size (PLN3); only a milestone carries a target date; and no work package links another of
  * the version's, however the link came (D99): a decision it linked may have become a work package.
  * Each problem is named in words a refusal can quote; none means the version goes on to review.
  */
@@ -139,6 +141,7 @@ export function workProblems(elements: { element_id: string; work?: WorkFields |
       }
     }
     if (w.target_date && !w.milestone) problems.push(`${e.element_id} carries a target date, and only a milestone does`);
+    if (w.milestone && w.size) problems.push(`${e.element_id} is a milestone, and carries a size: a milestone has no work of its own to size (PLN2, PLN3); its members do`);
     if (w.milestone && !w.depends_on?.length) problems.push(`${e.element_id} is a milestone, and depends on no members: a milestone depends on the work packages it gathers (PLN3)`);
   }
   // No cycle in Depends on: a walk that comes back to a work package on its own path.
@@ -232,7 +235,7 @@ export interface CheckedEvidence {
   repo: string | null;
 }
 
-const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'files', 'repo'] as const;
+const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'summary', 'files', 'repo'] as const;
 
 /**
  * A repository's URL in the one form Kolab stores and compares (W5.2a; migration 0032's repository_url):
@@ -341,7 +344,7 @@ export function sameLink(url: string): string {
  * Evidence as a client gives it (PLN16, D98), checked: a list of at most MAX_EVIDENCE_PER_CALL
  * items, each a commit by its full sha (with its subject as `title`, the `files` it touched and a
  * `url`), a pull request by its https `url` (with its number as `pr`, and its `title`), or a test
- * run by its `url` or a summary as `title`. Nothing given is dropped quietly: a field the kind
+ * run by its `url` or a summary as `summary` or `title`. Nothing given is dropped quietly: a field the kind
  * doesn't take, or an unknown one, is refused. `problems` names each refusal; `limit` is set when
  * one of them is a size limit.
  */
@@ -375,13 +378,17 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
       const u = evidenceUrl(what, o.url);
       if (u.problem) { problems.push(u.problem); if (u.limit) limit = true; } else out.url = u.url!;
     }
-    if (given('title')) {
-      if (typeof o.title !== 'string' || !o.title.trim()) problems.push(`${what}'s title is text`);
-      else if (textLength(o.title.trim()) > MAX_TEXT) { limit = true; problems.push(`${what}'s title is ${textLength(o.title.trim()).toLocaleString('en')} characters; the limit is ${MAX_TEXT.toLocaleString('en')}`); }
-      else out.title = o.title.trim();
+    // A test run's summary may be given as summary, as its title is kept (W5.7): one or the other.
+    const titled = kind === 'test_run' && given('summary') ? 'summary' : 'title';
+    if (titled === 'summary' && given('title')) problems.push(`${what} is a test run: give its summary as title or as summary, not both`);
+    else if (given(titled)) {
+      const t = o[titled];
+      if (typeof t !== 'string' || !t.trim()) problems.push(`${what}'s ${titled} is text`);
+      else if (textLength(t.trim()) > MAX_TEXT) { limit = true; problems.push(`${what}'s ${titled} is ${textLength(t.trim()).toLocaleString('en')} characters; the limit is ${MAX_TEXT.toLocaleString('en')}`); }
+      else out.title = t.trim();
     }
     if (kind === 'commit') {
-      refuse(['pr']);
+      refuse(['pr', 'summary']);
       if (typeof o.sha !== 'string' || !SHA.test(o.sha.trim().toLowerCase())) problems.push(`${what} is a commit, named by its full sha: 40 hexadecimal characters (64 for SHA-256), not ${JSON.stringify(o.sha ?? null)}`);
       else out.ref = o.sha.trim().toLowerCase();
       if (given('files')) {
@@ -392,7 +399,7 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
         else out.files = (f as string[]).map((p) => p.trim());
       }
     } else if (kind === 'pull_request') {
-      refuse(['sha', 'files']);
+      refuse(['sha', 'files', 'summary']);
       if (!given('url')) problems.push(`${what} is a pull request, named by its https url`);
       if (given('pr')) {
         if (!Number.isInteger(o.pr) || (o.pr as number) < 1 || (o.pr as number) > 9_999_999_999) problems.push(`${what}'s pr is the pull request's number, a whole number from 1`);
@@ -400,7 +407,7 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
       }
     } else {
       refuse(['sha', 'pr', 'files', 'repo']);
-      if (!given('url') && !given('title')) problems.push(`${what} is a test run: give its url, or a summary as title ("npm test: 120 passed")`);
+      if (!given('url') && !given('title') && !given('summary')) problems.push(`${what} is a test run: give its url, or its summary ("npm test: 120 passed") as summary or title`);
     }
     items.push(out);
   });

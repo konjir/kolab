@@ -205,10 +205,15 @@ test('only the assignee, holding the package with a live lease, records evidence
   expect(await rejection(kolab.addEvidence(bob, W('M1'), [COMMIT()]))).toMatch(/kj:orders-pg#M1 is To do/);
   // The lease lapses: bob's evidence and submission are refused before the sweep has run.
   await leaseIn(kolab, id, -1);
-  expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()]))).toMatch(/^GateError: your lease on kj:orders-pg#W1\.1 lapsed at .*: pull again \(konjir_pull_work\)$/);
-  expect(await rejection(kolab.submitWork(bob, W(id), { evidence: [COMMIT()] }))).toMatch(/your lease on kj:orders-pg#W1\.1 lapsed at/);
+  const lapsed = /^GateError: your lease on kj:orders-pg#W1\.1 lapsed at \S+, so it went back to To do: nothing was recorded\. A lease in kolab test runs \d+ minutes from your last call on the package \(PLN15\)\. Pull it again \(konjir_pull_work\), then send this again$/;
+  expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()]))).toMatch(lapsed);
+  expect(await rejection(kolab.submitWork(bob, W(id), { evidence: [COMMIT()] }))).toMatch(lapsed);
   expect((await kolab.db.query(`select 1 from evidence`)).rows).toStrictEqual([]);
   expect(await kolab.sweepLapsedLeases()).toBe(1);
+  // Swept, it says the same to the one whose lease lapsed (W5.7: konjir work deliver said only "only its assignee"); others are told it is To do.
+  expect(await rejection(kolab.submitWork(bob, W(id), { evidence: [COMMIT()] }))).toMatch(lapsed);
+  expect(await rejection(kolab.addEvidence(bob, W(id), [COMMIT()]))).toMatch(lapsed);
+  expect(await rejection(kolab.submitWork(eve, W(id), { evidence: [COMMIT()] }))).toMatch(/^GateError: kj:orders-pg#W1\.1 is To do: only its assignee submits it/);
 });
 
 test('evidence is checked before anything is written: full shas, https links with no user in them, the fields each kind takes, and the limits (D98)', async () => {
@@ -247,7 +252,7 @@ test('evidence is checked before anything is written: full shas, https links wit
     .toMatch(/evidence 2's url carries a user or password/);
   expect(await refused([{ kind: 'pull_request' }])).toMatch(/evidence 1 is a pull request, named by its https url/);
   expect(await refused([{ kind: 'pull_request', url: PR.url, files: ['a'] }])).toMatch(/evidence 1 is a pull request, which takes no files/);
-  expect(await refused([{ kind: 'test_run' }])).toMatch(/evidence 1 is a test run: give its url, or a summary as title/);
+  expect(await refused([{ kind: 'test_run' }])).toMatch(/evidence 1 is a test run: give its url, or its summary \("npm test: 120 passed"\) as summary or title/);
   expect(await refused([{ kind: 'test_run', title: 'ok', sha: sha('a') }])).toMatch(/evidence 1 is a test run, which takes no sha/);
   expect(await refused([{ kind: 'commit', sha: sha('a'), branch: 'main' }])).toMatch(/evidence 1 has branch, which evidence doesn't take/);
   expect(await refused([{ kind: 'deploy' }])).toMatch(/evidence 1's kind is one of commit, pull_request, test_run, not "deploy"/);
@@ -504,6 +509,16 @@ test('a milestone reopens when a member is reopened (PLN3)', async () => {
   await kolab.reopenWork(bob, W('W1.2'), { note: 'The queue drops orders.' });
   expect(await row(kolab, 'M1')).toMatchObject({ state: 'todo' });
   expect(await events(kolab, bob, W('M1'))).toStrictEqual([['added', 'bob'], ['milestone_done', 'kolab'], ['milestone_reopened', 'kolab']]);
+  // The board says why it is To do again: the member not Done, as a blocked reason says it (W5.7).
+  const m1 = (await kolab.listWork(bob)).items.find((i) => i.id === 'M1')!;
+  expect(m1).toMatchObject({ state: 'todo', ready: false, blocked: [], waiting: [{ reason: 'depends_on', work: 'kj:orders-pg#W1.2', state: 'todo' }] });
+  expect((await kolab.readWork(bob, W('M1')))).toMatchObject({ waiting: [{ work: 'kj:orders-pg#W1.2' }] });
+  // Done again once the member is, and then waits on nothing.
+  expect(await pull(kolab, bob)).toBe('W1.2');
+  await kolab.submitWork(bob, W('W1.2'), { evidence: [COMMIT('b')] });
+  const done = (await kolab.listWork(bob)).items.find((i) => i.id === 'M1')!;
+  expect(done.state).toBe('done');
+  expect(done.waiting).toBeUndefined();
 });
 
 test('a binding version that revises an at-risk Done package reopens it, so a binding edit never settles its mark on its own; one that revises a package not at risk leaves it Done (PLN10, LNK6 as D98 amends it)', async () => {
@@ -817,7 +832,7 @@ test('only Kolab\'s trusted role writes evidence and work reviews; evidence is n
   await kolab.endSession({ actor: 'eve' });
   const eve2 = await kolab.openSession('eve', 'engineer', { kolab: 'other' });
   expect(await kolab.readAs(eve2, async (q) => (await q.query(`select 1 from evidence`)).rows.length + (await q.query(`select 1 from review_request`)).rows.length)).toBe(0);
-  expect(await rejection(kolab.reviewWork(eve2, 'kj:test/orders-pg#W1.1', { verdict: 'approve' }))).toBe('Error: no work package kj:orders-pg#W1.1 in kolab other');
+  expect(await rejection(kolab.reviewWork(eve2, 'kj:test/orders-pg#W1.1', { verdict: 'approve' }))).toMatch(/^Error: no work package kj:test\/orders-pg#W1\.1 in kolab other, the kolab your session works in/);
   expect(await kolab.reviewRequestsPage({ reviewer: 'eve', kolab: 'other' })).toStrictEqual({ items: [], next: null });
 });
 

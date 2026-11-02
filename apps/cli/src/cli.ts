@@ -41,6 +41,7 @@ import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setu
 import { deliverWork, gitIn, registerRepository } from './deliver.js';
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
+import { toolsListing, verbHelp } from './verbs.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
@@ -151,7 +152,7 @@ const usage = (canServe: boolean) => `konjir — Kolab from a shell. Same verbs 
 
   konjir instructions          the operating rules and precedent (read this first)
   konjir instructions reviewer how to review a version that waits for you
-  konjir tools                 every verb, one line each
+  konjir tools                 every verb with its parameters (name=<type>, [optional]) and what it does
   konjir help <verb>           a verb's description and parameters
   konjir <verb> key=value ...  call a verb; values parse as JSON when they can,
                                e.g. elements='[{"id":"R1","text":"..."}]'
@@ -651,16 +652,13 @@ export async function main(argv: string[]) {
     const generic = rest.some((a) => a === '--json' || a.includes('='));
     switch (generic && ['resolve', 'read', 'stale', 'queries', 'instructions'].includes(cmd) ? '' : cmd) {
       case 'tools':
-        result = (await client.listTools()).tools.map((t) => `${t.name.replace(/^konjir_/, '')}  — ${t.description}`).join('\n'); break;
+        result = toolsListing((await client.listTools()).tools); break;
       case 'help': {
         const name = toolName(rest[0]);
         const tool = (await client.listTools()).tools.find((t) => t.name === name);
         // An agent session doesn't see the admin verbs (toolVisibility 'authorized').
         if (!tool) throw new Error(`no verb ${rest[0]}${name.startsWith('konjir_admin_') ? ' for this token: the admin verbs are for a Konjir admin\'s own session, raised in their browser (konjir admin_elevate), or the break-glass token' : ''}; run konjir tools`);
-        const schema = tool.inputSchema as { properties?: Record<string, { type?: string; enum?: string[]; description?: string }>; required?: string[] };
-        const params = Object.entries(schema.properties ?? {}).map(([k, p]) =>
-          `  ${k}${schema.required?.includes(k) ? '' : ' (optional)'}: ${p.enum ? p.enum.join(' | ') : p.type ?? 'json'}${p.description ? ` — ${p.description}` : ''}`);
-        result = [`konjir ${rest[0].replace(/^konjir_/, '')} key=value ...`, '', tool.description, '', params.length ? params.join('\n') : '  (no parameters)'].join('\n');
+        result = verbHelp(tool);
         break;
       }
       case 'instructions': {

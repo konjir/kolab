@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpGuard, McpScopeGuard, McpTool, type McpCanActivate, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
+import { args } from './args.js';
 import { AccessError, GateError, Kolab, NameTakenError, SESSION_KEY, sessionKey } from '@konjir/engine';
 import { formatAddress, parseAddress } from '@konjir/address';
 import { ACCESS_LEVELS, ADMIN_DOER, DELTA_KINDS, LAYERS, ORG_ROLES, OUTBOX_STATES, ROLES, VISIBILITIES, type ArchiveTarget, type Doer } from '@konjir/types';
@@ -64,81 +65,81 @@ const AdminOnly = () => (target: object, key: string, descriptor: PropertyDescri
   McpGuard(BreakGlassAudit)(target, key, descriptor);
 };
 
-const addActor = z.object({
+const addActor = args({
   id: z.string(),
   name: z.string().optional(),
   owner: z.string().optional().describe('For an agent: the account that owns it, a person or an organization. Omit to register a person, who is also a user account.'),
 });
-const linkIdentity = z.object({
+const linkIdentity = args({
   actor: z.string().describe('The person to link'),
   provider: z.enum(['github']).describe('The identity provider'),
   subject: z.string().regex(/^[0-9]{1,20}$/).describe("The provider's id for the person: GitHub's numeric user id (gh api users/<login> --jq .id), never the login, which can change hands"),
   login: z.string().optional().describe('Their login there, for display'),
 });
-const listActors = z.object({
+const listActors = args({
   owner: z.string().optional().describe("Only this account's agents"),
   archived: z.boolean().optional().describe('Also list archived actors, and agents of an archived account, each with archived: true or false'),
   ...paging,
 });
-const openSession = z.object({
+const openSession = args({
   actor: z.string(), role: z.enum(ROLES),
   kolab: z.string().optional().describe('The kolab the session works in. Defaults to the one kolab the actor can reach.'),
 });
-const endSession = z.object({
+const endSession = args({
   token: z.string().optional().describe('The bearer token the session opened with'),
   session: z.string().optional().describe("The session's key, as whoami gives it: the sha256 of its token, base64url"),
   actor: z.string().optional().describe('The actor whose open session to end'),
 });
-const addOrganization = z.object({ id: z.string(), name: z.string().optional() });
-const addMember = z.object({ org: z.string(), user: z.string(), role: z.enum(ORG_ROLES).optional().describe('owner administers every kolab the organization owns. Defaults to member.') });
-const removeMember = z.object({ org: z.string(), user: z.string() });
-const removeTeamMember = z.object({ team: z.string().describe('<org>/<team>'), user: z.string() });
-const addTeam = z.object({ org: z.string(), name: z.string(), parent: z.string().optional().describe('A team of the same organization to nest this one under; its members inherit the parent\'s access') });
-const addTeamMember = z.object({ team: z.string().describe('<org>/<team>'), user: z.string() });
-const addKolab = z.object({
+const addOrganization = args({ id: z.string(), name: z.string().optional() });
+const addMember = args({ org: z.string(), user: z.string(), role: z.enum(ORG_ROLES).optional().describe('owner administers every kolab the organization owns. Defaults to member.') });
+const removeMember = args({ org: z.string(), user: z.string() });
+const removeTeamMember = args({ team: z.string().describe('<org>/<team>'), user: z.string() });
+const addTeam = args({ org: z.string(), name: z.string(), parent: z.string().optional().describe('A team of the same organization to nest this one under; its members inherit the parent\'s access') });
+const addTeamMember = args({ team: z.string().describe('<org>/<team>'), user: z.string() });
+const addKolab = args({
   name: z.string().describe('The short name, unique across all of Konjir: lowercase letters, digits and -'),
   owner: z.string().describe('The account that owns it: a person or an organization'),
   title: z.string().optional(),
   visibility: z.enum(VISIBILITIES).optional().describe('Defaults to private'),
   base: z.enum(ACCESS_LEVELS).optional().describe('An organization\'s kolab: what every member of the organization holds'),
 });
-const listKolabs = z.object({
+const listKolabs = args({
   owner: z.string().optional(),
   archived: z.boolean().optional().describe('Also list archived kolabs, and those of an archived account, each with archived: true or false'),
   ...paging,
 });
-const archiveTarget = z.object({
+const archiveTarget = args({
   kolab: z.string().optional().describe('A kolab, by its name'),
   organization: z.string().optional().describe('An organization: its kolabs and its agents go with it'),
   actor: z.string().optional().describe("A person or an agent: a person's agents go with them; the kolabs a person owns stay live"),
 });
-const grant = z.object({
+const grant = args({
   kolab: z.string(),
   to: z.string().describe('A person, an agent, or a team as <org>/<team>'),
   level: z.enum(ACCESS_LEVELS),
   layers: z.array(z.enum(LAYERS)).optional().describe('For write: the layers it covers. Defaults to both.'),
 });
-const revoke = z.object({ kolab: z.string(), to: z.string() });
-const access = z.object({ actor: z.string(), kolab: z.string() });
-const applyRuling = z.object({
+const revoke = args({ kolab: z.string(), to: z.string() });
+const access = args({ actor: z.string(), kolab: z.string() });
+const applyRuling = args({
   ruling: z.string().regex(/^D\d+$/).describe('The ruling being applied, by its Decisions Log ID, e.g. D46'),
   actor: z.string().describe('Who the version is written as, e.g. mirror-product; it writes in the role of the node\'s layer'),
   node: z.string().describe('The node, as <kolab>/<node> (e.g. kolab/kolab-binding), or its name alone when no other kolab has a node of that name'),
   // Strict, as konjir_draft's: a misplaced field is refused, not dropped. Work left out is kept (D98).
-  elements: z.array(z.strictObject({ id: z.string().optional(), text: z.string(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
-  deltas: z.array(z.strictObject({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
+  elements: z.array(args({ id: z.string().optional(), text: z.string(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
+  deltas: z.array(args({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
   parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
   unlink: z.array(linkRef).optional().describe('Links of the node\'s live version that the ruling drops, so they aren\'t carried forward, and their open marks settle: [{"source_element":"b1","target":"kj:kolab#R1"}] or [{"link":"<id>"}]; targets in the node\'s kolab'),
 });
-const auditLog = z.object({
+const auditLog = args({
   kolab: z.string().optional().describe("Only this kolab's changes: its grants and its outbox jobs"),
   subject: z.string().optional().describe('Only changes to this grantee, person or job'),
   limit: z.number().int().min(1).max(500).optional().describe('At most this many, newest first; 100 by default'),
   before: z.number().int().min(1).optional().describe('Only events older than this one: the id of the last event of the previous page, to page back'),
 });
-const elevate = z.object({ lower: z.boolean().optional().describe('End the raise now, before it lapses') });
-const adminPerson = z.object({ actor: z.string().describe('The person, by their actor id (a GitHub sign-up is named after their login, e.g. icedlee337)') });
-const outbox = z.object({
+const elevate = args({ lower: z.boolean().optional().describe('End the raise now, before it lapses') });
+const adminPerson = args({ actor: z.string().describe('The person, by their actor id (a GitHub sign-up is named after their login, e.g. icedlee337)') });
+const outbox = args({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
   kolab: z.string().optional().describe('Only jobs of this kolab'),
   retry: z.string().optional().describe('The id of a dead job, or one waiting out its backoff, to run again now'),
@@ -215,7 +216,7 @@ export class AdminTools {
     } catch (e) { return fail(e); }
   }
 
-  @McpTool({ name: 'konjir_admin_list_admins', description: "Admin: Konjir's admins, each with who made them one and when, whether they are archived, and whether they can sign in (signs_in: a linked GitHub identity, without which they can never raise a session); and whether this Kolab's break-glass token is enabled.", schema: z.object({}) })
+  @McpTool({ name: 'konjir_admin_list_admins', description: "Admin: Konjir's admins, each with who made them one and when, whether they are archived, and whether they can sign in (signs_in: a linked GitHub identity, without which they can never raise a session); and whether this Kolab's break-glass token is enabled.", schema: args({}) })
   @AdminOnly()
   async listAdmins() {
     try { return ok({ admins: await this.kolab.admins(), break_glass: breakGlassOn(this.options) }); } catch (e) { return fail(e); }

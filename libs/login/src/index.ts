@@ -591,7 +591,7 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
       await (opts.open ?? ((v: URL) => openBrowser(v, url)))(u);
     });
     const back = new Promise<URLSearchParams>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`the sign-in took too long; ${opts.again ?? 'run konjir login again'}`)), opts.timeoutMs ?? 5 * 60_000);
+      const timer = setTimeout(() => reject(new Error(`the sign-in took too long: a sign-in waits ${SIGN_IN_WAIT_MS / 60_000} minutes for the browser, as long as Kolab's sign-in page lasts; ${opts.again ?? 'run konjir login again'}`)), opts.timeoutMs ?? SIGN_IN_WAIT_MS);
       timer.unref();
       server.on('request', (req, res) => {
         const u = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
@@ -621,6 +621,13 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
     server.close();
   }
 }
+
+/**
+ * How long `konjir login` (and the channel's own sign-in) waits for the person in the browser: as
+ * long as Kolab's sign-in page lasts, 20 minutes (its oauth.requestTtlS), so neither gives up while
+ * the other still waits (W5.7).
+ */
+export const SIGN_IN_WAIT_MS = 20 * 60_000;
 
 /**
  * Signs in (`konjir login`): `scope` may preselect the kolab and role on Kolab's page

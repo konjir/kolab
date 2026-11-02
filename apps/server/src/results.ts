@@ -24,7 +24,13 @@ export function fail(e: unknown) {
     : err instanceof TenancyError ? ' Read the message and adjust the request.'
     : err instanceof LimitError ? ' Nothing was written. Read the message and adjust the request; do not retry unchanged.'
     : '';
-  return { content: [{ type: 'text' as const, text: `${err.name ?? 'Error'}: ${err.message}.${hint}` }], isError: true };
+  return { content: [{ type: 'text' as const, text: `${err.name ?? 'Error'}: ${sentence(err.message)}${hint}` }], isError: true };
+}
+
+/** A message ended as a sentence: a full stop added unless it ends in one already (or ? or !), so none ends in '..' (W5.7). */
+export function sentence(text: string): string {
+  const t = String(text ?? '').trimEnd();
+  return /[.!?]$/.test(t) ? t : `${t}.`;
 }
 
 /**
