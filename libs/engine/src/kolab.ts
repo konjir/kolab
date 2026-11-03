@@ -5014,13 +5014,15 @@ export class Kolab {
       await this.refuseByPolicyIn(tx, s, { version: v, product, here });
       const json = findings.length ? JSON.stringify(findings) : null;
       const mine = await tx.query(
-        `update review_request set state = $3, note = $4, findings = $5, decided_at = now()
+        // Dated by the clock, not the transaction's start: one that waited on the node's lock while its
+        // version was resubmitted is of the round it lands in, as approvalsIn compares it with submitted_at.
+        `update review_request set state = $3, note = $4, findings = $5, decided_at = clock_timestamp()
           where version_id = $1 and reviewer_id = $2 and state = 'open' and product = $6 returning id`,
         [v.id, s.actor_id, state, input.note ?? null, json, product]);
       if (!mine.rows.length) {
         // A reviewer who gained Write on the layer after the version was submitted.
         await tx.query(`insert into review_request(id, version_id, reviewer_id, state, note, findings, decided_at, product)
-                        values ($1, $2, $3, $4, $5, $6, now(), $7)`, [ulid(), v.id, s.actor_id, state, input.note ?? null, json, product]);
+                        values ($1, $2, $3, $4, $5, $6, clock_timestamp(), $7)`, [ulid(), v.id, s.actor_id, state, input.note ?? null, json, product]);
       }
     };
 
@@ -8768,7 +8770,10 @@ export class Kolab {
       return { changes, requests, satisfied };
     });
     // A version that now holds every approval it needs commits at once (POL2).
-    for (const id of out.satisfied ?? []) await this.commitSatisfied(id);
+    // The change stands whatever happens here: one that fails is logged, and the rest still commit.
+    for (const id of out.satisfied ?? []) {
+      await this.commitSatisfied(id).catch((e: unknown) => log.error('a version the policy change left with every approval it needs did not commit; it commits at its next approval or resubmission', { kolab: s.kolab, version: id, error: e }));
+    }
     return { ...this.policyView(s.kolab, await this.policyIn(this.db, s.kolab)), changes: out.changes, requests: out.requests };
   }
 

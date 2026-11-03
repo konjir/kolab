@@ -428,3 +428,24 @@ test('an approval the policy no longer allows doesn\'t count: tightened to a per
   expect(await kolab.version(v)).toMatchObject({ state: 'in_review' });
   expect(await kolab.recordReview(s.bob, v, { verdict: 'approve' })).toMatchObject({ ok: true });
 });
+
+test('a version the change satisfies that fails to commit neither fails the change nor keeps the rest from committing (POL2)', async () => {
+  const { kolab, s } = await adasKolab();
+  await kolab.setPolicy(s.ada, { product_review_of_bindings: true });
+  const spec = (await kolab.latestCommitted('orders'))!.id;
+  const waiting: string[] = [];
+  for (const name of ['orders-pg', 'orders-ui']) {
+    await kolab.createNode(s.eng, 'binding', name, name);
+    const v = await kolab.draft(s.eng, name, { elements: els({ b1: `${name}'s flag.` }), links: [{ kind: 'dependency', sourceElement: 'b1', target: spec, targetElement: 'R1' }] });
+    await kolab.submit(s.eng, v);
+    expect(await kolab.recordReview(s.eng2, v, { verdict: 'approve' })).toMatchObject({ ok: false, in_review: true });
+    waiting.push(v);
+  }
+  // The first one's commit fails; the change stands, and the second commits.
+  const k = kolab as unknown as { commitSatisfied(id: string): Promise<void> };
+  const commit = k.commitSatisfied.bind(kolab);
+  k.commitSatisfied = async (id) => { if (id === waiting[0]) throw new Error('the database went away'); return commit(id); };
+  expect(await kolab.setPolicy(s.ada, { product_review_of_bindings: false })).toMatchObject({ policy: { product_review_of_bindings: false } });
+  expect((await kolab.version(waiting[0])).state).toBe('in_review');
+  expect((await kolab.version(waiting[1])).state).toBe('committed');
+});
