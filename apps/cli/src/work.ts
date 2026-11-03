@@ -79,7 +79,7 @@ export const gitShell: Shell = (dir, args) => new Promise((resolve, reject) => {
 
 /** A job konjir_take_job started (JOB2, JOB3): its item, the pool agent doing it, its token (given once) and its lease, with Kolab's clock if it gives it. */
 export interface TakenJob {
-  job: string; kind: 'build' | 'review'; item: string; agent: string; token: string; lease_until: string; instructions: string; trailer?: string; now?: string;
+  job: string; kind: 'build' | 'review' | 'answer' | 'mark' | 'serve'; item: string; agent: string; token: string; lease_until: string; instructions: string; trailer?: string; now?: string;
 }
 /** The caps on live jobs (JOB3): the person's and the kolab's. */
 export interface Caps { person: { live: number; max: number }; kolab: { live: number; max: number } }
@@ -184,7 +184,11 @@ export function harnessEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 /** What a job's harness is told beside the item's instructions. */
 const JOB_RULES = 'You are a Konjir job: you do this one item and exit. Kolab is your MCP server (konjir), as the job\'s pool agent. '
   + 'Work only in this worktree. Push your branch and open a pull request if the item calls for one, but never merge a pull request '
-  + 'and never deploy: that stays a person\'s. When the item is done (submitted, or your review recorded), exit.';
+  + 'and never deploy: that stays a person\'s. When the item is done (submitted, your review recorded, the question answered, the mark cleared, '
+  + 'or the item handed to a person, as its playbook says), exit.';
+
+/** What a job of each kind does to its item, as its prompt's first line says it (JOB6). */
+const JOB_VERBS: Record<string, string> = { build: 'build', review: 'review', answer: 'answer', mark: 'settle the mark', serve: 'serve' };
 
 /**
  * The harness's command line, environment and stdin for a job (JOB4). For Claude Code: headless
@@ -207,7 +211,7 @@ export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: bo
   const env = { ...harnessEnv(opts.env ?? process.env), KONJIR_URL: opts.url, KONJIR_TOKEN: job.token, KONJIR_CREDENTIALS: opts.credentials,
     KONJIR_JOB: job.job, KONJIR_ITEM: job.item, KONJIR_JOB_KIND: job.kind };
   const prompt = [
-    `Konjir job ${job.job}: ${job.kind === 'review' ? 'review' : 'build'} ${job.item}, as ${job.agent}, in the worktree ${opts.worktree}.`,
+    `Konjir job ${job.job}: ${JOB_VERBS[job.kind] ?? 'build'} ${job.item}, as ${job.agent}, in the worktree ${opts.worktree}.`,
     ...(job.trailer ? [`Every commit for it carries the trailer "${job.trailer}" (git commit --trailer "${job.trailer}"); konjir work deliver records them.`] : []),
     '', job.instructions,
   ].join('\n');

@@ -48,7 +48,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`link`](#link) | Declare that one of your elements relies on an address, so you are told when it changes. |
 | [`list_agents`](#list_agents) | For a person's own session only: your agents, by name, each with its label (null when its name doesn't start <you>-), archive_with (what konjir_archive_agent takes for it: label=<label> or agent=<name>), when it was made, when it last used Kolab (last_used: when a session of its last opened, its sign-in last renewed, every 15 minutes while it works, or a job of its ended; null if never; one with a session open is in use now, whatever its last_used, since a session an admin opened never renews), the kolabs where its own grant gives it access now, with that access (never more than yours), whether a session of its is open, and whether it is archived. |
 | [`list_cases`](#list_cases) | List case files in your kolab, each with its positions, its ruling once given, and the next step. |
-| [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended. |
+| [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and its note for those with Write in the kolab. |
 | [`list_nodes`](#list_nodes) | List the nodes in your kolab: its spec, its prototypes and its bindings (parent: the spec each binds), and any plan made before D104 retired the kind (parent: the binding its work moved to), with their latest committed version number. |
 | [`list_queries`](#list_queries) | List questions and notes. |
 | [`list_repositories`](#list_repositories) | Your kolab's registered repositories, by URL: each with its root commit, the binding it implements, who registered it, and whether it is confirmed (by whom, and by which work package's approval). |
@@ -580,7 +580,7 @@ Draft a new version. To change a few elements, send only deltas: [{"kind":"overr
 konjir end_job job=<string> outcome=<done|stopped|failed> [note=<string>]
 ```
 
-End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. The ledger records how it ended: submitted or reviewed when the agent did its item, else released or stopped. Only the session that took the job.
+End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. The ledger records how it ended: when the agent did its item, submitted (a package, a redraft of a marked node, or a binding version serving a spec element), reviewed, answered (a question or note) or cleared (a mark); else released (for a question, mark or spec element, handed to a person, your note saying what they must decide) or stopped. Only the session that took the job.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -591,7 +591,7 @@ End a job you took, once its agent has exited (done or failed) or you stopped it
 ## instructions
 
 ```
-konjir instructions [which=<operating|reviewer|playbook>] [kind=<build|review>]
+konjir instructions [which=<operating|reviewer|playbook>] [kind=<build|review|answer|mark|serve>]
 ```
 
 Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. Without which=playbook, returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts. With which=playbook and a kind, the playbook a job of that kind follows (JOB7): server text with no prompt of its own, the item's specifics as placeholders.
@@ -599,7 +599,7 @@ Call before your first change: the full operating instructions for working throu
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `which` | `operating\|reviewer\|playbook` | no | operating (the default): the rules, with your kolab's precedent, rulings and answered questions. reviewer: how to review a version that waits for you. playbook: the playbook for the kind of job item kind names. |
-| `kind` | `build\|review` | no | With which=playbook: the kind of job item, one of build, review. Its playbook says what done is, which verbs do it and when to hand the item to a person, and gives the text a job of that kind is told, with the item's specifics as placeholders (JOB7). |
+| `kind` | `build\|review\|answer\|mark\|serve` | no | With which=playbook: the kind of job item, one of build, review, answer, mark, serve. Its playbook says what done is, which verbs do it and when to hand the item to a person, and gives the text a job of that kind is told, with the item's specifics as placeholders (JOB7). |
 
 ## lineage
 
@@ -667,7 +667,7 @@ List case files in your kolab, each with its positions, its ruling once given, a
 konjir list_jobs [live=<boolean>] [cursor=<string>] [limit=<int>]
 ```
 
-The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended. live=true: only those running. With the queue (reviews and ready work packages a job may take now) and the caps on live jobs, yours and the kolab's. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and its note for those with Write in the kolab. live=true: only those running. With the queue (what a job may take now, by kind: reviews, ready work packages, technical questions and notes to answer, technical marks, and spec elements no binding element serves) and the caps on live jobs, yours and the kolab's. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1020,7 +1020,7 @@ Submit the work package you hold In progress, kj:<binding>#<id>, for review, onc
 konjir take_job machine=<string>
 ```
 
-For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `konjir work` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls. An item whose last two jobs ended in the last hour without doing it is held back. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build or review), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most 4 live jobs a person and 8 a kolab. With nothing to take, or past a cap, taken is false and why says why.
+For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `konjir work` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then an open question or note on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most 4 live jobs a person and 8 a kolab. With nothing to take, or past a cap, taken is false and why says why.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

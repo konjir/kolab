@@ -58,7 +58,7 @@ test('an agent with only MCP tools gets the full operating instructions with its
   const tools = (await ann.client.listTools()).tools;
   const tool = tools.find((t) => t.name === 'konjir_instructions')!;
   expect(tool.annotations).toMatchObject({ readOnlyHint: true, idempotentHint: true });
-  expect(tool.inputSchema).toMatchObject({ properties: { which: { enum: ['operating', 'reviewer', 'playbook'] }, kind: { enum: ['build', 'review'] } } });
+  expect(tool.inputSchema).toMatchObject({ properties: { which: { enum: ['operating', 'reviewer', 'playbook'] }, kind: { enum: ['build', 'review', 'answer', 'mark', 'serve'] } } });
   expect((tool.inputSchema as { required?: string[] }).required ?? []).toStrictEqual([]);
 
   const text = await toolText(ann.client);
@@ -184,7 +184,7 @@ test('which=playbook with a kind is that kind\'s playbook, its item\'s specifics
   const { server, admin, open } = await boot();
   const ann = await open('ann', 'anns');
   await precedent(ann.client, 'alpha');
-  for (const kind of ['build', 'review'] as const) {
+  for (const kind of ['build', 'review', 'answer', 'mark', 'serve'] as const) {
     const text = await toolText(ann.client, { which: 'playbook', kind });
     expect(text).toBe(playbookText(kind));
     expect(text).toMatch(new RegExp(`^Konjir playbook: ${kind}\\.`));
@@ -199,8 +199,8 @@ test('which=playbook with a kind is that kind\'s playbook, its item\'s specifics
     expect(r.isError).toBe(true);
     return (r.content as { text: string }[])[0].text;
   };
-  expect(await refusal({ which: 'playbook' })).toMatch(/which=playbook needs kind, the kind of job item whose playbook you want: one of build, review/);
-  expect(await refusal({ which: 'playbook', kind: 'answer' })).toMatch(/kind is the kind of job item whose playbook you want: one of build, review/);
+  expect(await refusal({ which: 'playbook' })).toMatch(/which=playbook needs kind, the kind of job item whose playbook you want: one of build, review, answer, mark, serve/);
+  expect(await refusal({ which: 'playbook', kind: 'deploy' })).toMatch(/kind is the kind of job item whose playbook you want: one of build, review, answer, mark, serve/);
   expect(await refusal({ kind: 'build' })).toMatch(/kind names a playbook, so it goes with which=playbook/);
   expect(await refusal({ which: 'reviewer', kind: 'build' })).toMatch(/kind names a playbook, so it goes with which=playbook/);
   await server.close();
@@ -294,6 +294,14 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
     reviewVersionJob: fillPlaybook('review', { kolab: 'anns', agent: 'ann-engineer-2', person: 'ann', item: 'kj:b@2', subject: 'version', author: 'ann-engineer-1', node: 'b', seq: 2 }),
     buildPlaybook: await toolText(ann.client, { which: 'playbook', kind: 'build' }),
     reviewPlaybook: await toolText(ann.client, { which: 'playbook', kind: 'review' }),
+    // JOB6's kinds (W5.11), served and filled in each way they can be.
+    answerPlaybook: await toolText(ann.client, { which: 'playbook', kind: 'answer' }),
+    markPlaybook: await toolText(ann.client, { which: 'playbook', kind: 'mark' }),
+    servePlaybook: await toolText(ann.client, { which: 'playbook', kind: 'serve' }),
+    answerJob: fillPlaybook('answer', { kolab: 'anns', agent: 'ann-engineer-1', person: 'ann', query: 'Q1', kind: 'question', address: 'kj:b@2#b1', node: 'b', text: 'Why?', asker: 'bob', from: 'kj:c@1#c1' }),
+    noteJob: fillPlaybook('answer', { kolab: 'anns', agent: 'ann-engineer-1', person: 'ann', query: 'Q2', kind: 'note', address: 'kj:b@2#b1', node: 'b', text: 'Assuming.', asker: 'bob' }),
+    markJob: fillPlaybook('mark', { kolab: 'anns', agent: 'ann-engineer-1', person: 'ann', mark: 'M1', reason: 'changed', dirty: 'kj:b@2#W1', node: 'b', because: 'kj:s#R1 changed in version 2', next: 'Check it.', work: 'kj:b#W1' }),
+    serveJob: fillPlaybook('serve', { kolab: 'anns', agent: 'ann-engineer-1', person: 'ann', element: 'kj:s#R1', spec: 's', text: 'It works.', binding: 'b', others: ['c'] }),
   };
 
   // Every konjir_* named is a tool a session lists, or one of the two prompts.
