@@ -44,7 +44,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`draft`](#draft) | Draft a new version. |
 | [`end_job`](#end_job) | End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. |
 | [`end_session`](#end_session) | For a person's own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. |
-| [`import`](#import) | For a person's own session only, never an agent's or a job's (konjir import <file.json> sends it): import a kolab's spec, its binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), its rulings (each with its ID, such as D109, and the date it was given) and its repository, from one file, into your session's kolab, as you. |
+| [`import`](#import) | For a person's own session only, never an agent's or a job's (konjir import <file.json> sends it): import from one file what your session's role may write, into your session's kolab, as you: as product, the spec and the rulings on it; as engineer, the binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), the rulings on it and the repository. |
 | [`instructions`](#instructions) | Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. |
 | [`lineage`](#lineage) | Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. |
 | [`link`](#link) | Declare that one of your elements relies on an address, so you are told when it changes. |
@@ -612,13 +612,13 @@ For a person's own session only: end one of your open sessions, named by its id 
 konjir import file=<object> [dry_run=<boolean>] [update=<boolean>]
 ```
 
-For a person's own session only, never an agent's or a job's (konjir import <file.json> sends it): import a kolab's spec, its binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), its rulings (each with its ID, such as D109, and the date it was given) and its repository, from one file, into your session's kolab, as you. The whole file is checked before anything is written. Each write goes the way its verb goes: nodes made as konjir_create_node makes them, each version drafted and submitted as konjir_submit_for_review submits it (the kolab's policy decides whether it commits unreviewed or waits in review, VER11), rulings given as konjir_rule gives a direct one, the repository registered as konjir_register_repository registers it. You need Write on each layer it writes and, for a repository, Maintain. Run again, it changes nothing that is there and equal, reports what differs without overwriting it (update=true drafts the file's version of a node that differs), and completes what a run before it left waiting or unfinished. dry_run=true writes nothing and says what it would do. The result lists each step: created, unchanged, differs, in_review, waiting or failed.
+For a person's own session only, never an agent's or a job's (konjir import <file.json> sends it): import from one file what your session's role may write, into your session's kolab, as you: as product, the spec and the rulings on it; as engineer, the binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), the rulings on it and the repository. A whole file takes two passes, two sign-ins, in either order; what the other pass writes is reported as other_pass, naming the sign-in, and complete is true only once the whole file is in. The whole file is checked before anything is written. Each write is its verb's own: konjir_create_node, konjir_draft and konjir_submit_for_review (the kolab's policy decides whether a version commits unreviewed or waits in review, VER11), konjir_rule's checks, with the ruling's ID and the date it was given (dated rulings are audited, and keep when they were recorded), and konjir_register_repository. You need Write on the layer of your role and, for a repository, Maintain. Run again, it changes nothing that is there and equal, reports what differs without overwriting it (update=true drafts the file's version of a node of your pass that differs), and completes what a run before it left waiting or unfinished. dry_run=true writes nothing and says what it would do. A version a reviewer sent back is reported with their note (sent_back) and never resubmitted by itself. The result lists each step: created, unchanged, differs, in_review, waiting, other_pass, sent_back or failed.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `file` | `object` | yes | The import file, as one JSON object: {"format": "konjir-import/1", "kolab": …, "spec": …, "binding": …, "rulings": […], "repository": …}. README.md, "Importing a kolab", gives its shape |
 | `dry_run` | `boolean` | no | true: check the file and say what the import would write, writing nothing |
-| `update` | `boolean` | no | true: a node whose latest committed version differs from the file gets the file's as a new version, reviewed as any is. Without it, a difference is reported and left alone |
+| `update` | `boolean` | no | true: a node of your pass whose latest committed version differs from the file gets the file's as a new version, reviewed as any is, dropping links the file doesn't give; refused if it would drop a work package with work. Without it, a difference is reported and left alone |
 
 ## instructions
 
@@ -769,7 +769,7 @@ Review requests waiting for you, oldest first, each with its subject and how to 
 ## list_rulings
 
 ```
-konjir list_rulings [node=<string>] [cursor=<string>] [limit=<int>]
+konjir list_rulings [node=<string>] [ref=<string>] [cursor=<string>] [limit=<int>]
 ```
 
 List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
@@ -777,6 +777,7 @@ List the rulings in your kolab, newest first: precedent, so a settled question i
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `node` | `string` | no | Only rulings on this node of your kolab |
+| `ref` | `string` | no | Only the ruling of this ID, such as D109 |
 | `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
 | `limit` | `int` | no | How many to return: 50 by default, at most 200. |
 
@@ -1013,7 +1014,7 @@ Record your verdict on a version in review that you did not write, on your own l
 ## rule
 
 ```
-konjir rule text=<string> [case=<string>] [address=<string>] [effect=<change_intent|keep_intent>] [verdicts=<object>] [replaces=<string>] [ref=<string>] [ruled_at=<string>]
+konjir rule text=<string> [case=<string>] [address=<string>] [effect=<change_intent|keep_intent>] [verdicts=<object>] [replaces=<string>] [ref=<string>]
 ```
 
 Rule, as a person (never an agent), from a session in the role that writes the element's layer, holding Write on it. With case: rule on that case file, sustaining exactly one of its two positions and overruling the other; the ruling's effect is the side the sustained one seeks. You may not rule on one you or your agent holds a position on. With address and no case: rule directly, with no case file behind it. A direct ruling says whether it changes the intent or keeps it and asks for another way, and supersedes any case file still open on its element. A ruling that changes the intent marks the element, with a question to its layer, until a version amends it. A ruling records its author and date, never changes, and is served to every agent in the kolab as precedent; a later ruling says what it replaces.
@@ -1027,7 +1028,6 @@ Rule, as a person (never an agent), from a session in the role that writes the e
 | `verdicts` | `object` | no | With case: each position's verdict, by position id, sustaining exactly one: {"<position>":"sustained","<position>":"overruled"} |
 | `replaces` | `string` | no | What this ruling overrules, in words, if anything |
 | `ref` | `string` | no | The ruling's own name in your kolab, such as D109: a letter, then up to 39 letters, digits, '.', '_' or '-', unique in the kolab and never changed. Its precedent line names it |
-| `ruled_at` | `string` | no | For a direct ruling recorded after it was given: the date it was given, YYYY-MM-DD or an ISO 8601 time with its offset, never in the future. Kolab records when it was written beside it. A ruling that changes the intent, dated before the live version of what it rules on was written, marks nothing: that version carries it |
 
 ## set_policy
 

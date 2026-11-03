@@ -27,8 +27,8 @@
  *                                           Claude Code per job, in its own worktree (W5.4b, D103)
  *   konjir status [--json]               -> the kolab's queue, its live jobs and your room under the caps (W5.4b)
  *   konjir import <file.json> [--dry-run] [--update]
- *                                        -> imports a kolab's spec, binding, rulings and repository from one file,
- *                                           as the person signed in, never an agent or a job (W6.3)
+ *                                        -> imports from one file what the role signed in may write, as that person,
+ *                                           never an agent or a job: run it as product and as engineer (W6.3)
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -182,9 +182,10 @@ Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|sum
            Run again, it records only what is new. Kolab itself never reads git.
            konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a
            person with Maintain or Admin (never an agent): registers its repository, pinned by its root commit.
-Import:    konjir import <file.json> [--dry-run] [--update], signed in as yourself (konjir login, never an agent or a
-           job): imports a kolab's spec, its binding with its decisions and work packages, its rulings and its
-           repository from one file, into the kolab you are signed in to (README.md, "Importing a kolab", gives the
+Import:    konjir import <file.json> [--dry-run] [--update], signed in as yourself (never an agent or a job): imports
+           from one file what your role may write, into the kolab you are signed in to. Two passes, in either order:
+           konjir login --kolab <k> --role product, for the spec and the rulings on it; then --role engineer, for the
+           binding, its work packages, the rulings on it and the repository (README.md, "Importing a kolab", gives the
            file's shape). Kolab checks the whole file first; run again, it changes nothing that is there and equal,
            reports what differs, and completes what waited. --dry-run writes nothing and says what it would do.
 Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>],
@@ -635,7 +636,8 @@ export async function main(argv: string[]) {
     }
     return;
   }
-  if (cmd === 'import' && !rest.some((a) => a === '--json' || a.includes('='))) {
+  // The verb's own form takes file=… or --json; anything else, a path with '=' in it too, is a file to read.
+  if (cmd === 'import' && !rest.some((a) => a === '--json' || a.startsWith('file='))) {
     try {
       const r = await importKolab((verb, a) => call(client, verb, a), rest, { log: (l) => console.error(l) });
       console.log(JSON.stringify(r.report, null, 2));
