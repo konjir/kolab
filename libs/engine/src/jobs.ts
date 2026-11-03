@@ -1,5 +1,5 @@
 /**
- * Jobs (W5.4a; D103, D104, JOB1–JOB3): what Kolab tells the headless agent a job runs, and the
+ * Jobs (W5.4a, W5.11; D103, D104, D108, JOB1–JOB3, JOB6): what Kolab tells the headless agent a job runs, and the
  * small rules a job's rows follow. Pure: the engine reads the rows, and these decide. What a job's
  * agent is told is its kind's playbook (playbooks.ts; JOB7, D108).
  */
@@ -21,12 +21,29 @@ export function jobMachine(given: unknown): { machine?: string; problem?: string
 }
 
 /**
- * How a job ended (JOB1), from what became of its item and what its runner said: `submitted`, its
- * build's package submitted by its agent; `reviewed`, its agent gave the review; otherwise its item
- * went back to the queue, `stopped` if the runner stopped it and `released` if the agent finished
- * or failed without doing it. A lapse is Kolab's, and says `lapsed` whatever happened.
+ * What a job's agent did of its item (JOB1, JOB6), as the engine reads it: nothing (false); its
+ * item done (true); or, for a mark job, which way it settled the mark: `cleared` it, or `redrafted`
+ * the marked node and submitted that version for review.
  */
-export function jobOutcome(kind: JobKind, did: boolean, said: JobEnd): JobOutcome {
-  if (did) return kind === 'build' ? 'submitted' : 'reviewed';
+export type JobDid = boolean | 'cleared' | 'redrafted';
+
+/**
+ * How a job ended (JOB1, JOB6), from what became of its item and what its runner said. Done:
+ * `submitted`, a build's package submitted by its agent, a mark job's redraft or a serve job's
+ * binding version submitted for review; `reviewed`, a review given; `answered`, an answer job's
+ * question answered or note replied to; `cleared`, a mark job's mark cleared. Otherwise its item
+ * went back to the queue, `stopped` if the runner stopped it and `released` if the agent finished
+ * or failed without doing it: for a question, a mark or a spec element, a hand-off to a person,
+ * the runner's note saying what they must decide. A lapse is Kolab's, and says `lapsed` whatever happened.
+ */
+export function jobOutcome(kind: JobKind, did: JobDid, said: JobEnd): JobOutcome {
+  if (did) {
+    if (kind === 'review') return 'reviewed';
+    if (kind === 'answer') return 'answered';
+    return did === 'cleared' ? 'cleared' : 'submitted';
+  }
   return said === 'stopped' ? 'stopped' : 'released';
 }
+
+/** The outcomes that say a job did its item (JOB2): the rest, ended in the last hour, hold the item back. */
+export const DID_OUTCOMES: readonly JobOutcome[] = ['submitted', 'reviewed', 'answered', 'cleared'];

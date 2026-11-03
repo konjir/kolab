@@ -343,16 +343,21 @@ export interface RepositoryView {
 /** A kolab's lease on In progress work (PLN15), in minutes: 30 by default, from 1 to 1,440 (a day). */
 export const WORK_LEASE_MINUTES = { default: 30, min: 1, max: 1440 } as const;
 /**
- * What a job does (JOB1, D103): build a work package, or answer a review request (a work package
- * In review, or a technical version in review). Migration 0034's job_kind_check.
+ * What a job does (JOB1, JOB6; D103, D108): build a work package; answer a review request (a work
+ * package In review, or a technical version in review); answer an open question or note on a
+ * technical node; settle an open mark on a technical node; or serve a spec element that no binding
+ * element serves (PLN7). Migrations 0034 and 0039's job_kind_check.
  */
-export const JOB_KINDS = ['build', 'review'] as const;
+export const JOB_KINDS = ['build', 'review', 'answer', 'mark', 'serve'] as const;
 export type JobKind = typeof JOB_KINDS[number];
 /**
- * How a job ended (JOB1): its package submitted, its review given, its item released back to the
- * queue, its lease lapsed, or its runner stopped it with the item untouched. Migration 0034's job_outcome_check.
+ * How a job ended (JOB1, JOB6): its package, or a version it drafted, submitted; its review given;
+ * its question answered or note replied to; its mark cleared; its item released back to the queue
+ * (for a question, a mark or a spec element, handed to a person, its note saying what they must
+ * decide); its lease lapsed; or its runner stopped it with the item untouched. Migrations 0034 and
+ * 0039's job_outcome_check.
  */
-export const JOB_OUTCOMES = ['submitted', 'reviewed', 'released', 'lapsed', 'stopped'] as const;
+export const JOB_OUTCOMES = ['submitted', 'reviewed', 'answered', 'cleared', 'released', 'lapsed', 'stopped'] as const;
 export type JobOutcome = typeof JOB_OUTCOMES[number];
 /** What a runner says as it ends a job (konjir_end_job): its agent finished, it stopped it, or the agent failed. Migration 0034's job_said_check. */
 export const JOB_ENDS = ['done', 'stopped', 'failed'] as const;
@@ -368,10 +373,15 @@ export interface JobCaps { person: { live: number; max: number }; kolab: { live:
 /** One job as konjir_list_jobs shows it (JOB1). */
 export interface JobView {
   job: string; person: string; machine: string; agent: string; kind: JobKind;
-  /** Its item: a work package, kj:<binding>#<id>, or a version in review, kj:<node>@<seq>. */
+  /**
+   * Its item: a work package, kj:<binding>#<id>; a version in review, kj:<node>@<seq>; a question's
+   * or note's id (answer); a mark's id (mark); or a spec element, kj:<spec>#<id> (serve).
+   */
   item: string;
   started_at: string; lease_until: string;
   ended_at?: string; outcome?: JobOutcome;
+  /** How it ended, in its runner's words or Kolab's: for a hand-off, what the person must decide (JOB6). */
+  note?: string;
 }
 /**
  * Why a work package is blocked (PLN19, as D98 and D104 amend it): a work package it depends on
