@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { resolve as resolvePath } from 'node:path';
 import { monotonicFactory, ulid } from 'ulid';
 import {
-  type Address, type QuoteSelector, fingerprint, formatAddress, isElementId, isKolabName, isNodeName, MAX_QUOTE, normalize, parseAddress,
+  type Address, type QuoteSelector, fingerprint, formatAddress, isKolabName, isNodeName, MAX_QUOTE, UNSAFE_NAME_CHAR, normalize, parseAddress,
   parseNodeRef, resolveSpan,
 } from '@konjir/address';
 import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konjir/db';
@@ -4232,8 +4232,8 @@ export class Kolab {
     links: LinkInput[] = []): Promise<string> {
     // Its size first, before any work is done on it (W2.21).
     checkDraftInput(input);
-    // Each new element's id, and the parent it names, is one an address can carry onto one line (JOB6).
-    checkElementIds(input);
+    // Each element's id, and each parent named, is one an address can carry onto one line (JOB6).
+    checkElementIds(input, null);
     // A plan takes no new version (D104): its work packages are its binding's now.
     const drafted = await this.node(nodeId);
     if (drafted.kind === 'plan') {
@@ -4321,6 +4321,8 @@ export class Kolab {
 
     const els = materialize(parentEls, deltaRows);
     checkVersion(els);
+    // A new id holds no '~' either; one the version builds on is kept as it is (JOB6).
+    checkElementIds(input, new Set(parentEls.map((e) => e.element_id)));
     // Each parent the draft names is an element of the version it makes (JOB6).
     const made = new Set(els.map((e) => e.element_id));
     const named = [...(input.elements ?? []).map((e) => e.parent), ...(input.deltas ?? []).map((d) => d.parent)];
@@ -9198,7 +9200,7 @@ export class Kolab {
     const rows = (await q.query<{ binding_node_id: string; element_id: string; name: string }>(
       `select w.binding_node_id, w.element_id, n.name from work_package w join node n on n.id = w.binding_node_id
         where w.kolab_id = $1 and w.state <> 'done' and w.removed_in_version_id is null`, [kolab])).rows;
-    return rows.filter((r) => !isElementId(r.element_id) || !isNodeName(r.name)).map((r) => `${r.binding_node_id}#${r.element_id}`);
+    return rows.filter((r) => UNSAFE_NAME_CHAR.test(r.element_id) || UNSAFE_NAME_CHAR.test(r.name)).map((r) => `${r.binding_node_id}#${r.element_id}`);
   }
 
   /**
@@ -9627,7 +9629,7 @@ export class Kolab {
   private async serveQueueIn(q: Q, kolab: string, held: HeldBack, only?: string): Promise<ServeItem[]> {
     const rows = (await q.query<{ spec_node_id: string; spec: string; element_id: string; text: string; bindings: string[] }>(
       `select x.spec_node_id, s.name as spec, x.element_id, x.text,
-              array(select b.name from node b where b.parent_node_id = s.id and b.kind = 'binding'
+              array(select b.name from node b where b.parent_node_id = s.id and b.kind = 'binding' and b.name !~ ${UNSAFE_NAME_SQL}
                        and exists (select 1 from version bc where bc.node_id = b.id and bc.state = 'committed') order by b.name) as bindings
          from (${SERVE_ITEMS}) x join node s on s.id = x.spec_node_id
         where ($3::text is null or x.spec_node_id || '#' || x.element_id = $3)
@@ -11135,19 +11137,31 @@ const NO_HOLD: HeldBack = { packages: new Set(), versions: new Set(), count: 0, 
 const JOB_QUEUE_READ = 50;
 
 /**
+ * UNSAFE_NAME_CHAR as a Postgres regular expression, a literal: whitespace (JavaScript's \\s, every
+ * one), control characters, C0 and C1, and the line and paragraph separators. NUL can't be in text.
+ */
+const UNSAFE_NAME_SQL = "'[\\u0001-\\u0020\\u007f-\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]'";
+
+/**
  * JOB6's items, as SQL over `$1`, the kolab, and `$2`, the held-back ids (heldBackIn): the open
  * questions and notes people and agents raised on technical nodes, no mark's (answerQueueIn); the
  * open marks a mark job may settle (markQueueIn); and the spec elements no binding element serves,
  * each with its spec's node, its order and its text (serveQueueIn). Each leaves out an item with a
- * live job. A take reads them a page at a time; jobQueue counts them; insertJob reads one again,
+ * live job, and one whose address a node's name or an element's id would write with whitespace or
+ * a control character (UNSAFE_NAME_SQL; written before Kolab refused them), so such items neither
+ * fill a page nor count; unsafeItem is the last wall. A take reads them a page at a time; jobQueue counts them; insertJob reads one again,
  * under the jobs lock, to see it may still be taken.
  */
-const ANSWER_ITEMS = `select q.* from query q join version v on v.id = q.version_id
+const ANSWER_ITEMS = `select q.* from query q join version v on v.id = q.version_id join node n on n.id = v.node_id
    where q.kolab_id = $1 and q.state = 'open' and v.layer = 'technical' and q.invalidation_id is null and q.raised_by is not null
+     and n.name !~ ${UNSAFE_NAME_SQL} and coalesce(q.element_id, '') !~ ${UNSAFE_NAME_SQL}
+     and not exists (select 1 from version fv join node fn on fn.id = fv.node_id
+                      where fv.id = q.from_version_id and (fn.name ~ ${UNSAFE_NAME_SQL} or coalesce(q.from_element_id, '') ~ ${UNSAFE_NAME_SQL}))
      and not exists (select 1 from job j where j.ended_at is null and j.query_id = q.id)
      and q.id <> all($2::text[])`;
-const MARK_ITEMS = `select i.* from invalidation i join version v on v.id = i.version_id
+const MARK_ITEMS = `select i.* from invalidation i join version v on v.id = i.version_id join node n on n.id = v.node_id
    where i.kolab_id = $1 and i.state = 'open' and v.layer = 'technical' and v.state = 'committed'
+     and n.name !~ ${UNSAFE_NAME_SQL} and coalesce(i.element_id, '') !~ ${UNSAFE_NAME_SQL}
      and i.reason not in ('upstream_dirty', 'role_boundary')
      and not exists (select 1 from version r where r.node_id = v.node_id and r.state = 'in_review')
      and not exists (select 1 from work_package w where w.binding_node_id = v.node_id and w.element_id = i.element_id and w.state in ('in_progress', 'in_review'))
@@ -11155,11 +11169,13 @@ const MARK_ITEMS = `select i.* from invalidation i join version v on v.id = i.ve
      and i.id <> all($2::text[])`;
 const SERVE_ITEMS = `select sv.node_id as spec_node_id, e.element_id, e.ord, e.text
      from (select distinct on (v.node_id) v.id, v.node_id from version v join node s on s.id = v.node_id
-            where s.kolab_id = $1 and s.kind = 'spec' and v.state = 'committed'
-              and exists (select 1 from node b join version bc on bc.node_id = b.id and bc.state = 'committed' where b.parent_node_id = s.id and b.kind = 'binding')
+            where s.kolab_id = $1 and s.kind = 'spec' and v.state = 'committed' and s.name !~ ${UNSAFE_NAME_SQL}
+              and exists (select 1 from node b join version bc on bc.node_id = b.id and bc.state = 'committed'
+                           where b.parent_node_id = s.id and b.kind = 'binding' and b.name !~ ${UNSAFE_NAME_SQL})
             order by v.node_id, v.seq desc) sv
      join element e on e.version_id = sv.id
-    where not exists (select 1 from element c where c.version_id = sv.id and c.parent_element_id = e.element_id)
+    where e.element_id !~ ${UNSAFE_NAME_SQL}
+      and not exists (select 1 from element c where c.version_id = sv.id and c.parent_element_id = e.element_id)
       and not exists (
             select 1 from edge g join version tv on tv.id = g.target_version_id
               join version bv on bv.id = g.source_version_id join node b on b.id = bv.node_id
@@ -11225,22 +11241,33 @@ function jobsFull(caps: JobCaps, kolab: string): string | undefined {
 const jobEnded = (j: JobRow) => new GateError(`job ${j.id} ended ${j.outcome === 'lapsed' ? 'when its lease lapsed' : `(${j.outcome})`} at ${iso(j.ended_at)}${j.outcome === 'lapsed' ? ', and its item went back to the queue' : ''}: take another (konjir_take_job)`);
 
 /**
- * Refuses a draft whose element ids, or the parents they name, aren't ids (isElementId: no
- * whitespace, no control character, C0 or C1, no line or paragraph separator; JOB6): the ids of
- * its elements, of the elements its deltas add, and every parent any of them names. An id is
- * written into addresses, and an address into a job's instructions as it is, so a line break there
- * could pass for a step. That each parent named is an element of the version is checked once it
- * is made (writeDraft).
+ * Refuses a draft whose element ids, or the parents they name, aren't ids (JOB6): each id of its
+ * elements, of the elements its deltas add, and every parent any of them names, holds no
+ * whitespace, no control character, C0 or C1, and no line or paragraph separator
+ * (UNSAFE_NAME_CHAR), since an id is written into addresses, and an address into a job's
+ * instructions as it is, so a line break there could pass for a step; and an id that isn't in
+ * `prior`, the version the draft builds on, holds no '~' (isElementId); without `prior`, before
+ * that version is read, only the first is checked. '/', '@' and '#' are
+ * fine: an address reads its element as everything after its first '#' up to a '~'. That each
+ * parent named is an element of the version is checked once it is made (writeDraft).
  */
-function checkElementIds(input: { elements?: { id?: string; parent?: string }[]; deltas?: { kind: string; element: string; parent?: string }[] }) {
+function checkElementIds(input: { elements?: { id?: string; parent?: string }[]; deltas?: { kind: string; element: string; parent?: string }[] }, prior: ReadonlySet<string> | null) {
   const ids = [
-    ...(input.elements ?? []).flatMap((e) => [...(e.id === undefined ? [] : [e.id]), ...(e.parent === undefined || e.parent === null ? [] : [e.parent])]),
-    ...(input.deltas ?? []).flatMap((d) => [...(d.kind === 'add' ? [d.element] : []), ...(d.parent === undefined || d.parent === null ? [] : [d.parent])]),
+    ...(input.elements ?? []).flatMap((e) => (e.id === undefined ? [] : [e.id])),
+    ...(input.deltas ?? []).flatMap((d) => (d.kind === 'add' ? [d.element] : [])),
   ];
-  const bad = ids.find((id) => !isElementId(id));
-  if (bad !== undefined) {
-    throw new GateError(`${quoteText(bad)} isn't a valid element id: an id is one word, with no whitespace and no control character (a line break among them), since addresses carry it`);
+  const parents = [...(input.elements ?? []).map((e) => e.parent), ...(input.deltas ?? []).map((d) => d.parent)]
+    .filter((p): p is string => p !== undefined && p !== null);
+  // Every id, an element's or a parent's, new or not: no whitespace or control character.
+  const unsafe = [...ids, ...parents].find((id) => typeof id !== 'string' || !id.length || UNSAFE_NAME_CHAR.test(id));
+  if (unsafe !== undefined) {
+    throw new GateError(`${quoteText(String(unsafe))} isn't a valid element id: ${unsafe === '' ? 'an id is never empty' : 'an id holds no whitespace and no control character (a line break among them), since addresses carry it'}`);
   }
+  // A new id: no '~' either, which would end its address's element and start a quote. An id the
+  // version builds on is kept as it is.
+  if (!prior) return;
+  const tilde = ids.find((id) => !prior.has(id) && id.includes('~'));
+  if (tilde !== undefined) throw new GateError(`${quoteText(tilde)} isn't a valid element id: a new id holds no '~', which starts an address's quote`);
 }
 
 /** A pull that found nothing ready: thrown inside its transaction, so its rate hold is given back. */

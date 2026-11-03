@@ -56,12 +56,13 @@ export const UNSAFE_NAME_CHAR = /[\s\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 export const NODE_NAME = /^[^/@#~\s\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/;
 
 /**
- * Whether `s` may be an element's id (JOB6): not empty, with none of '/', '@', '#' and '~', which
- * the address grammar uses, and no whitespace or control character (UNSAFE_NAME_CHAR). As a node's
- * name is (NODE_NAME).
+ * Whether `s` may be an element's id (JOB6): not empty, with no whitespace or control character
+ * (UNSAFE_NAME_CHAR) and no '~', which starts an address's quote. '/', '@' and '#' are fine: the
+ * grammar reads an address's element as everything after its first '#' up to a '~', so
+ * kj:api#v1/users@2 names the element v1/users@2.
  */
 export function isElementId(s: unknown): s is string {
-  return typeof s === 'string' && NODE_NAME.test(s);
+  return typeof s === 'string' && s.length > 0 && !UNSAFE_NAME_CHAR.test(s) && !s.includes('~');
 }
 
 /**
