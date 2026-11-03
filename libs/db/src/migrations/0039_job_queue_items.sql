@@ -20,7 +20,8 @@
 -- to its agent only if it was submitted while the job ran, whenever it was drafted, so a pool agent
 -- reused across jobs can't be credited for one an earlier job wrote. Versions submitted before have none.
 --
--- It adds nullable columns, widens three checks and adds indexes: every existing job is a build or a
+-- It adds nullable columns, widens three checks, adds indexes and narrows what agents read of a
+-- job to every column but its note: every existing job is a build or a
 -- review with its item where it was, so it can neither refuse a database nor change what is in one,
 -- and needs no preflight. The unique key on query(id, kolab_id) is its primary key's, with the kolab.
 
@@ -91,3 +92,11 @@ $$;
 revoke execute on function kj_version_submitted_at() from public;
 create trigger version_submitted_at before update of state on version for each row
   when (old.state = 'drafted' and new.state in ('in_review', 'committed')) execute function kj_version_submitted_at();
+
+-- A job's note quotes its agent's last words, a hand-off's what a person must decide (JOB6): Kolab
+-- shows it only to the job's own person and the kolab's Admins, reading as itself. So agents, who
+-- read their kolab's jobs (0034's kolab_read), read every column of a job but its note.
+revoke select on job from kj_agent;
+grant select (id, kolab_id, person_id, runner_session_id, machine, agent_id, session_id, kind, binding_node_id, element_id, version_id,
+              review_request_id, lease_until, started_at, ended_at, outcome, said, ended_by, query_id, mark_id, spec_node_id, spec_element_id)
+  on job to kj_agent;

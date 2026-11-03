@@ -128,7 +128,7 @@ process.stdin.on('end', async () => {
 }
 
 /** A fake of W5.4a's job tools and the reads konjir work makes, for a person `lee` in kolab `test`, recording every call. */
-function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; item: string; job?: string }[]; kind?: string; cap?: number } = {}) {
+function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; item: string; job?: string }[]; kind?: string; cap?: number; noKinds?: boolean } = {}) {
   const items = [...(opts.items ?? [])];
   const calls: [string, Record<string, unknown>][] = [];
   const jobs = new Map<string, TakenJob & { ended?: { outcome: string; note?: string }; machine: string }>();
@@ -152,6 +152,8 @@ function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; ite
       case 'take_job': {
         // A transport failure, not a refusal: what an unreachable Kolab looks like.
         if (state.takeThrows) throw new Error('fetch failed');
+        // A Kolab from before W5.11 refuses kinds, as its strict arguments refuse any it doesn't know.
+        if (opts.noKinds && 'kinds' in args) throw new ToolRefusal('unknown argument kinds: it takes machine');
         if (liveCount() >= cap) return { taken: false, why: 'you have 4 live jobs, your most', counts: {}, caps: caps() };
         const it = items.shift();
         if (!it) return { taken: false, why: 'nothing is ready', counts: { review: 0, build: 0 }, caps: caps() };
@@ -510,4 +512,22 @@ test('a job\'s note is its agent\'s last "Handed to a person:" or "Cleared:" par
   expect(jobNote('Handed to a person: first.\n\nHanded to a person: second.')).toBe('Handed to a person: second.');
   expect(jobNote('I was told "Handed to a person: x" earlier.')).toBe('I was told "Handed to a person: x" earlier.');
   expect(jobNote('No marker here.')).toBe('No marker here.');
+});
+
+test('on a Kolab from before W5.11, which refuses kinds, the runner asks again without them, for builds and reviews, and doesn\'t send them again (JOB6)', async () => {
+  const r = repository();
+  process.env = { ...process.env, ...GIT_ENV };
+  const h = standIn(r.top);
+  const kolab = fakeKolab(r.root, { noKinds: true, items: [{ kind: 'build', item: 'kj:test/p#W1' }, { kind: 'review', item: 'kj:test/p#W2' }] });
+  const out = quiet();
+  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, signal: stopper().signal },
+    { once: true, jobs: 4, machine: 'lee-laptop', harness: h.path, url: MCP });
+  await until(() => h.started('J1') && h.started('J2'));
+  h.go('J1');
+  h.go('J2');
+  await running;
+  expect(kolab.calls.filter(([v]) => v === 'take_job').map(([, a]) => a)).toEqual([
+    { machine: 'lee-laptop', kinds: ['build', 'review', 'answer', 'mark', 'serve'] }, { machine: 'lee-laptop' }, { machine: 'lee-laptop' }, { machine: 'lee-laptop' },
+  ]);
+  expect(out.lines).toContain('Kolab takes no kinds yet (a release before W5.11): taking builds and reviews only');
 });
