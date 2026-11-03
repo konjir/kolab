@@ -340,7 +340,11 @@ test('editing a draft that came back: a carried link whose target element is gon
   expect((await bob.call<WebNodeView>('nodes/orders-pg')).body.drafts.map((d) => d.seq)).toStrictEqual([v]);   // nothing written, the draft kept
 });
 
-test('replacing a draft claims it only while it is a draft: a "resubmit as it is" racing it stays in review, and a link into work no longer read is refused saying nothing of it', async () => {
+/**
+ * Bob's orders-pg draft, through the web API, with Erin to review it: `returned` drafts and submits a
+ * version, with a link from b3 if asked, and Erin returns it with changes requested.
+ */
+async function returnedDrafts() {
   const { kolab, engineer, product } = await specAndBinding();
   await people(kolab, 'erin', { layers: ['technical'] });
   const base = await serve(kolab);
@@ -355,8 +359,13 @@ test('replacing a draft claims it only while it is a draft: a "resubmit as it is
     return seq;
   };
   const inReview = async () => (await bob.call<WebNodeView>('nodes/orders-pg')).body.in_review.map((r) => r.seq);
+  return { kolab, product, bob, returned, inReview };
+}
 
-  // A resubmit as it is and a replacement, at once: whichever wins, only it succeeds, and exactly one version waits in review.
+// Replacing a draft claims it only while it is a draft. Four scenarios, each its own test: together, under load, they neared the 30 s timeout.
+
+test('replacing a draft and a "resubmit as it is" racing it: whichever wins, only it succeeds, and exactly one version waits in review', async () => {
+  const { bob, returned, inReview } = await returnedDrafts();
   // A resubmit told "in review" is never abandoned behind its back.
   for (let round = 0; round < 3; round++) {
     const v = await returned();
@@ -371,14 +380,18 @@ test('replacing a draft claims it only while it is a draft: a "resubmit as it is
     else expect(waiting).toStrictEqual([replaced.body.seq]);
     expect((await bob.call(`nodes/orders-pg/versions/${waiting[0]}/abandon`, {})).status).toBe(200);
   }
-  // Resubmitted first, then replaced: the replacement is refused, and the resubmitted version stays in review.
+});
+
+test('a draft resubmitted as it is, then replaced: the replacement is refused, and the resubmitted version stays in review', async () => {
+  const { bob, returned, inReview } = await returnedDrafts();
   const v = await returned();
   expect((await bob.call(`nodes/orders-pg/versions/${v}/resubmit`, {})).status).toBe(200);
   const late = await bob.call<{ error: string }>('nodes/orders-pg/submit', { base: 1, replaces: v, changes: [{ kind: 'add', element: 'b3', text: 'x' }] });
   expect([late.status, await inReview()]).toStrictEqual([409, [v]]);
-  expect((await bob.call(`nodes/orders-pg/versions/${v}/abandon`, {})).status).toBe(200);
+});
 
-  // A quote that no longer stands where it pointed is refused before anything is written.
+test('replacing a draft whose quote no longer stands where it pointed is refused before anything is written', async () => {
+  const { kolab, product, bob, returned } = await returnedDrafts();
   const orders = (await kolab.latestCommitted('orders'))!;
   const quoted = await returned({ target: orders.id, element: 'R2', selector: { exact: 'refunded in full' } });
   await kolab.commit(product, 'orders', { elements: els({ R1: 'Office staff can cancel an order.', R2: 'A cancelled order is refunded, less shipping.' }) });
@@ -388,9 +401,10 @@ test('replacing a draft claims it only while it is a draft: a "resubmit as it is
   expect(quote.status).toBe(400);
   expect(quote.body.message).toMatch(new RegExp(`orders-pg@${quoted} quotes "refunded in full" in kj:orders@1#R2, which version 2 no longer says as quoted`));
   expect(await seqs()).toBe(before);
-  expect((await bob.call(`nodes/orders-pg/versions/${quoted}/abandon`, {})).status).toBe(200);
+});
 
-  // A link into another kolab Bob read when he drafted, and reads no longer: refused, naming nothing of that kolab's work.
+test('replacing a draft with a link into another kolab Bob read when he drafted, and reads no longer: refused, naming nothing of that kolab\'s work', async () => {
+  const { kolab, bob, returned } = await returnedDrafts();
   await kolab.addActor('olga');
   await kolab.createKolab('other', { owner: 'olga' });
   const olga = await kolab.openSession('olga', 'product', { kolab: 'other' });
