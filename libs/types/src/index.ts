@@ -131,7 +131,7 @@ export const ADMIN_DOER = 'admin';
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
   'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
-  'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set',
+  'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
 ] as const;
 /**
  * How long an admin's session may run admin verbs once they raise it (konjir_admin_elevate, W2.22),

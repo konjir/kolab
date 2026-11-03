@@ -20,9 +20,11 @@ export const IMPORT_FORMAT = 'konjir-import/1';
  * version committed, a ruling given, a repository registered), `unchanged` (there already, equal),
  * `differs` (there already, and not as the file says: left alone), `in_review` (submitted, and
  * waiting for its reviewers under the kolab's policy), `waiting` (on something not committed yet;
- * a later run completes it), `failed`; and, for a dry run, `would_create` and `would_update`.
+ * a later run completes it), `other_pass` (what the other role's sign-in writes: a pass writes only
+ * what its role may), `sent_back` (a reviewer asked for changes: its author resubmits or abandons it),
+ * `failed`; and, for a dry run, `would_create` and `would_update`.
  */
-export type ImportOutcome = 'created' | 'unchanged' | 'differs' | 'in_review' | 'waiting' | 'failed' | 'would_create' | 'would_update';
+export type ImportOutcome = 'created' | 'unchanged' | 'differs' | 'in_review' | 'waiting' | 'other_pass' | 'sent_back' | 'failed' | 'would_create' | 'would_update';
 
 export interface ImportStep {
   /** What the step is about: `node kj:<kolab>/<node>`, `version …`, `links … (relies_on)`, `repository <url>`, `ruling <ref>`. */
@@ -32,22 +34,32 @@ export interface ImportStep {
   version?: number;
   /** Who may approve a version in review now. */
   reviewers?: string[];
+  /** A ruling that changes the intent: `set`, it marked what it rules on; `carried`, that last changed after its date, so no mark. */
+  mark?: 'set' | 'carried';
+  /** The case files a ruling superseded. */
+  superseded?: string[];
   detail?: string;
 }
 
 export interface ImportReport {
   kolab: string;
-  /** The person it ran as. */
+  /** The person it ran as, and the role of this pass. */
   by: string;
+  role: string;
   dry_run: boolean;
   steps: ImportStep[];
   created: string[]; unchanged: string[]; differs: string[];
   /** In review or waiting: what a later run, or a reviewer, completes. */
   waiting: string[];
+  /** Versions a reviewer sent back: their author's to resubmit or abandon. */
+  sent_back: string[];
+  /** What the other role's pass writes; `next` says how to run it. */
+  other_pass: string[];
+  next?: string;
   failed: string[];
   /** A dry run's writes. */
   would?: string[];
-  /** Every step created or unchanged: the kolab holds the file. Never for a dry run. */
+  /** Every step created or unchanged: the kolab holds the whole file. Never for a dry run. */
   complete: boolean;
 }
 
@@ -223,11 +235,11 @@ export function parseImportFile(input: unknown): ImportFile {
     } else {
       try {
         const a = parseAddress(r.on.startsWith('kj:') ? r.on : `kj:${r.on}`);
+        // A node not in the file must be in the kolab (importKolab checks): rulings can come in a file of their own.
         const node = [spec, binding].find((n) => n?.name === a.node);
         if (a.version !== undefined || a.selector) say(`${where}.on names a node or an element, with no version or quote: ${a.node}${a.element ? `#${a.element}` : ''}`);
         else if (a.kolab !== undefined && a.kolab !== kolab) say(`${where}.on is in kolab ${a.kolab}, and the file imports into ${kolab}`);
-        else if (!node) say(`${where}.on names ${a.node}, which is neither the file's spec nor its binding`);
-        else if (a.element !== undefined && !node.elements.some((e) => e.id === a.element)) say(`${where}.on names ${a.node}#${a.element}, and ${a.node} has no element ${a.element} in the file`);
+        else if (a.element !== undefined && node && !node.elements.some((e) => e.id === a.element)) say(`${where}.on names ${a.node}#${a.element}, and ${a.node} has no element ${a.element} in the file`);
         else on = { node: a.node, ...(a.element !== undefined ? { element: a.element } : {}) };
       } catch {
         say(`${where}.on is the node, or element, it rules on: kolab, or kolab#ENF4`);

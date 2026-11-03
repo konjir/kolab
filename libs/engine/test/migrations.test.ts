@@ -2111,8 +2111,15 @@ test('a database at 0040 with versions in review, review requests and answered q
 
 /** Takes a database at 0042 back to 0041 by hand, as 0042 found it. */
 const UNDO_0042 = `drop index ruling_ref_per_kolab;
+  alter table ruling drop constraint ruling_ruled_since;
   alter table ruling drop column ref;
   alter table ruling drop column recorded_at;
+  alter table audit_event drop constraint audit_event_action_check;
+  alter table audit_event add constraint audit_event_action_check check (action in
+    ('grant.set', 'grant.removed', 'member.set', 'member.removed',
+     'team_member.added', 'team_member.removed', 'outbox.retried',
+     'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
+     'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set'));
   delete from kj_migration where version = 42;`;
 
 test('a database at 0041 with rulings reaches 0042: every ruling is kept as it was, with no ref and no recorded_at, and a ruling after it records both (W6.3)', async () => {
@@ -2145,9 +2152,8 @@ test('a database at 0041 with rulings reaches 0042: every ruling is kept as it w
   try {
     await kolab.endSession({ actor: 'alice' });
     const pm = await kolab.openSession('alice', 'product');
-    await kolab.rule(pm, { address: 'kj:orders#R1', text: 'One, once.', effect: 'keep_intent', ref: 'D1', ruled_at: '2026-01-01' });
-    const rows = (await kolab.db.query<{ ref: string | null; recorded_at: Date | null; ruled_at: Date }>(`select ref, recorded_at, ruled_at from ruling order by ref nulls first`)).rows;
+    await kolab.rule(pm, { address: 'kj:orders#R1', text: 'One, once.', effect: 'keep_intent', ref: 'D1' });
+    const rows = (await kolab.db.query<{ ref: string | null; recorded_at: Date | null }>(`select ref, recorded_at from ruling order by ref nulls first`)).rows;
     expect(rows.map((r) => [r.ref, r.recorded_at === null])).toStrictEqual([[null, true], ['D1', false]]);
-    expect(new Date(rows[1].ruled_at).toISOString()).toBe('2026-01-01T00:00:00.000Z');
   } finally { await kolab.close(); }
 });

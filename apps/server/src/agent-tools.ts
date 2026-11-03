@@ -130,7 +130,6 @@ const rule = args({
   verdicts: z.record(z.string(), z.enum(POSITION_VERDICTS)).optional().describe('With case: each position\'s verdict, by position id, sustaining exactly one: {"<position>":"sustained","<position>":"overruled"}'),
   replaces: z.string().optional().describe('What this ruling overrules, in words, if anything'),
   ref: z.string().optional().describe('The ruling\'s own name in your kolab, such as D109: a letter, then up to 39 letters, digits, \'.\', \'_\' or \'-\', unique in the kolab and never changed. Its precedent line names it'),
-  ruled_at: z.string().optional().describe('For a direct ruling recorded after it was given: the date it was given, YYYY-MM-DD or an ISO 8601 time with its offset, never in the future. Kolab records when it was written beside it. A ruling that changes the intent, dated before the live version of what it rules on was written, marks nothing: that version carries it'),
 });
 const listCases = args({
   state: z.enum(CASE_FILE_STATES).optional().describe('Default: open ones'),
@@ -140,7 +139,7 @@ const listCases = args({
   ...paging,
 });
 const readCase = args({ case: z.string() });
-const listRulings = args({ node: node.optional().describe('Only rulings on this node of your kolab'), ...paging });
+const listRulings = args({ node: node.optional().describe('Only rulings on this node of your kolab'), ref: z.string().optional().describe('Only the ruling of this ID, such as D109'), ...paging });
 const work = z.string().describe('A work package of your kolab: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2. An address from before D104, kj:<plan>#<id>, names the package where it moved');
 const listWork = args({
   binding: node.optional().describe('Only this binding\'s work packages'),
@@ -187,7 +186,7 @@ const registerRepository = args({
 const importFile = args({
   file: z.record(z.string(), z.unknown()).describe('The import file, as one JSON object: {"format": "konjir-import/1", "kolab": …, "spec": …, "binding": …, "rulings": […], "repository": …}. README.md, "Importing a kolab", gives its shape'),
   dry_run: z.boolean().optional().describe('true: check the file and say what the import would write, writing nothing'),
-  update: z.boolean().optional().describe('true: a node whose latest committed version differs from the file gets the file\'s as a new version, reviewed as any is. Without it, a difference is reported and left alone'),
+  update: z.boolean().optional().describe('true: a node of your pass whose latest committed version differs from the file gets the file\'s as a new version, reviewed as any is, dropping links the file doesn\'t give; refused if it would drop a work package with work. Without it, a difference is reported and left alone'),
 });
 const archiveRepository = args({ repo: z.string().describe('The repository, by its URL or id') });
 const listRepositories = args({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
@@ -717,10 +716,10 @@ export class AgentTools {
     schema: listRulings,
     annotations: { readOnlyHint: true },
   })
-  listRulings({ node, cursor, limit }: z.infer<typeof listRulings>, context?: McpToolContext) {
+  listRulings({ node, ref, cursor, limit }: z.infer<typeof listRulings>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
-      const { items, next } = await this.kolab.rulingsPage(s, { node: id }, { cursor, limit });
+      const { items, next } = await this.kolab.rulingsPage(s, { node: id, ...(ref !== undefined ? { ref } : {}) }, { cursor, limit });
       return { rulings: items, next };
     });
   }
@@ -845,7 +844,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_import',
-    description: 'For a person\'s own session only, never an agent\'s or a job\'s (konjir import <file.json> sends it): import a kolab\'s spec, its binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), its rulings (each with its ID, such as D109, and the date it was given) and its repository, from one file, into your session\'s kolab, as you. The whole file is checked before anything is written. Each write goes the way its verb goes: nodes made as konjir_create_node makes them, each version drafted and submitted as konjir_submit_for_review submits it (the kolab\'s policy decides whether it commits unreviewed or waits in review, VER11), rulings given as konjir_rule gives a direct one, the repository registered as konjir_register_repository registers it. You need Write on each layer it writes and, for a repository, Maintain. Run again, it changes nothing that is there and equal, reports what differs without overwriting it (update=true drafts the file\'s version of a node that differs), and completes what a run before it left waiting or unfinished. dry_run=true writes nothing and says what it would do. The result lists each step: created, unchanged, differs, in_review, waiting or failed.',
+    description: 'For a person\'s own session only, never an agent\'s or a job\'s (konjir import <file.json> sends it): import from one file what your session\'s role may write, into your session\'s kolab, as you: as product, the spec and the rulings on it; as engineer, the binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), the rulings on it and the repository. A whole file takes two passes, two sign-ins, in either order; what the other pass writes is reported as other_pass, naming the sign-in, and complete is true only once the whole file is in. The whole file is checked before anything is written. Each write is its verb\'s own: konjir_create_node, konjir_draft and konjir_submit_for_review (the kolab\'s policy decides whether a version commits unreviewed or waits in review, VER11), konjir_rule\'s checks, with the ruling\'s ID and the date it was given (dated rulings are audited, and keep when they were recorded), and konjir_register_repository. You need Write on the layer of your role and, for a repository, Maintain. Run again, it changes nothing that is there and equal, reports what differs without overwriting it (update=true drafts the file\'s version of a node of your pass that differs), and completes what a run before it left waiting or unfinished. dry_run=true writes nothing and says what it would do. A version a reviewer sent back is reported with their note (sent_back) and never resubmitted by itself. The result lists each step: created, unchanged, differs, in_review, waiting, other_pass, sent_back or failed.',
     schema: importFile,
   })
   importKolab({ file, dry_run, update }: z.infer<typeof importFile>, context?: McpToolContext) {

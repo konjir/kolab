@@ -655,10 +655,11 @@ export async function activity(kolab: Kolab, session: string, page: PageOpts = {
          from position p join case_file c on c.id = p.case_file_id join version v on v.id = c.version_id join node n on n.id = v.node_id
         where p.kolab_id = $1 and p.created_at is not null and p.actor_id is distinct from c.opened_by and ${before('p.created_at')}
        union all
-       select r.ruled_at, r.actor_id, 'ruling', n.name, v.seq, null, null, coalesce(r.element_id, c.element_id), r.effect, r.id
+       -- When it was recorded: a ruling dated in the past (W6.3) shows as what just happened here.
+       select coalesce(r.recorded_at, r.ruled_at), r.actor_id, 'ruling', n.name, v.seq, null, null, coalesce(r.element_id, c.element_id), r.effect, r.id
          from ruling r left join case_file c on c.id = r.case_file_id
          join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
-        where r.kolab_id = $1 and r.ruled_at is not null and ${before('r.ruled_at')}
+        where r.kolab_id = $1 and r.ruled_at is not null and ${before('coalesce(r.recorded_at, r.ruled_at)')}
      ) a
      where $2::text is null or a.at < $2::timestamptz or (a.at = $2::timestamptz and (a.kind, a.id) > ($3::text, $4::text))
      order by a.at desc, a.kind, a.id limit $5`,
