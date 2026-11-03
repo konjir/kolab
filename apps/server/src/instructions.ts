@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpPrompt, McpResource, McpTool, type McpHandlerContext, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { args } from './args.js';
-import { Kolab } from '@konjir/engine';
+import { Kolab, PLAYBOOK_KINDS, playbookText } from '@konjir/engine';
 import { fail, sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
 
@@ -66,24 +66,7 @@ export async function instructionsText(kolab: Kolab, which: InstructionKind, ses
   return which === 'reviewer' ? REVIEWER_INSTRUCTIONS : operatingInstructionsText(kolab, session);
 }
 
-/** How many answered questions and notes the operating instructions print, newest first read. */
-const ANSWERED_SHOWN = 20;
-
 async function operatingInstructionsText(engine: Kolab, session: string | undefined): Promise<string> {
-  // Precedent, rulings and answers come only from the kolab the session works in (TEN13). The
-  // admin token works in no kolab, so it gets the rules alone.
-  const kolab = session ? await engine.sessionKolab(session) : undefined;
-  // A reader who holds only Read doesn't belong to the kolab's work, so gets no precedent (D49).
-  const belongs = session ? await engine.sessionBelongs(session) : false;
-  const prec = kolab && belongs ? (await engine.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
-    `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
-  // Read as the session: a reader outside the kolab's work gets only the questions and notes people
-  // raised, never one a mark raised, since its marks and rulings stay private (D49, D51; 0022).
-  // Only the newest 20 are read and printed, with how many there are in all.
-  const answered = session ? await engine.queriesFor(session, { state: 'answered', newest: ANSWERED_SHOWN }) : [];
-  const answeredInAll = session && kolab ? await engine.readAs(session, async (q) => (await q.query<{ n: number }>(
-    `select count(*)::int as n from query where kolab_id = $1 and state = 'answered'`, [kolab])).rows[0].n) : 0;
-  const rulings = session ? await engine.rulingsFor(session, { limit: 20 }) : [];
   return [
     INSTRUCTIONS,
     '',
@@ -111,9 +94,9 @@ async function operatingInstructionsText(engine: Kolab, session: string | undefi
     'Edge kinds: dependency = this element relies on that one (the usual choice); derivation = this element was generated from that one (e.g. a work package from a binding element); equivalence = two representations that must stay in sync (a prototype\'s screen and the requirement it shows: a spec change marks the screen, and a committed change to the screen asks the requirement, a question to product; answering it marks the screen with the answer, and a spec change that marks the screen settles it). All three are re-checked the same way when the target changes.',
     'Links inside one spec are allowed: they say one requirement relies on another, and Kolab re-checks them when the target requirement changes.',
     '',
-    `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
-    `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: "${r.text}" (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces "${r.replaces}"` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
-    `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
+    // Precedent, rulings and answers come only from the kolab the session works in (TEN13): the
+    // admin token works in no kolab, so it gets none.
+    await engine.precedentFor(session),
   ].join('\n');
 }
 
@@ -147,8 +130,11 @@ export class ReviewerInstructions {
   }
 }
 
+const kinds = PLAYBOOK_KINDS.join(', ');
 const which = args({
-  which: z.enum(INSTRUCTION_KINDS).optional().describe('operating (the default): the rules, with your kolab\'s precedent, rulings and answered questions. reviewer: how to review a version that waits for you.'),
+  which: z.enum([...INSTRUCTION_KINDS, 'playbook']).optional().describe('operating (the default): the rules, with your kolab\'s precedent, rulings and answered questions. reviewer: how to review a version that waits for you. playbook: the playbook for the kind of job item kind names.'),
+  kind: z.enum(PLAYBOOK_KINDS, { error: () => `kind is the kind of job item whose playbook you want: one of ${kinds}` }).optional()
+    .describe(`With which=playbook: the kind of job item, one of ${kinds}. Its playbook says what done is, which verbs do it and when to hand the item to a person, and gives the text a job of that kind is told, with the item's specifics as placeholders (JOB7).`),
 });
 
 /**
@@ -165,13 +151,19 @@ export class InstructionsAccess {
   @McpTool({
     name: 'konjir_instructions',
     title: 'Konjir instructions',
-    description: 'Call before your first change: the full operating instructions for working through Konjir, with your kolab\'s precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.',
+    description: 'Call before your first change: the full operating instructions for working through Konjir, with your kolab\'s precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. With which=playbook and a kind, the playbook a job of that kind follows (JOB7). Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.',
     schema: which,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
   })
-  async instructions({ which: kind }: z.infer<typeof which>, context?: McpToolContext) {
+  async instructions({ which: what, kind }: z.infer<typeof which>, context?: McpToolContext) {
     try {
-      const text = await instructionsText(this.kolab, kind ?? 'operating', sessionOf(context?.authInfo));
+      // A playbook is server text, the same for everyone (JOB7, D108): only a job's own instructions carry precedent.
+      if (what === 'playbook') {
+        if (!kind) throw new Error(`which=playbook needs kind, the kind of job item whose playbook you want: one of ${kinds}`);
+        return { content: [{ type: 'text' as const, text: playbookText(kind) }] };
+      }
+      if (kind) throw new Error(`kind names a playbook, so it goes with which=playbook: konjir_instructions which=playbook kind=${kind}`);
+      const text = await instructionsText(this.kolab, what ?? 'operating', sessionOf(context?.authInfo));
       return { content: [{ type: 'text' as const, text }] };
     } catch (e) {
       return fail(e);

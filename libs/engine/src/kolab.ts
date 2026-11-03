@@ -13,7 +13,8 @@ import {
   canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, milestoneStates, naturalCompare, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
-import { buildInstructions, jobMachine, jobOutcome, poolLabel, reviewInstructions } from './jobs.js';
+import { jobMachine, jobOutcome, poolLabel } from './jobs.js';
+import { jobInstructions, type BriefOf } from './playbooks.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -592,6 +593,9 @@ class ClaimLost extends Error { name = 'ClaimLost'; }
  * and runs once that one is done (a node's cascades run in commit order).
  */
 class Deferred extends Error { name = 'Deferred'; }
+
+/** How many answered questions and notes the precedent prints, newest first read (precedentFor). */
+const ANSWERED_SHOWN = 20;
 
 /** How long a resync heard over the channel waits for others to fold into it. */
 const RESYNC_DEBOUNCE_MS = 250;
@@ -7198,6 +7202,31 @@ export class Kolab {
   }
 
   /**
+   * A session's kolab's precedent, as the operating instructions end with it and a job's
+   * instructions too (TEN13, JOB7): resolved overrides, rulings, and answered questions and notes,
+   * newest first, one line each. Only from the kolab the session works in; without a session (the
+   * admin token, which works in no kolab) none. A reader who holds only Read doesn't belong to the
+   * kolab's work, so gets no overrides' precedent (D49), and is read as itself: only the questions
+   * and notes people raised, never one a mark raised, since its marks and rulings stay private (D49,
+   * D51; 0022). Only the newest ANSWERED_SHOWN answers are read and printed, with how many there are.
+   */
+  async precedentFor(session: string | undefined): Promise<string> {
+    const kolab = session ? await this.sessionKolab(session) : undefined;
+    const belongs = session ? await this.sessionBelongs(session) : false;
+    const prec = kolab && belongs ? (await this.db.query<{ resolution: string; amended_text: string | null; ruled_by: string }>(
+      `select resolution, amended_text, ruled_by from precedent where kolab_id = $1 order by id desc limit 20`, [kolab])).rows : [];
+    const answered = session ? await this.queriesFor(session, { state: 'answered', newest: ANSWERED_SHOWN }) : [];
+    const answeredInAll = session && kolab ? await this.readAs(session, async (q) => (await q.query<{ n: number }>(
+      `select count(*)::int as n from query where kolab_id = $1 and state = 'answered'`, [kolab])).rows[0].n) : 0;
+    const rulings = session ? await this.rulingsFor(session, { limit: 20 }) : [];
+    return [
+      `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
+      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: "${r.text}" (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces "${r.replaces}"` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
+      `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
+    ].join('\n');
+  }
+
+  /**
    * A session's questions and notes, read as kj_agent: listQueries in its own kolab. Row-level
    * security leaves out, for a session that holds only Read, the questions marks raised there
    * (0022; D49, D51): its marks and rulings stay private to those who belong to its work.
@@ -9112,19 +9141,22 @@ export class Kolab {
         if (r) await this.releaseByKolabIn(tx, signal, r, note, person);
       }).catch((e: unknown) => log.error('jobs: a session a job opened was not given back; it ends when it expires', { agent: a.agent, error: e }));
     };
-    const started = (job: { id: string; lease_until: string; now: string }, kind: JobKind, item: string, instructions: string, trailer?: string) => ({
-      taken: true as const, job: job.id, kind, item, agent: a.agent, token: a.token, lease_until: job.lease_until, instructions, ...(trailer ? { trailer } : {}), now: job.now,
-    });
+    // Its instructions are its kind's playbook filled in with its item, then its kolab's precedent
+    // as the agent reads it (JOB7, DEL3), read quietly: the job starting is not its agent working.
+    const started = async <K extends JobKind>(job: { id: string; lease_until: string; now: string }, kind: K, item: string, brief: BriefOf<K>, trailer?: string) => {
+      const instructions = jobInstructions(kind, brief, await this.quietly(() => this.precedentFor(a.token)));
+      return { taken: true as const, job: job.id, kind, item, agent: a.agent, token: a.token, lease_until: job.lease_until, instructions, ...(trailer ? { trailer } : {}), now: job.now };
+    };
     try {
       if (what.kind === 'review') {
         const r = what.item;
         const job = await this.insertJob(s, machine, a, { kind: 'review', binding_node_id: r.binding_node_id, element_id: r.element_id, version_id: r.version_id });
         if (!job) { await giveBack(`${r.address} went to another job, or left review`); return undefined; }
         if ('why' in job) { await giveBack(job.why); return { why: job.why, full: true }; }
-        return started(job, 'review', r.address, reviewInstructions({
+        return await started(job, 'review', r.address, {
           kolab: s.kolab, agent: a.agent, person, item: r.address, subject: r.version_id ? 'version' : 'work', author: r.author,
           ...(r.version_id ? { node: r.node, seq: r.seq! } : {}),
-        }));
+        });
       }
       let bindingId: string;
       let element: string;
@@ -9146,10 +9178,10 @@ export class Kolab {
       const p = (await this.bindingBoard(this.db, binding)).find((x) => x.id === element)!;
       const context = await this.workContext(a.token, p, s.kolab);
       const trailer = workTrailer(s.kolab, binding.name, element);
-      return started(job, 'build', work, buildInstructions({
+      return await started(job, 'build', work, {
         kolab: s.kolab, agent: a.agent, person, work, text: p.text, done_when: context.done_when, trailer,
         repository: context.repository?.url ?? null, resumed: what.kind === 'resume',
-      }), trailer);
+      }, trailer);
     } catch (e) {
       await giveBack('its job could not start');
       throw e;

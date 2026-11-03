@@ -591,14 +591,15 @@ End a job you took, once its agent has exited (done or failed) or you stopped it
 ## instructions
 
 ```
-konjir instructions [which=<operating|reviewer>]
+konjir instructions [which=<operating|reviewer|playbook>] [kind=<build|review>]
 ```
 
-Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.
+Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. With which=playbook and a kind, the playbook a job of that kind follows (JOB7). Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `which` | `operating\|reviewer` | no | operating (the default): the rules, with your kolab's precedent, rulings and answered questions. reviewer: how to review a version that waits for you. |
+| `which` | `operating\|reviewer\|playbook` | no | operating (the default): the rules, with your kolab's precedent, rulings and answered questions. reviewer: how to review a version that waits for you. playbook: the playbook for the kind of job item kind names. |
+| `kind` | `build\|review` | no | With which=playbook: the kind of job item, one of build, review. Its playbook says what done is, which verbs do it and when to hand the item to a person, and gives the text a job of that kind is told, with the item's specifics as placeholders (JOB7). |
 
 ## lineage
 
@@ -1019,7 +1020,7 @@ Submit the work package you hold In progress, kj:<binding>#<id>, for review, onc
 konjir take_job machine=<string>
 ```
 
-For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `konjir work` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls. An item whose last two jobs ended in the last hour without doing it is held back. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build or review), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions, and now, Kolab's clock. At most 4 live jobs a person and 8 a kolab. With nothing to take, or past a cap, taken is false and why says why.
+For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `konjir work` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls. An item whose last two jobs ended in the last hour without doing it is held back. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build or review), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most 4 live jobs a person and 8 a kolab. With nothing to take, or past a cap, taken is false and why says why.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
