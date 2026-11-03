@@ -380,34 +380,57 @@ test('a Deny while Allow is being carried out is refused, and a setup that made 
   const kolab = await openKolab();
   const { base, idp } = await serve(kolab);
   const client = await register(base);
-  for (let round = 0; round < 3; round++) {
-    const scope = setupScope(`race-${round}`, [`r${round}:product`]);
-    const { page, browser, field } = await setupPage(base, idp, client, scope);
-    const binding = [...browser.cookies].find(([k]) => k.startsWith('konjir_oauth_'))![1];
-    const [allow, deny] = await Promise.allSettled([kolab.consentSetup(binding, field('csrf'), field('shown')), kolab.declineAuthorization(binding, field('csrf'))]);
+  const bindingOf = (browser: Browser) => [...browser.cookies].find(([k]) => k.startsWith('konjir_oauth_'))![1];
+  const madeAgent = async (label: string) => (await kolab.listActors({ owner: 'ann' })).some((a) => a.id === `ann-${label}`);
+  // Every agent a setup made is in a setup's row, so the rate sees it.
+  const allCounted = async () => expect((await kolab.db.query(`select count(*)::int as n from actor a where a.owner_id = 'ann' and not exists (select 1 from oauth_setup s where s.person_id = 'ann' and s.agents @> jsonb_build_array(jsonb_build_object('agent', a.id)))`)).rows[0]).toStrictEqual({ n: 0 });
+  // Which of two calls at once lands first is the scheduler's to say (on PGlite, always Allow), so
+  // each order is driven in turn. Deny landing while Allow is under way: Allow is held once it has
+  // claimed the sign-in, at its plan, until the Deny is answered.
+  {
+    const { page, browser, field, post } = await setupPage(base, idp, client, setupScope('race-0', ['r0:product']));
     expect(page.html).toContain('value="allow"');
-    const made = (await kolab.listActors({ owner: 'ann' })).some((a) => a.id === `ann-r${round}`);
-    if (allow.status === 'fulfilled') {
-      // Allowed: the Deny found it claimed, and declined nothing; the setup is recorded.
-      expect(deny).toStrictEqual({ status: 'fulfilled', value: undefined });
-      expect(made).toBe(true);
-    } else {
-      // Denied first: nothing made, and no setup recorded.
-      expect(deny.status === 'fulfilled' && deny.value).toBeTruthy();
-      expect(made).toBe(false);
-    }
-    // Whatever happened, every agent a setup made is in a setup's row, so the rate sees it.
-    expect((await kolab.db.query(`select count(*)::int as n from actor a where a.owner_id = 'ann' and not exists (select 1 from oauth_setup s where s.person_id = 'ann' and s.agents @> jsonb_build_array(jsonb_build_object('agent', a.id)))`)).rows[0]).toStrictEqual({ n: 0 });
+    const binding = bindingOf(browser);
+    const plan = kolab.setupPlan.bind(kolab);
+    let reached!: () => void;
+    const atPlan = new Promise<void>((r) => { reached = r; });
+    let go!: () => void;
+    const held = new Promise<void>((r) => { go = r; });
+    kolab.setupPlan = async (...args) => { kolab.setupPlan = plan; reached(); await held; return plan(...args); };
+    const allow = kolab.consentSetup(binding, field('csrf'), field('shown'));
+    await atPlan;
+    // Claimed: the Deny declines nothing, there is no page for it, and the browser is told so.
+    expect(await kolab.declineAuthorization(binding, field('csrf'))).toBeUndefined();
+    expect(await kolab.pendingAuthorization(binding)).toBeUndefined();
+    const refused = await post('deny');
+    expect(refused.res.status).toBe(400);
+    expect(refused.html).toContain('This sign-in is being allowed right now');
+    go();
+    // Allowed: the setup is recorded.
+    await expect(allow).resolves.toMatchObject({ code: expect.any(String) });
+    expect(await madeAgent('r0')).toBe(true);
+    await allCounted();
   }
-  // A claimed sign-in, as one being allowed: no Deny, no page for it, and the browser is told so.
-  const { browser, field, post } = await setupPage(base, idp, client, setupScope('claimed', ['c:product']));
-  const binding = [...browser.cookies].find(([k]) => k.startsWith('konjir_oauth_'))![1];
-  await kolab.db.query(`update oauth_request set claimed_at = now()`);
-  expect(await kolab.declineAuthorization(binding, field('csrf'))).toBeUndefined();
-  expect(await kolab.pendingAuthorization(binding)).toBeUndefined();
-  const refused = await post('deny');
-  expect(refused.res.status).toBe(400);
-  expect(refused.html).toContain('This sign-in is being allowed right now');
+  // Deny first: Allow is refused, nothing is made, and no setup is recorded.
+  {
+    const { browser, field } = await setupPage(base, idp, client, setupScope('race-1', ['r1:product']));
+    const binding = bindingOf(browser);
+    expect(await kolab.declineAuthorization(binding, field('csrf'))).toMatchObject({ redirectUri: CB });
+    await expect(kolab.consentSetup(binding, field('csrf'), field('shown'))).rejects.toThrow('this sign-in expired or was already used');
+    expect(await madeAgent('r1')).toBe(false);
+    expect((await kolab.db.query(`select count(*)::int as n from oauth_setup`)).rows[0]).toStrictEqual({ n: 1 });
+  }
+  // And at once, as a browser and a second tab might: on Postgres either may land first, and
+  // whichever does, the other is refused and every agent made is counted.
+  {
+    const { browser, field } = await setupPage(base, idp, client, setupScope('race-2', ['r2:product']));
+    const binding = bindingOf(browser);
+    const [allow, deny] = await Promise.allSettled([kolab.consentSetup(binding, field('csrf'), field('shown')), kolab.declineAuthorization(binding, field('csrf'))]);
+    if (allow.status === 'fulfilled') expect(deny).toStrictEqual({ status: 'fulfilled', value: undefined });
+    else expect(deny.status === 'fulfilled' && deny.value).toBeTruthy();
+    expect(await madeAgent('r2')).toBe(allow.status === 'fulfilled');
+    await allCounted();
+  }
 });
 
 test('two setups at once can\'t both pass the rate: at the third, of two posted together one makes its agent and the other is refused', async () => {

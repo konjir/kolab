@@ -418,36 +418,41 @@ test('the backoff returns to its first step only after a stream that lived stead
   await call(admin, 'admin_add_actor', { id: 'pm' });
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'pm' });
   const { token } = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string };
-  // Each listen stream is cut by the "network" after its lifetime here: three short, one long, then short again.
-  const lifetimes = [50, 50, 50, 1200, 50];
-  const starts: number[] = [];
-  const ends: number[] = [];
+  // Each listen stream is cut by the "network" once the bridge is listening on it: three at once,
+  // then one after it has lived well past steadyMs; the fifth is left open. The test reads the
+  // delays the bridge chose, not the gaps between streams, which a busy machine stretches.
+  const steadyMs = 2000;
+  const holds = [0, 0, 0, steadyMs + 500];
+  const cuts: (() => void)[] = [];
   const cut: typeof fetch = async (input, init) => {
     const res = await fetch(input, init);
     if (typeof init?.body !== 'string' || !init.body.includes('"method":"subscriptions/listen"') || !res.body) return res;
-    const life = lifetimes[starts.length] ?? 60_000;
-    starts.push(Date.now());
     const reader = res.body.getReader();
     const body = new ReadableStream<Uint8Array>({
       start(c) {
-        setTimeout(() => { ends.push(Date.now()); void reader.cancel().catch(() => undefined); try { c.close(); } catch { /* closed */ } }, life).unref();
+        cuts.push(() => { void reader.cancel().catch(() => undefined); try { c.close(); } catch { /* closed */ } });
         void (async () => { for (;;) { const r = await reader.read().catch(() => ({ done: true as const, value: undefined })); if (r.done) break; try { c.enqueue(r.value); } catch { break; } } })();
       },
     });
     return new Response(body, { status: res.status, headers: res.headers });
   };
-  const bridge = new KolabBridge({ url: server.url, token, fetch: cut as never, forward: async () => undefined, log: () => undefined, backoff: { initialMs: 200, maxMs: 5000, steadyMs: 800 } });
+  const bridge = new KolabBridge({ url: server.url, token, fetch: cut as never, forward: async () => undefined, log: () => undefined, backoff: { initialMs: 200, maxMs: 5000, steadyMs } });
   closeAtEnd({ close: () => bridge.stop() });
+  const delays: number[] = [];
+  bridge.onBackoff = (ms) => { delays.push(ms); };
+  let listens = 0;
+  bridge.onListening = () => {
+    const n = listens++;
+    const end = cuts[cuts.length - 1];
+    if (n >= holds.length) return;
+    if (holds[n]) setTimeout(end, holds[n]).unref();
+    else end();
+  };
   bridge.start();
-  await until('five streams', () => starts.length >= 5 || undefined, 20_000);
+  await until('the fifth stream', () => listens > holds.length || undefined, 30_000);
   await bridge.stop();
-  // The gap after a stream's end is the delay plus a reconnect: 200, 400 and 800 ms after the short ones, 200 after the long one.
-  // The steps are wide enough that a reconnect slowed by a busy machine (CI runs the projects in parallel) doesn't blur them.
-  const gap = (i: number) => starts[i + 1] - ends[i];
-  expect(gap(1)).toBeGreaterThanOrEqual(390);
-  expect(gap(2)).toBeGreaterThanOrEqual(790);
-  expect(gap(3)).toBeLessThan(gap(2) - 300);
-  expect(gap(3)).toBeGreaterThanOrEqual(195);
+  // 200, 400 and 800 ms after the short ones, and back to 200 after the long one.
+  expect(delays).toStrictEqual([200, 400, 800, 200]);
   await server.close();
 }, 60_000);
 
