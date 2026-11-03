@@ -151,7 +151,7 @@ export class InstructionsAccess {
   @McpTool({
     name: 'konjir_instructions',
     title: 'Konjir instructions',
-    description: 'Call before your first change: the full operating instructions for working through Konjir, with your kolab\'s precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. With which=playbook and a kind, the playbook a job of that kind follows (JOB7). Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.',
+    description: 'Call before your first change: the full operating instructions for working through Konjir, with your kolab\'s precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. Without which=playbook, returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts. With which=playbook and a kind, the playbook a job of that kind follows (JOB7): server text with no prompt of its own, the item\'s specifics as placeholders.',
     schema: which,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
   })

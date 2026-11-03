@@ -596,6 +596,8 @@ class Deferred extends Error { name = 'Deferred'; }
 
 /** How many answered questions and notes the precedent prints, newest first read (precedentFor). */
 const ANSWERED_SHOWN = 20;
+/** People's text in the precedent: a JSON string, on one line, its quotes and line breaks escaped (JOB7). */
+const quoted = (text: string) => JSON.stringify(text);
 
 /** How long a resync heard over the channel waits for others to fold into it. */
 const RESYNC_DEBOUNCE_MS = 250;
@@ -7209,6 +7211,9 @@ export class Kolab {
    * kolab's work, so gets no overrides' precedent (D49), and is read as itself: only the questions
    * and notes people raised, never one a mark raised, since its marks and rulings stay private (D49,
    * D51; 0022). Only the newest ANSWERED_SHOWN answers are read and printed, with how many there are.
+   * What people wrote (an amended text, a ruling and what it replaces, a question or note and its
+   * answer) is quoted as a JSON string, so it stays on its one line with its quotes escaped: anyone
+   * who may ask can't forge a step or a heading in the instructions it ends (JOB7).
    */
   async precedentFor(session: string | undefined): Promise<string> {
     const kolab = session ? await this.sessionKolab(session) : undefined;
@@ -7220,9 +7225,9 @@ export class Kolab {
       `select count(*)::int as n from query where kolab_id = $1 and state = 'answered'`, [kolab])).rows[0].n) : 0;
     const rulings = session ? await this.rulingsFor(session, { limit: 20 }) : [];
     return [
-      `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> "${p.amended_text}"` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
-      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: "${r.text}" (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces "${r.replaces}"` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
-      `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} "${q.question}" -> "${q.answer}"`).join('; ') || 'none yet'),
+      `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> ${quoted(p.amended_text)}` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
+      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: ${quoted(r.text)} (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces ${quoted(r.replaces)}` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
+      `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} ${quoted(q.question)} -> ${quoted(q.answer ?? '')}`).join('; ') || 'none yet'),
     ].join('\n');
   }
 
