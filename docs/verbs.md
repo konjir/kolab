@@ -594,7 +594,7 @@ End a job you took, once its agent has exited (done or failed) or you stopped it
 konjir instructions [which=<operating|reviewer|playbook>] [kind=<build|review>]
 ```
 
-Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. With which=playbook and a kind, the playbook a job of that kind follows (JOB7). Returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts.
+Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. With which=reviewer, call before reviewing: how to review a version that waits for you, and how to give your verdict with konjir_review. Without which=playbook, returns the same text as the konjir_operating_instructions and konjir_reviewer_instructions prompts. With which=playbook and a kind, the playbook a job of that kind follows (JOB7): server text with no prompt of its own, the item's specifics as placeholders.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
