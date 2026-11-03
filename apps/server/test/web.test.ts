@@ -684,7 +684,7 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
     ['cases', { node: 'orders', element: 'R1~q(})', question: 'q', claim: 'c', evidence: ['x'], seeks: 'keep_intent' }],
     ['cases', { node: 'orders', element: 'R1', question: 1, claim: 'c', evidence: ['x'], seeks: 'keep_intent' }],
     ['rulings', { node: 'orders', element: 'R1', text: 'x', effect: 'keep_intent', replaces: 1 }],
-    ['rulings', { node: 'orders', element: 'R1#x', text: 'x', effect: 'keep_intent' }],
+    ['rulings', { node: 'orders', element: 'R1 x', text: 'x', effect: 'keep_intent' }],
     ['rulings', { node: 'orders', text: 7, effect: 'keep_intent' }],
     ['cases/whatever/rule', { text: 'x', verdicts: { p: 'sustained' }, replaces: ['a'] }],
     ['cases/whatever/positions', { claim: 5, evidence: ['x'] }],

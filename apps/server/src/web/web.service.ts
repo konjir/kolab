@@ -303,7 +303,7 @@ export class WebService {
   /** konjir_open_case: on one element of a committed version of the session's kolab, with the opener's position. */
   async openCase(s: string, b: WebOpenCase): Promise<WebCase> {
     if (typeof b?.node !== 'string' || !isNodeName(b.node)) throw bad('name the node it is about');
-    if (!isElementId(b.element)) throw bad('a case file is about one element: name it, without "/", "@", "#", "~" or spaces');
+    if (!isElementId(b.element)) throw bad('a case file is about one element: name it, without "~" or spaces');
     if (typeof b.question !== 'string' || typeof b.claim !== 'string') throw bad('give the question in dispute and your claim, as text');
     if (b.seq !== undefined && !Number.isInteger(b.seq)) throw bad('the version is a number');
     if (!RULING_EFFECTS.includes(b.seeks)) throw bad('say which side your position takes: keep the intent, or change it');
@@ -337,7 +337,7 @@ export class WebService {
     if (typeof b?.node !== 'string' || !isNodeName(b.node)) throw bad('name the node it rules on');
     if (b.seq !== undefined && !Number.isInteger(b.seq)) throw bad('the version is a number');
     if (!RULING_EFFECTS.includes(b.effect)) throw bad('say what the ruling does: change the intent, or keep it');
-    if (b.element !== undefined && b.element !== '' && !isElementId(b.element)) throw bad('name the element without "/", "@", "#", "~" or spaces, or leave it out to rule on the node');
+    if (b.element !== undefined && b.element !== '' && !isElementId(b.element)) throw bad('name the element without "~" or spaces, or leave it out to rule on the node');
     const replaces = replacesOf(b);
     const address = formatAddress({ node: b.node, version: b.seq, element: b.element || undefined });
     const ruling = await this.kolab.rule(s, { address, text: textOf(b.text), effect: b.effect, replaces });
