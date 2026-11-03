@@ -16,7 +16,11 @@ export default async function globalSetup() {
   if (process.env.KONJIR_TEST_POSTGRES !== '1' || process.env.KONJIR_TEST_DATABASE_URL) return;
   const { PostgreSqlContainer } = await import('@testcontainers/postgresql');
   const { default: pg } = await import('pg');
-  const container = await new PostgreSqlContainer('postgres:18-alpine').start();
+  // A bigger /dev/shm than Docker's 64 MB: each test's database lives until the teardown, and
+  // Postgres's shared stats grow with every table of every database, in segments that double (61 MB
+  // held at about 500 databases). The next, of 32 MB, fails with "could not resize shared memory
+  // segment" even on a first migration, or crashes the server into recovery.
+  const container = await new PostgreSqlContainer('postgres:18-alpine').withSharedMemorySize(1024 * 1024 * 1024).start();
   globalThis.__konjirPostgres = container;
 
   const admin = new pg.Client({ connectionString: container.getConnectionUri() });

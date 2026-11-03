@@ -535,7 +535,11 @@ export interface WorkEventView {
   note: string | null;
 }
 /** An element as a draft gives it: `work` only on a binding's elements, its work packages (D98, D104). */
-export interface ElementInput { id?: string; text: string; parent?: string; work?: WorkFields | null }
+/**
+ * An element as a draft gives it. `parent` left out keeps where the element sits; `null`, which only
+ * Kolab's own callers send (an import), puts it at the top level.
+ */
+export interface ElementInput { id?: string; text: string; parent?: string | null; work?: WorkFields | null }
 /**
  * A change to one element. On an add or an override, `work` replaces the element's work fields
  * whole (null clears them); left out, the element keeps the ones it has.

@@ -47,7 +47,7 @@ async function lee() {
   await people(kolab, 'lee', { level: 'admin' });
   const as = async (role: Role) => {
     await kolab.endSession({ actor: 'lee' });
-    return kolab.openSession('lee', role);
+    return kolab.openSession('lee', role, { kolab: TEST_KOLAB });
   };
   return { kolab, as, pass: async (role: Role, file: unknown = fixture(), opts = {}) => kolab.importKolab(await as(role), file, opts) };
 }
@@ -72,7 +72,7 @@ test('two passes write the whole file: as product the spec and its rulings, leav
   // Nobody else may approve in this kolab, so the version committed on its checks alone (VER11), as lee's.
   expect(first.steps.find((s) => s.what === 'version kj:test/shop')!.detail).toMatch(/committed unreviewed/);
   // A first import's elements are all newer than its rulings: no mark, and the step says so.
-  expect(first.steps.find((s) => s.what === 'ruling D7')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/marks nothing: shop#CHK1 last changed after that date/) });
+  expect(first.steps.find((s) => s.what === 'ruling D7')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/marks nothing: this file states shop#CHK1 after its own rulings/) });
 
   const second = await pass('engineer');
   expect(outcomes(second)).toStrictEqual({
@@ -558,8 +558,11 @@ test('backdating shows: audited, the precedent says when it was recorded and how
   expect((await kolab.rulingsPage(session, { ref: 'D103' })).items.map((r) => r.text)).toStrictEqual(['Ruling number 3.']);
   expect((await kolab.rulingsPage(session, { ref: 'NOPE' })).items).toStrictEqual([]);
   expect((await kolab.auditLog({ kolab: 'test' })).filter((a) => a.action === 'ruling.backdated')).toHaveLength(25);
-  const feed = (await activity(kolab, session, { limit: 200 })).items.filter((a) => a.kind === 'ruling');
+  const items = (await activity(kolab, session, { limit: 200 })).items;
+  const feed = items.filter((a) => a.kind === 'ruling');
   expect(feed).toHaveLength(25);
+  // Ordered by when each was recorded: after the version they rule on was written, though dated long before it.
+  expect(items.findIndex((a) => a.kind === 'ruling')).toBeLessThan(items.findIndex((a) => a.kind === 'version'));
   for (const a of feed) expect(Date.now() - Date.parse(a.at)).toBeLessThan(10 * 60_000);
 });
 
@@ -619,4 +622,183 @@ test('text that tries to pass for instructions stays data through take_job (W6.3
   expect(lines.filter((l) => l === PRECEDENT_END)).toHaveLength(1);
   expect(lines.filter((l) => l.startsWith('## New step'))).toStrictEqual([]);
   expect(job.instructions.includes(String.fromCharCode(7)) || job.instructions.includes(String.fromCharCode(0x2028))).toBe(false);
+});
+
+test('a session with no Write on any layer imports nothing and learns nothing of the rulings, by a dry run or otherwise: Read, Triage, and no grant on a public kolab (D49, re-review of #105)', async () => {
+  const { kolab, pass } = await lee();
+  await pass('product');
+  await pass('engineer');
+  const probe = rulingsFile({ id: 'D7', date: '2026-01-02', text: 'Cards only at launch; wallets later.', effect: 'change_intent', replaces: 'Any payment method', on: 'shop#CHK1' });
+  for (const [who, level] of [['rita', 'read'], ['tess', 'triage']] as const) {
+    await people(kolab, who, { level });
+    const session = await kolab.openSession(who, 'engineer');
+    for (const opts of [{}, { dryRun: true }]) {
+      const said = await rejection(kolab.importKolab(session, probe, opts));
+      expect(said).toMatch(new RegExp(`AccessError: importing into kolab test needs Write on a layer of it; ${who} holds`));
+      expect(said).not.toMatch(/unchanged|differs|D7/);
+    }
+  }
+  // An actor with no grant at all, reading a public kolab.
+  await kolab.createKolab('open', { owner: 'test-org', visibility: 'public' });
+  await kolab.addActor('zed');
+  const zed = await kolab.openSession('zed', 'engineer', { kolab: 'open' });
+  expect(await rejection(kolab.importKolab(zed, { ...probe, kolab: 'open' }, { dryRun: true }))).toMatch(/importing into kolab open needs Write on a layer of it; zed holds/);
+  // The comparison reads as the session: under row-level security, one who doesn't belong would see no ruling.
+  const read = jest.spyOn(kolab, 'readAs');
+  await pass('product', probe, { dryRun: true });
+  expect(read).toHaveBeenCalled();
+  jest.restoreAllMocks();
+  const rita = await kolab.endSession({ actor: 'rita' }).then(() => kolab.openSession('rita', 'engineer'));
+  expect((await kolab.readAs(rita, (q) => q.query(`select ref from ruling`))).rows).toStrictEqual([]);
+});
+
+test('--update moves an element to the top level and converges; a version that doesn\'t hold the file is abandoned, never reported written (re-review of #105)', async () => {
+  const { kolab, pass } = await lee();
+  const base = { format: IMPORT_FORMAT, kolab: TEST_KOLAB, spec: fixture().spec };
+  await pass('product', base);
+  const moved = { ...base, spec: { ...base.spec, elements: [base.spec.elements[0], { id: 'CHK1', text: 'A shopper pays by card.' }, base.spec.elements[2]] } };
+  expect(outcomes(await pass('product', moved))).toMatchObject({ 'version kj:test/shop': 'differs' });
+  const u = await pass('product', moved, { update: true });
+  expect(u).toMatchObject({ complete: true });
+  expect(outcomes(u)).toMatchObject({ 'version kj:test/shop': 'created' });
+  const v = (await kolab.latestCommitted('shop'))!;
+  expect(v.seq).toBe(2);
+  expect((await kolab.elements(v.id)).map((e) => [e.element_id, e.parent_element_id])).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', 'CHK']]);
+  expect(await pass('product', moved, { update: true })).toMatchObject({ complete: true, created: [] });
+  expect((await kolab.latestCommitted('shop'))!.seq).toBe(2);
+  // Out of a section the same version removes: it moves, and isn't lost with the section.
+  const out = { ...base, spec: { ...base.spec, elements: [{ id: 'CHK2', text: 'A receipt is emailed within a minute of paying.' }, { id: 'CHK1', text: 'A shopper pays by card.' }] } };
+  expect(await pass('product', out, { update: true })).toMatchObject({ complete: true });
+  expect((await kolab.elements((await kolab.latestCommitted('shop'))!.id)).map((e) => [e.element_id, e.parent_element_id])).toStrictEqual([['CHK2', null], ['CHK1', null]]);
+  // konjir_draft's own full list, which leaves parent out, still keeps where an element sits.
+  const again = { ...base, spec: { ...base.spec, elements: base.spec.elements } };
+  await pass('product', again, { update: true });
+  const session = await kolab.endSession({ actor: 'lee' }).then(() => kolab.openSession('lee', 'product'));
+  const kept = await kolab.draft(session, 'shop', { elements: [{ id: 'CHK', text: 'Checkout' }, { id: 'CHK1', text: 'A shopper pays by card.' }, { id: 'CHK2', text: 'A receipt is emailed within a minute of paying.', parent: 'CHK' }] });
+  expect((await kolab.elements(kept)).map((e) => e.parent_element_id)).toStrictEqual([null, 'CHK', 'CHK']);
+  await kolab.abandon(session, kept);
+
+  // A draft that comes back not holding the file is abandoned: not created, not complete.
+  const real = kolab.draft.bind(kolab);
+  const changed = fixture();
+  changed.spec.elements[2] = { id: 'CHK2', text: 'A receipt is emailed at once.', parent: 'CHK' };
+  const spy = jest.spyOn(kolab, 'draft').mockImplementation(async (s, n, input) => real(s, n, { ...input, elements: input.elements!.map((e) => (e.id === 'CHK2' ? { ...e, text: 'Something else.' } : e)) }));
+  const r = await pass('product', { format: IMPORT_FORMAT, kolab: TEST_KOLAB, spec: changed.spec }, { update: true });
+  spy.mockRestore();
+  expect(r).toMatchObject({ complete: false, created: [], failed: ['version kj:test/shop'] });
+  expect(step(r, 'version kj:test/shop').detail).toMatch(/doesn't hold the file's elements, so it was abandoned/);
+  expect((await kolab.db.query(`select 1 from version where node_id = 'shop' and state in ('drafted', 'in_review')`)).rows).toStrictEqual([]);
+});
+
+test('when an element last changed: a move or a links-only version isn\'t a change of it, and a section changes with what leaves it (re-review of #105)', async () => {
+  const { kolab, pass } = await lee();
+  const noRulings = fixture();
+  noRulings.rulings = [];
+  const noLinks = fixture() as unknown as { binding: { elements: { relies_on?: string[] }[] }; rulings: unknown[] };
+  noLinks.rulings = [];
+  for (const e of noLinks.binding.elements) delete e.relies_on;
+  await pass('product', noRulings);
+  await pass('engineer', noLinks);
+  await tick();
+  const between = new Date().toISOString();
+  await tick();
+  // A version that only adds links to the binding: DEC1 is as it was.
+  expect(outcomes(await pass('engineer', noRulings))).toMatchObject({ 'links kj:test/shop-binding (relies_on)': 'created' });
+  const links = await pass('engineer', rulingsFile({ id: 'D50', date: between, text: 'Through two gateways.', effect: 'change_intent', on: 'shop-binding#DEC1' }));
+  expect(step(links, 'ruling D50').mark).toBe('set');
+  // A version that moves CHK1 out of CHK: CHK1 is as it was, and CHK isn't.
+  const moved = fixture();
+  moved.rulings = [];
+  moved.spec.elements[1] = { id: 'CHK1', text: 'A shopper pays by card.' } as typeof moved.spec.elements[1];
+  await pass('product', moved, { update: true });
+  const r = await pass('product', rulingsFile(
+    { id: 'D51', date: between, text: 'Wallets too.', effect: 'change_intent', on: 'shop#CHK1' },
+    { id: 'D52', date: between, text: 'A new section.', effect: 'change_intent', on: 'shop#CHK' },
+  ));
+  expect(step(r, 'ruling D51')).toMatchObject({ mark: 'set' });
+  expect(step(r, 'ruling D52')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/shop#CHK last changed after that date/) });
+  expect((await kolab.db.query(`select element_id from invalidation where reason = 'ruled' and state = 'open' order by element_id`)).rows).toStrictEqual([{ element_id: 'CHK1' }, { element_id: 'DEC1' }]);
+});
+
+test('a ruling dated today in the file of its node marks nothing and isn\'t audited as backdated; in a rulings-only file it marks; tomorrow is refused (re-review of #105)', async () => {
+  const { kolab, pass } = await lee();
+  const today = new Date().toISOString().slice(0, 10);
+  const f = fixture();
+  f.rulings = [{ id: 'D60', date: today, text: 'Today, in the file.', replaces: '', effect: 'change_intent', on: 'shop#CHK1' }].map(({ replaces: _, ...r }) => r) as Fixture['rulings'];
+  const r = await pass('product', f);
+  expect(step(r, 'ruling D60')).toMatchObject({ outcome: 'created', mark: 'carried' });
+  expect((await kolab.db.query(`select 1 from invalidation where reason = 'ruled'`)).rows).toStrictEqual([]);
+  expect((await pass('product', rulingsFile({ id: 'D61', date: today, text: 'Today, alone.', effect: 'change_intent', on: 'shop#CHK2' }))).steps[0]).toMatchObject({ mark: 'set' });
+  expect((await kolab.auditLog({ kolab: 'test' })).map((a) => a.action)).not.toContain('ruling.backdated');
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  expect(await rejection(pass('product', rulingsFile({ id: 'D62', date: tomorrow, text: 'Tomorrow.', on: 'shop#CHK2' })))).toMatch(/is in the future/);
+  // Inside the clocks' skew, a time is taken; a day never is.
+  expect(rulingDate(new Date(Date.now() + 60_000).toISOString())).toBeInstanceOf(Date);
+});
+
+test('a file can\'t state a spec\'s links, so a held one is left alone; a binding\'s link into another kolab is named with its kolab (re-review of #105)', async () => {
+  const { kolab, as, pass } = await lee();
+  const first = fixture();
+  first.rulings = [];
+  await pass('product', first);
+  await pass('engineer', first);
+  // The spec relies on a prototype: nothing the file says.
+  let session = await as('product');
+  await kolab.createNode(session, 'prototype', 'Shop screens', 'shop-proto');
+  const proto = await kolab.draft(session, 'shop-proto', { elements: [{ id: 'S1', text: 'https://example.com/pay' }] });
+  await kolab.submit(session, proto);
+  const specV = (await kolab.latestCommitted('shop'))!;
+  const draft = await kolab.draft(session, 'shop', { elements: await kolab.elements(specV.id).then((els) => els.map((e) => ({ id: e.element_id, text: e.text, parent: e.parent_element_id ?? undefined }))), links: [{ kind: 'dependency', sourceElement: 'CHK1', target: proto, targetElement: 'S1' }] });
+  await kolab.submit(session, draft);
+  const r = await pass('product', first, { update: true });
+  expect(outcomes(r)).toMatchObject({ 'version kj:test/shop': 'unchanged' });
+  expect((await kolab.latestCommitted('shop'))!.seq).toBe(2);
+
+  // Another kolab lee reads: ann writes its spec, bea its binding.
+  await kolab.createKolab('other', { owner: 'test-org' });
+  await kolab.addActor('ann');
+  await kolab.addActor('bea');
+  await kolab.grant('other', 'ann', 'write', { layers: ['functional'] });
+  await kolab.grant('other', 'bea', 'write', { layers: ['technical'] });
+  await kolab.grant('other', 'lee', 'read');
+  const ann = await kolab.openSession('ann', 'product', { kolab: 'other' });
+  const bea = await kolab.openSession('bea', 'engineer', { kolab: 'other' });
+  await kolab.createNode(ann, 'spec', 'Other', 'other-spec');
+  await kolab.submit(ann, await kolab.draft(ann, 'other-spec', { elements: [{ id: 'O1', text: 'Other.' }] }));
+  await kolab.createNode(bea, 'binding', 'Other binding', 'other-binding');
+  const theirs = await kolab.draft(bea, 'other-binding', { elements: [{ id: 'B1', text: 'Their way.' }] });
+  await kolab.submit(bea, theirs);
+  session = await as('engineer');
+  const binding = (await kolab.latestCommitted('shop-binding'))!;
+  await kolab.link(session, { kind: 'dependency', source: binding.id, sourceElement: 'DEC1', target: theirs, targetElement: 'B1' });
+  const c = await pass('engineer', first);
+  expect(step(c, 'version kj:test/shop-binding').detail).toMatch(/it holds links the file doesn't give: DEC1 → other\/other-binding#B1/);
+});
+
+test('a Done package stays when --update keeps it, and --update refuses to drop it or make it a milestone (re-review of #105)', async () => {
+  const { kolab, as, pass } = await lee();
+  await pass('product');
+  await pass('engineer');
+  await people(kolab, 'bob', { layers: ['technical'] });
+  const bob = await kolab.openSession('bob', 'engineer');
+  await kolab.pullWork(bob);
+  await kolab.submitWork(bob, 'kj:shop-binding#W1.1', { evidence: [{ kind: 'commit', sha: 'a'.repeat(40), title: 'Card payments' }] });
+  await kolab.reviewWork(await as('engineer'), 'kj:shop-binding#W1.1', { verdict: 'approve' });
+  const stateOf = async () => (await kolab.db.query(`select state from work_package where element_id = 'W1.1'`)).rows;
+  expect(await stateOf()).toStrictEqual([{ state: 'done' }]);
+
+  const dropped = fixture();
+  dropped.binding.elements = dropped.binding.elements.filter((e) => !['W1.1', 'W1.2', 'M1'].includes(e.id));
+  const r = await pass('engineer', dropped, { update: true });
+  expect(step(r, 'version kj:test/shop-binding')).toMatchObject({ outcome: 'differs', detail: expect.stringMatching(/--update would drop work from shop-binding: W1\.1 \(done\)/) });
+  const milestone = fixture() as unknown as { binding: { elements: Record<string, unknown>[] } };
+  milestone.binding.elements = milestone.binding.elements.filter((e) => e.id !== 'W1.2' && e.id !== 'M1').map((e) => (e.id === 'W1.1' ? { id: 'W1.1', text: 'Now a milestone.', work: { milestone: true, depends_on: ['W9'] } } : e));
+  milestone.binding.elements.push({ id: 'W9', text: 'A member.', work: { done_when: 'It is done.' } });
+  expect(step(await pass('engineer', milestone, { update: true }), 'version kj:test/shop-binding').outcome).toBe('differs');
+  expect((await kolab.latestCommitted('shop-binding'))!.seq).toBe(2);
+  // Dropping a milestone that has no work of its own goes through, and W1.1 stays Done.
+  const kept = fixture();
+  kept.binding.elements = kept.binding.elements.filter((e) => e.id !== 'M1');
+  expect(step(await pass('engineer', kept, { update: true }), 'version kj:test/shop-binding').outcome).not.toBe('differs');
+  expect(await stateOf()).toStrictEqual([{ state: 'done' }]);
 });

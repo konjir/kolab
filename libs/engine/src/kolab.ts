@@ -4475,7 +4475,7 @@ export class Kolab {
       })];
     }
 
-    const els = materialize(parentEls, deltaRows);
+    const els = materialize(parentEls, deltaRows, new Set((input.elements ?? []).filter((e) => e.parent === null).map((e) => e.id!)));
     checkVersion(els);
     // A new id holds no '~' either; one the version builds on is kept as it is (JOB6).
     checkElementIds(input, new Set(parentEls.map((e) => e.element_id)));
@@ -7400,7 +7400,7 @@ export class Kolab {
    * recorded later: only an import gives one (importRuling, W6.3), so an everyday ruling is dated as
    * it is given. It is audited, and `recorded_at` keeps when it was written.
    */
-  private async giveRuling(sessionId: string, input: Parameters<Kolab['rule']>[1], ruledAt: Date | null): Promise<GivenRuling> {
+  private async giveRuling(sessionId: string, input: Parameters<Kolab['rule']>[1], ruledAt: Date | null, carried = false): Promise<GivenRuling> {
     const text = requireText(input.text, 'the ruling');
     if (input.effect !== undefined && !RULING_EFFECTS.includes(input.effect)) throw new GateError(`a ruling's effect is ${RULING_EFFECTS.join(' or ')} (CASE6)`);
     const replaces = input.replaces === undefined ? null : requireText(input.replaces, 'what the ruling replaces');
@@ -7466,18 +7466,20 @@ export class Kolab {
     const on = formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: a.element });
     if (a.element && (await this.resolveIn(v.id, a.element, null)).status === 'orphan') throw new Error(`${on} doesn't exist`);
     await ruler(v.layer, v.kolab_id!);
-    return this.ruleDirectly(s.actor_id, v, { id, element: a.element ?? null, on, text, replaces, effect, ref, ruledAt });
+    return this.ruleDirectly(s.actor_id, v, { id, element: a.element ?? null, on, text, replaces, effect, ref, ruledAt, carried });
   }
 
   /**
    * Writes a direct ruling (CASE3, D16) by `actor`, a person whose right to rule on `v`'s layer the
    * caller has checked: on version `v`, or its `element`, superseding any case file still open there,
    * and marking the element if it changes the intent (D51). One given a date (W6.3) is audited
-   * (ruling.backdated), supersedes no case file opened after that date, whose dispute it can't have
+   * (ruling.backdated) when that is before today, supersedes no case file opened after that date, whose dispute it can't have
    * settled, and marks nothing if what it rules on last changed after that date (markRuled).
    */
   private async ruleDirectly(actor: string, v: VersionRow, r: {
     id: string; element: string | null; on: string; text: string; replaces: string | null; effect: RulingEffect; ref: string | null; ruledAt: Date | null;
+    /** What it rules on already says it, as the import's file does (importRuling): no mark. */
+    carried?: boolean;
   }): Promise<GivenRuling> {
     const { id, text, replaces, effect, on } = r;
     const a = { element: r.element ?? undefined };
@@ -7492,14 +7494,14 @@ export class Kolab {
          returning c.id, c.opened_by`, [id, a.element, v.kolab_id, v.node_id, r.ruledAt?.toISOString() ?? null])).rows : [];
       const parties = superseded.length ? (await tx.query<{ actor_id: string }>(
         `select distinct actor_id from position where case_file_id = any($1)`, [superseded.map((c) => c.id)])).rows.map((r) => r.actor_id) : [];
-      const mark = effect === 'change_intent' ? await this.markRuled(tx, signal, { versionId: v.id, element: a.element ?? null, ruling: id, text, on, ruledAt: r.ruledAt }) : undefined;
+      const mark = effect !== 'change_intent' ? undefined : r.carried ? 'carried' as const : await this.markRuled(tx, signal, { versionId: v.id, element: a.element ?? null, ruling: id, text, on, ruledAt: r.ruledAt });
       // New precedent in the kolab, and the superseded case files leave the inbox and reach their parties.
       await signal({ inbox: 'layer', kolab: v.kolab_id!, layer: v.layer });
       for (const party of new Set([...superseded.map((c) => c.opened_by), ...parties])) {
         if (party) await signal({ inbox: 'actor', kolab: v.kolab_id!, actor: party });
       }
       // On Kolab's own login, since the audit log is its alone.
-      if (r.ruledAt) {
+      if (r.ruledAt && r.ruledAt.toISOString().slice(0, 10) !== new Date().toISOString().slice(0, 10)) {
         await tx.exec('set local role none');
         await audit(tx, actor, 'ruling.backdated', { kolab: v.kolab_id!, subject: id, detail: { ref: r.ref, on, ruled_at: r.ruledAt.toISOString() } });
       }
@@ -10830,6 +10832,9 @@ export class Kolab {
     if (s.kind !== 'person') {
       throw new AccessError(`${s.actor_id} is an agent, and an agent imports nothing: a person imports a kolab, from their own session (konjir import, signed in as themselves with konjir login), never from an agent's or a job's`);
     }
+    // Before the file is read at all: comparing a file with what is there tells what is there, which
+    // those who only read may not learn (D49: rulings stay with those who belong to the kolab's work).
+    if (!s.access.layers.length) throw new AccessError(`importing into kolab ${s.kolab} needs Write on a layer of it; ${s.actor_id} holds ${describeAccess(s.access)}. Nothing was written`);
     const file = parseImportFile(input);
     if (file.kolab !== s.kolab) {
       throw new GateError(`the file imports into kolab ${file.kolab}, and this session works in kolab ${s.kolab}: sign in there (konjir login --kolab ${file.kolab}) and run it again. Nothing was written`);
@@ -10874,9 +10879,10 @@ export class Kolab {
       else if (!spec || binding.parent_node_id !== spec.id) problems.push(`${file.binding.name} binds ${binding.parent_node_id ? await this.nameOf(binding.parent_node_id) : 'nothing'}, not ${file.spec!.name}: a binding's spec is set when it is made, and never changes (D78)`);
     }
     // Each version as a draft of it would be checked, so nothing fails half way for what the file says.
-    const specEls = file.spec?.elements.map((e) => ({ id: e.id, text: e.text, ...(e.parent !== undefined ? { parent: e.parent } : {}) }));
+    // `parent: null` says top level: a version holds what the file says, and an element moved out of a section moves.
+    const specEls = file.spec?.elements.map((e) => ({ id: e.id, text: e.text, parent: e.parent ?? null }));
     const bindingEls = file.binding ? draftWork({ name: file.binding.name, kind: 'binding' }, {
-      elements: file.binding.elements.map((e) => ({ id: e.id, text: e.text, ...(e.parent !== undefined ? { parent: e.parent } : {}), work: e.work ?? null })),
+      elements: file.binding.elements.map((e) => ({ id: e.id, text: e.text, parent: e.parent ?? null, work: e.work ?? null })),
     }).elements! : undefined;
     for (const [what, els] of [['spec', specEls], ['binding', bindingEls]] as const) {
       if (!els) continue;
@@ -11019,9 +11025,11 @@ export class Kolab {
    * and every link; else the person's own version waiting with them is submitted again; else a new
    * version is drafted and submitted, through draft and submit on this session: when the node has
    * none committed, or holds the same elements but lacks links, or (with `update`) differs. Otherwise
-   * it differs, reported, and nothing is written. So does a held link the file doesn't give, which
-   * `update` unlinks. `update` never drops work: a package with work that the file leaves out, or makes
-   * a decision or a milestone, refuses it. A version a reviewer sent back is `sent_back`, with their
+   * it differs, reported, and nothing is written. So does a held link of a binding that the file
+   * doesn't give, which `update` unlinks; a spec's links are nothing a file can state, so they are left
+   * alone. `update` never drops work: a package In progress, In review or Done that the file leaves
+   * out, or makes a decision or a milestone, refuses it. A version is checked to hold the file before
+   * it is submitted. A version a reviewer sent back is `sent_back`, with their
    * note, and resubmitting it is its author's act. Links a version can't make yet wait: a spec element
    * not committed (serves), or, until the binding has committed the file's elements, its own decisions
    * (relies_on), which `linksOnly` makes then. With `dry`, it only reads.
@@ -11046,7 +11054,7 @@ export class Kolab {
     const toAdd = wanted.filter((l) => !held.has(keyOfLink(l)));
     // Links it holds that the file doesn't give, from elements the file keeps (one from an element it leaves out goes with it).
     const ids = new Set(els.map((e) => e.id));
-    const beyond = latest && !o.linksOnly ? (await this.linksBeyond(latest.id, found.desired)).filter((l) => l.source === null || ids.has(l.source)) : [];
+    const beyond = latest && o.links && !o.linksOnly ? (await this.linksBeyond(latest.id, found.desired, s.kolab)).filter((l) => l.source === null || ids.has(l.source)) : [];
     if (equal && !toAdd.length && !beyond.length) return { outcome: 'unchanged', version: latest!.seq };
     // The person's own version of the node, waiting: submitted again rather than drafted twice.
     const open = (await this.db.query<VersionRow>(
@@ -11076,14 +11084,19 @@ export class Kolab {
       return { outcome: 'differs', version: latest.seq, detail: `${node.name}@${latest.seq} differs from the file: ${change}. Nothing was written; with --update, the import drafts the file's as a new version, reviewed as any is` };
     }
     if (latest && !equal) {
-      // Never by a version that takes work away (PLN4): a package with work stays a package.
-      const lost = await this.workItWouldDrop(node.id, els);
+      // Never by a version that takes work away: a package In progress, In review or Done stays a package.
+      const lost = await this.workItWouldDrop(node.id, els, await this.elements(latest.id));
       if (lost.length) return { outcome: 'differs', version: latest.seq, detail: `--update would drop work from ${node.name}: ${lost.join(', ')}. Nothing was written: keep each in the file as a work package (its state stays as it is)` };
     }
     const what = !latest ? `version 1, of ${els.length} elements and ${toAdd.length} links` : `a new version: ${[change, toAdd.length ? `it adds ${toAdd.length} link${toAdd.length === 1 ? '' : 's'}` : ''].filter(Boolean).join('; ')}`;
     if (o.dry) return { outcome: latest ? 'would_update' : 'would_create', detail: what };
     const id = await this.draft(sessionId, node.id, { elements: els, links: toAdd.map((l) => l.link), ...(beyond.length ? { unlink: beyond.map((l) => ({ link: l.id })) } : {}) });
     const seq = (await this.version(id)).seq;
+    // A version says it holds the file only if it does: never submitted, or reported written, otherwise.
+    if (!same(await this.elements(id))) {
+      await this.abandon(sessionId, id);
+      return { outcome: 'failed', version: seq, detail: `${node.name}@${seq}, as drafted, doesn't hold the file's elements, so it was abandoned and nothing committed` };
+    }
     return this.importOutcome(await this.submit(sessionId, id), seq);
   }
 
@@ -11095,21 +11108,26 @@ export class Kolab {
   }
 
   /** The links a version holds other than those `desired` names (linkKey): any other kind, a quote's, or to another target. */
-  private async linksBeyond(versionId: string, desired: ReadonlySet<string>): Promise<{ id: string; source: string | null; says: string }[]> {
-    const rows = (await this.db.query<{ id: string; kind: string; source_element_id: string | null; node_id: string; name: string; target_element_id: string | null; quoted: boolean }>(
-      `select e.id, e.kind, e.source_element_id, t.node_id, n.name, e.target_element_id, e.target_selector is not null as quoted
+  private async linksBeyond(versionId: string, desired: ReadonlySet<string>, kolab: string): Promise<{ id: string; source: string | null; says: string }[]> {
+    const rows = (await this.db.query<{ id: string; kind: string; source_element_id: string | null; node_id: string; name: string; kolab_id: string; target_element_id: string | null; quoted: boolean }>(
+      `select e.id, e.kind, e.source_element_id, t.node_id, n.name, n.kolab_id, e.target_element_id, e.target_selector is not null as quoted
          from edge e join version t on t.id = e.target_version_id join node n on n.id = t.node_id
         where e.source_version_id = $1 order by e.source_element_id nulls first, n.name, e.target_element_id, e.id`, [versionId])).rows;
     return rows.filter((r) => r.kind !== 'dependency' || r.quoted || !desired.has(linkKey(r.source_element_id, r.node_id, r.target_element_id)))
-      .map((r) => ({ id: r.id, source: r.source_element_id, says: `${r.source_element_id ?? '(the whole version)'} → ${r.name}${r.target_element_id ? `#${r.target_element_id}` : ''}` }));
+      .map((r) => ({ id: r.id, source: r.source_element_id, says: `${r.source_element_id ?? '(the whole version)'} → ${r.kolab_id === kolab ? '' : `${r.kolab_id}/`}${r.name}${r.target_element_id ? `#${r.target_element_id}` : ''}` }));
   }
 
-  /** The work packages with work (In progress, In review or Done) that a binding version of `els` would remove, make a decision, or make a milestone. */
-  private async workItWouldDrop(binding: string, els: ElementInput[]): Promise<string[]> {
+  /**
+   * The work packages with work (In progress, In review or Done) that a binding version of `els` would
+   * remove, make a decision, or make a milestone, against its latest committed elements. A milestone
+   * has no work of its own, so dropping or keeping one takes none.
+   */
+  private async workItWouldDrop(binding: string, els: ElementInput[], was: ElementRow[]): Promise<string[]> {
     const rows = (await this.db.query<{ element_id: string; state: string }>(
       `select element_id, state from work_package where binding_node_id = $1 and removed_in_version_id is null and state <> 'todo' order by element_id`, [binding])).rows;
     const next = new Map(els.map((e) => [e.id, e.work]));
-    return rows.filter((r) => !next.get(r.element_id) || (next.get(r.element_id)!.milestone && r.state !== 'done')).map((r) => `${r.element_id} (${r.state})`);
+    const milestones = new Set(was.filter((e) => e.work?.milestone).map((e) => e.element_id));
+    return rows.filter((r) => !milestones.has(r.element_id) && (!next.get(r.element_id) || next.get(r.element_id)!.milestone)).map((r) => `${r.element_id} (${r.state})`);
   }
 
   /** The dependency links a version holds, as linkKey writes them: what the import compares. */
@@ -11143,11 +11161,12 @@ export class Kolab {
   /** A ruling the file gives (importKolab): given directly, with its ref and date, unless the kolab has it already. */
   private async importRuling(sessionId: string, s: Session, r: ImportRuling, dry: boolean, fileEls?: ElementInput[]): Promise<Omit<ImportStep, 'what'>> {
     const ruledAt = rulingDate(r.date);
-    const had = (await this.db.query<{ text: string; replaces: string | null; effect: RulingEffect | null; ruled_at: Date | string | null; node: string; element_id: string | null }>(
+    // As the session, under row-level security: rulings stay with those who belong to the kolab's work (D49).
+    const had = await this.readAs(sessionId, async (q) => (await q.query<{ text: string; replaces: string | null; effect: RulingEffect | null; ruled_at: Date | string | null; node: string; element_id: string | null }>(
       `select r.text, r.replaces, r.effect, r.ruled_at, n.name as node, coalesce(r.element_id, c.element_id) as element_id
          from ruling r left join case_file c on c.id = r.case_file_id
          join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
-        where r.kolab_id = $1 and r.ref = $2`, [s.kolab, r.id])).rows[0];
+        where r.kolab_id = $1 and r.ref = $2`, [s.kolab, r.id])).rows[0]);
     if (had) {
       const diffs = [
         ...(had.text !== r.text ? ['its text'] : []),
@@ -11168,11 +11187,12 @@ export class Kolab {
     if (fileEls && !sameElements(await this.elements(v.id), fileEls)) return { outcome: 'waiting', detail: `it rules on ${r.on.node}, which differs from the file` };
     if (dry) return { outcome: 'would_create', detail: `on ${on}, dated ${ruledAt.toISOString().slice(0, 10)}` };
     // rule's own checks: a person, in the role that writes the layer, holding Write on it (D51).
-    const given = await this.giveRuling(sessionId, { address: formatAddress({ node: r.on.node, element: r.on.element }), text: r.text, ...(r.replaces ? { replaces: r.replaces } : {}), effect: r.effect, ref: r.id }, ruledAt);
+    // With its node in this file, and holding the file's elements (checked above): the file states its text after its own rulings.
+    const given = await this.giveRuling(sessionId, { address: formatAddress({ node: r.on.node, element: r.on.element }), text: r.text, ...(r.replaces ? { replaces: r.replaces } : {}), effect: r.effect, ref: r.id }, ruledAt, !!fileEls);
     return {
       outcome: 'created',
       detail: [`on ${on}, dated ${ruledAt.toISOString().slice(0, 10)}`,
-        ...(given.mark === 'carried' ? [`it changes the intent, and marks nothing: ${on} last changed after that date, so carries it`] : given.mark === 'set' ? [`${on} is marked until a version amends it`] : []),
+        ...(given.mark === 'carried' ? [`it changes the intent, and marks nothing: ${fileEls ? `this file states ${on} after its own rulings` : `${on} last changed after that date, so carries it`}`] : given.mark === 'set' ? [`${on} is marked until a version amends it`] : []),
         ...(given.superseded.length ? [`it supersedes case file${given.superseded.length === 1 ? '' : 's'} ${given.superseded.join(', ')}`] : [])].join('; '),
       ...(given.mark ? { mark: given.mark } : {}), ...(given.superseded.length ? { superseded: given.superseded } : {}),
     };
@@ -11917,7 +11937,9 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
 }
 
 /** Parent elements overlaid by deltas. Dirty and orphaned overrides still apply. */
-function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'version_id'>[]): ElementRow[] {
+function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'version_id'>[],
+  /** Elements named as top level (`parent: null`, an import), which a null parent alone doesn't move. */
+  topLevel: ReadonlySet<string> = new Set()): ElementRow[] {
   const map = new Map(parent.map((e) => [e.element_id, { ...e }]));
   let maxOrd = parent.reduce((m, e) => Math.max(m, e.ord), -1);
   const removed = new Set<string>();
@@ -11929,7 +11951,7 @@ function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'versio
     const work = d.work ?? undefined;
     map.set(d.element_id, {
       element_id: d.element_id,
-      parent_element_id: d.parent_element_id ?? existing?.parent_element_id ?? null,
+      parent_element_id: d.parent_element_id ?? (topLevel.has(d.element_id) ? null : existing?.parent_element_id ?? null),
       ord: d.ord ?? existing?.ord ?? ++maxOrd,
       text,
       fingerprint: elementFingerprint(text, work),
@@ -12488,7 +12510,7 @@ const jobEnded = (j: JobRow) => new GateError(`job ${j.id} ended ${j.outcome ===
  * fine: an address reads its element as everything after its first '#' up to a '~'. That each
  * parent named is an element of the version is checked once it is made (writeDraft).
  */
-function checkElementIds(input: { elements?: { id?: string; parent?: string }[]; deltas?: { kind: string; element: string; parent?: string }[] }, prior: ReadonlySet<string> | null) {
+function checkElementIds(input: { elements?: { id?: string; parent?: string | null }[]; deltas?: { kind: string; element: string; parent?: string }[] }, prior: ReadonlySet<string> | null) {
   const ids = [
     ...(input.elements ?? []).flatMap((e) => (e.id === undefined ? [] : [e.id])),
     ...(input.deltas ?? []).flatMap((d) => (d.kind === 'add' ? [d.element] : [])),
@@ -12834,7 +12856,8 @@ const RULED_AT_FLOOR = Date.UTC(2000, 0, 1);
 /**
  * When a ruling recorded later was given (W6.3): a date, YYYY-MM-DD, which means the end of that day
  * in UTC (or now, if that is today), or an ISO 8601 time with its offset. Refused if its calendar
- * date doesn't exist (2026-02-31), it is before 2000, or it is in the future.
+ * date doesn't exist (2026-02-31), it is before 2000, or it is in the future: for a time, past the
+ * clocks' skew; for a date alone, any day after today, UTC.
  */
 export function rulingDate(when: unknown): Date {
   const s = typeof when === 'string' ? when.trim() : '';
@@ -12852,7 +12875,7 @@ export function rulingDate(when: unknown): Date {
   if (Number.isNaN(d.getTime())) throw bad();
   if (d.getTime() < RULED_AT_FLOOR) throw new GateError(`a ruling's date is 2000-01-01 or later, not ${s}`);
   const now = Date.now();
-  if ((m[4] ? d.getTime() : calendar.getTime()) > now + RULED_AT_SKEW_MS) throw new GateError(`a ruling's date, ${s}, is in the future: a ruling is dated when it was given`);
+  if (m[4] ? d.getTime() > now + RULED_AT_SKEW_MS : calendar.getTime() > now) throw new GateError(`a ruling's date, ${s}, is in the future: a ruling is dated when it was given`);
   return !m[4] && d.getTime() > now ? new Date(now) : d;
 }
 

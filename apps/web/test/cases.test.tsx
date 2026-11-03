@@ -103,6 +103,17 @@ test('a person who may rule sustains exactly one position; a party is told someo
   expect(document.querySelector('.casebox form')).toBeNull();
 });
 
+test('a ruling recorded on another calendar day than it was given shows both, however few hours apart; one recorded the same day shows when it was given (W6.3)', async () => {
+  const dated = { ...ruling, ref: 'D7', effect: 'keep_intent' as const, ruled_at: '2026-03-01T23:59:59.999Z', recorded_at: '2026-03-02T01:00:00.000Z' };
+  view(lee, spec({}, [el('PR7', 'A reset signs the user in.', { rulings: [dated] })]));
+  expect(await screen.findByText(/lee ruled on 2026-03-01, recorded .*directly/)).toBeTruthy();
+  expect(screen.getByText('ruling D7')).toBeTruthy();
+  cleanup();
+  view(lee, spec({}, [el('PR7', 'A reset signs the user in.', { rulings: [{ ...dated, ruled_at: '2026-03-02T00:10:00.000Z', recorded_at: '2026-03-02T23:00:00.000Z' }] })]));
+  expect(await screen.findByText(/lee ruled .*directly/)).toBeTruthy();
+  expect(screen.queryByText(/recorded/)).toBeNull();
+});
+
 test('a ruling is precedent beside its element, and a ruled mark settles only with a version that amends it', async () => {
   view(lee, spec({}, [el('PR7', 'A reset signs the user in.', { rulings: [ruling], marks: [ruled], queries: [ruledQuestion] })]));
   expect(await screen.findByText('A reset signs the user in with a new session.')).toBeTruthy();

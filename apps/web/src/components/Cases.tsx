@@ -21,8 +21,8 @@ function AddrChip({ address, here, go }: { address: string; here: string; go(r: 
   return <button type="button" className="chip" onClick={() => go(routeOf(a, here))}>{address}</button>;
 }
 
-/** Whether a ruling was recorded a day or more after it was given (W6.3): an imported one, dated when it was given. */
-const recordedLater = (r: WebRuling) => !!r.recorded_at && !!r.ruled_at && Date.parse(r.recorded_at) - Date.parse(r.ruled_at) >= 86_400_000;
+/** Whether a ruling was recorded on another calendar day than it was given (W6.3): an imported one, dated when it was given. */
+const recordedLater = (r: WebRuling) => !!r.recorded_at && !!r.ruled_at && r.recorded_at.slice(0, 10) !== r.ruled_at.slice(0, 10);
 
 /** A ruling beside what it rules on: precedent in its kolab (CASE4), never changed once given. */
 export function RulingBox({ ruling: r, me, go, showOn }: { ruling: WebRuling; me: WebMe; go(r: string): void; showOn?: boolean }) {
