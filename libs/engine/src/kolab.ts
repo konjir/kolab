@@ -19,7 +19,7 @@ import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
-  type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
+  type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
@@ -401,6 +401,9 @@ export function doer(by: Doer | undefined): Doer {
   if (typeof by !== 'string' || !by.trim()) throw new Error('a write must name who made it (W2.20): pass `by`');
   return by;
 }
+/** Who ends a session (endSession): `by`, checked as doer checks it, or null when its own actor signs out. */
+const enderOf = (opts: { by: Doer } | { signingOut: true } | undefined): string | null =>
+  opts && 'signingOut' in opts && opts.signingOut === true ? null : doer((opts as { by?: Doer } | undefined)?.by);
 export class GateError extends Error { name = 'GateError'; }
 
 /**
@@ -518,6 +521,36 @@ const RAISE_USED_UP = `used_up as (update admin_raise set cancelled_at = now()
 
 const OPEN_SESSION = `s.ended_at is null and (g.id is null and (s.expires_at is null or s.expires_at > now())
        or g.id is not null and g.revoked_at is null and g.expires_at > now())`;
+
+/**
+ * The machine a session is on (D103, migration 0040), which a new sign-in is compared against: it
+ * ends only its actor's open session on the same machine. Every agent's session is on AGENT_MACHINE,
+ * so an agent holds one, whatever it signs in through. A person's is `client:<id>` for a sign-in
+ * through an OAuth client (each konjir install and harness entry registers and keeps its own),
+ * `web:<key>` for Kolab's web page in one browser (webMachine), and TOKEN_MACHINE for a hand-issued
+ * one: an admin opens a person one at a time, as before.
+ */
+export const AGENT_MACHINE = 'agent';
+
+/** The machine of every session an admin opens for a person (admin_open_session): one open at a time (D103). */
+export const TOKEN_MACHINE = 'token';
+
+/** The machine of a person's sign-in to Kolab's web page in the browser that keeps `secret` in its cookie (D103). */
+export const webMachine = (secret: string) => `web:${sessionKey(secret)}`;
+
+/** A browser's secret, as Kolab's web page keeps it in its cookie (webMachine): 32 random bytes, base64url. */
+export const BROWSER_SECRET = /^[A-Za-z0-9_-]{43}$/;
+
+const WEB_MACHINE = /^web:[A-Za-z0-9_-]{43}$/;
+
+/** The most of a person's open sessions listOwnSessions lists, most recently used first. */
+export const MAX_OWN_SESSIONS = 100;
+
+/** What a person is shown of where a session is (`session.place`): printable, on one line, at most 100 characters; null if nothing is left. */
+function placeOf(text: string): string | null {
+  const s = [...text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/g, ' ').trim()].slice(0, 100).join('').trim();
+  return s || null;
+}
 
 const isObject = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
@@ -1661,8 +1694,10 @@ export class Kolab {
    * Opens a session for an actor in one kolab, with one active role, and returns its bearer
    * token: random, not a sortable ULID. This is the only time the token is shown. The database
    * stores only its sessionKey, as the session's id (P1), and every other method takes the token
-   * and hashes it. Each actor holds at most one open session (ENF4), so a person's agents each
-   * hold their own.
+   * and hashes it. An agent holds at most one open session (ENF4), so a person's agents each hold
+   * their own, and one that holds a session open is refused another. A person's hand-issued
+   * sessions are one machine of theirs (TOKEN_MACHINE, D103): one open at a time, refused while one
+   * is, as before; it ends none of their sign-ins elsewhere, and none of those ends it.
    *
    * The actor must be able to reach the kolab. Without `kolab`, it is the one kolab the actor
    * can reach. An agent's access is checked against its owner's as the session opens, and on
@@ -1697,7 +1732,10 @@ export class Kolab {
         await tx.query(`update session set ended_at = now(), ended_by = $2
           where actor_id = $1 and ended_at is null and grant_id is null and expires_at <= now()`, [actorId, by]);
         // A job's session (JOB3) ends with its job, at the latest when the job's four hours are up.
-        await insertSession(tx, id, { actor: actorId, role, kolab: kolab!, ...(opts.until === undefined ? { ttlS: this.sessions.handIssuedTtlS } : { until: opts.until }), by });
+        await insertSession(tx, id, {
+          actor: actorId, role, kolab: kolab!, machine: actor.kind === 'agent' ? AGENT_MACHINE : TOKEN_MACHINE,
+          ...(opts.until === undefined ? { ttlS: this.sessions.handIssuedTtlS } : { until: opts.until }), by,
+        });
         await this.signalRequestsOf(tx, signal, actorId);
         // Checked as it opens, and again on every use (session), so a grant revoked meanwhile still binds it.
         const access = await accessIn(tx, actorId, kolab);
@@ -1707,7 +1745,7 @@ export class Kolab {
         }
       });
     } catch (e) {
-      if (String(e).includes('one_open_session_per_actor')) {
+      if (String(e).includes('one_open_session_per_machine')) {
         throw new ActorError(`${actorId} already has an open session; end it before opening another`);
       }
       // Archived since the checks above: the database refuses it too (session_openable).
@@ -1720,13 +1758,23 @@ export class Kolab {
   /**
    * End a session, revoking its token, and tell listeners so its open streams close (D41).
    * The session is named by its token, by its sessionKey (`{ key }`, as whoami and events give
-   * it), or by its actor (`{ actor }`, whose one open session it is), since the token is shown
-   * only once. Returns the ended session's sessionKey, or null if there was no such open session.
-   * The event names the session by sessionKey, never by its token. Who ended it is recorded
-   * (W2.20): `by`, such as an admin, or with `signingOut` the session's own actor.
+   * it), or by its actor (`{ actor }`: every open session it holds, one for an agent, one on each
+   * machine for a person, D103), since the token is shown only once. Returns the ended session's
+   * sessionKey (by actor, the first of them by id; endSessions gives them all), or null if there was
+   * no such open session. Each event names its session by sessionKey, never by its token. Who ended
+   * it is recorded (W2.20): `by`, such as an admin, or with `signingOut` the session's own actor.
    */
   async endSession(which: string | { key: string } | { actor: string }, opts: { by: Doer } | { signingOut: true }): Promise<string | null> {
-    const by = opts && 'signingOut' in opts && opts.signingOut === true ? null : doer((opts as { by?: Doer } | undefined)?.by);
+    return (await this.endSessionsBy(which, enderOf(opts)))[0] ?? null;
+  }
+
+  /** As endSession, returning every session it ended, by sessionKey, in id order: by actor, all of its open sessions. */
+  async endSessions(which: string | { key: string } | { actor: string }, opts: { by: Doer } | { signingOut: true }): Promise<string[]> {
+    return this.endSessionsBy(which, enderOf(opts));
+  }
+
+  /** endSession's and endSessions' work: `by` is who ended them, or null for each session's own actor, signing out. */
+  private async endSessionsBy(which: string | { key: string } | { actor: string }, by: string | null): Promise<string[]> {
     return this.inTransaction(async (tx, signal) => {
       const r = typeof which === 'object' && 'actor' in which
         ? await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now(), ended_by = coalesce($2, actor_id) where actor_id = $1 and ended_at is null returning id, actor_id`, [which.actor, by])
@@ -1735,12 +1783,13 @@ export class Kolab {
           ? await tx.query<{ id: string; actor_id: string }>(`update session s set ended_at = now(), ended_by = coalesce($2, s.actor_id)
               where s.ended_at is null and (s.token_key = $1 or (s.token_key is null and s.id = $1)) returning s.id, s.actor_id`, [sessionKey(which), by])
           : await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now(), ended_by = coalesce($2, actor_id) where id = $1 and ended_at is null returning id, actor_id`, [which.key, by]);
-      const key = r.rows[0]?.id ?? null;
-      if (key) await signal({ session: 'ended', id: key });
-      if (key) await this.signalRequestsOf(tx, signal, r.rows[0].actor_id);
-      // The jobs it ran end with it, and their agents' sessions (JOB2).
-      if (key) await this.endRunnersJobsIn(tx, signal, [key], by ?? r.rows[0].actor_id);
-      return key;
+      const ended = r.rows.map((x) => x.id).sort();
+      if (!ended.length) return [];
+      for (const id of ended) await signal({ session: 'ended', id });
+      await this.signalRequestsOf(tx, signal, r.rows[0].actor_id);
+      // The jobs they ran end with them, and their agents' sessions (JOB2).
+      await this.endRunnersJobsIn(tx, signal, ended, by ?? r.rows[0].actor_id);
+      return ended;
     });
   }
 
@@ -2669,20 +2718,26 @@ export class Kolab {
   }
 
   /**
-   * Opens a grant's session for `actor`, in `tx` under the access lock: the actor's one open
-   * session ends (ENF4: the newest sign-in wins), and its streams close (D41); the grant, its
+   * Opens a grant's session for `actor`, in `tx` under the access lock, ending the session it
+   * replaces (D103), whose streams close (D41): an agent's one open session (ENF4: its newest
+   * sign-in wins, whatever client it came through), or a person's open session on the same machine
+   * (`machine`, by default the client's, `client:<id>`), and no other of theirs. The grant, its
    * session and its first refresh token are made; its access is checked as any session's is.
    */
-  private async openGrant(tx: Db, signal: Signal, g: { grantId: string; clientId: string; actor: string; person: string; kolab: string; role: Role; scope: string; resource: string | null }) {
+  private async openGrant(tx: Db, signal: Signal, g: { grantId: string; clientId: string; actor: string; person: string; kolab: string; role: Role; scope: string; resource: string | null; machine?: string; place?: string | null }) {
     const access = newSessionToken();
     const refresh = `kjr_${randomBytes(32).toString('base64url')}`;
-    for (const { id } of (await tx.query<{ id: string }>(`update session set ended_at = now(), ended_by = $2 where actor_id = $1 and ended_at is null returning id`, [g.actor, g.person])).rows) {
+    const agent = g.actor !== g.person;
+    const machine = agent ? AGENT_MACHINE : g.machine ?? `client:${g.clientId}`;
+    for (const { id } of (await tx.query<{ id: string }>(
+      `update session set ended_at = now(), ended_by = $2 where actor_id = $1 and ended_at is null and ($3::text is null or machine_key = $3) returning id`,
+      [g.actor, g.person, agent ? null : machine])).rows) {
       await signal({ session: 'ended', id });
     }
     await tx.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, resource, expires_at)
                     values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second')`,
       [g.grantId, g.clientId, g.actor, g.person, g.scope, g.resource, this.oauth.refreshTtlS]);
-    const session = await insertSession(tx, access, { actor: g.actor, role: g.role, kolab: g.kolab, grant: g.grantId, ttlS: this.oauth.accessTtlS, by: g.person });
+    const session = await insertSession(tx, access, { actor: g.actor, role: g.role, kolab: g.kolab, machine, place: agent ? null : g.place ?? null, grant: g.grantId, ttlS: this.oauth.accessTtlS, by: g.person });
     await this.signalRequestsOf(tx, signal, g.actor);
     if (!(await accessIn(tx, g.actor, g.kolab)).level) throw new OAuthGrantError('access_denied', `${g.actor} can no longer reach kolab ${g.kolab}`);
     await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
@@ -2750,11 +2805,15 @@ export class Kolab {
    * refresh token: once, by the client it was issued to, at the same redirect URI, with the PKCE
    * verifier of its challenge (S256). A code used a second time revokes the grant it opened. The
    * grant's session opens in the consented kolab and role, under the access lock, with access
-   * checked as any session's is; it replaces any session its actor already holds (ENF4: one each),
-   * whose streams are told (D41), so the newest sign-in wins.
+   * checked as any session's is. It replaces the session it signs in again (D103), whose streams
+   * are told (D41): an agent's one open session (ENF4: the newest sign-in wins), or the person's
+   * open session on the same machine, and no other of theirs. The machine is the client's, unless
+   * `machine` names it: Kolab's web page names the browser (webMachine), and `place` what the
+   * person is shown of it.
    */
-  async exchangeCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string }): Promise<OAuthTokens> {
+  async exchangeCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string; machine?: string; place?: string }): Promise<OAuthTokens> {
     const key = sessionKey(p.code);
+    if (p.machine !== undefined && !WEB_MACHINE.test(p.machine)) throw new Error('a sign-in names its machine only as webMachine gives it');
     const grantId = randomBytes(24).toString('base64url');
     let replayed: string | null = null;
     const out = await this.inTransaction(async (tx, signal) => {
@@ -2767,9 +2826,12 @@ export class Kolab {
       if (c.expired || c.redirect_uri !== p.redirectUri || !PKCE_VERIFIER.test(p.codeVerifier)
           || createHash('sha256').update(p.codeVerifier).digest('base64url') !== c.code_challenge) return undefined;
       if (p.resource !== undefined && c.resource !== null && p.resource !== c.resource) return undefined;
-      // The newest sign-in wins: the actor's one open session ends (ENF4), and its streams close (D41).
+      // The session this sign-in replaces ends (D103: an agent's one, or the person's on this machine), and its streams close (D41).
       // The person signing in ends it, and opens the new one (W2.20). The grant goes in first, then the code names it.
-      const t = await this.openGrant(tx, signal, { grantId, clientId: c.client_id, actor: c.actor_id, person: c.person_id, kolab: c.kolab, role: c.role, scope: c.scope, resource: c.resource });
+      const t = await this.openGrant(tx, signal, {
+        grantId, clientId: c.client_id, actor: c.actor_id, person: c.person_id, kolab: c.kolab, role: c.role, scope: c.scope, resource: c.resource,
+        ...(p.machine !== undefined ? { machine: p.machine } : {}), place: p.place === undefined ? null : placeOf(p.place),
+      });
       await tx.query(`update oauth_code set used_at = now(), grant_id = $2 where key = $1`, [key, grantId]);
       return { accessToken: t.accessToken, refreshToken: t.refreshToken, expiresIn: this.oauth.accessTtlS, scope: c.scope, session: t.session, actor: c.actor_id, kolab: c.kolab, role: c.role };
     }).catch((e) => {
@@ -2813,7 +2875,8 @@ export class Kolab {
       await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
         [sessionKey(refresh), t.grant_id, this.oauth.refreshTtlS]);
       await tx.query(`update oauth_grant set expires_at = now() + $2 * interval '1 second' where id = $1`, [t.grant_id, this.oauth.refreshTtlS]);
-      await tx.query(`update session set token_key = $2, expires_at = now() + $3 * interval '1 second' where id = $1`,
+      // A refresh is when the session was last used (D103): every 15 minutes while it works, and never on each call.
+      await tx.query(`update session set token_key = $2, expires_at = now() + $3 * interval '1 second', last_used_at = now() where id = $1`,
         [s.id, sessionKey(access), this.oauth.accessTtlS]);
       return { accessToken: access, refreshToken: refresh, expiresIn: this.oauth.accessTtlS, scope: grantedScope(s.kolab_id, s.active_role), session: s.id, actor: s.actor_id, kolab: s.kolab_id, role: s.active_role };
     });
@@ -3049,6 +3112,64 @@ export class Kolab {
     }
     const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [me.actor])).rows[0].n;
     return { agents, live, limit: this.oauth.agentsPerPerson };
+  }
+
+  /**
+   * A person's own open sessions (D103: one on each machine they signed in through), most recently
+   * used first, at most MAX_OWN_SESSIONS: each by its id (whoami's `session`), which is the caller's
+   * own (`current`), how it signed in (`via`: Kolab's web page, an app or harness through its OAuth
+   * client, or a token an admin opened), where (`where`: the client's name, or the browser), its
+   * kolab and role, when it opened, and when it was last used: when it last renewed its sign-in,
+   * which a signed-in session does every 15 minutes while it works, else when it opened. A
+   * hand-issued one says when it expires. An agent's session and the admin token are refused: an
+   * agent's sessions are its own (konjir_list_agents), and a job's agent's end with the job.
+   */
+  async listOwnSessions(session: string): Promise<{ sessions: OwnSession[] }> {
+    const me = await this.sessionInfo(session);
+    if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person lists their sessions. Sign in as yourself to list yours`);
+    const rows = (await this.db.query<{ id: string; kolab_id: string; active_role: Role; started_at: Date | string; last_used: Date | string; machine_key: string;
+      place: string | null; grant_id: string | null; expires_at: Date | string | null; client_id: string | null; client_name: string | null }>(
+      `select s.id, s.kolab_id, s.active_role, s.started_at, coalesce(s.last_used_at, s.started_at) as last_used, s.machine_key, s.place,
+              s.grant_id, s.expires_at, g.client_id, c.name as client_name
+         from session s left join oauth_grant g on g.id = s.grant_id left join oauth_client c on c.id = g.client_id
+        where s.actor_id = $1 and ${OPEN_SESSION}
+        order by coalesce(s.last_used_at, s.started_at) desc, s.id limit ${MAX_OWN_SESSIONS}`, [me.actor])).rows;
+    return {
+      sessions: rows.map((r) => {
+        const via: OwnSession['via'] = r.grant_id === null ? 'token' : r.client_id === 'konjir-web' ? 'web' : 'app';
+        return {
+          session: r.id, current: r.id === me.session, via,
+          where: via === 'token' ? 'a token an admin opened' : via === 'web' ? `Kolab's web page${r.place ? `, ${r.place}` : ''}` : r.client_name ?? 'an app',
+          kolab: r.kolab_id, role: r.active_role, started_at: iso(r.started_at)!, last_used: iso(r.last_used)!,
+          expires_at: r.grant_id === null ? iso(r.expires_at) : null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Ends one of a person's own open sessions (D103), named by its id or the first 8 or more
+   * characters of it, as listOwnSessions gives it, matching exactly one: a signed-in one's grant
+   * is revoked, so its refresh token renews nothing, and either way it ends and its streams close
+   * (D41), as do the jobs it ran (JOB2). Recorded as the person's. Ending the caller's own session
+   * signs it out. Anything not an open session of theirs is refused alike; an agent's session is.
+   */
+  async endOwnSession(session: string, which: { session?: unknown }): Promise<{ ended: string; current: boolean }> {
+    const me = await this.sessionInfo(session);
+    if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person ends their sessions. Sign in as yourself to end one of yours`);
+    const id = which?.session;
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{8,43}$/.test(id)) throw new ActorError('name the session to end by its id, or at least its first 8 characters, as konjir_list_sessions gives it');
+    const found = (await this.db.query<{ id: string; grant_id: string | null }>(
+      `select s.id, s.grant_id from session s left join oauth_grant g on g.id = s.grant_id
+        where s.actor_id = $1 and left(s.id, $3) = $2 and ${OPEN_SESSION} order by s.id limit 2`, [me.actor, id, id.length])).rows;
+    if (found.length > 1) throw new ActorError(`more than one session of yours starts ${id}: give more of its id`);
+    // Plainly "not there", whoever's it is, so no one learns of another's session.
+    if (!found.length) throw new Error(`you have no open session ${id}`);
+    const s = found[0];
+    if (s.grant_id) await this.revokeGrant(s.grant_id, me.actor);
+    else await this.endSessionsBy({ key: s.id }, null);
+    log.info(`${me.actor} ended a session of theirs`, { event: 'own_session_ended', actor: me.actor, session: s.id });
+    return { ended: s.id, current: s.id === me.session };
   }
 
   /**
@@ -3786,15 +3907,16 @@ export class Kolab {
     const token = newSessionToken();
     await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      const old = (await tx.query<{ id: string; actor_id: string; grant_id: string | null; expires_at: Date | string | null }>(
-        `update session s set ended_at = now(), ended_by = s.actor_id where ${LIVE_SESSION} returning s.id, s.actor_id, s.grant_id, s.expires_at`, [sessionKey(sessionId)])).rows[0];
+      const old = (await tx.query<{ id: string; actor_id: string; grant_id: string | null; expires_at: Date | string | null; machine_key: string; place: string | null }>(
+        `update session s set ended_at = now(), ended_by = s.actor_id where ${LIVE_SESSION}
+         returning s.id, s.actor_id, s.grant_id, s.expires_at, s.machine_key, s.place`, [sessionKey(sessionId)])).rows[0];
       if (!old) throw new RoleError('this session has ended');
       // Access first, so an archived kolab is refused as any other it can't reach, saying nothing of the archive (D52).
       if (!(await accessIn(tx, old.actor_id, to.kolab)).level) throw new AccessError(`no kolab ${to.kolab} you can reach`);
       // A grant's session moves with its grant (D55): the new one carries it, with a fresh access token, so the refresh token keeps working.
-      // A hand-issued one keeps its expiry (W2.22): switching never lengthens it.
+      // A hand-issued one keeps its expiry (W2.22): switching never lengthens it. Either stays on its machine (D103).
       await insertSession(tx, token, {
-        actor: old.actor_id, role: to.role, kolab: to.kolab, grant: old.grant_id, by: old.actor_id,
+        actor: old.actor_id, role: to.role, kolab: to.kolab, machine: old.machine_key, place: old.place, grant: old.grant_id, by: old.actor_id,
         ...(old.grant_id ? { ttlS: this.oauth.accessTtlS } : old.expires_at !== null ? { until: old.expires_at } : { ttlS: this.sessions.handIssuedTtlS }),
       });
       await signal({ session: 'ended', id: old.id });
@@ -10935,21 +11057,22 @@ const newSessionToken = () => `kjs_${randomBytes(24).toString('base64url')}`;
 /**
  * Inserts an open session for `token`. A hand-issued session's id is its token's key (P1). A
  * grant's (D55) gets an id of its own, random and never a token's key, with its access token's key
- * and expiry beside it, so the token can rotate while the session, and its id, stay.
+ * and expiry beside it, so the token can rotate while the session, and its id, stay. Each is on
+ * `machine` (AGENT_MACHINE for an agent's, D103), with `place`, what its person is shown of where.
  */
-async function insertSession(tx: Q, token: string, s: { actor: string; role: Role; kolab: string; grant?: string | null; ttlS?: number; until?: Date | string; by: Doer }) {
+async function insertSession(tx: Q, token: string, s: { actor: string; role: Role; kolab: string; machine: string; place?: string | null; grant?: string | null; ttlS?: number; until?: Date | string; by: Doer }) {
   if (!s.grant) {
     // A hand-issued session expires (W2.22): `until`, or `ttlS` after it opens. Then it is refused like an ended one.
     if (s.until === undefined && !(s.ttlS !== undefined && Number.isInteger(s.ttlS) && s.ttlS > 0)) throw new Error('a hand-issued session needs its lifetime, in whole seconds');
-    await tx.query(`insert into session(id, actor_id, active_role, kolab_id, expires_at, opened_by)
-      values ($1, $2, $3, $4, coalesce($5::timestamptz, now() + $6 * interval '1 second'), $7)`,
-      [sessionKey(token), s.actor, s.role, s.kolab, s.until === undefined ? null : new Date(s.until).toISOString(), s.ttlS ?? null, s.by]);
+    await tx.query(`insert into session(id, actor_id, active_role, kolab_id, expires_at, opened_by, machine_key, place)
+      values ($1, $2, $3, $4, coalesce($5::timestamptz, now() + $6 * interval '1 second'), $7, $8, $9)`,
+      [sessionKey(token), s.actor, s.role, s.kolab, s.until === undefined ? null : new Date(s.until).toISOString(), s.ttlS ?? null, s.by, s.machine, s.place ?? null]);
     return sessionKey(token);
   }
   const id = randomBytes(32).toString('base64url');
   await tx.query(
-    `insert into session(id, actor_id, active_role, kolab_id, grant_id, token_key, expires_at, opened_by)
-     values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second', $8)`, [id, s.actor, s.role, s.kolab, s.grant, sessionKey(token), s.ttlS ?? 900, s.by]);
+    `insert into session(id, actor_id, active_role, kolab_id, grant_id, token_key, expires_at, opened_by, machine_key, place)
+     values ($1, $2, $3, $4, $5, $6, now() + $7 * interval '1 second', $8, $9, $10)`, [id, s.actor, s.role, s.kolab, s.grant, sessionKey(token), s.ttlS ?? 900, s.by, s.machine, s.place ?? null]);
   return id;
 }
 

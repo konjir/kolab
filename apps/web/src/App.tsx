@@ -6,13 +6,13 @@ import { Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
 import { ActivityView, ForeignKolabView, KolabsView, LineageView, More, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
 import { CasesView } from './components/Cases.js';
-import { ConnectPage, GettingStarted, InviteCard, PeopleView } from './components/Onboarding.js';
+import { ConnectPage, GettingStarted, InviteCard, PeopleView, SessionsView } from './components/Onboarding.js';
 import { parseKj, routeOf } from './util.js';
 import type { Act } from './components/Marks.js';
 
 /**
  * Where the page is: `#/node/<name>[@<version>][#<element>]`, `#/questions`, `#/cases`,
- * `#/reviews`, `#/lineage`, `#/activity`, `#/kolabs`, `#/people` or `#/connect`; another kolab read
+ * `#/reviews`, `#/lineage`, `#/activity`, `#/kolabs`, `#/people`, `#/connect` or `#/sessions`; another kolab read
  * in place (D49) is `#/read/<kolab>` and `#/read/<kolab>/<name>[@<version>][#<element>]`. The hash
  * keeps every place linkable without the server knowing any route but `/`. An invite's link,
  * `#/invite/<secret>` (W3.4), is taken out of the address as soon as the page reads it.
@@ -20,7 +20,7 @@ import type { Act } from './components/Marks.js';
 export type Route =
   | { view: 'node'; name: string; version?: number; focus?: string; kolab?: string }
   | { view: 'read'; kolab: string }
-  | { view: 'questions' | 'cases' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'people' | 'connect' | 'home' | 'start' };
+  | { view: 'questions' | 'cases' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'people' | 'connect' | 'sessions' | 'home' | 'start' };
 
 export function parseRoute(hash: string): Route {
   let h: string;
@@ -33,7 +33,7 @@ export function parseRoute(hash: string): Route {
   }
   const kolab = /^read\/([a-z0-9][a-z0-9-]*)$/.exec(h);
   if (kolab) return { view: 'read', kolab: kolab[1] };
-  if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs', 'people', 'connect'].includes(h)) return { view: h as 'questions' };
+  if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs', 'people', 'connect', 'sessions'].includes(h)) return { view: h as 'questions' };
   return { view: 'home' };
 }
 
@@ -237,9 +237,9 @@ export function App() {
           ))}
           <More more={nodesNext ? readMoreNodes : undefined} busy={readingNodes} what="documents" />
           <div className="rail-label">Kolab</div>
-          {(['lineage', 'questions', ...(belongs ? ['cases' as const] : []), 'reviews', 'activity', 'people', 'connect'] as const).map((v) => (
+          {(['lineage', 'questions', ...(belongs ? ['cases' as const] : []), 'reviews', 'activity', 'people', 'connect', 'sessions'] as const).map((v) => (
             <button key={v} type="button" className="place" aria-current={r.view === v ? 'page' : undefined} onClick={() => go(v)}>
-              {v === 'connect' ? 'Connect a harness' : v[0].toUpperCase() + v.slice(1)}
+              {v === 'connect' ? 'Connect a harness' : v === 'sessions' ? 'Your sessions' : v[0].toUpperCase() + v.slice(1)}
               {v === 'questions' && counts?.waiting ? <span className="count question" title={`${counts.waiting} waiting on you`}>{counts.waiting}</span> : null}
               {v === 'reviews' && counts?.reviews ? <span className="count question" title={`${counts.reviews} waiting for your review`}>{counts.reviews}</span> : null}
               {v === 'cases' && counts?.cases ? <span className="count stale" title={`${counts.cases} open on your layer`}>{counts.cases}</span> : null}
@@ -259,7 +259,7 @@ export function App() {
               moved(next, `Joined ${next.kolab}: you work here as ${next.role}`);
             }, '')} />}
           {inviteNote}
-          {overview && !['kolabs', 'people', 'connect'].includes(r.view) && !reading && <Summary overview={overview} />}
+          {overview && !['kolabs', 'people', 'connect', 'sessions'].includes(r.view) && !reading && <Summary overview={overview} />}
           {nodeRoute.view === 'node' && <NodeView key={`${nodeRoute.kolab ?? ''}/${nodeRoute.name}`} me={me} name={nodeRoute.name} version={nodeRoute.version} focus={nodeRoute.focus}
             kolab={nodeRoute.kolab} tick={tick} act={act} go={go}
             read={(v) => go(`${nodeRoute.kolab ? `read/${nodeRoute.kolab}` : 'node'}/${nodeRoute.name}${v ? `@${v}` : ''}`)} />}
@@ -273,6 +273,7 @@ export function App() {
           {r.view === 'start' && <GettingStarted me={me} go={go} />}
           {r.view === 'people' && overview && <PeopleView me={me} overview={overview} tick={tick} act={act} />}
           {r.view === 'connect' && <ConnectPage me={me} />}
+          {r.view === 'sessions' && <SessionsView tick={tick} act={act} />}
           {r.view === 'start' && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
           {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onRead={(k) => go(`read/${k}`)}
             onCreateKolab={(name, title) => act.run(async () => { moved(await createKolab(name, title), `Created ${name}. Its spec is empty: start it.`); }, '')} />}

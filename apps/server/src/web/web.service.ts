@@ -8,7 +8,7 @@ import {
 import { formatAddress, isElementId, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
 import {
   ACCESS_LEVELS, CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, notAKind, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
-  type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type KolabAccessView, type WebAccessChanged, type WebChangeGrant, type CaseFileState, type CaseFileView, type RulingView,
+  type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSessionsView, type WebSessionRevoked, type WebSwitch, type KolabAccessView, type WebAccessChanged, type WebChangeGrant, type CaseFileState, type CaseFileView, type RulingView,
   type WebCase, type WebCasesView, type WebForeignKolab, type WebOpenCase, type WebPosition, type WebRuleCase, type WebRuleDirect, type WebRuling,
   type ElementInput, type GateResult, type Layer, type Role,
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
@@ -735,8 +735,8 @@ export class WebService {
   /**
    * Moves the person to another kolab or role (the prototype's kolab picker and "Working as"):
    * Kolab ends the session and opens one in the chosen kolab and role in one transaction, so a
-   * kolab the person can't reach, or any failure, leaves the session as it was (ENF4: one open
-   * session per actor). The new token goes only into the cookie.
+   * kolab the person can't reach, or any failure, leaves the session as it was. The new session is
+   * on the same machine (D103), and the new token goes only into the cookie.
    */
   async switchTo(s: string, b: WebSwitch): Promise<string> {
     if (!ROLES.includes(b?.role)) throw bad(`the role is one of ${ROLES.join(', ')}`);
@@ -809,6 +809,17 @@ export class WebService {
     await this.kolab.endSession(s, { signingOut: true });
   }
 
+  // ---- a person's own sessions, one on each machine (W6.1, D103) ----
+
+  async sessions(s: string): Promise<WebSessionsView> {
+    return this.kolab.listOwnSessions(s);
+  }
+
+  /** Revokes one of the person's own sessions: it ends, and its streams close (D41). */
+  async revokeSession(s: string, id: string): Promise<WebSessionRevoked> {
+    return this.kolab.endOwnSession(s, { session: id });
+  }
+
   private async outcome(r: GateResult): Promise<WebOutcome> {
     const v = await this.kolab.version(r.version);
     return {
@@ -864,7 +875,7 @@ export function httpError(e: unknown): HttpException {
   if (e instanceof GateError || e instanceof ChecksError) return new ConflictException({ error: 'conflict', message });
   if (e instanceof ActorError || e instanceof TenancyError || e instanceof LimitError) return new BadRequestException({ error: 'bad_request', message });
   // Kolab's own "not there" refusals: no node, no version, no query, no mark.
-  if (/^(no (node|version|query|mark|actor|case file|ruling|work package) |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
+  if (/^(no (node|version|query|mark|actor|case file|ruling|work package) |you have no open session |[^ ]+ has no (committed )?version|cannot ask about )|^kj:\S+ doesn't exist$/.test(message)) return new NotFoundException({ error: 'not_found', message });
   // A malformed address (a quote selector that isn't JSON included), or evidence that doesn't resolve: the request is wrong, not Kolab.
   if (e instanceof SyntaxError) return new BadRequestException({ error: 'bad_request', message: `not a Konjir address: ${message}` });
   if (/^(not a Konjir address|a selector needs an element|evidence \S+ does not resolve)/.test(message)) return new BadRequestException({ error: 'bad_request', message });

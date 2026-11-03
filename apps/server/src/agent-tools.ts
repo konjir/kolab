@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { args } from './args.js';
-import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
+import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
@@ -200,6 +200,7 @@ const archiveAgent = args({
   agent: z.string().optional().describe('The agent\'s whole name, for an agent of yours whose name doesn\'t start <you>- (konjir_list_agents gives each one\'s archive_with). Give label or agent, not both.'),
 });
 const listAgents = args({ archived: z.boolean().optional().describe('Include your archived agents too') });
+const endOwnSession = args({ session: z.string().describe('The session\'s id as konjir_list_sessions gives it, or at least its first 8 characters') });
 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
 @Injectable()
@@ -915,6 +916,28 @@ export class AgentTools {
   })
   archiveAgent({ label, agent }: z.infer<typeof archiveAgent>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.archiveOwnAgent(s, { label, agent }));
+  }
+
+  // ---- a person's own sessions, one on each machine (W6.1, D103) ------------------
+
+  @McpTool({
+    name: 'konjir_list_sessions',
+    description: `For a person's own session only: your open sessions, most recently used first (at most ${MAX_OWN_SESSIONS}). You hold one on each machine you sign in through as yourself: each konjir install, browser and harness entry; signing in again on one replaces only that one. Each with its id (session, as whoami gives it), whether it is this one (current), how it signed in (via: web, Kolab's web page; app, an app or harness through its own sign-in, such as the konjir CLI; token, one an admin opened), where (the app's name, or the browser), its kolab and role, when it opened, when it was last used (last_used: when it last renewed its sign-in, every 15 minutes while it works, else when it opened), and for a token when it expires. Your agents' sessions are theirs: konjir_list_agents. An agent's session and the admin token are refused.`,
+    schema: noArgs,
+    annotations: { readOnlyHint: true },
+  })
+  listSessions(_: unknown, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.listOwnSessions(s));
+  }
+
+  @McpTool({
+    name: 'konjir_end_session',
+    description: 'For a person\'s own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. A signed-in one\'s sign-in is revoked, so it renews no more; either way it ends at once, its listen streams close, and the jobs it ran stop. Ending this session signs you out here. Your other sessions go on. Anything but an open session of yours is refused alike. An agent\'s session and the admin token are refused.',
+    schema: endOwnSession,
+    annotations: { destructiveHint: true },
+  })
+  endSession({ session }: z.infer<typeof endOwnSession>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.endOwnSession(s, { session }));
   }
 }
 

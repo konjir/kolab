@@ -13,7 +13,7 @@
  *
  * It also passes Kolab's own tools, resources and prompts through to Claude Code (W3.8, D61), on
  * this same connection and sign-in, so Claude Code needs one Konjir server and one sign-in: one
- * session per actor (ENF4) holds. It lists them from Kolab, refreshing on list_changed and on each
+ * session per agent (ENF4) holds. It lists them from Kolab, refreshing on list_changed and on each
  * reconnect, and forwards each call as it came. A call is sent once: the MCP client sends it again
  * only after Kolab answered 401, which Kolab gives before it runs anything (a token expired or
  * rotated mid-call, refreshed under the lock), never after a timeout or a lost connection.

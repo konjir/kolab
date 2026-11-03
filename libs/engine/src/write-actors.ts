@@ -79,6 +79,9 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   addActor: { recorded: ['actor.created_by', 'account.created_by'] },
   openSession: { recorded: ['session.opened_by', 'session.ended_by'] },
   endSession: { recorded: ['session.ended_by'] },
+  endSessions: { recorded: ['session.ended_by'] },
+  // A person ends a session of their own (D103): its grant revoked as theirs, and it ended by them.
+  endOwnSession: { recorded: ['oauth_grant.revoked_by', 'session.ended_by'] },
   switchSession: { recorded: ['session.ended_by', 'session.opened_by'] },
   signInWith: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by'] },
   linkIdentity: { recorded: ['identity.linked_by'] },

@@ -42,6 +42,17 @@ export interface InviteView {
   state: 'open' | 'accepted' | 'revoked' | 'expired';
   accepted_by: string | null; accepted_at: string | null;
 }
+/**
+ * One of a person's own open sessions (D103: one on each machine they sign in through), as they
+ * see it: its id (whoami's `session`), whether it is the one asking (`current`), how it signed in
+ * (`web`: Kolab's web page; `app`: an app or harness, such as the konjir CLI, through its OAuth
+ * client; `token`: a token an admin opened), where, its kolab and role, when it opened, when it
+ * was last used (when it last renewed its sign-in, else when it opened), and for a token, when it expires.
+ */
+export interface OwnSession {
+  session: string; current: boolean; via: 'web' | 'app' | 'token'; where: string;
+  kolab: string; role: Role; started_at: string; last_used: string; expires_at: string | null;
+}
 /** What an invite's link shows whoever holds it, before they accept: the kolab, the access, and who invites them. */
 export interface InvitePreview {
   kolab: string; title: string; owner: string; level: InviteLevel; layers: Layer[];

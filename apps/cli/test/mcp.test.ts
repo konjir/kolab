@@ -163,7 +163,7 @@ test('a token is shown once, when its session opens: whoami and the database hol
 
   // By actor, for an admin who kept no token.
   const again = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string; session: string };
-  expect(await call(admin, 'admin_end_session', { actor: 'pm' })).toStrictEqual({ ended: again.session });
+  expect(await call(admin, 'admin_end_session', { actor: 'pm' })).toStrictEqual({ ended: again.session, sessions: [again.session] });   // by actor: every session it holds
   await expect(connect(server.url, again.token)).rejects.toThrow();
   await pm.close();
 });

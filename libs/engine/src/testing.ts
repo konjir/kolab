@@ -23,6 +23,9 @@ export class TestKolab extends Kolab {
   override endSession(which: string | { key: string } | { actor: string }, opts: { by?: Doer } | { signingOut: true } = {}) {
     return super.endSession(which, 'by' in opts && opts.by !== undefined ? { by: opts.by } : { signingOut: true });
   }
+  override endSessions(which: string | { key: string } | { actor: string }, opts: { by?: Doer } | { signingOut: true } = {}) {
+    return super.endSessions(which, 'by' in opts && opts.by !== undefined ? { by: opts.by } : { signingOut: true });
+  }
   override linkIdentity(actorId: string, who: { provider: string; subject: string; login?: string }, opts: { by?: Doer } = {}) { return super.linkIdentity(actorId, who, { by: opts.by ?? ADMIN_DOER }); }
   override addOrganization(id: string, opts: { name?: string; by?: Doer } = {}) { return super.addOrganization(id, { ...opts, by: opts.by ?? ADMIN_DOER }); }
   override createKolab(name: string, opts: { owner: string; title?: string; visibility?: Visibility; base?: AccessLevel; by?: Doer }) { return super.createKolab(name, { ...opts, by: opts.by ?? ADMIN_DOER }); }

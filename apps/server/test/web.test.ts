@@ -133,7 +133,7 @@ test('switching kolab or role ends the session and opens another, and a person m
 
   const moved = await alice.call<{ kolab: string; role: string }>('session/switch', { kolab: 'second', role: 'engineer' });
   expect([moved.status, moved.body.kolab, moved.body.role]).toStrictEqual([200, 'second', 'engineer']);
-  expect(await kolab.sessionOpen(product)).toBe(false);   // ENF4: one open session per actor
+  expect(await kolab.sessionOpen(product)).toBe(false);   // the switch replaced it, on the same machine (D103)
   expect((await alice.call('me')).status).toBe(401);       // the old cookie is dead…
   expect((await alice.call('session/switch', { kolab: 'nowhere', role: 'product' })).status).toBe(401);
   const sessions = (await kolab.db.query<{ n: number }>(`select count(*)::int as n from session where actor_id = 'alice' and ended_at is null`)).rows[0].n;
