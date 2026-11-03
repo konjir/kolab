@@ -441,9 +441,12 @@ test('the backoff returns to its first step only after a stream that lived stead
   const delays: number[] = [];
   bridge.onBackoff = (ms) => { delays.push(ms); };
   let listens = 0;
+  const cutAt: number[] = [];
+  const listenedAt: number[] = [];
   bridge.onListening = () => {
     const n = listens++;
-    const end = cuts[cuts.length - 1];
+    listenedAt.push(Date.now());
+    const end = () => { cutAt.push(Date.now()); cuts[n](); };
     if (n >= holds.length) return;
     if (holds[n]) setTimeout(end, holds[n]).unref();
     else end();
@@ -453,6 +456,47 @@ test('the backoff returns to its first step only after a stream that lived stead
   await bridge.stop();
   // 200, 400 and 800 ms after the short ones, and back to 200 after the long one.
   expect(delays).toStrictEqual([200, 400, 800, 200]);
+  // And the bridge did wait them: at least the 800 ms after the third stream, less a little for timers.
+  expect(listenedAt[3] - cutAt[2]).toBeGreaterThanOrEqual(780);
+  await server.close();
+}, 60_000);
+
+test('a stream lives from when it opens: a catch-up longer than steadyMs counts, so a stream cut as soon as it is caught up resets the backoff', async () => {
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'channel-catch-up-admin', kolab, webRoot: null });
+  closeAtEnd(server);
+  const admin = await kolabClient(server.url, 'channel-catch-up-admin');
+  await call(admin, 'admin_add_actor', { id: 'pm' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'pm' });
+  const { token } = await call(admin, 'admin_open_session', { actor: 'pm', role: 'product' }) as { token: string };
+  // Each read of the catch-up takes 600 ms, past steadyMs; each stream is cut once the bridge is listening.
+  const steadyMs = 400;
+  const cuts: (() => void)[] = [];
+  const slow: typeof fetch = async (input, init) => {
+    const body = typeof init?.body === 'string' ? init.body : '';
+    if (body.includes('"method":"resources/read"')) await new Promise((r) => setTimeout(r, 600));
+    const res = await fetch(input, init);
+    if (!body.includes('"method":"subscriptions/listen"') || !res.body) return res;
+    const reader = res.body.getReader();
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        cuts.push(() => { void reader.cancel().catch(() => undefined); try { c.close(); } catch { /* closed */ } });
+        void (async () => { for (;;) { const r = await reader.read().catch(() => ({ done: true as const, value: undefined })); if (r.done) break; try { c.enqueue(r.value); } catch { break; } } })();
+      },
+    });
+    return new Response(stream, { status: res.status, headers: res.headers });
+  };
+  const bridge = new KolabBridge({ url: server.url, token, fetch: slow as never, forward: async () => undefined, log: () => undefined, backoff: { initialMs: 200, maxMs: 5000, steadyMs } });
+  closeAtEnd({ close: () => bridge.stop() });
+  const delays: number[] = [];
+  bridge.onBackoff = (ms) => { delays.push(ms); };
+  let listens = 0;
+  bridge.onListening = () => { const n = listens++; if (n < 2) cuts[n](); };
+  bridge.start();
+  await until('the third stream', () => listens > 2 || undefined, 30_000);
+  await bridge.stop();
+  // Timed from after the catch-up, each stream would have lived no time at all, and the second delay doubled to 400.
+  expect(delays).toStrictEqual([200, 200]);
   await server.close();
 }, 60_000);
 

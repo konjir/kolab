@@ -398,14 +398,18 @@ test('a Deny while Allow is being carried out is refused, and a setup that made 
     const held = new Promise<void>((r) => { go = r; });
     kolab.setupPlan = async (...args) => { kolab.setupPlan = plan; reached(); await held; return plan(...args); };
     const allow = kolab.consentSetup(binding, field('csrf'), field('shown'));
-    await atPlan;
-    // Claimed: the Deny declines nothing, there is no page for it, and the browser is told so.
-    expect(await kolab.declineAuthorization(binding, field('csrf'))).toBeUndefined();
-    expect(await kolab.pendingAuthorization(binding)).toBeUndefined();
-    const refused = await post('deny');
-    expect(refused.res.status).toBe(400);
-    expect(refused.html).toContain('This sign-in is being allowed right now');
-    go();
+    try {
+      // An Allow that ends, or fails, before its plan says so, rather than leaving the test waiting.
+      await Promise.race([atPlan, allow.then(() => { throw new Error('Allow never reached its plan'); })]);
+      // Claimed: the Deny declines nothing, there is no page for it, and the browser is told so.
+      expect(await kolab.declineAuthorization(binding, field('csrf'))).toBeUndefined();
+      expect(await kolab.pendingAuthorization(binding)).toBeUndefined();
+      const refused = await post('deny');
+      expect(refused.res.status).toBe(400);
+      expect(refused.html).toContain('This sign-in is being allowed right now');
+    } finally {
+      go();
+    }
     // Allowed: the setup is recorded.
     await expect(allow).resolves.toMatchObject({ code: expect.any(String) });
     expect(await madeAgent('r0')).toBe(true);

@@ -235,13 +235,13 @@ test('an organization\'s agents share one budget of the organization\'s, with it
 });
 
 // On Postgres, each call takes a pooled connection (10 by default). The budget's lock is held only
-// while a call counts and takes its place, never through its write, so one person's draft stuck in
-// its write holds nobody else up: not their own next draft, nor another person's read. (With the
-// lock held through each write, a burst of big drafts ran one at a time, each holding a connection
-// as it waited.) The test holds one of Bob's writes, rather than timing a burst against one with
-// no rate, which a busy machine blurs. PGlite is one connection, which a held write holds for
-// everyone whatever the lock does, so this is Postgres's alone.
-(process.env.KONJIR_TEST_DATABASE_URL ? test : test.skip)('one person\'s burst of big drafts doesn\'t starve another person\'s read', async () => {
+// while a call counts and takes its place, never through its write, so one person's write that is
+// stuck doesn't hold the budget's lock: their next drafts take their places and write, and another
+// person's read goes through. (With the lock held through each write, a burst of big drafts ran
+// one at a time.) The test holds one of Bob's writes and checks what goes through meanwhile; it
+// doesn't time anything. PGlite is one connection, which a held write holds for everyone whatever
+// the lock does, so this is Postgres's alone.
+(process.env.KONJIR_TEST_DATABASE_URL ? test : test.skip)('one person\'s stuck write doesn\'t hold the budget\'s lock: their next drafts and another person\'s read go through', async () => {
   const { kolab, product, engineer } = await orders();
   for (let i = 0; i < 4; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
   const big = Array.from({ length: MAX_ELEMENTS }, (_, i) => ({ id: `b${i}`, text: `Element ${i}: ${long(150)}` }));
@@ -260,16 +260,21 @@ test('an organization\'s agents share one budget of the organization\'s, with it
   });
   await isLocked;
   const stuck = kolab.draft(engineer, 'part-0', { elements: big });
-  for (let waited = 0; (await holds()) < 1; waited += 20) {
-    if (waited > 20_000) throw new Error('the draft never took its place');
-    await new Promise((r) => setTimeout(r, 20));
+  try {
+    for (let waited = 0; (await holds()) < 1; waited += 20) {
+      if (waited > 20_000) throw new Error('the draft never took its place');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // Its place is taken and its write waits: Bob's next drafts take theirs and write, and Alice reads.
+    await Promise.all([1, 2, 3].map((i) => kolab.draft(engineer, `part-${i}`, { elements: big })));
+    await kolab.queriesPage(product, {});
+    expect(await holds()).toBe(1);
+  } finally {
+    // Never left locked, nor the draft waiting, whatever failed above.
+    release();
+    await holder.catch(() => undefined);
+    await stuck.catch(() => undefined);
   }
-  // Its place is taken and its write waits: Bob's next drafts take theirs and write, and Alice reads.
-  await Promise.all([1, 2, 3].map((i) => kolab.draft(engineer, `part-${i}`, { elements: big })));
-  await kolab.queriesPage(product, {});
-  expect(await holds()).toBe(1);
-  release();
-  await holder;
   await expect(stuck).resolves.toEqual(expect.any(String));
   expect(await holds()).toBe(0);
   expect((await kolab.db.query(`select 1 from version where actor_id = 'bob'`)).rows).toHaveLength(5);
