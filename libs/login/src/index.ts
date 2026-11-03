@@ -653,7 +653,7 @@ export async function login(url: string, opts: { path?: string; clientName?: str
   }), opts);
   const kept = new StoredLogin(url, { path: opts.path });
   const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
-  await client.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: kept, fetch: kept.fetch }));
+  await client.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: kept, fetch: kept.fetch, onInsufficientScope: 'throw' }));
   let me;
   try {
     const r = await client.callTool({ name: 'konjir_whoami', arguments: {} });

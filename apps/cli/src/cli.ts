@@ -76,9 +76,12 @@ const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_
 export async function connect(url: string, auth: string | OAuthClientProvider): Promise<Client> {
   // 'auto' talks 2026-07-28 to a Kolab server that offers it (needed for subscriptions/listen) and 2025 to an older one.
   const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
+  // A 403 insufficient_scope is Kolab refusing an admin verb to a session that isn't raised: raising
+  // happens in the person's browser on Kolab's page (W2.22), never by signing in again for a wider
+  // scope, so the client throws it (InsufficientScopeError, said plainly by call) and keeps the sign-in.
   await client.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
-    ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } } }
-    : { authProvider: auth, ...(auth instanceof StoredLogin ? { fetch: auth.fetch } : {}) }));
+    ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } }, onInsufficientScope: 'throw' }
+    : { authProvider: auth, ...(auth instanceof StoredLogin ? { fetch: auth.fetch } : {}), onInsufficientScope: 'throw' }));
   // An error the SDK reports only here lets go of a leaked hold, never of a refresh still in flight
   // (that would let another konjir refresh with the same token, and undo the compare-and-swap).
   if (auth instanceof StoredLogin) client.onerror = () => auth.releaseIdleLock();
@@ -131,7 +134,7 @@ const insufficientScope = (e: unknown) =>
 
 /** The refusal for an agent session calling an admin verb, said plainly. */
 const adminOnly = (verb: string) =>
-  `${toolName(verb)} is an admin verb: only a Konjir admin's own session, raised in their browser (konjir admin_elevate), or the break-glass token may call it, and this session isn't raised. Ask a Konjir admin.`;
+  `${toolName(verb)} is an admin verb: only a Konjir admin's own session, raised in their browser (konjir admin_elevate), or the break-glass token may call it, and this session isn't raised. Nothing else is wrong with it: a Konjir admin runs konjir admin_elevate and confirms the raise in their own browser; anyone else, ask a Konjir admin.`;
 
 /** Call a tool and return its structured result, or throw with the tool's error text. */
 export async function call(client: Client, verb: string, args: Record<string, unknown> = {}) {

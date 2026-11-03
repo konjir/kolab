@@ -480,8 +480,8 @@ export class KolabBridge {
     // With a sign-in, the MCP client refreshes the access token as it expires, under the credentials
     // file's lock, and a request refused while another konjir refreshed is sent again with the new token.
     return new StreamableHTTPClientTransport(new URL(this.opts.url), login
-      ? { authProvider: login, fetch: login.fetchWith(aborting) }
-      : { requestInit: { headers: { Authorization: `Bearer ${this.opts.token}` } }, fetch: aborting });
+      ? { authProvider: login, fetch: login.fetchWith(aborting), onInsufficientScope: 'throw' }
+      : { requestInit: { headers: { Authorization: `Bearer ${this.opts.token}` } }, fetch: aborting, onInsufficientScope: 'throw' });
   }
 
   /**
