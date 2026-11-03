@@ -559,6 +559,40 @@ test('the web interface signs a person in with the identity provider, refreshes 
   expect((await token(base, { grant_type: 'authorization_code', client_id: 'konjir-web', code: 'kjc_x', redirect_uri: `${base}/api/session/oauth/callback`, code_verifier: 'v'.repeat(43) })).status).toBe(401);
 });
 
+test('a web sign-in replaces the session its browser still holds when it is the same person\'s, and leaves another person\'s alone (D103)', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const webIn = async (browser: Browser, who: { subject: string; login: string }, kolabField: Record<string, string>) => {
+    idp.next(who);
+    const html = await (await browser.go('/api/session/oauth/start')).res.text();
+    await browser.consent({ csrf: csrfOf(html), decision: 'allow', role: 'product', ...kolabField });
+  };
+  const open = async (actor: string) => (await kolab.db.query<{ id: string }>(`select id from session where actor_id = $1 and ended_at is null order by id`, [actor])).rows.map((r) => r.id);
+  const uma = { subject: '711', login: 'uma' };
+  const a = new Browser(base);
+  await webIn(a, uma, { kolab: '@new', new_kolab_name: 'uma', new_kolab_title: 'Uma' });
+  const [first] = await open('uma');
+  // A session from before browsers had a machine of their own (0040 gave it client:konjir-web), in a browser whose secret is gone.
+  await kolab.db.query(`update session set machine_key = 'client:konjir-web' where id = $1`, [first]);
+  a.cookies.delete('konjir_browser');
+  await webIn(a, uma, { kolab: 'kolab:uma' });
+  const [second] = await open('uma');
+  expect(second).not.toBe(first);
+  expect(await open('uma')).toStrictEqual([second]);   // the old one ended: no session lingers
+  expect((await kolab.db.query(`select ended_by from session where id = $1`, [first])).rows).toStrictEqual([{ ended_by: 'uma' }]);
+
+  // Another person's cookies in a browser Uma signs in with (a shared computer) are ignored, not ended.
+  const v = new Browser(base);
+  await webIn(v, { subject: '712', login: 'vic' }, { kolab: '@new', new_kolab_name: 'vic', new_kolab_title: 'Vic' });
+  const vics = await open('vic');
+  const shared = new Browser(base);
+  for (const k of ['konjir_session', 'konjir_refresh']) shared.cookies.set(k, v.cookies.get(k)!);
+  await webIn(shared, uma, { kolab: 'kolab:uma' });
+  expect(await open('vic')).toStrictEqual(vics);
+  expect((await open('uma')).length).toBe(2);   // this browser's, and browser a's, another machine
+  expect((await v.fetch('/api/me', { headers: { origin: base } })).status).toBe(200);
+});
+
 test('hand-issued tokens can be turned off; the admin token works either way', async () => {
   const { kolab, product } = await setup();
   const { mcp } = await serve(kolab, { handIssuedTokens: false });

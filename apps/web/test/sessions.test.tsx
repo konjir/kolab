@@ -9,7 +9,7 @@ import type { Act } from '../src/components/Marks.js';
 
 const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 const session = (over: Partial<OwnSession> & Pick<OwnSession, 'session' | 'where'>): OwnSession => ({
-  current: false, via: 'app', kolab: 'shop', role: 'product', started_at: at(180), last_used: at(5), expires_at: null, ...over,
+  current: false, via: 'app', app: null, kolab: 'shop', role: 'product', started_at: at(180), last_used: at(5), expires_at: null, ...over,
 });
 const view: WebSessionsView = {
   sessions: [
