@@ -362,7 +362,7 @@ async function returnedDrafts() {
   return { kolab, product, bob, returned, inReview };
 }
 
-// Replacing a draft claims it only while it is a draft. Four scenarios, each its own test: together, under load, they neared the 30 s timeout.
+// Replacing a draft claims it only while it is a draft.
 
 test('replacing a draft and a "resubmit as it is" racing it: whichever wins, only it succeeds, and exactly one version waits in review', async () => {
   const { bob, returned, inReview } = await returnedDrafts();
@@ -388,6 +388,7 @@ test('a draft resubmitted as it is, then replaced: the replacement is refused, a
   expect((await bob.call(`nodes/orders-pg/versions/${v}/resubmit`, {})).status).toBe(200);
   const late = await bob.call<{ error: string }>('nodes/orders-pg/submit', { base: 1, replaces: v, changes: [{ kind: 'add', element: 'b3', text: 'x' }] });
   expect([late.status, await inReview()]).toStrictEqual([409, [v]]);
+  expect((await bob.call(`nodes/orders-pg/versions/${v}/abandon`, {})).status).toBe(200);
 });
 
 test('replacing a draft whose quote no longer stands where it pointed is refused before anything is written', async () => {
@@ -401,6 +402,8 @@ test('replacing a draft whose quote no longer stands where it pointed is refused
   expect(quote.status).toBe(400);
   expect(quote.body.message).toMatch(new RegExp(`orders-pg@${quoted} quotes "refunded in full" in kj:orders@1#R2, which version 2 no longer says as quoted`));
   expect(await seqs()).toBe(before);
+  // The refused replacement left the draft it would have replaced as it was.
+  expect((await bob.call(`nodes/orders-pg/versions/${quoted}/abandon`, {})).status).toBe(200);
 });
 
 test('replacing a draft with a link into another kolab Bob read when he drafted, and reads no longer: refused, naming nothing of that kolab\'s work', async () => {
