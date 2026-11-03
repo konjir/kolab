@@ -88,7 +88,7 @@ const openSession = args({
 const endSession = args({
   token: z.string().optional().describe('The bearer token the session opened with'),
   session: z.string().optional().describe("The session's key, as whoami gives it: the sha256 of its token, base64url"),
-  actor: z.string().optional().describe('The actor whose open session to end'),
+  actor: z.string().optional().describe('The actor whose open sessions to end: an agent\'s one, or every one a person holds, one on each machine'),
 });
 const addOrganization = args({ id: z.string(), name: z.string().optional() });
 const addMember = args({ org: z.string(), user: z.string(), role: z.enum(ORG_ROLES).optional().describe('owner administers every kolab the organization owns. Defaults to member.') });
@@ -275,7 +275,7 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_end_session',
-    description: "Admin: end a session, revoking its token. Name it by exactly one of token (kjs_…), session (its 43-character key, as whoami and admin_open_session give it) or actor (whose open session it is). Returns the ended session's key; an error if no open session matched, so a mistyped revoke never passes for one that worked.",
+    description: "Admin: end a session, revoking its token. Name it by exactly one of token (kjs_…), session (its 43-character key, as whoami and admin_open_session give it) or actor (every open session it holds: an agent holds one, a person one on each machine they sign in through, D103). Returns the ended session's key (by actor, the first, with all of them in sessions); an error if no open session matched, so a mistyped revoke never passes for one that worked.",
     schema: endSession,
   })
   @AdminOnly()
@@ -289,11 +289,11 @@ export class AdminTools {
       if (session !== undefined && !SESSION_KEY.test(session)) {
         throw new Error(session.startsWith('kjs_') ? 'that is a token, not a session key; pass it as token=' : "that is not a session key, which is 43 base64url characters (whoami's session)");
       }
-      const ended = await this.kolab.endSession(token ?? (session !== undefined ? { key: session } : { actor: actor! }), admin(context));
-      if (!ended) {
+      const ended = await this.kolab.endSessions(token ?? (session !== undefined ? { key: session } : { actor: actor! }), admin(context));
+      if (!ended.length) {
         throw new Error(actor !== undefined ? `${actor} has no open session` : 'no open session matched; it has already ended, or never existed');
       }
-      return ok({ ended });
+      return ok({ ended: ended[0], ...(actor !== undefined ? { sessions: ended } : {}) });
     } catch (e) { return fail(e); }
   }
 

@@ -3,7 +3,7 @@ import {
   BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, HttpException, Inject, Logger, NotFoundException, Param, ParseIntPipe, Post, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { Kolab, maskTokens } from '@konjir/engine';
+import { BROWSER_SECRET, Kolab, maskTokens, webMachine } from '@konjir/engine';
 import type {
   InvitePreview, WebAnswer, WebChangeGrant, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
   WebCli, WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
@@ -49,6 +49,31 @@ const pkcePath = WEB_CALLBACK.slice(0, WEB_CALLBACK.lastIndexOf('/'));
 
 /** How long the invite a person opened waits for them to sign in (W3.4): longer than a sign-in may take. */
 const INVITE_COOKIE_S = 1800;
+
+/**
+ * The cookie that names this browser to Kolab (D103): a random secret, made at its first sign-in
+ * and kept across them, whose hash is the machine of its sessions (webMachine), so signing in again
+ * in this browser replaces only this browser's session, never one on another machine. Read only by
+ * the sign-in's callback: `__Host-` behind the TLS proxy, as the PKCE cookie is, and on loopback
+ * scoped to the callback. It grants nothing: a sign-in still needs the identity provider.
+ */
+const browserCookie = (options: WebOptions) => (options.publicHost ? '__Host-konjir_browser' : 'konjir_browser');
+/** A browser keeps its secret for 400 days, the most a browser keeps a cookie; each sign-in renews it. */
+const BROWSER_COOKIE_S = 400 * 24 * 3600;
+
+/**
+ * What a person is shown of the browser a session signed in from (`session.place`): its browser
+ * and system, read from its User-Agent at sign-in, such as "Firefox on macOS"; undefined if neither
+ * is known. Only those words, never the header itself.
+ */
+export function browserPlace(ua: string | undefined): string | undefined {
+  if (!ua) return undefined;
+  const browser = /Edg(e|A|iOS)?\//.test(ua) ? 'Edge' : /OPR\/|Opera/.test(ua) ? 'Opera' : /Firefox\/|FxiOS\//.test(ua) ? 'Firefox'
+    : /Chrome\/|CriOS\/|Chromium\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : undefined;
+  const system = /iPhone|iPad|iPod/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /CrOS/.test(ua) ? 'ChromeOS'
+    : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : undefined;
+  return browser && system ? `${browser} on ${system}` : browser ?? (system ? `a browser on ${system}` : undefined);
+}
 
 /** Signing in and out of the web interface, and switching kolab or role (see auth.ts). */
 @Controller('api/session')
@@ -120,7 +145,14 @@ export class WebSessionController {
     if (q.iss !== undefined && q.iss !== base) return back('That sign-in came back from another server. Try again.');
     if (typeof q.code !== 'string') return back(q.error === 'access_denied' ? 'Signing in was cancelled.' : 'Signing in didn\'t finish. Try again.');
     try {
-      const t = await this.kolab.exchangeCode({ code: q.code, clientId: WEB_CLIENT, redirectUri: `${base}${WEB_CALLBACK}`, codeVerifier: verifier });
+      // This browser's machine (D103): signing in here again replaces only this browser's session.
+      const kept = cookieOf(req, browserCookie(this.options));
+      const browser = kept && BROWSER_SECRET.test(kept) ? kept : randomBytes(32).toString('base64url');
+      const place = browserPlace(req.headers['user-agent']);
+      const t = await this.kolab.exchangeCode({
+        code: q.code, clientId: WEB_CLIENT, redirectUri: `${base}${WEB_CALLBACK}`, codeVerifier: verifier, machine: webMachine(browser), ...(place ? { place } : {}),
+      });
+      res.append('set-cookie', `${browserCookie(this.options)}=${browser}; ${bindingCookieAttrs(this.options, pkcePath)}; HttpOnly; SameSite=Lax; Max-Age=${BROWSER_COOKIE_S}`);
       await this.people.check(t.accessToken);
       setSessionCookie(res, t.accessToken, this.options, t.refreshToken);
       back();
@@ -260,6 +292,13 @@ export class WebController {
 
   @Post('invites/:id/revoke') @HttpCode(204)
   async revokeInvite(@WebSession() s: string, @Param('id') id: string) { await run(() => this.web.revokeInvite(s, id)); }
+
+  // ---- the person's own sessions, one on each machine (W6.1, D103) ----
+
+  @Get('sessions') sessions(@WebSession() s: string) { return run(() => this.web.sessions(s)); }
+
+  @Post('sessions/:id/revoke') @HttpCode(200)
+  revokeSession(@WebSession() s: string, @Param('id') id: string) { return run(() => this.web.revokeSession(s, id)); }
 
   // ---- who holds access (W3.6): for those with Admin in the session's kolab, as Kolab decides ----
 

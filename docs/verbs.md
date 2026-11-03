@@ -43,6 +43,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`create_node`](#create_node) | Create a node in your kolab. |
 | [`draft`](#draft) | Draft a new version. |
 | [`end_job`](#end_job) | End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. |
+| [`end_session`](#end_session) | For a person's own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. |
 | [`instructions`](#instructions) | Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. |
 | [`lineage`](#lineage) | Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. |
 | [`link`](#link) | Declare that one of your elements relies on an address, so you are told when it changes. |
@@ -54,6 +55,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`list_repositories`](#list_repositories) | Your kolab's registered repositories, by URL: each with its root commit, the binding it implements, who registered it, and whether it is confirmed (by whom, and by which work package's approval). |
 | [`list_reviews`](#list_reviews) | Review requests waiting for you, oldest first, each with its subject and how to review it; and your own submissions, newest first, with the verdicts they got. |
 | [`list_rulings`](#list_rulings) | List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. |
+| [`list_sessions`](#list_sessions) | For a person's own session only: your open sessions, most recently used first (at most 100). |
 | [`list_stale`](#list_stale) | List open dirty marks: what is dirty, why, and the next step. |
 | [`list_work`](#list_work) | The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), what a milestone not Done waits on (waiting: its members that aren't Done, as blocked names them), at_risk and its revisit (repository, commits, files, pull requests) while an open mark on it says something it serves or relies on changed (a Done package stays Done, PLN10), and ready: To do, not blocked, not a milestone, and your session may write the technical layer. |
 | [`open_case`](#open_case) | Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can't be met as written. |
@@ -267,13 +269,13 @@ Admin: the audit log (W2.20), newest first, a page at a time (next_before, when 
 konjir admin_end_session [token=<string>] [session=<string>] [actor=<string>]
 ```
 
-Admin: end a session, revoking its token. Name it by exactly one of token (kjs_…), session (its 43-character key, as whoami and admin_open_session give it) or actor (whose open session it is). Returns the ended session's key; an error if no open session matched, so a mistyped revoke never passes for one that worked.
+Admin: end a session, revoking its token. Name it by exactly one of token (kjs_…), session (its 43-character key, as whoami and admin_open_session give it) or actor (every open session it holds: an agent holds one, a person one on each machine they sign in through, D103). Returns the ended session's key (by actor, the first, with all of them in sessions); an error if no open session matched, so a mistyped revoke never passes for one that worked.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `token` | `string` | no | The bearer token the session opened with |
 | `session` | `string` | no | The session's key, as whoami gives it: the sha256 of its token, base64url |
-| `actor` | `string` | no | The actor whose open session to end |
+| `actor` | `string` | no | The actor whose open sessions to end: an agent's one, or every one a person holds, one on each machine |
 
 ## admin_grant
 
@@ -588,6 +590,18 @@ End a job you took, once its agent has exited (done or failed) or you stopped it
 | `outcome` | `done\|stopped\|failed` | yes | done: the agent finished and exited; stopped: you stopped it; failed: the agent failed or crashed |
 | `note` | `string` | no | What happened, for the ledger and for whoever takes its item next. At most 4000 characters |
 
+## end_session
+
+```
+konjir end_session session=<string>
+```
+
+For a person's own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. A signed-in one's sign-in is revoked, so it renews no more; either way it ends at once, its listen streams close, and the jobs it ran stop. Ending this session signs you out here. Your other sessions go on. Anything but an open session of yours is refused alike. An agent's session and the admin token are refused.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `session` | `string` | yes | The session's id as konjir_list_sessions gives it, or at least its first 8 characters |
+
 ## instructions
 
 ```
@@ -747,6 +761,16 @@ List the rulings in your kolab, newest first: precedent, so a settled question i
 | `node` | `string` | no | Only rulings on this node of your kolab |
 | `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
 | `limit` | `int` | no | How many to return: 50 by default, at most 200. |
+
+## list_sessions
+
+```
+konjir list_sessions
+```
+
+For a person's own session only: your open sessions, most recently used first (at most 100). You hold one on each machine you sign in through as yourself: each konjir install, browser and harness entry; signing in again on one replaces only that one. Each with its id (session, as whoami gives it), whether it is this one (current), how it signed in (via: web, Kolab's web page; app, an app or harness through its own sign-in, such as the konjir CLI; token, one an admin opened), where (the app's name, or the browser), its kolab and role, when it opened, when it was last used (last_used: when it last renewed its sign-in, every 15 minutes while it works, else when it opened), and for a token when it expires. Your agents' sessions are theirs: konjir_list_agents. An agent's session and the admin token are refused.
+
+No parameters.
 
 ## list_stale
 

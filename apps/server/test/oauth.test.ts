@@ -533,7 +533,9 @@ test('the web interface signs a person in with the identity provider, refreshes 
   expect(html).not.toContain('name="as"');   // the web interface is for people: no agents
   const done = await browser.consent({ csrf: csrfOf(html), decision: 'allow', kolab: '@new', new_kolab_name: 'tess', new_kolab_title: 'Tess', role: 'product' });
   expect([done.at.pathname, done.at.search]).toStrictEqual(['/', '']);   // back on the page, with no sign-in error (no web build here, so it says so)
-  expect([...browser.cookies.keys()].sort()).toStrictEqual(['konjir_refresh', 'konjir_session']);
+  // Beside the tokens, the browser keeps a secret naming it, so signing in here again replaces only this browser's session (D103).
+  expect([...browser.cookies.keys()].sort()).toStrictEqual(['konjir_browser', 'konjir_refresh', 'konjir_session']);
+  expect(browser.cookies.get('konjir_browser')).toMatch(/^[A-Za-z0-9_-]{43}$/);
   const me = () => browser.fetch('/api/me', { headers: { origin: base } });
   expect(await (await me()).json()).toMatchObject({ actor: 'tess', kind: 'person', kolab: 'tess', role: 'product' });
 
@@ -548,7 +550,7 @@ test('the web interface signs a person in with the identity provider, refreshes 
   // Signing out ends the session and revokes the refresh token.
   const refresh = decodeURIComponent(browser.cookies.get('konjir_refresh')!);
   expect((await browser.fetch('/api/session', { method: 'DELETE', headers: { origin: base } })).status).toBe(204);
-  expect(browser.cookies.size).toBe(0);
+  expect([...browser.cookies.keys()]).toStrictEqual(['konjir_browser']);   // the browser is still the same machine
   expect(await kolab.refreshGrant({ refreshToken: refresh, clientId: 'konjir-web' }).catch((e: { code: string }) => e.code)).toBe('invalid_grant');
 
   // A state that isn't this browser's is refused, and so is the web client at the token endpoint.
@@ -894,4 +896,17 @@ test('the web page learns how to run the konjir CLI: npx only with a pinned spec
   expect(isPinnedNpmSpec('@konjir/cli@0.6.0-rc.1')).toBe(true);
   for (const zeros of ['konjir@01.2.3', 'konjir@1.02.3', 'konjir@1.2.03']) expect([zeros, isPinnedNpmSpec(zeros)]).toStrictEqual([zeros, false]);
   expect(isPinnedNpmSpec('konjir@10.0.0')).toBe(true);
+});
+
+test('a web session says which browser it signed in from, by name and system only, never the User-Agent itself (D103)', async () => {
+  const { browserPlace } = await import('../src/web/web.controller.js');
+  const ua = {
+    firefoxMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:131.0) Gecko/20100101 Firefox/131.0',
+    chromeWin: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    edgeWin: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
+    safariIos: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+    chromeAndroid: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+  };
+  expect(Object.values(ua).map((u) => browserPlace(u))).toStrictEqual(['Firefox on macOS', 'Chrome on Windows', 'Edge on Windows', 'Safari on iOS', 'Chrome on Android']);
+  expect([browserPlace(undefined), browserPlace(''), browserPlace('curl/8.7.1'), browserPlace('<script>x</script> Linux')]).toStrictEqual([undefined, undefined, undefined, 'a browser on Linux']);
 });

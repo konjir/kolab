@@ -1941,9 +1941,11 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
   await withDb(async (db) => {
     const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
     expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
+    // Each of these people and agents holds one open session, so 0040 goes back too.
+    await db.exec(UNDO_0040);
     await db.exec(undo0039());
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40] });
     // Every job as it was: its item and how it ended, the new items empty.
     expect((await db.query(`select * from job order by id`)).rows)
       .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
@@ -1957,5 +1959,66 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
   try {
     expect((await kolab.listJobs(lee, { live: true })).jobs.map((j) => `${j.kind} ${j.item}`).sort()).toStrictEqual(['build kj:orders-pg#W2', 'review kj:orders-pg#W1']);
     expect(await kolab.takeJob(lee, { machine: 'm', kinds: ['build', 'review', 'answer', 'mark', 'serve'] })).toMatchObject({ taken: false });
+  } finally { await kolab.close(); }
+});
+
+// ---- 0040: sessions per machine (W6.1; D103, ENF4, DEL7) -------------------------------------------
+
+/** Takes a database at 0040 back to 0039 by hand, as 0040 found it: what 0040 adds dropped, and one_open_session_per_actor back. */
+const UNDO_0040 = `drop index one_open_session_per_machine;
+  drop trigger session_machine on session;
+  drop function kj_session_machine();
+  alter table session drop constraint session_machine_open;
+  alter table session drop column machine_key, drop column place, drop column last_used_at;
+  create unique index one_open_session_per_actor on session(actor_id) where ended_at is null;
+  delete from kj_migration where version = 40;`;
+
+test('a database at 0039 with open and ended sessions reaches 0040: each open one is given its machine, agents\' all `agent`, and everyone stays signed in (D103)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'machine_sessions');
+  expect(MIGRATIONS[at].version).toBe(40);
+  let kolab = await TestKolab.open(store);
+  const s = { alice: '', bob: '', agent: '', carol: '', client: '' };
+  try {
+    await people(kolab, 'alice', { layers: ['functional'] });
+    await people(kolab, ['bob', 'carol'], { layers: ['technical'] });
+    await kolab.addActor('alice-pm', { owner: 'alice' });
+    await kolab.grant('test', 'alice-pm', 'write', { layers: ['functional'] });
+    // Alice signed in through an app; bob and her agent with tokens an admin opened; carol's ended.
+    const { createHash, randomBytes } = await import('node:crypto');
+    s.client = (await kolab.registerClient({ name: 'konjir CLI', redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+    const verifier = randomBytes(32).toString('base64url');
+    const begun = await kolab.beginAuthorization({ provider: 'github', clientId: s.client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: createHash('sha256').update(verifier).digest('base64url') });
+    const { csrf } = await kolab.identifyAuthorization(begun.binding, begun.state, 'alice');
+    const { code } = await kolab.consent(begun.binding, csrf, { as: { kind: 'self' }, kolab: 'test', role: 'product' });
+    s.alice = (await kolab.exchangeCode({ code, clientId: s.client, redirectUri: 'http://127.0.0.1:9/cb', codeVerifier: verifier })).accessToken;
+    s.bob = await kolab.openSession('bob', 'engineer');
+    s.agent = await kolab.openSession('alice-pm', 'product');
+    s.carol = await kolab.openSession('carol', 'engineer');
+    await kolab.endSession(s.carol);
+  } finally { await kolab.close(); }
+
+  await withDb(async (db) => {
+    await db.exec(UNDO_0040);
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40] });
+    expect((await db.query(`select actor_id, machine_key, place, last_used_at from session order by actor_id`)).rows).toStrictEqual([
+      { actor_id: 'alice', machine_key: `client:${s.client}`, place: null, last_used_at: null },
+      { actor_id: 'alice-pm', machine_key: 'agent', place: null, last_used_at: null },
+      { actor_id: 'bob', machine_key: 'token', place: null, last_used_at: null },
+      { actor_id: 'carol', machine_key: null, place: null, last_used_at: null },
+    ]);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0040_machine_sessions\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
+
+  // Everyone is still signed in; each machine's next sign-in replaces only its own.
+  kolab = await TestKolab.open(store);
+  try {
+    for (const t of [s.alice, s.bob, s.agent]) expect(await kolab.sessionOpen(t)).toBe(true);
+    expect(await rejection(kolab.openSession('alice-pm', 'product'))).toMatch(/already has an open session/);
+    expect(await rejection(kolab.openSession('bob', 'engineer'))).toMatch(/already has an open session/);
+    const more = await kolab.openSession('alice', 'product');   // a token beside her sign-in through the app: another machine
+    for (const t of [s.alice, s.bob, more]) expect(await kolab.sessionOpen(t)).toBe(true);
   } finally { await kolab.close(); }
 });

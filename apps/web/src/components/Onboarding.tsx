@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import type {
-  AccessHolder, AccessLevel, AccessSource, InvitePreview, InviteView, KolabAccessView, Layer, WebAccessChanged, WebCli, WebInviteMade, WebInvitesView, WebMe, WebOverview, WebPaged,
+  AccessHolder, AccessLevel, AccessSource, InvitePreview, InviteView, KolabAccessView, Layer, OwnSession, WebAccessChanged, WebCli, WebInviteMade, WebInvitesView, WebMe, WebOverview, WebPaged,
+  WebSessionRevoked, WebSessionsView,
 } from '@konjir/types';
 import { api } from '../api.js';
 import { ago } from '../util.js';
@@ -388,6 +389,54 @@ export function GettingStarted({ me, go }: { me: WebMe; go(r: string): void }) {
         <li>Write the spec below, or let your agent draft it for you to review.</li>
       </ol>
     </section>
+  );
+}
+
+const VIA_WORDS: Record<OwnSession['via'], string> = { web: 'web page', app: 'app', token: 'token' };
+
+/**
+ * Your sessions (W6.1, D103): you hold one on each machine you sign in through as yourself, each
+ * konjir install, browser and harness entry, and signing in again on one replaces only that one.
+ * The list says where and when each was last used; revoking one ends it at once and closes its
+ * streams (D41). This browser's own is marked, and signing out ends it instead.
+ */
+export function SessionsView({ tick, act }: { tick: number; act: Act }) {
+  const [again, setAgain] = useState(0);
+  const { data, error } = useRead<WebSessionsView>('sessions', tick + again);
+  const [pending, setPending] = useState<OwnSession>();
+  const revoke = async (s: OwnSession) => {
+    setPending(undefined);
+    if (await act.run(() => api<WebSessionRevoked>(`sessions/${encodeURIComponent(s.session)}/revoke`, {}), `Revoked: ${s.where} is signed out`)) setAgain((n) => n + 1);
+  };
+  const sessions = data?.sessions ?? [];
+  return (
+    <>
+      <section className="summary" aria-label="Your sessions">
+        <h1>Your sessions</h1>
+        <span className="fact">You stay signed in on each machine you use: each konjir install, browser and harness. Signing in again on one replaces only that one. Revoke any you no longer use.</span>
+      </section>
+      <section aria-labelledby="s-list"><h2 className="section-title" id="s-list">Signed in now</h2>
+        {error && <p className="empty" role="alert">{error}</p>}
+        {pending && (
+          <div className="notice" role="alertdialog" aria-labelledby="s-confirm">
+            <h2 id="s-confirm">Revoke {pending.where}?</h2>
+            <p>It is signed out at once, wherever it is, and anything it runs stops. Signing in there again opens a new session.</p>
+            <div className="edit-row">
+              <button type="button" className="btn primary" onClick={() => void revoke(pending)}>Revoke</button>
+              <button type="button" className="btn quiet" onClick={() => setPending(undefined)}>Keep it</button>
+            </div>
+          </div>
+        )}
+        {sessions.length ? <ul className="qlist">{sessions.map((s) => (
+          <li key={s.session} className="qitem" aria-label={`${s.where}, ${s.session.slice(0, 8)}`}><div className="row">
+            <Pill tone={s.current ? 'clean' : 'question'}>{s.current ? 'this browser' : VIA_WORDS[s.via]}</Pill>
+            <span><b>{s.where}</b> · {s.kolab} as {s.role} · last used {ago(s.last_used)} · opened {ago(s.started_at)}
+              {s.expires_at ? ` · expires ${new Date(s.expires_at).toLocaleDateString()}` : ''} · <span className="mono" title={s.session}>{s.session.slice(0, 8)}</span></span>
+            {!s.current && <button type="button" className="btn quiet" onClick={() => setPending(s)}>Revoke</button>}
+          </div></li>
+        ))}</ul> : !error && data ? <p className="empty">No open sessions.</p> : null}
+      </section>
+    </>
   );
 }
 

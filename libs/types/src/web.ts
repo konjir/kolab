@@ -4,7 +4,7 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, PositionVerdict, QueryKind,
+  Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, QueryKind,
   QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkState,
 } from './index.js';
 
@@ -356,6 +356,10 @@ export interface WebInvitesView extends WebPaged { invites: InviteView[] }
 export interface WebVersionsView extends WebPaged { versions: WebVersion[] }
 /** An invite's secret, from its link. */
 export interface WebInviteToken { token: string }
+/** A person's own open sessions, one on each machine they sign in through (GET /api/sessions; W6.1, D103), most recently used first. */
+export interface WebSessionsView { sessions: OwnSession[] }
+/** A session revoked (POST /api/sessions/:id/revoke): its id, and whether it was the page's own. */
+export interface WebSessionRevoked { ended: string; current: boolean }
 
 /**
  * A direct grant's new level on the session's kolab (W3.6), and for Write its layers (both by

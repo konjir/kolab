@@ -180,9 +180,10 @@ ${hidden}
 
 /**
  * The consent page (D55): who signed in, which client asks, and the choice of who it acts as, in
- * which kolab and role. One session per actor (ENF4): acting as yourself ends your other session,
- * so an MCP client defaults to an agent of yours (D30): a new one unless the controller picks one,
- * and an agent signed in now is marked, since choosing it ends that session too.
+ * which kolab and role. An MCP client defaults to an agent of yours (D30): a new one unless the
+ * controller picks one, and an agent signed in now is marked, since an agent holds one session
+ * (ENF4) and choosing it ends that one. Acting as yourself ends only your session through this
+ * same client, if any (D103): a person holds one on each machine.
  */
 export function consentPage(v: ConsentView): string {
   if (v.lock && !v.web) return lockedConsentPage({ ...v, lock: v.lock });
@@ -194,7 +195,7 @@ export function consentPage(v: ConsentView): string {
   const who = v.web ? '' : `<fieldset><legend>Work as</legend>
 ${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></span></label>`).join('\n')}
 <label class="opt"><input type="radio" name="as" value="new-agent"${checked(as === 'new-agent')}><span>A new agent of yours, <code>${esc(v.person)}-</code><input type="text" name="agent_label" value="${esc(v.pick.label ?? 'agent')}" maxlength="24" aria-label="The new agent's name" pattern="[a-z0-9][a-z0-9\\-]*"></span></label>
-<label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>Ends any other session you hold open, such as Kolab's web page: one session per person</small></span></label>
+<label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>Replaces only a sign-in of yours through this same app; yours elsewhere, such as Kolab's web page, stay open</small></span></label>
 </fieldset>`;
   return `<h1>Sign in to Kolab</h1>
 <p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>

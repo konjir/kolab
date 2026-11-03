@@ -424,20 +424,24 @@ test('an OAuth grant records who opened and ended its sessions, and who revoked 
   const kolab = await openKolab();
   await people(kolab, 'alice');
   const s256 = (x: string) => createHash('sha256').update(x).digest('base64url');
-  const signIn = async () => {
-    const client = (await kolab.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  const signIn = async (given?: string) => {
+    const client = given ?? (await kolab.registerClient({ redirectUris: ['http://127.0.0.1:9/cb'] })).id;
     const verifier = randomBytes(32).toString('base64url');
     const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256(verifier) });
     const { csrf } = await kolab.identifyAuthorization(binding, state, 'alice');
     const { code } = await kolab.consent(binding, csrf, { kolab: TEST_KOLAB, role: 'product', as: { kind: 'self' } });
     const exchange = () => kolab.exchangeCode({ code, clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeVerifier: verifier });
-    return { tokens: await exchange(), exchange };
+    return { client, tokens: await exchange(), exchange };
   };
   const first = await signIn();
   expect(await row(kolab, `select opened_by from session where id = $1`, [first.tokens.session])).toStrictEqual({ opened_by: 'alice' });
-  const second = await signIn();
-  // The newest sign-in wins: alice ended the first session by signing in again.
+  // Through another client, another machine: the first stands (D103).
+  const elsewhere = await signIn();
+  expect(await row(kolab, `select ended_by from session where id = $1`, [first.tokens.session])).toStrictEqual({ ended_by: null });
+  const second = await signIn(first.client);
+  // Signing in again on the same machine replaces its session: alice ended the first by signing in again.
   expect(await row(kolab, `select ended_by from session where id = $1`, [first.tokens.session])).toStrictEqual({ ended_by: 'alice' });
+  expect(await row(kolab, `select ended_by from session where id = $1`, [elsewhere.tokens.session])).toStrictEqual({ ended_by: null });
   expect(await kolab.revokeToken(second.tokens.refreshToken)).toBe(true);
   expect(await row(kolab, `select g.revoked_by, s.ended_by from session s join oauth_grant g on g.id = s.grant_id where s.id = $1`, [second.tokens.session]))
     .toStrictEqual({ revoked_by: 'alice', ended_by: 'alice' });

@@ -3,6 +3,7 @@
 // signs in the agent; the reviewer is never the author; a person runs at most four live jobs and a
 // kolab eight; ending a job releases its package and ends its session; a lapsed job's package returns
 // to To do; the runner's heartbeat and the agent's calls renew the lease, never past four hours.
+import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import { fillPlaybook, fillTemplate, oneLineId, UnsafeSpecificError, jobMachine, jobOutcome, PLAYBOOK_KINDS, PLAYBOOKS, playbookText, PRECEDENT_BEGIN, PRECEDENT_END, type Kolab } from '@konjir/engine';
 import { els, openKolab, people, registeredRepository, rejection, TEST_KOLAB } from '@konjir/engine/testing';
@@ -1088,4 +1089,27 @@ test('a work package whose id was written with a line break is never pulled by a
   expect(await take(kolab, lee)).toMatchObject({ kind: 'build', item: W('W1') });
   expect((await kolab.db.query(`select state from work_package where element_id = $1`, [forged])).rows).toStrictEqual([{ state: 'todo' }]);
   expect((await kolab.db.query(`select 1 from job where element_id = $1`, [forged])).rows).toStrictEqual([]);
+});
+
+test('a job\'s session, and the session that took it, go on when its person signs in on another machine (D103, JOB2)', async () => {
+  const { kolab, lee } = await planned(2);
+  const job = await take(kolab, lee);
+  // Lee signs in as herself elsewhere, through an app: an OAuth client of its own, another machine.
+  const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
+  const client = (await kolab.registerClient({ name: 'Another machine', redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  const verifier = randomBytes(32).toString('base64url');
+  const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256(verifier) });
+  const { csrf } = await kolab.identifyAuthorization(binding, state, 'lee');
+  const { code } = await kolab.consent(binding, csrf, { as: { kind: 'self' }, kolab: TEST_KOLAB, role: 'engineer' });
+  const elsewhere = await kolab.exchangeCode({ code, clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeVerifier: verifier });
+  for (const t of [lee, job.token, elsewhere.accessToken]) expect(await kolab.sessionOpen(t)).toBe(true);
+  expect(await kolab.sweepLapsedJobs()).toBe(0);
+  expect((await jobRow(kolab, job.job)).ended_at).toBeNull();
+  // The job's agent still works as itself, and still holds its one session.
+  expect(await kolab.sessionInfo(job.token)).toMatchObject({ actor: job.agent, kind: 'agent' });
+  expect(await rejection(kolab.openSession(job.agent, 'engineer'))).toMatch(/already has an open session/);
+  // Its person ending the session that took it ends the job, and its agent's session, as ever (JOB2).
+  await kolab.endSession(lee);
+  expect(await kolab.sessionOpen(job.token)).toBe(false);
+  expect(await kolab.sessionOpen(elsewhere.accessToken)).toBe(true);
 });
