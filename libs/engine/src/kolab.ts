@@ -543,6 +543,18 @@ export const BROWSER_SECRET = /^[A-Za-z0-9_-]{43}$/;
 
 const WEB_MACHINE = /^web:[A-Za-z0-9_-]{43}$/;
 
+/**
+ * How a session through an app is shown (listOwnSessions' `where`): `app "<its name>"`, the name it
+ * registered itself with, on one line and at most 60 characters, so whatever an app calls itself
+ * reads as its own claim and never as Kolab's web page or another machine; `an unnamed app` if none.
+ */
+function appClaim(name: string | null): string {
+  const n = name === null ? null : placeOf(name);
+  if (!n) return 'an unnamed app';
+  const short = [...n].length > 60 ? `${[...n].slice(0, 59).join('')}…` : n;
+  return `app "${short}"`;
+}
+
 /** The most of a person's open sessions listOwnSessions lists, most recently used first. */
 export const MAX_OWN_SESSIONS = 100;
 
@@ -2724,14 +2736,21 @@ export class Kolab {
    * (`machine`, by default the client's, `client:<id>`), and no other of theirs. The grant, its
    * session and its first refresh token are made; its access is checked as any session's is.
    */
-  private async openGrant(tx: Db, signal: Signal, g: { grantId: string; clientId: string; actor: string; person: string; kolab: string; role: Role; scope: string; resource: string | null; machine?: string; place?: string | null }) {
+  private async openGrant(tx: Db, signal: Signal, g: { grantId: string; clientId: string; actor: string; person: string; kolab: string; role: Role; scope: string; resource: string | null; machine?: string; place?: string | null; replacing?: string[] }) {
     const access = newSessionToken();
     const refresh = `kjr_${randomBytes(32).toString('base64url')}`;
     const agent = g.actor !== g.person;
     const machine = agent ? AGENT_MACHINE : g.machine ?? `client:${g.clientId}`;
+    // A person's sign-in also ends the session the browser presented, by its access or refresh token
+    // (`replacing`), when it is theirs: one from before the browser had a machine of its own, say.
+    const replacing = agent ? [] : (g.replacing ?? []).filter((t) => typeof t === 'string' && t.length > 0).map(sessionKey);
     for (const { id } of (await tx.query<{ id: string }>(
-      `update session set ended_at = now(), ended_by = $2 where actor_id = $1 and ended_at is null and ($3::text is null or machine_key = $3) returning id`,
-      [g.actor, g.person, agent ? null : machine])).rows) {
+      `update session s set ended_at = now(), ended_by = $2 where s.actor_id = $1 and s.ended_at is null
+          and (($3::text is null or s.machine_key = $3)
+               or s.token_key = any($4::text[]) or (s.token_key is null and s.id = any($4::text[]))
+               or s.grant_id in (select t.grant_id from oauth_refresh_token t where t.key = any($4::text[])))
+        returning s.id`,
+      [g.actor, g.person, agent ? null : machine, replacing])).rows) {
       await signal({ session: 'ended', id });
     }
     await tx.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, resource, expires_at)
@@ -2809,9 +2828,11 @@ export class Kolab {
    * are told (D41): an agent's one open session (ENF4: the newest sign-in wins), or the person's
    * open session on the same machine, and no other of theirs. The machine is the client's, unless
    * `machine` names it: Kolab's web page names the browser (webMachine), and `place` what the
-   * person is shown of it.
+   * person is shown of it. `replacing`: the tokens the browser presented (its session cookie's
+   * access token and its refresh token); a person's sign-in also ends the open session either
+   * reaches, if it is that person's own, and never anyone else's.
    */
-  async exchangeCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string; machine?: string; place?: string }): Promise<OAuthTokens> {
+  async exchangeCode(p: { code: string; clientId: string; redirectUri: string; codeVerifier: string; resource?: string; machine?: string; place?: string; replacing?: string[] }): Promise<OAuthTokens> {
     const key = sessionKey(p.code);
     if (p.machine !== undefined && !WEB_MACHINE.test(p.machine)) throw new Error('a sign-in names its machine only as webMachine gives it');
     const grantId = randomBytes(24).toString('base64url');
@@ -2830,7 +2851,7 @@ export class Kolab {
       // The person signing in ends it, and opens the new one (W2.20). The grant goes in first, then the code names it.
       const t = await this.openGrant(tx, signal, {
         grantId, clientId: c.client_id, actor: c.actor_id, person: c.person_id, kolab: c.kolab, role: c.role, scope: c.scope, resource: c.resource,
-        ...(p.machine !== undefined ? { machine: p.machine } : {}), place: p.place === undefined ? null : placeOf(p.place),
+        ...(p.machine !== undefined ? { machine: p.machine } : {}), place: p.place === undefined ? null : placeOf(p.place), replacing: p.replacing,
       });
       await tx.query(`update oauth_code set used_at = now(), grant_id = $2 where key = $1`, [key, grantId]);
       return { accessToken: t.accessToken, refreshToken: t.refreshToken, expiresIn: this.oauth.accessTtlS, scope: c.scope, session: t.session, actor: c.actor_id, kolab: c.kolab, role: c.role };
@@ -3139,7 +3160,9 @@ export class Kolab {
         const via: OwnSession['via'] = r.grant_id === null ? 'token' : r.client_id === 'konjir-web' ? 'web' : 'app';
         return {
           session: r.id, current: r.id === me.session, via,
-          where: via === 'token' ? 'a token an admin opened' : via === 'web' ? `Kolab's web page${r.place ? `, ${r.place}` : ''}` : r.client_name ?? 'an app',
+          // An app's name is its own claim, from its registration: quoted, and never read as Kolab's own words.
+          where: via === 'token' ? 'a token an admin opened' : via === 'web' ? `Kolab's web page${r.place ? `, ${r.place}` : ''}` : appClaim(r.client_name),
+          app: via === 'app' ? r.client_name : null,
           kolab: r.kolab_id, role: r.active_role, started_at: iso(r.started_at)!, last_used: iso(r.last_used)!,
           expires_at: r.grant_id === null ? iso(r.expires_at) : null,
         };

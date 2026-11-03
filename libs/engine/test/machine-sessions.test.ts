@@ -12,13 +12,13 @@ const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 const CB = 'http://127.0.0.1:9/cb';
 
 /** A sign-in through `client` (a new one by default), as `person`, acting as `as`, straight through the engine. */
-async function signIn(kolab: Kolab, person: string, o: { client?: string; agent?: string; role?: 'product' | 'engineer'; machine?: string; place?: string } = {}) {
+async function signIn(kolab: Kolab, person: string, o: { client?: string; agent?: string; role?: 'product' | 'engineer'; machine?: string; place?: string; replacing?: string[] } = {}) {
   const client = o.client ?? (await kolab.registerClient({ name: 'Test harness', redirectUris: [CB] })).id;
   const verifier = randomBytes(32).toString('base64url');
   const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: CB, codeChallenge: s256(verifier) });
   const { csrf } = await kolab.identifyAuthorization(binding, state, person);
   const { code } = await kolab.consent(binding, csrf, { as: o.agent ? { kind: 'agent', agent: o.agent } : { kind: 'self' }, kolab: TEST_KOLAB, role: o.role ?? 'product' });
-  const t = await kolab.exchangeCode({ code, clientId: client, redirectUri: CB, codeVerifier: verifier, ...(o.machine ? { machine: o.machine } : {}), ...(o.place ? { place: o.place } : {}) });
+  const t = await kolab.exchangeCode({ code, clientId: client, redirectUri: CB, codeVerifier: verifier, ...(o.machine ? { machine: o.machine } : {}), ...(o.place ? { place: o.place } : {}), ...(o.replacing ? { replacing: o.replacing } : {}) });
   return { client, ...t };
 }
 
@@ -127,7 +127,7 @@ test('a person lists their own sessions and ends one; an agent does neither, and
   const list = (await kolab.listOwnSessions(web.accessToken)).sessions;
   expect(list[0].session).toBe(cli.session);
   expect(list.map((s) => s.session).sort()).toStrictEqual([cli.session, web.session, sessionKey(token)].sort());
-  expect(list[0]).toMatchObject({ current: false, via: 'app', where: 'konjir CLI', kolab: TEST_KOLAB, role: 'product', expires_at: null });
+  expect(list[0]).toMatchObject({ current: false, via: 'app', where: 'app "konjir CLI"', app: 'konjir CLI', kolab: TEST_KOLAB, role: 'product', expires_at: null });
   expect(Date.parse(list[0].last_used)).toBeGreaterThan(Date.parse(list[0].started_at));
   expect(list.find((s) => s.session === web.session)).toMatchObject({ current: true, via: 'web', where: 'Kolab\'s web page, Firefox on macOS', expires_at: null });
   expect(list.find((s) => s.session === sessionKey(token))).toMatchObject({ current: false, via: 'token', where: 'a token an admin opened', expires_at: expect.any(String) });
@@ -171,4 +171,52 @@ test('a person lists their own sessions and ends one; an agent does neither, and
   expect(all).toStrictEqual([one.session, two.session].sort());
   expect(ended.slice(-2).sort()).toStrictEqual(all);
   expect(await kolab.endSession({ actor: 'alice' })).toBe(null);
+});
+
+test('a web sign-in also ends the session its browser still presents, when it is the same person\'s, and never anyone else\'s (D103)', async () => {
+  const kolab = await openKolab();
+  await people(kolab, ['alice', 'bob'], { layers: ['functional'] });
+  const ended = endedEvents(kolab);
+  // Sessions from before the browser had a machine of its own (0040 gave them `client:konjir-web`), and one from before its cookies were cleared.
+  const legacy = await signIn(kolab, 'alice');
+  const cleared = await signIn(kolab, 'alice', { machine: webMachine(randomBytes(32).toString('base64url')) });
+  const bobs = await signIn(kolab, 'bob');
+  const elsewhere = await signIn(kolab, 'alice');   // another machine, which the browser presents nothing of
+  const browser = webMachine(randomBytes(32).toString('base64url'));
+  // The browser presents its access token from one, the refresh token from another, and bob's (a shared machine, say): only alice's end.
+  const now = await signIn(kolab, 'alice', { machine: browser, replacing: [legacy.accessToken, cleared.refreshToken, bobs.accessToken, bobs.refreshToken, 'kjs_nothing', ''] });
+  expect([...ended].sort()).toStrictEqual([legacy.session, cleared.session].sort());
+  for (const t of [legacy.accessToken, cleared.accessToken]) expect(await kolab.sessionOpen(t)).toBe(false);
+  for (const t of [now.accessToken, bobs.accessToken, elsewhere.accessToken]) expect(await kolab.sessionOpen(t)).toBe(true);
+  expect((await kolab.db.query(`select ended_by from session where id = any($1)`, [[legacy.session, cleared.session]])).rows).toStrictEqual([{ ended_by: 'alice' }, { ended_by: 'alice' }]);
+  // An expired access token still names its session; a hand-issued one is named by its token too.
+  await kolab.db.query(`update session set expires_at = now() - interval '1 second' where id = $1`, [now.session]);
+  const token = await kolab.openSession('alice', 'product');
+  await signIn(kolab, 'alice', { machine: webMachine(randomBytes(32).toString('base64url')), replacing: [now.accessToken, token] });
+  expect(ended).toContain(now.session);
+  expect(await kolab.sessionOpen(token)).toBe(false);
+  // An agent's sign-in replaces only its own one session, whatever is presented.
+  await kolab.addActor('alice-pm', { owner: 'alice' });
+  await kolab.grant(TEST_KOLAB, 'alice-pm', 'write', { layers: ['functional'] });
+  await signIn(kolab, 'alice', { agent: 'alice-pm', replacing: [elsewhere.accessToken] });
+  expect(await kolab.sessionOpen(elsewhere.accessToken)).toBe(true);
+});
+
+test('an app\'s name is its own claim: quoted, on one line and short, so it never passes for Kolab\'s web page or another machine (D103)', async () => {
+  const kolab = await openKolab();
+  await people(kolab, 'alice', { layers: ['functional'] });
+  const named = async (name: string) => {
+    const s = await signIn(kolab, 'alice');
+    await kolab.db.query(`update oauth_client set name = $2 where id = $1`, [s.client, name]);
+    return s;
+  };
+  const posing = await named('Kolab\'s web page, Firefox on macOS');
+  const lines = await named('konjir CLI\n(laptop)‮');
+  const long = await named('x'.repeat(200));
+  const list = (await kolab.listOwnSessions(posing.accessToken)).sessions;
+  const of = (s: { session: string }) => list.find((x) => x.session === s.session)!;
+  expect(of(posing)).toMatchObject({ via: 'app', where: 'app "Kolab\'s web page, Firefox on macOS"', app: 'Kolab\'s web page, Firefox on macOS' });
+  expect(of(lines)).toMatchObject({ via: 'app', where: 'app "konjir CLI (laptop)"' });
+  expect(of(long).where).toBe(`app "${'x'.repeat(59)}…"`);
+  expect(list.every((s) => s.via === 'app' && s.where.startsWith('app "'))).toBe(true);
 });

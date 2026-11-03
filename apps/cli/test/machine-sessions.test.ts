@@ -149,8 +149,8 @@ test('a person signed in on two machines and in a browser keeps all three; signi
   const listed = (await call(a.client, 'list_sessions')) as { sessions: OwnSession[] };
   const mine = listed.sessions;
   expect(mine.map((s) => s.session).sort()).toStrictEqual([sa, sb, wid].sort());
-  expect(mine.find((s) => s.session === sa)).toMatchObject({ current: true, via: 'app', where: 'konjir CLI', kolab: 'test', role: 'product', expires_at: null });
-  expect(mine.find((s) => s.session === sb)).toMatchObject({ current: false, via: 'app', where: 'konjir CLI' });
+  expect(mine.find((s) => s.session === sa)).toMatchObject({ current: true, via: 'app', where: 'app "konjir CLI"', app: 'konjir CLI', kolab: 'test', role: 'product', expires_at: null });
+  expect(mine.find((s) => s.session === sb)).toMatchObject({ current: false, via: 'app', where: 'app "konjir CLI"', app: 'konjir CLI' });
   expect(mine.find((s) => s.session === wid)).toMatchObject({ current: false, via: 'web', where: expect.stringMatching(/^Kolab's web page/) });
   const fromWeb = (await (await browser.api('sessions')).json()) as { sessions: OwnSession[] };
   expect(fromWeb.sessions.filter((s) => s.current).map((s) => s.session)).toStrictEqual([wid]);

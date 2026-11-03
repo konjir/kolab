@@ -151,6 +151,9 @@ export class WebSessionController {
       const place = browserPlace(req.headers['user-agent']);
       const t = await this.kolab.exchangeCode({
         code: q.code, clientId: WEB_CLIENT, redirectUri: `${base}${WEB_CALLBACK}`, codeVerifier: verifier, machine: webMachine(browser), ...(place ? { place } : {}),
+        // The session this browser still holds, if any, is replaced too, when it is the same person's:
+        // one from before it had a machine of its own, or a token sign-in's.
+        replacing: [tokenOf(req, this.options), tokenOf(req, this.options, refreshCookieName(this.options))].filter((t): t is string => !!t),
       });
       res.append('set-cookie', `${browserCookie(this.options)}=${browser}; ${bindingCookieAttrs(this.options, pkcePath)}; HttpOnly; SameSite=Lax; Max-Age=${BROWSER_COOKIE_S}`);
       await this.people.check(t.accessToken);
