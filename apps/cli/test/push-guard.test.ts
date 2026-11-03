@@ -124,6 +124,24 @@ test('git\'s short names for the default branch, and pushes whose branch can\'t 
   ] as [string, string?][]) expect([line, deny(line, on)]).toEqual([line, undefined]);
 });
 
+test('after git checkout -b or git switch -c with its name written out, and only &&, a push of HEAD, @ or no refspec pushes that new branch (W6.4 re-review)', () => {
+  // Judged as pushes of the new branch, whatever was checked out before: a feature branch's allowed.
+  for (const line of [
+    'git checkout -b feat && git push -u origin HEAD', 'git checkout -B feat && git push origin @', 'git switch -c feat && git push -u origin',
+    'git switch -C feat origin/main && git add -A && git commit -m x && git push -u origin HEAD', 'git switch --create feat && git push origin HEAD',
+    'git checkout -b feat --track origin/x && git push', 'git checkout main && git checkout -b feat && git push -u origin HEAD',
+  ]) expect([line, deny(line, 'main')]).toEqual([line, undefined]);
+  // The default branch's name, or a branch the guard can't know: denied.
+  for (const [line, why] of [
+    ['git checkout -b main && git push origin HEAD', /default branch/], ['git switch -c main && git push -u origin', /default branch/],
+    ['git checkout -b feat || git push origin HEAD', /can't be known/], ['git checkout -b feat; git push origin HEAD', /can't be known/],
+    ['git checkout -b feat\ngit push origin HEAD', /can't be known/], ['git checkout -b feat | cat && git push origin HEAD', /can't be known/],
+    ['git checkout -b "$B" && git push origin HEAD', /can't be known/], ['git checkout -b feat && cd .. && git push origin HEAD', /can't be known/],
+    ['git checkout -b feat && git checkout main && git push origin HEAD', /can't be known/], ['git checkout -b feat && git symbolic-ref HEAD refs/heads/main && git push', /can't be known/],
+    ['git switch feat && git push origin HEAD', /can't be known/], ['git checkout -b feat && (git push origin HEAD)', /can't be known/],
+  ] as [string, RegExp][]) expect([line, deny(line, 'feature')]).toEqual([line, expect.stringMatching(why)]);
+});
+
 test('the hook: Claude Code\'s PreToolUse input in, exit 2 and why for a denial, 0 otherwise; input it can\'t read is denied (W6.4)', () => {
   const input = (command: unknown, cwd = '/') => JSON.stringify({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd });
   expect(guardHook(input('git push origin :x'), 'main')).toEqual({ code: 2, message: expect.stringMatching(/^Denied in a Konjir job: the refspec :x deletes x on the remote\. /) });
