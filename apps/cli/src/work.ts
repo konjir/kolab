@@ -42,6 +42,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { canonicalRemote, checkoutRepository, type Call, type Git } from './deliver.js';
 import { credentialsPath } from './login.js';
+import { GUARDED_TOOLS } from './guard.js';
 
 /** The most jobs at once the runner takes by default (JOB4): the per-person cap (JOB3). */
 export const DEFAULT_JOBS = 4;
@@ -227,7 +228,7 @@ export function konjirCommand(): string[] {
 
 /**
  * The settings a job's Claude Code runs with beside its own (`--settings`, W6.4): a PreToolUse hook
- * on Bash, `konjir work guard --branch <default branch>`, which reads each command as the shell
+ * on the tools that run shell commands (Bash, and Monitor, which runs one to watch), `konjir work guard --branch <default branch>`, which reads each command as the shell
  * splits it and denies what deniedTools' patterns can't catch (guard.ts). Hooks run whatever the
  * permission mode, --dangerously-skip-permissions included, and a denial reaches the agent as why.
  * `disableAllHooks: false`: --settings outranks the repository's own settings, which Claude Code
@@ -236,8 +237,11 @@ export function konjirCommand(): string[] {
  */
 export function guardSettings(guard: string[], branch: string): string {
   const command = [...guard, 'work', 'guard', '--branch', branch].map(shellQuote).join(' ');
-  return JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command }] }] } });
+  return JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: GUARDED_TOOLS.join('|'), hooks: [{ type: 'command', command }] }] } });
 }
+
+/** How long the runner waits for a harness to open its MCP config's FIFO before removing it unread. */
+export const FEED_DEADLINE_MS = 2 * 60_000;
 
 /**
  * The kinds of job whose agent's commands get the job's token as KONJIR_TOKEN: a build job's, for
@@ -282,10 +286,14 @@ export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: bo
 /**
  * Hands `text` to the first process that opens the FIFO at `path` for reading, then removes it, so
  * nothing that starts later can read it (W6.4). It polls for a reader with a non-blocking open
- * (ENXIO while there is none), never blocking a thread, until `over()` says the reader can no
- * longer come (its harness exited), when it removes the FIFO unread. Resolves to whether it was read.
+ * (ENXIO while there is none), never blocking a thread: every 10 ms for the first second (Claude
+ * Code reads it as it starts), then backing off to once a second, until `over()` says the reader
+ * can no longer come (its harness exited) or `deadlineMs` passes, when it removes the FIFO unread.
+ * Resolves to whether it was read.
  */
-export async function feedOnce(path: string, text: string, over: () => boolean, everyMs = 10): Promise<boolean> {
+export async function feedOnce(path: string, text: string, over: () => boolean, deadlineMs = FEED_DEADLINE_MS): Promise<boolean> {
+  const start = Date.now();
+  let every = 10;
   try {
     for (;;) {
       let fd: number | undefined;
@@ -303,8 +311,10 @@ export async function feedOnce(path: string, text: string, over: () => boolean, 
         } finally { closeSync(fd); }
         return true;
       }
-      if (over()) return false;
-      await new Promise((r) => setTimeout(r, everyMs));
+      const waited = Date.now() - start;
+      if (over() || waited >= deadlineMs) return false;
+      if (waited > 1_000) every = Math.min(1_000, every * 2);
+      await new Promise((r) => setTimeout(r, Math.min(every, deadlineMs - waited)));
     }
   } finally {
     rmSync(path, { force: true });

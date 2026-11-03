@@ -15,7 +15,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
 import { rejection } from '@konjir/engine/testing';
 
 const env = { ...process.env };
@@ -481,7 +481,7 @@ test('the harness\'s command: Claude Code headless, Kolab its only MCP server, e
   // Its MCP config, with the token, is read from the FIFO the runner feeds it through; the guard hook comes in --settings.
   expect(c.args[c.args.indexOf('--mcp-config') + 1]).toBe('/jobs/.mcp/J9.json');
   expect(JSON.parse(c.mcp)).toEqual({ mcpServers: { konjir: { type: 'http', url: 'https://kolab.example.com/mcp', headers: { Authorization: 'Bearer kjs_secret' } } } });
-  expect(JSON.parse(c.args[c.args.indexOf('--settings') + 1])).toEqual({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command',
+  expect(JSON.parse(c.args[c.args.indexOf('--settings') + 1])).toEqual({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash|Monitor', hooks: [{ type: 'command',
     command: `'/usr/bin/node' '/opt/kon'\\''jir/main.js' 'work' 'guard' '--branch' 'main'` }] }] } });
   expect(c.args).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits', '--allowedTools', ...ALLOWED_TOOLS, '--disallowedTools', ...deniedTools('main', '/home/lee/.config/konjir')]));
   expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir']));
@@ -538,6 +538,27 @@ test('konjir status: the queue by kind, every live job across pages, and the cal
   ].join('\n'));
   expect(formatStatus({ ...s, jobs: [] })).toMatch(/Jobs:   none live$/);
 });
+
+test('the MCP config\'s FIFO: read once by the first reader and removed; never opened, removed unread at its deadline, or when its harness exits (W6.4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'konjir-fifo-'));
+  const fifo = join(dir, 'J1.json');
+  execFileSync('mkfifo', ['-m', '600', fifo]);
+  const fed = feedOnce(fifo, '{"secret":1}', () => false);
+  const read = await new Promise<string>((resolve, reject) => execFile('cat', [fifo], (e, out) => (e ? reject(e) : resolve(out))));
+  expect([read, await fed, existsSync(fifo)]).toEqual(['{"secret":1}', true, false]);
+
+  execFileSync('mkfifo', ['-m', '600', fifo]);
+  const t0 = Date.now();
+  expect(await feedOnce(fifo, 'x', () => false, 2_500)).toBe(false);
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(2_400);
+  expect(existsSync(fifo)).toBe(false);
+  // Stopped early when its harness exits.
+  execFileSync('mkfifo', ['-m', '600', fifo]);
+  let over = false;
+  setTimeout(() => { over = true; }, 50);
+  expect(await feedOnce(fifo, 'x', () => over)).toBe(false);
+  expect(existsSync(fifo)).toBe(false);
+}, 20_000);
 
 test('a job\'s note is its agent\'s last "Handed to a person:" or "Cleared:" paragraph alone when it ends with one, and otherwise the output\'s tail (JOB6)', () => {
   const out = 'Reading kj:orders-pg@2#b1.\nSecrets: none here.\n\nHanded to a person: whether refunds are in scope.\nProduct decides.\n\nDone.';
