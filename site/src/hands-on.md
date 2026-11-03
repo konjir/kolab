@@ -1,6 +1,6 @@
 # Write a spec, then build it with a team of agents
 
-In about an hour you put a small product on Konjir and build it with three AI agents: one writes the functional spec, one reviews it, and one binds it to a stack, plans the work and builds it. Then you change one requirement and watch Konjir mark exactly the part of the binding, and the finished work, that relied on it.
+In about an hour you put a small product on Konjir and build it with three AI agents: one writes the functional spec, one reviews it for you to approve, and one binds it to a stack, plans the work and builds it. Then you change one requirement and watch Konjir mark exactly the part of the binding, and the finished work, that relied on it.
 
 The product is **Linkly**, a link shortener whose links expire. Every command and prompt here is meant to be pasted as it is. Each step says what you should see. The agents' wording will differ from run to run, but what Konjir does won't.
 
@@ -62,7 +62,7 @@ Each agent is an actor of its own, owned by you. It gets no more access than you
 | Agent | Role | Does |
 | --- | --- | --- |
 | `<you>-spec-writer` | product | drafts the functional spec |
-| `<you>-spec-reviewer` | product | reviews the spec |
+| `<you>-spec-reviewer` | product | reviews the spec for you; you approve it |
 | `<you>-builder` | engineer | binds the spec to a stack and writes the code |
 
 One command makes your kolab and the three agents, and connects them to the repository:
@@ -162,17 +162,17 @@ Notes:
 - Codes are generated with crypto.randomBytes and stored in a SQLite table named links.
 ```
 
-It answers that `short-links` version 1 is in review, waiting on `ada` or `ada-spec-reviewer`. Nothing is truth until a review commits it. The last note is implementation, not behavior, on purpose.
+It answers that `short-links` version 1 is in review, waiting on `ada`: you. Nothing is truth until a review commits it, and intent is a person's, so by default your kolab's policy keeps approving the spec for a person: an agent's verdict on it is refused. Your spec-reviewer reads it for you; the verdict is yours. The last note is implementation, not behavior, on purpose.
 
 In the **spec-reviewer** session:
 
 ```text
 You are the product reviewer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions which=reviewer first and follow it. Our team's rule: implementation never goes into the spec, so request changes for a layer leak rather than approving with one.
 
-Review every version that waits for you (konjir_list_reviews). Read each with konjir_read_node and give your own verdict with konjir_review: approve it, or request changes with a note and findings that cite element IDs. Then tell me each verdict and why.
+short-links waits in review for a person to approve it, so don't call konjir_review: review it for me. Read the version in review with konjir_read_node node=short-links version=<its version>, check it as the reviewer instructions say, and tell me the verdict you would give, with the note and the element IDs of anything you found.
 ```
 
-It requests changes: the requirement about `crypto.randomBytes` and SQLite prescribes implementation, a `layer_leak`, which belongs in the binding. The version goes back to its author as a draft.
+It recommends requesting changes: the requirement about `crypto.randomBytes` and SQLite prescribes implementation, a `layer_leak`, which belongs in the binding. Give that verdict yourself. In [kolab.konjir.com](https://kolab.konjir.com), signed in with GitHub in your kolab, next to **Working as**, choose **product**. Open **Reviews**, then `short-links` under **Waiting for your review**, and choose **Request changes** with the reviewer's note. The version goes back to its author as a draft.
 
 Back in the **spec-writer** session:
 
@@ -182,7 +182,7 @@ You are the product writer for Linkly. You work in Konjir through your konjir to
 Your spec short-links came back with changes requested. Read the reviewer's note and findings (konjir_list_reviews), then fix what they found: draft a new version that keeps the spec to what people experience, abandon the version that came back, and submit the new one for review. Nothing of short-links has committed yet, and deltas apply only to a committed version, so send the full element list. Tell me what you changed.
 ```
 
-It abandons version 1 and submits version 2, with the implementation note dropped or rewritten as behavior. Give the reviewer's prompt to the **spec-reviewer** again. If it finds something else (in one of our runs it asked for a requirement to be split in two), run the writer's prompt and the reviewer's again. When it approves, the version commits, and each requirement has an address such as `kj:short-links@2#R3`.
+It abandons version 1 and submits version 2, with the implementation note dropped or rewritten as behavior. Give the reviewer's prompt to the **spec-reviewer** again. If it finds something else (in one of our runs it asked for a requirement to be split in two), request changes with its note, and run the writer's prompt and the reviewer's again. When it finds nothing, choose **Approve** under **Reviews**: the version commits, and each requirement has an address such as `kj:short-links@2#R3`.
 
 ## 4. Bind it
 
@@ -215,8 +215,10 @@ It reports a question on the visit-count requirement, waiting on the element tha
 ```text
 You are the product writer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
 
-Engineering asked a question about the spec short-links (konjir_list_queries). Our product answer: every visit that redirects counts, repeat visits from the same visitor included; the visit-count requirement already says so, so the spec doesn't change. Answer the question with that, in your own words, and leave the spec as it is. Tell me what you answered.
+Engineering asked a question about the spec short-links (konjir_list_queries). Our product answer: every visit that redirects counts, repeat visits from the same visitor included; the visit-count requirement already says so, so the spec doesn't change. Answer the question with that, in your own words, citing the visit-count requirement's committed address, and leave the spec as it is. Tell me what you answered.
 ```
+
+An agent answers a question about the spec only by citing what is committed (its `cites`): it doesn't invent intent. Without anything to cite, the question would wait for you.
 
 The answer comes back to the element that waited on it, as a `query_answered` mark, even though the spec text didn't change. The builder's `konjir_list_stale` now shows, in our run:
 
@@ -278,7 +280,7 @@ You are the product writer for Linkly. You work in Konjir through your konjir to
 Product decision: a link the person doesn't choose a duration for now lasts 1 day, not 7 days. Change only the requirement that says how long links last, with a delta that keeps its ID, and submit the new version of short-links for review. Tell me the version.
 ```
 
-Give the **spec-reviewer** its review prompt from step 3. When it approves, the new version commits, and Kolab checks every link into the spec against it. The builder's session gets, in our run:
+Give the **spec-reviewer** its review prompt from step 3. When it finds nothing, approve the new version on Kolab's page as in step 3, as **product**: it commits, and Kolab checks every link into the spec against it. The builder's session gets, in our run:
 
 ```output
 ← konjir: Your technical inbox in linkly-ada changed: 0 open questions and notes, 3 open marks.
@@ -300,7 +302,7 @@ You are the engineer for Linkly. You work in Konjir through your konjir tools, a
 The spec changed. Run konjir_list_stale and settle every mark on your layer. For a binding element, read what changed with konjir_read_node; where it still holds, konjir_clear_mark it; where it doesn't, revise it with a delta that keeps its ID, and submit the new version of short-links-binding for review. For a work package that is Done and at risk, look at the files its revisit names: if the code still holds, clear its mark; if it doesn't, reopen it with konjir_reopen_work, and don't rebuild it until the binding it builds is committed. Tell me, for each mark, what you did and why.
 ```
 
-A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 on Kolab's page, where you are still signed in as **engineer**: open **Reviews**, then `short-links-binding` version 2 under **Waiting for your review**, read what changed, and choose **Approve**. If the page signed you out (you ran `konjir login` as yourself again, say), sign in again and switch to **engineer** first.
+A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 on Kolab's page, as **engineer**: next to **Working as**, switch to **engineer**, open **Reviews**, then `short-links-binding` version 2 under **Waiting for your review**, read what changed, and choose **Approve**. If the page signed you out (you ran `konjir login` as yourself again, say), sign in again first.
 
 Then, in the **builder** session:
 
@@ -325,7 +327,9 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 - **`you ran 3 setups that made agents in the last 10 minutes`.** One setup makes as many agents as you name, but at most 3 setups that make agents run in 10 minutes. Wait, then run it again: it reuses what it already made.
 - **The web page signed you out.** Signing in as yourself anywhere else (`konjir login` as yourself, say) ends your other session. Sign in again.
 - **`a product session may not write the technical layer` when you approve the binding.** Switch to **engineer** next to **Working as**, then approve.
-- **A version waits and nobody is asked.** A review request reaches only those who work in the layer's role. “Nobody else can review the functional layer yet” means no other product agent is signed in: connect one, or review it yourself in that role.
+- **A version waits and nobody is asked.** A review request reaches only those who work in the layer's role, and whom the kolab's policy lets approve it: a spec is a person's to approve by default. “Nobody else can review the functional layer yet” means no one who may is working as product: review it yourself in that role.
+- **`kolab …'s policy keeps reviewing functional versions for a person` when the spec-reviewer reviews.** By default only a person approves a spec. Have it tell you its verdict, and give it yourself on Kolab's page, as in step 3. An Admin of the kolab can change that (`konjir set_policy approve_functional=agent`, signed in as yourself), but the default keeps intent with you.
+- **`an agent answers a question on the functional layer only by citing`.** The spec-writer answered without `cites`. Ask it to answer again citing the committed requirement the answer rests on, or answer it yourself on Kolab's page.
 - **An agent says its channel has no sign-in.** It names the command that signs it in, `KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent <agent>`. Run it in another terminal; the channel picks the sign-in up by itself.
 - **Agents keep signing each other out.** An agent holds one session at a time. Don't also add Kolab's HTTP server (`claude mcp add … /mcp`) as the same agent, and don't run `konjir login` as an agent that a session uses.
 - **No `← konjir:` messages arrive.** Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with `konjir_list_reviews`, `konjir_list_queries` and `konjir_list_stale`.

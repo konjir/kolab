@@ -62,6 +62,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`pull_work`](#pull_work) | Pull work: Kolab gives you the first ready work package of your kolab's binding in natural ID order (never a decision, nor a milestone), makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<binding>#<id>). |
 | [`read_case`](#read_case) | Read one case file of your kolab: the element in dispute, the question, each position with its evidence and verdict, and its ruling once given. |
 | [`read_node`](#read_node) | Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest 20, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. |
+| [`read_policy`](#read_policy) | For a person with Admin in your kolab, from their own session (never an agent's): its autonomy policy, how far agents act there without a person (AUT1). |
 | [`read_work`](#read_work) | Read one work package of your kolab, kj:<binding>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), its elements: each spec element it serves and each decision of its binding it relies on, at its latest committed version, with that element's links (a decision's spec elements, with their ancestors), questions, notes and rulings; the git trailer for its commits (and former_trailers, those its commits carried while it was a plan's, before D104), its open_marks, at_risk and revisit (the repository, commit SHAs, files and pull requests of its work since it was last To do) while an open mark on it says something it serves or relies on changed (PLN10), and its events (who changed its state, when, against which versions), oldest first. |
 | [`reassign_work`](#reassign_work) | With Maintain or Admin in your kolab: give a work package that is To do or In progress to `to`, who must hold Write on the technical layer there and hold no work package In progress. |
 | [`register_repository`](#register_repository) | For a person with Maintain or Admin in your kolab, never an agent (your session's kolab only: for another kolab, sign in there first, konjir login --kolab <kolab>): register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding's implementation (one per binding). |
@@ -72,6 +73,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`resolve_override`](#resolve_override) | Resolve a stale or orphaned override in a variant spec: reaffirm (keep yours), adopt_parent (take the parent text), or amend (new text). |
 | [`review`](#review) | Record your verdict on a version in review that you did not write, on your own layer (node and version), or on a work package In review that you are not the assignee of (work, from an engineer session with Write on the technical layer): approve, or request_changes with a note (and, for a version, findings). |
 | [`rule`](#rule) | Rule, as a person (never an agent), from a session in the role that writes the element's layer, holding Write on it. |
+| [`set_policy`](#set_policy) | For a person with Admin in your kolab, from their own session (never an agent's): change settings of its autonomy policy (AUT1). |
 | [`set_work_lease`](#set_work_lease) | With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from 1 to 1440 (30 by default). |
 | [`submit_for_review`](#submit_for_review) | Submit a draft. |
 | [`submit_work`](#submit_work) | Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. |
@@ -471,15 +473,16 @@ Leave a note on an address for the layer that owns it: an interpretation you are
 ## answer_query
 
 ```
-konjir answer_query query=<string> answer=<string>
+konjir answer_query query=<string> answer=<string> [cites=<[string]>]
 ```
 
-Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it.
+Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it. An agent answers a question on the functional layer only by citing what it rests on (cites: committed element addresses or ruling ids), never from its own judgment, and not at all where the kolab's policy keeps those answers for a person (AUT4): with nothing to cite, leave the question open for a person. Anyone may cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `query` | `string` | yes |  |
 | `answer` | `string` | yes | At most 4000 characters |
+| `cites` | `[string]` | no | What the answer rests on, each checked to exist and be readable: committed element addresses (kj:checkout@3#R1, or kj:<kolab>/… in another kolab you read; without @version, the latest committed) and ruling ids (konjir_list_rulings). At most 20. An agent answering a question on the functional layer must cite (AUT4): with nothing to cite, leave it for a person. |
 
 ## archive_agent
 
@@ -860,6 +863,16 @@ Read the elements of a node version, with who wrote it and who made the node, ea
 | `version` | `int` | no |  |
 | `cursor` | `string` | no | A version holds at most 1000 elements, read 250 at a time: pass the next a read returned for the elements after them. Omit it for the first. |
 
+## read_policy
+
+```
+konjir read_policy
+```
+
+For a person with Admin in your kolab, from their own session (never an agent's): its autonomy policy, how far agents act there without a person (AUT1). Who approves functional versions (approve_functional), technical versions (approve_technical) and work packages (approve_work); whether a binding version also needs a product approval (product_review_of_bindings, VER13); who answers a question on the functional layer (answer_functional); and the job caps (jobs_per_person, jobs_per_kolab), never above the server's own limits. With which settings differ from the defaults, and who changed it last. Rulings and registering a repository are always a person's, whatever it says (AUT5).
+
+No parameters.
+
 ## read_work
 
 ```
@@ -999,6 +1012,24 @@ Rule, as a person (never an agent), from a session in the role that writes the e
 | `verdicts` | `object` | no | With case: each position's verdict, by position id, sustaining exactly one: {"<position>":"sustained","<position>":"overruled"} |
 | `replaces` | `string` | no | What this ruling overrules, in words, if anything |
 
+## set_policy
+
+```
+konjir set_policy [approve_functional=<agent|person|other_person>] [approve_technical=<agent|person|other_person>] [approve_work=<agent|person>] [product_review_of_bindings=<boolean>] [answer_functional=<agent_cited|person>] [jobs_per_person=<int>] [jobs_per_kolab=<int>]
+```
+
+For a person with Admin in your kolab, from their own session (never an agent's): change settings of its autonomy policy (AUT1). Name only the settings to change; the rest keep their values. The defaults: a person approves functional versions; an agent may approve technical versions and work packages; no product approval of bindings; an agent answers a functional question only citing committed elements or rulings; at most 4 jobs a person and 8 a kolab. Takes effect at once: review requests waiting in the kolab are given again under the new policy (those it no longer allows are withdrawn, those it newly allows are asked). Audited with you as its actor. Your session's kolab only: for another kolab, sign in there first (konjir login --kolab <kolab>).
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `approve_functional` | `agent\|person\|other_person` | no | Who approves functional versions (AUT2): person (the default), other_person (a person other than the one whose intent the version carries: its author, or its author's owner), or agent (any reviewer with Write on the layer) |
+| `approve_technical` | `agent\|person\|other_person` | no | Who approves technical versions (AUT2): agent (the default: any reviewer with Write on the layer), person, or other_person |
+| `approve_work` | `agent\|person` | no | Who approves work packages (AUT3): agent (the default) or person |
+| `product_review_of_bindings` | `boolean` | no | Whether a binding version also needs a product approval, from a product session, that it doesn't change behavior (VER13): false by default |
+| `answer_functional` | `agent_cited\|person` | no | Who answers a question on the functional layer (AUT4): agent_cited (the default: an agent too, citing the committed elements or rulings its answer rests on) or person |
+| `jobs_per_person` | `int` | no | How many jobs a person runs at once in this kolab (AUT7): 1 to 4, the server's own limit (4 by default) |
+| `jobs_per_kolab` | `int` | no | How many jobs this kolab runs at once (AUT7): 1 to 8, the server's own limit (8 by default) |
+
 ## set_work_lease
 
 ```
@@ -1044,7 +1075,7 @@ Submit the work package you hold In progress, kj:<binding>#<id>, for review, onc
 konjir take_job machine=<string> [kinds=<[build|review|answer|mark|serve]>]
 ```
 
-For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `konjir work` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then, for a runner that names them in kinds, an open question or note people raised on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most 4 live jobs a person and 8 a kolab. With nothing to take, or past a cap, taken is false and why says why.
+For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `konjir work` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then, for a runner that names them in kinds, an open question or note people raised on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. A review is offered only where the kolab's policy lets an agent approve it. At most 4 live jobs a person and 8 a kolab, or fewer where the kolab's policy says so (AUT7). With nothing to take, or past a cap, taken is false and why says why.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

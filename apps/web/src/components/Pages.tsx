@@ -258,7 +258,7 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
         {data.for_me.length ? <ul className="qlist">{data.for_me.map((r) => r.kind === 'work' ? <WorkReviewItem key={r.subject} r={r} act={act} go={go} /> : (
           <li key={r.subject} className="qitem"><div className="row"><Pill tone="question">in review</Pill>
             <button type="button" className="chip" onClick={() => go(`node/${r.node}@${r.seq}`)}>{r.subject}</button>
-            <span>by {r.author} · {ago(r.at)}</span></div></li>
+            <span>by {r.author} · {ago(r.at)}</span>{r.product_review && <span className="why-not">product review: check it doesn’t change behavior</span>}</div></li>
         ))}</ul> : <p className="empty">Nothing waits for your review.</p>}
       </section>
       <section aria-labelledby="r-yours"><h2 className="section-title" id="r-yours">What you submitted</h2>

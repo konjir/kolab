@@ -8,10 +8,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { closeAtEnd, els, people, registeredRepository, setup, TEST_KOLAB } from '@konjir/engine/testing';
+import { agentsMay, closeAtEnd, els, people, registeredRepository, setup, TEST_KOLAB } from '@konjir/engine/testing';
 import { cursorFor, REVIEW_EVIDENCE_SHOWN, scoped } from '@konjir/engine';
 import type {
-  KolabAccessView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
+  KolabAccessView, PolicySet, PolicyView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
   WebQueriesView, WebQuery, WebReviewsView, WebRuling, WebVersionsView, WebWorkOutcome, WebWorkReview,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
@@ -718,8 +718,10 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
 
 test('in the page: with nobody else able to review yet it says so; an engineer asks about the version in review; abandoned, the question is withdrawn (D65)', async () => {
   const { kolab, product, engineer } = await specAndBinding();
-  // Alice's only other writer on the functional layer is her own agent, signed in as engineer.
+  // Alice's only other writer on the functional layer is her own agent, signed in as engineer, in a
+  // kolab that lets agents approve functional versions (W6.2): otherwise hers would commit unreviewed.
   await people(kolab, 'alice-agent', { owner: 'alice', layers: ['functional'] });
+  await agentsMay(kolab);
   await kolab.openSession('alice-agent', 'engineer');
   const base = await serve(kolab);
   const alice = await signIn(base, product);
@@ -1120,4 +1122,30 @@ test('the review list shows at most REVIEW_EVIDENCE_SHOWN items of a submission\
   const eve = await signIn(await serve(kolab), await kolab.openSession('eve', 'engineer'));
   const w = (await eve.call<WebReviewsView>('reviews')).body.for_me[0] as WebWorkReview;
   expect([w.evidence.length, w.evidence_more, w.earlier_count]).toStrictEqual([REVIEW_EVIDENCE_SHOWN, 3, 0]);
+});
+
+test('in the page, a kolab\'s Admin reads and changes its policy, at once and recorded as theirs; anyone else is refused; an answer carries its cites (W6.2, POL2, AUT4)', async () => {
+  const { kolab, product, q } = await specAndBinding();
+  await people(kolab, 'ada', { level: 'admin' });
+  const base = await serve(kolab);
+  const ada = await signIn(base, await kolab.openSession('ada', 'product'));
+  const alice = await signIn(base, product);
+  // Ada, an Admin: the defaults, then a change, which takes effect at once and is audited as hers.
+  expect((await ada.call<PolicyView>('policy')).body).toMatchObject({ kolab: 'test', policy: { approve_functional: 'person', jobs_per_person: 4 }, updated_by: null });
+  const set = await ada.call<PolicySet>('policy', { answer_functional: 'person', jobs_per_kolab: 3 });
+  expect(set).toMatchObject({ status: 200, body: { policy: { answer_functional: 'person', jobs_per_kolab: 3 }, updated_by: 'ada', changes: [
+    { setting: 'answer_functional', was: 'agent_cited', now: 'person' }, { setting: 'jobs_per_kolab', was: 8, now: 3 }] } });
+  expect((await kolab.auditLog({ kolab: 'test' })).filter((e) => e.action === 'policy.set').map((e) => e.by)).toStrictEqual(['ada']);
+  expect(await kolab.policyIn(kolab.db, 'test')).toMatchObject({ answer_functional: 'person', jobs_per_kolab: 3 });
+  expect((await ada.call('policy', { jobs_per_person: 9 })).status).toBe(400);
+  expect((await ada.call('policy', { approve_work: 'nobody' })).status).toBe(409);
+  // Alice holds Write, not Admin: she can't read it or change it.
+  expect(await alice.call('policy')).toMatchObject({ status: 403, body: { message: expect.stringMatching(/by those with Admin there/) } });
+  expect((await alice.call('policy', { answer_functional: 'agent_cited' })).status).toBe(403);
+
+  // An answer from the page carries its cites, checked, and the question shows them with it.
+  expect(await alice.call(`queries/${q}/answer`, { answer: 'From Open only.', cites: ['kj:orders#R9'] }))
+    .toMatchObject({ status: 409, body: { message: expect.stringMatching(/cite kj:orders#R9: orders@1 has no element R9/) } });
+  expect((await alice.call(`queries/${q}/answer`, { answer: 'From Open only.', cites: ['kj:orders#R1'] })).status).toBe(200);
+  expect(JSON.stringify((await alice.call<WebNodeView>('nodes/orders')).body)).toContain('"cites":["kj:orders@1#R1"]');
 });

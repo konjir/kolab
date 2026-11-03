@@ -7,6 +7,7 @@ import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
+  FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
 } from '@konjir/types';
 import { linkRef, toLinkRef } from './link-refs.js';
@@ -108,7 +109,10 @@ const clearMark = args({ mark: z.string() });
 const resolveOverride = args({ mark: z.string(), resolution: z.enum(OVERRIDE_RESOLUTIONS), text: z.string().optional() });
 const ask = args({ address, question: z.string().describe(`At most ${MAX_TEXT} characters`), from });
 const annotate = args({ address, note: z.string().describe(`At most ${MAX_TEXT} characters`), from: address.optional().describe('Your own element the note is about') });
-const answerQuery = args({ query: z.string(), answer: z.string().describe(`At most ${MAX_TEXT} characters`) });
+const answerQuery = args({
+  query: z.string(), answer: z.string().describe(`At most ${MAX_TEXT} characters`),
+  cites: z.array(z.string()).max(MAX_CITES).optional().describe(`What the answer rests on, each checked to exist and be readable: committed element addresses (kj:checkout@3#R1, or kj:<kolab>/… in another kolab you read; without @version, the latest committed) and ruling ids (konjir_list_rulings). At most ${MAX_CITES}. An agent answering a question on the functional layer must cite (AUT4): with nothing to cite, leave it for a person.`),
+});
 const evidence = z.array(z.string()).min(1).describe('What backs the claim: kj: addresses (each must resolve), and anything else as text, such as a commit, a file and line, or a test run. At least one.');
 const openCase = args({
   address: address.describe('The element in dispute, e.g. kj:checkout#R1, on a committed version in your kolab'),
@@ -181,6 +185,15 @@ const registerRepository = args({
 const archiveRepository = args({ repo: z.string().describe('The repository, by its URL or id') });
 const listRepositories = args({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
 const setWorkLease = args({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
+const setPolicy = args({
+  approve_functional: z.enum(VERSION_APPROVERS).optional().describe(`Who approves functional versions (AUT2): person (the default), other_person (a person other than the one whose intent the version carries: its author, or its author's owner), or agent (any reviewer with Write on the layer)`),
+  approve_technical: z.enum(VERSION_APPROVERS).optional().describe('Who approves technical versions (AUT2): agent (the default: any reviewer with Write on the layer), person, or other_person'),
+  approve_work: z.enum(WORK_APPROVERS).optional().describe('Who approves work packages (AUT3): agent (the default) or person'),
+  product_review_of_bindings: z.boolean().optional().describe('Whether a binding version also needs a product approval, from a product session, that it doesn\'t change behavior (VER13): false by default'),
+  answer_functional: z.enum(FUNCTIONAL_ANSWERERS).optional().describe('Who answers a question on the functional layer (AUT4): agent_cited (the default: an agent too, citing the committed elements or rulings its answer rests on) or person'),
+  jobs_per_person: z.number().int().optional().describe(`How many jobs a person runs at once in this kolab (AUT7): 1 to ${JOB_LIMITS.perPerson}, the server's own limit (${JOB_LIMITS.perPerson} by default)`),
+  jobs_per_kolab: z.number().int().optional().describe(`How many jobs this kolab runs at once (AUT7): 1 to ${JOB_LIMITS.perKolab}, the server's own limit (${JOB_LIMITS.perKolab} by default)`),
+});
 const takeJob = args({
   machine: z.string().describe(`A label for the machine the job runs on, 1 to ${JOB_LIMITS.machine} characters, such as lee-laptop: it names the machine in the ledger`),
   kinds: z.array(z.enum(JOB_KINDS)).min(1).optional()
@@ -513,7 +526,8 @@ export class AgentTools {
     const at = `kj:${node}@${v.seq}`;
     return {
       ok: r.ok, review: r.note ?? null, committed: r.ok ? at : null, stale: r.stale ?? false,
-      in_review: r.in_review ? at : null, ...(r.reviewers ? { reviewers: r.reviewers } : {}), unreviewed: r.unreviewed ?? false,
+      in_review: r.in_review ? at : null, ...(r.reviewers ? { reviewers: r.reviewers } : {}),
+      ...(r.product_reviewers ? { product_reviewers: r.product_reviewers } : {}), unreviewed: r.unreviewed ?? false,
       ...(r.cascade ? { cascade: r.cascade } : {}),
       ...(r.rebases ? { rebases_queued: r.rebases } : {}),
       ...(r.ok ? await (async () => {
@@ -528,10 +542,14 @@ export class AgentTools {
           } : {}),
         };
       })() : { stale_after_commit: [] }),
-      next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else holds Write on this layer' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
-        : r.in_review ? (r.reviewers?.length
-          ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request in their inbox, and one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
-          : `In review. ${nobodyCanReview(v.layer)} The verdict comes back in your answers (konjir_list_reviews).`)
+      next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else who may approve it holds Write on this layer (its review says why)' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
+        : r.in_review ? (r.nobody
+          ? `In review. ${r.nobody} The verdict comes back in your answers (konjir_list_reviews).`
+          : r.product_reviewers
+            ? `In review, for two approvals, since your kolab requires a product approval of bindings (VER13): one from ${r.reviewers?.length ? r.reviewers.join(', ') : 'a technical reviewer'}, and one from ${r.product_reviewers.length ? r.product_reviewers.join(', ') : 'a product reviewer'}, who checks it doesn't change behavior. Carry on; the verdicts come back in your answers (konjir_list_reviews).`
+          : r.reviewers?.length
+            ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request in their inbox, and one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
+            : `In review. ${nobodyCanReview(v.layer)} The verdict comes back in your answers (konjir_list_reviews).`)
         : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
         : `Not committed: the checks found what the review names. The draft stays yours, drafted: draft a new version that fixes it (and konjir_abandon node=${node} version=${submitted ?? v.seq}), or resubmit it if the finding was wrong.`,
     };
@@ -605,11 +623,11 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_answer_query',
-    description: 'Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it.',
+    description: 'Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it. An agent answers a question on the functional layer only by citing what it rests on (cites: committed element addresses or ruling ids), never from its own judgment, and not at all where the kolab\'s policy keeps those answers for a person (AUT4): with nothing to cite, leave the question open for a person. Anyone may cite.',
     schema: answerQuery,
   })
-  answerQuery({ query, answer }: z.infer<typeof answerQuery>, context?: McpToolContext) {
-    return asAgent(context, async (s) => { await this.kolab.answerQuery(s, query, answer); return { answered: query }; });
+  answerQuery({ query, answer, cites }: z.infer<typeof answerQuery>, context?: McpToolContext) {
+    return asAgent(context, async (s) => { await this.kolab.answerQuery(s, query, answer, { cites }); return { answered: query, ...(cites?.length ? { cites } : {}) }; });
   }
 
   // ---- case files and rulings (CASE1–CASE7) ----------------------------------
@@ -782,10 +800,10 @@ export class AgentTools {
       return {
         ...r,
         next: r.in_review
-          ? (r.reviewers.length
+          ? (r.nobody ? `In review. ${r.nobody} The verdict comes back in your answers. In a job, you are done: stop.` : r.reviewers.length
             ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request, and one approval makes it Done. The verdict comes back in your answers. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).`
             : `In review. ${nobodyCanReview('technical')} The verdict comes back in your answers. In a job, you are done: stop.`)
-          : 'Done, unreviewed: no one else holds Write on the technical layer. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).',
+          : 'Done, unreviewed: no one else who may approve it holds Write on the technical layer. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).',
       };
     });
   }
@@ -848,11 +866,32 @@ export class AgentTools {
     return asAgent(context, (s) => this.kolab.setWorkLease(s, minutes));
   }
 
+  // ---- a kolab's autonomy policy (W6.2; AUT1–AUT5, AUT7, VER13; POL1–POL4) -------------------
+
+  @McpTool({
+    name: 'konjir_read_policy',
+    description: 'For a person with Admin in your kolab, from their own session (never an agent\'s): its autonomy policy, how far agents act there without a person (AUT1). Who approves functional versions (approve_functional), technical versions (approve_technical) and work packages (approve_work); whether a binding version also needs a product approval (product_review_of_bindings, VER13); who answers a question on the functional layer (answer_functional); and the job caps (jobs_per_person, jobs_per_kolab), never above the server\'s own limits. With which settings differ from the defaults, and who changed it last. Rulings and registering a repository are always a person\'s, whatever it says (AUT5).',
+    schema: noArgs,
+    annotations: { readOnlyHint: true },
+  })
+  readPolicy(_a: z.infer<typeof noArgs>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.readPolicy(s));
+  }
+
+  @McpTool({
+    name: 'konjir_set_policy',
+    description: 'For a person with Admin in your kolab, from their own session (never an agent\'s): change settings of its autonomy policy (AUT1). Name only the settings to change; the rest keep their values. The defaults: a person approves functional versions; an agent may approve technical versions and work packages; no product approval of bindings; an agent answers a functional question only citing committed elements or rulings; at most 4 jobs a person and 8 a kolab. Takes effect at once: review requests waiting in the kolab are given again under the new policy (those it no longer allows are withdrawn, those it newly allows are asked). Audited with you as its actor. Your session\'s kolab only: for another kolab, sign in there first (konjir login --kolab <kolab>).',
+    schema: setPolicy,
+  })
+  setPolicy(a: z.infer<typeof setPolicy>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.setPolicy(s, a));
+  }
+
   // ---- jobs: a person's machine runs agents as jobs (W5.4a; D103, D104, JOB1–JOB3) -----------
 
   @McpTool({
     name: 'konjir_take_job',
-    description: `For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which \`konjir work\` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then, for a runner that names them in kinds, an open question or note people raised on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most ${JOB_LIMITS.perPerson} live jobs a person and ${JOB_LIMITS.perKolab} a kolab. With nothing to take, or past a cap, taken is false and why says why.`,
+    description: `For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which \`konjir work\` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then, for a runner that names them in kinds, an open question or note people raised on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. A review is offered only where the kolab's policy lets an agent approve it. At most ${JOB_LIMITS.perPerson} live jobs a person and ${JOB_LIMITS.perKolab} a kolab, or fewer where the kolab's policy says so (AUT7). With nothing to take, or past a cap, taken is false and why says why.`,
     schema: takeJob,
   })
   takeJob({ machine, kinds }: z.infer<typeof takeJob>, context?: McpToolContext) {

@@ -106,6 +106,8 @@ export interface WebQuery {
   layer: Layer;
   question: string; raised_by: string | null; at: string;
   answer: string | null; answered_by: string | null;
+  /** What the answer cites (AUT4): committed element addresses, pinned to their versions, and ruling ids. */
+  cites?: string[];
   /** The asker's own element waiting on the answer, if any. */
   from: string | null;
   /** The mark it is about: such a question settles with the mark (resolve or clear), not with an answer, unless it is a role_boundary one. */
@@ -235,7 +237,8 @@ export interface WebQueriesView extends WebPaged { queries: WebQuery[] }
 export interface WebMarksView extends WebPaged { marks: WebMark[] }
 
 /** A version in review that waits for the session's verdict. */
-export interface WebVersionReview { kind: 'version'; subject: string; node: string; seq: number; author: string; at: string }
+/** A version in review that waits for the session's verdict; with `product_review`, a binding's product review (VER13), from a product session. */
+export interface WebVersionReview { kind: 'version'; subject: string; node: string; seq: number; author: string; at: string; product_review?: true }
 
 /** An item of a work package's evidence as the review list shows it: no files, and not the event that recorded it. */
 export type WebReviewEvidence = Omit<EvidenceView, 'files' | 'event'>;
@@ -327,7 +330,8 @@ export interface WebVerdict {
 }
 export interface WebResolve { resolution: OverrideResolution; text?: string }
 export interface WebAsk { node: string; element?: string; seq?: number; kind: QueryKind; text: string }
-export interface WebAnswer { answer: string }
+/** An answer from the web page, with what it cites, if anything (AUT4): committed element addresses and ruling ids. */
+export interface WebAnswer { answer: string; cites?: string[] }
 /** konjir_open_case: a case file on one element of a committed version, with the opener's position. */
 export interface WebOpenCase {
   node: string; seq?: number; element: string;

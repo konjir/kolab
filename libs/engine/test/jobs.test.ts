@@ -303,7 +303,7 @@ test('only a person\'s own session with Write on the technical layer takes a job
   expect(await kolab.takeJob(bob, { machine: 'bob-desktop' })).toStrictEqual({
     taken: false, why: 'nothing in orders-pg is To do: 1 In progress, 0 In review, 0 Done',
     counts: { review: 0, ready: 0, answer: 0, mark: 0, serve: 0, todo: 0, blocked_by_dependencies: 0, blocked_by_questions: 0, blocked_by_case_files: 0, in_progress: 1, in_review: 0, done: 0, held_back: 0 },
-    caps: { person: { live: 0, max: 4 }, kolab: { live: 1, max: 8 } }, now: expect.any(String),
+    caps: { person: { live: 0, max: 4 }, kolab: { live: 1, max: 8 }, everywhere: { live: 0, max: 4 } }, now: expect.any(String),
   });
   expect((await kolab.listActors({ owner: 'bob' })).length).toBe(0);
   // W1 submitted: bob's take reviews it, and a second take finds nothing, the review being taken.
@@ -575,7 +575,7 @@ test('a job in an archived kolab holds no place under the caps, and its runner i
   // Archived outside Kolab's verbs, which would have ended it: the job is left live.
   await kolab.db.query(`update kolab set archived_at = now() where id = $1`, [TEST_KOLAB]);
   const caps = await (kolab as unknown as { jobCapsIn(q: unknown, p: string, k: string): Promise<unknown> }).jobCapsIn(kolab.db, 'lee', TEST_KOLAB);
-  expect(caps).toStrictEqual({ person: { live: 0, max: 4 }, kolab: { live: 0, max: 8 } });
+  expect(caps).toStrictEqual({ person: { live: 0, max: 4 }, kolab: { live: 0, max: 8 }, everywhere: { live: 0, max: 4 } });
   // Its runner is told the kolab is out of reach, never that the job lapsed; and it changes nothing there.
   expect(await rejection(kolab.renewJob(lee, j.job))).toBe('AccessError: lee can no longer reach kolab test; its session has ended');
   expect(await rejection(kolab.endJob(lee, { job: j.job, outcome: 'done' }))).toMatch(/^RoleError: no open session for that token/);

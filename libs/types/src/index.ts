@@ -124,13 +124,14 @@ export const ADMIN_DOER = 'admin';
  * grant made, replaced or removed, a person added to or removed from an organization or a team,
  * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
  * a Konjir admin, an admin raising their session to run admin verbs and lowering it, and each admin
- * verb the break-glass token runs; a kolab's lease length for work set (PLN15, W5.1b); and a
- * repository registered or archived by a person (KON7, D98, W5.2a).
+ * verb the break-glass token runs; a kolab's lease length for work set (PLN15, W5.1b); a
+ * repository registered or archived by a person (KON7, D98, W5.2a); and a kolab's autonomy policy
+ * changed by one of its Admins (POL2, W6.2).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
   'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
-  'work_lease.set', 'repository.registered', 'repository.archived',
+  'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set',
 ] as const;
 /**
  * How long an admin's session may run admin verbs once they raise it (konjir_admin_elevate, W2.22),
@@ -376,13 +377,81 @@ export type JobOutcome = typeof JOB_OUTCOMES[number];
 export const JOB_ENDS = ['done', 'stopped', 'failed'] as const;
 export type JobEnd = typeof JOB_ENDS[number];
 /**
- * How many jobs may be live at once (JOB3; AUT7's defaults, constants until P23 makes them
- * settings): per person, across every kolab, and per kolab. A job lasts at most `maxHours`, however
+ * How many jobs may be live at once (JOB3; AUT7's defaults): the server's own limits, per person,
+ * across every kolab, and per kolab. A kolab's policy may lower its caps, never raise them (POL1). A job lasts at most `maxHours`, however
  * often its lease is renewed (JOB1), and a runner's machine label is 1 to `machine` characters.
  */
 export const JOB_LIMITS = { perPerson: 4, perKolab: 8, maxHours: 4, machine: 64 } as const;
-/** Live jobs against their cap: a person's, and the kolab's (JOB3). */
-export interface JobCaps { person: { live: number; max: number }; kolab: { live: number; max: number } }
+/**
+ * Live jobs against their cap (JOB3, AUT7): the person's in this kolab and the kolab's, against its
+ * policy's caps (POL1); and `everywhere`, the person's in every kolab, against the server's own
+ * limit, which no kolab's policy raises.
+ */
+export interface JobCaps {
+  person: { live: number; max: number }; kolab: { live: number; max: number };
+  everywhere: { live: number; max: number };
+}
+
+// ---- a kolab's autonomy policy (W6.2; AUT1–AUT5, AUT7, VER13; POL1–POL4, D103, D109) ----
+
+/**
+ * Who may approve a version of a layer (AUT2): any reviewer, agents included (`agent`); only a
+ * person (`person`); or only a person other than the one whose intent the version carries, its
+ * author or the owner of the agent that wrote it (`other_person`). Migration 0041's checks.
+ */
+export const VERSION_APPROVERS = ['agent', 'person', 'other_person'] as const;
+export type VersionApprover = typeof VERSION_APPROVERS[number];
+/** Who may approve a work package (AUT3, PLN16): any reviewer, agents included, or only a person. */
+export const WORK_APPROVERS = ['agent', 'person'] as const;
+export type WorkApprover = typeof WORK_APPROVERS[number];
+/**
+ * Who answers a question on the functional layer (AUT4): an agent too, citing the committed
+ * elements or rulings its answer rests on (`agent_cited`), or only a person (`person`).
+ */
+export const FUNCTIONAL_ANSWERERS = ['agent_cited', 'person'] as const;
+export type FunctionalAnswerer = typeof FUNCTIONAL_ANSWERERS[number];
+
+/** A kolab's autonomy policy (POL1): one setting each, every one with a default. */
+export interface KolabPolicy {
+  /** Who approves functional versions (AUT2): a person, by default. */
+  approve_functional: VersionApprover;
+  /** Who approves technical versions (AUT2): an agent may, by default. */
+  approve_technical: VersionApprover;
+  /** Who approves work packages (AUT3): an agent may, by default. */
+  approve_work: WorkApprover;
+  /** Whether a binding version also needs a product approval (VER13): no, by default. */
+  product_review_of_bindings: boolean;
+  /** Who answers a question on the functional layer (AUT4): an agent citing its source, by default. */
+  answer_functional: FunctionalAnswerer;
+  /** How many jobs a person runs at once in the kolab (AUT7): 4, by default, never above JOB_LIMITS.perPerson. */
+  jobs_per_person: number;
+  /** How many jobs the kolab runs at once (AUT7): 8, by default, never above JOB_LIMITS.perKolab. */
+  jobs_per_kolab: number;
+}
+/** D103's defaults (AUT2–AUT4, AUT7, VER13): what a kolab without a policy row has (POL1). */
+export const DEFAULT_POLICY: Readonly<KolabPolicy> = Object.freeze({
+  approve_functional: 'person', approve_technical: 'agent', approve_work: 'agent',
+  product_review_of_bindings: false, answer_functional: 'agent_cited',
+  jobs_per_person: JOB_LIMITS.perPerson, jobs_per_kolab: JOB_LIMITS.perKolab,
+});
+/** The settings, in the order konjir_read_policy and the web page show them. */
+export const POLICY_SETTINGS = Object.keys(DEFAULT_POLICY) as (keyof KolabPolicy)[];
+/** A kolab's policy as konjir_read_policy and konjir_set_policy give it (POL2). */
+export interface PolicyView {
+  kolab: string;
+  policy: KolabPolicy;
+  /** Which settings differ from D103's defaults. */
+  changed_from_default: (keyof KolabPolicy)[];
+  /** The server's own job limits, which a kolab's caps never exceed (AUT7). */
+  limits: { jobs_per_person: number; jobs_per_kolab: number };
+  /** Who last changed it, and when; null for a kolab that never has. */
+  updated_by: string | null; updated_at: string | null;
+}
+/** What konjir_set_policy changed (POL2): each setting's value before and after, and the review requests it re-signalled (REV6). */
+export interface PolicySet extends PolicyView {
+  changes: { setting: keyof KolabPolicy; was: unknown; now: unknown }[];
+  requests: { added: number; withdrawn: number };
+}
 /** One job as konjir_list_jobs shows it (JOB1). */
 export interface JobView {
   job: string; person: string; machine: string; agent: string; kind: JobKind;
@@ -539,6 +608,13 @@ export type ReviewVerdict = { ok: boolean; note?: string; findings?: Finding[] }
 export type GateResult = ReviewVerdict & {
   version: string; stale?: boolean;
   in_review?: boolean; reviewers?: string[]; unreviewed?: boolean;
+  /** A binding version's product reviewers (VER13), told beside `reviewers` when its kolab requires a product approval. */
+  product_reviewers?: string[];
+  /**
+   * Why nobody can approve it yet, when its kolab's policy keeps the approval for a person no one
+   * here is (AUT1, AUT2, POL3): it waits in review until one may, or an Admin changes the policy.
+   */
+  nobody?: string;
   /**
    * The version committed, but its cascade waits in the outbox behind an earlier cascade of its
    * node that is still running elsewhere, backing off or dead (W1.8): it runs once that one is done.
@@ -561,13 +637,18 @@ export interface ReviewRequestView {
   requested_at: string; next: string;
   /** A work package's: how many open marks make it at risk (PLN10, D102), which its reviewer sees before approving. */
   open_marks?: number;
+  /**
+   * A binding version's product review (VER13): its kolab requires a product approval of bindings,
+   * so a reviewer from a product session checks that it doesn't change behavior.
+   */
+  product_review?: true;
 }
 /** A version an author submitted, with the review it has had, as the author's answers show it. */
 export interface SubmissionView {
   subject: string; state: VersionState; note: string | null;
   /** For a version Kolab folded into a fresh rebase: the fold that carries its edit. */
   folded_into?: string;
-  verdicts: { reviewer: string; state: ReviewRequestState; note: string | null; findings: Finding[] }[];
+  verdicts: { reviewer: string; state: ReviewRequestState; note: string | null; findings: Finding[]; product_review?: true }[];
   next: string;
 }
 /** What Kolab's checks see of a version: its elements, and its node. */
@@ -614,6 +695,11 @@ export interface Query {
   id: string; kind: QueryKind; address: string; question: string; state: string;
   answer: string | null; answered_by: string | null; raised_by: string | null;
   from: string | null; mark: string | null;
+  /**
+   * What its answer cites (AUT4, POL3): committed element addresses, each pinned to its version, and
+   * ruling ids. An agent's answer to a question on the functional layer always cites; any other may.
+   */
+  cites?: string[];
   /**
    * The version it was asked of, when the question has moved since: it was asked of a version in
    * review that was then abandoned or returned to its author (D65). Only in the question's own kolab.

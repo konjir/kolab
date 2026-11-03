@@ -148,3 +148,23 @@ test('routes: #/people and #/connect; an invite\'s link carries only a well-form
   expect(inviteLink(TOKEN, 'https://kolab.example.com')).toBe(`https://kolab.example.com/#/invite/${TOKEN}`);
   expect(accessWords({ level: 'maintain', layers: ['functional', 'technical'] })).toBe('Maintain');
 });
+
+test('an Admin sees the kolab\'s policy beside who holds access, and changes a setting; Kolab decides (W6.2, POL2)', async () => {
+  const policy = { approve_functional: 'person', approve_technical: 'agent', approve_work: 'agent', product_review_of_bindings: false, answer_functional: 'agent_cited', jobs_per_person: 4, jobs_per_kolab: 8 };
+  replies['GET /api/invites'] = { invites: [], next: null };
+  replies['GET /api/access'] = { kolab: { id: 'anns', owner: 'ann', owner_kind: 'user', visibility: 'private', base_permission: null }, holders: [], teams: [] };
+  replies['GET /api/policy'] = { kolab: 'anns', policy, changed_from_default: [], limits: { jobs_per_person: 4, jobs_per_kolab: 8 }, updated_by: null, updated_at: null };
+  render(<PeopleView me={ann} overview={overview(ann)} tick={0} act={runner} />);
+  const form = await screen.findByRole('form', { name: 'Policy' });
+  expect((within(form).getByLabelText('Who approves functional versions') as HTMLSelectElement).value).toBe('person');
+  expect(within(form).getByText(/Every setting has its default/)).toBeTruthy();
+  expect((within(form).getByRole('button', { name: /Change/ }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(within(form).getByLabelText('Who approves technical versions'), { target: { value: 'person' } });
+  fireEvent.change(within(form).getByLabelText('Jobs a person runs at once'), { target: { value: '2' } });
+  fireEvent.change(within(form).getByLabelText('Product review of bindings'), { target: { value: 'true' } });
+  await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Change these settings' })); });
+  expect(calls.find((c) => c.url === '/api/policy' && c.method === 'POST')).toStrictEqual({
+    url: '/api/policy', method: 'POST', body: { approve_technical: 'person', product_review_of_bindings: true, jobs_per_person: 2 },
+  });
+  expect(said).toContain('Policy changed: it takes effect at once');
+});

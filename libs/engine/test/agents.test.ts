@@ -2,7 +2,7 @@
 // account, holds its own sessions, and is the author of what it writes.
 import { expect, test } from '@jest/globals';
 import { ActorError, sessionKey } from '@konjir/engine';
-import { TEST_KOLAB, commitReviewed, els, openKolab, people, rejection } from '@konjir/engine/testing';
+import { TEST_KOLAB, agentsMay, commitReviewed, els, openKolab, people, rejection } from '@konjir/engine/testing';
 
 /** Alice, with Write on both layers of the test kolab, and three agents of hers with the same. */
 async function aliceAndHerAgents() {
@@ -11,6 +11,8 @@ async function aliceAndHerAgents() {
   await kolab.addActor('alice', { name: 'Alice' });
   await kolab.grant(TEST_KOLAB, 'alice', 'write');
   await people(kolab, ['alice-pm', 'alice-pm-2', 'alice-eng'], { owner: 'alice' });
+  // These tests have one agent review another's spec: a kolab that lets agents approve functional versions (W6.2).
+  await agentsMay(kolab);
   return kolab;
 }
 
@@ -48,7 +50,8 @@ test('two agents of one person hold sessions at the same time, and each version 
   const q = await kolab.raiseQuery(eng, 'kj:checkout#R1', 'Is 10 seconds a hard limit?');
   expect((await kolab.listQueries({ raisedBy: 'alice-eng' })).map((x) => x.id)).toStrictEqual([q]);
   expect(await kolab.listQueries({ raisedBy: 'alice' })).toStrictEqual([]);
-  await kolab.answerQuery(pm2, q, 'Yes.');
+  // An agent answers on the functional layer citing what it rests on (AUT4).
+  await kolab.answerQuery(pm2, q, 'Yes.', { cites: ['kj:checkout#R1'] });
   expect((await kolab.listQueries({ raisedBy: 'alice-eng' }))[0].answered_by).toBe('alice-pm-2');
 });
 

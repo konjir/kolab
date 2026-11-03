@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
-import { ADMIN_DOER, type AccessLevel, type ArchiveTarget, type DeltaInput, type Doer, type ElementInput, type GateResult, type Layer, type LinkRef, type Checks, type OrgRole, type Role, type Visibility } from '@konjir/types';
+import { ADMIN_DOER, type AccessLevel, type ArchiveTarget, type KolabPolicy, type DeltaInput, type Doer, type ElementInput, type GateResult, type Layer, type LinkRef, type Checks, type OrgRole, type Role, type Visibility } from '@konjir/types';
 import { Kolab } from './kolab.js';
 
 /**
@@ -213,6 +213,27 @@ export async function people(kolab: Kolab, ids: string | string[], opts: { owner
     await kolab.grant(TEST_KOLAB, id, opts.level ?? 'write', { ...(opts.layers ? { layers: opts.layers } : {}), by: ADMIN_DOER });
   }
 }
+
+/**
+ * Sets settings of `kolab`'s autonomy policy (W6.2, POL1) as a fixture, through konjir_set_policy:
+ * as a person with Admin there, `policy-admin` (made the first time), whose grant is then removed, so
+ * it holds no place in the test and reviews nothing, as registeredRepository's keeper. For a test of
+ * something else that needs agents to approve functional versions, say. The rest of the settings
+ * keep their values (D103's defaults for a kolab with no row).
+ */
+export async function testPolicy(kolab: Kolab, settings: Partial<KolabPolicy>, k = TEST_KOLAB) {
+  const admin = 'policy-admin';
+  if (!(await kolab.listActors()).some((a) => a.id === admin)) await kolab.addActor(admin, { by: ADMIN_DOER });
+  await kolab.grant(k, admin, 'admin', { by: ADMIN_DOER });
+  try {
+    await kolab.setPolicy(await kolab.openSession(admin, 'product', { kolab: k, by: ADMIN_DOER }), settings as Record<string, unknown>);
+  } finally {
+    await kolab.revoke(k, admin, { by: ADMIN_DOER });
+  }
+}
+
+/** Lets agents approve every layer and answer functional questions uncited in `kolab`: the policy before W6.2, for tests of something else. */
+export const agentsMay = (kolab: Kolab, k = TEST_KOLAB) => testPolicy(kolab, { approve_functional: 'agent', approve_technical: 'agent', approve_work: 'agent' }, k);
 
 /** A root commit for a test repository (W5.2a): a full sha from one hex digit. */
 export const testRoot = (c = 'f') => c.repeat(40);

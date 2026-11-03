@@ -157,6 +157,9 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   releaseWork: { recorded: ['work_event.actor_id'] },
   reassignWork: { recorded: ['work_event.actor_id', 'work_package.assignee_id'] },
   setWorkLease: { recorded: ['audit_event:work_lease.set'] },
+  // W6.2 (POL2): a kolab's policy names who changed it last, and each change is audited with its actor;
+  // the review requests it gives again (REV6) are each its reviewer's.
+  setPolicy: { recorded: ['kolab_policy.updated_by', 'audit_event:policy.set', 'review_request.reviewer_id'] },
   // W5.1c (PLN10, PLN16, D98): evidence names who recorded it; a verdict, its reviewer.
   addEvidence: { recorded: ['work_event.actor_id', 'evidence.recorded_by'] },
   submitWork: { recorded: ['work_event.actor_id', 'evidence.recorded_by'] },

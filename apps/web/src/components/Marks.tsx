@@ -85,6 +85,7 @@ export function MarkBox({ mark: m, me, act, onRevise }: { mark: WebMark; me: Web
 /** A question or a note beside what it is about (Q5), with the answer, or the form to give it. */
 export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me: WebMe; act: Act; readOnly?: boolean }) {
   const [answer, setAnswer] = useState('');
+  const [cites, setCites] = useState('');
   const owner = !readOnly && q.layer === me.layer && me.access.layers.includes(q.layer);
   const settledByMark = q.mark !== null && q.mark_reason !== 'role_boundary';
   return (
@@ -96,7 +97,9 @@ export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me:
       {q.quote && <div className="why-not">“{q.quote}”</div>}
       <blockquote>{q.question}</blockquote>
       {q.state === 'answered' ? (
-        <div className="a"><span className="why-not">{q.answered_by} answered</span><br />{q.answer}</div>
+        <div className="a"><span className="why-not">{q.answered_by} answered</span><br />{q.answer}
+          {q.cites?.length ? <div className="why-not" aria-label="Cites">Cites {q.cites.map((c, i) => <span key={c}>{i ? ', ' : ''}{c.startsWith('kj:') ? <Addr>{c}</Addr> : <>ruling <span className="mono">{c}</span></>}</span>)}</div> : null}
+        </div>
       ) : q.state === 'withdrawn' ? (
         <div className="a"><span className="why-not">Kolab withdrew it</span><br />{q.answer}</div>
       ) : settledByMark ? (
@@ -104,9 +107,11 @@ export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me:
       ) : readOnly ? (
         <span className="why-not">Open, in its own kolab.</span>
       ) : owner ? (
-        <form className="ask-form" onSubmit={async (e) => { e.preventDefault(); if (await act.run(() => answerQuery(q.id, answer), 'Answered')) setAnswer(''); }}>
+        <form className="ask-form" onSubmit={async (e) => { e.preventDefault(); if (await act.run(() => answerQuery(q.id, answer, citesOf(cites)), 'Answered')) { setAnswer(''); setCites(''); } }}>
           <label className="why-not" htmlFor={`ans-${q.id}`}>{q.kind === 'note' ? 'Reply. A reply to a note marks nothing.' : 'Answer. If it settles intent, amend the spec too, so everyone who depends on it hears.'}</label>
           <textarea id={`ans-${q.id}`} required value={answer} onChange={(e) => setAnswer(e.target.value)} />
+          <label className="why-not" htmlFor={`cites-${q.id}`}>Cites (optional): the committed elements (kj:spec@3#R1) or ruling ids it rests on, separated by spaces.</label>
+          <input id={`cites-${q.id}`} value={cites} onChange={(e) => setCites(e.target.value)} />
           <div className="edit-row"><button type="submit" className="btn primary" disabled={!answer.trim()}>{q.kind === 'note' ? 'Reply' : 'Answer'}</button></div>
         </form>
       ) : (
@@ -117,4 +122,7 @@ export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me:
 }
 
 const api = (kind: 'marks', id: string, verb: string, body: unknown) => call(`${kind}/${encodeURIComponent(id)}/${verb}`, body);
-export const answerQuery = (id: string, answer: string) => call(`queries/${encodeURIComponent(id)}/answer`, { answer });
+/** What a person typed as cites (AUT4): addresses and ruling ids, separated by spaces or commas. */
+const citesOf = (text: string) => text.split(/[\s,]+/).map((c) => c.trim()).filter(Boolean);
+export const answerQuery = (id: string, answer: string, cites: string[] = []) =>
+  call(`queries/${encodeURIComponent(id)}/answer`, { answer, ...(cites.length ? { cites } : {}) });

@@ -14,7 +14,7 @@ import {
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
   type WebSubmit, type WebVerdict, type WebVersion, type WebVersionReview, type WebWorkOutcome, type WebWorkReview, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
-  type WebVersionsView, type WebWorkState, type WorkItemView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT,
+  type WebVersionsView, type WebWorkState, type WorkItemView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT, type PolicySet, type PolicyView,
 } from '@konjir/types';
 import { KOLAB } from '../tokens.js';
 
@@ -133,8 +133,10 @@ export class WebService {
     }
     const requests = await openReviewRequests(k, s, { node: n.name });
     const inReview = [...inReviewRows].reverse().map((v) => {
-      const reviewers = requests.filter((r) => r.node === n.name && r.seq === v.seq).map((r) => r.reviewer);
-      return { seq: v.seq, author: v.actor, at: v.at, reviewers, for_me: reviewers.includes(me.actor) && me.layer === n.layer };
+      const asked = requests.filter((r) => r.node === n.name && r.seq === v.seq);
+      const reviewers = [...new Set(asked.map((r) => r.reviewer))];
+      // Its own layer's review, or a binding's product review (VER13), each in the role that gives it.
+      return { seq: v.seq, author: v.actor, at: v.at, reviewers, for_me: asked.some((r) => r.reviewer === me.actor && r.layer === me.layer) };
     });
     return {
       node: summary,
@@ -409,7 +411,9 @@ export class WebService {
       .catch((e: unknown) => { logger.error(`the review list couldn't read its work packages: ${maskTokens(e)}`); return undefined; });
     return {
       for_me: forMe.items.map((r): WebVersionReview | WebWorkReview => {
-        if (r.kind === 'version') return { kind: 'version', subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at };
+        if (r.kind === 'version') {
+          return { kind: 'version', subject: formatAddress({ node: r.node, version: r.seq }), node: r.node, seq: r.seq, author: r.author, at: r.at, ...(r.product ? { product_review: true as const } : {}) };
+        }
         const d = details?.get(`${r.binding}#${r.element}`);
         return {
           kind: 'work', subject: formatAddress({ node: r.binding, element: r.element }), binding: r.binding, id: r.element,
@@ -725,11 +729,24 @@ export class WebService {
     return { query: await this.kolab.raiseQuery(s, address, b.text.trim(), { kind: b.kind }) };
   }
 
-  /** konjir_answer_query: only the layer that owns the answer may give it. */
-  async answer(s: string, query: string, answer: string) {
+  /** konjir_answer_query: only the layer that owns the answer may give it, citing what it rests on if anything (AUT4). */
+  async answer(s: string, query: string, answer: string, cites?: unknown) {
     if (!answer?.trim()) throw bad('write the answer');
-    await this.kolab.answerQuery(s, query, answer.trim());
+    if (cites !== undefined && cites !== null && (!Array.isArray(cites) || cites.some((c) => typeof c !== 'string'))) throw bad('cites is a list of addresses and ruling ids');
+    const given = Array.isArray(cites) ? (cites as string[]).map((c) => c.trim()).filter(Boolean) : [];
+    await this.kolab.answerQuery(s, query, answer.trim(), given.length ? { cites: given } : {});
     return { answered: query };
+  }
+
+  // ---- the kolab's autonomy policy (POL2): for those with Admin there, as Kolab decides ----
+
+  /** konjir_read_policy. */
+  policy(s: string): Promise<PolicyView> { return this.kolab.readPolicy(s); }
+
+  /** konjir_set_policy: only the settings given change. */
+  setPolicy(s: string, body: unknown): Promise<PolicySet> {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw bad('name the settings to change');
+    return this.kolab.setPolicy(s, body as Record<string, unknown>);
   }
 
   /**
@@ -916,6 +933,7 @@ const query = (q: QueryDetailRow): WebQuery => ({
   address: formatAddress({ node: q.node, version: q.seq, element: q.element ?? undefined, selector: q.selector ?? undefined }),
   node: q.node, seq: q.seq, element: q.element, quote: q.selector?.exact ?? null, layer: q.layer,
   question: q.question, raised_by: q.raised_by, at: q.at, answer: q.answer, answered_by: q.answered_by,
+  ...(q.cites?.length ? { cites: q.cites } : {}),
   from: q.from_node ? formatAddress({ node: q.from_node, version: q.from_seq ?? undefined, element: q.from_element ?? undefined }) : null,
   mark: q.mark, mark_reason: q.mark_reason,
 });
