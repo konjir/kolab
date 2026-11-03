@@ -78,6 +78,52 @@ test('the shell split: quotes, escapes, ANSI-C strings, redirections and substit
   expect(simpleCommands("git push origin '$x'")[0][3]).toEqual({ text: '$x', dynamic: false });
 });
 
+test('heredocs: a body is data up to its delimiter, so an apostrophe in it hides nothing after it, and a line in it is no command; an unquoted one\'s substitutions run (W6.4 review)', () => {
+  // Claude Code's own commit pattern, then a denied push: denied.
+  const commit = (body: string) => `git commit -m "$(cat <<'EOF'\n${body}\nEOF\n)"`;
+  for (const after of ['git push origin :x', 'git push --force origin x', 'git push origin x:main']) {
+    const line = `${commit('it isn\'t done')} && ${after}`;
+    expect([line, deny(line)]).toEqual([line, expect.stringMatching(/./)]);
+  }
+  for (const line of [
+    'cat <<EOF\nit\'s\nEOF\ngit push origin :x', 'cat <<"EOF"\nit\'s "\nEOF\ngit push origin :x', 'cat <<-EOF\n\tit\'s\n\tEOF\ngit push origin :x',
+    'cat <<\\EOF\nit\'s\nEOF\ngit push origin :x', 'cat <<EOF | git push origin :x\nbody\nEOF', 'cat <<EOF\n$(git push origin :x)\nEOF', 'cat <<EOF\n`git push origin :x`\nEOF',
+  ]) expect([line, deny(line)]).toEqual([line, expect.stringMatching(/./)]);
+  // A body's lines, a quoted one's substitutions among them, are data: allowed.
+  for (const line of [
+    commit('terraform apply\ngit push --force origin main\ngh pr merge 3\nit isn\'t done'),
+    'cat > notes.md <<\'EOF\'\nterraform apply\ngit push origin :main\n$(git push origin :x)\nEOF',
+    'gh pr create --title "W6.4" --body "$(cat <<\'EOF\'\n## Summary\ngh pr merge is a person\'s\nEOF\n)"',
+    'cat <<-EOF > x.txt\n\tgit push --force\n\tEOF\nls',
+    'git commit -F - <<EOF\nWe can\'t merge here.\nEOF',
+  ]) expect([line, deny(line)]).toEqual([line, undefined]);
+});
+
+test('quoting not closed, nesting too deep and lines too long are denied, quickly (W6.4 review)', () => {
+  for (const line of ['git push origin \':x', 'echo "it is', 'echo $(git push origin feature', 'echo `ls', "echo $'x", 'cat <<\'EOF']) {
+    expect([line, deny(line)]).toEqual([line, expect.stringMatching(/can't read this command/)]);
+  }
+  const deep = `${'$('.repeat(5000)}ls${')'.repeat(5000)}`;
+  const t0 = Date.now();
+  expect(deny(deep)).toMatch(/nest deeper/);
+  expect(guardHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: deep } }), 'main').code).toBe(2);
+  expect(deny('x'.repeat(300_000))).toMatch(/more than the guard reads/);
+  expect(Date.now() - t0).toBeLessThan(500);
+});
+
+test('git\'s short names for the default branch, and pushes whose branch can\'t be known before they run, are denied (W6.4 review)', () => {
+  for (const [line, why, on] of [
+    ['git push origin x:heads/main', /default branch/], ['git push origin heads/main', /default branch/], ['git push origin HEAD:heads/main', /default branch/],
+    ['git checkout main && git push origin HEAD', /can't be known/, 'feature'], ['git switch main; git push', /can't be known/, 'feature'],
+    ['cd ../other && git push -u origin', /can't be known/, 'feature'], ['echo :x | xargs git push origin', /xargs/], ['xargs -n1 git push origin < refs.txt', /xargs/],
+    ['bash -c -- "git push origin :x"', /deletes/], ['env -S "git push origin :x"', /deletes/], ['env -S"git push" origin :x', /deletes/], ['env --split-string="git push origin :x"', /deletes/],
+  ] as [string, RegExp, string?][]) expect([line, deny(line, on)]).toEqual([line, expect.stringMatching(why)]);
+  for (const [line, on] of [
+    ['git push origin x:refs/remotes/origin/main'], ['git push origin x:main-2'], ['git push origin heads/feature'], ['git checkout -b feature && git push -u origin feature', 'main'],
+    ['cd sub && npm test'], ['env git commit -S -m x'],
+  ] as [string, string?][]) expect([line, deny(line, on)]).toEqual([line, undefined]);
+});
+
 test('the hook: Claude Code\'s PreToolUse input in, exit 2 and why for a denial, 0 otherwise; input it can\'t read is denied (W6.4)', () => {
   const input = (command: unknown, cwd = '/') => JSON.stringify({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd });
   expect(guardHook(input('git push origin :x'), 'main')).toEqual({ code: 2, message: expect.stringMatching(/^Denied in a Konjir job: the refspec :x deletes x on the remote\. /) });
@@ -85,6 +131,9 @@ test('the hook: Claude Code\'s PreToolUse input in, exit 2 and why for a denial,
   expect(guardHook('not json', 'main')).toEqual({ code: 2, message: expect.stringMatching(/couldn't read/) });
   expect(guardHook(input(42), 'main')).toEqual({ code: 2, message: expect.stringMatching(/no command/) });
   expect(guardHook(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/x' } }), 'main')).toEqual({ code: 0 });
+  // Monitor runs a shell command too, and is checked alike.
+  expect(guardHook(JSON.stringify({ tool_name: 'Monitor', tool_input: { command: 'git push origin :x', description: 'd' } }), 'main').code).toBe(2);
+  expect(guardHook(JSON.stringify({ tool_name: 'Monitor', tool_input: {} }), 'main').code).toBe(2);
 
   // On the default branch, a bare push is denied, read from the hook's cwd; on another, allowed.
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-guard-')));
