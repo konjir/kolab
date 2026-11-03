@@ -1888,7 +1888,9 @@ async function preflight0033(db: Db) {
 function undo0039(): string {
   const m0034 = MIGRATIONS.find((m) => m.version === 34)!.sql;
   const fixed = /create function kj_job_fixed\(\)[\s\S]*?\n\$\$;/.exec(m0034)![0].replace('create function', 'create or replace function');
-  return `drop trigger version_submitted_at on version;
+  return `revoke select on job from kj_agent;
+    grant select on job to kj_agent;
+    drop trigger version_submitted_at on version;
     drop function kj_version_submitted_at();
     alter table version drop column submitted_at;
     alter table job drop constraint job_item, drop constraint job_kind_check, drop constraint job_outcome_check;

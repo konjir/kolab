@@ -55,9 +55,22 @@ export const UNSAFE_NAME_CHAR = /[\s\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
  */
 export const NODE_NAME = /^[^/@#~\s\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/;
 
-/** Whether `s` may be an element's id (JOB6): not empty, with no whitespace and no control character (UNSAFE_NAME_CHAR). */
-export function isElementId(s: string): boolean {
-  return typeof s === 'string' && s.length > 0 && !UNSAFE_NAME_CHAR.test(s);
+/**
+ * Whether `s` may be an element's id (JOB6): not empty, with none of '/', '@', '#' and '~', which
+ * the address grammar uses, and no whitespace or control character (UNSAFE_NAME_CHAR). As a node's
+ * name is (NODE_NAME).
+ */
+export function isElementId(s: unknown): s is string {
+  return typeof s === 'string' && NODE_NAME.test(s);
+}
+
+/**
+ * `v` as JSON on one line, with the characters JSON leaves as they are but a reader may take for a
+ * line break or a control also escaped: C1 controls, U+2028 and U+2029 (JOB6). Still JSON: it
+ * parses back to `v`.
+ */
+export function jsonOneLine(v: unknown): string {
+  return JSON.stringify(v).replace(/[\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 export function isKolabName(s: string): boolean {
@@ -78,7 +91,8 @@ export function formatAddress(a: Address, opts: { from?: string } = {}): string 
   let s = a.kolab !== undefined && a.kolab !== opts.from ? `kj:${a.kolab}/${a.node}` : `kj:${a.node}`;
   if (a.version !== undefined) s += `@${a.version}`;
   if (a.element) s += `#${a.element}`;
-  if (a.selector) s += `~q(${JSON.stringify(a.selector)})`;
+  // The quote is people's text: one line, whatever it holds (JOB6).
+  if (a.selector) s += `~q(${jsonOneLine(a.selector)})`;
   return s;
 }
 

@@ -14,7 +14,7 @@ import {
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
-import { jobInstructions, quoteText, UnsafeSpecificError, type BriefOf } from './playbooks.js';
+import { fillPlaybook, jobInstructions, oneLineId, quoteText, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -4321,6 +4321,11 @@ export class Kolab {
 
     const els = materialize(parentEls, deltaRows);
     checkVersion(els);
+    // Each parent the draft names is an element of the version it makes (JOB6).
+    const made = new Set(els.map((e) => e.element_id));
+    const named = [...(input.elements ?? []).map((e) => e.parent), ...(input.deltas ?? []).map((d) => d.parent)];
+    const missing = named.find((p): p is string => typeof p === 'string' && !made.has(p));
+    if (missing !== undefined) throw new GateError(`${quoteText(missing)} is named as a parent, but the version this draft makes has no element of that id`);
     const removals = input.unlink?.length ? await this.linkIdentities(nodeId, latest?.id ?? null, null, input.unlink) : [];
     const id = ulid();
     const once = new Map(links.map((e) => [JSON.stringify([e.kind, e.sourceElement ?? null, e.target, e.targetElement ?? null, e.selector ?? null]), e]));
@@ -7228,8 +7233,8 @@ export class Kolab {
     const rulings = session ? await this.rulingsFor(session, { limit: 20 }) : [];
     return [
       `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> ${quoted(p.amended_text)}` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
-      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.on}: ${quoted(r.text)} (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces ${quoted(r.replaces)}` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
-      `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${q.address}: ${q.kind === 'note' ? 'note' : 'asked'} ${quoted(q.question)} -> ${quoted(q.answer ?? '')}`).join('; ') || 'none yet'),
+      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${oneLineId(r.on)}: ${quoted(r.text)} (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces ${quoted(r.replaces)}` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
+      `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${oneLineId(q.address)}: ${q.kind === 'note' ? 'note' : 'asked'} ${quoted(q.question)} -> ${quoted(q.answer ?? '')}`).join('; ') || 'none yet'),
     ].join('\n');
   }
 
@@ -9084,6 +9089,11 @@ export class Kolab {
     await this.sweepLapsedJobs();
     await this.sweepLapsedLeases();
     const held = await this.heldBackIn(this.db, s.kolab);
+    // Packages whose ids can't be written into a job's instructions safely are never pulled,
+    // resumed or reviewed by a job (JOB6); they are not counted as held back.
+    const unsafe = await this.unsafePackagesIn(this.db, s.kolab);
+    if (unsafe.length) log.warn('jobs: work packages whose ids hold a control character or whitespace are left out of jobs', { kolab: s.kolab, packages: unsafe.length });
+    const avoid: HeldBack = unsafe.length ? { ...held, packages: new Set([...held.packages, ...unsafe]) } : held;
     const refuse = async (why: string, extra: Record<string, number> = {}): Promise<TakeJobResult> => ({
       taken: false,
       why: why
@@ -9096,14 +9106,14 @@ export class Kolab {
     if (full) return refuse(full);
     let busy: string | undefined;
     // 1. A package returned to a free agent of the person's, with changes requested: resumed as that agent.
-    for (const r of takes('build') ? await this.returnedQueueIn(this.db, s.kolab, s.actor_id, held) : []) {
+    for (const r of takes('build') ? await this.returnedQueueIn(this.db, s.kolab, s.actor_id, avoid) : []) {
       const got = await this.startJob(s, machine!, { kind: 'resume', item: r });
       if (!got) continue;
       if ('why' in got) { if (got.full) return refuse(got.why); continue; }
       return got;
     }
     // 2. A review a free agent of the person's may give (VER16: never its author).
-    for (const r of takes('review') ? await this.reviewQueueIn(this.db, s.kolab, held) : []) {
+    for (const r of takes('review') ? await this.reviewQueueIn(this.db, s.kolab, avoid) : []) {
       const got = await this.startJob(s, machine!, { kind: 'review', item: r });
       if (!got) continue;
       if ('why' in got) {
@@ -9114,11 +9124,11 @@ export class Kolab {
       return got;
     }
     // 3. The first ready work package, pulled for the job's agent as konjir_pull_work pulls it.
-    const ready = takes('build') ? await this.readyToBuild(sessionId, s.kolab, held) : { why: 'this runner takes no builds (kinds)', counts: {} };
+    const ready = takes('build') ? await this.readyToBuild(sessionId, s.kolab, avoid) : { why: 'this runner takes no builds (kinds)', counts: {} };
     let none: { why: string; counts?: Record<string, number> };
     if ('why' in ready) none = { why: busy ? `${busy}; and ${ready.why}` : ready.why, counts: ready.counts };
     else {
-      const got = await this.startJob(s, machine!, { kind: 'build', binding: ready.binding, skip: held.packages });
+      const got = await this.startJob(s, machine!, { kind: 'build', binding: ready.binding, skip: avoid.packages });
       if (got && !('why' in got)) return got;
       if (got?.full || got?.noAgent) return refuse(got.why, got.counts);
       none = got ? { why: got.why, counts: got.counts } : { why: `${ready.binding}'s ready work package went to another job starting at the same moment: take again` };
@@ -9150,6 +9160,48 @@ export class Kolab {
   }
 
   /**
+   * Why an item can't be filled into its playbook safely, or undefined (JOB6): its brief, as the
+   * job would get it, with a stand-in agent, filled in. Only an identifier can fail (fillTemplate):
+   * an address, an id or a node's name written before Kolab refused control characters in them.
+   * A build's or a resume's package is checked by its ids before (unsafePackagesIn).
+   */
+  private async unsafeItem(s: Session, what: StartWhat): Promise<string | undefined> {
+    const who = { kolab: s.kolab, agent: `${s.actor_id}-${poolLabel(1)}`, person: s.actor_id };
+    try {
+      if (what.kind === 'review') {
+        const r = what.item;
+        fillPlaybook('review', { ...who, item: r.address, subject: r.version_id ? 'version' : 'work', author: r.author, ...(r.version_id ? { node: r.node, seq: r.seq! } : {}) });
+      } else if (what.kind === 'answer') {
+        const q = what.item;
+        fillPlaybook('answer', { ...who, query: q.id, kind: q.kind, address: q.address, node: q.node, text: q.question, asker: q.asker, from: q.from });
+      } else if (what.kind === 'mark') {
+        const [m] = await this.describeMarks({ kolab: s.kolab, ids: [what.item.id] });
+        if (m) fillPlaybook('mark', { ...who, mark: m.mark, reason: m.reason, dirty: m.dirty, node: what.item.node, because: m.because, next: m.next, work: m.work ?? null });
+      } else if (what.kind === 'serve') {
+        const e = what.item;
+        fillPlaybook('serve', { ...who, element: e.address, spec: e.spec, text: e.text, binding: e.bindings[0], others: e.bindings.slice(1) });
+      }
+      return undefined;
+    } catch (e) {
+      if (e instanceof UnsafeSpecificError) return e.message;
+      throw e;
+    }
+  }
+
+  /**
+   * The work packages of `kolab` whose element id, or binding's name, holds a control character,
+   * whitespace or a line or paragraph separator (written before Kolab refused them; JOB6), as
+   * `<binding id>#<element>`: never pulled, resumed or reviewed by a job, since neither its
+   * address nor its trailer could be written into a job's instructions safely.
+   */
+  private async unsafePackagesIn(q: Q, kolab: string): Promise<string[]> {
+    const rows = (await q.query<{ binding_node_id: string; element_id: string; name: string }>(
+      `select w.binding_node_id, w.element_id, n.name from work_package w join node n on n.id = w.binding_node_id
+        where w.kolab_id = $1 and w.state <> 'done' and w.removed_in_version_id is null`, [kolab])).rows;
+    return rows.filter((r) => !isElementId(r.element_id) || !isNodeName(r.name)).map((r) => `${r.binding_node_id}#${r.element_id}`);
+  }
+
+  /**
    * Starts one job for the person of `s` (JOB2, JOB3): signs in a pool agent (a returned package's
    * own holder for a resume), pulls the work for a build, and writes the job. Returns the job; why it
    * can't start one (`full`: past a cap); or undefined when the item or the agent went to another
@@ -9157,9 +9209,18 @@ export class Kolab {
    * session, and a package pulled for it.
    */
   private async startJob(s: Session, machine: string,
-    what: { kind: 'resume'; item: ReturnedItem } | { kind: 'review'; item: ReviewItem } | { kind: 'build'; binding: string; skip: ReadonlySet<string> } | JobItem): Promise<
+    what: StartWhat): Promise<
     Extract<TakeJobResult, { taken: true }> | { why: string; full?: boolean; noAgent?: boolean; skipped?: boolean; counts?: Record<string, number> } | undefined> {
     const person = s.actor_id;
+    // An item an identifier of which (an id or a name, written before Kolab refused them; JOB6)
+    // can't be filled into its playbook safely is skipped before anything starts: no agent signed
+    // in, nothing pulled, no job written, so nothing holds it back; it is logged, and the take
+    // moves on. Packages are kept from a pull or a resume by their ids (unsafePackagesIn).
+    const unsafe = await this.unsafeItem(s, what);
+    if (unsafe) {
+      log.warn('jobs: an item was skipped, since its specifics cannot be written into a job\'s instructions safely', { kolab: s.kolab, kind: what.kind, error: unsafe });
+      return { why: `a ${what.kind} item was skipped: ${unsafe}`, skipped: true };
+    }
     let got: { agent: string; session: string; token: string } | { why: string };
     if (what.kind === 'resume') {
       const signed = await this.signInPoolAgent(person, s.kolab, what.item.agent);
@@ -9186,9 +9247,9 @@ export class Kolab {
     };
     // Its instructions are its kind's playbook filled in with its item, then its kolab's precedent
     // as the agent reads it (JOB7, DEL3), read quietly: the job starting is not its agent working.
-    // An item whose specifics can't be filled in safely (an id or a name with a line break, written
-    // before Kolab refused them; JOB6) is skipped: its job ends released, by Kolab, giving back its
-    // session and a package pulled for it, and the take moves on to the next item.
+    // unsafeItem checked the item before anything started. Should a specific still fail to fill
+    // in (one read after that check), the job ends released, by Kolab, giving back its session and
+    // a package pulled for it, and the take moves on.
     const started = async <K extends JobKind>(job: { id: string; lease_until: string; now: string }, kind: K, item: string, brief: BriefOf<K>, trailer?: string) => {
       let instructions: string;
       try {
@@ -9374,10 +9435,12 @@ export class Kolab {
         const lease = await this.leaseSeconds(tx, s.kolab);
         await tx.exec('set local role kj_system');
         let request: string | null = null;
-        // JOB6's items are read again here, as a take reads them, held for this transaction: a
-        // question or note answered or withdrawn meanwhile, a mark cleared, or now on a node with a
-        // version in review or a package In progress or In review, and a spec element served or gone,
-        // went elsewhere. Their one live job each is the unique indexes' to keep.
+        // JOB6's items are read again here, as a take reads them: one that no longer qualifies
+        // (answered, cleared, served, gone, or now on a node with a version in review or a package
+        // In progress or In review) isn't started. This narrows the window, and no more: nothing
+        // here stops a write elsewhere just after, which is acceptable since what a job did is
+        // decided as it ends (didItemIn). The question's or mark's row is held for share to the
+        // end of this transaction. That each item has one live job is the unique indexes' to keep.
         if (item.query_id) {
           await tx.query(`select 1 from query where id = $1 for share`, [item.query_id]);
           if (!(await this.answerQueueIn(tx, s.kolab, NO_HOLD, item.query_id)).length) return undefined;
@@ -9734,23 +9797,28 @@ export class Kolab {
   /**
    * What job `j`'s agent did of its item since the job started, in `tx` (JOB1, JOB6): submitted its
    * package, or gave its review; answered its question, or replied to its note; cleared its mark,
-   * or redrafted the marked node, changing what the mark is on, and submitted that version while
-   * the job ran (in review, or committed already); or submitted, while the job ran, a version of a
-   * binding of the spec with a link to the spec element it serves.
+   * or redrafted the marked node, changing what the mark is on against the version marked, and
+   * submitted that version itself while the job ran (in review, or committed already); or
+   * submitted itself, while the job ran, a version of a binding of the spec with a link to the
+   * spec element it serves.
    */
   private async didItemIn(tx: Q, j: JobRow): Promise<JobDid> {
     const any = async (sql: string, params: unknown[]) => (await tx.query(sql, params)).rows.length > 0;
     if (j.kind === 'answer') return any(`select 1 from query where id = $1 and state = 'answered' and answered_by = $2`, [j.query_id, j.agent_id]);
     if (j.kind === 'mark') {
       if (await any(`select 1 from invalidation where id = $1 and state = 'cleared' and cleared_by = $2`, [j.mark_id, j.agent_id])) return 'cleared';
-      // A redraft counts only if it touches what the mark is on: its element changed or removed, or
-      // its link dropped or pinned again to the target as it is now.
+      // A redraft counts only if it changes what the mark is on, against the version marked: its
+      // element gone, or its text (fingerprint) or parent different; or its link dropped or pinned
+      // again to the target as it is now. An element moved, or a variant's deltas carried, don't.
+      // Only the agent's own submission, made while the job ran: never Kolab's folds or rebases.
       return (await any(`select 1 from invalidation i join version mv on mv.id = i.version_id join version v on v.node_id = mv.node_id
                           left join edge g on g.id = i.edge_id left join version gt on gt.id = g.target_version_id
-                          where i.id = $1 and v.actor_id = $2 and v.submitted_at >= $3 and v.state in ('in_review', 'committed')
+                          where i.id = $1 and v.actor_id = $2 and v.submitted_by = $2 and v.submitted_at >= $3 and v.state in ('in_review', 'committed')
                             and ((i.element_id is not null
-                                  and (exists (select 1 from delta d where d.version_id = v.id and d.element_id = i.element_id)
-                                       or not exists (select 1 from element e where e.version_id = v.id and e.element_id = i.element_id)))
+                                  and (not exists (select 1 from element e where e.version_id = v.id and e.element_id = i.element_id)
+                                       or exists (select 1 from element e join element o on o.version_id = mv.id and o.element_id = e.element_id
+                                                   where e.version_id = v.id and e.element_id = i.element_id
+                                                     and (e.fingerprint <> o.fingerprint or e.parent_element_id is distinct from o.parent_element_id))))
                               or (g.id is not null
                                   and (exists (select 1 from link_removal r where r.version_id = v.id and r.kind = g.kind
                                                   and r.source_element_id is not distinct from g.source_element_id and r.target_node_id = gt.node_id
@@ -9763,7 +9831,7 @@ export class Kolab {
     }
     if (j.kind === 'serve') {
       return any(`select 1 from version v join node b on b.id = v.node_id join edge g on g.source_version_id = v.id join version tv on tv.id = g.target_version_id
-                   where v.actor_id = $1 and v.submitted_at >= $2 and v.state in ('in_review', 'committed') and b.kind = 'binding' and b.parent_node_id = $3
+                   where v.actor_id = $1 and v.submitted_by = $1 and v.submitted_at >= $2 and v.state in ('in_review', 'committed') and b.kind = 'binding' and b.parent_node_id = $3
                      and tv.node_id = $3 and g.target_element_id = $4`, [j.agent_id, j.started_at, j.spec_node_id, j.spec_element_id]);
     }
     return (j.kind === 'build'
@@ -11110,6 +11178,9 @@ interface AnswerItem { id: string; kind: QueryKind; question: string; asker: str
 interface MarkItem { id: string; node: string; node_id: string }
 /** A spec element no binding element serves (JOB6, PLN7), with its spec's bindings by name. */
 interface ServeItem { spec_node_id: string; spec: string; element_id: string; text: string; bindings: string[]; address: string }
+/** What startJob starts a job on: a package to resume, a review, a binding to pull a build from, or one of JOB6's items. */
+type StartWhat = { kind: 'resume'; item: ReturnedItem } | { kind: 'review'; item: ReviewItem } | { kind: 'build'; binding: string; skip: ReadonlySet<string> } | JobItem;
+
 /** One of JOB6's items, by the kind of job that takes it. */
 type JobItem = { kind: 'answer'; item: AnswerItem } | { kind: 'mark'; item: MarkItem } | { kind: 'serve'; item: ServeItem };
 
@@ -11156,13 +11227,15 @@ const jobEnded = (j: JobRow) => new GateError(`job ${j.id} ended ${j.outcome ===
 /**
  * Refuses a draft whose element ids, or the parents they name, aren't ids (isElementId: no
  * whitespace, no control character, C0 or C1, no line or paragraph separator; JOB6): the ids of
- * its elements, and of the elements its deltas add. An id is written into addresses, and an
- * address into a job's instructions as it is, so a line break there could pass for a step.
+ * its elements, of the elements its deltas add, and every parent any of them names. An id is
+ * written into addresses, and an address into a job's instructions as it is, so a line break there
+ * could pass for a step. That each parent named is an element of the version is checked once it
+ * is made (writeDraft).
  */
 function checkElementIds(input: { elements?: { id?: string; parent?: string }[]; deltas?: { kind: string; element: string; parent?: string }[] }) {
   const ids = [
     ...(input.elements ?? []).flatMap((e) => [...(e.id === undefined ? [] : [e.id]), ...(e.parent === undefined || e.parent === null ? [] : [e.parent])]),
-    ...(input.deltas ?? []).flatMap((d) => (d.kind === 'add' ? [d.element, ...(d.parent === undefined || d.parent === null ? [] : [d.parent])] : [])),
+    ...(input.deltas ?? []).flatMap((d) => [...(d.kind === 'add' ? [d.element] : []), ...(d.parent === undefined || d.parent === null ? [] : [d.parent])]),
   ];
   const bad = ids.find((id) => !isElementId(id));
   if (bad !== undefined) {

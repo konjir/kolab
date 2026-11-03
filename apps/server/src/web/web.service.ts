@@ -5,7 +5,7 @@ import {
   nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, waitingCounts, workReviewDetails,
   type LinkRow, type MarkDetailRow, type PageOpts, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
-import { formatAddress, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
+import { formatAddress, isElementId, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
 import {
   ACCESS_LEVELS, CASE_FILE_STATES, FINDING_KINDS, INVITE_LEVELS, KINDS, notAKind, LAYERS, OVERRIDE_RESOLUTIONS, POSITION_VERDICTS, QUERY_KINDS, REVIEW_VERDICTS, ROLES, RULING_EFFECTS,
   type WebCreateKolab, type WebCreateInvite, type WebInviteMade, type WebInvitesView, type WebSwitch, type KolabAccessView, type WebAccessChanged, type WebChangeGrant, type CaseFileState, type CaseFileView, type RulingView,
@@ -828,8 +828,6 @@ const bad = (message: string) => new BadRequestException({ error: 'bad_request',
 const conflict = (message: string) => new ConflictException({ error: 'conflict', message });
 /** The same refusal for a kolab the session can't read and a node that isn't there (TEN12, D49). */
 const notThere = (kolab: string, name: string) => new NotFoundException({ error: 'not_found', message: `no node ${name} in kolab ${kolab}` });
-/** An element's id as an address carries it: no "/", "@", "#", "~" or whitespace, which the grammar uses. */
-const isElementId = (e: unknown): e is string => typeof e === 'string' && /^[^/@#~\s]+$/.test(e);
 /** A ruling's text: Kolab checks it isn't empty. */
 function textOf(t: unknown): string {
   if (typeof t !== 'string') throw bad('write the ruling, as text');

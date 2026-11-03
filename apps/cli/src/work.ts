@@ -545,6 +545,9 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   let wait = deps.pollFirstMs ?? POLL_FIRST_MS;
   const longest = deps.pollLongestMs ?? POLL_LONGEST_MS;
   let first = true;
+  // Whether Kolab takes konjir_take_job's kinds (JOB6): a Kolab from before W5.11 refuses the
+  // argument, and is then asked without it, for builds and reviews, for the rest of this run.
+  let sendKinds = true;
   let failure: Error | undefined;
   try {
     for (;;) {
@@ -565,7 +568,14 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
       while (!stopped && !heldOff && live.size < max) {
         let r: Take;
         try {
-          r = await deps.call('take_job', { machine, kinds: [...RUNNER_KINDS] }) as Take;
+          try {
+            r = await deps.call('take_job', { machine, ...(sendKinds ? { kinds: [...RUNNER_KINDS] } : {}) }) as Take;
+          } catch (e) {
+            if (!(sendKinds && e instanceof ToolRefusal && /unknown argument.*\bkinds\b/.test((e as Error).message))) throw e;
+            sendKinds = false;
+            log('Kolab takes no kinds yet (a release before W5.11): taking builds and reviews only');
+            r = await deps.call('take_job', { machine }) as Take;
+          }
         } catch (e) {
           // Kolab out of reach (or refusing) is waited out, never the end of the jobs already running.
           why = `couldn't take a job (${clean((e as Error).message)})`;
