@@ -14,7 +14,9 @@
  * - a forced push: a `+` refspec, `--force`, `-f`, `--force-with-lease` and `--force-if-includes`;
  * - a push to the default branch: a refspec whose destination is it, as git resolves it (`main`,
  *   `heads/main`, `refs/heads/main`, `x:main`), a wildcard one, or `HEAD`, `@` or no refspec at all
- *   while on it, or when the same command line changes directory or branch first;
+ *   while on it, or when the same command line changes directory or branch first, but for a new
+ *   branch whose name is written out (`git checkout -b <name> && git push -u origin HEAD`), which
+ *   is judged as a push of <name>;
  * - a push whose options or refspecs aren't written out (`$var`, `$(…)`, or added by xargs), which
  *   can't be checked;
  * - `git send-pack` and `git http-push`, which push without push's options;
@@ -32,6 +34,8 @@ import { basename } from 'node:path';
 
 /** A word as the shell would pass it, and whether any of it is expanded when the command runs (`$x`, `$(…)`, a glob). */
 interface Word { text: string; dynamic: boolean }
+/** A simple command's words, and the operator before it (`&&`, `;`, `||`, `|`, a newline, a parenthesis, or none). */
+export type Command = Word[] & { sep?: string };
 
 /** A command the guard can't read as the shell would: denied. */
 export class Unreadable extends Error {}
@@ -50,15 +54,15 @@ const ANSI: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'
  * substitutions; a heredoc's body is data, not commands. Throws Unreadable for quoting or a
  * substitution not closed, nesting deeper than MAX_NESTING, or a line longer than MAX_LENGTH.
  */
-export function simpleCommands(line: string): Word[][] {
+export function simpleCommands(line: string): Command[] {
   if (line.length > MAX_LENGTH) throw new Unreadable(`it is ${line.length} characters long, more than the guard reads`);
-  const out: Word[][] = [];
+  const out: Command[] = [];
   readList(line, { i: 0 }, out, undefined, 0);
   return out;
 }
 
 /** Reads commands from `s` at `at.i` up to `stop` (the `)` closing a `$(` or `<(`, or a backtick) or the end. */
-function readList(s: string, at: { i: number }, out: Word[][], stop: ')' | '`' | undefined, depth: number): void {
+function readList(s: string, at: { i: number }, out: Command[], stop: ')' | '`' | undefined, depth: number): void {
   if (depth > MAX_NESTING) throw new Unreadable('its substitutions nest deeper than the guard reads');
   let cur: Word[] = [];
   let word: Word | undefined;
@@ -66,7 +70,14 @@ function readList(s: string, at: { i: number }, out: Word[][], stop: ')' | '`' |
   let parens = 0;
   const heredocs: Heredoc[] = [];
   const flushWord = () => { if (word) { if (dropNext) dropNext = false; else cur.push(word); } word = undefined; };
-  const flushCmd = () => { flushWord(); dropNext = false; if (cur.length) out.push(cur); cur = []; };
+  // The operator before the next command: `&&` runs it only if the one before succeeded.
+  let sep = '';
+  const flushCmd = (next = '') => {
+    flushWord(); dropNext = false;
+    if (cur.length) out.push(Object.assign(cur, { sep }));
+    cur = [];
+    sep = next;
+  };
   const add = (t: string, dynamic = false) => { word ??= { text: '', dynamic: false }; word.text += t; word.dynamic ||= dynamic; };
   /** A substitution whose opener ends at `at.i`, begun at `open`: its commands read, its text the word's, expanded. */
   const substitution = (open: number, close: ')' | '`', into = true) => {
@@ -119,12 +130,12 @@ function readList(s: string, at: { i: number }, out: Word[][], stop: ')' | '`' |
     const c = s[i];
     if (stop === '`' && c === '`') { flushCmd(); at.i = i + 1; return; }
     if (c === ')') {
-      flushCmd(); at.i = i + 1;
+      flushCmd(')'); at.i = i + 1;
       if (parens > 0) { parens--; continue; }
       if (stop === ')') return;
       continue;
     }
-    if (c === '(') { flushCmd(); parens++; at.i = i + 1; continue; }
+    if (c === '(') { flushCmd('('); parens++; at.i = i + 1; continue; }
     if (c === '\\') {
       if (s[i + 1] !== '\n') add(s[i + 1] ?? '');
       at.i = i + 2; continue;
@@ -172,8 +183,9 @@ function readList(s: string, at: { i: number }, out: Word[][], stop: ')' | '`' |
     if (c === '$') { add(c, /[A-Za-z_0-9@*#?$!-]/.test(s[i + 1] ?? '')); at.i = i + 1; continue; }
     if (c === '#' && !word) { const e = s.indexOf('\n', i); at.i = e < 0 ? s.length : e; continue; }
     if (c === ' ' || c === '\t') { flushWord(); at.i = i + 1; continue; }
-    if (c === '\n') { flushCmd(); at.i = i + 1; bodies(); continue; }
-    if (c === ';' || c === '|' || (c === '&' && s[i + 1] !== '>')) { flushCmd(); at.i = i + 1; continue; }
+    if (c === '\n') { flushCmd('\n'); at.i = i + 1; bodies(); continue; }
+    if ((c === '&' || c === '|') && s[i + 1] === c) { flushCmd(c + c); at.i = i + 2; continue; }
+    if (c === ';' || c === '|' || (c === '&' && s[i + 1] !== '>')) { flushCmd(c); at.i = i + 1; continue; }
     if (c === '<' || c === '>' || c === '&') {
       // A redirection: its operator, a file descriptor's number before it, and its target, which isn't an argument.
       if (word && /^\d+$/.test(word.text) && !word.dynamic) word = undefined; else flushWord();
@@ -398,29 +410,52 @@ function commandDenial(words: Word[], ctx: GuardContext, depth: number): string 
   return undefined;
 }
 
-/** Whether a simple command changes the directory or the branch later commands run on. */
-function moves(words: Word[]): boolean {
+/** The options of git checkout and git switch that create a branch and switch to it, naming it next. */
+const CREATES: Record<string, string[]> = { checkout: ['-b', '-B'], co: ['-b', '-B'], switch: ['-c', '-C', '--create', '--force-create'], sw: ['-c', '-C', '--create', '--force-create'] };
+
+/**
+ * How a simple command changes where later commands in the line run: not at all (undefined); onto a
+ * new branch whose name is written out (`git checkout -b <name>`, `git switch -c <name>`), as
+ * `{ created }`; or somewhere the guard can't know before it runs (`cd`, a checkout or switch of an
+ * existing branch, `symbolic-ref`, a name not written out), as 'unknown'.
+ */
+function move(words: Word[]): { created: string } | 'unknown' | undefined {
   let i = 0;
   while (i < words.length && (RESERVED.has(words[i].text) || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(words[i].text))) i++;
   const prog = basename(words[i]?.text ?? '');
-  if (MOVES.has(prog)) return true;
-  if (prog !== 'git') return false;
-  const sub = words.slice(i + 1).find((w) => !w.text.startsWith('-'));
-  return !!sub && GIT_MOVES.has(sub.text);
+  if (MOVES.has(prog)) return 'unknown';
+  if (prog !== 'git') return undefined;
+  const at = words.findIndex((w, n) => n > i && !w.text.startsWith('-'));
+  const sub = words[at]?.text;
+  if (!sub || !GIT_MOVES.has(sub)) return undefined;
+  const flags = CREATES[sub] ?? [];
+  const args = words.slice(at + 1);
+  const k = args.findIndex((w) => flags.includes(w.text));
+  const name = k < 0 ? undefined : args[k + 1];
+  return name && !name.dynamic && !name.text.startsWith('-') && name.text ? { created: name.text } : 'unknown';
 }
 
 /** Why a command line is denied, or undefined when nothing in it is. A line it can't read is denied. */
 export function lineDenial(line: string, ctx: GuardContext, depth = 0): string | undefined {
-  let commands: Word[][];
+  let commands: Command[];
   try {
     commands = simpleCommands(line);
   } catch (e) {
     return `the guard can't read this command as the shell would (${e instanceof Unreadable ? e.message : 'it is nested too deep'}), so it can't be checked`;
   }
-  const within = !ctx.moved && commands.some(moves) ? { ...ctx, moved: true } : ctx;
+  // Where each command runs, in the line's order: as given until something moves it. After a new
+  // branch made and switched to, a command joined to it by && runs on that branch, since && runs it
+  // only if the switch succeeded; after anything else that moves it, the branch isn't known.
+  let where: GuardContext = ctx;
+  let created = false;
   for (const words of commands) {
-    const why = commandDenial(words, within, depth);
+    if (created && words.sep !== '&&') { where = { ...ctx, moved: true }; created = false; }
+    const why = commandDenial(words, where, depth);
     if (why) return why;
+    const m = move(words);
+    if (m === 'unknown') { where = { ...ctx, moved: true }; created = false; }
+    // Wherever it was, a branch made and switched to is where the next && command runs.
+    else if (m) { const on = m.created; where = { ...ctx, moved: false, current: () => on }; created = true; }
   }
   return undefined;
 }
