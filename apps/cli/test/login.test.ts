@@ -299,7 +299,7 @@ test('an admin verb from a sign-in that isn\'t raised says so, and the sign-in i
 
   // Kolab answers 403 insufficient_scope; the CLI asks for no wider sign-in and says what the refusal means.
   const refused = await rejection(main(['admin_list_kolabs']));
-  expect(refused).toMatch(/konjir_admin_list_kolabs is an admin verb: .* this session isn't raised\. Nothing else is wrong with it: a Konjir admin runs konjir admin_elevate/);
+  expect(refused).toMatch(/konjir_admin_list_kolabs is an admin verb: .* this session isn't raised\. If you are a Konjir admin, run konjir admin_elevate from your own sign-in; if not, ask one\.$/);
   expect(refused).not.toMatch(/ended or was revoked/);
   // The sign-in is untouched and still works.
   expect(readFileSync(credentialsPath(), 'utf8')).toBe(kept);

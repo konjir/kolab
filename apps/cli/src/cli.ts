@@ -132,9 +132,9 @@ export function listenRefusal(e: unknown): string | undefined {
 const insufficientScope = (e: unknown) =>
   (e as { constructor?: { mcpBrand?: unknown } } | undefined)?.constructor?.mcpBrand === 'mcp.InsufficientScopeError';
 
-/** The refusal for an agent session calling an admin verb, said plainly. */
+/** The refusal for a session that isn't a raised admin's (an agent's, or a person's own sign-in) calling an admin verb, said plainly. */
 const adminOnly = (verb: string) =>
-  `${toolName(verb)} is an admin verb: only a Konjir admin's own session, raised in their browser (konjir admin_elevate), or the break-glass token may call it, and this session isn't raised. Nothing else is wrong with it: a Konjir admin runs konjir admin_elevate and confirms the raise in their own browser; anyone else, ask a Konjir admin.`;
+  `${toolName(verb)} is an admin verb: only a Konjir admin's own session, raised in their browser (konjir admin_elevate), or the break-glass token may call it, and this session isn't raised. If you are a Konjir admin, run konjir admin_elevate from your own sign-in; if not, ask one.`;
 
 /** Call a tool and return its structured result, or throw with the tool's error text. */
 export async function call(client: Client, verb: string, args: Record<string, unknown> = {}) {
