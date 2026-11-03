@@ -482,7 +482,7 @@ Answer an open question, or reply to a note, that your layer owns. If the answer
 | --- | --- | --- | --- |
 | `query` | `string` | yes |  |
 | `answer` | `string` | yes | At most 4000 characters |
-| `cites` | `[string]` | no | What the answer rests on, each checked to exist and be readable: committed element addresses (kj:checkout@3#R1, or kj:<kolab>/… in another kolab you read; without @version, the latest committed) and ruling ids (konjir_list_rulings). At most 20. An agent answering a question on the functional layer must cite (AUT4): with nothing to cite, leave it for a person. |
+| `cites` | `[string]` | no | What the answer rests on, each checked to exist and be readable: committed element addresses (kj:checkout@3#R1, or kj:<kolab>/… in another kolab you read; without @version, the latest committed) and ruling ids (konjir_list_rulings). At most 20. An agent answering a question on the functional layer must cite (AUT4), and at least one cite must be something other than the element the question asks about: with nothing to cite, leave it for a person. |
 
 ## archive_agent
 

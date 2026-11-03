@@ -57,12 +57,14 @@ test('over MCP: an Admin reads and sets the policy, at once and audited as their
 test('konjir_answer_query takes cites: an agent\'s uncited answer on the functional layer is refused; a cited one stands, with its cites (AUT4)', async () => {
   const { ada, pm, bob } = await adasKolab();
   await call(ada.c, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
-  await call(ada.c, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });
+  await call(ada.c, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }, { id: 'R2', text: 'A shipped order is never cancelled.' }] });
   await call(ada.c, 'submit_for_review', { node: 'orders', version: 1 });
   const { query: question } = (await call(bob.c, 'ask', { address: 'kj:orders#R1', question: 'Once shipped too?' })) as { query: string };
   expect(await rejection(call(pm.c, 'answer_query', { query: question, answer: 'No.' }))).toMatch(/an agent answers a question on the functional layer only by citing committed elements or precedent \(AUT4\)/);
-  expect(await call(pm.c, 'answer_query', { query: question, answer: 'No.', cites: ['kj:orders#R1'] })).toStrictEqual({ answered: question, cites: ['kj:orders#R1'] });
-  expect(await call(bob.c, 'list_queries', { mine: true })).toMatchObject({ queries: [{ id: question, state: 'answered', cites: ['kj:orders@1#R1'] }] });
+  // The element asked about is no source of its own answer.
+  expect(await rejection(call(pm.c, 'answer_query', { query: question, answer: 'No.', cites: ['kj:orders#R1'] }))).toMatch(/the element the question asks about is not its own source/);
+  expect(await call(pm.c, 'answer_query', { query: question, answer: 'No.', cites: ['kj:orders#R2'] })).toStrictEqual({ answered: question, cites: ['kj:orders#R2'] });
+  expect(await call(bob.c, 'list_queries', { mine: true })).toMatchObject({ queries: [{ id: question, state: 'answered', cites: ['kj:orders@1#R2'] }] });
 });
 
 test('in a shell: konjir set_policy and read_policy, as the Admin signed in', async () => {

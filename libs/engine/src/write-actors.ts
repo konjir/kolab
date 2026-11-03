@@ -18,6 +18,7 @@ export const NO_ACTOR_REASONS = {
   system: {
     migrations: 'applies migrations, and frees the outbox claims of a process that stopped',
     outbox: 'runs outbox jobs: cascades, settles and rebases owed by versions whose authors and submitters are recorded; a rebase Kolab writes is by kolab',
+    policy_resync: 'gives the review requests on versions in review again under each kolab\'s policy as Kolab opens (W6.2, REV6): each request names its reviewer, and it commits nothing',
   },
   unsigned: {
     client_registration: 'a client registers itself before anyone signs in (RFC 7591); its row is the record, and one no one uses is pruned',
@@ -61,6 +62,7 @@ export type UnsignedReason = keyof typeof NO_ACTOR_REASONS.unsigned;
 export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system: SystemReason } | { unsigned: UnsignedReason }> = {
   // ---- the outbox and Kolab's own processes ----
   open: { system: 'migrations' },
+  resyncReviewRequests: { system: 'policy_resync' },
   listen: { system: 'outbox' },
   startWorker: { system: 'outbox' },
   drainOutbox: { system: 'outbox' },

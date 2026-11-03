@@ -139,7 +139,8 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
   expect(await rejection(call(pm.c, 'draft', { node: 'billing-spec', elements: [{ id: 'B1', text: 'Weekly.' }] }))).toMatch(/no node billing-spec in kolab orders/);
 
   // The served instructions carry answered questions only from the agent's own kolab (TEN13).
-  const { query } = await call(bot.c, 'ask', { address: 'kj:billing-spec#B1', question: 'Why monthly, not weekly?' }) as { query: string };
+  // Asked of the spec as a whole, so its element B1 is a source an agent may cite (AUT4).
+  const { query } = await call(bot.c, 'ask', { address: 'kj:billing-spec', question: 'Why monthly, not weekly?' }) as { query: string };
   await call(bot.c, 'answer_query', { query, answer: 'Our customers pay monthly.', cites: ['kj:billing-spec#B1'] });
   const instructions = async (c: typeof pm.c) => {
     const r = await c.getPrompt({ name: 'konjir_operating_instructions' });

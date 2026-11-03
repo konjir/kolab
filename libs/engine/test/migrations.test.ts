@@ -2056,15 +2056,15 @@ test('a database at 0040 with versions in review, review requests and answered q
   try {
     // Alice writes the spec, and her agent and Dave may write it too; Bob writes the binding.
     await people(kolab, ['alice', 'dave'], { layers: ['functional'] });
-    await people(kolab, 'alice-pm', { owner: 'alice', layers: ['functional'] });
+    await people(kolab, ['alice-pm', 'alice-pm-2'], { owner: 'alice', layers: ['functional'] });
     await people(kolab, 'bob', { layers: ['technical'] });
     const pm = await kolab.openSession('alice-pm', 'product');
     const bob = await kolab.openSession('bob', 'engineer');
     dave = await kolab.openSession('dave', 'product');
     await kolab.createNode(pm, 'spec', 'Orders', 'orders');
-    await commitReviewed(kolab, pm, dave, 'orders', { elements: els({ R1: 'One.' }) });
+    await commitReviewed(kolab, pm, dave, 'orders', { elements: els({ R1: 'One.', R2: 'The first is the one.' }) });
     q = await kolab.raiseQuery(bob, 'kj:orders#R1', 'Which one?');
-    await kolab.answerQuery(pm, q, 'The first.', { cites: ['kj:orders@1#R1'] });
+    await kolab.answerQuery(pm, q, 'The first.', { cites: ['kj:orders@1#R2'] });
     v2 = await kolab.draft(pm, 'orders', { elements: els({ R1: 'One, the first.' }) });
     expect(await kolab.submit(pm, v2)).toMatchObject({ in_review: true, reviewers: ['alice', 'dave'] });
   } finally { await kolab.close(); }
@@ -2073,8 +2073,10 @@ test('a database at 0040 with versions in review, review requests and answered q
     const requests = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
     await db.exec(UNDO_0041);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    expect((await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows).toStrictEqual(requests.map(({ product: _, ...r }) => r));
+    // As the release before 0041 wrote it, alice-pm-2, an agent with Write on the layer, was asked too.
+    await db.query(`insert into review_request(id, version_id, reviewer_id) values ('01ZZZZZZZZZZZZZZZZZZZZAGNT', $1, 'alice-pm-2')`, [v2]);
     const before = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
-    expect(before).toStrictEqual(requests.map(({ product: _, ...r }) => r));
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41] });
     // Nothing rewritten: each request as it was, of its version's own layer; no kolab has a policy row; no answer cites anything.
     expect((await db.query(`select * from review_request order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, product: false })));
@@ -2084,10 +2086,16 @@ test('a database at 0040 with versions in review, review requests and answered q
   }, store);
   expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
 
-  // The defaults hold at once (POL1): a person approves the spec; an agent's verdict is refused.
+  // The defaults hold at once (POL1): opening, Kolab gives the requests waiting again under them, so the
+  // agent's request from before is withdrawn; a person approves the spec; an agent's verdict is refused.
   kolab = await TestKolab.open(store);
   drainAfterWrites(kolab);
   try {
+    expect((await kolab.db.query(`select reviewer_id, state from review_request where version_id = $1 order by reviewer_id`, [v2])).rows).toStrictEqual([
+      { reviewer_id: 'alice', state: 'open' }, { reviewer_id: 'alice-pm-2', state: 'withdrawn' }, { reviewer_id: 'dave', state: 'open' },
+    ]);
+    // Run again, it changes nothing.
+    expect(await kolab.resyncReviewRequests()).toStrictEqual({ added: 0, withdrawn: 0 });
     expect(await kolab.policyIn(kolab.db, 'test')).toMatchObject({ approve_functional: 'person', approve_technical: 'agent', updated_by: null });
     await people(kolab, 'dave-pm', { owner: 'dave', layers: ['functional'] });
     const agent = await kolab.openSession('dave-pm', 'product');

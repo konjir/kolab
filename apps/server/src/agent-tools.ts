@@ -111,7 +111,7 @@ const ask = args({ address, question: z.string().describe(`At most ${MAX_TEXT} c
 const annotate = args({ address, note: z.string().describe(`At most ${MAX_TEXT} characters`), from: address.optional().describe('Your own element the note is about') });
 const answerQuery = args({
   query: z.string(), answer: z.string().describe(`At most ${MAX_TEXT} characters`),
-  cites: z.array(z.string()).max(MAX_CITES).optional().describe(`What the answer rests on, each checked to exist and be readable: committed element addresses (kj:checkout@3#R1, or kj:<kolab>/… in another kolab you read; without @version, the latest committed) and ruling ids (konjir_list_rulings). At most ${MAX_CITES}. An agent answering a question on the functional layer must cite (AUT4): with nothing to cite, leave it for a person.`),
+  cites: z.array(z.string()).max(MAX_CITES).optional().describe(`What the answer rests on, each checked to exist and be readable: committed element addresses (kj:checkout@3#R1, or kj:<kolab>/… in another kolab you read; without @version, the latest committed) and ruling ids (konjir_list_rulings). At most ${MAX_CITES}. An agent answering a question on the functional layer must cite (AUT4), and at least one cite must be something other than the element the question asks about: with nothing to cite, leave it for a person.`),
 });
 const evidence = z.array(z.string()).min(1).describe('What backs the claim: kj: addresses (each must resolve), and anything else as text, such as a commit, a file and line, or a test run. At least one.');
 const openCase = args({
