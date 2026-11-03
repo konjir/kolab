@@ -13,11 +13,15 @@
  * branch and finds the harness on PATH), then takes jobs with konjir_take_job up to --jobs at once.
  * Each job gets a git worktree at the default branch's head, fetched once a round, outside the
  * checkout, and the harness (Claude Code, `claude -p`) run there with the item's instructions on its
- * stdin and Kolab as its one MCP server. The job's token reaches the harness in its environment
- * alone: the MCP config names `${KONJIR_TOKEN}`, which Claude Code expands in a header, so it is
- * never in an argument or a file, and it is redacted from the job's log and note. The environment is
- * an allowlist, and points konjir's credentials at a file that doesn't exist, so nothing in a job
- * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set).
+ * stdin and Kolab as its one MCP server. The job's token reaches the harness in its MCP config
+ * alone, read once from a FIFO that is then removed (W6.4), so it is in no argument, no file and,
+ * but for a build job's, which `konjir work deliver` needs, no environment: what a review job runs,
+ * its tests among them, can't read it. It is redacted from the job's log and note. The environment
+ * is an allowlist, and points konjir's credentials at a file that doesn't exist, so nothing in a job
+ * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set). Each shell
+ * command the agent runs passes a guard hook first (guard.ts), which denies deleting, forcing or
+ * mirroring a push, a push to the default branch, merging and the rest of deniedTools' list
+ * however the command is quoted or wrapped.
  *
  * The runner renews each job's lease (konjir_renew_job) from the moment it is taken, well within it:
  * Kolab refusing a renewal means the job is over, and its harness, if it hasn't exited already, is
@@ -32,7 +36,7 @@
  * (D89) is what guarantees it, and the denials here only keep a job from trying.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, constants, createWriteStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, rmSync, statSync, writeSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -136,6 +140,8 @@ export interface WorkDeps {
   heartbeatMs?: number; pollFirstMs?: number; pollLongestMs?: number;
   /** The environment a harness's is drawn from (through HARNESS_ENV), and where KONJIR_HARNESS is read. */
   env?: NodeJS.ProcessEnv;
+  /** How a job's guard hook runs konjir: konjirCommand() by default. */
+  guard?: string[];
 }
 
 /** How one job ended, as `konjir work` reports it. */
@@ -153,13 +159,15 @@ export const ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Writ
   'Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir'];
 
 /**
- * What a job is kept from trying, even with --allow-all: merging, `gh api` (which can merge, or
- * change the repository's settings), pushing to the default branch, forcing or deleting a push, a
- * mirror or --all push (a `:<branch>` delete refspec isn't a pattern Claude Code can write: its
- * trailing `:*` reads as the old prefix syntax), git pointed elsewhere or reconfigured (`-c`, `-C`, `--git-dir`), terraform,
- * and reading or writing the person's konjir credentials. Claude Code's patterns are prefix globs, so
- * this is a fence, not a wall: main's branch protection, which requires CI and binds admins (D89), is
- * what keeps a job from merging or deploying.
+ * What a job is kept from trying, even with --allow-all, as Claude Code's permission patterns:
+ * merging, `gh api` (which can merge, or change the repository's settings), pushing to the default
+ * branch, forcing or deleting a push, a mirror, --all or --prune push, git pointed elsewhere or
+ * reconfigured (`-c`, `-C`, `--git-dir`), terraform, and reading or writing the person's konjir
+ * credentials. The patterns are prefix globs over the command as written, so quoting, abbreviations
+ * and wrappers pass them, and a `:<branch>` delete refspec can't be written as one (a trailing `:*`
+ * reads as their old prefix syntax): the guard hook (guardSettings, guard.ts) reads each command as
+ * the shell splits it and denies those too (W6.4). Both are a fence, not a wall: main's branch
+ * protection, which requires CI and binds admins (D89), is what keeps a job from merging or deploying.
  */
 export function deniedTools(branch: string, credentialsDir: string): string[] {
   const b = branch;
@@ -169,6 +177,7 @@ export function deniedTools(branch: string, credentialsDir: string): string[] {
     'Bash(git -c*)', 'Bash(git -C*)', 'Bash(git --git-dir*)', 'Bash(git --work-tree*)', 'Bash(git --exec-path*)', 'Bash(git config*)',
     'Bash(git push --force*)', 'Bash(git push -f*)', 'Bash(git push * --force*)', 'Bash(git push * -f*)',
     'Bash(git push +*)', 'Bash(git push * +*)', 'Bash(git push --mirror*)', 'Bash(git push * --mirror*)', 'Bash(git push --all*)', 'Bash(git push * --all*)',
+    'Bash(git push --prune*)', 'Bash(git push * --prune*)', 'Bash(git send-pack*)',
     'Bash(git push --delete*)', 'Bash(git push * --delete*)', 'Bash(git push -d*)', 'Bash(git push * -d *)',
     `Bash(git push *:${b})`, `Bash(git push *:${b} *)`, `Bash(git push *:refs/heads/${b}*)`, `Bash(git push * ${b})`, `Bash(git push * ${b} *)`,
     // Edit(path) covers every tool that edits a file; Write(path) and MultiEdit(path) match nothing.
@@ -204,32 +213,102 @@ const RUNNER_KINDS = ['build', 'review', 'answer', 'mark', 'serve'] as const;
 /** What a job of each kind does to its item, as its prompt's first line says it (JOB6). */
 const JOB_VERBS: Record<string, string> = { build: 'build', review: 'review', answer: 'answer', mark: 'settle the mark', serve: 'serve' };
 
+/** `s` quoted for a POSIX shell, as one word. */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * How this konjir runs itself: node and its script, or a compiled konjir alone (Bun's single-file
+ * executable, whose script is inside it).
+ */
+export function konjirCommand(): string[] {
+  const script = process.argv[1];
+  return script && !script.startsWith('/$bunfs') && !/^[A-Z]:\\~BUN\\/.test(script) && existsSync(script) ? [process.execPath, script] : [process.execPath];
+}
+
+/**
+ * The settings a job's Claude Code runs with beside its own (`--settings`, W6.4): a PreToolUse hook
+ * on Bash, `konjir work guard --branch <default branch>`, which reads each command as the shell
+ * splits it and denies what deniedTools' patterns can't catch (guard.ts). Hooks run whatever the
+ * permission mode, --dangerously-skip-permissions included, and a denial reaches the agent as why.
+ * `disableAllHooks: false`: --settings outranks the repository's own settings, which Claude Code
+ * reloads as they change, so a `.claude/settings.json` that turns hooks off (from a branch a review
+ * checks out, say) doesn't turn this one off; without it, it did (found running it).
+ */
+export function guardSettings(guard: string[], branch: string): string {
+  const command = [...guard, 'work', 'guard', '--branch', branch].map(shellQuote).join(' ');
+  return JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command }] }] } });
+}
+
+/**
+ * The kinds of job whose agent's commands get the job's token as KONJIR_TOKEN: a build job's, for
+ * `konjir work deliver`, which records its commits and submits its package. Every other kind works
+ * with Kolab over MCP alone, so what it runs (a review's tests of someone else's change among them)
+ * finds no token in its environment or in any file (W6.4).
+ */
+export const TOKEN_KINDS: ReadonlySet<string> = new Set(['build']);
+
 /**
  * The harness's command line, environment and stdin for a job (JOB4). For Claude Code: headless
  * (`-p`), the prompt on stdin (its --mcp-config and --allowedTools take every argument after them),
  * Kolab its only MCP server (`--strict-mcp-config`, so no server of the person's own config joins),
- * as HTTP with `Authorization: Bearer ${KONJIR_TOKEN}`, which Claude Code expands from its own
- * environment, so the token is in no argument and no file. Permissions: acceptEdits and the allowed
- * tools, or with `allowAll` --dangerously-skip-permissions; deniedTools either way. The environment
- * is HARNESS_ENV's, with KONJIR_URL and KONJIR_TOKEN, so `konjir work deliver` inside the job works
- * as the job's agent, and KONJIR_CREDENTIALS naming `credentials`, a file that doesn't exist.
+ * as HTTP with `Authorization: Bearer <the job's token>`. The config, `mcp`, is read from
+ * `mcpConfig`, a FIFO the runner writes it into once, as Claude Code starts, and then removes
+ * (feedOnce, W6.4): so the token is in no argument, no file and not in Claude Code's environment,
+ * which every command it runs inherits. Permissions: acceptEdits and the allowed tools, or with
+ * `allowAll` --dangerously-skip-permissions; deniedTools and the guard hook (guardSettings) either
+ * way. The environment is HARNESS_ENV's, with KONJIR_URL, KONJIR_JOB, KONJIR_ITEM, KONJIR_JOB_KIND
+ * and KONJIR_CREDENTIALS naming `credentials`, a file that doesn't exist; and for a build job
+ * (TOKEN_KINDS), KONJIR_TOKEN, so `konjir work deliver` inside it works as the job's agent.
  */
-export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: boolean; harness?: string; worktree: string; branch: string; credentials: string; personCredentials?: string; env?: NodeJS.ProcessEnv }) {
+export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: boolean; harness?: string; worktree: string; branch: string; credentials: string; mcpConfig: string; guard?: string[]; personCredentials?: string; env?: NodeJS.ProcessEnv }) {
   const [command, ...pre] = (opts.harness?.trim() || 'claude').split(/\s+/);
-  const mcp = { mcpServers: { konjir: { type: 'http', url: opts.url, headers: { Authorization: 'Bearer ${KONJIR_TOKEN}' } } } };
+  const mcp = JSON.stringify({ mcpServers: { konjir: { type: 'http', url: opts.url, headers: { Authorization: `Bearer ${job.token}` } } } });
   const personDir = dirname(opts.personCredentials ?? credentialsPath(opts.env ?? process.env));
-  const args = [...pre, '-p', '--output-format', 'text', '--strict-mcp-config', '--mcp-config', JSON.stringify(mcp),
+  const args = [...pre, '-p', '--output-format', 'text', '--strict-mcp-config', '--mcp-config', opts.mcpConfig,
+    '--settings', guardSettings(opts.guard ?? konjirCommand(), opts.branch),
     '--append-system-prompt', JOB_RULES,
     ...(opts.allowAll ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'acceptEdits', '--allowedTools', ...ALLOWED_TOOLS]),
     '--disallowedTools', ...deniedTools(opts.branch, personDir)];
-  const env = { ...harnessEnv(opts.env ?? process.env), KONJIR_URL: opts.url, KONJIR_TOKEN: job.token, KONJIR_CREDENTIALS: opts.credentials,
-    KONJIR_JOB: job.job, KONJIR_ITEM: job.item, KONJIR_JOB_KIND: job.kind };
+  const env: Record<string, string> = { ...harnessEnv(opts.env ?? process.env), KONJIR_URL: opts.url, KONJIR_CREDENTIALS: opts.credentials,
+    KONJIR_JOB: job.job, KONJIR_ITEM: job.item, KONJIR_JOB_KIND: job.kind, ...(TOKEN_KINDS.has(job.kind) ? { KONJIR_TOKEN: job.token } : {}) };
   const prompt = [
     `Konjir job ${job.job}: ${JOB_VERBS[job.kind] ?? 'build'} ${job.item}, as ${job.agent}, in the worktree ${opts.worktree}.`,
     ...(job.trailer ? [`Every commit for it carries the trailer "${job.trailer}" (git commit --trailer "${job.trailer}"); konjir work deliver records them.`] : []),
     '', job.instructions,
   ].join('\n');
-  return { command, args, env, prompt };
+  return { command, args, env, prompt, mcp };
+}
+
+/**
+ * Hands `text` to the first process that opens the FIFO at `path` for reading, then removes it, so
+ * nothing that starts later can read it (W6.4). It polls for a reader with a non-blocking open
+ * (ENXIO while there is none), never blocking a thread, until `over()` says the reader can no
+ * longer come (its harness exited), when it removes the FIFO unread. Resolves to whether it was read.
+ */
+export async function feedOnce(path: string, text: string, over: () => boolean, everyMs = 10): Promise<boolean> {
+  try {
+    for (;;) {
+      let fd: number | undefined;
+      try {
+        fd = openSync(path, constants.O_WRONLY | constants.O_NONBLOCK);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENXIO') throw e;
+      }
+      if (fd !== undefined) {
+        try {
+          const b = Buffer.from(text);
+          for (let at = 0; at < b.length;) {
+            try { at += writeSync(fd, b, at); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EAGAIN') throw e; await new Promise((r) => setTimeout(r, 1)); }
+          }
+        } finally { closeSync(fd); }
+        return true;
+      }
+      if (over()) return false;
+      await new Promise((r) => setTimeout(r, everyMs));
+    }
+  } finally {
+    rmSync(path, { force: true });
+  }
 }
 
 /** How long a lease runs from now: `until` less Kolab's own `now` when it gives one, else less this machine's clock. */
@@ -493,7 +572,13 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         if (l.stopping || l.lost) { report.outcome = 'stopped'; report.ledger = await end(l, 'stopped', 'stopped before it started'); return report; }
         await inTurn(() => shell(checkout.top, ['worktree', 'add', '--detach', '--quiet', worktree, base]));
         report.worktree = worktree;
-        const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env,
+        // The MCP config, with the job's token, goes through a FIFO of its own, read once (feedOnce).
+        const fifos = join(jobsDir, '.mcp');
+        mkdirSync(fifos, { recursive: true, mode: 0o700 });
+        const mcpConfig = join(fifos, `${taken.job}.json`);
+        rmSync(mcpConfig, { force: true });
+        await new Promise<void>((resolve, reject) => execFile('mkfifo', ['-m', '600', mcpConfig], (e) => (e ? reject(new Error(`couldn't make the FIFO its MCP config goes through (mkfifo: ${e.message})`)) : resolve())));
+        const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env, mcpConfig, guard: deps.guard,
           credentials: join(jobsDir, '.no-credentials', taken.job, 'credentials.json') });
         log(`job ${taken.job}: ${clean(taken.kind)} ${clean(taken.item)} as ${clean(taken.agent)}, in ${worktree}`);
         const out = createWriteStream(join(jobsDir, `${taken.job}.log`), { flags: 'a', mode: 0o600 });
@@ -508,11 +593,15 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         child.stderr!.on('data', (b: Buffer) => keep(redactor.push(b)));
         child.stdin!.on('error', () => undefined);
         child.stdin!.end(h.prompt);
+        let exited = false;
+        const fed = feedOnce(mcpConfig, h.mcp, () => exited);
         if (l.stopping) stop(l, 'stopped');
         const exit = await new Promise<number | null>((resolve) => {
           child.on('error', (e) => { keep(`\n${h.command}: ${e.message}`); resolve(null); });
           child.on('close', (code) => resolve(code));
         });
+        exited = true;
+        await fed.catch((e: Error) => keep(`\nkonjir work couldn't hand the harness its MCP config: ${clean(e.message)}`));
         // How it ended is fixed here: a renewal answered late changes nothing.
         l.finished = true;
         clearTimeout(l.beat);
