@@ -40,12 +40,14 @@ const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setup } from './login.js';
 import { deliverWork, gitIn, registerRepository } from './deliver.js';
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
+import { guardHook } from './guard.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 import { toolsListing, verbHelp } from './verbs.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
-export { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
+export { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, guardSettings, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
+export { guardHook, lineDenial, simpleCommands } from './guard.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -182,7 +184,10 @@ Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [
            kolab at 8), each done by one of your pool agents in its own git worktree at the default branch's head
            (under ~/.konjir/jobs), by Claude Code run headless on your own model account, with Kolab as its one MCP
            server and only edits, git, npm, npx, gh and konjir allowed (--allow-all: every permission). A job never
-           merges or deploys. It renews each job's lease, ends the job when its harness exits, keeps a worktree with
+           merges or deploys: a hook (konjir work guard) denies a push that deletes (:branch, --delete), forces,
+           mirrors or reaches the default branch, merging, gh api and terraform, however the command is written.
+           Only a build job's commands get its token, as KONJIR_TOKEN for konjir work deliver; Claude Code reads
+           it from a FIFO read once, so a review's tests find it nowhere. It renews each job's lease, ends the job when its harness exits, keeps a worktree with
            work not pushed, and waits while nothing is ready; Ctrl-C (or SIGTERM, SIGHUP) stops every job and gives
            back what it held, and a second Ctrl-C kills them at once. --once takes one round and exits. --machine
            names this machine (its hostname); --harness (or KONJIR_HARNESS) runs another command in Claude Code's
@@ -372,6 +377,19 @@ export function connectionUrl(o: { given?: string; token?: string; cmd?: string;
 }
 
 export async function main(argv: string[]) {
+  // A job's guard hook (W6.4): Claude Code runs it before each shell command, inside the job, with
+  // its PreToolUse input on stdin. It talks to no Kolab and needs no session.
+  if (argv[0] === 'work' && argv[1] === 'guard') {
+    const branch = flag(argv.slice(2), 'branch');
+    if (!branch) throw new Error('konjir work guard --branch <the default branch>: a job\'s Claude Code runs it as a hook, with the command to check on stdin');
+    let input = '';
+    process.stdin.setEncoding('utf8');
+    for await (const chunk of process.stdin) input += chunk;
+    const r = guardHook(input, branch);
+    if (r.message) console.error(r.message);
+    process.exitCode = r.code;
+    return;
+  }
   const given = flag(argv, 'url') ?? process.env.KONJIR_URL;
   const token = sessionToken(flag(argv, 'token'));
   const [cmd, ...rest] = argv;

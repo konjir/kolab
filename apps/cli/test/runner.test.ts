@@ -15,7 +15,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
 import { rejection } from '@konjir/engine/testing';
 
 const env = { ...process.env };
@@ -88,17 +88,30 @@ function standIn(top: string, modes: Record<string, string> = {}) {
   const path = join(dir, 'harness.mjs');
   writeFileSync(join(dir, 'modes.json'), JSON.stringify(modes));
   writeFileSync(path, `#!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const job = process.env.KONJIR_JOB;
 const out = (name) => here + '/' + job + name;
+// As Claude Code starts: it reads its MCP config, once, from the path it is given.
+const mcpPath = process.argv[process.argv.indexOf('--mcp-config') + 1];
+const mcpWasFifo = statSync(mcpPath).isFIFO();
+const mcp = JSON.parse(readFileSync(mcpPath, 'utf8'));
+const token = mcp.mcpServers.konjir.headers.Authorization.replace(/^Bearer /, '');
+// As a command the agent runs (its tests, say) sees things: a child with the harness's environment,
+// and every file under the jobs directory, once the config's FIFO is gone.
+const childEnv = execFileSync('env', { encoding: 'utf8' });
+for (let i = 0; i < 200 && existsSync(mcpPath); i++) await new Promise((r) => setTimeout(r, 10));
+const mcpGone = !existsSync(mcpPath);
+const filesWithToken = [];
+const scan = (d) => { for (const n of readdirSync(d)) { const p = join(d, n); const s = lstatSync(p); if (s.isDirectory()) scan(p); else if (s.isFile() && readFileSync(p, 'latin1').includes(token)) filesWithToken.push(p); } };
+scan(dirname(dirname(mcpPath)));
 let prompt = '';
 process.stdin.on('data', (d) => { prompt += d; });
 process.stdin.on('end', async () => {
-  writeFileSync(out('.json'), JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2), env: process.env, prompt }));
+  writeFileSync(out('.json'), JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2), env: process.env, prompt, mcp, mcpWasFifo, mcpGone, tokenInChildEnv: childEnv.includes(token), filesWithToken }));
   const mode = JSON.parse(readFileSync(here + '/modes.json', 'utf8'))[job] || 'wait';
   console.log('working on ' + process.env.KONJIR_ITEM);
   const commit = (name) => { writeFileSync(name, name + '\\n'); execFileSync('git', ['add', '-A']); execFileSync('git', ['commit', '-q', '-m', name]); };
@@ -112,7 +125,7 @@ process.stdin.on('end', async () => {
     process.exit(0);
   }
   if (mode === 'leak') {
-    const t = process.env.KONJIR_TOKEN;
+    const t = token;
     process.stdout.write('token ' + t.slice(0, 5));
     await new Promise((r) => setTimeout(r, 50));
     process.stdout.write(t.slice(5) + ' and again ' + t + '\\n');
@@ -124,7 +137,8 @@ process.stdin.on('end', async () => {
 `);
   chmodSync(path, 0o755);
   return { path, dir, go: (job: string) => writeFileSync(join(dir, `${job}.go`), ''), started: (job: string) => existsSync(join(dir, `${job}.json`)),
-    seen: (job: string) => JSON.parse(readFileSync(join(dir, `${job}.json`), 'utf8')) as { cwd: string; argv: string[]; env: Record<string, string>; prompt: string } };
+    seen: (job: string) => JSON.parse(readFileSync(join(dir, `${job}.json`), 'utf8')) as { cwd: string; argv: string[]; env: Record<string, string>; prompt: string;
+      mcp: unknown; mcpWasFifo: boolean; mcpGone: boolean; tokenInChildEnv: boolean; filesWithToken: string[] } };
 }
 
 /** A fake of W5.4a's job tools and the reads konjir work makes, for a person `lee` in kolab `test`, recording every call. */
@@ -219,18 +233,28 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
     expect(s.cwd).toBe(join(r.jobsDir, job));
     expect(s.cwd.startsWith(r.dir)).toBe(false);
     expect(git(s.cwd, 'rev-parse', 'HEAD')).toBe(r.fetched);
-    expect(s.env).toMatchObject({ KONJIR_TOKEN: `kjs_job_token_${job}`, KONJIR_URL: MCP, KONJIR_JOB: job, GH_TOKEN: 'gh-token' });
+    expect(s.env).toMatchObject({ KONJIR_URL: MCP, KONJIR_JOB: job, GH_TOKEN: 'gh-token' });
     // The environment is an allowlist: no cloud credentials, no Kolab admin token or database, no XDG_CONFIG_HOME;
     // konjir's credentials point at a file that doesn't exist.
     for (const k of ['AWS_SECRET_ACCESS_KEY', 'KONJIR_ADMIN_TOKEN', 'KONJIR_DATABASE_URL', 'XDG_CONFIG_HOME']) expect(s.env[k]).toBeUndefined();
     expect(s.env.KONJIR_CREDENTIALS.startsWith(r.jobsDir)).toBe(true);
     expect(existsSync(s.env.KONJIR_CREDENTIALS)).toBe(false);
-    // The token is in no argument: the MCP config names ${KONJIR_TOKEN}, which Claude Code expands.
+    // The token is in no argument and no file: the MCP config comes through a FIFO, read once and then removed (W6.4).
     expect(s.argv.join(' ')).not.toContain('kjs_job_token');
-    const mcp = JSON.parse(s.argv[s.argv.indexOf('--mcp-config') + 1]);
-    expect(mcp).toEqual({ mcpServers: { konjir: { type: 'http', url: MCP, headers: { Authorization: 'Bearer ${KONJIR_TOKEN}' } } } });
-    expect(s.argv).toEqual(expect.arrayContaining(['-p', '--strict-mcp-config', '--permission-mode', 'acceptEdits', 'Bash(git push *:main)']));
+    expect(s.argv[s.argv.indexOf('--mcp-config') + 1]).toBe(join(r.jobsDir, '.mcp', `${job}.json`));
+    expect(s.mcpWasFifo).toBe(true);
+    expect(s.mcp).toEqual({ mcpServers: { konjir: { type: 'http', url: MCP, headers: { Authorization: `Bearer kjs_job_token_${job}` } } } });
+    expect(s.mcpGone).toBe(true);
+    expect(s.filesWithToken).toEqual([]);
+    expect(s.argv).toEqual(expect.arrayContaining(['-p', '--strict-mcp-config', '--permission-mode', 'acceptEdits', 'Bash(git push *:main)', '--settings']));
   }
+  // A build job's commands get its token, for konjir work deliver; a review job's, its tests among them, find none in their environment (W6.4).
+  expect(j1.env.KONJIR_TOKEN).toBe('kjs_job_token_J1');
+  expect(j1.tokenInChildEnv).toBe(true);
+  expect(j2.env.KONJIR_TOKEN).toBeUndefined();
+  expect(j2.tokenInChildEnv).toBe(false);
+  expect(JSON.stringify(j2.env)).not.toContain('kjs_job_token');
+  expect(readdirSync(join(r.jobsDir, '.mcp'))).toEqual([]);
   expect(j1.prompt).toContain('Do kj:test/orders-plan#W1.');
   expect(j1.prompt).toContain('Konjir-Work: kj:test/orders-plan#W1');
   expect(kolab.calls.filter(([v]) => v === 'take_job').map(([, a]) => a)).toEqual(Array(3).fill({ machine: 'lee-laptop', kinds: ['build', 'review', 'answer', 'mark', 'serve'] }));
@@ -450,10 +474,15 @@ test('inside a job, konjir never falls back to a sign-in kept on this machine: a
 test('the harness\'s command: Claude Code headless, Kolab its only MCP server, edits and git, npm, npx, gh and konjir only, or --allow-all; the denials and the environment (JOB4, M5, M6)', () => {
   const job: TakenJob = { job: 'J9', kind: 'build', item: 'kj:k/p#W1', agent: 'lee-engineer-1', token: 'kjs_secret', lease_until: '', instructions: 'Build it.' };
   const c = harnessCommand(job, { url: 'https://kolab.example.com/mcp', worktree: '/w', branch: 'main', credentials: '/jobs/.no-credentials/J9/credentials.json',
-    env: { PATH: '/bin', HOME: '/home/lee', KONJIR_AGENT: 'lee-product', KONJIR_CREDENTIALS: '/home/lee/.config/konjir/credentials.json', AWS_PROFILE: 'p', LC_ALL: 'C', ANTHROPIC_API_KEY: 'k', CLAUDE_CONFIG_DIR: '/c', GIT_SSH_COMMAND: 'ssh' } });
+    mcpConfig: '/jobs/.mcp/J9.json', guard: ['/usr/bin/node', "/opt/kon'jir/main.js"], env:{ PATH: '/bin', HOME: '/home/lee', KONJIR_AGENT: 'lee-product', KONJIR_CREDENTIALS: '/home/lee/.config/konjir/credentials.json', AWS_PROFILE: 'p', LC_ALL: 'C', ANTHROPIC_API_KEY: 'k', CLAUDE_CONFIG_DIR: '/c', GIT_SSH_COMMAND: 'ssh' } });
   expect(c.command).toBe('claude');
   expect(c.args.slice(0, 4)).toEqual(['-p', '--output-format', 'text', '--strict-mcp-config']);
   expect(c.args.join(' ')).not.toContain('kjs_secret');
+  // Its MCP config, with the token, is read from the FIFO the runner feeds it through; the guard hook comes in --settings.
+  expect(c.args[c.args.indexOf('--mcp-config') + 1]).toBe('/jobs/.mcp/J9.json');
+  expect(JSON.parse(c.mcp)).toEqual({ mcpServers: { konjir: { type: 'http', url: 'https://kolab.example.com/mcp', headers: { Authorization: 'Bearer kjs_secret' } } } });
+  expect(JSON.parse(c.args[c.args.indexOf('--settings') + 1])).toEqual({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command',
+    command: `'/usr/bin/node' '/opt/kon'\\''jir/main.js' 'work' 'guard' '--branch' 'main'` }] }] } });
   expect(c.args).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits', '--allowedTools', ...ALLOWED_TOOLS, '--disallowedTools', ...deniedTools('main', '/home/lee/.config/konjir')]));
   expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir']));
   expect(deniedTools('main', '/home/lee/.config/konjir')).toEqual(expect.arrayContaining(['Bash(gh api*)', 'Bash(gh pr merge*)', 'Bash(git -c*)', 'Bash(git push --force*)', 'Bash(git push * +*)',
@@ -465,7 +494,13 @@ test('the harness\'s command: Claude Code headless, Kolab its only MCP server, e
     KONJIR_URL: 'https://kolab.example.com/mcp', KONJIR_TOKEN: 'kjs_secret', KONJIR_CREDENTIALS: '/jobs/.no-credentials/J9/credentials.json', KONJIR_JOB: 'J9', KONJIR_ITEM: 'kj:k/p#W1', KONJIR_JOB_KIND: 'build' });
   expect(harnessEnv({ AWS_SECRET_ACCESS_KEY: 'x', KONJIR_ADMIN_TOKEN: 'y', KONJIR_DATABASE_URL: 'z', XDG_CONFIG_HOME: '/x', GITHUB_TOKEN: 'g', SSH_AUTH_SOCK: '/s' })).toEqual({ GITHUB_TOKEN: 'g', SSH_AUTH_SOCK: '/s' });
   expect(c.prompt).toMatch(/^Konjir job J9: build kj:k\/p#W1, as lee-engineer-1, in the worktree \/w\.\n\nBuild it\.$/);
-  const all = harnessCommand(job, { url: 'https://kolab.example.com/mcp', worktree: '/w', branch: 'trunk', credentials: '/n', allowAll: true, harness: 'my-claude --model opus', personCredentials: '/p/credentials.json' });
+  // Every other kind's environment has no token: its agent works with Kolab over MCP alone (W6.4).
+  for (const kind of ['review', 'answer', 'mark', 'serve'] as const) {
+    const other = harnessCommand({ ...job, kind }, { url: 'https://kolab.example.com/mcp', worktree: '/w', branch: 'main', credentials: '/n', mcpConfig: '/m', env: { PATH: '/bin', KONJIR_TOKEN: 'kjs_mine' } });
+    expect(other.env).toEqual({ PATH: '/bin', KONJIR_URL: 'https://kolab.example.com/mcp', KONJIR_CREDENTIALS: '/n', KONJIR_JOB: 'J9', KONJIR_ITEM: 'kj:k/p#W1', KONJIR_JOB_KIND: kind });
+  }
+  expect([...TOKEN_KINDS]).toEqual(['build']);
+  const all = harnessCommand(job, { url: 'https://kolab.example.com/mcp', worktree: '/w', branch: 'trunk', credentials: '/n', mcpConfig: '/m', allowAll: true, harness: 'my-claude --model opus', personCredentials: '/p/credentials.json' });
   expect(all.command).toBe('my-claude');
   expect(all.args.slice(0, 3)).toEqual(['--model', 'opus', '-p']);
   expect(all.args).toContain('--dangerously-skip-permissions');
