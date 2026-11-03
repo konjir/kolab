@@ -723,9 +723,18 @@ export interface PositionView {
  * address it rules on, in the short form of its kolab. Served back to agents as precedent (CASE4).
  */
 export interface RulingView {
-  ruling: string; on: string; case: string | null; text: string; effect: RulingEffect | null;
-  replaces: string | null; ruled_by: string; ruled_at: string | null;
+  ruling: string;
+  /** Its own name in its kolab, such as D109 (W6.3), or null for one given without. */
+  ref: string | null;
+  on: string; case: string | null; text: string; effect: RulingEffect | null;
+  replaces: string | null; ruled_by: string;
+  /** When it was given: for a ruling recorded later, the date it was given (W6.3). */
+  ruled_at: string | null;
+  /** When Kolab recorded it; null for a ruling from before migration 0042. */
+  recorded_at: string | null;
 }
+/** A ruling's ref (W6.3): a letter, then up to 39 letters, digits, '.', '_' or '-', such as D109. Migration 0042's ruling_ref_form. */
+export const RULING_REF = /^[A-Za-z][A-Za-z0-9._-]{0,39}$/;
 /** A case file (CASE1): what is disputed, about which element, its positions, and its ruling once given. */
 export interface CaseFileView {
   case: string; on: string; layer: Layer; question: string | null; state: CaseFileState;

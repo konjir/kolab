@@ -21,18 +21,21 @@ function AddrChip({ address, here, go }: { address: string; here: string; go(r: 
   return <button type="button" className="chip" onClick={() => go(routeOf(a, here))}>{address}</button>;
 }
 
+/** Whether a ruling was recorded a day or more after it was given (W6.3): an imported one, dated when it was given. */
+const recordedLater = (r: WebRuling) => !!r.recorded_at && !!r.ruled_at && Date.parse(r.recorded_at) - Date.parse(r.ruled_at) >= 86_400_000;
+
 /** A ruling beside what it rules on: precedent in its kolab (CASE4), never changed once given. */
 export function RulingBox({ ruling: r, me, go, showOn }: { ruling: WebRuling; me: WebMe; go(r: string): void; showOn?: boolean }) {
   return (
     <div className="rulingbox" data-ruling={r.ruling}>
       <div className="head">
-        <Pill tone="clean">ruling</Pill>
+        <Pill tone="clean">{r.ref ? `ruling ${r.ref}` : 'ruling'}</Pill>
         <span>{r.effect === 'change_intent' ? 'Changes the intent' : r.effect === 'keep_intent' ? 'Keeps the intent: find another way to meet it as written' : 'Precedent'}
           {showOn !== false && <> · on <AddrChip address={r.on} here={me.kolab} go={go} /></>}</span>
       </div>
       <blockquote>{r.text}</blockquote>
       {r.replaces && <div className="why-not">Replaces: {r.replaces}</div>}
-      <div className="by">{r.ruled_by} ruled{r.ruled_at ? ` ${ago(r.ruled_at)}` : ''}{r.case ? ', on a case file' : ', directly'}. It is precedent here: agents are served it, so it isn’t argued again.</div>
+      <div className="by">{r.ruled_by} ruled{r.ruled_at ? (recordedLater(r) ? ` on ${r.ruled_at.slice(0, 10)}, recorded ${ago(r.recorded_at!)}` : ` ${ago(r.ruled_at)}`) : ''}{r.case ? ', on a case file' : ', directly'}. It is precedent here: agents are served it, so it isn’t argued again.</div>
     </div>
   );
 }

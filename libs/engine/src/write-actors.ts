@@ -171,6 +171,8 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   // W5.2a (KON7, D98): a repository names the person who registered or archived it, audited.
   registerRepository: { recorded: ['repository.registered_by', 'audit_event:repository.registered'] },
   archiveRepository: { recorded: ['repository.archived_by', 'audit_event:repository.archived'] },
+  // W6.3: each write of an import names the person whose session ran it, as its own verb's does.
+  importKolab: { recorded: ['node.created_by', 'version.actor_id', 'version.submitted_by', 'ruling.actor_id', 'repository.registered_by', 'audit_event:repository.registered'] },
   // A lease that lapsed goes back as Kolab's (PLN15): its event names `kolab`.
   sweepLapsedLeases: { recorded: ['work_event.actor_id'] },
 
