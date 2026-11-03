@@ -147,7 +147,8 @@ export function drainAfterWrites(kolab: Kolab) {
 }
 
 /**
- * Closes `things` when the test file ends, before the Kolabs and databases: servers, clients,
+ * Closes `things` when the test that registered them ends (or the file, if registered outside a
+ * test; markOpened), before the Kolabs and databases: servers, clients,
  * child processes, anything that holds a Kolab or a connection to a database. Everything
  * registered closes in the reverse of the order it was registered, so a client registered after
  * its server closes first. A test may close something itself as well; its `close` must then
@@ -157,8 +158,23 @@ export function closeAtEnd(...things: { close(): Promise<unknown> }[]) {
   for (const it of things) closers.push(() => it.close());
 }
 
+/** How much a file had opened at some moment (markOpened), so closeOpened can close only what came after. */
+export interface OpenedMark { closers: number; opened: number; dirs: number; adhoc: number }
+const NOTHING_OPENED: OpenedMark = { closers: 0, opened: 0, dirs: 0, adhoc: 0 };
+
 /**
- * Tears down what a test file opened, in order: what it registered with `closeAtEnd` (its servers
+ * What the file has opened so far. jest.setup.js marks it before each test and, after the test,
+ * closes only what the test opened (closeOpened(mark)): each test's Kolabs (PGlite instances,
+ * hundreds of megabytes each), servers and clients go when it ends, not when the file does, so a
+ * file holds one test's at a time. What a file opens outside a test (at its top level, or in a
+ * beforeAll) stays until the file ends.
+ */
+export function markOpened(): OpenedMark {
+  return { closers: closers.length, opened: opened.length, dirs: dirs.length, adhoc: adhoc.length };
+}
+
+/**
+ * Tears down what a test file opened (with `since`, only what it opened after that mark), in order: what it registered with `closeAtEnd` (its servers
  * and clients), then the Kolabs `openKolab` opened, then their databases (PGlite data directories,
  * and Postgres databases made without a run name). jest.setup.js runs it after each file, as the
  * file's only teardown, so no server is left holding a Kolab or a connection to a database that
@@ -167,13 +183,13 @@ export function closeAtEnd(...things: { close(): Promise<unknown> }[]) {
  *
  * The run's Postgres databases stay until jest.global-teardown.js drops them.
  */
-export async function closeOpened() {
+export async function closeOpened(since: OpenedMark = NOTHING_OPENED) {
   const errors: unknown[] = [];
   const attempt = async (fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { errors.push(e); } };
-  for (const close of closers.splice(0).reverse()) await attempt(close);
-  for (const kolab of opened.splice(0)) await attempt(() => kolab.close());
-  for (const dir of dirs.splice(0)) await attempt(async () => rmSync(dir, { recursive: true, force: true }));
-  for (const name of adhoc.splice(0)) await attempt(() => onServer(`drop database if exists ${name} with (force)`));
+  for (const close of closers.splice(since.closers).reverse()) await attempt(close);
+  for (const kolab of opened.splice(since.opened)) await attempt(() => kolab.close());
+  for (const dir of dirs.splice(since.dirs)) await attempt(async () => rmSync(dir, { recursive: true, force: true }));
+  for (const name of adhoc.splice(since.adhoc)) await attempt(() => onServer(`drop database if exists ${name} with (force)`));
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) throw new AggregateError(errors, `${errors.length} teardown steps failed`);
 }
