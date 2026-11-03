@@ -156,9 +156,11 @@ test('archiving closes the listen streams of every session it ends: a person\'s 
   expect(await settled(engStream.closed, 100)).toBe('open');
   await expect(connect(server.url, pm.token)).rejects.toThrow(/401|invalid_token|Unauthorized/i);
   await expect(call(admin, 'admin_open_session', { actor: 'lee-pm', role: 'product' })).rejects.toThrow(/lee-pm's owner lee is archived/);
-  expect(await call(admin, 'admin_list_actors', {})).toMatchObject({ actors: [{ id: 'eng' }] });
-  expect((await call(admin, 'admin_list_actors', { archived: true }) as { actors: { id: string; archived: boolean }[] }).actors
-    .map((a) => [a.id, a.archived])).toStrictEqual([['eng', false], ['lee', true], ['lee-pm', true]]);
+  // Leaving out policy-admin, the person boot set the kolab's policy as (testPolicy).
+  const actors = async (archived?: boolean) => (await call(admin, 'admin_list_actors', archived ? { archived } : {}) as { actors: { id: string; archived: boolean }[] }).actors
+    .filter((a) => a.id !== 'policy-admin');
+  expect(await actors()).toMatchObject([{ id: 'eng' }]);
+  expect((await actors(true)).map((a) => [a.id, a.archived])).toStrictEqual([['eng', false], ['lee', true], ['lee-pm', true]]);
 
   // The kolab: everyone left in it is ended, and it leaves the listing but for archived=true.
   expect(await call(admin, 'admin_archive', { kolab: 'test' })).toMatchObject({ archived: { kolab: 'test' }, ended_sessions: 1 });
