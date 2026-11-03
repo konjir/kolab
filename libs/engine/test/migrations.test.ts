@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
-import { commitReviewed, els, marksOn, people, persistentStore, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
+import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   EVIDENCE_KINDS, JOB_ENDS, JOB_KINDS, JOB_OUTCOMES, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
@@ -1877,3 +1877,83 @@ async function preflight0033(db: Db) {
     rejected: (await db.query<{ kolab_id: string; name: string; seq: number; state: string }>(rejected)).rows,
   };
 }
+
+// ---- 0039: questions, marks and spec elements as job items (W5.11; JOB6, D108) -----------------
+
+/**
+ * Takes a database at 0039 back to 0038 by hand, as 0039 found it: what 0039 adds dropped, and what
+ * it replaces (job_item, the kind and outcome checks, kj_job_fixed) as 0034 wrote it. The test
+ * checks the result is 0038's schema, line for line, so the rows it keeps are a 0038 database's.
+ */
+function undo0039(): string {
+  const m0034 = MIGRATIONS.find((m) => m.version === 34)!.sql;
+  const fixed = /create function kj_job_fixed\(\)[\s\S]*?\n\$\$;/.exec(m0034)![0].replace('create function', 'create or replace function');
+  return `drop trigger version_submitted_at on version;
+    drop function kj_version_submitted_at();
+    alter table version drop column submitted_at;
+    alter table job drop constraint job_item, drop constraint job_kind_check, drop constraint job_outcome_check;
+    alter table job drop column query_id, drop column mark_id, drop column spec_node_id, drop column spec_element_id;
+    alter table query drop constraint query_id_kolab_key;
+    alter table job add constraint job_kind_check check (kind in ('build', 'review'));
+    alter table job add constraint job_outcome_check check (outcome in ('submitted', 'reviewed', 'released', 'lapsed', 'stopped'));
+    alter table job add constraint job_item check ((version_id is null) <> (binding_node_id is null) and (binding_node_id is null) = (element_id is null)
+                             and (kind = 'review' or binding_node_id is not null) and (kind = 'review' or review_request_id is null));
+    ${fixed}
+    revoke execute on function kj_job_fixed() from public;
+    delete from kj_migration where version = 39;`;
+}
+
+test('a database at 0038 holding live and ended build and review jobs reaches 0039: every job keeps its item and how it ended, with none of the new ones, and the live ones go on (JOB6)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'job_queue_items');
+  expect(MIGRATIONS[at].version).toBe(39);
+  // The jobs, written by this release; then the database is taken back to 0038 as 0039 found it.
+  let kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  let lee = '';
+  try {
+    await people(kolab, 'alice', { layers: ['functional'] });
+    await people(kolab, ['bob', 'lee'], { layers: ['technical'] });
+    const product = await kolab.openSession('alice', 'product');
+    const bob = await kolab.openSession('bob', 'engineer');
+    lee = await kolab.openSession('lee', 'engineer');
+    await kolab.createNode(product, 'spec', 'Orders', 'orders');
+    await kolab.commit(product, 'orders', { elements: els({ R1: 'One.', R2: 'Two.' }) });
+    const spec = (await kolab.latestCommitted('orders'))!.id;
+    await kolab.createNode(bob, 'binding', 'Orders on Postgres', 'orders-pg');
+    const v = await kolab.draft(bob, 'orders-pg', {
+      elements: [{ id: 'W1', text: 'Build one.', work: {} }, { id: 'W2', text: 'Build two.', work: {} }],
+      links: [{ kind: 'dependency', sourceElement: 'W1', target: spec, targetElement: 'R1' }, { kind: 'dependency', sourceElement: 'W2', target: spec, targetElement: 'R2' }],
+    });
+    await kolab.submit(bob, v);
+    expect(await kolab.recordReview(lee, v, { verdict: 'approve' })).toMatchObject({ ok: true });
+    const take = async (s: string) => { const r = await kolab.takeJob(s, { machine: 'm' }); if (!r.taken) throw new Error(r.why); return r; };
+    const built = await take(lee);
+    await registeredRepository(kolab, { binding: 'orders-pg' });
+    await kolab.submitWork(built.token, built.item, { evidence: [{ kind: 'commit', sha: 'a'.repeat(40), title: 'Build one' }] });
+    await kolab.endJob(lee, { job: built.job, outcome: 'done' });
+    expect(await take(bob)).toMatchObject({ kind: 'review', item: 'kj:orders-pg#W1' });
+    expect(await take(lee)).toMatchObject({ kind: 'build', item: 'kj:orders-pg#W2' });
+  } finally { await kolab.close(); }
+
+  await withDb(async (db) => {
+    const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
+    expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
+    await db.exec(undo0039());
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39] });
+    // Every job as it was: its item and how it ended, the new items empty.
+    expect((await db.query(`select * from job order by id`)).rows)
+      .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
+    // The release before 0039 refuses the database now: going back means restoring a snapshot.
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0039_job_queue_items\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
+
+  // The live jobs go on, and their items are still each one's.
+  kolab = await TestKolab.open(store);
+  try {
+    expect((await kolab.listJobs(lee, { live: true })).jobs.map((j) => `${j.kind} ${j.item}`).sort()).toStrictEqual(['build kj:orders-pg#W2', 'review kj:orders-pg#W1']);
+    expect(await kolab.takeJob(lee, { machine: 'm', kinds: ['build', 'review', 'answer', 'mark', 'serve'] })).toMatchObject({ taken: false });
+  } finally { await kolab.close(); }
+});

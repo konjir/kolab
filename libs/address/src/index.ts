@@ -42,10 +42,23 @@ export const KOLAB_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const KOLAB_NAME_MAX = 100;
 
 /**
- * A node's name, unique within its kolab: anything but '/', '@', '#', '~' and whitespace, which
- * the address grammar uses to find where the name starts and ends.
+ * A character no node name or element id holds (JOB6): whitespace, the line and paragraph
+ * separators (U+2028, U+2029) among it, and control characters, C0 and C1. Names and ids are
+ * written into addresses, and addresses into a job's instructions as they are, so one of these
+ * could start a line there.
  */
-export const NODE_NAME = /^[^/@#~\s]+$/;
+export const UNSAFE_NAME_CHAR = /[\s\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+/**
+ * A node's name, unique within its kolab: anything but '/', '@', '#', '~', whitespace and control
+ * characters. The address grammar uses the first four to find where the name starts and ends.
+ */
+export const NODE_NAME = /^[^/@#~\s\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/;
+
+/** Whether `s` may be an element's id (JOB6): not empty, with no whitespace and no control character (UNSAFE_NAME_CHAR). */
+export function isElementId(s: string): boolean {
+  return typeof s === 'string' && s.length > 0 && !UNSAFE_NAME_CHAR.test(s);
+}
 
 export function isKolabName(s: string): boolean {
   return KOLAB_NAME.test(s) && s.length <= KOLAB_NAME_MAX;

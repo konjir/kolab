@@ -264,6 +264,18 @@ test('over MCP: the admin token takes no job (JOB2)', async () => {
   expect(await rejection(call(admin, 'take_job', { machine: 'x' }))).toMatch(/this tool needs an agent session token, not the admin token/);
 });
 
+test('over MCP: take_job takes the kinds a runner can run, build and review if it names none; an unknown kind, an empty list or an unknown argument is refused (JOB6)', async () => {
+  const { lead } = await planned();
+  const tool = (await lead.c.listTools()).tools.find((t) => t.name === 'konjir_take_job')!;
+  expect(tool.inputSchema).toMatchObject({ properties: { kinds: { type: 'array', items: { enum: ['build', 'review', 'answer', 'mark', 'serve'] } } } });
+  expect(await rejection(call(lead.c, 'take_job', { machine: 'x', kinds: ['deploy'] }))).toMatch(/kinds/);
+  expect(await rejection(call(lead.c, 'take_job', { machine: 'x', kinds: [] }))).toMatch(/kinds/);
+  expect(await rejection(call(lead.c, 'take_job', { machine: 'x', kind: 'build' }))).toMatch(/kind/);
+  // Only serve: W1 is ready, but this runner builds nothing, and every spec element is served.
+  expect(await call(lead.c, 'take_job', { machine: 'x', kinds: ['serve'] })).toMatchObject({ taken: false });
+  expect(await call(lead.c, 'take_job', { machine: 'x', kinds: ['build'] })).toMatchObject({ taken: true, kind: 'build', item: 'kj:orders-pg#W1' });
+});
+
 test('with hand-issued tokens off, a job\'s token stands while its job is live and its runner signed in, and not after it ends, lapses, or its runner signs out (JOB2, JOB3)', async () => {
   const { kolab, lead } = await planned();
   const strict = await startServer({ adminToken: ADMIN, kolab, handIssuedTokens: false });

@@ -45,7 +45,7 @@ import { toolsListing, verbHelp } from './verbs.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
-export { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, harnessCommand, harnessEnv, heartbeatEvery, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
+export { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, runWork, workStatus, type JobReport, type TakenJob } from './work.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the

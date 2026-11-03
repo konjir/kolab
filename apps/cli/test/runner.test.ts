@@ -15,7 +15,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, ToolRefusal, deniedTools, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
 import { rejection } from '@konjir/engine/testing';
 
 const env = { ...process.env };
@@ -231,7 +231,7 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   }
   expect(j1.prompt).toContain('Do kj:test/orders-plan#W1.');
   expect(j1.prompt).toContain('Konjir-Work: kj:test/orders-plan#W1');
-  expect(kolab.calls.filter(([v]) => v === 'take_job').map(([, a]) => a)).toEqual([{ machine: 'lee-laptop' }, { machine: 'lee-laptop' }, { machine: 'lee-laptop' }]);
+  expect(kolab.calls.filter(([v]) => v === 'take_job').map(([, a]) => a)).toEqual(Array(3).fill({ machine: 'lee-laptop', kinds: ['build', 'review', 'answer', 'mark', 'serve'] }));
   // One fetch, the preflight's, serves the first round's two jobs.
   expect(r.fetches).toEqual(['fetch --quiet origin']);
   // Heartbeats while they run.
@@ -500,4 +500,14 @@ test('konjir status: the queue by kind, every live job across pages, and the cal
     '  lee     lee-[31mlaptop  lee-engineer-2  build  kj:test/p#W2  3h',
   ].join('\n'));
   expect(formatStatus({ ...s, jobs: [] })).toMatch(/Jobs:   none live$/);
+});
+
+test('a job\'s note is its agent\'s last "Handed to a person:" or "Cleared:" paragraph alone when it ends with one, and otherwise the output\'s tail (JOB6)', () => {
+  const out = 'Reading kj:orders-pg@2#b1.\nSecrets: none here.\n\nHanded to a person: whether refunds are in scope.\nProduct decides.\n\nDone.';
+  expect(jobNote(out)).toBe('Handed to a person: whether refunds are in scope.\nProduct decides.');
+  expect(jobNote('Checked it.\n\nCleared: b1 still holds against R1.')).toBe('Cleared: b1 still holds against R1.');
+  // The last one wins, and a mention inside a line isn't one.
+  expect(jobNote('Handed to a person: first.\n\nHanded to a person: second.')).toBe('Handed to a person: second.');
+  expect(jobNote('I was told "Handed to a person: x" earlier.')).toBe('I was told "Handed to a person: x" earlier.');
+  expect(jobNote('No marker here.')).toBe('No marker here.');
 });

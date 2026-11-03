@@ -2,10 +2,10 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { args } from './args.js';
-import { GateError, Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
+import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   nobodyCanReview, notAKind,
 } from '@konjir/types';
@@ -181,7 +181,11 @@ const registerRepository = args({
 const archiveRepository = args({ repo: z.string().describe('The repository, by its URL or id') });
 const listRepositories = args({ archived: z.boolean().optional().describe('true: archived ones too'), ...paging });
 const setWorkLease = args({ minutes: z.number().int().describe(`From ${WORK_LEASE_MINUTES.min} to ${WORK_LEASE_MINUTES.max}`) });
-const takeJob = args({ machine: z.string().describe(`A label for the machine the job runs on, 1 to ${JOB_LIMITS.machine} characters, such as lee-laptop: it names the machine in the ledger`) });
+const takeJob = args({
+  machine: z.string().describe(`A label for the machine the job runs on, 1 to ${JOB_LIMITS.machine} characters, such as lee-laptop: it names the machine in the ledger`),
+  kinds: z.array(z.enum(JOB_KINDS)).min(1).optional()
+    .describe(`The kinds of item your runner can run, any of ${JOB_KINDS.join(', ')}: ${DEFAULT_TAKE_KINDS.join(' and ')} if you name none, so a runner that knows no other kind is never given one (JOB6)`),
+});
 const job = z.string().describe('The job\'s id, as konjir_take_job gave it');
 const renewJob = args({ job });
 const endJob = args({
@@ -847,11 +851,11 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_take_job',
-    description: `For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which \`konjir work\` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then an open question or note on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most ${JOB_LIMITS.perPerson} live jobs a person and ${JOB_LIMITS.perKolab} a kolab. With nothing to take, or past a cap, taken is false and why says why.`,
+    description: `For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which \`konjir work\` runs as one headless agent and which stops after that item. First a work package returned with changes requested to a free agent of yours, resumed as that agent; then a work package In review or a technical version in review that an agent of yours may review (never its author); then the first ready work package, pulled for the agent as konjir_pull_work pulls; then, for a runner that names them in kinds, an open question or note people raised on a technical node (answer), then an open mark on one (mark), each oldest first, and then a spec element no binding element serves (serve). Questions, notes and marks on the functional layer stay with people. An item whose last two jobs ended in the last hour without doing it is held back; a question, mark or spec element once its last job did, as a hand-off does: the agent leaves it, its last words, the job's note, saying what the person must decide. Kolab picks a free pool agent, making one on first need (within the 10 live agents a person may have), grants it what you hold here (at most Write), and opens its session, its only one. The result carries that session's token, shown this once: hand it to the agent and nowhere else; it ends with the job, or when your session ends. Also the job's id, its kind (build, review, answer, mark or serve), its item, the agent, the lease (renew it with konjir_renew_job), the agent's instructions (its kind's playbook, konjir_instructions which=playbook, filled in with the item, then your kolab's precedent), and now, Kolab's clock. At most ${JOB_LIMITS.perPerson} live jobs a person and ${JOB_LIMITS.perKolab} a kolab. With nothing to take, or past a cap, taken is false and why says why.`,
     schema: takeJob,
   })
-  takeJob({ machine }: z.infer<typeof takeJob>, context?: McpToolContext) {
-    return asAgent(context, (s) => this.kolab.takeJob(s, { machine }));
+  takeJob({ machine, kinds }: z.infer<typeof takeJob>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.takeJob(s, { machine, kinds }));
   }
 
   @McpTool({
@@ -874,7 +878,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_jobs',
-    description: `The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and its note for those with Write in the kolab. live=true: only those running. With the queue (what a job may take now, by kind: reviews, ready work packages, technical questions and notes to answer, technical marks, and spec elements no binding element serves) and the caps on live jobs, yours and the kolab's.${PAGED}`,
+    description: `The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and, for the job's own person and the kolab's Admins, its note (a hand-off's says what the person must decide). live=true: only those running. With the queue (what a job may take now, by kind: reviews, ready work packages, technical questions and notes to answer, technical marks, and spec elements no binding element serves) and the caps on live jobs, yours and the kolab's.${PAGED}`,
     schema: listJobs,
     annotations: { readOnlyHint: true },
   })
