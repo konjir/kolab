@@ -210,15 +210,13 @@ You are the engineer for Linkly. You work in Konjir through your konjir tools. C
 Before building, settle one question with product instead of guessing: when the same visitor opens the same short link again, does that visit count too, or only the first visit from each visitor? Ask it with konjir_ask on the short-links requirement about the visit count, from the short-links-binding element that counts visits, so the answer comes back to that element. Then tell me the question's id, the requirement it's on and the element that waits on it.
 ```
 
-It reports a question on the visit-count requirement, waiting on the element that counts visits: in our run, `kj:short-links#R7` and `kj:short-links-binding#b7`. The question goes to the functional layer's inbox, so the spec-writer's session gets a `← konjir:` message about it. In the **spec-writer** session:
+It reports a question on the visit-count requirement, waiting on the element that counts visits: in our run, `kj:short-links#R7` and `kj:short-links-binding#b7`. The question goes to the functional layer's inbox, so the spec-writer's session gets a `← konjir:` message about it. Its answer turns on what the spec intends, and an agent answers a question about the spec only by citing a committed source other than the requirement it asks about: it doesn't invent intent. Nothing else says whether repeat visits count, so the answer is yours. In [kolab.konjir.com](https://kolab.konjir.com), as **product**, open **Questions**, find the question on the visit-count requirement, and answer it:
 
 ```text
-You are the product writer for Linkly. You work in Konjir through your konjir tools. Call konjir_instructions first and follow it.
-
-Engineering asked a question about the spec short-links (konjir_list_queries). Our product answer: every visit that redirects counts, repeat visits from the same visitor included; the visit-count requirement already says so, so the spec doesn't change. Answer the question with that, in your own words, citing the visit-count requirement's committed address, and leave the spec as it is. Tell me what you answered.
+Every visit that redirects counts, repeat visits from the same visitor included: that is what the requirement says.
 ```
 
-An agent answers a question about the spec only by citing what is committed (its `cites`): it doesn't invent intent. Without anything to cite, the question would wait for you.
+Leave the spec as it is: it already says so.
 
 The answer comes back to the element that waited on it, as a `query_answered` mark, even though the spec text didn't change. The builder's `konjir_list_stale` now shows, in our run:
 
@@ -329,7 +327,7 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 - **`a product session may not write the technical layer` when you approve the binding.** Switch to **engineer** next to **Working as**, then approve.
 - **A version waits and nobody is asked.** A review request reaches only those who work in the layer's role, and whom the kolab's policy lets approve it: a spec is a person's to approve by default. “Nobody else can review the functional layer yet” means no one who may is working as product: review it yourself in that role.
 - **`kolab …'s policy keeps reviewing functional versions for a person` when the spec-reviewer reviews.** By default only a person approves a spec. Have it tell you its verdict, and give it yourself on Kolab's page, as in step 3. An Admin of the kolab can change that (`konjir set_policy approve_functional=agent`, signed in as yourself), but the default keeps intent with you.
-- **`an agent answers a question on the functional layer only by citing`.** The spec-writer answered without `cites`. Ask it to answer again citing the committed requirement the answer rests on, or answer it yourself on Kolab's page.
+- **`an agent answers a question on the functional layer only by citing`, or `is not its own source`.** An agent answered a question about the spec without citing a committed source other than the requirement it asks about. Answer it yourself on Kolab's page, as product, as in step 5, or have the agent cite the other requirement or ruling that settles it.
 - **An agent says its channel has no sign-in.** It names the command that signs it in, `KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent <agent>`. Run it in another terminal; the channel picks the sign-in up by itself.
 - **Agents keep signing each other out.** An agent holds one session at a time. Don't also add Kolab's HTTP server (`claude mcp add … /mcp`) as the same agent, and don't run `konjir login` as an agent that a session uses.
 - **No `← konjir:` messages arrive.** Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with `konjir_list_reviews`, `konjir_list_queries` and `konjir_list_stale`.
@@ -340,7 +338,7 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 - **`konjir repo register` or `konjir set_work_lease` acts on the wrong kolab.** A sign-in works in one kolab, and these act in that one. To act in another, sign in there first, as yourself: `konjir login --kolab <its name>`, then run the step. That sign-in replaces your other one as yourself, so sign back in to `$KOLAB` afterwards.
 - **A deltas draft says `cannot override …: not in parent`.** Deltas apply to the node's latest committed version. A first version that came back with changes requested never committed, so draft the full element list again. If the node has a committed version, the refusal lists its element ids: check the one you gave.
 - **`konjir login` says the sign-in took too long.** It waits 20 minutes for your browser, as long as Kolab's sign-in page lasts. Run it again.
-- **The builder asks you a question about the spec instead of building.** The instructions tell it to ask in Konjir, with `konjir_ask`, so the question reaches the spec-writer's inbox as in step 5. Answer it there, and an open question blocks pulling the work that serves its requirement until it is answered.
+- **The builder asks you a question about the spec instead of building.** The instructions tell it to ask in Konjir, with `konjir_ask`, so the question reaches the functional layer's inbox as in step 5. Answer it on Kolab's page, and an open question blocks pulling the work that serves its requirement until it is answered.
 - **`konjir connect` says it has no bridge.** It runs the channel from a checkout. Use `~/kolab/bin/konjir`, or add `--http` for plain HTTP entries that each sign in through `/mcp` in Claude Code, without a channel.
 
 ## Clean up

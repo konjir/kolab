@@ -224,6 +224,9 @@ test('an agent answers a question on the functional layer only citing committed 
   expect(await rejection(kolab.answerQuery(s.pm, q1, 'No.', { cites: Array.from({ length: 21 }, () => 'kj:orders#R1') }))).toMatch(/LimitError: an answer cites at most 20/);
   expect((await kolab.listQueries({ kolab: 'test' })).find((q) => q.id === q1)).toMatchObject({ state: 'open' });
 
+  // The element asked about, in any version, is no source of its own answer: something else must be cited.
+  expect(await rejection(kolab.answerQuery(s.pm, q1, 'No.', { cites: ['kj:orders#R1', 'kj:orders@1#R1'] })))
+    .toMatch(/GateError: an agent's answer cites its source \(AUT4\), and the element the question asks about is not its own source/);
   // Cited, it stands: each address pinned to the version it read, and a ruling of the kolab's.
   const ruling = await kolab.rule(s.ada, { address: 'kj:orders#R2', text: 'A day means a working day.', effect: 'keep_intent' });
   await kolab.answerQuery(s.pm, q1, 'No: only until it ships.', { cites: ['kj:orders#R1', 'kj:orders@1#R2', ruling, 'kj:orders@1#R1'] });
@@ -371,4 +374,57 @@ test('rulings and registering a repository stay a person\'s, whatever the policy
   // A person's ruling and registration stand, as ever.
   expect(await kolab.rule(s.ada, { address: 'kj:orders#R1', text: 'Cancelling is free.', effect: 'keep_intent' })).toEqual(expect.any(String));
   expect(await kolab.registerRepository(await adaAs('engineer'), { url: 'https://github.com/acme/orders', root_sha: sha('f') })).toMatchObject({ url: 'https://github.com/acme/orders' });
+});
+
+test('a change of the policy while a version\'s checks run is honored as it commits: one that now needs review waits for it, rather than commit unreviewed (POL2, POL3)', async () => {
+  const { kolab, s } = await adasKolab();
+  // Ada's own spec: under the default, with only agents beside her on the layer, it would commit unreviewed.
+  // Between the plan that says so and its commit, she requires a person other than herself.
+  const plan = kolab.reviewPlanIn.bind(kolab);
+  let armed = true;
+  kolab.reviewPlanIn = async (q, v) => {
+    const p = await plan(q, v);
+    if (armed && q === kolab.db) { armed = false; await kolab.setPolicy(s.ada, { approve_functional: 'other_person' }); }
+    return p;
+  };
+  const v2 = await kolab.draft(s.ada, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Orders ship in two days.' }] });
+  const r = await kolab.submit(s.ada, v2);
+  expect(armed).toBe(false);
+  expect(r).toMatchObject({ ok: false, in_review: true, reviewers: [], nobody: expect.stringMatching(/for a person other than the one whose intent it carries/) });
+  expect(await kolab.version(v2)).toMatchObject({ state: 'in_review', submitted_by: 'ada' });
+});
+
+test('review requests are given again without asking anyone who approved; a change that leaves a version with every approval it needs commits it at once (POL2, VER13)', async () => {
+  const { kolab, s } = await adasKolab();
+  await kolab.setPolicy(s.ada, { product_review_of_bindings: true });
+  const { v } = await bindingInReview(kolab, s.eng);
+  // Its technical approval: the other technical requests go, and the product one waits.
+  expect(await kolab.recordReview(s.eng2, v, { verdict: 'approve' })).toMatchObject({ ok: false, in_review: true });
+  const open = async () => (await kolab.db.query<{ reviewer_id: string; product: boolean }>(
+    `select reviewer_id, product from review_request where version_id = $1 and state = 'open' order by reviewer_id`, [v])).rows;
+  expect(await open()).toStrictEqual([{ reviewer_id: 'ada', product: true }]);
+  // A change that leaves it partly approved asks no one again.
+  expect(await kolab.setPolicy(s.ada, { jobs_per_kolab: 7 })).toMatchObject({ requests: { added: 0, withdrawn: 0 } });
+  expect(await kolab.resyncReviewRequests()).toStrictEqual({ added: 0, withdrawn: 0 });
+  expect(await open()).toStrictEqual([{ reviewer_id: 'ada', product: true }]);
+  // No product review needed any more: it holds every approval it needs, and commits at once.
+  expect(await kolab.setPolicy(s.ada, { product_review_of_bindings: false })).toMatchObject({ requests: { added: 0, withdrawn: 1 } });
+  expect(await kolab.version(v)).toMatchObject({ state: 'committed' });
+  expect((await kolab.db.query<{ review_note: string }>(`select review_note from version where id = $1`, [v])).rows[0].review_note).toMatch(/^Approved by ada-eng-2; with its kolab's policy changed, that is every approval it needs \(POL2\)\./);
+  expect(await open()).toStrictEqual([]);
+});
+
+test('an approval the policy no longer allows doesn\'t count: tightened to a person after an agent approved, a person must approve (POL3)', async () => {
+  const { kolab, s } = await adasKolab();
+  await kolab.setPolicy(s.ada, { product_review_of_bindings: true });
+  const { v } = await bindingInReview(kolab, s.eng);
+  expect(await kolab.recordReview(s.eng2, v, { verdict: 'approve' })).toMatchObject({ ok: false, in_review: true });
+  // Only a person approves technical versions now: ada-eng-2's approval stands in the record, but
+  // counts for nothing, and the people who may approve are asked again.
+  expect(await kolab.setPolicy(s.ada, { approve_technical: 'person' })).toMatchObject({ requests: { added: 2 } });
+  expect((await kolab.reviewRequests({ kolab: 'test', layer: 'technical' })).map((r) => r.reviewer).sort()).toStrictEqual(['ada', 'bob']);
+  // The product approval alone doesn't commit it; Bob's technical one then does.
+  expect(await kolab.recordReview(s.ada, v, { verdict: 'approve' })).toMatchObject({ ok: false, in_review: true });
+  expect(await kolab.version(v)).toMatchObject({ state: 'in_review' });
+  expect(await kolab.recordReview(s.bob, v, { verdict: 'approve' })).toMatchObject({ ok: true });
 });

@@ -733,8 +733,15 @@ export class Kolab {
       throw e;
     }
     if (dataDir) openDataDirs.set(dataDir, (openDataDirs.get(dataDir) ?? 0) + 1);
-    return new Kolab(db, opts.submissionChecks ?? structuralChecks, opts.checks ?? structuralChecks,
+    const kolab = new Kolab(db, opts.submissionChecks ?? structuralChecks, opts.checks ?? structuralChecks,
       opts.outboxLeaseMs ?? OUTBOX_LEASE_MS, opts.closeWaitMs ?? CLOSE_WAIT_MS, dataDir);
+    // The review requests waiting are given again under each kolab's policy (W6.2, POL2): those
+    // written before 0041, or by a process that stopped part way, match it from now on. Idempotent,
+    // and nothing to do in a kolab with nothing in review. A failure is logged and opens anyway.
+    if (opts.migrate !== false) {
+      await kolab.resyncReviewRequests().catch((e: unknown) => log.error('review requests were not given again under each kolab\'s policy on opening', { error: e }));
+    }
+    return kolab;
   }
 
   /**
@@ -4574,6 +4581,7 @@ export class Kolab {
     }
     let note = verdict.note ?? null;
     let unreviewed = false;
+    let checksNote: string | null = null;
     if (human && approvedBy) {
       note = `Approved by ${approvedBy}, then rebased by Kolab onto its node's newer version; ${note ?? ''}`.trim();
     } else if (ruling) {
@@ -4601,6 +4609,7 @@ export class Kolab {
         }
       }
       unreviewed = true;
+      checksNote = note;
       note = `${note ?? ''} ${NO_REVIEWER(v.layer, plan)}`.trim();
     }
     // The node may have moved on while the checks ran.
@@ -4609,11 +4618,24 @@ export class Kolab {
       ...(ruling ? { ruling } : {}),
       ...(approvedBy ? { record: (tx: Q, signal: Signal, overtaken: boolean) => this.foldRecord(tx, signal, v, overtaken) } : {}),
       ...(this.settlesDurably(v) ? { settle: { ruling, ...(applier ? { rulingBy: applier } : {}) } } : {}),
+      ...(unreviewed ? { unreviewed: { checks: checksNote, by } } : {}),
     });
     if (isRefused(late)) return { ok: false, note: late.refused, version: versionId };
+    if (isReview(late)) return this.reviewResult(v, late);
     if (!isCommitted(late)) return this.settle(v, late as Overtaker[], approvedBy, ruling, applier);
     const after = await this.afterCommitNow(v, late);
     return { ok: true, note: note ?? undefined, version: versionId, ...(unreviewed ? { unreviewed } : {}), ...after };
+  }
+
+  /** What a version that went into review in its commit step, as the policy now needs, is told (commitStep's `unreviewed`). */
+  private async reviewResult(v: VersionRow, r: { review: ReviewPlan; note: string }): Promise<GateResult> {
+    const plan = r.review;
+    const reviewers = await this.ableToReview(v, plan.own);
+    const product = plan.productNeeded ? await this.ableToReview({ layer: 'functional', kolab_id: v.kolab_id }, plan.product) : [];
+    return {
+      ok: false, note: r.note, version: v.id, in_review: true, reviewers,
+      ...(plan.productNeeded ? { product_reviewers: product } : {}), ...(plan.nobody ? { nobody: plan.nobody } : {}),
+    };
   }
 
   /**
@@ -4716,8 +4738,9 @@ export class Kolab {
     const verdict = await this.checks(await this.checkContext(v));
     if (!verdict.ok) return { ...verdict, version: v.id, in_review: true };
     const note = `${verdict.note ?? ''} Everyone who could review it has gone: ${NO_REVIEWER(v.layer, plan)}`.trim();
-    const late = await this.commitStep(v, note, { from: 'in_review' });
+    const late = await this.commitStep(v, note, { from: 'in_review', unreviewed: { checks: `Still in review.` } });
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
+    if (isReview(late)) return this.reviewResult(v, late);
     if (!isCommitted(late)) return this.settle(v, late as Overtaker[]);
     const after = await this.afterCommitNow(v, late);
     return { ok: true, note, version: v.id, unreviewed: true, ...after };
@@ -4800,7 +4823,24 @@ export class Kolab {
       ...(ownNeeded && !own.length ? [`Kolab ${v.kolab_id}'s policy keeps approving ${v.layer} versions for ${APPROVER_WORDS[setting]} (AUT2), and nobody here who may is free to: ${NOBODY_HELP}`] : []),
       ...(productNeeded && !product.length ? [`Kolab ${v.kolab_id} requires a product approval of bindings (VER13), which its policy keeps for ${APPROVER_WORDS[policy.approve_functional]}, and nobody here who may is free to: ${NOBODY_HELP}`] : []),
     ].join(' ');
-    return { policy, writers: writers.length, own, ownNeeded, product, productNeeded, ...(nobody ? { nobody } : {}) };
+    return { policy, layer: v.layer, intent: author.intent, writers: writers.length, own, ownNeeded, product, productNeeded, ...(nobody ? { nobody } : {}) };
+  }
+
+  /**
+   * The approvals a version in review holds in this round of review (given since it was last
+   * submitted) from reviewers the kolab's policy allows now, of each kind: its own layer's, and a
+   * binding's product review (VER13); and whether they are all `plan` needs (POL3). An approval by
+   * someone the policy no longer allows doesn't count.
+   */
+  private async approvalsIn(q: Q, v: Pick<VersionRow, 'id'>, plan: ReviewPlan): Promise<{ own: string[]; product: string[]; met: boolean }> {
+    const rows = (await q.query<{ reviewer_id: string; product: boolean }>(
+      `select r.reviewer_id, r.product from review_request r join version x on x.id = r.version_id
+        where r.version_id = $1 and r.state = 'approved' and r.decided_at >= coalesce(x.submitted_at, '-infinity'::timestamptz)
+        order by r.decided_at, r.reviewer_id`, [v.id])).rows;
+    const of = (product: boolean) => [...new Set(rows.filter((r) => r.product === product).map((r) => r.reviewer_id))];
+    const own = await this.policyAllowsIn(q, approverOf(plan.policy, plan.layer), of(false), plan.intent);
+    const product = await this.policyAllowsIn(q, plan.policy.approve_functional, of(true), plan.intent);
+    return { own, product, met: (own.length >= REQUIRED_APPROVALS || !plan.ownNeeded) && (product.length >= REQUIRED_APPROVALS || !plan.productNeeded) };
   }
 
   /**
@@ -5005,14 +5045,16 @@ export class Kolab {
         await record(tx, 'approved');
         // Its own layer's approval, and a binding's product approval where the kolab requires one
         // (VER13), each unless nobody the policy allows may give it and none is needed (reviewPlanIn).
+        // Only approvals of this round, by reviewers the policy allows now, count (POL3): one an agent
+        // gave before a person became needed doesn't.
         const plan = await this.reviewPlanIn(tx, v);
-        const approvals = (await tx.query<{ own: number; product: number }>(
-          `select count(*) filter (where not product)::int as own, count(*) filter (where product)::int as product
-             from review_request where version_id = $1 and state = 'approved'`, [v.id])).rows[0];
+        const { met } = await this.approvalsIn(tx, v, plan);
+        // Still waiting: the requests of the kind it holds now are withdrawn, and no one is asked again (syncVersionRequestsIn).
+        if (!met) await this.syncVersionRequestsIn(tx, v, plan);
         await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
         if (product || plan.productNeeded) await signal({ inbox: 'layer', kolab: v.kolab_id, layer: 'functional' });
         await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
-        return (approvals.own >= REQUIRED_APPROVALS || !plan.ownNeeded) && (approvals.product >= REQUIRED_APPROVALS || !plan.productNeeded);
+        return met;
       },
     });
     if (late === 'waiting') {
@@ -5020,7 +5062,7 @@ export class Kolab {
     }
     if (isRefused(late)) return { ok: false, note: late.refused, version: v.id };
     // Overtaken while it waited: the approval stands, and its settle job folds or rejects it.
-    if (!isCommitted(late)) return this.settle(v, late, s.actor_id);
+    if (!isCommitted(late)) return this.settle(v, late as Overtaker[], s.actor_id);
     const after = await this.afterCommitNow(v, late);
     return { ok: true, note, version: v.id, findings, ...after };
   }
@@ -5202,9 +5244,18 @@ export class Kolab {
     settle?: { approvedBy?: string; ruling?: string; rulingBy?: Doer };
     /** The ruling it applies (D47), if any: a ruling that fails a check here has no author to return to. */
     ruling?: string;
-  } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> {
+    /**
+     * It commits unreviewed, as no one its kolab's policy allows may review it (VER11): checked
+     * again here, under the policy lock, so a change of the policy since it was decided is honored
+     * (POL2, POL3). If review is needed now, it goes into review instead (`{ review }`), with requests
+     * to those the policy allows, and `review` the note it waits with.
+     */
+    unreviewed?: { checks: string | null; by?: Doer };
+  } = {}): Promise<Overtaker[] | 'waiting' | { refused: string } | { review: ReviewPlan; note: string } | Committed> {
     const from = opts.from ?? 'drafted';
-    const late = await this.asSystem(async (tx, signal): Promise<Overtaker[] | 'waiting' | { refused: string } | Committed> => {
+    const late = await this.asSystem(async (tx, signal): Promise<Overtaker[] | 'waiting' | { refused: string } | { review: ReviewPlan; note: string } | Committed> => {
+      // The policy lock before any row's, as konjir_set_policy takes it before the requests it writes.
+      if (opts.unreviewed) await tx.query(`select pg_advisory_xact_lock_shared($1)`, [POLICY_LOCK]);
       const newer = await overtakenBy(tx, v);
       if (opts.record && !(await opts.record(tx, signal, !!newer))) return 'waiting' as const;
       if (newer) {
@@ -5213,6 +5264,23 @@ export class Kolab {
       }
       const refused = await this.authorRefusal(tx, signal, v);
       if (refused) return { refused };
+      if (opts.unreviewed) {
+        const plan = await this.reviewPlanIn(tx, v);
+        if (plan.ownNeeded || plan.productNeeded) {
+          // The policy changed while its checks ran: it needs review now, so it waits for it.
+          const waiting = `${opts.unreviewed.checks ?? 'Kolab\'s checks passed.'} ${waitingFor(v.layer, plan.own, plan, plan.product)}`;
+          const r = from === 'drafted'
+            ? await tx.query(`update version set state = 'in_review', review_note = $2, submitted_by = $3 where id = $1 and state = 'drafted' returning id`,
+              [v.id, waiting, doer(opts.unreviewed.by ?? opts.submittedBy)])
+            : await tx.query(`update version set review_note = $2 where id = $1 and state = 'in_review' returning id`, [v.id, waiting]);
+          if (!r.rows.length) throw new GateError(`${v.id} is no longer ${from === 'drafted' ? 'drafted' : 'in review'}: another review settled it first`);
+          await this.syncVersionRequestsIn(tx, v, plan);
+          await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+          if (plan.productNeeded) await signal({ inbox: 'layer', kolab: v.kolab_id, layer: 'functional' });
+          await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
+          return { review: plan, note: waiting };
+        }
+      }
       // A binding version's PLN2 checks again, under the node's lock (D98, D104): a link added
       // meanwhile to the version it was built on, which it would carry forward, is seen now (see link).
       const binding = (await tx.query(`select 1 from node where id = $1 and kind = 'binding'`, [v.node_id])).rows.length > 0;
@@ -7046,7 +7114,11 @@ export class Kolab {
     if (mark && mark.reason !== 'role_boundary') {
       throw new GateError(`query ${queryId} is about a dirty mark; resolve it with konjir_resolve_override or konjir_clear_mark`);
     }
-    const cites = await this.citesIn(sessionId, opts.cites);
+    const cited = await this.citesIn(sessionId, opts.cites);
+    const cites = cited.map((c) => c.cite);
+    // Its source is something other than what it was asked about (AUT4): a ruling, or an element
+    // that isn't the questioned one, in any version of it.
+    const sourced = cited.some((c) => !c.node || c.node !== v.node_id || q.element_id === null || c.element !== q.element_id);
     // An agent doesn't invent intent (AUT4): on the functional layer it answers a question only by
     // citing, and not at all where the policy keeps those answers for a person. Checked again below,
     // under the policy lock, as the answer is recorded.
@@ -7058,6 +7130,9 @@ export class Kolab {
       }
       if (!cites.length) {
         throw new GateError(`an agent answers a question on the functional layer only by citing committed elements or precedent (AUT4): give cites, the addresses of the committed elements (kj:<node>@<version>#<element>) or the ids of the rulings the answer rests on. With nothing to cite, leave query ${queryId} open for a person: the intent is theirs to decide`);
+      }
+      if (!sourced) {
+        throw new GateError(`an agent's answer cites its source (AUT4), and the element the question asks about is not its own source: cite another committed element, or a ruling, that settles it. With nothing else to cite, leave query ${queryId} open for a person: the intent is theirs to decide`);
       }
     };
     await refuseAgent(this.db);
@@ -7088,7 +7163,7 @@ export class Kolab {
    * id in the session's kolab. One that doesn't exist, can't be read, isn't committed or names no
    * element is refused, naming it. None given is none.
    */
-  private async citesIn(sessionId: string, given: unknown): Promise<string[]> {
+  private async citesIn(sessionId: string, given: unknown): Promise<{ cite: string; node?: string; element?: string }[]> {
     if (given === undefined || given === null) return [];
     if (!Array.isArray(given) || given.some((c) => typeof c !== 'string' || !c.trim())) {
       throw new GateError('cites is a list of committed element addresses (kj:<node>@<version>#<element>) and ruling ids');
@@ -7096,14 +7171,15 @@ export class Kolab {
     if (given.length > MAX_CITES) throw new LimitError(`an answer cites at most ${MAX_CITES} elements and rulings; it cites ${given.length}`);
     const here = await this.sessionKolab(sessionId);
     const where = { session: sessionId };
-    const out: string[] = [];
+    const out: { cite: string; node?: string; element?: string }[] = [];
+    const add = (x: { cite: string; node?: string; element?: string }) => { if (!out.some((o) => o.cite === x.cite)) out.push(x); };
     for (const raw of given as string[]) {
       const c = raw.trim();
       if (!c.startsWith('kj:')) {
         // A ruling of the session's kolab, as the session reads its precedent (D49, D51).
         const [r] = await this.rulingsFor(sessionId, { ids: [c], limit: 1 });
         if (!r) throw new GateError(`cite ${c} is neither a kj: address nor a ruling you can read in kolab ${here} (konjir_list_rulings lists them)`);
-        if (!out.includes(r.ruling)) out.push(r.ruling);
+        add({ cite: r.ruling });
         continue;
       }
       let a: Address;
@@ -7118,7 +7194,7 @@ export class Kolab {
       if (r.status === 'orphan') throw new GateError(`cite ${c}: ${found.node.name}@${v.seq} has no element ${a.element}${a.selector ? ' holding that quote' : ''}`);
       // Stored in the full form, kolab and all, so it reads the same from any kolab (listQueries shortens it for its own).
       const pinned = formatAddress({ kolab: found.node.kolab_id, node: found.node.name, version: v.seq, element: a.element, selector: a.selector });
-      if (!out.includes(pinned)) out.push(pinned);
+      add({ cite: pinned, node: found.node.id, element: a.element });
     }
     return out;
   }
@@ -8678,7 +8754,7 @@ export class Kolab {
       const { updated_by: _b, updated_at: _a, ...was } = await this.policyIn(tx, s.kolab);
       const now: KolabPolicy = { ...was, ...want };
       const changes = POLICY_SETTINGS.filter((k) => now[k] !== was[k]).map((k) => ({ setting: k, was: was[k], now: now[k] }));
-      if (!changes.length) return { changes, requests: { added: 0, withdrawn: 0 } };
+      if (!changes.length) return { changes, requests: { added: 0, withdrawn: 0 }, satisfied: [] as string[] };
       await tx.query(
         `insert into kolab_policy(kolab_id, approve_functional, approve_technical, approve_work, product_review_of_bindings, answer_functional, jobs_per_person, jobs_per_kolab, updated_by, updated_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp())
@@ -8688,9 +8764,11 @@ export class Kolab {
         [s.kolab, now.approve_functional, now.approve_technical, now.approve_work, now.product_review_of_bindings, now.answer_functional, now.jobs_per_person, now.jobs_per_kolab, s.actor_id]);
       await audit(tx, s.actor_id, 'policy.set', { kolab: s.kolab, subject: s.kolab, detail: { changes } });
       // The review requests it changes, at once (REV6).
-      const requests = await this.resyncRequestsIn(tx, signal, s.kolab);
-      return { changes, requests };
+      const { satisfied, ...requests } = await this.resyncRequestsIn(tx, signal, s.kolab);
+      return { changes, requests, satisfied };
     });
+    // A version that now holds every approval it needs commits at once (POL2).
+    for (const id of out.satisfied ?? []) await this.commitSatisfied(id);
     return { ...this.policyView(s.kolab, await this.policyIn(this.db, s.kolab)), changes: out.changes, requests: out.requests };
   }
 
@@ -8700,18 +8778,22 @@ export class Kolab {
    * longer allows is withdrawn, and each reviewer it allows with none gets one. Signals the inboxes
    * and the authors whose requests changed. Counts what it added and withdrew.
    */
-  private async resyncRequestsIn(tx: Q, signal: Signal, kolab: string): Promise<{ added: number; withdrawn: number }> {
+  private async resyncRequestsIn(tx: Q, signal: Signal, kolab: string, opts: { work?: boolean } = { work: true }): Promise<{ added: number; withdrawn: number; satisfied: string[] }> {
     let added = 0;
     let withdrawn = 0;
+    const satisfied: string[] = [];
     const versions = (await tx.query<VersionRow>(`select * from version where kolab_id = $1 and state = 'in_review' order by created_at, id`, [kolab])).rows;
     for (const v of versions) {
-      const n = await this.syncVersionRequestsIn(tx, v, await this.reviewPlanIn(tx, v));
+      const plan = await this.reviewPlanIn(tx, v);
+      const n = await this.syncVersionRequestsIn(tx, v, plan);
       added += n.added;
       withdrawn += n.withdrawn;
       for (const layer of n.layers) await signal({ inbox: 'layer', kolab, layer });
       if (n.layers.length) await signal({ inbox: 'actor', kolab, actor: v.actor_id });
+      // One that holds every approval it now needs commits, once this change has (commitSatisfied).
+      if ((await this.approvalsIn(tx, v, plan)).met) satisfied.push(v.id);
     }
-    const packages = (await tx.query<{ binding_node_id: string; element_id: string; assignee_id: string }>(
+    const packages = !opts.work ? [] : (await tx.query<{ binding_node_id: string; element_id: string; assignee_id: string }>(
       `select binding_node_id, element_id, assignee_id from work_package where kolab_id = $1 and state = 'in_review' and assignee_id is not null
         order by binding_node_id, element_id`, [kolab])).rows;
     for (const w of packages) {
@@ -8722,6 +8804,67 @@ export class Kolab {
         await signal({ inbox: 'layer', kolab, layer: 'technical' });
         await signal({ inbox: 'actor', kolab, actor: w.assignee_id });
       }
+    }
+    return { added, withdrawn, satisfied };
+  }
+
+  /**
+   * Commits a version in review that holds every approval the kolab's policy now needs (POL2: a
+   * change takes effect at once), after the change that made it so: through the same commit step as
+   * an approval, which checks again under the policy lock that it still does. One that no longer
+   * does, or isn't in review, is left as it is.
+   */
+  private async commitSatisfied(versionId: string): Promise<void> {
+    const v = await this.version(versionId);
+    if (v.state !== 'in_review') return;
+    // One overtaken with its approval recorded is its settle job's to fold or reject, not this.
+    if ((await this.db.query(`select 1 from outbox where kind = 'settle' and version_id = $1`, [v.id])).rows.length) return;
+    const given = await this.approvalsIn(this.db, v, await this.reviewPlanIn(this.db, v));
+    const by = [...given.own, ...given.product];
+    if (!given.met || !by.length) return;
+    const note = `Approved by ${by.join(', ')}; with its kolab's policy changed, that is every approval it needs (POL2).`;
+    const late = await this.commitStep(v, note, {
+      from: 'in_review',
+      settle: { approvedBy: by[0] },
+      record: async (tx, signal) => {
+        await tx.query(`select pg_advisory_xact_lock_shared($1)`, [POLICY_LOCK]);
+        const now = (await tx.query<{ state: VersionState }>(`select state from version where id = $1`, [v.id])).rows[0].state;
+        if (now !== 'in_review') return false;
+        const met = (await this.approvalsIn(tx, v, await this.reviewPlanIn(tx, v))).met;
+        if (met) {
+          await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
+          await signal({ inbox: 'actor', kolab: v.kolab_id, actor: v.actor_id });
+        }
+        return met;
+      },
+    });
+    if (late === 'waiting' || isRefused(late)) return;
+    if (!isCommitted(late)) { await this.settle(v, late as Overtaker[], by[0]); return; }
+    await this.afterCommitNow(v, late);
+  }
+
+  /**
+   * Gives every version in review its review requests again under its kolab's policy, in each kolab
+   * that holds one and isn't archived (resyncRequestsIn): a request the policy doesn't allow is
+   * withdrawn, and each reviewer it allows with none is asked. Kolab.open runs it once migrations have
+   * applied, so the requests written before a kolab had a policy (before 0041: agents asked to approve
+   * functional versions) match it from the first start. It commits nothing: a version with every
+   * approval it needs was committed by its last approval, or is its settle job's. Work packages are
+   * left as they are: the defaults ask agents of them as before 0041, and a change of the policy gives
+   * them their requests again (setPolicy). Idempotent: run again, it changes nothing.
+   */
+  async resyncReviewRequests(): Promise<{ added: number; withdrawn: number }> {
+    const kolabs = (await this.db.query<{ kolab_id: string }>(
+      `select distinct kolab_id from version where state = 'in_review' and not ${archivedKolabSql('kolab_id')} order by kolab_id`)).rows.map((r) => r.kolab_id);
+    let added = 0;
+    let withdrawn = 0;
+    for (const kolab of kolabs) {
+      const r = await this.inTransaction(async (tx, signal) => {
+        await tx.query(`select pg_advisory_xact_lock($1)`, [POLICY_LOCK]);
+        return this.resyncRequestsIn(tx, signal, kolab, { work: false });
+      });
+      added += r.added;
+      withdrawn += r.withdrawn;
     }
     return { added, withdrawn };
   }
@@ -8735,7 +8878,11 @@ export class Kolab {
     let added = 0;
     let withdrawn = 0;
     const layers = new Set<Layer>();
-    for (const [product, who] of [[false, plan.own], [true, plan.productNeeded ? plan.product : []]] as const) {
+    // A kind whose approval it holds already, this round, asks no one more: the others' requests of
+    // that kind are withdrawn, and no one who approved is asked again.
+    const given = await this.approvalsIn(tx, v, plan);
+    const kinds = [[false, given.own.length ? [] : plan.own], [true, plan.productNeeded && !given.product.length ? plan.product : []]] as const;
+    for (const [product, who] of kinds) {
       const w = await tx.query(`update review_request set state = 'withdrawn', decided_at = now()
                                  where version_id = $1 and state = 'open' and product = $2 and reviewer_id <> all($3::text[]) returning id`, [v.id, product, who]);
       const open = new Set((await tx.query<{ reviewer_id: string }>(
@@ -11830,6 +11977,8 @@ const POLICY_LOCK = 0x4b4a0041;
 /** Who may review a version under its kolab's policy (reviewPlanIn). */
 interface ReviewPlan {
   policy: KolabPolicy;
+  /** The version's layer, and the person whose intent it carries: its author, or its author's owner. */
+  layer: Layer; intent: string | null;
   /** How many others hold Write on the version's layer, allowed or not (VER16). */
   writers: number;
   own: string[]; ownNeeded: boolean; product: string[]; productNeeded: boolean; nobody?: string;
@@ -12180,6 +12329,8 @@ const evidenceOf = (e: unknown): string[] => (Array.isArray(e) ? e.map((x) => (t
 
 /** Whether a commit step refused the version, because its author can no longer write its layer. */
 const isRefused = (x: unknown): x is { refused: string } => typeof x === 'object' && x !== null && 'refused' in x;
+/** A commit step that put its version into review instead, as the kolab's policy now needs (commitStep's `unreviewed`). */
+const isReview = (x: unknown): x is { review: ReviewPlan; note: string } => typeof x === 'object' && x !== null && 'review' in x;
 
 /** A commit step that committed its version, with the rebase jobs it wrote for the version's variants (D43, P6). */
 type Committed = { committed: true; rebases: number };

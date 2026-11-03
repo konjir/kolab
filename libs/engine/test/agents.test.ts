@@ -47,10 +47,10 @@ test('two agents of one person hold sessions at the same time, and each version 
   expect((await kolab.version(v2)).actor_id).toBe('alice-pm-2');
 
   // Questions are raised by the agent, so its answers inbox is its own.
-  const q = await kolab.raiseQuery(eng, 'kj:checkout#R1', 'Is 10 seconds a hard limit?');
+  const q = await kolab.raiseQuery(eng, 'kj:checkout', 'Is 10 seconds a hard limit?');
   expect((await kolab.listQueries({ raisedBy: 'alice-eng' })).map((x) => x.id)).toStrictEqual([q]);
   expect(await kolab.listQueries({ raisedBy: 'alice' })).toStrictEqual([]);
-  // An agent answers on the functional layer citing what it rests on (AUT4).
+  // An agent answers on the functional layer citing what it rests on (AUT4): asked of the spec as a whole, its R1.
   await kolab.answerQuery(pm2, q, 'Yes.', { cites: ['kj:checkout#R1'] });
   expect((await kolab.listQueries({ raisedBy: 'alice-eng' }))[0].answered_by).toBe('alice-pm-2');
 });
