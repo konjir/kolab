@@ -391,7 +391,14 @@ export class WebController {
   ask(@WebSession() s: string, @Body() body: WebAsk) { return run(() => this.web.ask(s, body)); }
 
   @Post('queries/:id/answer') @HttpCode(200)
-  answer(@WebSession() s: string, @Param('id') id: string, @Body() body: WebAnswer) { return run(() => this.web.answer(s, id, body?.answer)); }
+  answer(@WebSession() s: string, @Param('id') id: string, @Body() body: WebAnswer) { return run(() => this.web.answer(s, id, body?.answer, body?.cites)); }
+
+  // ---- the kolab's autonomy policy (W6.2, POL2): for those with Admin there, as Kolab decides ----
+
+  @Get('policy') policy(@WebSession() s: string) { return run(() => this.web.policy(s)); }
+
+  @Post('policy') @HttpCode(200)
+  setPolicy(@WebSession() s: string, @Body() body: unknown) { return run(() => this.web.setPolicy(s, body)); }
 
   // ---- case files and rulings: one route per verb (CASE1–CASE7, D49, D51) ----
 

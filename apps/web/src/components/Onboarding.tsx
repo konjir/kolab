@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import type {
   AccessHolder, AccessLevel, AccessSource, InvitePreview, InviteView, KolabAccessView, Layer, OwnSession, WebAccessChanged, WebCli, WebInviteMade, WebInvitesView, WebMe, WebOverview, WebPaged,
-  WebSessionRevoked, WebSessionsView,
+  WebSessionRevoked, WebSessionsView, KolabPolicy, PolicySet, PolicyView,
 } from '@konjir/types';
 import { api } from '../api.js';
 import { ago } from '../util.js';
@@ -198,6 +198,7 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
         )}
       </section>
       <AccessList me={me} tick={tick} act={act} />
+      <PolicySettings me={me} tick={tick} act={act} />
       <section aria-labelledby="p-list"><h2 className="section-title" id="p-list">Invites</h2>
         {error && <p className="empty" role="alert">{error}</p>}
         {invites.length ? <ul className="qlist">{invites.map((i) => (
@@ -357,6 +358,90 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
             </div></li>
           ))}</ul>
         </>
+      )}
+    </section>
+  );
+}
+
+/** Each setting of a kolab's policy (POL1), in words, with its choices; the first is D103's default for those with choices. */
+const POLICY_CHOICES: { key: keyof KolabPolicy; label: string; hint: string; options?: { value: string; label: string }[]; cap?: 'jobs_per_person' | 'jobs_per_kolab' }[] = [
+  {
+    key: 'approve_functional', label: 'Who approves functional versions', hint: 'Intent is a person\'s: by default a person approves the spec (AUT2).',
+    options: [{ value: 'person', label: 'A person' }, { value: 'other_person', label: 'A person other than the one whose intent it carries' }, { value: 'agent', label: 'Anyone with Write, agents included' }],
+  },
+  {
+    key: 'approve_technical', label: 'Who approves technical versions', hint: 'How it\'s built needn\'t be a person\'s: by default an agent may approve bindings (AUT2).',
+    options: [{ value: 'agent', label: 'Anyone with Write, agents included' }, { value: 'person', label: 'A person' }, { value: 'other_person', label: 'A person other than the one whose intent it carries' }],
+  },
+  {
+    key: 'approve_work', label: 'Who approves work packages', hint: 'By default an agent reviewer approves work (AUT3).',
+    options: [{ value: 'agent', label: 'Anyone with Write on the technical layer, agents included' }, { value: 'person', label: 'A person' }],
+  },
+  {
+    key: 'product_review_of_bindings', label: 'Product review of bindings', hint: 'Whether a binding version also needs a product approval that it doesn\'t change behavior (VER13).',
+    options: [{ value: 'false', label: 'Not required' }, { value: 'true', label: 'Required' }],
+  },
+  {
+    key: 'answer_functional', label: 'Who answers questions on the functional layer', hint: 'Agents don\'t invent intent: by default an agent answers only by citing committed elements or rulings (AUT4).',
+    options: [{ value: 'agent_cited', label: 'An agent citing its source, or a person' }, { value: 'person', label: 'Only a person' }],
+  },
+  { key: 'jobs_per_person', label: 'Jobs a person runs at once', hint: 'AUT7: never above the server\'s own limit.', cap: 'jobs_per_person' },
+  { key: 'jobs_per_kolab', label: 'Jobs the kolab runs at once', hint: 'AUT7: never above the server\'s own limit.', cap: 'jobs_per_kolab' },
+];
+
+/**
+ * The kolab's autonomy policy (W6.2; AUT1, POL2): for those with Admin there, from their own
+ * session. Each setting with its value, and changing any of them at once. Kolab decides each change,
+ * which takes effect at once and is recorded with who made it; rulings and registering a repository
+ * stay a person's whatever it says (AUT5).
+ */
+export function PolicySettings({ me, tick, act }: { me: WebMe; tick: number; act: Act }) {
+  const [again, setAgain] = useState(0);
+  const [chosen, setChosen] = useState<Partial<Record<keyof KolabPolicy, string>>>({});
+  const read = useRead<PolicyView>('policy', tick + again);
+  const error = read.error;
+  // Only a policy as Kolab gives it is shown.
+  const data = read.data?.policy ? read.data : undefined;
+  const valueOf = (k: keyof KolabPolicy) => chosen[k] ?? (data ? String(data.policy[k]) : '');
+  const changes = data ? POLICY_CHOICES.filter((c) => chosen[c.key] !== undefined && chosen[c.key] !== String(data.policy[c.key])) : [];
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const body: Record<string, unknown> = {};
+    for (const c of changes) {
+      const v = chosen[c.key]!;
+      body[c.key] = c.cap ? Number(v) : c.key === 'product_review_of_bindings' ? v === 'true' : v;
+    }
+    if (await act.run(() => api<PolicySet>('policy', body), 'Policy changed: it takes effect at once')) {
+      setChosen({});
+      setAgain((n) => n + 1);
+    }
+  };
+  return (
+    <section aria-labelledby="p-policy"><h2 className="section-title" id="p-policy">Kolab settings: how far agents act without a person</h2>
+      <p className="why-not">The policy of {me.kolab} (AUT1). Kolab enforces it where each act happens; anything it keeps for a person waits for one. Rulings and registering a repository are always a person's.</p>
+      {error && <p className="empty" role="alert">{error}</p>}
+      {!data && !error && <p className="empty">Reading the policy…</p>}
+      {data && (
+        <form onSubmit={save} aria-label="Policy">
+          {POLICY_CHOICES.map((c) => (
+            <div key={c.key} className="field">
+              <label htmlFor={`pol-${c.key}`}>{c.label}</label>
+              {c.options ? (
+                <select id={`pol-${c.key}`} value={valueOf(c.key)} onChange={(e) => setChosen({ ...chosen, [c.key]: e.target.value })}>
+                  {c.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              ) : (
+                <input id={`pol-${c.key}`} type="number" min={1} max={data.limits[c.cap!]} value={valueOf(c.key)} onChange={(e) => setChosen({ ...chosen, [c.key]: e.target.value })} />
+              )}
+              <span className="hint">{c.hint}{c.cap ? ` At most ${data.limits[c.cap]}.` : ''}{data.changed_from_default.includes(c.key) ? ' Changed from the default.' : ''}</span>
+            </div>
+          ))}
+          <div className="edit-row">
+            <button type="submit" className="btn primary" disabled={!changes.length}>Change {changes.length === 1 ? 'this setting' : 'these settings'}</button>
+            {changes.length > 0 && <button type="button" className="btn quiet" onClick={() => setChosen({})}>Cancel</button>}
+            <span className="why-not">{data.updated_by ? `Last changed by ${data.updated_by} ${ago(data.updated_at!)}.` : 'Every setting has its default.'}</span>
+          </div>
+        </form>
       )}
     </section>
   );

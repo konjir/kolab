@@ -64,7 +64,7 @@ test('an engineer raises a case file against the spec; the other side takes the 
   expect(open.opened_at).toMatch(/^\d{4}-\d\d-\d\dT/);
   expect(open.next).toMatch(/konjir_add_position case=.*to keep the intent/);
   // An open case file freezes nothing (CASE7): the spec still commits.
-  await commitReviewed(kolab, product, pm, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Users can save a cart for 30 days.' }] });
+  await commitReviewed(kolab, product, dana, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Users can save a cart for 30 days.' }] });
 
   // Nobody rules on one side.
   expect(await rejection(kolab.rule(dana, { case: c, text: 'R1 stands.', verdicts: {} })))
@@ -148,9 +148,9 @@ test('a direct ruling that changes the intent marks the element, with a question
   expect(await rejection(kolab.clear(product, mark.id))).toMatch(/amend it and commit/);
   expect(await rejection(kolab.answerQuery(product, question.id, 'done'))).toMatch(/commit a version that amends it/);
   // An unrelated edit settles nothing; amending R2 settles both.
-  await commitReviewed(kolab, product, pm, 'orders', { deltas: [{ kind: 'override', element: 'R1', text: 'Checkout completes within 6 seconds.' }] });
+  await commitReviewed(kolab, product, dana, 'orders', { deltas: [{ kind: 'override', element: 'R1', text: 'Checkout completes within 6 seconds.' }] });
   expect((await marksOn(kolab, 'orders')).map((m) => m.reason)).toStrictEqual(['ruled']);
-  await commitReviewed(kolab, product, pm, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Users can save a cart for 30 days.' }] });
+  await commitReviewed(kolab, product, dana, 'orders', { deltas: [{ kind: 'override', element: 'R2', text: 'Users can save a cart for 30 days.' }] });
   expect(await marksOn(kolab, 'orders')).toStrictEqual([]);
   expect((await kolab.listQueries({ layer: 'functional' })).find((q) => q.id === question.id)).toMatchObject({ state: 'answered', answer: expect.stringMatching(/^settled: version 3 of orders amends it/) });
 
@@ -160,7 +160,7 @@ test('a direct ruling that changes the intent marks the element, with a question
   const [{ positions }] = await kolab.listCases({ kolab: TEST_KOLAB, id: c2 });
   await kolab.rule(dana, { case: c2, text: 'R1 goes.', verdicts: Object.fromEntries(positions.map((p) => [p.position, p.actor === 'bob' ? 'sustained' as const : 'overruled' as const])) });
   expect((await marksOn(kolab, 'orders')).map((m) => [m.reason, m.element_id])).toStrictEqual([['ruled', 'R1']]);
-  await commitReviewed(kolab, product, pm, 'orders', { deltas: [{ kind: 'remove', element: 'R1' }] });
+  await commitReviewed(kolab, product, dana, 'orders', { deltas: [{ kind: 'remove', element: 'R1' }] });
   expect(await marksOn(kolab, 'orders')).toStrictEqual([]);
 });
 

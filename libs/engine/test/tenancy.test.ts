@@ -4,7 +4,7 @@
 import { expect, test } from '@jest/globals';
 import { AccessError, sessionKey, TenancyError, type Kolab } from '@konjir/engine';
 import type { KolabEvent } from '@konjir/types';
-import { els, openKolab, rejection } from '@konjir/engine/testing';
+import { els, openKolab, rejection, testPolicy } from '@konjir/engine/testing';
 
 const WRITE_BOTH = { level: 'write', layers: ['functional', 'technical'] };
 
@@ -209,6 +209,9 @@ test('an organization can own agents: they work in its kolabs, and hold nothing 
   const s = await kolab.openSession('acme-bot', 'product');
   expect(await kolab.sessionInfo(s)).toMatchObject({ actor: 'acme-bot', kind: 'agent', owner: 'acme', kolab: 'acme-api', access: { level: 'write', layers: ['functional'] } });
   await kolab.createNode(s, 'spec', 'API', 'api');
+  // With no person in acme-api, an agent's spec waits for one under the default policy (AUT1, AUT2):
+  // this kolab lets agents approve functional versions, so its checks alone commit it (VER11).
+  await testPolicy(kolab, { approve_functional: 'agent' }, 'acme-api');
   const v = await kolab.commit(s, 'api', { elements: els({ A1: 'Requests are authenticated.' }) });
   expect(await kolab.author(v)).toStrictEqual({ actor: 'acme-bot', kind: 'agent', owner: 'acme', role: 'product' });
 

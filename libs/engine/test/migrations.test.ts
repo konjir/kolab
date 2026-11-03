@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
-import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
+import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testPolicy, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   EVIDENCE_KINDS, JOB_ENDS, JOB_KINDS, JOB_OUTCOMES, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
@@ -1147,6 +1147,8 @@ test('a database at 0026 reaches 0027: each node is mapped by its label, wbs bec
     await kolab.grant('kolab', 'mirror-engineer', 'write', { layers: ['technical'] });
     const pm = await kolab.openSession('mirror-product', 'product', { kolab: 'kolab' });
     const eng = await kolab.openSession('mirror-engineer', 'engineer', { kolab: 'kolab' });
+    // No person writes this kolab's spec, so an agent's version of it would wait for one (AUT2): let agents approve it here.
+    await testPolicy(kolab, { approve_functional: 'agent' }, 'kolab');
     expect(await rejection(kolab.createNode(pm, 'spec', 'A second spec', 'kolab-2'))).toMatch(/kolab kolab already holds its spec, kolab/);
     // No plan is made any more (D104, 0033).
     expect(await rejection(kolab.createNode(eng, 'plan', 'A second plan', 'kolab-plan-2'))).toMatch(/the plan kind is retired \(D104\)/);
@@ -1941,11 +1943,12 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
   await withDb(async (db) => {
     const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
     expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
-    // Each of these people and agents holds one open session, so 0040 goes back too.
+    // Each of these people and agents holds one open session, so 0040 goes back too, and 0041 before it.
+    await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     await db.exec(undo0039());
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41] });
     // Every job as it was: its item and how it ended, the new items empty.
     expect((await db.query(`select * from job order by id`)).rows)
       .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
@@ -1999,9 +2002,10 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41] });
     expect((await db.query(`select actor_id, machine_key, place, last_used_at from session order by actor_id`)).rows).toStrictEqual([
       { actor_id: 'alice', machine_key: `client:${s.client}`, place: null, last_used_at: null },
       { actor_id: 'alice-pm', machine_key: 'agent', place: null, last_used_at: null },
@@ -2020,5 +2024,74 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
     expect(await rejection(kolab.openSession('bob', 'engineer'))).toMatch(/already has an open session/);
     const more = await kolab.openSession('alice', 'product');   // a token beside her sign-in through the app: another machine
     for (const t of [s.alice, s.bob, more]) expect(await kolab.sessionOpen(t)).toBe(true);
+  } finally { await kolab.close(); }
+});
+
+// ---- 0041: a kolab's autonomy policy (W6.2; AUT1–AUT5, AUT7, VER13; POL1–POL4) --------------------
+
+/** Takes a database at 0041 back to 0040 by hand, as 0041 found it: what 0041 adds dropped, and what it replaces as 0032 and 0007 wrote it. */
+const UNDO_0041 = `drop table kolab_policy;
+  alter table query drop column answer_cites;
+  drop index one_open_request_per_reviewer;
+  alter table review_request drop constraint review_request_product;
+  alter table review_request drop column product;
+  create unique index one_open_request_per_reviewer on review_request(version_id, reviewer_id) where state = 'open';
+  alter table audit_event drop constraint audit_event_action_check;
+  alter table audit_event add constraint audit_event_action_check check (action in
+    ('grant.set', 'grant.removed', 'member.set', 'member.removed',
+     'team_member.added', 'team_member.removed', 'outbox.retried',
+     'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
+     'work_lease.set', 'repository.registered', 'repository.archived'));
+  delete from kj_migration where version = 41;`;
+
+test('a database at 0040 with versions in review, review requests and answered questions reaches 0041: no kolab gets a policy row, every request and answer is kept, and the defaults apply at once (W6.2)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'kolab_policy');
+  expect(MIGRATIONS[at].version).toBe(41);
+  let kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  let v2 = '';
+  let q = '';
+  let dave = '';
+  try {
+    // Alice writes the spec, and her agent and Dave may write it too; Bob writes the binding.
+    await people(kolab, ['alice', 'dave'], { layers: ['functional'] });
+    await people(kolab, 'alice-pm', { owner: 'alice', layers: ['functional'] });
+    await people(kolab, 'bob', { layers: ['technical'] });
+    const pm = await kolab.openSession('alice-pm', 'product');
+    const bob = await kolab.openSession('bob', 'engineer');
+    dave = await kolab.openSession('dave', 'product');
+    await kolab.createNode(pm, 'spec', 'Orders', 'orders');
+    await commitReviewed(kolab, pm, dave, 'orders', { elements: els({ R1: 'One.' }) });
+    q = await kolab.raiseQuery(bob, 'kj:orders#R1', 'Which one?');
+    await kolab.answerQuery(pm, q, 'The first.', { cites: ['kj:orders@1#R1'] });
+    v2 = await kolab.draft(pm, 'orders', { elements: els({ R1: 'One, the first.' }) });
+    expect(await kolab.submit(pm, v2)).toMatchObject({ in_review: true, reviewers: ['alice', 'dave'] });
+  } finally { await kolab.close(); }
+
+  await withDb(async (db) => {
+    const requests = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
+    await db.exec(UNDO_0041);
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    const before = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
+    expect(before).toStrictEqual(requests.map(({ product: _, ...r }) => r));
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41] });
+    // Nothing rewritten: each request as it was, of its version's own layer; no kolab has a policy row; no answer cites anything.
+    expect((await db.query(`select * from review_request order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, product: false })));
+    expect((await db.query(`select * from kolab_policy`)).rows).toStrictEqual([]);
+    expect((await db.query(`select id, answer, answer_cites from query`)).rows).toStrictEqual([{ id: q, answer: 'The first.', answer_cites: null }]);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0041_kolab_policy\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
+
+  // The defaults hold at once (POL1): a person approves the spec; an agent's verdict is refused.
+  kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  try {
+    expect(await kolab.policyIn(kolab.db, 'test')).toMatchObject({ approve_functional: 'person', approve_technical: 'agent', updated_by: null });
+    await people(kolab, 'dave-pm', { owner: 'dave', layers: ['functional'] });
+    const agent = await kolab.openSession('dave-pm', 'product');
+    expect(await rejection(kolab.recordReview(agent, v2, { verdict: 'approve' }))).toMatch(/AccessError: kolab test's policy keeps reviewing functional versions for a person/);
+    expect(await kolab.recordReview(dave, v2, { verdict: 'approve' })).toMatchObject({ ok: true });
   } finally { await kolab.close(); }
 });

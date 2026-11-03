@@ -232,8 +232,8 @@ export async function waitingCounts(kolab: Kolab, session: string, layer: Layer,
             (select count(*)::int from query q where q.kolab_id = $1 and q.state = 'open') as open`, [here, layer])).rows[0]);
   // Versions in review on `layer`, and, on the technical layer, work packages In review (VER17, W5.8).
   const requests = await kolab.readAs(session, async (q) => (await q.query<{ reviewer: string; layer: Layer }>(
-    `select r.reviewer_id as reviewer, v.layer from review_request r join version v on v.id = r.version_id
-      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and v.layer = $3
+    `select r.reviewer_id as reviewer, ${REQUEST_LAYER} as layer from review_request r join version v on v.id = r.version_id
+      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and ${REQUEST_LAYER} = $3
      union all
      select r.reviewer_id, 'technical' from review_request r join work_package w on w.binding_node_id = r.binding_node_id and w.element_id = r.element_id
       where r.state = 'open' and w.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and $3 = 'technical'`, [here, reviewer, layer])).rows);
@@ -282,7 +282,14 @@ export async function ownSide(kolab: Kolab, person: string, actors: string[]): P
     `select id from actor where id = any($1::text[]) and (id = $2 or (kind = 'agent' and owner_id = $2))`, [actors, person])).rows.map((r) => r.id));
 }
 
-export interface ReviewRequestRow { kind: 'version'; node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string }
+/**
+ * An open review request on a version in review: its node and version, the layer whose review it
+ * asks for, and with `product`, a binding version's product review (VER13), the functional layer's.
+ */
+export interface ReviewRequestRow { kind: 'version'; node: string; seq: number; layer: Layer; author: string; reviewer: string; at: string; product?: true }
+
+/** The layer a version's review request asks a review of: its own, or the functional layer's for a binding's product review (VER13). */
+const REQUEST_LAYER = `(case when r.product then 'functional' else v.layer end)`;
 
 /**
  * An open review request on a work package In review (VER17, PLN16): its binding and id, its
@@ -320,19 +327,19 @@ async function requestRows(kolab: Kolab, session: string, only: { node?: string;
   const after = page ? keyOf(list, page.cursor, ['ts', 'text', 'text']) as [string, string, string] | undefined : undefined;
   const rows = await kolab.readAs(session, async (q) => (await q.query<{
     kind: 'version' | 'work'; node: string; seq: number | null; element: string | null; layer: Layer; author: string; reviewer: string;
-    at: Date | string; at_key: string; id: string; submitted_at: Date | string | null; submitted_note: string | null;
+    at: Date | string; at_key: string; id: string; submitted_at: Date | string | null; submitted_note: string | null; product: boolean;
   }>(
     // A work package's requests only with `work`, and never for one node's versions; its latest
     // submission is the newest event that put it In review.
     `select * from (
-       select 'version' as kind, n.name as node, v.seq, null::text as element, v.layer, v.actor_id as author, r.reviewer_id as reviewer,
-              r.created_at as at, r.created_at::text as at_key, r.id, null::timestamptz as submitted_at, null::text as submitted_note
+       select 'version' as kind, n.name as node, v.seq, null::text as element, ${REQUEST_LAYER} as layer, v.actor_id as author, r.reviewer_id as reviewer,
+              r.created_at as at, r.created_at::text as at_key, r.id, null::timestamptz as submitted_at, null::text as submitted_note, r.product
          from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
         where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1
-          and ($2::text is null or n.name = $2) and ($3::text is null or r.reviewer_id = $3) and ($4::text is null or v.layer = $4)
+          and ($2::text is null or n.name = $2) and ($3::text is null or r.reviewer_id = $3) and ($4::text is null or ${REQUEST_LAYER} = $4)
        union all
        select 'work', n.name, null::int, w.element_id, 'technical', w.assignee_id, r.reviewer_id,
-              r.created_at, r.created_at::text, r.id, s.at, s.note
+              r.created_at, r.created_at::text, r.id, s.at, s.note, false
          from review_request r join work_package w on w.binding_node_id = r.binding_node_id and w.element_id = r.element_id
          join node n on n.id = w.binding_node_id
          left join lateral (select e.at, e.note from work_event e where e.binding_node_id = w.binding_node_id and e.element_id = w.element_id
@@ -348,7 +355,7 @@ async function requestRows(kolab: Kolab, session: string, only: { node?: string;
   const shown = await kolab.shownRequests(here, picked.map((r): ReviewRequestRow | WorkReviewRequestRow => (r.kind === 'work'
     ? { kind: 'work', binding: r.node, element: r.element!, layer: 'technical', author: r.author, reviewer: r.reviewer, at: iso(r.at),
       submitted_at: r.submitted_at === null ? null : iso(r.submitted_at), submitted_note: r.submitted_note }
-    : { kind: 'version', node: r.node, seq: r.seq!, layer: r.layer, author: r.author, reviewer: r.reviewer, at: iso(r.at) })));
+    : { kind: 'version', node: r.node, seq: r.seq!, layer: r.layer, author: r.author, reviewer: r.reviewer, at: iso(r.at), ...(r.product ? { product: true as const } : {}) })));
   return { items: shown, next };
 }
 
@@ -448,7 +455,7 @@ export async function workReviewDetails(kolab: Kolab, session: string, packages:
 
 export interface SubmissionRow {
   node: string; seq: number; state: VersionState; note: string | null;
-  verdicts: { reviewer: string; state: ReviewRequestState; note: string | null }[];
+  verdicts: { reviewer: string; state: ReviewRequestState; note: string | null; product?: true }[];
 }
 
 /**
@@ -472,8 +479,9 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
     next = more;
     const out: (SubmissionRow & { layer: Layer })[] = [];
     for (const { id, at_key: _, ...v } of versions) {
-      out.push({ ...v, verdicts: (await q.query<{ reviewer: string; state: ReviewRequestState; note: string | null }>(
-        `select reviewer_id as reviewer, state, note from review_request where version_id = $1 order by created_at, reviewer_id, id`, [id])).rows });
+      out.push({ ...v, verdicts: (await q.query<{ reviewer: string; state: ReviewRequestState; note: string | null; product: boolean }>(
+        `select reviewer_id as reviewer, state, note, product from review_request where version_id = $1 order by created_at, reviewer_id, id`, [id])).rows
+        .map(({ product, ...x }) => ({ ...x, ...(product ? { product: true as const } : {}) })) });
     }
     return out;
   });
@@ -481,10 +489,10 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
   for (const { layer, ...v } of rows) {
     // As Kolab.submissions (WITHDRAWN_SHOWN): an open request while its reviewer can review now
     // (D65); a withdrawn one only for a person, whom every request is shown to (W5.7).
-    const open = v.verdicts.filter((x) => x.state === 'open').map((x) => ({ reviewer: x.reviewer, layer }));
-    const shown = new Set((await kolab.shownRequests(here, open)).map((x) => x.reviewer));
+    const open = v.verdicts.filter((x) => x.state === 'open').map((x) => ({ reviewer: x.reviewer, layer: x.product ? 'functional' as const : layer, product: !!x.product }));
+    const shown = new Set((await kolab.shownRequests(here, open)).map((x) => `${x.reviewer}:${x.product}`));
     const persons = await kolab.personsAmong(v.verdicts.filter((x) => x.state === 'withdrawn').map((x) => x.reviewer));
-    out.push({ ...v, verdicts: v.verdicts.filter((x) => (x.state === 'open' ? shown.has(x.reviewer) : x.state === 'withdrawn' ? persons.has(x.reviewer) : true)) });
+    out.push({ ...v, verdicts: v.verdicts.filter((x) => (x.state === 'open' ? shown.has(`${x.reviewer}:${!!x.product}`) : x.state === 'withdrawn' ? persons.has(x.reviewer) : true)) });
   }
   return { items: out, next };
 }
@@ -493,6 +501,8 @@ export interface QueryDetailRow {
   id: string; kind: QueryKind; state: QueryState; node: string; seq: number; layer: Layer;
   element: string | null; selector: QuoteSelector | null; question: string; raised_by: string | null; at: string;
   answer: string | null; answered_by: string | null;
+  /** What the answer cites (AUT4), each address in the short form where it is in the reader's own kolab; null for none. */
+  cites: string[] | null;
   from_node: string | null; from_seq: number | null; from_element: string | null;
   mark: string | null; mark_reason: MarkReason | null;
 }
@@ -553,7 +563,7 @@ async function queryRows(kolab: Kolab, session: string, only: { nodeId?: string;
   const rows = await kolab.readAs(session, async (q) => (await q.query<QueryDetailRow & { at: Date | string; at_key: string; rn: number; total: number }>(
     `select * from (
      select q.id, q.kind, q.state, n.name as node, v.seq, v.layer, q.element_id as element, q.selector, q.question,
-            q.raised_by, q.created_at as at, q.answer, q.answered_by,
+            q.raised_by, q.created_at as at, q.answer, q.answered_by, q.answer_cites as cites,
             fn.name as from_node, fv.seq as from_seq, q.from_element_id as from_element,
             q.invalidation_id as mark, i.reason as mark_reason, q.created_at::text as at_key,
             ${only.per === undefined ? 'null::int as rn, null::int as total' : `row_number() over (partition by q.element_id order by q.created_at desc, q.id desc)::int as rn,
@@ -574,6 +584,8 @@ async function queryRows(kolab: Kolab, session: string, only: { nodeId?: string;
   const { rows: shown, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, list, (r) => [r.at_key, r.id]);
   return { next, items: shown.map(({ at_key, rn, total, ...r }) => ({
     ...r, at: iso(r.at), ...(outside ? { mark: null, mark_reason: null, from_node: null, from_seq: null, from_element: null } : {}),
+    // Cites are stored in the full form (Kolab.answerQuery); in the reader's own kolab, the short one.
+    cites: r.cites?.map((c) => (c.startsWith(`kj:${own}/`) ? `kj:${c.slice(own.length + 4)}` : c)) ?? null,
     // The last shown of an element's newest `per`, when it has more: the cursor to the rest.
     ...(only.per !== undefined && rn === only.per && total > rn ? { cursor: cursorFor(scoped('web:queries', { here, nodeId, element: r.element ?? '' }), [at_key, r.id]) } : {}),
   })) };

@@ -3,7 +3,7 @@
 // the solo-project fallback, and rebases that commit after structural checks only.
 import { expect, test } from '@jest/globals';
 import { RoleError, sessionKey, structuralChecks } from '@konjir/engine';
-import { TEST_KOLAB, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
+import { TEST_KOLAB, agentsMay, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import type { KolabEvent } from '@konjir/types';
 
 /** Alice (product) and Dave (product), two people, so each reviews the other's specs; Bob is the engineer. */
@@ -68,8 +68,13 @@ test('another agent of the same person counts as a reviewer, and so does the per
   const spec = await kolab.createNode(pm, 'spec', 'Checkout', 'checkout');
 
   // Both the other agent and the person who owns them hold Write on the layer: each is a reviewer,
-  // whatever session it has open, or none (VER16).
+  // whatever session it has open, or none (VER16), where the kolab's policy lets an agent approve
+  // functional versions. By default only a person does (AUT2): the agent is asked nothing, and its
+  // verdict is refused.
   const v1 = await kolab.draft(pm, spec, { elements: els({ R1: 'Checkout completes in 30 seconds.' }) });
+  expect(await kolab.review(v1)).toMatchObject({ in_review: true, reviewers: ['alice'] });
+  expect(await rejection(kolab.recordReview(codex, v1, { verdict: 'approve' }))).toMatch(/AccessError: kolab test's policy keeps reviewing functional versions for a person \(AUT2/);
+  await agentsMay(kolab);
   expect(await kolab.review(v1)).toMatchObject({ in_review: true, reviewers: ['alice', 'alice-codex'] });
   expect(await kolab.recordReview(codex, v1, { verdict: 'approve' })).toMatchObject({ ok: true, note: 'Approved by alice-codex.' });
   expect(await kolab.author(v1)).toMatchObject({ actor: 'alice-pm', owner: 'alice' });

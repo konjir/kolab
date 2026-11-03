@@ -59,6 +59,8 @@ export const MAX_EVIDENCE_PATH = 1024;
 export const MAX_EVIDENCE_URL = 2000;
 /** Findings in one review verdict. */
 export const MAX_FINDINGS = 100;
+/** Elements and rulings one answer cites (AUT4, POL3; migration 0041's query_answer_cites). */
+export const MAX_CITES = 20;
 /** Characters in a node's title. */
 export const MAX_TITLE = 200;
 /** Characters in a kolab's title (D54), whoever makes the kolab. */

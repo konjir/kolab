@@ -137,8 +137,9 @@ test('an unarchived kolab is as it was: its grants count again, its draft goes o
   const ann = await kolab.openSession('ann', 'product', { kolab: 'orders' });
   const bob = await kolab.openSession('bob', 'engineer', { kolab: 'orders' });
   expect((await kolab.sessionInfo(bob)).access).toStrictEqual({ level: 'write', layers: ['technical'] });
-  // Ann's draft from before goes on to review by her agent, as any other.
-  expect(await kolab.submit(ann, draft)).toMatchObject({ in_review: true, reviewers: ['ann-pm'] });
+  // Ann's draft from before goes on, as any other: hers is a person's spec, and her agent may not
+  // approve it under the default policy (AUT2), so with no other person it commits unreviewed (VER11).
+  expect(await kolab.submit(ann, draft)).toMatchObject({ ok: true, unreviewed: true });
   expect((await kolab.listKolabs()).map((k) => k.id)).toStrictEqual(['notes', 'orders']);
 });
 

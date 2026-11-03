@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import { Kolab } from '@konjir/engine';
-import { TEST_KOLAB, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
+import { TEST_KOLAB, agentsMay, commitReviewed, els, marksOn, openKolab, people, rejection, setup, textOf } from '@konjir/engine/testing';
 import { nobodyCanReview } from '@konjir/types';
 import { openReviewRequests, queryDetails, submissionsOf } from '../src/views.js';
 import type { KolabEvent } from '@konjir/types';
@@ -281,12 +281,17 @@ test('an ask racing the abandon of its version is refused or handed on, never le
 
 // ---- review requests (D65, VER16, VER11) -----------------------------------
 
-/** Pat, a product owner; Lee, a person with Write on both layers, not signed in; and Lee's agent, Write on both, signed in as engineer. */
+/**
+ * Pat, a product owner; Lee, a person with Write on both layers, not signed in; and Lee's agent, Write
+ * on both, signed in as engineer. Its kolab lets agents approve functional versions (W6.2), so the
+ * agent is a reviewer of Pat's spec: these tests are of who is asked by the role they work in (D65).
+ */
 async function leesKolab() {
   const kolab = await openKolab();
   await people(kolab, 'pat', { layers: ['functional'] });
   await people(kolab, 'lee', { layers: ['functional', 'technical'] });
   await people(kolab, 'lee-agent', { owner: 'lee' });
+  await agentsMay(kolab);
   const pat = await kolab.openSession('pat', 'product');
   const eng = await kolab.openSession('lee-agent', 'engineer');
   const spec = await kolab.createNode(pat, 'spec', 'Checkout', 'checkout');
@@ -342,10 +347,12 @@ test('a request withdrawn from an agent that never saw it (signed in as engineer
 });
 
 test('when nobody else can review yet, the version waits in review and says how to get a reviewer; it doesn\'t commit unreviewed (D66)', async () => {
-  // Pat's only other writer on the layer is Pat's own agent, signed in as engineer.
+  // Pat's only other writer on the layer is Pat's own agent, signed in as engineer, in a kolab that
+  // lets agents approve functional versions (W6.2).
   const kolab = await openKolab();
   await people(kolab, 'pat', { layers: ['functional', 'technical'] });
   await people(kolab, 'pat-agent', { owner: 'pat' });
+  await agentsMay(kolab);
   const pat = await kolab.openSession('pat', 'product');
   await kolab.openSession('pat-agent', 'engineer');
   const spec = await kolab.createNode(pat, 'spec', 'Checkout', 'checkout');

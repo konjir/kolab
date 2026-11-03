@@ -4,7 +4,7 @@ import type { Client } from '@modelcontextprotocol/client';
 import { startServer, type KonjirServer } from '@konjir/server';
 import { connect, call, listenRefusal } from '../src/cli.js';
 import { sessionKey } from '@konjir/engine';
-import { closeAtEnd, testStore } from '@konjir/engine/testing';
+import { agentsMay, closeAtEnd, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'listen-test-admin';
 const INBOX = 'konjir://inbox/test/functional';
@@ -17,6 +17,8 @@ async function boot() {
   await call(admin, 'admin_add_organization', { id: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' }).catch(() => undefined);
   await call(admin, 'admin_grant', { kolab: 'test', to: 'lee', level: 'write' });
+  // Some tests have an agent approve a spec: a kolab that lets agents approve functional versions (W6.2).
+  await agentsMay(server.kolab);
   // Lee holds Write on the functional layer, so she is a reviewer of every spec here (W1.6).
   const { token } = await call(admin, 'admin_open_session', { actor: 'lee', role: 'product' }) as { token: string };
   lee = await connect(server.url, token);

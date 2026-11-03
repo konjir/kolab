@@ -6,7 +6,7 @@ import type { Client } from '@modelcontextprotocol/client';
 import { sessionKey } from '@konjir/engine';
 import { startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
-import { closeAtEnd, rejection, testStore } from '@konjir/engine/testing';
+import { agentsMay, closeAtEnd, rejection, testPolicy, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
 
@@ -123,6 +123,8 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
   expect([bot.k, pm.k]).toStrictEqual(['billing', 'orders']);
   expect(await rejection(call(admin, 'admin_open_session', { actor: 'ann', role: 'product', kolab: 'billing' }))).toMatch(/AccessError: ann has no access to kolab billing/);
 
+  // No person writes billing's spec: it lets agents approve functional versions (W6.2), or its agent's would wait for one.
+  await testPolicy(server.kolab, { approve_functional: 'agent' }, 'billing');
   await call(bot.c, 'create_node', { kind: 'spec', title: 'Billing', id: 'billing-spec' });
   await call(bot.c, 'draft', { node: 'billing-spec', elements: [{ id: 'B1', text: 'Invoices are monthly.' }] });
   await call(bot.c, 'submit_for_review', { node: 'billing-spec', version: 1 });
@@ -138,7 +140,7 @@ test('over MCP: two accounts\' kolabs can\'t see each other, a taken kolab name 
 
   // The served instructions carry answered questions only from the agent's own kolab (TEN13).
   const { query } = await call(bot.c, 'ask', { address: 'kj:billing-spec#B1', question: 'Why monthly, not weekly?' }) as { query: string };
-  await call(bot.c, 'answer_query', { query, answer: 'Our customers pay monthly.' });
+  await call(bot.c, 'answer_query', { query, answer: 'Our customers pay monthly.', cites: ['kj:billing-spec#B1'] });
   const instructions = async (c: typeof pm.c) => {
     const r = await c.getPrompt({ name: 'konjir_operating_instructions' });
     return (r.messages[0].content as { text: string }).text;
@@ -168,6 +170,8 @@ test('over MCP, a review request waits in the reviewer\'s inbox, konjir_review s
   await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
   await call(admin, 'admin_add_actor', { id: 'lee' });
   await call(admin, 'admin_grant', { kolab: 'test', to: 'lee', level: 'write', layers: ['functional'] });
+  // One agent reviews another's spec here: a kolab that lets agents approve functional versions (W6.2).
+  await agentsMay(server.kolab);
   const session = async (actor: string) => {
     await call(admin, 'admin_add_actor', { id: actor, owner: 'lee' });
     await call(admin, 'admin_grant', { kolab: 'test', to: actor, level: 'write', layers: ['functional'] });

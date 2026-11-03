@@ -6,7 +6,7 @@ import { Kolab, RoleError, sessionKey } from '@konjir/engine';
 import { nobodyCanReview, type KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testStore, TestKolab } from '@konjir/engine/testing';
+import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testPolicy, testStore, TestKolab } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -100,13 +100,18 @@ test('a database from the previous release is migrated on open', async () => {
     // before node names per kolab (0008), before the outbox (0010), before hashed session
     // tokens (0011), before link removals and the cascade's indexes (0012), before rulings' dates
     // and the case-file verbs' columns (0013), before archiving (0014), before rebase jobs (0015),
-    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025), before admins who are people (0026), before typed konstruct kinds (0027), before work-package fields (0029; 0028's columns go with oauth_request), before work state and leases (0030), before work review and evidence (0031), before repositories (0032), before work in the binding (0033), before jobs (0034), before setups (0036), before the indexes for agents' last use (0037; job's goes with job), before what screens' questions ask about (0038), before when versions were submitted (0039; its job columns go with job) and before sessions per machine (0040),
+    // before outside readers' questions (0016) before links and forks across kolabs (0017), before OAuth (0018), before invites (0019), before the consent token's and the tombstone sweep's indexes (0020 and 0021, which go with oauth_request), before Read-only sessions' marks and mark-raised questions (0022), before questions about versions in review (0023), before every write recording who made it (0024), before the paged lists' indexes and the rates' events (0025), before admins who are people (0026), before typed konstruct kinds (0027), before work-package fields (0029; 0028's columns go with oauth_request), before work state and leases (0030), before work review and evidence (0031), before repositories (0032), before work in the binding (0033), before jobs (0034), before setups (0036), before the indexes for agents' last use (0037; job's goes with job), before what screens' questions ask about (0038), before when versions were submitted (0039; its job columns go with job), before sessions per machine (0040) and before kolabs' policies, answers' cites and product reviews (0041),
     // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people and the spec stay, and
     // alice's session is stored by its token again, as 0.5 stored it, so 0011 hashing it in place
     // is what keeps it working. 0014's kj_access goes with 0006's below, since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop table kolab_policy;
+      alter table query drop column answer_cites;
+      drop index one_open_request_per_reviewer;
+      alter table review_request drop column product;
+      create unique index one_open_request_per_reviewer on review_request(version_id, reviewer_id) where state = 'open';
       drop index one_open_session_per_machine;
       drop trigger session_machine on session;
       drop function kj_session_machine();
@@ -475,6 +480,8 @@ test('over MCP: an engineer agent asks about a version in review, and konjir_sub
   await call(admin, 'admin_add_actor', { id: 'pat' });
   await call(admin, 'admin_add_actor', { id: 'pat-eng', owner: 'pat' });
   for (const to of ['pat', 'pat-eng']) await call(admin, 'admin_grant', { kolab: 'checkout', to, level: 'write' });
+  // A kolab that lets agents approve functional versions (W6.2): otherwise Pat's spec, with no other person, commits unreviewed.
+  await testPolicy(server.kolab, { approve_functional: 'agent' }, 'checkout');
   const open = async (actor: string, role: 'product' | 'engineer') => {
     const { token } = await call(admin, 'admin_open_session', { actor, role }) as { token: string };
     const c = await connect(server.url, token);
