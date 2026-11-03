@@ -4,3 +4,4 @@ export * from './write-actors.js';
 export * from './page.js';
 export * from './work.js';
 export * from './jobs.js';
+export * from './playbooks.js';

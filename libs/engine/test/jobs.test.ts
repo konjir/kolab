@@ -4,7 +4,7 @@
 // kolab eight; ending a job releases its package and ends its session; a lapsed job's package returns
 // to To do; the runner's heartbeat and the agent's calls renew the lease, never past four hours.
 import { expect, test } from '@jest/globals';
-import { buildInstructions, jobMachine, jobOutcome, reviewInstructions, type Kolab } from '@konjir/engine';
+import { fillPlaybook, fillTemplate, jobMachine, jobOutcome, PLAYBOOK_KINDS, PLAYBOOKS, playbookText, type Kolab } from '@konjir/engine';
 import { els, openKolab, people, registeredRepository, rejection, TEST_KOLAB } from '@konjir/engine/testing';
 import type { ElementInput } from '@konjir/types';
 
@@ -314,19 +314,76 @@ test('only a person\'s own session with Write on the technical layer takes a job
   expect((await kolab.db.query(`select level, functional, technical from kolab_grant where agent_id = 'bob-engineer-1'`)).rows).toStrictEqual([{ level: 'write', functional: false, technical: true }]);
 });
 
-test('the instructions are one function per kind, and an outcome follows what became of the item (JOB1, JOB2)', () => {
-  const b = buildInstructions({ kolab: 'k', agent: 'ann-engineer-1', person: 'ann', work: 'kj:p#W1', text: 'Do it.\nWell.', trailer: 'Konjir-Work: kj:k/p#W1' });
-  expect(b).toMatch(/^You are ann-engineer-1, an engineer agent of ann's, running one job in kolab k of Konjir\. Your job is one item: build the work package kj:p#W1\./);
-  expect(b).toMatch(/\n {2}Do it\.\n {2}Well\.\n/);
-  expect(b).toMatch(/Done when: its text above is met/);
-  expect(b).not.toMatch(/repository https/);
-  const r = reviewInstructions({ kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p#W1', subject: 'work', author: 'ann-engineer-1' });
+test('a job\'s instructions are its kind\'s playbook filled in with its item, and an outcome follows what became of the item (JOB1, JOB2, JOB7)', () => {
+  const brief = { kolab: 'k', agent: 'ann-engineer-1', person: 'ann', work: 'kj:p#W1', text: 'Do it.\nWell.', trailer: 'Konjir-Work: kj:k/p#W1' };
+  const b = fillPlaybook('build', brief);
+  expect(b).toMatch(/^You are ann-engineer-1, an engineer agent of ann's, running one job in kolab k of Konjir\. Your job is one item: build the work package kj:p#W1\. Kolab has already pulled it for you/);
+  expect(b).toMatch(/\n {2}Do it\.\n {2}Well\.\n\nDone when: its text above is met \(it names no done-when of its own\)\.\n\nHow to do it:\n1\. /);
+  expect(b).not.toMatch(/repository https|changes requested|already open/);
+  expect(b).toMatch(/\n3\. .*\n4\. No repository is registered for it, .*\n5\. .*\n\nThen stop\. This job is kj:p#W1 and nothing else/);
+  // A package resumed, with a done-when and a repository: the other side of each part.
+  const resumed = fillPlaybook('build', { ...brief, done_when: 'It works.', repository: 'https://github.com/a/b', resumed: true });
+  expect(resumed).toMatch(/It was returned to you with changes requested/);
+  expect(resumed).toMatch(/\n\nDone when: It works\.\n\nIt is done in the repository https:\/\/github\.com\/a\/b: work in a checkout of it\.\n\nHow to do it:\n/);
+  expect(resumed).toMatch(/its events, the review note among them\./);
+  expect(resumed).toMatch(/\n3\. .*\(or push to the one already open\)\.\n4\. Deliver and submit it from the checkout: konjir work deliver kj:p#W1 --submit .*\n5\. /);
+  expect(resumed).not.toMatch(/No repository is registered|already pulled it/);
+  const r = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p#W1', subject: 'work', author: 'ann-engineer-1' });
   expect(r).toMatch(/check out its pull request/i);
   expect(r).toMatch(/run the tests/);
+  expect(r).toMatch(/\nHow to do it:\n1\. Read it: konjir_read_work work=kj:p#W1 .*\n2\. .*\n3\. Give your verdict.*\n\nThen stop\./);
+  const v = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p@2', subject: 'version', author: 'ann-engineer-1', node: 'p', seq: 2 });
+  expect(v).toMatch(/\nHow to do it:\n1\. Call konjir_instructions which=reviewer once.*\n2\. Read it: konjir_read_node node=p version=2,.*\n3\. .*\n4\. .*konjir_review node=p version=2 verdict=approve.*\n\nThen stop\./);
+  // Nothing of the template is left in what a job is told, and what an item says is never read as a tag.
+  for (const t of [b, resumed, r, v]) expect(t).not.toMatch(/\{\{/);
+  expect(fillPlaybook('build', { ...brief, text: 'Show {{agent}} and {{#resumed}}x{{/resumed}}.' })).toContain('  Show {{agent}} and {{#resumed}}x{{/resumed}}.');
+  expect(() => fillTemplate('Hi {{who}}.', {})).toThrow(/names \{\{who\}\}, which its item doesn't give/);
+  expect(() => fillTemplate('Hi {{who}}.', { who: true })).toThrow(/only decides whether a part shows/);
   expect(jobOutcome('build', true, 'done')).toBe('submitted');
   expect(jobOutcome('review', true, 'failed')).toBe('reviewed');
   expect(jobOutcome('build', false, 'stopped')).toBe('stopped');
   expect(jobOutcome('review', false, 'done')).toBe('released');
+});
+
+test('each kind of job item has a playbook, served as written: what done is, its verbs, when a person takes over, and its text with the item\'s specifics as placeholders (JOB7)', () => {
+  expect([...PLAYBOOK_KINDS]).toStrictEqual(['build', 'review']);
+  for (const kind of PLAYBOOK_KINDS) {
+    const p = PLAYBOOKS[kind];
+    const text = playbookText(kind);
+    expect(text).toMatch(new RegExp(`^Konjir playbook: ${kind}\\. .*\\nDone: .+\\nVerbs: konjir_.+\\nHanded to a person: .+\\nThe item's specifics: .+\\n\\nText:\\n`));
+    expect(text.endsWith(`\nText:\n${p.text}`)).toBe(true);
+    // Every specific its text names is one it lists, and one its item's brief gives.
+    const named = new Set([...p.text.matchAll(/\{\{[#^/]?(\w+)\}\}/g)].map((m) => m[1]));
+    expect([...named].sort()).toStrictEqual(Object.keys(p.specifics).sort());
+  }
+  expect(playbookText('build')).toContain('konjir_read_work work={{work}}');
+  expect(playbookText('build')).toContain('git commit --trailer "{{trailer}}"');
+  expect(playbookText('build')).toMatch(/\{\{#repository\}\}\n4\. Deliver .*\n\{\{\/repository\}\}\n\{\{\^repository\}\}\n4\. No repository/);
+  expect(playbookText('review')).toContain('konjir_review work={{item}} verdict=approve');
+  expect(playbookText('review')).toContain('konjir_read_node node={{node}} version={{seq}}');
+});
+
+test('a job\'s instructions are its playbook filled in, then its kolab\'s precedent as konjir_instructions gives it: its rulings and answered questions (JOB7, DEL3, TEN13)', async () => {
+  const { kolab, product, bob, lee } = await planned(2);
+  await kolab.rule(product, { address: 'kj:orders#R1', text: 'Requirement 1 stands as written.', effect: 'keep_intent' });
+  const q = await kolab.raiseQuery(bob, 'kj:orders#R2', 'Does requirement 2 cover refunds?');
+  await kolab.answerQuery(product, q, 'No, refunds come later.');
+  const job = await take(kolab, lee);
+  expect(job).toMatchObject({ kind: 'build', item: W('W1'), agent: 'lee-engineer-1' });
+  const [playbook, precedent] = job.instructions.split('\n\nYour kolab\'s precedent, as konjir_instructions gives it: what is settled here. Follow it, and don\'t argue it again.\n');
+  expect(playbook).toBe(fillPlaybook('build', {
+    kolab: TEST_KOLAB, agent: 'lee-engineer-1', person: 'lee', work: W('W1'), text: 'Build element 1.', done_when: 'Element 1 works.',
+    trailer: 'Konjir-Work: kj:test/orders-pg#W1', repository: 'https://github.com/acme/orders', resumed: false,
+  }));
+  // The precedent is the operating instructions' own, as the job's agent reads it.
+  expect(precedent).toBe(await kolab.precedentFor(job.token));
+  expect(precedent).toMatch(/^Precedent on stale overrides \(0\): none yet\nRulings, newest first \(1\): kj:orders@\d+#R1: "Requirement 1 stands as written\." \(keeps the intent; ruled by alice on \d{4}-\d\d-\d\d\)\nAnswered questions and notes \(1\): kj:orders@\d+#R2: asked "Does requirement 2 cover refunds\?" -> "No, refunds come later\."$/);
+  // A review job's too.
+  await kolab.submitWork(job.token, W('W1'), { evidence: [COMMIT()] });
+  await kolab.endJob(lee, { job: job.job, outcome: 'done' });
+  const review = await take(kolab, bob, 'bob-desktop');
+  expect(review).toMatchObject({ kind: 'review', item: W('W1') });
+  expect(review.instructions).toMatch(/\nThen stop\. This job is reviewing kj:orders-pg#W1 .*\n\nYour kolab's precedent, as konjir_instructions gives it: .*\nPrecedent on stale overrides \(0\): none yet\nRulings, newest first \(1\): .*\nAnswered questions and notes \(1\): .*$/);
 });
 
 test('ending a job gives back only its own item: a build its own package, a review nothing; an agent holding a package takes no new job, and resumes its package once changes are requested (JOB2, PLN18)', async () => {

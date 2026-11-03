@@ -6,7 +6,7 @@ import type { Client } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
 import { connect, call, main } from '../src/cli.js';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
-import { buildInstructions, reviewInstructions } from '@konjir/engine';
+import { fillPlaybook, playbookText } from '@konjir/engine';
 
 const ADMIN = 'instructions-test-admin';
 
@@ -58,7 +58,7 @@ test('an agent with only MCP tools gets the full operating instructions with its
   const tools = (await ann.client.listTools()).tools;
   const tool = tools.find((t) => t.name === 'konjir_instructions')!;
   expect(tool.annotations).toMatchObject({ readOnlyHint: true, idempotentHint: true });
-  expect(tool.inputSchema).toMatchObject({ properties: { which: { enum: ['operating', 'reviewer'] } } });
+  expect(tool.inputSchema).toMatchObject({ properties: { which: { enum: ['operating', 'reviewer', 'playbook'] }, kind: { enum: ['build', 'review'] } } });
   expect((tool.inputSchema as { required?: string[] }).required ?? []).toStrictEqual([]);
 
   const text = await toolText(ann.client);
@@ -180,6 +180,32 @@ test('the reviewer variant is the reviewer prompt, for every session and the adm
   await server.close();
 });
 
+test('which=playbook with a kind is that kind\'s playbook, its item\'s specifics as placeholders, for every session and the admin token; with no kind or an unknown one it is refused, naming the kinds (JOB7)', async () => {
+  const { server, admin, open } = await boot();
+  const ann = await open('ann', 'anns');
+  await precedent(ann.client, 'alpha');
+  for (const kind of ['build', 'review'] as const) {
+    const text = await toolText(ann.client, { which: 'playbook', kind });
+    expect(text).toBe(playbookText(kind));
+    expect(text).toMatch(new RegExp(`^Konjir playbook: ${kind}\\.`));
+    // Server text, the same for everyone: no kolab's precedent in it.
+    expect(text).not.toMatch(/alpha/);
+    expect(await toolText(admin, { which: 'playbook', kind })).toBe(text);
+  }
+  expect(await toolText(ann.client, { which: 'playbook', kind: 'build' })).toContain('konjir work deliver {{work}} --submit');
+  expect(await toolText(ann.client, { which: 'playbook', kind: 'review' })).toContain('review {{item}}, which {{author}} submitted');
+  const refusal = async (args: Record<string, unknown>) => {
+    const r = await ann.client.callTool({ name: 'konjir_instructions', arguments: args });
+    expect(r.isError).toBe(true);
+    return (r.content as { text: string }[])[0].text;
+  };
+  expect(await refusal({ which: 'playbook' })).toMatch(/which=playbook needs kind, the kind of job item whose playbook you want: one of build, review/);
+  expect(await refusal({ which: 'playbook', kind: 'answer' })).toMatch(/kind is the kind of job item whose playbook you want: one of build, review/);
+  expect(await refusal({ kind: 'build' })).toMatch(/kind names a playbook, so it goes with which=playbook/);
+  expect(await refusal({ which: 'reviewer', kind: 'build' })).toMatch(/kind names a playbook, so it goes with which=playbook/);
+  await server.close();
+});
+
 test('the resources konjir://instructions and konjir://instructions/reviewer hold the same texts, and no listen stream may ask for them', async () => {
   const { server, admin, open } = await boot();
   const ann = await open('ann', 'anns');
@@ -244,6 +270,7 @@ test('the CLI: konjir instructions, konjir instructions reviewer and konjir inst
     expect(await run('instructions', 'which=operating')).toBe(operating);
     expect(await run('instructions', 'reviewer')).toBe(reviewer);
     expect(await run('instructions', 'which=reviewer')).toBe(reviewer);
+    expect(await run('instructions', 'which=playbook', 'kind=build')).toBe(playbookText('build'));
     await expect(main(['instructions', 'admin'])).rejects.toThrow(/no instructions "admin"/);
   } finally {
     log.mockRestore();
@@ -259,12 +286,14 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
   const text = await toolText(ann.client);
   const reviewer = await toolText(ann.client, { which: 'reviewer' });
   const brief = { kolab: 'anns', agent: 'ann-engineer-1', person: 'ann', work: 'kj:b#W1', text: 'Do it.', trailer: 'Konjir-Work: kj:anns/b#W1' };
-  const job = buildInstructions({ ...brief, repository: 'https://github.com/a/b' });
+  const job = fillPlaybook('build', { ...brief, repository: 'https://github.com/a/b' });
   const texts: Record<string, string> = {
     served, text, reviewer, job,
-    jobNoRepository: buildInstructions({ ...brief, resumed: true }),
-    reviewJob: reviewInstructions({ kolab: 'anns', agent: 'ann-engineer-2', person: 'ann', item: 'kj:b#W1', subject: 'work', author: 'ann-engineer-1' }),
-    reviewVersionJob: reviewInstructions({ kolab: 'anns', agent: 'ann-engineer-2', person: 'ann', item: 'kj:b@2', subject: 'version', author: 'ann-engineer-1', node: 'b', seq: 2 }),
+    jobNoRepository: fillPlaybook('build', { ...brief, resumed: true }),
+    reviewJob: fillPlaybook('review', { kolab: 'anns', agent: 'ann-engineer-2', person: 'ann', item: 'kj:b#W1', subject: 'work', author: 'ann-engineer-1' }),
+    reviewVersionJob: fillPlaybook('review', { kolab: 'anns', agent: 'ann-engineer-2', person: 'ann', item: 'kj:b@2', subject: 'version', author: 'ann-engineer-1', node: 'b', seq: 2 }),
+    buildPlaybook: await toolText(ann.client, { which: 'playbook', kind: 'build' }),
+    reviewPlaybook: await toolText(ann.client, { which: 'playbook', kind: 'review' }),
   };
 
   // Every konjir_* named is a tool a session lists, or one of the two prompts.
