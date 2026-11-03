@@ -235,34 +235,45 @@ test('an organization\'s agents share one budget of the organization\'s, with it
 });
 
 // On Postgres, each call takes a pooled connection (10 by default). The budget's lock is held only
-// while a call counts and takes its place, never through its write, so one person's burst of big
-// drafts costs everyone else no more than the same burst would with no rate at all. (With the lock
-// held through each write, the burst took four times as long and another person's read waited
-// four or five times as long as with no rate.) PGlite is one connection, which a burst holds in
-// turn whatever the lock does, so this is Postgres's alone.
+// while a call counts and takes its place, never through its write, so one person's draft stuck in
+// its write holds nobody else up: not their own next draft, nor another person's read. (With the
+// lock held through each write, a burst of big drafts ran one at a time, each holding a connection
+// as it waited.) The test holds one of Bob's writes, rather than timing a burst against one with
+// no rate, which a busy machine blurs. PGlite is one connection, which a held write holds for
+// everyone whatever the lock does, so this is Postgres's alone.
 (process.env.KONJIR_TEST_DATABASE_URL ? test : test.skip)('one person\'s burst of big drafts doesn\'t starve another person\'s read', async () => {
   const { kolab, product, engineer } = await orders();
-  const parts = 20;
-  for (let i = 0; i < 2 * parts; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
+  for (let i = 0; i < 4; i++) await kolab.createNode(engineer, 'binding', `Part ${i}`, `part-${i}`);
   const big = Array.from({ length: MAX_ELEMENTS }, (_, i) => ({ id: `b${i}`, text: `Element ${i}: ${long(150)}` }));
-  const read = async () => { const t = Date.now(); await kolab.queriesPage(product, {}); return Date.now() - t; };
-  /** Bob drafts on `parts` nodes at once, from node `from`; Alice reads once the burst has the pool. */
-  const burst = async (from: number) => {
-    const started = Date.now();
-    const drafts = Promise.all(Array.from({ length: parts }, (_, i) => kolab.draft(engineer, `part-${from + i}`, { elements: big })));
-    await new Promise((r) => setTimeout(r, 300));
-    const alice = await read();
-    await drafts;
-    return { alice, total: Date.now() - started };
-  };
-  Object.assign(kolab.rates, { drafts: Infinity });
-  const unrated = await burst(0);
   Object.assign(kolab.rates, { drafts: MAX_DRAFTS_PER_HOUR });
-  const rated = await burst(parts);
-  expect((await kolab.db.query(`select 1 from version where actor_id = 'bob'`)).rows).toHaveLength(2 * parts + 1);
-  expect({ alice: rated.alice < 3 * unrated.alice + 1_000, total: rated.total < 2 * unrated.total + 2_000, unrated, rated })
-    .toMatchObject({ alice: true, total: true });
-}, 300_000);
+  const holds = async () => (await kolab.db.query(`select 1 from rate_event where owner_id = 'bob' and kind = 'draft' and held`)).rows.length;
+  // Another connection locks part-0's row, so the draft's write, inserting a version that refers to
+  // it, waits for that lock: after the draft has taken its place, and for as long as the test likes.
+  let release!: () => void;
+  const released = new Promise<void>((r) => { release = r; });
+  let locked!: () => void;
+  const isLocked = new Promise<void>((r) => { locked = r; });
+  const holder = kolab.db.transaction(async (tx) => {
+    await tx.query(`select 1 from node where name = 'part-0' for update`);
+    locked();
+    await released;
+  });
+  await isLocked;
+  const stuck = kolab.draft(engineer, 'part-0', { elements: big });
+  for (let waited = 0; (await holds()) < 1; waited += 20) {
+    if (waited > 20_000) throw new Error('the draft never took its place');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  // Its place is taken and its write waits: Bob's next drafts take theirs and write, and Alice reads.
+  await Promise.all([1, 2, 3].map((i) => kolab.draft(engineer, `part-${i}`, { elements: big })));
+  await kolab.queriesPage(product, {});
+  expect(await holds()).toBe(1);
+  release();
+  await holder;
+  await expect(stuck).resolves.toEqual(expect.any(String));
+  expect(await holds()).toBe(0);
+  expect((await kolab.db.query(`select 1 from version where actor_id = 'bob'`)).rows).toHaveLength(5);
+}, 60_000);
 
 test('kolab titles count characters, and the admin\'s names and titles are capped too', async () => {
   const { kolab } = await orders();

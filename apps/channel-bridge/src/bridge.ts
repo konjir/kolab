@@ -103,6 +103,8 @@ export class KolabBridge {
   me?: Whoami;
   /** Called each time a subscription is open and caught up; for tests. */
   onListening?: (me: Whoami) => void;
+  /** Called with each reconnect delay as the bridge starts to wait it; for tests. */
+  onBackoff?: (delayMs: number) => void;
   /** Called when one of Kolab's lists, as passed through, has changed (or is first known). */
   onListChanged?: (kind: ListKind) => void;
   /** Kolab's lists as last read: what Claude Code is shown, unchanged. */
@@ -210,6 +212,8 @@ export class KolabBridge {
           ...(caps.prompts?.listChanged ? { promptsListChanged: true } : {}),
           ...(caps.resources?.listChanged ? { resourcesListChanged: true } : {}),
         });
+        // The stream lives from here: catching up on what changed is part of its life.
+        const opened = Date.now();
         // Read each resource: a baseline the first time it is read, and on a reconnect,
         // whatever changed while the bridge was away.
         const firstReads: { uri: string; body: unknown }[] = [];
@@ -233,7 +237,6 @@ export class KolabBridge {
           }
           this.onListening?.(me);
           const alive = this.watchLiveness(client, stop);
-          const opened = Date.now();
           const how = await Promise.race([subscription.closed.then(() => 'closed' as const), ended, this.stopping]);
           alive();
           this.down = 'it is reconnecting to Kolab';
@@ -313,6 +316,7 @@ export class KolabBridge {
         this.opts.login?.releaseIdleLock();
       }
       if (this.stopped) break;
+      this.onBackoff?.(delay);
       await this.sleep(delay);
       delay = Math.min(delay * 2, maxMs);
     }
