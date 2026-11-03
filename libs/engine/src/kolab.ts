@@ -14,9 +14,10 @@ import {
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
+import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -4234,6 +4235,14 @@ export class Kolab {
     if (!isNodeName(name)) throw new GateError(`${quoteText(name)} isn't a valid node name: it may not contain '/', '@', '#', '~', whitespace or a control character`);
     checkText('the title', title, MAX_TITLE);
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
+    return this.createNodeAs(s, kind, title, name, opts);
+  }
+
+  /**
+   * createNode's write, by `s.actor_id` in kolab `s.kolab`, whose right to write the kind's layer
+   * there the caller has checked (createNode, importKolab).
+   */
+  private async createNodeAs(s: { actor_id: string; kolab: string }, kind: Kind, title: string, name: string, opts: { parent?: string } = {}): Promise<string> {
     const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
     if (await this.findNode(this.db, s.kolab, name)) throw taken();
     const spec = async () => (await this.db.query<{ name: string }>(`select name from node where kolab_id = $1 and kind = 'spec'`, [s.kolab])).rows[0];
@@ -7388,11 +7397,18 @@ export class Kolab {
   async rule(sessionId: string, input: {
     case?: string; address?: Address | string; text: string; effect?: RulingEffect;
     verdicts?: Record<string, PositionVerdict>; replaces?: string;
+    /** The ruling's own name in its kolab (W6.3), such as D109: unique there, and never changed. */
+    ref?: string;
+    /** For a direct ruling given before it is recorded (W6.3): its date, YYYY-MM-DD or an ISO time, never in the future. */
+    ruled_at?: string;
   }): Promise<string> {
     const text = requireText(input.text, 'the ruling');
     if (input.effect !== undefined && !RULING_EFFECTS.includes(input.effect)) throw new GateError(`a ruling's effect is ${RULING_EFFECTS.join(' or ')} (CASE6)`);
     const replaces = input.replaces === undefined ? null : requireText(input.replaces, 'what the ruling replaces');
     if ((input.case === undefined) === (input.address === undefined)) throw new GateError('rule on a case file (case) or directly on an element (address), not both or neither');
+    const ref = input.ref === undefined ? null : rulingRef(input.ref);
+    if (input.ruled_at !== undefined && input.case !== undefined) throw new GateError('ruled_at dates a direct ruling given before it is recorded; a ruling on a case file is dated as it is given');
+    const ruledAt = input.ruled_at === undefined ? null : rulingDate(input.ruled_at);
     const s = await this.session(sessionId);
     const ruler = async (layer: Layer, kolab: string) => {
       if (s.kind !== 'person') {
@@ -7433,8 +7449,7 @@ export class Kolab {
         if (input.effect !== undefined && input.effect !== effect) {
           throw new GateError(`the sustained position seeks to ${effect === 'keep_intent' ? 'keep' : 'change'} the intent, so the ruling's effect is ${effect}, not ${input.effect}`);
         }
-        await tx.query(`insert into ruling(id, case_file_id, actor_id, text, replaces, effect) values ($1, $2, $3, $4, $5, $6)`,
-          [id, c.id, s.actor_id, text, replaces, effect]);
+        await this.insertRuling(tx, { id, case_file_id: c.id, actor_id: s.actor_id, text, replaces, effect, ref, kolab: c.kolab_id });
         for (const p of positions) await tx.query(`update position set verdict = $2 where id = $1`, [p.id, verdicts[p.id]]);
         await tx.query(`update case_file set state = 'ruled' where id = $1`, [c.id]);
         if (effect === 'change_intent') await this.markRuled(tx, signal, { versionId: c.version_id, element: c.element_id, ruling: id, text, on: c.on });
@@ -7454,9 +7469,23 @@ export class Kolab {
     const on = formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: a.element });
     if (a.element && (await this.resolveIn(v.id, a.element, null)).status === 'orphan') throw new Error(`${on} doesn't exist`);
     await ruler(v.layer, v.kolab_id!);
+    await this.ruleDirectly(s.actor_id, v, { id, element: a.element ?? null, on, text, replaces, effect, ref, ruledAt });
+    return id;
+  }
+
+  /**
+   * Writes a direct ruling (CASE3, D16) by `actor`, a person whose right to rule on `v`'s layer the
+   * caller has checked (rule, importKolab): on version `v`, or its `element`, superseding any case
+   * file still open there, and marking the element if it changes the intent (D51), unless it is dated
+   * before the live version it would mark was written (W6.3): that version already carries it.
+   */
+  private async ruleDirectly(actor: string, v: VersionRow, r: {
+    id: string; element: string | null; on: string; text: string; replaces: string | null; effect: RulingEffect; ref: string | null; ruledAt: Date | null;
+  }): Promise<void> {
+    const { id, text, replaces, effect, on } = r;
+    const a = { element: r.element ?? undefined };
     await this.asSystem(async (tx, signal) => {
-      await tx.query(`insert into ruling(id, version_id, element_id, actor_id, text, replaces, effect) values ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, v.id, a.element ?? null, s.actor_id, text, replaces, effect]);
+      await this.insertRuling(tx, { id, version_id: v.id, element_id: a.element ?? null, actor_id: actor, text, replaces, effect, ref: r.ref, ruled_at: r.ruledAt, kolab: v.kolab_id! });
       // The question is settled: any case file still open on the element is superseded by this ruling.
       const superseded = a.element ? (await tx.query<{ id: string; opened_by: string | null }>(
         `update case_file c set state = 'superseded', superseded_by = $1
@@ -7465,14 +7494,31 @@ export class Kolab {
          returning c.id, c.opened_by`, [id, a.element, v.kolab_id, v.node_id])).rows : [];
       const parties = superseded.length ? (await tx.query<{ actor_id: string }>(
         `select distinct actor_id from position where case_file_id = any($1)`, [superseded.map((c) => c.id)])).rows.map((r) => r.actor_id) : [];
-      if (effect === 'change_intent') await this.markRuled(tx, signal, { versionId: v.id, element: a.element ?? null, ruling: id, text, on });
+      if (effect === 'change_intent') await this.markRuled(tx, signal, { versionId: v.id, element: a.element ?? null, ruling: id, text, on, ruledAt: r.ruledAt });
       // New precedent in the kolab, and the superseded case files leave the inbox and reach their parties.
       await signal({ inbox: 'layer', kolab: v.kolab_id!, layer: v.layer });
-      for (const actor of new Set([...superseded.map((c) => c.opened_by), ...parties])) {
-        if (actor) await signal({ inbox: 'actor', kolab: v.kolab_id!, actor });
+      for (const party of new Set([...superseded.map((c) => c.opened_by), ...parties])) {
+        if (party) await signal({ inbox: 'actor', kolab: v.kolab_id!, actor: party });
       }
     });
-    return id;
+  }
+
+  /** Inserts a ruling row in `tx`, refusing a ref its kolab already gives another ruling (W6.3). */
+  private async insertRuling(tx: Q, r: {
+    id: string; case_file_id?: string; version_id?: string; element_id?: string | null; actor_id: string; text: string;
+    replaces: string | null; effect: RulingEffect; ref: string | null; ruled_at?: Date | null; kolab: string;
+  }) {
+    if (r.ref !== null && (await tx.query(`select 1 from ruling where kolab_id = $1 and ref = $2`, [r.kolab, r.ref])).rows.length) throw refTaken(r.kolab, r.ref);
+    try {
+      await tx.query(
+        `insert into ruling(id, case_file_id, version_id, element_id, actor_id, text, replaces, effect, ref, ruled_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10::timestamptz, clock_timestamp()))`,
+        [r.id, r.case_file_id ?? null, r.version_id ?? null, r.element_id ?? null, r.actor_id, r.text, r.replaces, r.effect, r.ref, r.ruled_at?.toISOString() ?? null]);
+    } catch (e) {
+      // Given by another call since the check: the index holds to it.
+      if (isUniqueViolation(e, 'ruling_ref_per_kolab')) throw refTaken(r.kolab, r.ref!);
+      throw e;
+    }
   }
 
   /**
@@ -7480,10 +7526,13 @@ export class Kolab {
    * version, with a question to its layer, in the ruling's transaction. A later version that revises
    * or removes the element settles both. Nothing is marked when the live version no longer has it.
    */
-  private async markRuled(tx: Q, signal: Signal, r: { versionId: string; element: string | null; ruling: string; text: string; on: string }) {
-    const live = (await tx.query<{ id: string }>(
-      `select l.id from version l join version v on v.node_id = l.node_id
-        where v.id = $1 and l.state = 'committed' order by l.seq desc limit 1`, [r.versionId])).rows[0]?.id ?? r.versionId;
+  private async markRuled(tx: Q, signal: Signal, r: { versionId: string; element: string | null; ruling: string; text: string; on: string; ruledAt?: Date | null }) {
+    const liveRow = (await tx.query<{ id: string; created_at: Date | string }>(
+      `select l.id, l.created_at from version l join version v on v.node_id = l.node_id
+        where v.id = $1 and l.state = 'committed' order by l.seq desc limit 1`, [r.versionId])).rows[0];
+    const live = liveRow?.id ?? r.versionId;
+    // A ruling dated before the live version was written (W6.3): that version came after it, so carries it already.
+    if (r.ruledAt && liveRow && r.ruledAt.getTime() < new Date(liveRow.created_at).getTime()) return;
     if (r.element && !(await tx.query(`select 1 from element where version_id = $1 and element_id = $2`, [live, r.element])).rows.length) return;
     const what = r.on.replace(/@\d+/, '');
     await this.markAndAskIn(tx, signal, {
@@ -7590,9 +7639,10 @@ export class Kolab {
     const rows = (await q.query<{
       id: string; case_file_id: string | null; node: string; seq: number; element_id: string | null; text: string;
       effect: RulingEffect | null; replaces: string | null; actor_id: string; ruled_at: Date | string | null; at_key: string;
+      ref: string | null; recorded_at: Date | string | null;
     }>(
       `select r.id, r.case_file_id, n.name as node, v.seq, coalesce(r.element_id, c.element_id) as element_id, r.text,
-              r.effect, r.replaces, r.actor_id, r.ruled_at, coalesce(r.ruled_at, '-infinity'::timestamptz)::text as at_key
+              r.effect, r.replaces, r.actor_id, r.ruled_at, r.ref, r.recorded_at, coalesce(r.ruled_at, '-infinity'::timestamptz)::text as at_key
          from ruling r left join case_file c on c.id = r.case_file_id
          join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
         where r.kolab_id = $1 and ($2::text is null or v.node_id = $2)
@@ -7602,8 +7652,8 @@ export class Kolab {
       [filter.kolab, filter.node ?? null, pick, filter.cases ?? [], filter.ids ?? [], filter.limit ?? 50, filter.after?.[0] ?? null, filter.after?.[1] ?? null])).rows;
     keys?.push(...rows.map((r) => ({ at: r.at_key, id: r.id })));
     return rows.map((r) => ({
-      ruling: r.id, on: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }), case: r.case_file_id,
-      text: r.text, effect: r.effect, replaces: r.replaces, ruled_by: r.actor_id, ruled_at: iso(r.ruled_at),
+      ruling: r.id, ref: r.ref, on: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined }), case: r.case_file_id,
+      text: r.text, effect: r.effect, replaces: r.replaces, ruled_by: r.actor_id, ruled_at: iso(r.ruled_at), recorded_at: iso(r.recorded_at),
     }));
   }
 
@@ -7642,7 +7692,7 @@ export class Kolab {
     const rulings = session ? await this.rulingsFor(session, { limit: 20 }) : [];
     return [
       `Precedent on stale overrides (${prec.length}): ` + (prec.map((p) => `${p.resolution}${p.amended_text ? ` -> ${quoted(p.amended_text)}` : ''} (ruled by ${p.ruled_by})`).join('; ') || 'none yet'),
-      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${oneLineId(r.on)}: ${quoted(r.text)} (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces ${quoted(r.replaces)}` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
+      `Rulings, newest first (${rulings.length}): ` + (rulings.map((r) => `${r.ref ? `${r.ref} on ` : ''}${oneLineId(r.on)}: ${quoted(r.text)} (${r.effect === 'change_intent' ? 'changes the intent' : r.effect === 'keep_intent' ? 'keeps the intent' : 'ruled'}${r.replaces ? `; replaces ${quoted(r.replaces)}` : ''}; ruled by ${r.ruled_by}${r.ruled_at ? ` on ${r.ruled_at.slice(0, 10)}` : ''})`).join('; ') || 'none yet'),
       `Answered questions and notes (${answeredInAll > answered.length ? `newest ${answered.length} of ${answeredInAll}` : answered.length}): ` + (answered.map((q) => `${oneLineId(q.address)}: ${q.kind === 'note' ? 'note' : 'asked'} ${quoted(q.question)} -> ${quoted(q.answer ?? '')}`).join('; ') || 'none yet'),
     ].join('\n');
   }
@@ -10719,6 +10769,329 @@ export class Kolab {
     };
   }
 
+  // ---- importing a kolab (W6.3; D15, D104, D109) ---------------------------------
+
+  /**
+   * `konjir import` (W6.3): writes a kolab's spec, its binding with its decisions and work packages,
+   * its rulings and its repository from one file (parseImportFile), as the person whose own session
+   * this is, in the kolab it works in. Never an agent's session, a job's among them, nor the admin
+   * token, which has no session.
+   *
+   * Everything is checked before anything is written: the file's shape, that the file names the
+   * session's kolab, that the person may do every write it asks for (Write on the spec's and the
+   * binding's layers, Maintain for the repository), that the nodes there are of the right kind, and
+   * each version as a draft would be checked (its size, its ids, its work fields, PLN2). Then each
+   * write goes through the path its verb takes, as that person: the node is made as
+   * konjir_create_node makes it, each version is drafted (counted against the person's draft budget)
+   * and submitted as konjir_submit_for_review submits it, so the kolab's policy decides whether it
+   * commits unreviewed or waits in review (VER11, AUT2); each ruling is given as konjir_rule gives a
+   * direct ruling, with its ref and date; and the repository is registered as
+   * konjir_register_repository registers it, audited. A version is written in the role of its own
+   * layer, as the person may write both: one import, from either role, writes the spec and the binding.
+   *
+   * It is idempotent: what is there already and equal is left alone (`unchanged`); what is there and
+   * differs is reported (`differs`), never overwritten, unless `update` asks for a new version of a
+   * node that differs; and what waits on something else (a version in review, a node not committed
+   * yet) is reported as `waiting` or `in_review`, for a later run to finish. A run that stops part way
+   * leaves what it wrote, and the next run completes the rest. With `dryRun`, nothing is written: the
+   * report says what a run would do.
+   */
+  async importKolab(sessionId: string, input: unknown, opts: { dryRun?: boolean; update?: boolean } = {}): Promise<ImportReport> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') {
+      throw new AccessError(`${s.actor_id} is an agent, and an agent imports nothing: a person imports a kolab, from their own session (konjir import, signed in as themselves with konjir login), never from an agent's or a job's`);
+    }
+    const file = parseImportFile(input);
+    if (file.kolab !== s.kolab) {
+      throw new GateError(`the file imports into kolab ${file.kolab}, and this session works in kolab ${s.kolab}: sign in there (konjir login --kolab ${file.kolab}) and run it again. Nothing was written`);
+    }
+    await this.requireLiveKolab(s.kolab, 'takes no import');
+    const dry = !!opts.dryRun;
+    const nodeNamed = (n: string) => this.findNode(this.db, s.kolab, n);
+
+    // Who may do what the file asks: every write's right, checked before any is made.
+    const layerOf = (node: string) => (node === file.spec?.name ? 'functional' : 'technical') as Layer;
+    const needs = new Set<Layer>([
+      ...(file.spec ? ['functional' as const] : []), ...(file.binding ? ['technical' as const] : []), ...file.rulings.map((r) => layerOf(r.on.node)),
+    ]);
+    const lacking = [...needs].filter((l) => !s.access.layers.includes(l)).map((l) => `Write on the ${l} layer`);
+    if (file.repository && rankOf(s.access.level) < rankOf('maintain')) lacking.push('Maintain or Admin, to register its repository');
+    if (lacking.length) throw new AccessError(`importing this file into kolab ${s.kolab} needs ${lacking.join(' and ')}; ${s.actor_id} holds ${describeAccess(s.access)}. Nothing was written`);
+
+    // The nodes already there are of the kind the file makes them, and the binding binds the spec.
+    const problems: string[] = [];
+    const spec = file.spec ? await nodeNamed(file.spec.name) : undefined;
+    if (file.spec) {
+      if (spec && spec.kind !== 'spec') problems.push(`${file.spec.name} is a ${KIND_WORDS[spec.kind]} in kolab ${s.kolab}, not its spec`);
+      const held = (await this.db.query<{ name: string }>(`select name from node where kolab_id = $1 and kind = 'spec' and name <> $2`, [s.kolab, file.spec.name])).rows[0];
+      if (held) problems.push(`kolab ${s.kolab} holds its spec already, ${held.name}, and a kolab holds exactly one (KON1): name it in the file`);
+    }
+    const binding = file.binding ? await nodeNamed(file.binding.name) : undefined;
+    if (file.binding && binding) {
+      if (binding.kind !== 'binding') problems.push(`${file.binding.name} is a ${KIND_WORDS[binding.kind]} in kolab ${s.kolab}, not a binding`);
+      else if (!spec || binding.parent_node_id !== spec.id) problems.push(`${file.binding.name} binds ${binding.parent_node_id ? await this.nameOf(binding.parent_node_id) : 'nothing'}, not ${file.spec!.name}: a binding's spec is set when it is made, and never changes (D78)`);
+    }
+    // Each version as a draft of it would be checked, so nothing fails half way for what the file says.
+    const specEls = file.spec?.elements.map((e) => ({ id: e.id, text: e.text, ...(e.parent !== undefined ? { parent: e.parent } : {}) }));
+    const bindingEls = file.binding ? draftWork({ name: file.binding.name, kind: 'binding' }, {
+      elements: file.binding.elements.map((e) => ({ id: e.id, text: e.text, ...(e.parent !== undefined ? { parent: e.parent } : {}), work: e.work ?? null })),
+    }).elements! : undefined;
+    for (const [what, els] of [['spec', specEls], ['binding', bindingEls]] as const) {
+      if (!els) continue;
+      try {
+        checkDraftInput({ elements: els });
+        checkElementIds({ elements: els }, new Set());
+        const rows = materialize([], diff([], els.map((e) => ({ ...e, id: e.id! })), null));
+        checkVersion(rows);
+        const verdict = await structuralChecks({ elements: rows } as unknown as CheckContext);
+        if (!verdict.ok) problems.push(`the ${what}: ${verdict.note}`);
+        if (what === 'binding') {
+          const links: WorkLink[] = file.binding!.elements.flatMap((e) => [
+            ...e.serves.map((t) => ({ source_element_id: e.id, target: `${file.spec!.name}#${t}`, target_element_id: t })),
+            ...e.relies_on.map((t) => ({ source_element_id: e.id, target: `${file.binding!.name}#${t}`, target_element_id: t, into_self: true })),
+          ]);
+          const work = workProblems(rows, links);
+          if (work.length) problems.push(`the binding's work (PLN2): ${work.join('; ')}`);
+        }
+      } catch (e) {
+        problems.push(`the ${what}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (file.repository) {
+      const u = repositoryUrl(file.repository.url);
+      if (u.problem) problems.push(`the repository: ${u.problem}`);
+      if (!ROOT_SHA.test(file.repository.root_sha.trim().toLowerCase())) problems.push('the repository\'s root_sha is its root commit, a full sha, as `git rev-list --max-parents=0 HEAD` prints it');
+    }
+    for (const r of file.rulings) {
+      try { rulingDate(r.date); } catch (e) { problems.push(`ruling ${r.id}: ${(e as Error).message}`); }
+    }
+    if (problems.length) throw new GateError(`the import is refused, and nothing was written: ${problems.join('; ')}`);
+
+    const steps: ImportStep[] = [];
+    const step = async (what: string, run: () => Promise<Omit<ImportStep, 'what'>>) => {
+      try {
+        steps.push({ what, ...(await run()) });
+      } catch (e) {
+        steps.push({ what, outcome: 'failed', detail: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
+      }
+    };
+    const addr = (node: string, element?: string) => formatAddress({ kolab: s.kolab, node, element });
+
+    // The spec: its node, then its version.
+    let specNode = spec;
+    if (file.spec) {
+      const f = file.spec;
+      await step(`node ${addr(f.name)}`, async () => {
+        if (specNode) return this.nodeOutcome(specNode, f.title);
+        if (dry) return { outcome: 'would_create', detail: `a spec, "${f.title}"` };
+        await this.createNodeAs(s, 'spec', f.title, f.name);
+        specNode = await nodeNamed(f.name);
+        return { outcome: 'created', detail: `a spec, "${f.title}"` };
+      });
+      await step(`version ${addr(f.name)}`, () => this.importVersion(s, specNode, specEls!, { dry, update: !!opts.update }));
+    }
+
+    // The binding: its node, its repository, then its version, and its links to its own decisions.
+    let bindingNode = binding;
+    if (file.binding) {
+      const f = file.binding;
+      await step(`node ${addr(f.name)}`, async () => {
+        if (bindingNode) return this.nodeOutcome(bindingNode, f.title);
+        if (!specNode) return { outcome: dry ? 'would_create' : 'waiting', detail: dry ? `a binding of ${f.name}, once the spec is made` : `it binds ${file.spec!.name}, which isn't made` };
+        if (dry) return { outcome: 'would_create', detail: `a binding of ${file.spec!.name}, "${f.title}"` };
+        await this.createNodeAs(s, 'binding', f.title, f.name, { parent: file.spec!.name });
+        bindingNode = await nodeNamed(f.name);
+        return { outcome: 'created', detail: `a binding of ${file.spec!.name}, "${f.title}"` };
+      });
+    }
+    if (file.repository) {
+      const r = file.repository;
+      await step(`repository ${repositoryUrl(r.url).url}`, () => this.importRepository(sessionId, s, r, bindingNode, file.binding?.name, dry));
+    }
+    if (file.binding) {
+      const f = file.binding;
+      // What each element serves, in the spec's latest committed version; what it relies on, in the binding's.
+      const links = async (latest: VersionRow | undefined, equal: boolean): Promise<{ links: WantedLink[]; missing: string[] }> => {
+        const specLive = specNode ? await this.latestCommitted(specNode.id) : undefined;
+        const specIds = new Set(specLive ? (await this.elements(specLive.id)).map((e) => e.element_id) : []);
+        const out: WantedLink[] = [];
+        const missing: string[] = [];
+        for (const e of f.elements) {
+          for (const t of e.serves) {
+            if (specLive && specIds.has(t)) out.push({ link: { kind: 'dependency', sourceElement: e.id, target: specLive.id, targetElement: t }, node: specNode!.id, relies: false });
+            else missing.push(`${e.id} serves ${file.spec!.name}#${t}`);
+          }
+          // A decision the element relies on is linked once the binding has committed it, as the file says it.
+          for (const t of e.relies_on) {
+            if (latest && equal) out.push({ link: { kind: 'dependency', sourceElement: e.id, target: latest.id, targetElement: t }, node: latest.node_id, relies: true });
+          }
+        }
+        return { links: out, missing };
+      };
+      await step(`version ${addr(f.name)}`, () => this.importVersion(s, bindingNode, bindingEls!, { dry, update: !!opts.update, links }));
+      // Its links to its own decisions need a committed version of it: a second version, once the first commits.
+      if (f.elements.some((e) => e.relies_on.length)) {
+        await step(`links ${addr(f.name)} (relies_on)`, () => this.importVersion(s, bindingNode, bindingEls!, { dry, update: false, links, linksOnly: true }));
+      }
+    }
+
+    // The rulings, each on its committed node, with its ref and its date.
+    for (const r of file.rulings) {
+      await step(`ruling ${r.id}`, () => this.importRuling(s, r, dry));
+    }
+
+    const by = (o: ImportOutcome[]) => steps.filter((x) => o.includes(x.outcome)).map((x) => x.what);
+    const report: ImportReport = {
+      kolab: s.kolab, by: s.actor_id, dry_run: dry, steps,
+      created: by(['created']), unchanged: by(['unchanged']), differs: by(['differs']),
+      waiting: by(['waiting', 'in_review']), failed: by(['failed']),
+      ...(dry ? { would: by(['would_create', 'would_update']) } : {}),
+      complete: !dry && steps.every((x) => x.outcome === 'created' || x.outcome === 'unchanged'),
+    };
+    return report;
+  }
+
+  /** A node the file names that is there already: unchanged, saying when its title isn't the file's, since no verb changes a title. */
+  private nodeOutcome(node: NodeRow, title: string): Omit<ImportStep, 'what'> {
+    return node.title === title ? { outcome: 'unchanged' }
+      : { outcome: 'unchanged', detail: `its title stays "${node.title}"; the file's is "${title}", and a node's title is set when it is made` };
+  }
+
+  /**
+   * A node's version as the file gives it (importKolab), with the links `links` finds: unchanged when
+   * its latest committed version holds the same elements (ids, text, work fields, parents and order)
+   * and every link; else the person's own version waiting with them is submitted again; else a new
+   * version is drafted and submitted: when the node has none committed, or holds the same elements but
+   * lacks links, or (with `update`) differs. Otherwise it differs, reported, and nothing is written.
+   * Links a version can't make yet wait: a spec element not committed (serves), or, until the binding
+   * has committed the file's elements, its own decisions (relies_on), which `linksOnly` makes then.
+   */
+  private async importVersion(s: Session, node: NodeRow | undefined, els: ElementInput[],
+    o: { dry: boolean; update: boolean; linksOnly?: boolean;
+      links?: (latest: VersionRow | undefined, equal: boolean) => Promise<{ links: WantedLink[]; missing: string[] }> }): Promise<Omit<ImportStep, 'what'>> {
+    if (!node) return o.dry ? { outcome: 'would_create', detail: o.linksOnly ? 'a version linking its decisions, once the first commits' : `version 1, of ${els.length} elements` }
+      : { outcome: 'waiting', detail: 'its node isn\'t made' };
+    const latest = await this.latestCommitted(node.id);
+    const same = (rows: ElementRow[]) => rows.length === els.length && els.every((e, i) => {
+      const r = rows[i];
+      return r.element_id === e.id && (r.parent_element_id ?? undefined) === (e.parent ?? undefined) && r.fingerprint === elementFingerprint(e.text, e.work ?? null);
+    });
+    const equal = !!latest && same(await this.elements(latest.id));
+    if (o.linksOnly && !equal) {
+      return o.dry ? { outcome: 'would_create', detail: 'a version linking its decisions, once the file\'s elements commit' }
+        : { outcome: 'waiting', detail: `its links to its own decisions wait for ${node.name} to commit the file's elements` };
+    }
+    const found = o.links ? await o.links(latest, equal) : { links: [], missing: [] };
+    if (!o.linksOnly && found.missing.length) {
+      return o.dry ? { outcome: 'would_create', detail: `once the spec commits what it serves: ${found.missing.join('; ')}` }
+        : { outcome: 'waiting', detail: `it serves spec elements the spec hasn't committed: ${found.missing.join('; ')}` };
+    }
+    const wanted = found.links.filter((l) => l.relies === !!o.linksOnly);
+    const keyOfLink = (l: WantedLink) => linkKey(l.link.sourceElement, l.node, l.link.targetElement);
+    const held = latest ? await this.linkKeys(latest.id) : new Set<string>();
+    const toAdd = wanted.filter((l) => !held.has(keyOfLink(l)));
+    if (equal && !toAdd.length) return { outcome: 'unchanged', version: latest!.seq };
+    // The person's own version of the node, waiting: submitted again rather than drafted twice.
+    const open = (await this.db.query<VersionRow>(
+      `select * from version where node_id = $1 and actor_id = $2 and state in ('drafted', 'in_review') order by seq desc limit 1`, [node.id, s.actor_id])).rows[0];
+    if (open) {
+      const own = await this.linkKeys(open.id);
+      const base = open.base_version_id ? await this.linkKeys(open.base_version_id) : new Set<string>();
+      const has = wanted.every((l) => own.has(keyOfLink(l)) || base.has(keyOfLink(l)));
+      const where = `${node.name}@${open.seq}, ${open.state === 'drafted' ? 'drafted' : 'in review'}`;
+      if (!same(await this.elements(open.id)) || !has) {
+        return { outcome: 'differs', version: open.seq, detail: `your version ${where}, holds other content than the file: abandon it (konjir_abandon) or let it settle, then run the import again` };
+      }
+      if (o.dry) return { outcome: 'would_update', version: open.seq, detail: `submit ${where} already, again` };
+      return this.importOutcome(await this.judge(open.id, undefined, undefined, s.actor_id), open.seq);
+    }
+    if (latest && !equal && !o.update) {
+      return { outcome: 'differs', version: latest.seq, detail: `${node.name}@${latest.seq} differs from the file: ${describeDifference(await this.elements(latest.id), els)}. Nothing was written; with --update, the import drafts the file's as a new version, reviewed as any is` };
+    }
+    const what = !latest ? `version 1, of ${els.length} elements and ${toAdd.length} links` : equal ? `a version adding ${toAdd.length} link${toAdd.length === 1 ? '' : 's'}` : `a new version of the file's ${els.length} elements`;
+    if (o.dry) return { outcome: latest ? 'would_update' : 'would_create', detail: what };
+    const layer = node.layer;
+    const author = { actor_id: s.actor_id, active_role: ROLE_OF_LAYER[layer], kolab: s.kolab };
+    // As the person, in the role of the node's layer; their Write there checked again under the access lock.
+    const id = await this.writeDraft(node.id, layer, author, { elements: els }, (fn) => this.asSystem(async (tx, signal) => {
+      const now = await accessIn(tx, s.actor_id, s.kolab);
+      if (!now.layers.includes(layer)) throw new AccessError(`${s.actor_id} may not write the ${layer} layer of kolab ${s.kolab} any more: it holds ${describeAccess(now)}`);
+      return fn(tx, signal);
+    }, node.id, { access: true }), true, toAdd.map((l) => l.link));
+    const seq = (await this.version(id)).seq;
+    return this.importOutcome(await this.judge(id, undefined, undefined, s.actor_id), seq);
+  }
+
+  /** A version's submission, as an import step says it. */
+  private importOutcome(r: GateResult, seq: number): Omit<ImportStep, 'what'> {
+    if (r.ok) return { outcome: 'created', version: seq, detail: r.unreviewed ? 'committed unreviewed: nobody else the policy lets approve it holds Write (VER11)' : 'committed' };
+    if (r.in_review) return { outcome: 'in_review', version: seq, detail: r.nobody ?? r.note ?? 'in review', ...(r.reviewers ? { reviewers: r.reviewers } : {}) };
+    return { outcome: 'failed', version: seq, detail: r.note ?? 'not committed' };
+  }
+
+  /** The dependency links a version holds, as linkKey writes them: what the import compares. */
+  private async linkKeys(versionId: string): Promise<Set<string>> {
+    const rows = (await this.db.query<{ source_element_id: string | null; node_id: string; target_element_id: string | null }>(
+      `select e.source_element_id, t.node_id, e.target_element_id from edge e join version t on t.id = e.target_version_id
+        where e.source_version_id = $1 and e.kind = 'dependency' and e.target_selector is null`, [versionId])).rows;
+    return new Set(rows.map((r) => linkKey(r.source_element_id, r.node_id, r.target_element_id)));
+  }
+
+  /** The repository the file names (importKolab): registered, unless it is already, as the file gives it. */
+  private async importRepository(sessionId: string, s: Session, r: NonNullable<ImportFile['repository']>, binding: NodeRow | undefined,
+    bindingName: string | undefined, dry: boolean): Promise<Omit<ImportStep, 'what'>> {
+    const url = repositoryUrl(r.url).url!;
+    const root = r.root_sha.trim().toLowerCase();
+    const live = (await this.repositoryRows(this.db, s.kolab, {})).find((x) => x.url.toLowerCase() === url.toLowerCase());
+    const wantBinding = r.implements_binding ? bindingName! : null;
+    if (live) {
+      const diffs = [
+        ...(live.root_sha !== root ? [`its root commit is ${live.root_sha}, not ${root}`] : []),
+        ...(live.binding !== wantBinding ? [`it implements ${live.binding ?? 'no binding'}, not ${wantBinding ?? 'none'}`] : []),
+      ];
+      return diffs.length ? { outcome: 'differs', detail: `${url} is registered already, and ${diffs.join(', and ')}: archive it (konjir_archive_repository) to register it again` } : { outcome: 'unchanged' };
+    }
+    if (r.implements_binding && !binding) return { outcome: dry ? 'would_create' : 'waiting', detail: dry ? `${url}, implementing ${bindingName}` : `it implements ${bindingName}, which isn't made` };
+    if (dry) return { outcome: 'would_create', detail: `${url}${wantBinding ? `, implementing ${wantBinding}` : ''}` };
+    await this.registerRepository(sessionId, { url, root_sha: root, binding: wantBinding });
+    return { outcome: 'created', detail: `${url}${wantBinding ? `, implementing ${wantBinding}` : ''}, unconfirmed until a work package citing it is approved` };
+  }
+
+  /** A ruling the file gives (importKolab): given directly, with its ref and date, unless the kolab has it already. */
+  private async importRuling(s: Session, r: ImportRuling, dry: boolean): Promise<Omit<ImportStep, 'what'>> {
+    const ruledAt = rulingDate(r.date);
+    const had = (await this.db.query<{ text: string; replaces: string | null; effect: RulingEffect | null; ruled_at: Date | string | null; node: string; element_id: string | null }>(
+      `select r.text, r.replaces, r.effect, r.ruled_at, n.name as node, coalesce(r.element_id, c.element_id) as element_id
+         from ruling r left join case_file c on c.id = r.case_file_id
+         join version v on v.id = coalesce(r.version_id, c.version_id) join node n on n.id = v.node_id
+        where r.kolab_id = $1 and r.ref = $2`, [s.kolab, r.id])).rows[0];
+    if (had) {
+      const diffs = [
+        ...(had.text !== r.text ? ['its text'] : []),
+        ...((had.replaces ?? undefined) !== r.replaces ? ['what it replaces'] : []),
+        ...(had.effect !== r.effect ? [`its effect (${had.effect})`] : []),
+        ...(!had.ruled_at || new Date(had.ruled_at).getTime() !== ruledAt.getTime() ? [`its date (${had.ruled_at ? new Date(had.ruled_at).toISOString() : 'none'})`] : []),
+        ...(had.node !== r.on.node || (had.element_id ?? undefined) !== r.on.element ? [`what it rules on (${had.node}${had.element_id ? `#${had.element_id}` : ''})`] : []),
+      ];
+      return diffs.length ? { outcome: 'differs', detail: `kolab ${s.kolab} has ruling ${r.id} already, with other ${diffs.join(', ')}; a ruling never changes: give a new one that says what it replaces` } : { outcome: 'unchanged' };
+    }
+    const node = await this.findNode(this.db, s.kolab, r.on.node);
+    const v = node ? await this.latestCommitted(node.id) : undefined;
+    const on = `${r.on.node}${r.on.element ? `#${r.on.element}` : ''}`;
+    if (!v || (r.on.element && !(await this.elements(v.id)).some((e) => e.element_id === r.on.element))) {
+      return { outcome: dry ? 'would_create' : 'waiting', detail: dry ? `on ${on}, once it commits` : `it rules on ${on}, which hasn't committed${v ? ' that element' : ''} yet` };
+    }
+    if (dry) return { outcome: 'would_create', detail: `on ${on}, dated ${ruledAt.toISOString().slice(0, 10)}` };
+    // A person with Write on the layer rules (D51), checked again now.
+    const now = await accessIn(this.db, s.actor_id, s.kolab);
+    if (!now.layers.includes(v.layer)) throw new AccessError(`${s.actor_id} may not write the ${v.layer} layer of kolab ${s.kolab}, so doesn't rule there: it holds ${describeAccess(now)}`);
+    await this.ruleDirectly(s.actor_id, v, {
+      id: ulid(), element: r.on.element ?? null, on: formatAddress({ node: r.on.node, version: v.seq, element: r.on.element }),
+      text: r.text, replaces: r.replaces ?? null, effect: r.effect, ref: r.id, ruledAt,
+    });
+    return { outcome: 'created', detail: `on ${on}, dated ${ruledAt.toISOString().slice(0, 10)}` };
+  }
+
   async sessionInfo(sessionId: string) {
     const s = await this.session(sessionId);
     return {
@@ -12318,6 +12691,57 @@ async function partiesIn(tx: Q, caseId: string) {
     .map((p) => ({ ...p, principal: principalOf(p.actor, p) }));
 }
 /** The most pieces of evidence one position cites. */
+/** A link an import wants (importKolab): the link, the node it targets, and whether it is to the binding's own decision (relies_on). */
+type WantedLink = { link: LinkInput; node: string; relies: boolean };
+
+/** A dependency link as an import compares it: its source element, the node it targets and the element there, whatever version it pins. */
+const linkKey = (source: string | null | undefined, node: string, element: string | null | undefined) => `${source ?? ''}|${node}|${element ?? ''}`;
+
+/** How a node's committed elements differ from an import file's (importKolab): the ids added, removed and changed, a few of each. */
+function describeDifference(had: ElementRow[], want: ElementInput[]): string {
+  const was = new Map(had.map((e, i) => [e.element_id, { e, i }]));
+  const ids = new Set(want.map((e) => e.id!));
+  const added = want.filter((e) => !was.has(e.id!)).map((e) => e.id!);
+  const removed = had.filter((e) => !ids.has(e.element_id)).map((e) => e.element_id);
+  const changed = want.filter((e, i) => {
+    const w = was.get(e.id!);
+    return w && (w.e.fingerprint !== elementFingerprint(e.text, e.work ?? null) || (w.e.parent_element_id ?? undefined) !== (e.parent ?? undefined) || w.i !== i);
+  }).map((e) => e.id!);
+  const few = (xs: string[]) => `${xs.slice(0, 10).join(', ')}${xs.length > 10 ? ` and ${xs.length - 10} more` : ''}`;
+  return [added.length ? `the file adds ${few(added)}` : '', removed.length ? `the file leaves out ${few(removed)}` : '',
+    changed.length ? `the file changes ${few(changed)} (text, work fields, parent or place)` : ''].filter(Boolean).join('; ') || 'their order differs';
+}
+
+/** A ruling's ref (W6.3), checked: such as D109 (RULING_REF). */
+export function rulingRef(ref: unknown): string {
+  if (typeof ref !== 'string' || !RULING_REF.test(ref)) {
+    throw new GateError(`a ruling's ref is its name in its kolab, such as D109: a letter, then up to 39 letters, digits, '.', '_' or '-', not ${JSON.stringify(ref ?? null)}`);
+  }
+  return ref;
+}
+
+/** How far ahead of this server's clock a ruling's date may be, for clocks that disagree a little. */
+const RULED_AT_SKEW_MS = 5 * 60_000;
+
+/**
+ * When a ruling recorded later was given (W6.3): a date, YYYY-MM-DD (midnight UTC), or an ISO 8601
+ * time with its offset; never in the future.
+ */
+export function rulingDate(when: unknown): Date {
+  const s = typeof when === 'string' ? when.trim() : '';
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  const time = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/.test(s);
+  const d = day ? new Date(`${s}T00:00:00Z`) : time ? new Date(s) : new Date(NaN);
+  if (Number.isNaN(d.getTime()) || (day && d.toISOString().slice(0, 10) !== s)) {
+    throw new GateError(`ruled_at is the date a ruling was given: YYYY-MM-DD, or an ISO 8601 time with its offset, not ${JSON.stringify(when ?? null)}`);
+  }
+  if (d.getTime() > Date.now() + RULED_AT_SKEW_MS) throw new GateError(`ruled_at ${s} is in the future: a ruling is dated when it was given`);
+  return d;
+}
+
+/** A ref its kolab already gives another ruling (W6.3). */
+const refTaken = (kolab: string, ref: string) => new GateError(`kolab ${kolab} already has a ruling named ${ref}: a ruling's ref is unique in its kolab, and a ruling never changes (konjir_list_rulings); give this one another, and say in it what it replaces`);
+
 /** Text someone must give, trimmed; refused when empty, or over `max` characters (MAX_TEXT by default). */
 function requireText(text: unknown, what: string, max = MAX_TEXT): string {
   const t = typeof text === 'string' ? text.trim() : '';

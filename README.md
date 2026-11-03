@@ -745,7 +745,8 @@ Every verb's parameters are in [`docs/verbs.md`](docs/verbs.md), generated from 
 | `unlink` | Remove links in a draft of yours (see *Removing links*); `draft` takes `unlink` too |
 | `clear_mark`, `resolve_override` | Settle a mark |
 | `ask`, `annotate`, `answer_query` | The question tier. Questions and notes route to the layer that owns the answer; see below. `answer_query` takes `cites`, which an agent's answer to a functional question needs (AUT4) |
-| `open_case`, `add_position`, `rule` | Case files and rulings: open a case file on an element with your claim and evidence, take the other side, and, as a person, rule (see *Case files and rulings*) |
+| `open_case`, `add_position`, `rule` | Case files and rulings: open a case file on an element with your claim and evidence, take the other side, and, as a person, rule (see *Case files and rulings*); a ruling may carry its `ref` (its ID in the kolab, such as D109) and, given directly, `ruled_at`, the date it was given |
+| `import` | A person's own session only (W6.3): import a kolab's spec, binding, rulings and repository from one file (see *Importing a kolab*). In a shell, `konjir import <file.json> [--dry-run] [--update]` |
 | `list_work`, `read_work`, `pull_work`, `release_work`, `reassign_work`, `set_work_lease` | Work packages (see *Work state, pulling and the lease*): the board in natural order with what is ready and what blocks the rest; one package with its context and events; pull the first ready one, In progress with a lease; give it back; and, with Maintain or Admin, give one to someone and set the kolab's lease length |
 | `add_evidence`, `submit_work`, `reopen_work` | Delivering work (see *Submitting, reviewing and delivering work*): record commits, pull requests and test runs on the package you hold; submit it for review, with at least one commit or pull request; and open new work on a Done package |
 | `take_job`, `renew_job`, `end_job`, `list_jobs` | Jobs (see *Jobs*): a person's own session takes the next item (a review first, then a ready work package) for one of their pool agents, `<you>-engineer-<n>`, and gets that agent's session token once; it renews and ends the jobs it took; anyone in the kolab reads the ledger, with the queue and the caps |
@@ -903,11 +904,74 @@ A **ruling** (CASE2–CASE6) is given with `konjir_rule`:
 - **On a case file:** `case=<id> verdicts={"<position>":"sustained","<position>":"overruled"}`, once it holds both sides (D51). It sustains exactly one position and overrules the other, and its effect is the side the sustained position seeks (`effect`, if given, must agree). The case file is ruled, once.
 - **Directly** (CASE3, D16): `address=kj:checkout#R1`, or a whole node, with no case file behind it, and an `effect` saying what it does. It is the way out for a case file whose other side never comes: any case file still open on the element is **superseded** by it (`case_file.superseded_by`), leaves the inbox, and reaches its parties' answers.
 - Either way it has `text`, an `effect` (`change_intent` or `keep_intent`, CASE6), and optionally `replaces`, what it overrules in words. It records its author and its date (`ruling.ruled_at`, CASE4), and the layer's inbox is signalled, in the ruling's kolab.
+- **Its ID and the date it was given (W6.3, migration 0042).** A ruling may carry `ref`, its own name in its kolab, such as D109: a letter, then up to 39 letters, digits, '.', '_' or '-', unique in the kolab (`ruling_ref_per_kolab`), and, like the rest of a ruling, never changed. Its id stays a ULID. A direct ruling recorded after it was given takes `ruled_at`, the date it was given (`YYYY-MM-DD`, midnight UTC, or an ISO 8601 time with its offset), never in the future; `recorded_at` keeps when Kolab wrote it, and is null for rulings from before 0042. One that changes the intent, dated before the live version of what it rules on was written, marks nothing: that version came after it, so carries it already (D51 otherwise as before). `konjir_list_rulings`, `read_node`, the precedent line (`D109 on kj:…`) and the web page show the ref; the page shows an imported ruling's date beside when it was recorded.
 - **Who rules (D51):** a person, never an agent (CASE2), from a session in the role that writes the element's layer, whose access in the kolab includes Write on that layer. On a case file, never a party: not one who holds a position on it, nor the person whose agent does. The database holds every new ruling to a person too (`kj_ruling_by_person`).
 - **A ruling that changes the intent marks the element (D51):** a `ruled` mark on its node's live version, with a question to its layer. Neither can be cleared or answered by hand: the next version that amends or removes the element settles both (a ruling on a whole node, any revision). A ruling that keeps the intent marks nothing.
 - **Nothing is rewritten or removed** (`kj_case_fixed`): a ruling never changes and is never deleted; a later ruling says what it replaces. A position keeps its claim, evidence and side, and gets its verdict once, only once its case file has a ruling; a case file keeps its subject and question, is ruled only with its ruling row, and takes no position once it isn't open. Deleting or truncating any of the three is refused.
 
 Rulings are **precedent in their kolab only** (CASE4, TEN13), for those who belong to its work (D49): `konjir_operating_instructions` lists the session's kolab's newest 20, `konjir_read_node` shows each beside its element (with the element's open case files), and `konjir_list_rulings` lists them all. Open case files wait in the inbox of the element's layer (`cases`), and each actor's answers carry the case files they opened or argued, most recently changed first, with their rulings. Kolab writes case files, positions and rulings as `kj_system`, after its checks. Migration 0013 adds the date, the effect, the side each position takes, who opened a case file on what question and when, the `superseded` state and the `ruled` mark (both value lists, D40), the rules above, and the indexes the reads use. Rows written before it keep no date or side: nothing is guessed, and its checks bind new rows only. A duplicate ruling or position among those rows stops the migration, naming it.
+
+## Importing a kolab
+
+Konjir runs on Konjir (W6.3; D15, D104, D109): a kolab's spec, its binding with its decisions and work packages, its rulings and its repository come into Kolab from one file, `konjir import <file.json>`, which a person runs from their own sign-in (`konjir login --kolab <kolab>`), in either role. It sends the file to `konjir_import`, which acts entirely as that person, in the kolab the session works in. An agent's session is refused, and so is the admin token, which has no session; `konjir import` refuses to run inside a Konjir job (KONJIR_JOB set), as `konjir login` does. The file is generated from wherever the content lives; nothing of it is kept in this repository.
+
+**What it checks first.** Kolab checks the whole file before it writes anything, and refuses it naming every problem: its shape (below; a key it doesn't take is refused, never dropped), that its `kolab` is the session's, that the person holds what each write needs (Write on the functional layer for the spec and the rulings on it, Write on the technical layer for the binding and the rulings on it, Maintain or Admin for the repository), that a node already there is of the kind the file makes it (and that the kolab holds no other spec, KON1, and the binding binds this spec, D78), and each version as `konjir_draft` and `konjir_submit_for_review` would check it: its size and ids, its structure (no empty or repeated element), its work fields and PLN2's checks (every Depends on a work package of the binding, no cycle, a milestone with members and no links). A ruling's date may not be in the future.
+
+**What it writes, and how.** Each write goes the way its verb goes, as the person:
+
+1. The spec's node, as `konjir_create_node kind=spec` makes it; then its version, drafted with the file's elements (counted against the person's draft budget) and submitted as `konjir_submit_for_review` submits it, so the kolab's policy decides what happens: with nobody else the policy lets approve it, it commits on Kolab's checks alone (VER11: under the default policy, a person's functional version commits when no other person holds Write on the functional layer); otherwise it waits in review for its reviewers.
+2. The binding's node, binding the spec.
+3. The repository, registered as `konjir_register_repository` registers it, as the binding's implementation unless `implements_binding` is false, and audited.
+4. The binding's version, its elements with their work fields and a dependency link from each element to each spec element it `serves`, pinned to the spec's committed version, so it waits until the spec has committed them. Under the default policy an agent may approve a technical version (AUT2), so it waits in review if any agent (a pool agent of the person's among them) holds Write on the technical layer, and commits otherwise.
+5. Its links to its own decisions (`relies_on`): a link pins a committed version, so these come in a second binding version, once the first has committed, submitted the same way.
+6. Each ruling, given directly as `konjir_rule` gives one, with its `ref` and `ruled_at`, on the committed version of the node it names, once that has committed what it rules on.
+
+A version is written in the role of its own layer (`product` for the spec, `engineer` for the binding), since the person may write both: one run, from either role, writes the whole file. Nothing bypasses review: what the policy holds for a reviewer waits for one.
+
+**Run again, it finishes.** An import is idempotent and resumable. Each step reports one of `created`; `unchanged` (there already and equal: a node by name and kind, a version by its elements' ids, text, work fields, parents and order and its links, a ruling by its ref, text, effect, replaces, date and subject, a repository by its URL, root commit and binding); `differs` (there already and not as the file says: reported, never overwritten); `in_review` (submitted, waiting for its reviewers, named); `waiting` (on something not committed yet); or `failed`. The person's own version of a node already drafted or in review with the file's content is submitted again, never drafted twice. A run that stops part way leaves what it wrote, and the next run completes the rest. `--update` drafts the file's version of a node whose latest committed version differs, as a new version reviewed as any is; a ruling that differs is never changed (give a new one that says what it replaces). A node's title is set when it is made, so a title that differs is noted, not a difference. `--dry-run` checks the file and reports the steps it would take (`would_create`, `would_update`), writing nothing. The command prints the report as JSON, one line a step on stderr, and exits 1 when a step failed or differs.
+
+**The file.** One JSON object, at most about 2 MiB (what `/mcp` takes in one request; split a larger one, the spec and binding in one file and the rulings in another):
+
+```jsonc
+{
+  "format": "konjir-import/1",                  // required, exactly this
+  "kolab": "kolab",                             // required: the kolab, the session's own
+  "spec": {                                     // optional: the kolab's one spec (KON1)
+    "name": "kolab",                            // its node's name: kj:kolab/kolab
+    "title": "Kolab — Functional Spec",         // at most 200 characters
+    "elements": [                               // 1 to 1,000, in order
+      { "id": "ENF", "text": "Enforcement" },
+      { "id": "ENF4", "text": "…", "parent": "ENF" }   // id: no whitespace, control character or '~'; text at most 8,000 characters
+    ]
+  },
+  "binding": {                                  // optional; needs the spec in the same file
+    "name": "kolab-binding", "title": "Kolab — Technical Binding",
+    "elements": [
+      // A decision: no work.
+      { "id": "B12", "text": "…", "parent": "…", "serves": ["ENF4"] },
+      // A work package (D104): work holds its work fields, as konjir_draft takes them.
+      { "id": "W6.3", "title": "Konjir runs on Konjir", "text": "…",   // title, if given, is its first line, then a blank line, then text
+        "work": { "done_when": "…", "depends_on": ["W6.1", "W6.2"], "size": "M" },   // also milestone, target_date (milestones only), repo
+        "serves": ["KON1", "KON8"],             // spec element ids: dependency links to the spec
+        "relies_on": ["B12"] }                  // decisions of this binding, never a work package (D99)
+    ]
+  },
+  "rulings": [                                  // optional
+    { "id": "D109",                             // its ref: a letter, then up to 39 letters, digits, '.', '_' or '-'
+      "date": "2026-10-30",                     // YYYY-MM-DD, or an ISO 8601 time with its offset; never in the future
+      "text": "…",                              // at most 4,000 characters
+      "replaces": "…",                          // optional: what it overrules, in words, at most 4,000 characters
+      "effect": "keep_intent",                  // optional: keep_intent (the default) or change_intent
+      "on": "kolab#ENF4" }                      // optional: the spec or binding, or one of its elements; the spec by default
+  ],
+  "repository": {                               // optional; needs Maintain or Admin
+    "url": "https://github.com/konjir/kolab",
+    "root_sha": "…",                            // git rev-list --max-parents=0 HEAD
+    "implements_binding": true }                // the default; needs the binding in the same file
+}
+```
+
+Every element, work package and ruling keeps its ID, so `kj:kolab/kolab#ENF4` and `kj:kolab/kolab-binding#W6.3` resolve, `konjir_read_node` and the web page show them, the open work packages are on the board and pullable, and a job's instructions carry a work package with its playbook and the rulings as precedent (`D109 on kj:kolab@1: …`). A work package's playbook is its job kind's (`libs/engine/src/playbooks.ts`); a package has none of its own. Only open work belongs in the file as work packages: a done package's state can't be imported, and an open one may depend only on packages in the file.
 
 ## Removing links
 

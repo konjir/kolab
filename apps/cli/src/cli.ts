@@ -26,6 +26,9 @@
  *                                        -> sets this machine to work: takes jobs from Kolab and runs one headless
  *                                           Claude Code per job, in its own worktree (W5.4b, D103)
  *   konjir status [--json]               -> the kolab's queue, its live jobs and your room under the caps (W5.4b)
+ *   konjir import <file.json> [--dry-run] [--update]
+ *                                        -> imports a kolab's spec, binding, rulings and repository from one file,
+ *                                           as the person signed in, never an agent or a job (W6.3)
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
@@ -43,6 +46,7 @@ import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { guardHook } from './guard.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 import { toolsListing, verbHelp } from './verbs.js';
+import { importKolab } from './import.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
@@ -178,6 +182,11 @@ Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|sum
            Run again, it records only what is new. Kolab itself never reads git.
            konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a
            person with Maintain or Admin (never an agent): registers its repository, pinned by its root commit.
+Import:    konjir import <file.json> [--dry-run] [--update], signed in as yourself (konjir login, never an agent or a
+           job): imports a kolab's spec, its binding with its decisions and work packages, its rulings and its
+           repository from one file, into the kolab you are signed in to (README.md, "Importing a kolab", gives the
+           file's shape). Kolab checks the whole file first; run again, it changes nothing that is there and equal,
+           reports what differs, and completes what waited. --dry-run writes nothing and says what it would do.
 Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>],
            signed in as yourself, in a checkout of the kolab's registered repository: sets this machine to work. It takes
            jobs from Kolab (a review, then a ready work package), up to --jobs at once (4; Kolab caps you at 4 and the
@@ -399,7 +408,7 @@ export async function main(argv: string[]) {
   // Inside a Konjir job (W5.4b) konjir works as the job's agent, with KONJIR_TOKEN, and never with a
   // sign-in kept on this machine: the person's is theirs, not the job's.
   if (process.env.KONJIR_JOB?.trim() && cmd && cmd !== '--version' && !((cmd === 'help' || cmd === '--help') && !rest[0])) {
-    if (['login', 'logout', 'connect', 'serve'].includes(cmd) || (cmd === 'work' && rest[0] !== 'deliver')) {
+    if (['login', 'logout', 'connect', 'serve', 'import'].includes(cmd) || (cmd === 'work' && rest[0] !== 'deliver')) {
       throw new Error(`konjir ${cmd} doesn't run inside a Konjir job (KONJIR_JOB is set): a job works as its agent, with the token it was given`);
     }
     if (!token) throw new Error('this is a Konjir job (KONJIR_JOB is set), which works as its agent with KONJIR_TOKEN, never with a sign-in kept on this machine, and KONJIR_TOKEN is unset or empty');
@@ -621,6 +630,17 @@ export async function main(argv: string[]) {
     } finally {
       done = true;
       for (const sig of SIGNALS) process.off(sig, onSignal);
+      stored?.releaseLock();
+      await client.close();
+    }
+    return;
+  }
+  if (cmd === 'import' && !rest.some((a) => a === '--json' || a.includes('='))) {
+    try {
+      const r = await importKolab((verb, a) => call(client, verb, a), rest, { log: (l) => console.error(l) });
+      console.log(JSON.stringify(r.report, null, 2));
+      process.exitCode = r.exitCode;
+    } finally {
       stored?.releaseLock();
       await client.close();
     }

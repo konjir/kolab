@@ -1943,12 +1943,13 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
   await withDb(async (db) => {
     const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
     expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
-    // Each of these people and agents holds one open session, so 0040 goes back too, and 0041 before it.
+    // Each of these people and agents holds one open session, so 0040 goes back too, and 0041 and 0042 before it.
+    await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     await db.exec(undo0039());
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42] });
     // Every job as it was: its item and how it ended, the new items empty.
     expect((await db.query(`select * from job order by id`)).rows)
       .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
@@ -2002,10 +2003,11 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42] });
     expect((await db.query(`select actor_id, machine_key, place, last_used_at from session order by actor_id`)).rows).toStrictEqual([
       { actor_id: 'alice', machine_key: `client:${s.client}`, place: null, last_used_at: null },
       { actor_id: 'alice-pm', machine_key: 'agent', place: null, last_used_at: null },
@@ -2071,13 +2073,14 @@ test('a database at 0040 with versions in review, review requests and answered q
 
   await withDb(async (db) => {
     const requests = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
+    await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     expect((await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows).toStrictEqual(requests.map(({ product: _, ...r }) => r));
     // As the release before 0041 wrote it, alice-pm-2, an agent with Write on the layer, was asked too.
     await db.query(`insert into review_request(id, version_id, reviewer_id) values ('01ZZZZZZZZZZZZZZZZZZZZAGNT', $1, 'alice-pm-2')`, [v2]);
     const before = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42] });
     // Nothing rewritten: each request as it was, of its version's own layer; no kolab has a policy row; no answer cites anything.
     expect((await db.query(`select * from review_request order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, product: false })));
     expect((await db.query(`select * from kolab_policy`)).rows).toStrictEqual([]);
@@ -2101,5 +2104,50 @@ test('a database at 0040 with versions in review, review requests and answered q
     const agent = await kolab.openSession('dave-pm', 'product');
     expect(await rejection(kolab.recordReview(agent, v2, { verdict: 'approve' }))).toMatch(/AccessError: kolab test's policy keeps reviewing functional versions for a person/);
     expect(await kolab.recordReview(dave, v2, { verdict: 'approve' })).toMatchObject({ ok: true });
+  } finally { await kolab.close(); }
+});
+
+// ---- 0042: a ruling's ref, and when it was recorded (W6.3; D15, D104, D109) --------------------------
+
+/** Takes a database at 0042 back to 0041 by hand, as 0042 found it. */
+const UNDO_0042 = `drop index ruling_ref_per_kolab;
+  alter table ruling drop column ref;
+  alter table ruling drop column recorded_at;
+  delete from kj_migration where version = 42;`;
+
+test('a database at 0041 with rulings reaches 0042: every ruling is kept as it was, with no ref and no recorded_at, and a ruling after it records both (W6.3)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'ruling_refs');
+  expect(MIGRATIONS[at].version).toBe(42);
+  let kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  try {
+    await people(kolab, 'alice', { layers: ['functional'] });
+    const pm = await kolab.openSession('alice', 'product');
+    await kolab.createNode(pm, 'spec', 'Orders', 'orders');
+    await kolab.commit(pm, 'orders', { elements: els({ R1: 'One.' }) });
+    await kolab.rule(pm, { address: 'kj:orders#R1', text: 'One means one.', effect: 'keep_intent' });
+  } finally { await kolab.close(); }
+
+  await withDb(async (db) => {
+    await db.exec(UNDO_0042);
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    const before = (await db.query<Record<string, unknown>>(`select * from ruling order by id`)).rows;
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42] });
+    expect((await db.query(`select * from ruling order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, ref: null, recorded_at: null })));
+    expect(await rejection(db.query(`insert into ruling(id, version_id, kolab_id, actor_id, text, effect, ref) select 'r2', version_id, kolab_id, actor_id, 'Two.', 'keep_intent', 'not a ref' from ruling limit 1`)))
+      .toMatch(/ruling_ref_form/);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0042_ruling_refs\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
+
+  kolab = await TestKolab.open(store);
+  try {
+    await kolab.endSession({ actor: 'alice' });
+    const pm = await kolab.openSession('alice', 'product');
+    await kolab.rule(pm, { address: 'kj:orders#R1', text: 'One, once.', effect: 'keep_intent', ref: 'D1', ruled_at: '2026-01-01' });
+    const rows = (await kolab.db.query<{ ref: string | null; recorded_at: Date | null; ruled_at: Date }>(`select ref, recorded_at, ruled_at from ruling order by ref nulls first`)).rows;
+    expect(rows.map((r) => [r.ref, r.recorded_at === null])).toStrictEqual([[null, true], ['D1', false]]);
+    expect(new Date(rows[1].ruled_at).toISOString()).toBe('2026-01-01T00:00:00.000Z');
   } finally { await kolab.close(); }
 });

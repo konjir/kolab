@@ -26,7 +26,7 @@ const caseFile = (over: Partial<WebCase> = {}): WebCase => ({
   you: { party: false, can_argue: true, can_rule: false }, ...over,
 });
 const ruling: WebRuling = {
-  ruling: 'r1', on: 'kj:password-reset@2#PR7', node: 'password-reset', seq: 2, element: 'PR7', case: null,
+  ruling: 'r1', ref: null, recorded_at: at, on: 'kj:password-reset@2#PR7', node: 'password-reset', seq: 2, element: 'PR7', case: null,
   text: 'A reset signs the user in with a new session.', effect: 'change_intent', replaces: null, ruled_by: 'lee', ruled_at: at,
 };
 const ruled: WebMark = {

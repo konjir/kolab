@@ -121,7 +121,7 @@ export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { qu
  * The writes that can commit a version, and so queue rebases; and the changes of access, which
  * queue a fork's rebase when its holder holds it again (LNK8).
  */
-const COMMITTING = ['commit', 'review', 'submit', 'recordReview', 'resolveOverride', 'applyRuling',
+const COMMITTING = ['commit', 'review', 'submit', 'recordReview', 'resolveOverride', 'applyRuling', 'importKolab',
   'grant', 'revoke', 'changeGrant', 'removeGrant', 'addMember', 'removeMember', 'addTeamMember', 'removeTeamMember'] as const;
 
 /** Makes each committing write of `kolab` drain the outbox before it returns or throws (openKolab). */
