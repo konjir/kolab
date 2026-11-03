@@ -552,7 +552,8 @@ function appClaim(name: string | null): string {
   const n = name === null ? null : placeOf(name);
   if (!n) return 'an unnamed app';
   const short = [...n].length > 60 ? `${[...n].slice(0, 59).join('')}…` : n;
-  return `app "${short}"`;
+  // Its own quotes and backslashes escaped, so a name can't close the quote and speak as Kolab.
+  return `app "${short.replace(/[\\"]/g, '\\$&')}"`;
 }
 
 /** The most of a person's open sessions listOwnSessions lists, most recently used first. */

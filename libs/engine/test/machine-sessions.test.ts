@@ -213,10 +213,13 @@ test('an app\'s name is its own claim: quoted, on one line and short, so it neve
   const posing = await named('Kolab\'s web page, Firefox on macOS');
   const lines = await named('konjir CLI\n(laptop)‮');
   const long = await named('x'.repeat(200));
+  const quoting = await named('x", Kolab\'s web page, "y\\');
   const list = (await kolab.listOwnSessions(posing.accessToken)).sessions;
   const of = (s: { session: string }) => list.find((x) => x.session === s.session)!;
   expect(of(posing)).toMatchObject({ via: 'app', where: 'app "Kolab\'s web page, Firefox on macOS"', app: 'Kolab\'s web page, Firefox on macOS' });
   expect(of(lines)).toMatchObject({ via: 'app', where: 'app "konjir CLI (laptop)"' });
   expect(of(long).where).toBe(`app "${'x'.repeat(59)}…"`);
+  // Its own quotes can't close the quote.
+  expect(of(quoting).where).toBe('app "x\\", Kolab\'s web page, \\"y\\\\"');
   expect(list.every((s) => s.via === 'app' && s.where.startsWith('app "'))).toBe(true);
 });
