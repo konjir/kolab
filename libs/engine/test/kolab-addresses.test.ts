@@ -43,7 +43,7 @@ test('a node name is unique within its kolab: two kolabs may each have one, and 
 
   // Within one kolab a name is taken once, and the refusal names only that kolab.
   expect(await rejection(kolab.createNode(bob, 'spec', 'Again', 'checkout'))).toBe('GateError: the node name checkout is taken in kolab billing; choose another');
-  expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a/b'))).toMatch(/GateError: "a\/b" isn't a valid node name: it may not contain '\/', '@', '#', '~' or whitespace/);
+  expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a/b'))).toMatch(/GateError: "a\/b" isn't a valid node name: it may not contain '\/', '@', '#', '~', whitespace or a control character/);
   expect(await rejection(kolab.createNode(bob, 'prototype', 'Bad', 'a b'))).toMatch(/isn't a valid node name/);
 
   // Listing gives each node's name, which every verb takes.

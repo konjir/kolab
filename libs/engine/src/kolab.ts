@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { resolve as resolvePath } from 'node:path';
 import { monotonicFactory, ulid } from 'ulid';
 import {
-  type Address, type QuoteSelector, fingerprint, formatAddress, isKolabName, isNodeName, MAX_QUOTE, normalize, parseAddress,
+  type Address, type QuoteSelector, fingerprint, formatAddress, isElementId, isKolabName, isNodeName, MAX_QUOTE, normalize, parseAddress,
   parseNodeRef, resolveSpan,
 } from '@konjir/address';
 import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konjir/db';
@@ -13,8 +13,8 @@ import {
   canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, milestoneStates, naturalCompare, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
-import { DID_OUTCOMES, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
-import { jobInstructions, type BriefOf } from './playbooks.js';
+import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
+import { jobInstructions, quoteText, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -596,8 +596,8 @@ class Deferred extends Error { name = 'Deferred'; }
 
 /** How many answered questions and notes the precedent prints, newest first read (precedentFor). */
 const ANSWERED_SHOWN = 20;
-/** People's text in the precedent: a JSON string, on one line, its quotes and line breaks escaped (JOB7). */
-const quoted = (text: string) => JSON.stringify(text);
+/** People's text in the precedent: a JSON string, on one line, its quotes and line breaks escaped (JOB7; quoteText). */
+const quoted = quoteText;
 
 /** How long a resync heard over the channel waits for others to fold into it. */
 const RESYNC_DEBOUNCE_MS = 250;
@@ -4076,7 +4076,7 @@ export class Kolab {
     if (!KINDS.includes(kind)) throw new GateError(notAKind(kind));
     // A binding holds its own work (KON5, D104): no plan is made any more.
     if (kind === 'plan') throw new GateError(`${PLAN_RETIRED}. Draft the work packages in the binding itself`);
-    if (!isNodeName(name)) throw new GateError(`"${name}" isn't a valid node name: it may not contain '/', '@', '#', '~' or whitespace`);
+    if (!isNodeName(name)) throw new GateError(`${quoteText(name)} isn't a valid node name: it may not contain '/', '@', '#', '~', whitespace or a control character`);
     checkText('the title', title, MAX_TITLE);
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
     const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
@@ -4232,6 +4232,8 @@ export class Kolab {
     links: LinkInput[] = []): Promise<string> {
     // Its size first, before any work is done on it (W2.21).
     checkDraftInput(input);
+    // Each new element's id, and the parent it names, is one an address can carry onto one line (JOB6).
+    checkElementIds(input);
     // A plan takes no new version (D104): its work packages are its binding's now.
     const drafted = await this.node(nodeId);
     if (drafted.kind === 'plan') {
@@ -9045,10 +9047,11 @@ export class Kolab {
    * resumed as that agent; then a work package In review or a technical version in review (oldest
    * first) that a free agent of the person's pool may review, not its author (VER16); then the
    * first ready work package (PLN17), pulled for the job's agent exactly as konjir_pull_work pulls
-   * (PLN18). Then, after ready builds (JOB6, D108): an open question or note on a technical node,
-   * then an open mark on one, each oldest first, then a spec element no binding element serves
-   * (PLN7), each with its kind's playbook; the functional layer's questions, notes and marks never
-   * (AUT1). An item whose last two jobs, by anyone, ended in the last hour without doing it is held
+   * (PLN18). Then, after ready builds (JOB6, D108): an open question or note people raised on a
+   * technical node, then an open mark on one, each oldest first, then a spec element no binding
+   * element serves (PLN7), each with its kind's playbook; the functional layer's questions, notes
+   * and marks never, nor a question a mark raised (AUT1). Only the kinds the runner names
+   * (`kinds`), build and review if it names none, so an older runner never gets one it can't run. An item whose last two jobs, by anyone, ended in the last hour without doing it is held
    * back, so one that fails every time isn't taken first forever; a question, mark or spec element
    * once its last job did, which is how a job hands it to a person. The refusal counts them.
    *
@@ -9061,13 +9064,18 @@ export class Kolab {
    * Refused past JOB3's caps, saying why; with nothing to take, it says why, as a pull does. `now`
    * is the database's clock, for the runner's heartbeat.
    */
-  async takeJob(sessionId: string, input: { machine: unknown }): Promise<TakeJobResult> {
+  async takeJob(sessionId: string, input: { machine: unknown; kinds?: unknown }): Promise<TakeJobResult> {
     const s = await this.session(sessionId);
     if (s.kind !== 'person') {
       throw new AccessError(`${s.actor_id} is an agent, and an agent takes no job: a person's own session takes jobs, for their pool agents to do (D103, JOB2)`);
     }
     const { machine, problem } = jobMachine(input.machine);
     if (problem) throw new GateError(problem);
+    // The kinds the runner can run (JOB6): build and review unless it names them, so a runner from
+    // before W5.11 never gets an item its playbooks don't know.
+    const { kinds, problem: kindsProblem } = jobKinds(input.kinds);
+    if (kindsProblem) throw new GateError(kindsProblem);
+    const takes = (k: JobKind) => kinds!.includes(k);
     if (!s.access.layers.includes('technical')) {
       throw new AccessError(`${s.actor_id} may not write the technical layer of kolab ${s.kolab}, so it takes no job (JOB2): it holds ${describeAccess(s.access)}`);
     }
@@ -9088,25 +9096,25 @@ export class Kolab {
     if (full) return refuse(full);
     let busy: string | undefined;
     // 1. A package returned to a free agent of the person's, with changes requested: resumed as that agent.
-    for (const r of await this.returnedQueueIn(this.db, s.kolab, s.actor_id, held)) {
+    for (const r of takes('build') ? await this.returnedQueueIn(this.db, s.kolab, s.actor_id, held) : []) {
       const got = await this.startJob(s, machine!, { kind: 'resume', item: r });
       if (!got) continue;
       if ('why' in got) { if (got.full) return refuse(got.why); continue; }
       return got;
     }
     // 2. A review a free agent of the person's may give (VER16: never its author).
-    for (const r of await this.reviewQueueIn(this.db, s.kolab, held)) {
+    for (const r of takes('review') ? await this.reviewQueueIn(this.db, s.kolab, held) : []) {
       const got = await this.startJob(s, machine!, { kind: 'review', item: r });
       if (!got) continue;
       if ('why' in got) {
         if (got.full) return refuse(got.why);
-        busy = `no agent of yours can review ${r.address}: ${got.why}`;
+        if (!got.skipped) busy = `no agent of yours can review ${r.address}: ${got.why}`;
         continue;
       }
       return got;
     }
     // 3. The first ready work package, pulled for the job's agent as konjir_pull_work pulls it.
-    const ready = await this.readyToBuild(sessionId, s.kolab, held);
+    const ready = takes('build') ? await this.readyToBuild(sessionId, s.kolab, held) : { why: 'this runner takes no builds (kinds)', counts: {} };
     let none: { why: string; counts?: Record<string, number> };
     if ('why' in ready) none = { why: busy ? `${busy}; and ${ready.why}` : ready.why, counts: ready.counts };
     else {
@@ -9119,16 +9127,16 @@ export class Kolab {
     // mark on one, each oldest first, then a spec element no binding element serves (PLN7). Never
     // the functional layer's: its questions, notes and marks stay with people (AUT1).
     const items: JobItem[] = [
-      ...(await this.answerQueueIn(this.db, s.kolab, held)).map((item) => ({ kind: 'answer' as const, item })),
-      ...(await this.markQueueIn(this.db, s.kolab, held)).map((item) => ({ kind: 'mark' as const, item })),
-      ...(await this.serveQueueIn(this.db, s.kolab, held)).map((item) => ({ kind: 'serve' as const, item })),
+      ...(takes('answer') ? await this.answerQueueIn(this.db, s.kolab, held) : []).map((item) => ({ kind: 'answer' as const, item })),
+      ...(takes('mark') ? await this.markQueueIn(this.db, s.kolab, held) : []).map((item) => ({ kind: 'mark' as const, item })),
+      ...(takes('serve') ? await this.serveQueueIn(this.db, s.kolab, held) : []).map((item) => ({ kind: 'serve' as const, item })),
     ];
     for (const what of items) {
       const got = await this.startJob(s, machine!, what);
       if (!got) continue;
       if ('why' in got) {
         // No agent for this one: its asker is the only free one; any other reason holds for every item.
-        if (got.full || (got.noAgent && !(what.kind === 'answer' && what.item.asker))) return refuse(got.why);
+        if (got.full || (got.noAgent && what.kind !== 'answer')) return refuse(got.why);
         continue;
       }
       return got;
@@ -9150,7 +9158,7 @@ export class Kolab {
    */
   private async startJob(s: Session, machine: string,
     what: { kind: 'resume'; item: ReturnedItem } | { kind: 'review'; item: ReviewItem } | { kind: 'build'; binding: string; skip: ReadonlySet<string> } | JobItem): Promise<
-    Extract<TakeJobResult, { taken: true }> | { why: string; full?: boolean; noAgent?: boolean; counts?: Record<string, number> } | undefined> {
+    Extract<TakeJobResult, { taken: true }> | { why: string; full?: boolean; noAgent?: boolean; skipped?: boolean; counts?: Record<string, number> } | undefined> {
     const person = s.actor_id;
     let got: { agent: string; session: string; token: string } | { why: string };
     if (what.kind === 'resume') {
@@ -9159,7 +9167,7 @@ export class Kolab {
       got = signed;
     } else {
       // Never a review's author (VER16), nor a question's asker answering itself.
-      const not = what.kind === 'review' ? what.item.author : what.kind === 'answer' ? what.item.asker ?? undefined : undefined;
+      const not = what.kind === 'review' ? what.item.author : what.kind === 'answer' ? what.item.asker : undefined;
       got = await this.poolAgent(person, s.kolab, not ? { not } : {});
     }
     if ('why' in got) return { why: got.why, noAgent: true };
@@ -9178,8 +9186,24 @@ export class Kolab {
     };
     // Its instructions are its kind's playbook filled in with its item, then its kolab's precedent
     // as the agent reads it (JOB7, DEL3), read quietly: the job starting is not its agent working.
+    // An item whose specifics can't be filled in safely (an id or a name with a line break, written
+    // before Kolab refused them; JOB6) is skipped: its job ends released, by Kolab, giving back its
+    // session and a package pulled for it, and the take moves on to the next item.
     const started = async <K extends JobKind>(job: { id: string; lease_until: string; now: string }, kind: K, item: string, brief: BriefOf<K>, trailer?: string) => {
-      const instructions = jobInstructions(kind, brief, await this.quietly(() => this.precedentFor(a.token)));
+      let instructions: string;
+      try {
+        instructions = jobInstructions(kind, brief, await this.quietly(() => this.precedentFor(a.token)));
+      } catch (e) {
+        if (!(e instanceof UnsafeSpecificError)) throw e;
+        log.warn('jobs: an item was skipped, since its specifics cannot be written into a job\'s instructions safely', { kolab: s.kolab, kind, job: job.id, error: e.message });
+        await this.inTransaction(async (tx, signal) => {
+          const j = await this.lockJobIn(tx, job.id);
+          if (!j || j.ended_at) return;
+          await tx.exec('set local role kj_system');
+          await this.endJobIn(tx, signal, j, { outcome: 'released', by: SYSTEM_ACTOR, note: `skipped: ${e.message} (JOB6)` });
+        });
+        return { why: `${kind} ${JSON.stringify(item)} was skipped: ${e.message}`, skipped: true };
+      }
       return { taken: true as const, job: job.id, kind, item, agent: a.agent, token: a.token, lease_until: job.lease_until, instructions, ...(trailer ? { trailer } : {}), now: job.now };
     };
     try {
@@ -9210,7 +9234,7 @@ export class Kolab {
         const who = { kolab: s.kolab, agent: a.agent, person };
         if (what.kind === 'answer') {
           const q = what.item;
-          return await started(job, 'answer', item, { ...who, query: q.id, kind: q.kind, address: q.address, node: q.node, text: q.question, asker: q.asker ?? 'Kolab', from: q.from });
+          return await started(job, 'answer', item, { ...who, query: q.id, kind: q.kind, address: q.address, node: q.node, text: q.question, asker: q.asker, from: q.from });
         }
         if (what.kind === 'mark') {
           const d = m!;
@@ -9350,13 +9374,18 @@ export class Kolab {
         const lease = await this.leaseSeconds(tx, s.kolab);
         await tx.exec('set local role kj_system');
         let request: string | null = null;
+        // JOB6's items are read again here, as a take reads them, held for this transaction: a
+        // question or note answered or withdrawn meanwhile, a mark cleared, or now on a node with a
+        // version in review or a package In progress or In review, and a spec element served or gone,
+        // went elsewhere. Their one live job each is the unique indexes' to keep.
         if (item.query_id) {
-          // A question or note still open (JOB6): answered or withdrawn meanwhile, it went elsewhere.
-          if (!(await tx.query(`select 1 from query where id = $1 and state = 'open' for share`, [item.query_id])).rows.length) return undefined;
+          await tx.query(`select 1 from query where id = $1 for share`, [item.query_id]);
+          if (!(await this.answerQueueIn(tx, s.kolab, NO_HOLD, item.query_id)).length) return undefined;
         } else if (item.mark_id) {
-          if (!(await tx.query(`select 1 from invalidation where id = $1 and state = 'open' for share`, [item.mark_id])).rows.length) return undefined;
+          await tx.query(`select 1 from invalidation where id = $1 for share`, [item.mark_id]);
+          if (!(await this.markQueueIn(tx, s.kolab, NO_HOLD, item.mark_id)).length) return undefined;
         } else if (item.spec_node_id) {
-          // A spec element: its one live job is the index's to keep (JOB6).
+          if (!(await this.serveQueueIn(tx, s.kolab, NO_HOLD, `${item.spec_node_id}#${item.spec_element_id}`)).length) return undefined;
         } else if (item.version_id) {
           const v = (await tx.query<{ state: VersionState; actor_id: string }>(`select state, actor_id from version where id = $1 for share`, [item.version_id])).rows[0];
           if (v?.state !== 'in_review' || v.actor_id === a.agent) return undefined;
@@ -9484,26 +9513,23 @@ export class Kolab {
   }
 
   /**
-   * The questions and notes an answer job may take in `kolab` (JOB6), oldest first: each open on a
-   * node of the technical layer, with no live job and not held back. Never the functional layer's,
-   * which stay with people (AUT1); nor one a mark raised that a mark's own verb settles (only a
-   * role_boundary question is answered, answerQuery). At most JOB_QUEUE_READ, from the oldest.
+   * The questions and notes an answer job may take in `kolab` (JOB6), oldest first: each one a
+   * person or an agent raised, open on a node of the technical layer, with no live job and not held
+   * back. Never the functional layer's, nor any a mark raised (a role_boundary question among them):
+   * those stay with people (AUT1), or settle with their mark. At most JOB_QUEUE_READ, from the
+   * oldest; with `only`, that question alone, if it may still be taken.
    */
-  private async answerQueueIn(q: Q, kolab: string, held: HeldBack): Promise<AnswerItem[]> {
+  private async answerQueueIn(q: Q, kolab: string, held: HeldBack, only?: string): Promise<AnswerItem[]> {
     const rows = (await q.query<{
-      id: string; kind: QueryKind; question: string; raised_by: string | null; node: string; seq: number; element_id: string | null; selector: QuoteSelector | null;
+      id: string; kind: QueryKind; question: string; raised_by: string; node: string; seq: number; element_id: string | null; selector: QuoteSelector | null;
       from_kolab: string | null; from_node: string | null; from_seq: number | null; from_element_id: string | null;
     }>(
       `select q.id, q.kind, q.question, q.raised_by, n.name as node, v.seq, q.element_id, q.selector,
               fn.kolab_id as from_kolab, fn.name as from_node, fv.seq as from_seq, q.from_element_id
-         from query q join version v on v.id = q.version_id join node n on n.id = v.node_id
+         from (${ANSWER_ITEMS}) q join version v on v.id = q.version_id join node n on n.id = v.node_id
          left join version fv on fv.id = q.from_version_id left join node fn on fn.id = fv.node_id
-         left join invalidation i on i.id = q.invalidation_id
-        where q.kolab_id = $1 and q.state = 'open' and v.layer = 'technical'
-          and (q.invalidation_id is null or i.reason = 'role_boundary')
-          and not exists (select 1 from job j where j.ended_at is null and j.query_id = q.id)
-          and q.id <> all($2::text[])
-        order by q.created_at, q.id limit ${JOB_QUEUE_READ}`, [kolab, [...held.queries]])).rows;
+        where ($3::text is null or q.id = $3)
+        order by q.created_at, q.id limit ${JOB_QUEUE_READ}`, [kolab, [...held.queries], only ?? null])).rows;
     return rows.map((r) => ({
       id: r.id, kind: r.kind, question: r.question, asker: r.raised_by, node: r.node,
       address: formatAddress({ node: r.node, version: r.seq, element: r.element_id ?? undefined, selector: r.selector ?? undefined }),
@@ -9515,51 +9541,44 @@ export class Kolab {
    * The marks a mark job may take in `kolab` (JOB6), oldest first: each open on a committed version
    * of a node of the technical layer, with no live job and not held back. Never the functional
    * layer's (AUT1). Left out: a mark that settles by itself (upstream_dirty, with its cause;
-   * role_boundary, with its question, which is an answer job's); one on a node with a version in
+   * role_boundary, with its question, which stays with people); one on a node with a version in
    * review, whose commit may settle it; and one on a work package In progress or In review, its
-   * assignee's or reviewer's to weigh (PLN10). At most JOB_QUEUE_READ, from the oldest.
+   * assignee's or reviewer's to weigh (PLN10). At most JOB_QUEUE_READ, from the oldest; with
+   * `only`, that mark alone, if it may still be taken.
    */
-  private async markQueueIn(q: Q, kolab: string, held: HeldBack): Promise<MarkItem[]> {
+  private async markQueueIn(q: Q, kolab: string, held: HeldBack, only?: string): Promise<MarkItem[]> {
     return (await q.query<MarkItem>(
-      `select i.id, n.name as node, n.id as node_id
-         from invalidation i join version v on v.id = i.version_id join node n on n.id = v.node_id
-        where i.kolab_id = $1 and i.state = 'open' and v.layer = 'technical' and v.state = 'committed'
-          and i.reason not in ('upstream_dirty', 'role_boundary')
-          and not exists (select 1 from version r where r.node_id = v.node_id and r.state = 'in_review')
-          and not exists (select 1 from work_package w where w.binding_node_id = v.node_id and w.element_id = i.element_id and w.state in ('in_progress', 'in_review'))
-          and not exists (select 1 from job j where j.ended_at is null and j.mark_id = i.id)
-          and i.id <> all($2::text[])
-        order by i.created_at, i.id limit ${JOB_QUEUE_READ}`, [kolab, [...held.marks]])).rows;
+      `select i.id, n.name as node, n.id as node_id from (${MARK_ITEMS}) i join version v on v.id = i.version_id join node n on n.id = v.node_id
+        where ($3::text is null or i.id = $3)
+        order by i.created_at, i.id limit ${JOB_QUEUE_READ}`, [kolab, [...held.marks], only ?? null])).rows;
   }
 
   /**
    * The spec elements a serve job may take in `kolab` (JOB6, PLN7), in the spec's order: each element
    * of a spec's latest committed version that no element of any of its bindings serves, by a link to
    * it from the binding's latest committed version or from one in review; with no live job, and not
-   * held back. Only a spec with a binding, which a serve job drafts in; an element with elements
-   * under it is served through them. At most JOB_QUEUE_READ.
+   * held back. Only a spec with a binding that has a committed version, the first of which, by
+   * name, a serve job drafts in; an element with elements under it is served through them. At most
+   * JOB_QUEUE_READ; with `only` (`<spec node id>#<element>`), that element alone, if it may still be taken.
    */
-  private async serveQueueIn(q: Q, kolab: string, held: HeldBack): Promise<ServeItem[]> {
+  private async serveQueueIn(q: Q, kolab: string, held: HeldBack, only?: string): Promise<ServeItem[]> {
     const rows = (await q.query<{ spec_node_id: string; spec: string; element_id: string; text: string; bindings: string[] }>(
-      `with sv as (
-         select distinct on (v.node_id) v.id, v.node_id from version v join node s on s.id = v.node_id
-          where s.kolab_id = $1 and s.kind = 'spec' and v.state = 'committed'
-            and exists (select 1 from node b where b.parent_node_id = s.id and b.kind = 'binding')
-          order by v.node_id, v.seq desc)
-       select sv.node_id as spec_node_id, s.name as spec, e.element_id, e.text,
-              array(select b.name from node b where b.parent_node_id = s.id and b.kind = 'binding' order by b.name) as bindings
-         from sv join node s on s.id = sv.node_id join element e on e.version_id = sv.id
-        where not exists (select 1 from element c where c.version_id = sv.id and c.parent_element_id = e.element_id)
-          and not exists (
-                select 1 from edge g join version tv on tv.id = g.target_version_id
-                  join version bv on bv.id = g.source_version_id join node b on b.id = bv.node_id
-                 where tv.node_id = sv.node_id and g.target_element_id = e.element_id and b.parent_node_id = sv.node_id and b.kind = 'binding'
-                   and (bv.state = 'in_review'
-                        or bv.id = (select x.id from version x where x.node_id = b.id and x.state = 'committed' order by x.seq desc limit 1)))
-          and not exists (select 1 from job j where j.ended_at is null and j.spec_node_id = sv.node_id and j.spec_element_id = e.element_id)
-          and (sv.node_id || '#' || e.element_id) <> all($2::text[])
-        order by s.name, e.ord, e.element_id limit ${JOB_QUEUE_READ}`, [kolab, [...held.specElements]])).rows;
+      `select x.spec_node_id, s.name as spec, x.element_id, x.text,
+              array(select b.name from node b where b.parent_node_id = s.id and b.kind = 'binding'
+                       and exists (select 1 from version bc where bc.node_id = b.id and bc.state = 'committed') order by b.name) as bindings
+         from (${SERVE_ITEMS}) x join node s on s.id = x.spec_node_id
+        where ($3::text is null or x.spec_node_id || '#' || x.element_id = $3)
+        order by s.name, x.ord, x.element_id limit ${JOB_QUEUE_READ}`, [kolab, [...held.specElements], only ?? null])).rows;
     return rows.map((r) => ({ ...r, address: formatAddress({ node: r.spec, element: r.element_id }) }));
+  }
+
+  /** How many items of JOB6's kinds jobs may take in `kolab` now, none held back (jobQueue): counted in full, not read. */
+  private async itemCountsIn(q: Q, kolab: string, held: HeldBack): Promise<{ answer: number; mark: number; serve: number }> {
+    return (await q.query<{ answer: number; mark: number; serve: number }>(
+      `select (select count(*)::int from (${ANSWER_ITEMS}) a) as answer,
+              (select count(*)::int from (${MARK_ITEMS.replace(/\$2/g, () => '$3')}) m) as mark,
+              (select count(*)::int from (${SERVE_ITEMS.replace(/\$2/g, () => '$4')}) v) as serve`,
+      [kolab, [...held.queries], [...held.marks], [...held.specElements]])).rows[0];
   }
 
   /**
@@ -9589,16 +9608,14 @@ export class Kolab {
   /**
    * What jobs may take in the kolab now (JOB2, JOB6), none held back: reviews waiting with no live
    * job, ready work packages, open technical questions and notes, open technical marks and unserved
-   * spec elements (each of the last three counted to JOB_QUEUE_READ); and, for a refusal, the counts a pull gives.
+   * spec elements, each counted in full; and, for a refusal, the counts a pull gives.
    */
   private async jobQueue(sessionId: string, kolab: string, held?: HeldBack): Promise<{ queue: JobQueue; counts: Record<string, number> }> {
     const h = held ?? await this.heldBackIn(this.db, kolab);
     const review = (await this.reviewQueueIn(this.db, kolab, h)).length;
     const ready = await this.readyToBuild(sessionId, kolab, h);
     const build = 'why' in ready ? 0 : ready.ready;
-    const answer = (await this.answerQueueIn(this.db, kolab, h)).length;
-    const mark = (await this.markQueueIn(this.db, kolab, h)).length;
-    const serve = (await this.serveQueueIn(this.db, kolab, h)).length;
+    const { answer, mark, serve } = await this.itemCountsIn(this.db, kolab, h);
     return { queue: { review, build, answer, mark, serve }, counts: { review, ready: build, answer, mark, serve, ...('why' in ready ? ready.counts : {}) } };
   }
 
@@ -9717,21 +9734,36 @@ export class Kolab {
   /**
    * What job `j`'s agent did of its item since the job started, in `tx` (JOB1, JOB6): submitted its
    * package, or gave its review; answered its question, or replied to its note; cleared its mark,
-   * or redrafted the marked node and submitted that version for review (in review, or committed
-   * already); or submitted a version of a binding with a link to the spec element it serves.
+   * or redrafted the marked node, changing what the mark is on, and submitted that version while
+   * the job ran (in review, or committed already); or submitted, while the job ran, a version of a
+   * binding of the spec with a link to the spec element it serves.
    */
   private async didItemIn(tx: Q, j: JobRow): Promise<JobDid> {
     const any = async (sql: string, params: unknown[]) => (await tx.query(sql, params)).rows.length > 0;
     if (j.kind === 'answer') return any(`select 1 from query where id = $1 and state = 'answered' and answered_by = $2`, [j.query_id, j.agent_id]);
     if (j.kind === 'mark') {
       if (await any(`select 1 from invalidation where id = $1 and state = 'cleared' and cleared_by = $2`, [j.mark_id, j.agent_id])) return 'cleared';
+      // A redraft counts only if it touches what the mark is on: its element changed or removed, or
+      // its link dropped or pinned again to the target as it is now.
       return (await any(`select 1 from invalidation i join version mv on mv.id = i.version_id join version v on v.node_id = mv.node_id
-                          where i.id = $1 and v.actor_id = $2 and v.created_at >= $3 and v.state in ('in_review', 'committed')`,
+                          left join edge g on g.id = i.edge_id left join version gt on gt.id = g.target_version_id
+                          where i.id = $1 and v.actor_id = $2 and v.submitted_at >= $3 and v.state in ('in_review', 'committed')
+                            and ((i.element_id is not null
+                                  and (exists (select 1 from delta d where d.version_id = v.id and d.element_id = i.element_id)
+                                       or not exists (select 1 from element e where e.version_id = v.id and e.element_id = i.element_id)))
+                              or (g.id is not null
+                                  and (exists (select 1 from link_removal r where r.version_id = v.id and r.kind = g.kind
+                                                  and r.source_element_id is not distinct from g.source_element_id and r.target_node_id = gt.node_id
+                                                  and r.target_element_id is not distinct from g.target_element_id)
+                                       or exists (select 1 from edge n join version nt on nt.id = n.target_version_id
+                                                   where n.source_version_id = v.id and n.kind = g.kind and n.source_element_id is not distinct from g.source_element_id
+                                                     and nt.node_id = gt.node_id and n.target_element_id is not distinct from g.target_element_id
+                                                     and (n.target_version_id <> g.target_version_id or n.target_fingerprint <> g.target_fingerprint)))))`,
       [j.mark_id, j.agent_id, j.started_at])) && 'redrafted';
     }
     if (j.kind === 'serve') {
       return any(`select 1 from version v join node b on b.id = v.node_id join edge g on g.source_version_id = v.id join version tv on tv.id = g.target_version_id
-                   where v.actor_id = $1 and v.created_at >= $2 and v.state in ('in_review', 'committed') and b.kind = 'binding' and b.parent_node_id = $3
+                   where v.actor_id = $1 and v.submitted_at >= $2 and v.state in ('in_review', 'committed') and b.kind = 'binding' and b.parent_node_id = $3
                      and tv.node_id = $3 and g.target_element_id = $4`, [j.agent_id, j.started_at, j.spec_node_id, j.spec_element_id]);
     }
     return (j.kind === 'build'
@@ -9890,15 +9922,16 @@ export class Kolab {
         order by j.id desc limit $4`, [s.kolab, filter.live ?? null, after?.[0] ?? null, size + 1])).rows;
     const { rows: shown, next } = pageOf(rows, size, list, (j) => [j.id]);
     const { queue } = await this.jobQueue(sessionId, s.kolab);
-    // A job's note, a hand-off's among them (JOB6), quotes its agent's last words: only for those
-    // who belong to the kolab's work, never a reader with Read alone (D49).
-    const belongs = s.access.layers.length > 0;
+    // A job's note, a hand-off's among them (JOB6), quotes its agent's last words: only for the
+    // job's own person and the kolab's Admins, never an agent's session, another person with Write,
+    // or a reader (D49).
+    const seesNote = (j: JobRow) => s.kind === 'person' && (s.actor_id === j.person_id || s.access.level === 'admin');
     return {
       jobs: shown.map((j) => ({
         job: j.id, person: j.person_id, machine: j.machine, agent: j.agent_id, kind: j.kind, item: j.item,
         started_at: iso(j.started_at)!, lease_until: iso(j.lease_until)!,
         ...(j.ended_at ? { ended_at: iso(j.ended_at)!, outcome: j.outcome! } : {}),
-        ...(j.ended_at && j.note && belongs ? { note: j.note } : {}),
+        ...(j.ended_at && j.note && seesNote(j) ? { note: j.note } : {}),
       })),
       queue,
       caps: await this.jobCapsIn(this.db, s.kind === 'person' ? s.actor_id : s.owner ?? s.actor_id, s.kolab),
@@ -11027,14 +11060,52 @@ interface HeldBack {
   queries: Set<string>; marks: Set<string>; specElements: Set<string>; handed: number;
 }
 
+/** Nothing held back: what insertJob reads an item again with. */
+const NO_HOLD: HeldBack = { packages: new Set(), versions: new Set(), count: 0, queries: new Set(), marks: new Set(), specElements: new Set(), handed: 0 };
+
 /** How many of each of JOB6's queues a take reads, oldest first: enough to find one an agent of the person's can take. */
 const JOB_QUEUE_READ = 50;
+
+/**
+ * JOB6's items, as SQL over `$1`, the kolab, and `$2`, the held-back ids (heldBackIn): the open
+ * questions and notes people and agents raised on technical nodes, no mark's (answerQueueIn); the
+ * open marks a mark job may settle (markQueueIn); and the spec elements no binding element serves,
+ * each with its spec's node, its order and its text (serveQueueIn). Each leaves out an item with a
+ * live job. A take reads them a page at a time; jobQueue counts them; insertJob reads one again,
+ * under the jobs lock, to see it may still be taken.
+ */
+const ANSWER_ITEMS = `select q.* from query q join version v on v.id = q.version_id
+   where q.kolab_id = $1 and q.state = 'open' and v.layer = 'technical' and q.invalidation_id is null and q.raised_by is not null
+     and not exists (select 1 from job j where j.ended_at is null and j.query_id = q.id)
+     and q.id <> all($2::text[])`;
+const MARK_ITEMS = `select i.* from invalidation i join version v on v.id = i.version_id
+   where i.kolab_id = $1 and i.state = 'open' and v.layer = 'technical' and v.state = 'committed'
+     and i.reason not in ('upstream_dirty', 'role_boundary')
+     and not exists (select 1 from version r where r.node_id = v.node_id and r.state = 'in_review')
+     and not exists (select 1 from work_package w where w.binding_node_id = v.node_id and w.element_id = i.element_id and w.state in ('in_progress', 'in_review'))
+     and not exists (select 1 from job j where j.ended_at is null and j.mark_id = i.id)
+     and i.id <> all($2::text[])`;
+const SERVE_ITEMS = `select sv.node_id as spec_node_id, e.element_id, e.ord, e.text
+     from (select distinct on (v.node_id) v.id, v.node_id from version v join node s on s.id = v.node_id
+            where s.kolab_id = $1 and s.kind = 'spec' and v.state = 'committed'
+              and exists (select 1 from node b join version bc on bc.node_id = b.id and bc.state = 'committed' where b.parent_node_id = s.id and b.kind = 'binding')
+            order by v.node_id, v.seq desc) sv
+     join element e on e.version_id = sv.id
+    where not exists (select 1 from element c where c.version_id = sv.id and c.parent_element_id = e.element_id)
+      and not exists (
+            select 1 from edge g join version tv on tv.id = g.target_version_id
+              join version bv on bv.id = g.source_version_id join node b on b.id = bv.node_id
+             where tv.node_id = sv.node_id and g.target_element_id = e.element_id and b.parent_node_id = sv.node_id and b.kind = 'binding'
+               and (bv.state = 'in_review'
+                    or bv.id = (select x.id from version x where x.node_id = b.id and x.state = 'committed' order by x.seq desc limit 1)))
+      and not exists (select 1 from job j where j.ended_at is null and j.spec_node_id = sv.node_id and j.spec_element_id = e.element_id)
+      and (sv.node_id || '#' || e.element_id) <> all($2::text[])`;
 
 /** What jobs may take in a kolab now (JOB2, JOB6), by kind, as konjir_list_jobs gives it. */
 export type JobQueue = Record<JobKind, number>;
 
 /** An open question or note on a technical node an answer job may take (JOB6): its address, its asker and the asker's waiting element. */
-interface AnswerItem { id: string; kind: QueryKind; question: string; asker: string | null; node: string; address: string; from: string | null }
+interface AnswerItem { id: string; kind: QueryKind; question: string; asker: string; node: string; address: string; from: string | null }
 /** An open mark on a technical node a mark job may take (JOB6), with its node. */
 interface MarkItem { id: string; node: string; node_id: string }
 /** A spec element no binding element serves (JOB6, PLN7), with its spec's bindings by name. */
@@ -11081,6 +11152,23 @@ function jobsFull(caps: JobCaps, kolab: string): string | undefined {
 
 /** The refusal of a renewal or an end of a job that has ended (JOB1). */
 const jobEnded = (j: JobRow) => new GateError(`job ${j.id} ended ${j.outcome === 'lapsed' ? 'when its lease lapsed' : `(${j.outcome})`} at ${iso(j.ended_at)}${j.outcome === 'lapsed' ? ', and its item went back to the queue' : ''}: take another (konjir_take_job)`);
+
+/**
+ * Refuses a draft whose element ids, or the parents they name, aren't ids (isElementId: no
+ * whitespace, no control character, C0 or C1, no line or paragraph separator; JOB6): the ids of
+ * its elements, and of the elements its deltas add. An id is written into addresses, and an
+ * address into a job's instructions as it is, so a line break there could pass for a step.
+ */
+function checkElementIds(input: { elements?: { id?: string; parent?: string }[]; deltas?: { kind: string; element: string; parent?: string }[] }) {
+  const ids = [
+    ...(input.elements ?? []).flatMap((e) => [...(e.id === undefined ? [] : [e.id]), ...(e.parent === undefined || e.parent === null ? [] : [e.parent])]),
+    ...(input.deltas ?? []).flatMap((d) => (d.kind === 'add' ? [d.element, ...(d.parent === undefined || d.parent === null ? [] : [d.parent])] : [])),
+  ];
+  const bad = ids.find((id) => !isElementId(id));
+  if (bad !== undefined) {
+    throw new GateError(`${quoteText(bad)} isn't a valid element id: an id is one word, with no whitespace and no control character (a line break among them), since addresses carry it`);
+  }
+}
 
 /** A pull that found nothing ready: thrown inside its transaction, so its rate hold is given back. */
 class NothingReady extends Error { name = 'NothingReady'; }

@@ -46,6 +46,17 @@ export const POLL_FIRST_MS = 30_000;
 export const POLL_LONGEST_MS = 5 * 60_000;
 /** How much of a harness's output a job's note carries, from its end. */
 const NOTE_TAIL = 2000;
+/**
+ * A job's note, from what its harness wrote (JOB6): its last paragraph that begins "Handed to a
+ * person:" (a hand-off, saying what the person must decide) or "Cleared:" (a mark cleared, with
+ * its reason), alone, when it ends with one; otherwise the output's tail, as it was.
+ */
+export function jobNote(output: string): string {
+  const starts = [...output.matchAll(/(?:^|\n)[ \t]*(?:Handed to a person:|Cleared:)/g)];
+  if (!starts.length) return output;
+  const from = starts[starts.length - 1].index! + (output[starts[starts.length - 1].index!] === '\n' ? 1 : 0);
+  return output.slice(from).split(/\n[ \t]*\n/)[0].trim();
+}
 /** How long a stopped harness has to exit before it is killed. */
 const KILL_AFTER_MS = 10_000;
 /** Jobs in a row that couldn't start before the runner stops taking any. */
@@ -79,7 +90,7 @@ export const gitShell: Shell = (dir, args) => new Promise((resolve, reject) => {
 
 /** A job konjir_take_job started (JOB2, JOB3): its item, the pool agent doing it, its token (given once) and its lease, with Kolab's clock if it gives it. */
 export interface TakenJob {
-  job: string; kind: 'build' | 'review' | 'answer' | 'mark' | 'serve'; item: string; agent: string; token: string; lease_until: string; instructions: string; trailer?: string; now?: string;
+  job: string; kind: typeof RUNNER_KINDS[number]; item: string; agent: string; token: string; lease_until: string; instructions: string; trailer?: string; now?: string;
 }
 /** The caps on live jobs (JOB3): the person's and the kolab's. */
 export interface Caps { person: { live: number; max: number }; kolab: { live: number; max: number } }
@@ -186,6 +197,9 @@ const JOB_RULES = 'You are a Konjir job: you do this one item and exit. Kolab is
   + 'Work only in this worktree. Push your branch and open a pull request if the item calls for one, but never merge a pull request '
   + 'and never deploy: that stays a person\'s. When the item is done (submitted, your review recorded, the question answered, the mark cleared, '
   + 'or the item handed to a person, as its playbook says), exit.';
+
+/** The kinds of item this runner runs, each with its playbook (JOB6, JOB7): it names them all to konjir_take_job. */
+const RUNNER_KINDS = ['build', 'review', 'answer', 'mark', 'serve'] as const;
 
 /** What a job of each kind does to its item, as its prompt's first line says it (JOB6). */
 const JOB_VERBS: Record<string, string> = { build: 'build', review: 'review', answer: 'answer', mark: 'settle the mark', serve: 'serve' };
@@ -386,7 +400,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   const end = async (l: Live, outcome: 'done' | 'failed' | 'stopped', note: string): Promise<string | undefined> => {
     if (l.lost === 'refused') return l.endedAs;
     try {
-      const r = await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: redacted(note, l.taken.token).slice(-NOTE_TAIL) } : {}) }) as { outcome?: string };
+      const r = await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: jobNote(redacted(note, l.taken.token)).slice(-NOTE_TAIL) } : {}) }) as { outcome?: string };
       return typeof r?.outcome === 'string' ? clean(r.outcome) : undefined;
     } catch (e) {
       const msg = clean((e as Error).message);
@@ -551,7 +565,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
       while (!stopped && !heldOff && live.size < max) {
         let r: Take;
         try {
-          r = await deps.call('take_job', { machine }) as Take;
+          r = await deps.call('take_job', { machine, kinds: [...RUNNER_KINDS] }) as Take;
         } catch (e) {
           // Kolab out of reach (or refusing) is waited out, never the end of the jobs already running.
           why = `couldn't take a job (${clean((e as Error).message)})`;

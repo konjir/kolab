@@ -15,6 +15,11 @@
 -- agent submitted a redraft of the marked node, or a serve job's agent a binding version that serves
 -- the element). JOB_KINDS and JOB_OUTCOMES in @konjir/types.
 --
+-- A version records when it was submitted (`submitted_at`): set as it leaves drafted, for review
+-- or committed unreviewed, again on each resubmission. A job credits a redraft or a binding version
+-- to its agent only if it was submitted while the job ran, whenever it was drafted, so a pool agent
+-- reused across jobs can't be credited for one an earlier job wrote. Versions submitted before have none.
+--
 -- It adds nullable columns, widens three checks and adds indexes: every existing job is a build or a
 -- review with its item where it was, so it can neither refuse a database nor change what is in one,
 -- and needs no preflight. The unique key on query(id, kolab_id) is its primary key's, with the kolab.
@@ -74,3 +79,15 @@ begin
 end
 $$;
 revoke execute on function kj_job_fixed() from public;
+
+alter table version add column submitted_at timestamptz;
+create function kj_version_submitted_at() returns trigger
+language plpgsql as $$
+begin
+  new.submitted_at := clock_timestamp();
+  return new;
+end
+$$;
+revoke execute on function kj_version_submitted_at() from public;
+create trigger version_submitted_at before update of state on version for each row
+  when (old.state = 'drafted' and new.state in ('in_review', 'committed')) execute function kj_version_submitted_at();
