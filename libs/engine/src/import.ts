@@ -34,7 +34,7 @@ export interface ImportStep {
   version?: number;
   /** Who may approve a version in review now. */
   reviewers?: string[];
-  /** A ruling that changes the intent: `set`, it marked what it rules on; `carried`, that last changed after its date, so no mark. */
+  /** A ruling that changes the intent: `set`, it marked what it rules on; `carried`, no mark, since that last changed after its date, or the same day for a date alone in a file its node holds. */
   mark?: 'set' | 'carried';
   /** The case files a ruling superseded. */
   superseded?: string[];

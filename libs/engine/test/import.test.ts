@@ -72,7 +72,7 @@ test('two passes write the whole file: as product the spec and its rulings, leav
   // Nobody else may approve in this kolab, so the version committed on its checks alone (VER11), as lee's.
   expect(first.steps.find((s) => s.what === 'version kj:test/shop')!.detail).toMatch(/committed unreviewed/);
   // A first import's elements are all newer than its rulings: no mark, and the step says so.
-  expect(first.steps.find((s) => s.what === 'ruling D7')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/marks nothing: this file states shop#CHK1 after its own rulings/) });
+  expect(first.steps.find((s) => s.what === 'ruling D7')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/marks nothing: shop#CHK1 last changed after that date/) });
 
   const second = await pass('engineer');
   expect(outcomes(second)).toStrictEqual({
@@ -718,6 +718,82 @@ test('when an element last changed: a move or a links-only version isn\'t a chan
   expect(step(r, 'ruling D51')).toMatchObject({ mark: 'set' });
   expect(step(r, 'ruling D52')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/shop#CHK last changed after that date/) });
   expect((await kolab.db.query(`select element_id from invalidation where reason = 'ruled' and state = 'open' order by element_id`)).rows).toStrictEqual([{ element_id: 'CHK1' }, { element_id: 'DEC1' }]);
+});
+
+test('a ruling dated by day alone on the day of a first import is carried, by what was checked; a timed one after the last change marks, in any file; an older one before a change is carried; a later unrelated change leaves a mark open (third review of #105)', async () => {
+  const { kolab, pass } = await lee();
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const first = fixture();
+  first.rulings = [
+    { id: 'D70', date: today, text: 'By day, on the import\'s day.', effect: 'change_intent', on: 'shop#CHK1' },
+    { id: 'D71', date: yesterday, text: 'By day, the day before.', effect: 'change_intent', on: 'shop#CHK2' },
+  ] as unknown as Fixture['rulings'];
+  const r = await pass('product', first);
+  expect(step(r, 'ruling D70')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/dated by day alone, shop#CHK1 last changed that same day, and it holds this file's text/) });
+  expect(step(r, 'ruling D71')).toMatchObject({ mark: 'carried', detail: expect.stringMatching(/shop#CHK2 last changed after that date/) });
+  await tick();
+  // Timed, after the last change, with its node in this file: a mark, though the file holds the text.
+  const timed = fixture();
+  timed.rulings = [...first.rulings, { id: 'D72', date: new Date().toISOString(), text: 'Timed, now.', effect: 'change_intent', on: 'shop#CHK1' }] as unknown as Fixture['rulings'];
+  const t = await pass('product', timed);
+  expect(step(t, 'ruling D72')).toMatchObject({ outcome: 'created', mark: 'set' });
+  const open = async () => (await kolab.db.query(`select element_id from invalidation where reason = 'ruled' and state = 'open' order by element_id`)).rows;
+  expect(await open()).toStrictEqual([{ element_id: 'CHK1' }]);
+  // The same day alone, in a file of rulings only: the plain rule, so a mark.
+  const alone = await pass('product', rulingsFile({ id: 'D73', date: today, text: 'By day, alone.', effect: 'change_intent', on: 'shop#CHK2' }));
+  expect(step(alone, 'ruling D73').mark).toBe('set');
+  expect(await open()).toStrictEqual([{ element_id: 'CHK1' }, { element_id: 'CHK2' }]);
+  // A later version that changes only CHK2 settles CHK2's mark, and leaves CHK1's open.
+  const later = fixture();
+  later.rulings = [];
+  later.spec.elements[2] = { id: 'CHK2', text: 'A receipt is emailed within two minutes of paying.', parent: 'CHK' };
+  await pass('product', later, { update: true });
+  expect(await open()).toStrictEqual([{ element_id: 'CHK1' }]);
+});
+
+test('by day alone, in its node\'s file, a change on an earlier day doesn\'t carry it: only that day or later (third review of #105)', async () => {
+  const { kolab, pass } = await lee();
+  const first = fixture();
+  first.rulings = [];
+  await pass('product', first);
+  await kolab.db.exec(`alter table version disable trigger user; update version set created_at = created_at - interval '3 days'; alter table version enable trigger user;`);
+  const today = new Date().toISOString().slice(0, 10);
+  const f = fixture();
+  f.rulings = [{ id: 'D74', date: today, text: 'Days after the change.', effect: 'change_intent', on: 'shop#CHK1' }] as unknown as Fixture['rulings'];
+  expect(step(await pass('product', f), 'ruling D74').mark).toBe('set');
+});
+
+test('on a fork, a move to the top level is put back by the upstream commit\'s rebase; a rerun reports it, and --update moves it again (pins today\'s behaviour, third review of #105)', async () => {
+  const kolab = await openKolab();
+  await people(kolab, 'ann', { layers: ['functional'] });
+  const ann = await kolab.openSession('ann', 'product');
+  const up = fixture().spec.elements;
+  await kolab.createNode(ann, 'spec', 'Upstream', 'shop');
+  await kolab.commit(ann, 'shop', { elements: up });
+  const v1 = (await kolab.latestCommitted('shop'))!;
+  await kolab.createKolab('forked', { owner: 'test-org' });
+  await kolab.addActor('lee');
+  await kolab.grant('forked', 'lee', 'admin');
+  await kolab.grant(TEST_KOLAB, 'lee', 'read');
+  const lee2 = await kolab.openSession('lee', 'product', { kolab: 'forked' });
+  const node = await kolab.createNode(lee2, 'spec', 'Fork', 'shop');
+  await kolab.submit(lee2, await kolab.draft(lee2, node, { parent: v1.id, deltas: [] }));
+  const parents = async () => (await kolab.elements((await kolab.latestCommitted(node))!.id)).map((e) => [e.element_id, e.parent_element_id]);
+  expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', 'CHK'], ['CHK2', 'CHK']]);
+
+  const moved = { format: IMPORT_FORMAT, kolab: 'forked', spec: { name: 'shop', title: 'Fork', elements: [up[0], { id: 'CHK1', text: up[1].text }, up[2]] } };
+  expect(await kolab.importKolab(lee2, moved, { update: true })).toMatchObject({ complete: true });
+  expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', 'CHK']]);
+  expect(await kolab.importKolab(lee2, moved)).toMatchObject({ complete: true, created: [] });
+
+  // Upstream commits something else: the fork's rebase puts the move back.
+  await kolab.commit(ann, 'shop', { elements: [...up.slice(0, 2), { id: 'CHK2', text: 'A receipt is emailed at once.', parent: 'CHK' }] });
+  await kolab.drainOutbox();
+  expect((await parents())[1]).toStrictEqual(['CHK1', 'CHK']);
+  const rerun = await kolab.importKolab(lee2, moved);
+  expect(rerun).toMatchObject({ complete: false });
+  expect(outcomes(rerun)).toMatchObject({ 'version kj:forked/shop': 'differs' });
 });
 
 test('a ruling dated today in the file of its node marks nothing and isn\'t audited as backdated; in a rulings-only file it marks; tomorrow is refused (re-review of #105)', async () => {
