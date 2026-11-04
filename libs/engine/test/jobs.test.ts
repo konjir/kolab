@@ -101,7 +101,7 @@ test('a person\'s session takes a review before a ready package; two takes give 
   // Each agent is lee's, made on first need, granted what lee holds here, and signed in as an engineer, once (ENF4).
   for (const [r, agent] of [[first, 'lee-engineer-1'], [second, 'lee-engineer-2']] as const) {
     expect(await kolab.sessionInfo(r.token)).toMatchObject({ actor: agent, kind: 'agent', owner: 'lee', role: 'engineer', kolab: TEST_KOLAB, access: { level: 'write', layers: ['technical'] } });
-    expect(await kolab.liveSession(r.token)).toMatchObject({ actor: agent, granted: false, job: true });
+    expect(await kolab.liveSession(r.token)).toMatchObject({ actor: agent, granted: false, job: true, admin: false });
   }
   expect((await kolab.db.query(`select opened_by from session where actor_id like 'lee-engineer-%' and ended_at is null order by actor_id`)).rows)
     .toStrictEqual([{ opened_by: 'lee' }, { opened_by: 'lee' }]);

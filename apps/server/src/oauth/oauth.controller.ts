@@ -480,7 +480,7 @@ export class OAuthController {
     // A scope naming the agent, kolab and role together locks the page to them (D97).
     const locked = web ? undefined : scopeLock(pending.scope);
     const view: ConsentView = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, konjirAdmin: !web && await this.kolab.isAdmin(pending.person), person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
       kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
       ...(locked ? { lock: { ...locked, step: pending.step } } : {}),
       ...(unreached ? { unreached: { ...('kolab' in unreached ? { kolab: unreached.kolab } : {}), meant: unreached.meant, yours: unreached.yours } } : {}),

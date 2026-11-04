@@ -343,6 +343,31 @@ test('a scope naming the agent, kolab and role locks the consent page to them: n
   expect((await kolab.listActors({ owner: zed })).map((a) => a.id).sort()).toStrictEqual(['zed-reviewer', 'zed-writer']);
 });
 
+test('the consent page tells a Konjir admin, on the Yourself option, that the app can run every admin verb as them; it tells no one else, and adds no step (D111)', async () => {
+  const { kolab } = await setup();
+  const { base, idp } = await serve(kolab);
+  const client = (await register(base)).body.client_id;
+  const zed = { subject: '602', login: 'zed' };
+  const { actor } = await kolab.signInWith({ provider: 'stub', ...zed });
+  await kolab.grant('test', actor, 'write');
+  const yourself = (html: string) => /<label class="opt"><input type="radio" name="as" value="self".*?<\/label>/.exec(html)?.[0] ?? '';
+
+  const before = await toConsent(base, idp, client, zed);
+  expect(yourself(before.html)).toContain('Yourself');
+  expect(before.html).not.toContain('Konjir admin');
+
+  await kolab.makeAdmin(actor);
+  const after = await toConsent(base, idp, client, zed);
+  expect(yourself(after.html)).toContain('You are a Konjir admin: this app can run every admin verb as you.');
+  // Information only: the same form, with the same fields and buttons.
+  const controls = (html: string) => [...html.matchAll(/<(?:input|button|select)\b[^>]*\bname="([^"]+)"/g)].map((m) => m[1]);
+  expect(controls(after.html)).toStrictEqual(controls(before.html));
+
+  // Removed, it says nothing again.
+  await kolab.removeAdmin(actor);
+  expect((await toConsent(base, idp, client, zed)).html).not.toContain('Konjir admin');
+});
+
 test('an agent signed in now is marked on the consent page, since choosing it ends that session; a client new to the person preselects a new agent, one signing in again its own agent unless the person revoked it or it is signed in through another client, and the scope still names one (ENF4, D59)', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);

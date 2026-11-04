@@ -229,9 +229,9 @@ resource "aws_cloudwatch_metric_alarm" "break_glass" {
 }
 
 # A person made a Konjir admin (W2.22). It is rare and lasts beyond the moment, since a new admin
-# stays one, and every session they sign in to runs the admin verbs (D111), so each one emails. Kolab
-# logs one warn line for each, "event":"admin_granted" (libs/engine, Kolab.makeAdmin).
-# apps/cli/test/admins.test.ts checks that each event these filters match is logged.
+# stays one, and every session they sign in to runs the admin verbs (D111), so it emails every time.
+# Kolab logs a warn line for it, "event":"admin_granted" (libs/engine, Kolab.makeAdmin).
+# apps/cli/test/admins.test.ts checks that the event this filter matches is logged.
 resource "aws_cloudwatch_log_metric_filter" "admin_granted" {
   name           = "${var.name}-admin-granted"
   log_group_name = aws_cloudwatch_log_group.kolab.name

@@ -10,15 +10,22 @@ import { openKolab, people, rejection, type TestKolab } from '../src/testing.js'
 
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 
-/** `person` signs in with the identity provider, as `as` (themselves by default), and gets an access token. */
-async function signedIn(kolab: Kolab, person: string, as: Parameters<Kolab['consent']>[2]['as'] = { kind: 'self' }): Promise<string> {
+/** `person` signs in with the identity provider, as `as` (themselves by default), and gets their tokens and the client that holds them. */
+async function signIn(kolab: Kolab, person: string, as: Parameters<Kolab['consent']>[2]['as'] = { kind: 'self' }) {
   const client = (await kolab.registerClient({ name: 'Test client', redirectUris: ['http://127.0.0.1:9/cb'] })).id;
   const verifier = randomBytes(32).toString('base64url');
   const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256(verifier) });
   const { csrf } = await kolab.identifyAuthorization(binding, state, person);
   const { code, redirectUri } = await kolab.consent(binding, csrf, { as, kolab: 'test', role: 'product' });
-  return (await kolab.exchangeCode({ code, clientId: client, redirectUri, codeVerifier: verifier })).accessToken;
+  return { ...await kolab.exchangeCode({ code, clientId: client, redirectUri, codeVerifier: verifier }), client };
 }
+
+/** As signIn, for the access token alone. */
+const signedIn = async (...a: Parameters<typeof signIn>) => (await signIn(...a)).accessToken;
+
+/** What refreshing these tokens gets: refused, as the OAuth error's code. */
+const refreshRefusal = (kolab: Kolab, t: Awaited<ReturnType<typeof signIn>>) =>
+  kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: t.client }).then(() => 'refreshed', (e: { code: string }) => e.code);
 
 async function admins() {
   const kolab = await openKolab();
@@ -141,6 +148,37 @@ test('an agent of an admin\'s, a hand-issued session of an admin\'s and a person
     alter table konjir_admin enable trigger user`);
   expect(await kolab.liveSession(agent)).toMatchObject({ actor: 'lee-claude', admin: false });
   expect(await kolab.liveSession('kjs_nothing')).toBeUndefined();
+});
+
+test('archiving an admin ends their session for good: its access and refresh tokens are refused, and stay refused after unarchiving; a new sign-in is an admin again', async () => {
+  const kolab = await admins();
+  await kolab.makeAdmin('lee');
+  const old = await signIn(kolab, 'lee');
+  expect(await kolab.liveSession(old.accessToken)).toMatchObject({ admin: true });
+
+  await kolab.archive({ actor: 'lee' });
+  expect(await kolab.liveSession(old.accessToken)).toBeUndefined();
+  expect(await refreshRefusal(kolab, old)).toBe('invalid_grant');
+
+  await kolab.unarchive({ actor: 'lee' });
+  expect(await kolab.liveSession(old.accessToken)).toBeUndefined();
+  expect(await refreshRefusal(kolab, old)).toBe('invalid_grant');
+
+  expect(await kolab.liveSession(await signedIn(kolab, 'lee'))).toMatchObject({ actor: 'lee', admin: true });
+});
+
+test('ending an admin\'s session, by its key or by its actor, refuses its refresh token too', async () => {
+  const kolab = await admins();
+  await kolab.makeAdmin('lee');
+  const byKey = await signIn(kolab, 'lee');
+  await kolab.endSession({ key: (await kolab.liveSession(byKey.accessToken))!.id }, { by: ADMIN_DOER });
+  expect(await kolab.liveSession(byKey.accessToken)).toBeUndefined();
+  expect(await refreshRefusal(kolab, byKey)).toBe('invalid_grant');
+
+  const byActor = await signIn(kolab, 'lee');
+  await kolab.endSession({ actor: 'lee' }, { by: ADMIN_DOER });
+  expect(await kolab.liveSession(byActor.accessToken)).toBeUndefined();
+  expect(await refreshRefusal(kolab, byActor)).toBe('invalid_grant');
 });
 
 test('the audit log\'s past admin.elevated and admin.lowered rows stay valid and readable; nothing writes them now', async () => {
