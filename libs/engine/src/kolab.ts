@@ -7400,7 +7400,7 @@ export class Kolab {
    * recorded later: only an import gives one (importRuling, W6.3), so an everyday ruling is dated as
    * it is given. It is audited, and `recorded_at` keeps when it was written.
    */
-  private async giveRuling(sessionId: string, input: Parameters<Kolab['rule']>[1], ruledAt: Date | null, carried = false): Promise<GivenRuling> {
+  private async giveRuling(sessionId: string, input: Parameters<Kolab['rule']>[1], ruledAt: Date | null, dayOnly = false): Promise<GivenRuling> {
     const text = requireText(input.text, 'the ruling');
     if (input.effect !== undefined && !RULING_EFFECTS.includes(input.effect)) throw new GateError(`a ruling's effect is ${RULING_EFFECTS.join(' or ')} (CASE6)`);
     const replaces = input.replaces === undefined ? null : requireText(input.replaces, 'what the ruling replaces');
@@ -7466,7 +7466,7 @@ export class Kolab {
     const on = formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: a.element });
     if (a.element && (await this.resolveIn(v.id, a.element, null)).status === 'orphan') throw new Error(`${on} doesn't exist`);
     await ruler(v.layer, v.kolab_id!);
-    return this.ruleDirectly(s.actor_id, v, { id, element: a.element ?? null, on, text, replaces, effect, ref, ruledAt, carried });
+    return this.ruleDirectly(s.actor_id, v, { id, element: a.element ?? null, on, text, replaces, effect, ref, ruledAt, dayOnly });
   }
 
   /**
@@ -7478,8 +7478,8 @@ export class Kolab {
    */
   private async ruleDirectly(actor: string, v: VersionRow, r: {
     id: string; element: string | null; on: string; text: string; replaces: string | null; effect: RulingEffect; ref: string | null; ruledAt: Date | null;
-    /** What it rules on already says it, as the import's file does (importRuling): no mark. */
-    carried?: boolean;
+    /** Dated by day alone, in a file its node holds (importRuling): a change that same day counts as after it. */
+    dayOnly?: boolean;
   }): Promise<GivenRuling> {
     const { id, text, replaces, effect, on } = r;
     const a = { element: r.element ?? undefined };
@@ -7494,7 +7494,7 @@ export class Kolab {
          returning c.id, c.opened_by`, [id, a.element, v.kolab_id, v.node_id, r.ruledAt?.toISOString() ?? null])).rows : [];
       const parties = superseded.length ? (await tx.query<{ actor_id: string }>(
         `select distinct actor_id from position where case_file_id = any($1)`, [superseded.map((c) => c.id)])).rows.map((r) => r.actor_id) : [];
-      const mark = effect !== 'change_intent' ? undefined : r.carried ? 'carried' as const : await this.markRuled(tx, signal, { versionId: v.id, element: a.element ?? null, ruling: id, text, on, ruledAt: r.ruledAt });
+      const mark = effect === 'change_intent' ? await this.markRuled(tx, signal, { versionId: v.id, element: a.element ?? null, ruling: id, text, on, ruledAt: r.ruledAt, dayOnly: r.dayOnly }) : undefined;
       // New precedent in the kolab, and the superseded case files leave the inbox and reach their parties.
       await signal({ inbox: 'layer', kolab: v.kolab_id!, layer: v.layer });
       for (const party of new Set([...superseded.map((c) => c.opened_by), ...parties])) {
@@ -7531,15 +7531,20 @@ export class Kolab {
    * A ruling that changes the intent (D51): marks the element it rules on, on its node's live
    * version, with a question to its layer, in the ruling's transaction. A later version that revises
    * or removes the element settles both. Nothing is marked when the live version no longer has it.
-   * A ruling given a date (W6.3) marks nothing when what it rules on last changed after that date:
-   * that change came after it, so carries it (`carried`, which the import reports). Says what it did.
+   * A ruling given a date (W6.3) marks nothing when what it rules on last changed after that date
+   * (`carried`), or, dated by day alone in a file its node holds (`dayOnly`), on that same UTC day
+   * (`same_day`): a date alone says no time of day. Says what it did, which the import reports.
    */
-  private async markRuled(tx: Q, signal: Signal, r: { versionId: string; element: string | null; ruling: string; text: string; on: string; ruledAt?: Date | null }): Promise<'set' | 'carried' | undefined> {
+  private async markRuled(tx: Q, signal: Signal, r: { versionId: string; element: string | null; ruling: string; text: string; on: string; ruledAt?: Date | null; dayOnly?: boolean }): Promise<'set' | 'carried' | 'same_day' | undefined> {
     const live = (await tx.query<{ id: string }>(
       `select l.id from version l join version v on v.node_id = l.node_id
         where v.id = $1 and l.state = 'committed' order by l.seq desc limit 1`, [r.versionId])).rows[0]?.id ?? r.versionId;
     if (r.element && !(await tx.query(`select 1 from element where version_id = $1 and element_id = $2`, [live, r.element])).rows.length) return undefined;
-    if (r.ruledAt && r.ruledAt.getTime() < (await this.lastChanged(tx, live, r.element)).getTime()) return 'carried';
+    if (r.ruledAt) {
+      const changed = await this.lastChanged(tx, live, r.element);
+      if (r.ruledAt.getTime() < changed.getTime()) return 'carried';
+      if (r.dayOnly && r.ruledAt.toISOString().slice(0, 10) <= changed.toISOString().slice(0, 10)) return 'same_day';
+    }
     const what = r.on.replace(/@\d+/, '');
     await this.markAndAskIn(tx, signal, {
       version_id: live, element_id: r.element, reason: 'ruled', triggered_by: r.versionId,
@@ -11187,14 +11192,17 @@ export class Kolab {
     if (fileEls && !sameElements(await this.elements(v.id), fileEls)) return { outcome: 'waiting', detail: `it rules on ${r.on.node}, which differs from the file` };
     if (dry) return { outcome: 'would_create', detail: `on ${on}, dated ${ruledAt.toISOString().slice(0, 10)}` };
     // rule's own checks: a person, in the role that writes the layer, holding Write on it (D51).
-    // With its node in this file, and holding the file's elements (checked above): the file states its text after its own rulings.
-    const given = await this.giveRuling(sessionId, { address: formatAddress({ node: r.on.node, element: r.on.element }), text: r.text, ...(r.replaces ? { replaces: r.replaces } : {}), effect: r.effect, ref: r.id }, ruledAt, !!fileEls);
+    // A date alone says no time of day: with its node in this file, holding the file's elements (checked above), the same day counts as before the change.
+    const dayOnly = !!fileEls && /^\d{4}-\d{2}-\d{2}$/.test(r.date.trim());
+    const given = await this.giveRuling(sessionId, { address: formatAddress({ node: r.on.node, element: r.on.element }), text: r.text, ...(r.replaces ? { replaces: r.replaces } : {}), effect: r.effect, ref: r.id }, ruledAt, dayOnly);
     return {
       outcome: 'created',
       detail: [`on ${on}, dated ${ruledAt.toISOString().slice(0, 10)}`,
-        ...(given.mark === 'carried' ? [`it changes the intent, and marks nothing: ${fileEls ? `this file states ${on} after its own rulings` : `${on} last changed after that date, so carries it`}`] : given.mark === 'set' ? [`${on} is marked until a version amends it`] : []),
+        ...(given.mark === 'carried' ? [`it changes the intent, and marks nothing: ${on} last changed after that date`]
+          : given.mark === 'same_day' ? [`it changes the intent, and marks nothing: it is dated by day alone, ${on} last changed that same day, and it holds this file's text`]
+            : given.mark === 'set' ? [`${on} is marked until a version amends it`] : []),
         ...(given.superseded.length ? [`it supersedes case file${given.superseded.length === 1 ? '' : 's'} ${given.superseded.join(', ')}`] : [])].join('; '),
-      ...(given.mark ? { mark: given.mark } : {}), ...(given.superseded.length ? { superseded: given.superseded } : {}),
+      ...(given.mark ? { mark: given.mark === 'set' ? 'set' as const : 'carried' as const } : {}), ...(given.superseded.length ? { superseded: given.superseded } : {}),
     };
   }
 
@@ -12804,7 +12812,7 @@ type WantedLink = { link: LinkInput; node: string; relies: boolean };
 /** The links a file gives a binding now: those it can make, those waiting on the spec, and the keys (linkKey) of all it gives. */
 type FoundLinks = { links: WantedLink[]; missing: string[]; desired: ReadonlySet<string> };
 /** A ruling given (giveRuling): its id, the case files it superseded, and what it did about a mark. */
-type GivenRuling = { id: string; superseded: string[]; mark?: 'set' | 'carried' };
+type GivenRuling = { id: string; superseded: string[]; mark?: 'set' | 'carried' | 'same_day' };
 /** How many rulings the precedent lists; it says how many there are, and how to read the rest. */
 const RULINGS_SHOWN = 20;
 
