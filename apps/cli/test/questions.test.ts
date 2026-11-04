@@ -167,13 +167,10 @@ test('a database from the previous release is migrated on open', async () => {
       update node set kind = case kind when 'spec' then 'functional_spec' when 'binding' then 'technical_binding' when 'plan' then 'wbs' else kind end;
       alter table node add constraint node_kind_check check (kind in
         ('functional_spec','prototype','technical_binding','wbs','work_package','implementation'));
-      alter table oauth_request drop column raise_id;
-      drop table admin_raise;
       alter table session drop constraint session_grant_token;
       update session set expires_at = null where grant_id is null;
       alter table session add constraint session_grant_token check (
         (grant_id is null) = (token_key is null) and (token_key is null) = (expires_at is null));
-      alter table session drop column admin_until;
       drop trigger konjir_admin_audited on konjir_admin;
       drop function kj_admin_audited();
       drop table konjir_admin;

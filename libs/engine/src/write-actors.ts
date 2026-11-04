@@ -71,10 +71,6 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   // ---- Konjir's admins (W2.22, D69) ----
   makeAdmin: { recorded: ['audit_event:admin.granted'] },
   removeAdmin: { recorded: ['audit_event:admin.revoked'] },
-  // A raise is asked for by the session's own person, and completed by them in a browser (Lee's ruling of 2026-10-23).
-  requestRaise: { recorded: ['admin_raise.actor_id'] },
-  completeRaise: { recorded: ['audit_event:admin.elevated'] },
-  lowerRaise: { recorded: ['audit_event:admin.lowered'] },
   recordBreakGlass: { recorded: ['audit_event:break_glass.used'] },
 
   // ---- actors, sessions and sign-in ----

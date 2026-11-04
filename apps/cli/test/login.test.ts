@@ -288,7 +288,7 @@ test('a sign-in that was revoked elsewhere says to run konjir login; the answer 
   expect(await rejection(main(['whoami']))).toMatch(/your sign-in to .* has ended or was revoked: run konjir login/);
 });
 
-test('an admin verb from a sign-in that isn\'t raised says so, and the sign-in is kept: never "ended or was revoked"', async () => {
+test('an admin verb from a sign-in that isn\'t an admin\'s own says so, and the sign-in is kept: never "ended or was revoked"', async () => {
   const kolab = await openKolab();
   const idp = new StubIdentity().next({ subject: '44', login: 'cy' });
   const server = await startServer({ adminToken: 'login-admin', kolab, identity: idp, webRoot: null });
@@ -299,7 +299,7 @@ test('an admin verb from a sign-in that isn\'t raised says so, and the sign-in i
 
   // Kolab answers 403 insufficient_scope; the CLI asks for no wider sign-in and says what the refusal means.
   const refused = await rejection(main(['admin_list_kolabs']));
-  expect(refused).toMatch(/konjir_admin_list_kolabs is an admin verb: .* this session isn't raised\. If you are a Konjir admin, run konjir admin_elevate from your own sign-in; if not, ask one\.$/);
+  expect(refused).toMatch(/konjir_admin_list_kolabs is an admin verb: .* this session is neither\. If you are a Konjir admin, sign in as yourself with GitHub; if not, ask one\.$/);
   expect(refused).not.toMatch(/ended or was revoked/);
   // The sign-in is untouched and still works.
   expect(readFileSync(credentialsPath(), 'utf8')).toBe(kept);

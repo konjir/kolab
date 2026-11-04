@@ -29,7 +29,7 @@ import { KOLAB, SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 
 /**
  * Who an admin verb records as having made its write (W2.20, D70; W2.22, D69): the Konjir admin
- * whose own raised session called it (KonjirAuth puts its actor in the auth's `extra`), or, for the
+ * whose own session called it (KonjirAuth puts its actor in the auth's `extra`), or, for the
  * break-glass token, ADMIN_DOER. Every verb below passes it, so none records a write as no one's,
  * and none falls back to the token for a caller it can't name.
  */
@@ -38,7 +38,7 @@ export function admin(context: McpToolContext | undefined): { by: Doer } {
   if (auth?.scopes.includes('break-glass')) return { by: ADMIN_DOER };
   const actor = auth?.extra?.actor;
   if (auth?.scopes.includes('admin') && typeof actor === 'string' && actor.trim()) return { by: actor };
-  throw new AccessError('admin verbs need a Konjir admin\'s own session, raised in their browser (konjir_admin_elevate), or the break-glass token');
+  throw new AccessError('admin verbs need a Konjir admin\'s own session or the break-glass token');
 }
 
 /**
@@ -56,7 +56,7 @@ export class BreakGlassAudit implements McpCanActivate {
 }
 
 /**
- * An admin verb: for a Konjir admin's raised session or the break-glass token, which both carry
+ * An admin verb: for a Konjir admin's own session or the break-glass token, which both carry
  * the `admin` scope (KonjirAuth); hidden from, and refused to, every other session. Each use of the
  * break-glass token is recorded.
  */
@@ -137,7 +137,6 @@ const auditLog = args({
   limit: z.number().int().min(1).max(500).optional().describe('At most this many, newest first; 100 by default'),
   before: z.number().int().min(1).optional().describe('Only events older than this one: the id of the last event of the previous page, to page back'),
 });
-const elevate = args({ lower: z.boolean().optional().describe('End the raise now, before it lapses') });
 const adminPerson = args({ actor: z.string().describe('The person, by their actor id (a GitHub sign-up is named after their login, e.g. icedlee337)') });
 const outbox = args({
   state: z.enum(OUTBOX_STATES).optional().describe('Only jobs in this state: dead ones wait for an admin to retry them'),
@@ -157,7 +156,7 @@ function oneTarget(a: { kolab?: string; organization?: string; actor?: string })
 /** Whether this Kolab's break-glass admin token is enabled: without it, the last live Konjir admin stays one (W2.22). */
 const breakGlassOn = (options: ServerOptions) => !!options.adminToken;
 
-/** Admin verbs: for a Konjir admin's raised session or the break-glass token; the scope guard refuses every other session. */
+/** Admin verbs: for a Konjir admin's own session or the break-glass token; the scope guard refuses every other session. */
 @Injectable()
 export class AdminTools {
   constructor(
@@ -166,33 +165,8 @@ export class AdminTools {
   ) {}
 
   @McpTool({
-    name: 'konjir_admin_elevate',
-    description: "For a Konjir admin, from their own session (W2.22, D69): ask for it to be raised to run the admin verbs for 15 minutes, as yourself. This raises nothing: it answers with a link (raise_url) for the person to open in their browser, sign in with GitHub as themselves and confirm on Kolab's page; only then is this session raised, and only for that person. Asking again, and confirming again, renews it. lower=true ends a raise now. Only a person's own session, signed in with GitHub, never an agent's or a hand-issued one, and only while they are a Konjir admin.",
-    schema: elevate,
-  })
-  @McpGuard(McpScopeGuard, { scopes: ['konjir-admin'] })
-  async elevate({ lower }: z.infer<typeof elevate>, context?: McpToolContext) {
-    try {
-      const token = context?.authInfo?.token;
-      if (!token || context?.authInfo?.scopes.includes('break-glass')) throw new AccessError('raise your own session: the break-glass token needs no raising');
-      if (lower) {
-        const r = await this.kolab.lowerRaise(token);
-        return ok({ actor: r.actor, session: r.session, admin_until: null, lowered: r.lowered });
-      }
-      // Asked for only: no MCP call raises a session (Lee's ruling of 2026-10-23). The person's browser does.
-      const r = await this.kolab.requestRaise(token);
-      if (!this.options.origin) throw new Error('this Kolab doesn\'t know its own address yet, so it can\'t give a raise link');
-      return ok({
-        actor: r.actor, session: r.session, raised: false,
-        raise_url: `${this.options.origin}/oauth/raise?request=${r.request}`, expires_at: r.expiresAt,
-        next: 'Open raise_url in your own browser, sign in with GitHub as yourself and confirm there. Only then does this session run the admin verbs, for 15 minutes; nothing called here raises it. If you did not ask for this, ignore the link.',
-      });
-    } catch (e) { return fail(e); }
-  }
-
-  @McpTool({
     name: 'konjir_admin_make_admin',
-    description: "Admin: make a person a Konjir admin (D69), who then runs the admin verbs from their own GitHub sign-in (konjir_admin_elevate) instead of the break-glass token. Never an agent. Recorded in the audit log as admin.granted, by you.",
+    description: "Admin: make a person a Konjir admin (D69), who then runs the admin verbs from their own GitHub sign-in instead of the break-glass token. Never an agent. Recorded in the audit log as admin.granted, by you.",
     schema: adminPerson,
   })
   @AdminOnly()
@@ -205,7 +179,7 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_remove_admin',
-    description: "Admin: a person is no longer a Konjir admin; any raised session of theirs stops running admin verbs at once. Refused for the last live admin while this Kolab's break-glass token is disabled. Recorded in the audit log as admin.revoked, by you.",
+    description: "Admin: a person is no longer a Konjir admin; any session of theirs stops running admin verbs at once. Refused for the last live admin while this Kolab's break-glass token is disabled. Recorded in the audit log as admin.revoked, by you.",
     schema: adminPerson,
   })
   @AdminOnly()
@@ -216,7 +190,7 @@ export class AdminTools {
     } catch (e) { return fail(e); }
   }
 
-  @McpTool({ name: 'konjir_admin_list_admins', description: "Admin: Konjir's admins, each with who made them one and when, whether they are archived, and whether they can sign in (signs_in: a linked GitHub identity, without which they can never raise a session); and whether this Kolab's break-glass token is enabled.", schema: args({}) })
+  @McpTool({ name: 'konjir_admin_list_admins', description: "Admin: Konjir's admins, each with who made them one and when, whether they are archived, and whether they can sign in (signs_in: a linked GitHub identity, without which they can never open a session that runs the admin verbs); and whether this Kolab's break-glass token is enabled.", schema: args({}) })
   @AdminOnly()
   async listAdmins() {
     try { return ok({ admins: await this.kolab.admins(), break_glass: breakGlassOn(this.options) }); } catch (e) { return fail(e); }
@@ -313,7 +287,7 @@ export class AdminTools {
 
   @McpTool({
     name: 'konjir_admin_audit',
-    description: "Admin: the audit log (W2.20), newest first, a page at a time (next_before, when given, is the before for the next page): each change that leaves no row of its own to say who made it, with who made it and when. A grant made, changed or removed (grant.set, grant.removed), a person added to or removed from an organization or a team (member.set, member.removed, team_member.added, team_member.removed), an outbox job retried (outbox.retried), a person made or no longer a Konjir admin (admin.granted, admin.revoked), an admin raising their session to run admin verbs or lowering it (admin.elevated, admin.lowered), and each admin verb the break-glass token ran (break_glass.used, its subject the verb). by is an actor, or admin for the break-glass token. Everything else Kolab writes names who made it on its own row: a node's created_by, a session's opened_by and ended_by, a version's actor and submitted_by, an archive's done_by.",
+    description: "Admin: the audit log (W2.20), newest first, a page at a time (next_before, when given, is the before for the next page): each change that leaves no row of its own to say who made it, with who made it and when. A grant made, changed or removed (grant.set, grant.removed), a person added to or removed from an organization or a team (member.set, member.removed, team_member.added, team_member.removed), an outbox job retried (outbox.retried), a person made or no longer a Konjir admin (admin.granted, admin.revoked), and each admin verb the break-glass token ran (break_glass.used, its subject the verb). Past rows may also say admin.elevated or admin.lowered, which nothing writes now. by is an actor, or admin for the break-glass token. Everything else Kolab writes names who made it on its own row: a node's created_by, a session's opened_by and ended_by, a version's actor and submitted_by, an archive's done_by.",
     schema: auditLog,
   })
   @AdminOnly()
@@ -352,7 +326,7 @@ export class AdminTools {
   }
 }
 
-/** Admin verbs for accounts, kolabs, teams and grants (W1.3; TEN1–TEN11): for a Konjir admin's raised session or the break-glass token. */
+/** Admin verbs for accounts, kolabs, teams and grants (W1.3; TEN1–TEN11): for a Konjir admin's own session or the break-glass token. */
 @Injectable()
 export class TenancyTools {
   constructor(

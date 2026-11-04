@@ -247,7 +247,7 @@ export function App() {
           ))}
           <GoTo here={me.kolab} go={go} />
           <div className="rail-foot"><span>{me.name} · {me.role} · {me.kolab}</span>
-            {me.konjirAdmin && <span title="You are a Konjir admin: run admin verbs from the konjir CLI or MCP, signed in as yourself, once you confirm konjir admin_elevate's raise in your browser">Konjir admin</span>}</div>
+            {me.konjirAdmin && <span title="You are a Konjir admin: run admin verbs from the konjir CLI or MCP, signed in as yourself">Konjir admin</span>}</div>
         </nav>
         <main>
           {awayNote}

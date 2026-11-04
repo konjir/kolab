@@ -23,11 +23,9 @@ export function adminTokenMatcher(adminToken: string | null | undefined): (token
  * active role, one kolab), with the `agent` scope, and its actor in `extra.actor`.
  *
  * Admins are people (W2.22, D69). A Konjir admin's own session, opened by signing in with the
- * identity provider (D55), also has the `konjir-admin` scope, which reaches konjir_admin_elevate
- * alone, and that only asks for a raise: its person completes it in a browser (OAuthController,
- * /oauth/raise). Raised, until it lapses, it has the `admin` scope too, which reaches the admin verbs,
- * and each records that person as who did it. An agent's session, and a hand-issued one, never has
- * either. Both are read from the database on every request, so a raise that lapsed or an admin
+ * identity provider (D55), also has the `admin` scope, which reaches the admin verbs, for as long
+ * as the session lasts (D111), and each records that person as who did it. An agent's session, and
+ * a hand-issued one, never has it. It is read from the database on every request, so an admin
  * removed counts at once. The static admin token is only a break-glass: it has the `admin` and
  * `break-glass` scopes, and each request with it logs a warning line (event break_glass_used),
  * which the deployed stack's alarm counts; each admin verb it runs is recorded in the audit log
@@ -65,13 +63,13 @@ export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
       throw new OAuthError(OAuthErrorCode.InvalidToken, 'hand-issued Konjir tokens are turned off here: connect with OAuth');
     }
     const expiresAt = Math.min(now + 300, s.expiresAt ? Math.floor(s.expiresAt.getTime() / 1000) : Infinity);
-    const scopes = ['agent', ...(s.admin !== 'none' ? ['konjir-admin'] : []), ...(s.admin === 'raised' ? ['admin'] : [])];
+    const scopes = ['agent', ...(s.admin ? ['admin'] : [])];
     return { token, clientId: s.id, scopes, expiresAt, extra: { actor: s.actor } };
   }
 
   /**
    * The gate on each subscriptions/listen stream, as it opens (API4, D41): the break-glass
-   * token's streams pass; a session's only while it is open, a raised admin's too. A session ended since its request
+   * token's streams pass; a session's only while it is open, an admin's too. A session ended since its request
    * was verified is refused in-band (JSON-RPC -32003, `data.reason` 'session_ended'), which
    * Kolab's own clients, the channel bridge and `konjir watch`, treat as the token revoked, as
    * they do a 401. If the check itself fails, the package refuses the stream as 'gate_failed'

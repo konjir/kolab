@@ -32,24 +32,19 @@ run "admin_alarms" {
     error_message = "admin-granted counts Kolab's admin_granted lines"
   }
   assert {
-    condition     = aws_cloudwatch_log_metric_filter.admin_elevated.pattern == "{ $.event = \"admin_elevated\" && $._SYSTEMD_UNIT = \"konjir.service\" }"
-    error_message = "admin-session-raised counts Kolab's admin_elevated lines"
-  }
-  assert {
-    condition = alltrue([for a in [aws_cloudwatch_metric_alarm.admin_granted, aws_cloudwatch_metric_alarm.admin_elevated] :
+    condition = alltrue([for a in [aws_cloudwatch_metric_alarm.admin_granted] :
       a.threshold == 1 && a.evaluation_periods == 1 && a.comparison_operator == "GreaterThanOrEqualToThreshold" && a.treat_missing_data == "notBreaching"
     ])
-    error_message = "one admin made or one session raised is enough to fire, as one break-glass use is"
+    error_message = "one admin made is enough to fire, as one break-glass use is"
   }
   assert {
     condition = alltrue([
       aws_cloudwatch_metric_alarm.admin_granted.metric_name == one(aws_cloudwatch_log_metric_filter.admin_granted.metric_transformation).name,
-      aws_cloudwatch_metric_alarm.admin_elevated.metric_name == one(aws_cloudwatch_log_metric_filter.admin_elevated.metric_transformation).name,
     ])
     error_message = "each alarm watches its own filter's metric"
   }
   assert {
-    condition     = length(setsubtract(["konjir-test-admin-granted", "konjir-test-admin-session-raised", "konjir-test-break-glass-used"], output.alarm_names)) == 0
+    condition     = length(setsubtract(["konjir-test-admin-granted", "konjir-test-break-glass-used"], output.alarm_names)) == 0
     error_message = "deploy/konjir-ops.sh alarms lists the admin alarms"
   }
 }

@@ -8,7 +8,6 @@ import { json, urlencoded, type NextFunction, type Request, type Response } from
 import { KonjirAuth } from './auth.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { KolabServerModule } from './kolab-server.module.js';
-import { SERVER_OPTIONS, type ServerOptions } from './tokens.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
 
@@ -108,8 +107,6 @@ export async function startServer(opts: {
   const http = app.getHttpServer() as HttpServer;
   const { port } = http.address() as AddressInfo;
   const url = opts.publicHost ? `https://${opts.publicHost}/mcp` : `http://${host}:${port}/mcp`;
-  // Its origin, now that it is known: where an admin's raise link points (W2.22).
-  (app.get(SERVER_OPTIONS) as ServerOptions).origin = url.slice(0, -'/mcp'.length);
   let closing: Promise<void> | undefined;
   return {
     url,

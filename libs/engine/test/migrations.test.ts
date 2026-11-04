@@ -1944,12 +1944,13 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
     const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
     expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
     // Each of these people and agents holds one open session, so 0040 goes back too, and 0041 and 0042 before it.
+    await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     await db.exec(undo0039());
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42, 43] });
     // Every job as it was: its item and how it ended, the new items empty.
     expect((await db.query(`select * from job order by id`)).rows)
       .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
@@ -2003,11 +2004,12 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42, 43] });
     expect((await db.query(`select actor_id, machine_key, place, last_used_at from session order by actor_id`)).rows).toStrictEqual([
       { actor_id: 'alice', machine_key: `client:${s.client}`, place: null, last_used_at: null },
       { actor_id: 'alice-pm', machine_key: 'agent', place: null, last_used_at: null },
@@ -2073,6 +2075,7 @@ test('a database at 0040 with versions in review, review requests and answered q
 
   await withDb(async (db) => {
     const requests = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
+    await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
@@ -2080,7 +2083,7 @@ test('a database at 0040 with versions in review, review requests and answered q
     // As the release before 0041 wrote it, alice-pm-2, an agent with Write on the layer, was asked too.
     await db.query(`insert into review_request(id, version_id, reviewer_id) values ('01ZZZZZZZZZZZZZZZZZZZZAGNT', $1, 'alice-pm-2')`, [v2]);
     const before = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42, 43] });
     // Nothing rewritten: each request as it was, of its version's own layer; no kolab has a policy row; no answer cites anything.
     expect((await db.query(`select * from review_request order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, product: false })));
     expect((await db.query(`select * from kolab_policy`)).rows).toStrictEqual([]);
@@ -2137,10 +2140,11 @@ test('a database at 0041 with rulings reaches 0042: every ruling is kept as it w
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     const before = (await db.query<Record<string, unknown>>(`select * from ruling order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42, 43] });
     expect((await db.query(`select * from ruling order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, ref: null, recorded_at: null })));
     expect(await rejection(db.query(`insert into ruling(id, version_id, kolab_id, actor_id, text, effect, ref) select 'r2', version_id, kolab_id, actor_id, 'Two.', 'keep_intent', 'not a ref' from ruling limit 1`)))
       .toMatch(/ruling_ref_form/);
@@ -2155,5 +2159,65 @@ test('a database at 0041 with rulings reaches 0042: every ruling is kept as it w
     await kolab.rule(pm, { address: 'kj:orders#R1', text: 'One, once.', effect: 'keep_intent', ref: 'D1' });
     const rows = (await kolab.db.query<{ ref: string | null; recorded_at: Date | null }>(`select ref, recorded_at from ruling order by ref nulls first`)).rows;
     expect(rows.map((r) => [r.ref, r.recorded_at === null])).toStrictEqual([[null, true], ['D1', false]]);
+  } finally { await kolab.close(); }
+});
+
+// ---- 0043: an admin's own session runs the admin verbs, with no raising (W6.5; D111) ---------------
+
+/** Takes a database at 0043 back to 0042 by hand, as 0043 found it: what it drops, as 0026 wrote it. */
+const UNDO_0043 = `alter table session add column admin_until timestamptz;
+  create table admin_raise (
+    id           text primary key check (id ~ '^[A-Za-z0-9_-]{43}$'),
+    session_id   text not null references session(id),
+    actor_id     text not null references actor(id),
+    created_at   timestamptz not null default clock_timestamp(),
+    expires_at   timestamptz not null,
+    completed_at timestamptz,
+    cancelled_at timestamptz,
+    constraint admin_raise_used_once check (completed_at is null or cancelled_at is null)
+  );
+  create index admin_raise_expires on admin_raise(expires_at);
+  alter table admin_raise enable row level security;
+  revoke all on admin_raise from public;
+  revoke all on admin_raise from kj_agent, kj_system;
+  alter table oauth_request add column raise_id text references admin_raise(id) on delete cascade;
+  delete from kj_migration where version = 43;`;
+
+test('a database at 0042 with raised sessions, raise requests and past raises in its audit log reaches 0043: what raising stored goes, a raise\'s sign-in with it, and everything else is kept (W6.5, D111)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'admins_without_raising');
+  expect(MIGRATIONS[at].version).toBe(43);
+  let kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  try {
+    await people(kolab, 'lee', { layers: ['functional'] });
+    await kolab.makeAdmin('lee');
+    await kolab.openSession('lee', 'product');
+    await kolab.beginAuthorization({ provider: 'github', clientId: 'konjir-web', redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: 'c'.repeat(43) });
+    await kolab.db.query(`insert into audit_event(action, subject, detail, done_by) values ('admin.elevated', 'lee', '{"session":"s"}', 'lee'), ('admin.lowered', 'lee', '{"session":"s"}', 'lee')`);
+  } finally { await kolab.close(); }
+
+  await withDb(async (db) => {
+    await db.exec(UNDO_0043);
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    const session = (await db.query<{ id: string }>(`select id from session where actor_id = 'lee' and ended_at is null`)).rows[0].id;
+    await db.query(`update session set admin_until = now() + interval '10 minutes' where id = $1`, [session]);
+    await db.query(`insert into admin_raise(id, session_id, actor_id, expires_at) values ($1, $2, 'lee', now() + interval '10 minutes')`, ['r'.repeat(43), session]);
+    await db.query(`insert into oauth_request(id, state_key, provider, client_id, redirect_uri, code_challenge, expires_at, raise_id)
+      values ($1, $2, 'github', 'konjir-raise', 'http://127.0.0.1:9/oauth/raise', $3, now() + interval '10 minutes', $4)`, ['b'.repeat(43), 's'.repeat(43), 'c'.repeat(43), 'r'.repeat(43)]);
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [43] });
+    expect((await db.query(`select client_id from oauth_request`)).rows).toStrictEqual([{ client_id: 'konjir-web' }]);
+    expect((await db.query(`select to_regclass('admin_raise') as t`)).rows).toStrictEqual([{ t: null }]);
+    for (const [table, column] of [['session', 'admin_until'], ['oauth_request', 'raise_id']]) {
+      expect((await db.query(`select 1 from information_schema.columns where table_name = $1 and column_name = $2`, [table, column])).rows).toStrictEqual([]);
+    }
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0043_admins_without_raising\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
+
+  kolab = await TestKolab.open(store);
+  try {
+    expect((await kolab.auditLog({ subject: 'lee' })).filter((e) => e.action === 'admin.elevated' || e.action === 'admin.lowered').map((e) => e.action).sort()).toStrictEqual(['admin.elevated', 'admin.lowered']);
+    expect(await kolab.isAdmin('lee')).toBe(true);
   } finally { await kolab.close(); }
 });
