@@ -141,6 +141,19 @@ test('an agent, even an admin\'s own, a person who isn\'t an admin, and a hand-i
   expect((await kolab.auditLog({ subject: 'icedlee337' })).map((e) => [e.action, e.by]).slice(0, 2)).toStrictEqual([['admin.revoked', 'admin'], ['admin.granted', 'admin']]);
 });
 
+test('on one open connection, the admin verbs are listed only while its person is an admin, and archiving them refuses the connection', async () => {
+  const { kolab, as } = await boot();
+  const glass = await as(BREAK_GLASS);
+  const ann = await as(await signedIn(kolab, 'ann'));
+  expect(await tools(ann)).toStrictEqual([]);
+  await call(glass, 'admin_make_admin', { actor: 'ann' });
+  expect((await tools(ann)).length).toBeGreaterThan(20);
+  await call(glass, 'admin_remove_admin', { actor: 'ann' });
+  expect(await tools(ann)).toStrictEqual([]);
+  await call(glass, 'admin_archive', { actor: 'ann' });
+  await expect(ann.listTools()).rejects.toThrow();
+});
+
 test('with the break-glass token disabled, the token reaches nothing, and the last admin who can sign in can neither remove themselves nor be archived', async () => {
   const env = await boot(null);
   const { kolab, server, as } = env;

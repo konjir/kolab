@@ -81,6 +81,8 @@ export interface ConsentView {
   redirect: string;
   /** The web interface, which is for people: no agents. */
   web: boolean;
+  /** The person is a Konjir admin: choosing Yourself gives the client every admin verb, as them (D111), and the page says so. */
+  konjirAdmin?: boolean;
   person: string; login: string; provider: string; created: boolean;
   kolabs: { id: string; title: string; access: Access }[];
   agents: string[];
@@ -195,7 +197,7 @@ export function consentPage(v: ConsentView): string {
   const who = v.web ? '' : `<fieldset><legend>Work as</legend>
 ${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></span></label>`).join('\n')}
 <label class="opt"><input type="radio" name="as" value="new-agent"${checked(as === 'new-agent')}><span>A new agent of yours, <code>${esc(v.person)}-</code><input type="text" name="agent_label" value="${esc(v.pick.label ?? 'agent')}" maxlength="24" aria-label="The new agent's name" pattern="[a-z0-9][a-z0-9\\-]*"></span></label>
-<label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>Replaces only a sign-in of yours through this same app; yours elsewhere, such as Kolab's web page, stay open</small></span></label>
+<label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>${v.konjirAdmin ? '<strong>You are a Konjir admin: this app can run every admin verb as you.</strong> ' : ''}Replaces only a sign-in of yours through this same app; yours elsewhere, such as Kolab's web page, stay open</small></span></label>
 </fieldset>`;
   return `<h1>Sign in to Kolab</h1>
 <p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>
