@@ -17,7 +17,7 @@ import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid 
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, ADMIN_ELEVATION_S, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -133,22 +133,8 @@ export interface PendingAuthorization {
   person: string | null;
   /** The key of the invite the web interface's sign-in carries (W3.4), if any; never a registered client's. */
   inviteKey: string | null;
-  /** The key of the admin raise this browser step completes (W2.22), for Kolab's own raise sign-in only. */
-  raiseKey: string | null;
   /** Which of several sign-ins this is, as the client said (`konjir connect`'s "agent N of M"): display only, never part of the scope. */
   step: { n: number; of: number } | null;
-}
-
-/** An admin raise waiting for its person's browser (W2.22): whose session, through which client, and until when. */
-/**
- * An admin raise waiting for its person's browser (W2.22): whose session, when it started, and
- * until when the request lasts; and the client that session signed in through, by what Kolab knows
- * of it. `client.firstParty` is Kolab's own web page; any other client's `name` is the one it
- * registered for itself, which anyone can choose, so it is never shown as fact.
- */
-export interface PendingRaise {
-  actor: string; session: string; sessionStarted: string; expiresAt: string;
-  client: { id: string; firstParty: boolean; name: string | null; redirectOrigins: string[] };
 }
 
 /**
@@ -447,12 +433,6 @@ export const SESSION_KEY = /^[A-Za-z0-9_-]{43}$/;
 /** An invite's secret (W3.4): `kji_` and 32 random bytes, base64url. Kolab stores only its sessionKey. */
 export const INVITE_TOKEN = /^kji_[A-Za-z0-9_-]{43}$/;
 
-/**
- * A raise request's secret (W2.22): `kje_` and 32 random bytes, base64url, in the link
- * konjir_admin_elevate answers with. Kolab stores only its sessionKey (P1), and logs mask it.
- */
-export const RAISE_TOKEN = /^kje_[A-Za-z0-9_-]{43}$/;
-
 type Q = Pick<Db, 'query' | 'exec'>;
 
 /** Tells every listener in every process about `e`, once the transaction it's called in commits. */
@@ -513,15 +493,6 @@ const LIVE_SESSION = `s.ended_at is null and (s.token_key = $1 or (s.token_key i
  * expiry (D55): not ended, and a grant's while its grant is neither revoked nor lapsed; a
  * hand-issued one's until it expires (W2.22), when it is refused like an ended one.
  */
-/**
- * In a statement whose CTE `dropped` deleted an authorization in progress, returning its raise_id:
- * the admin raise it carried, if any, is used up with it (W2.22). A raise declined on its page,
- * cancelled at the identity provider, or reached by someone else's sign-in can never be completed
- * later, so a link someone was talked out of using is dead, as the page says.
- */
-const RAISE_USED_UP = `used_up as (update admin_raise set cancelled_at = now()
-       where id in (select raise_id from dropped where raise_id is not null) and completed_at is null and cancelled_at is null)`;
-
 const OPEN_SESSION = `s.ended_at is null and (g.id is null and (s.expires_at is null or s.expires_at > now())
        or g.id is not null and g.revoked_at is null and g.expires_at > now())`;
 
@@ -1476,8 +1447,6 @@ export class Kolab {
       const r = await tx.query(`insert into konjir_admin(actor_id, granted_by) values ($1, $2) on conflict (actor_id) do nothing returning actor_id`, [actor, by]);
       if (!r.rows.length) return false;
       await audit(tx, by, 'admin.granted', { subject: actor });
-      // No session of theirs starts out raised: whatever an earlier spell as an admin left goes (N1).
-      await tx.query(`update session set admin_until = null where actor_id = $1 and admin_until is not null`, [actor]);
       log.warn(`${actor} made a Konjir admin by ${by}`, { event: 'admin_granted', actor, by });
       return true;
     });
@@ -1496,120 +1465,8 @@ export class Kolab {
       if (!r.rows.length) return false;
       await audit(tx, by, 'admin.revoked', { subject: actor });
       if (opts.breakGlass === false) await requireAnAdmin(tx, `${actor} is the last Konjir admin`);
-      // Their raised sessions, if any, are lowered too; each request checks they are an admin anyway.
-      await tx.query(`update session set admin_until = null where actor_id = $1 and admin_until is not null`, [actor]);
       log.warn(`${actor} is no longer a Konjir admin, by ${by}`, { event: 'admin_revoked', actor, by });
       return true;
-    });
-  }
-
-  /**
-   * The session a raise is for (W2.22), locked for the rest of `tx`: a person's own session, opened
-   * by signing in with the identity provider (D55), never a hand-issued one or an agent's, while
-   * they are a Konjir admin. By the token it reaches now, or by its id while it is open.
-   */
-  private async raisable(tx: Q, where: { token: string } | { session: string }): Promise<{ id: string; actor_id: string }> {
-    const byToken = 'token' in where;
-    const s = (await tx.query<{ id: string; actor_id: string; kind: ActorKind; granted: boolean; admin: boolean }>(
-      `select s.id, s.actor_id, a.kind, s.grant_id is not null as granted,
-              exists (select 1 from konjir_admin k where k.actor_id = s.actor_id) as admin
-         from session s join actor a on a.id = s.actor_id left join oauth_grant g on g.id = s.grant_id
-        where ${byToken ? LIVE_SESSION : `s.id = $1 and ${OPEN_SESSION}`} for update of s`,
-      [byToken ? sessionKey(where.token) : where.session])).rows[0];
-    if (!s) throw new RoleError(byToken ? 'no open session for that token' : 'the session this raise was asked for has ended: ask again, with konjir admin_elevate, from a session you hold open');
-    if (s.kind !== 'person') throw new RoleError(`${s.actor_id} is an agent, and an agent never runs admin verbs: an admin signs in as themselves (D69)`);
-    if (!s.granted) throw new RoleError('admin verbs run only from a session you signed in to yourself, with the identity provider (D55), never a hand-issued one');
-    if (!s.admin) throw new AccessError(`${s.actor_id} is not a Konjir admin`);
-    return s;
-  }
-
-  /**
-   * Asks for the session a token reaches to be raised to run admin verbs (W2.22, Lee's ruling of
-   * 2026-10-23). It raises nothing: it returns the secret of a link that only a browser step
-   * completes (completeRaise), once the session's own person signs in with the identity provider
-   * (GitHub's account picker, not a password or 2FA check) and confirms on Kolab's page. So no MCP or CLI call, and no agent driving one, raises a
-   * session. A request lasts as long as a sign-in (`oauth.requestTtlS`) and is used once (completed, or declined or cancelled in the browser); asking
-   * again leaves the earlier one to lapse. Only a session that could be raised may ask.
-   */
-  async requestRaise(token: string): Promise<{ request: string; actor: string; session: string; expiresAt: string }> {
-    const request = `kje_${randomBytes(32).toString('base64url')}`;
-    return this.inTransaction(async (tx) => {
-      const s = await this.raisable(tx, { token });
-      await tx.query(`delete from admin_raise where expires_at < now() - interval '1 day'`);
-      const r = await tx.query<{ expires_at: Date | string }>(
-        `insert into admin_raise(id, session_id, actor_id, expires_at) values ($1, $2, $3, now() + $4 * interval '1 second') returning expires_at`,
-        [sessionKey(request), s.id, s.actor_id, this.oauth.requestTtlS]);
-      log.info(`${s.actor_id} asked to raise their session to run admin verbs; it waits for their browser`, { event: 'admin_raise_requested', actor: s.actor_id, session: s.id });
-      return { request, actor: s.actor_id, session: s.id, expiresAt: new Date(r.rows[0].expires_at).toISOString() };
-    });
-  }
-
-  /**
-   * The raise a link's secret names, while it waits for its browser step: whose session, through
-   * which client, and until when; undefined if it is unknown, used or expired, or its session ended.
-   */
-  async pendingRaise(request: string): Promise<PendingRaise | undefined> {
-    return RAISE_TOKEN.test(request) ? this.pendingRaiseByKey(sessionKey(request)) : undefined;
-  }
-
-  /** As pendingRaise, by the request's key (PendingAuthorization.raiseKey). */
-  async pendingRaiseByKey(key: string): Promise<PendingRaise | undefined> {
-    const r = (await this.db.query<{ actor_id: string; session_id: string; started_at: Date | string; client_id: string; client_name: string | null; redirect_uris: string[] | null; expires_at: Date | string }>(
-      `select r.actor_id, r.session_id, s.started_at, g.client_id, c.name as client_name, c.redirect_uris, r.expires_at
-         from admin_raise r join session s on s.id = r.session_id join oauth_grant g on g.id = s.grant_id left join oauth_client c on c.id = g.client_id
-        where r.id = $1 and r.completed_at is null and r.cancelled_at is null and r.expires_at > now() and ${OPEN_SESSION}`, [key])).rows[0];
-    const origin = (u: string) => { try { return new URL(u).origin; } catch { return u; } };
-    return r && {
-      actor: r.actor_id, session: r.session_id, sessionStarted: new Date(r.started_at).toISOString(), expiresAt: new Date(r.expires_at).toISOString(),
-      client: {
-        id: r.client_id, firstParty: r.client_id === 'konjir-web',
-        name: r.client_id === 'konjir-web' ? null : r.client_name, redirectOrigins: [...new Set((r.redirect_uris ?? []).map(origin))],
-      },
-    };
-  }
-
-  /**
-   * Completes a raise in the browser (W2.22): its person signed in with the identity
-   * provider, through the raise's own sign-in (its binding cookie and state, D57), and confirmed
-   * with the page's form token (`csrf`). Only if they are the raise's own person, and its session
-   * can still be raised, does it run admin verbs, for ADMIN_ELEVATION_S from now; raising it again
-   * renews it. The sign-in and the request are used up. Under the access lock, as making and
-   * removing an admin are, so a raise and a removal at once never leave a raised session on someone
-   * no longer an admin (N1). Recorded in the audit log as the person's.
-   */
-  async completeRaise(binding: string, csrf: string): Promise<{ actor: string; session: string; until: string }> {
-    const gone = () => new OAuthGrantError('access_denied', 'this raise expired or was already used: ask for a new one with konjir admin_elevate');
-    return this.inTransaction(async (tx) => {
-      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      const req = (await tx.query<{ actor_id: string | null; raise_id: string | null }>(
-        `delete from oauth_request where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and raise_id is not null
-         returning actor_id, raise_id`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
-      if (!req?.actor_id || !req.raise_id) throw gone();
-      const raise = (await tx.query<{ session_id: string; actor_id: string }>(
-        `update admin_raise set completed_at = now() where id = $1 and completed_at is null and cancelled_at is null and expires_at > now() returning session_id, actor_id`, [req.raise_id])).rows[0];
-      if (!raise) throw gone();
-      if (raise.actor_id !== req.actor_id) throw new AccessError(`this raise is for ${raise.actor_id}'s session, and only ${raise.actor_id} can complete it: you signed in as ${req.actor_id}`);
-      const s = await this.raisable(tx, { session: raise.session_id });
-      const r = await tx.query<{ until: Date | string }>(
-        `update session set admin_until = now() + $2::int * interval '1 second' where id = $1 returning admin_until as until`, [s.id, ADMIN_ELEVATION_S]);
-      const until = new Date(r.rows[0].until).toISOString();
-      await audit(tx, s.actor_id, 'admin.elevated', { subject: s.actor_id, detail: { session: s.id, until } });
-      log.warn(`${s.actor_id} raised their session to run admin verbs until ${until}, in their browser`, { event: 'admin_elevated', actor: s.actor_id, session: s.id, until });
-      return { actor: s.actor_id, session: s.id, until };
-    });
-  }
-
-  /**
-   * Lowers the session a token reaches (W2.22): it runs admin verbs no more, at once. It needs no
-   * browser, since it only takes power away. Recorded in the audit log as the person's when the
-   * session was raised.
-   */
-  async lowerRaise(token: string): Promise<{ actor: string; session: string; lowered: boolean }> {
-    return this.inTransaction(async (tx) => {
-      const s = await this.raisable(tx, { token });
-      const r = await tx.query(`update session set admin_until = null where id = $1 and admin_until > now() returning id`, [s.id]);
-      if (r.rows.length) await audit(tx, s.actor_id, 'admin.lowered', { subject: s.actor_id, detail: { session: s.id } });
-      return { actor: s.actor_id, session: s.id, lowered: r.rows.length > 0 };
     });
   }
 
@@ -1842,25 +1699,22 @@ export class Kolab {
   /**
    * The session a bearer token reaches now: its id (the key whoami and events name it by), when
    * its token expires (a hand-issued one when the session does, W2.22), and its actor, or
-   * undefined. `admin` says what admin the session may run (W2.22, D69): none; `eligible`, a
-   * Konjir admin's own session, signed in with the identity provider, that may ask to be raised
-   * (requestRaise, completed in a browser); or `raised`, such a session raised and not yet lapsed, which runs the admin verbs.
-   * An agent's session, and a hand-issued one, is never either. `job`: the session is a live job's
+   * undefined. `admin` says whether the session runs the admin verbs (W2.22, D69, D111): only a
+   * Konjir admin's own session, signed in with the identity provider, and only while they are
+   * one, which this reads on every request. An agent's session, and a hand-issued one, never does. `job`: the session is a live job's
    * agent's, opened by Kolab for it (JOB3), whose lease still runs and whose runner's session is still
    * open: a Kolab that turns hand-issued tokens off still takes it, and only then.
    */
-  async liveSession(token: string): Promise<{ id: string; expiresAt: Date | null; granted: boolean; job: boolean; actor: string; admin: 'none' | 'eligible' | 'raised' } | undefined> {
-    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean; job: boolean; actor: string; eligible: boolean; raised: boolean }>(
+  async liveSession(token: string): Promise<{ id: string; expiresAt: Date | null; granted: boolean; job: boolean; actor: string; admin: boolean } | undefined> {
+    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean; job: boolean; actor: string; admin: boolean }>(
       `select s.id, s.expires_at, s.grant_id is not null as granted, s.actor_id as actor,
               exists (select 1 from job j join session r on r.id = j.runner_session_id left join oauth_grant rg on rg.id = r.grant_id
                        where j.session_id = s.id and j.ended_at is null and j.lease_until > now() and ${RUNNER_OPEN}) as job,
-              (a.kind = 'person' and s.grant_id is not null and exists (select 1 from konjir_admin k where k.actor_id = s.actor_id)) as eligible,
-              coalesce(s.admin_until > now(), false) as raised
+              (a.kind = 'person' and s.grant_id is not null and exists (select 1 from konjir_admin k where k.actor_id = s.actor_id)) as admin
          from session s join actor a on a.id = s.actor_id where ${LIVE_SESSION}`, [sessionKey(token)]);
     const row = r.rows[0];
     return row && {
-      id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted, job: row.job, actor: row.actor,
-      admin: !row.eligible ? 'none' : row.raised ? 'raised' : 'eligible',
+      id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted, job: row.job, actor: row.actor, admin: row.admin,
     };
   }
 
@@ -2161,15 +2015,6 @@ export class Kolab {
   readonly sessions = { handIssuedTtlS: 30 * 86_400 };
 
   /**
-   * The live person an identity is linked to, or undefined: who signed in, for a sign-in that must
-   * never sign anyone up, such as completing an admin raise (W2.22).
-   */
-  async personOf(who: { provider: string; subject: string }): Promise<string | undefined> {
-    const id = (await this.db.query<{ actor_id: string }>(`select actor_id from identity where provider = $1 and subject = $2`, [who.provider, who.subject])).rows[0]?.actor_id;
-    return id && !(await this.archivedActor(id)) ? id : undefined;
-  }
-
-  /**
    * The person an identity provider says signed in (D55). An identity is the provider's own stable
    * id for someone (`subject`: GitHub's numeric user id), never their login, which can change
    * hands. The first time an identity signs in, it signs up: a new person, and their user account,
@@ -2300,13 +2145,10 @@ export class Kolab {
    * identity provider, so the provider's answer counts only in the browser that asked, with the
    * state it was given (CSRF). Old requests and codes are cleared as it goes.
    */
-  async beginAuthorization(r: { provider: string; clientId: string; redirectUri: string; clientState?: string; codeChallenge: string; scope?: string; resource?: string; invite?: string; raise?: string; step?: { n: number; of: number } | null }): Promise<{ binding: string; state: string }> {
+  async beginAuthorization(r: { provider: string; clientId: string; redirectUri: string; clientState?: string; codeChallenge: string; scope?: string; resource?: string; invite?: string; step?: { n: number; of: number } | null }): Promise<{ binding: string; state: string }> {
     if (!PKCE_CHALLENGE.test(r.codeChallenge)) throw new OAuthGrantError('invalid_request', 'code_challenge must be an S256 challenge: 43 base64url characters');
     // An invite rides along by its key only (W3.4); whether it is still good is checked when it is shown and when it is used.
     const inviteKey = r.invite !== undefined && INVITE_TOKEN.test(r.invite) ? sessionKey(r.invite) : null;
-    // So does an admin raise, for Kolab's own raise sign-in (W2.22): checked again as it completes.
-    if (r.raise !== undefined && !RAISE_TOKEN.test(r.raise)) throw new OAuthGrantError('invalid_request', 'that is not a raise link');
-    const raiseKey = r.raise === undefined ? null : sessionKey(r.raise);
     // Display only: kept when it is one, checked again here, never otherwise.
     const step = r.step ? signInStep(String(r.step.n), String(r.step.of)) : null;
     const binding = randomBytes(32).toString('base64url');
@@ -2320,10 +2162,10 @@ export class Kolab {
     await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
     await this.db.query(`delete from oauth_setup where created_at < now() - interval '1 day'`);
     await this.db.query(
-      `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key, raise_id, step, steps)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10 * interval '1 second', $11, $12, $13, $14)`,
+      `insert into oauth_request(id, state_key, provider, client_id, redirect_uri, client_state, code_challenge, scope, resource, expires_at, invite_key, step, steps)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10 * interval '1 second', $11, $12, $13)`,
       [sessionKey(binding), sessionKey(state), r.provider, r.clientId, r.redirectUri, r.clientState ?? null, r.codeChallenge,
-        r.scope ?? null, r.resource ?? null, this.oauth.requestTtlS, inviteKey, raiseKey, step?.n ?? null, step?.of ?? null]);
+        r.scope ?? null, r.resource ?? null, this.oauth.requestTtlS, inviteKey, step?.n ?? null, step?.of ?? null]);
     return { binding, state };
   }
 
@@ -2349,11 +2191,11 @@ export class Kolab {
    * its consent form's token: a form from an earlier sign-in that this one replaced has another.
    */
   async pendingAuthorization(binding: string, opts: { state?: string; csrf?: string } = {}): Promise<PendingAuthorization | undefined> {
-    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null; raise_id: string | null; step: number | null; steps: number | null }>(
-      `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key, raise_id, step, steps from oauth_request
+    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null; step: number | null; steps: number | null }>(
+      `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key, step, steps from oauth_request
         where id = $1 and expires_at > now() and claimed_at is null and ($2::text is null or state_key = $2) and ($3::text is null or csrf_key = $3)`,
       [sessionKey(binding), opts.state === undefined ? null : sessionKey(opts.state), opts.csrf === undefined ? null : sessionKey(opts.csrf)])).rows[0];
-    return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider, inviteKey: r.invite_key, raiseKey: r.raise_id,
+    return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider, inviteKey: r.invite_key,
       step: r.step !== null && r.steps !== null ? { n: Number(r.step), of: Number(r.steps) } : null };
   }
 
@@ -2406,7 +2248,7 @@ export class Kolab {
     // Claimed first, before anything is made: a second submission of the form at once is refused.
     const req = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string | null; invite_key: string | null }>(
       `update oauth_request set claimed_at = now()
-        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null and raise_id is null
+        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null
        returning client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id, invite_key`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
     if (!req?.actor_id) throw new OAuthGrantError('access_denied', 'this sign-in expired or was already used; start again');
     try {
@@ -2593,7 +2435,7 @@ export class Kolab {
   async consentSetup(binding: string, csrf: string, shown?: string): Promise<{ code: string; redirectUri: string; clientState: string | null; plan: SetupPlan }> {
     const req = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string | null }>(
       `update oauth_request set claimed_at = now()
-        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null and raise_id is null
+        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null
        returning client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
     if (!req?.actor_id) throw new OAuthGrantError('access_denied', 'this sign-in expired or was already used; start again');
     try {
@@ -2789,9 +2631,8 @@ export class Kolab {
    */
   async abandonAuthorization(binding: string, state: string): Promise<{ redirectUri: string; clientState: string | null } | undefined> {
     const r = (await this.db.query<{ redirect_uri: string; client_state: string | null }>(
-      `with dropped as (delete from oauth_request where id = $1 and state_key = $2 and actor_id is null and expires_at > now()
-                          returning redirect_uri, client_state, raise_id), ${RAISE_USED_UP}
-       select redirect_uri, client_state from dropped`,
+      `delete from oauth_request where id = $1 and state_key = $2 and actor_id is null and expires_at > now()
+       returning redirect_uri, client_state`,
       [sessionKey(binding), sessionKey(state)])).rows[0];
     return r && { redirectUri: r.redirect_uri, clientState: r.client_state };
   }
@@ -2799,9 +2640,8 @@ export class Kolab {
   /** The person declined: the authorization is dropped. Returns where to tell the client, if it was theirs to decline. */
   async declineAuthorization(binding: string, csrf: string): Promise<{ redirectUri: string; clientState: string | null } | undefined> {
     const r = (await this.db.query<{ redirect_uri: string; client_state: string | null }>(
-      `with dropped as (delete from oauth_request where id = $1 and csrf_key = $2 and expires_at > now() and claimed_at is null
-                          returning redirect_uri, client_state, raise_id), ${RAISE_USED_UP}
-       select redirect_uri, client_state from dropped`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+      `delete from oauth_request where id = $1 and csrf_key = $2 and expires_at > now() and claimed_at is null
+       returning redirect_uri, client_state`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
     return r && { redirectUri: r.redirect_uri, clientState: r.client_state };
   }
 
@@ -4347,7 +4187,7 @@ export class Kolab {
    * Applies a ruling of Lee's to a node (D47): a new version, written as `actor` in the role that
    * writes the node's layer, that commits after structural checks only, with no review request,
    * as Kolab's own rebases do (VER12): the ruling is already the approval. Only a Konjir admin's
-   * raised session or the break-glass token reaches it (konjir_admin_apply_ruling, W2.22); an agent
+   * own session or the break-glass token reaches it (konjir_admin_apply_ruling, W2.22); an agent
    * session never does. It goes through the same
    * per-node commit step as any other commit, so a stale one is rejected (CAS7), and its note
    * records the ruling and who applied it.
@@ -4586,7 +4426,7 @@ export class Kolab {
     if (human && approvedBy) {
       note = `Approved by ${approvedBy}, then rebased by Kolab onto its node's newer version; ${note ?? ''}`.trim();
     } else if (ruling) {
-      // Who applied it: the break-glass admin token, or a Konjir admin from their own raised session (W2.22, D69).
+      // Who applied it: the break-glass admin token, or a Konjir admin from their own session (W2.22, D69).
       const through = !applier ? "Konjir's admin verbs" : applier === ADMIN_DOER ? 'the admin token' : `${applier}'s own admin session`;
       note = `Applied as ruling ${ruling} through ${through}, written as ${v.actor_id}: the ruling is the approval, so structural checks alone committed it, without review (D47). ${note ?? ''}`.trim();
     } else if (human) {
@@ -12702,7 +12542,7 @@ async function audit(tx: Q, by: Doer, action: AuditAction, e: { kolab?: string |
  * break-glass token is disabled, so no one could administer it. Called under the access lock.
  */
 async function requireAnAdmin(tx: Q, who: string) {
-  // Only an admin who can sign in counts (L1): one with no linked identity never opens the session a raise needs.
+  // Only an admin who can sign in counts (L1): one with no linked identity never opens the session the admin verbs need.
   const r = await tx.query(`select 1 from konjir_admin k where not kj_actor_archived(k.actor_id)
     and exists (select 1 from identity i where i.actor_id = k.actor_id) limit 1`);
   if (!r.rows.length) {

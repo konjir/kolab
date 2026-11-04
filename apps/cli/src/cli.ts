@@ -82,9 +82,9 @@ const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_
 export async function connect(url: string, auth: string | OAuthClientProvider): Promise<Client> {
   // 'auto' talks 2026-07-28 to a Kolab server that offers it (needed for subscriptions/listen) and 2025 to an older one.
   const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
-  // A 403 insufficient_scope is Kolab refusing an admin verb to a session that isn't raised: raising
-  // happens in the person's browser on Kolab's page (W2.22), never by signing in again for a wider
-  // scope, so the client throws it (InsufficientScopeError, said plainly by call) and keeps the sign-in.
+  // A 403 insufficient_scope is Kolab refusing an admin verb to a session that isn't an admin's own:
+  // signing in again for a wider scope never helps (W2.22), so the client throws it
+  // (InsufficientScopeError, said plainly by call) and keeps the sign-in.
   await client.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
     ? { requestInit: { headers: { Authorization: `Bearer ${auth}` } }, onInsufficientScope: 'throw' }
     : { authProvider: auth, ...(auth instanceof StoredLogin ? { fetch: auth.fetch } : {}), onInsufficientScope: 'throw' }));
@@ -138,9 +138,9 @@ export function listenRefusal(e: unknown): string | undefined {
 const insufficientScope = (e: unknown) =>
   (e as { constructor?: { mcpBrand?: unknown } } | undefined)?.constructor?.mcpBrand === 'mcp.InsufficientScopeError';
 
-/** The refusal for a session that isn't a raised admin's (an agent's, or a person's own sign-in) calling an admin verb, said plainly. */
+/** The refusal for a session that isn't a Konjir admin's own (an agent's, a hand-issued one, or another person's sign-in) calling an admin verb, said plainly. */
 const adminOnly = (verb: string) =>
-  `${toolName(verb)} is an admin verb: only a Konjir admin's own session, raised in their browser (konjir admin_elevate), or the break-glass token may call it, and this session isn't raised. If you are a Konjir admin, run konjir admin_elevate from your own sign-in; if not, ask one.`;
+  `${toolName(verb)} is an admin verb: only a Konjir admin's own session or the break-glass token may call it, and this session is neither. If you are a Konjir admin, sign in as yourself with GitHub; if not, ask one.`;
 
 /** Call a tool and return its structured result, or throw with the tool's error text. */
 export async function call(client: Client, verb: string, args: Record<string, unknown> = {}) {
@@ -235,8 +235,8 @@ ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-ur
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
         --no-migrate applies no migration (a database that needs one is refused) and --no-worker runs no
         outbox jobs, so a restored database can be checked without changing it (deploy/RECOVERY.md).
-        The admin token (or KONJIR_ADMIN_TOKEN) is a break-glass only: Konjir's admins are people who sign in, run
-        konjir admin_elevate and confirm the raise in their browser (W2.22). off disables it.
+        The admin token (or KONJIR_ADMIN_TOKEN) is a break-glass only: Konjir's admins are people who sign in as
+        themselves with GitHub, and run the admin verbs from that session (W2.22, D111). off disables it.
         Sign-in with GitHub (D55): KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET, a GitHub OAuth app's,
         whose callback is <origin>/oauth/callback/github. For local development and browser tests only,
         KONJIR_STUB_IDENTITY=<login> signs anyone who opens Kolab's sign-in in as <login>, with no GitHub and no
@@ -701,7 +701,7 @@ export async function main(argv: string[]) {
         const name = toolName(rest[0]);
         const tool = (await client.listTools()).tools.find((t) => t.name === name);
         // An agent session doesn't see the admin verbs (toolVisibility 'authorized').
-        if (!tool) throw new Error(`no verb ${rest[0]}${name.startsWith('konjir_admin_') ? ' for this token: the admin verbs are for a Konjir admin\'s own session, raised in their browser (konjir admin_elevate), or the break-glass token' : ''}; run konjir tools`);
+        if (!tool) throw new Error(`no verb ${rest[0]}${name.startsWith('konjir_admin_') ? ' for this token: the admin verbs are for a Konjir admin\'s own session or the break-glass token' : ''}; run konjir tools`);
         result = verbHelp(tool);
         break;
       }

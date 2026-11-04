@@ -239,10 +239,8 @@ export class AgentTools {
     // every 30 s; konjir watch's, on each reconnect), not the agent working, so it renews no lease (D98).
     return asAgent(context, (s) => this.kolab.quietly(async () => {
       const me = await this.kolab.sessionInfo(s);
-      // A Konjir admin's own session says so, and whether it is raised to run the admin verbs (W2.22).
-      const scopes = context?.authInfo?.scopes ?? [];
-      // No hint how to raise it: only its person's browser can (Lee's ruling of 2026-10-23).
-      const admin = scopes.includes('konjir-admin') ? { konjir_admin: { raised: scopes.includes('admin') } } : {};
+      // A Konjir admin's own session says so: it runs the admin verbs (W2.22, D111).
+      const admin = context?.authInfo?.scopes.includes('admin') ? { konjir_admin: true } : {};
       return { ...me, ...admin, subscribe: [inboxUri(me.kolab, me.layer), answersUri(me.kolab, me.actor)] };
     }));
   }

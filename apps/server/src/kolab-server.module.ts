@@ -73,7 +73,7 @@ export class KolabServerModule implements NestModule {
           requireBearerAuth: publicHost
             ? { resourceMetadataUrl: `https://${publicHost}/.well-known/oauth-protected-resource/${MCP_ROUTE}` }
             : true,
-          // Only a Konjir admin's raised session and the break-glass token see the admin verbs (W2.22).
+          // Only a Konjir admin's own session and the break-glass token see the admin verbs (W2.22).
           toolVisibility: 'authorized',
           exposeErrorMessages: false,
           // DNS-rebinding guard. Locally, a loopback host name on any port, whatever forwarding headers

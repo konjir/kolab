@@ -15,11 +15,6 @@ export interface ServerOptions {
    * on /mcp and in the web interface. The admin token works either way.
    */
   handIssuedTokens?: boolean;
-  /**
-   * This Kolab's own origin, `https://<public host>` or its loopback address, which startServer
-   * sets once it listens: where konjir_admin_elevate's raise link points (W2.22).
-   */
-  origin?: string;
 }
 
 /** Who this server says it is, in its MCP metadata and in the listen results it sends itself. */

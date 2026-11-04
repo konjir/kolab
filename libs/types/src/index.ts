@@ -123,21 +123,16 @@ export const ADMIN_DOER = 'admin';
  * The changes Kolab records in its audit log because they leave no row of their own (W2.20): a
  * grant made, replaced or removed, a person added to or removed from an organization or a team,
  * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
- * a Konjir admin, an admin raising their session to run admin verbs and lowering it, and each admin
- * verb the break-glass token runs; a kolab's lease length for work set (PLN15, W5.1b); a
+ * a Konjir admin, and each admin verb the break-glass token runs; a kolab's lease length for work set (PLN15, W5.1b); a
  * repository registered or archived by a person (KON7, D98, W5.2a); and a kolab's autonomy policy
  * changed by one of its Admins (POL2, W6.2).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
+  // admin.elevated and admin.lowered: nothing writes them now (D111, 0043); the audit log's past rows keep them, so they stay readable.
   'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
   'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
 ] as const;
-/**
- * How long an admin's session may run admin verbs once they raise it (konjir_admin_elevate, W2.22),
- * in seconds: 15 minutes, which raising it again renews.
- */
-export const ADMIN_ELEVATION_S = 15 * 60;
 export type AuditAction = typeof AUDIT_ACTIONS[number];
 /** One row of the audit log: what was done, in which kolab if any, to whom, by whom and when. */
 export interface AuditEvent { id: number; action: AuditAction; kolab: string | null; subject: string; detail: Record<string, unknown> | null; by: Doer; at: string }
