@@ -137,7 +137,7 @@ test('marks, nodes, lineage, review requests and submissions page by cursor to t
   expect((await all((p) => readableNodes(kolab, product, TEST_KOLAB, p).then((r) => r!), 1)).items.map((n) => n.name)).toStrictEqual(['orders-pg', 'orders']);
 
   const live = (await kolab.latestCommitted('orders'))!.id;
-  const down = await all((p) => kolab.lineagePage(live, 'downstream', p), 2);
+  const down = await all((p) => kolab.lineagePage({ session: product }, live, 'downstream', p), 2);
   expect(down.sizes).toStrictEqual([2, 2, 1]);
   expect(down.items.map((e) => e.edge)).toStrictEqual((await kolab.lineage(live, 'downstream')).map((e) => e.edge));
 

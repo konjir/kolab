@@ -107,6 +107,51 @@ test('two agents work through one kolab: roles, gate, links, questions, cascade,
   await server.close();
 });
 
+test('konjir_lineage names a node of another kolab only to a session that reads that kolab, in either direction (W7.1, LNK8, D49)', async () => {
+  const { server, admin } = await boot();
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  for (const name of ['billing', 'orders']) await call(admin, 'admin_add_kolab', { name, owner: 'test-org' });
+  const member = async (actor: string, kolab: string, role: 'product' | 'engineer') => {
+    await call(admin, 'admin_add_actor', { id: actor });
+    await call(admin, 'admin_grant', { kolab, to: actor, level: 'write', layers: [role === 'product' ? 'functional' : 'technical'] });
+    const { token } = await call(admin, 'admin_open_session', { actor, role, kolab }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  const bob = await member('bob', 'billing', 'product');
+  const alice = await member('alice', 'orders', 'product');
+  const carol = await member('carol', 'orders', 'engineer');   // in orders with alice, and holds nothing in billing
+  await call(bob, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
+  await call(bob, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Invoices are sent monthly.' }] });
+  await call(bob, 'submit_for_review', { node: 'checkout', version: 1 });
+  await call(admin, 'admin_grant', { kolab: 'billing', to: 'alice', level: 'read' });
+
+  await call(alice, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders-spec' });
+  await call(alice, 'draft', { node: 'orders-spec', elements: [{ id: 'O1', text: 'Orders are invoiced monthly.' }] });
+  await call(alice, 'submit_for_review', { node: 'orders-spec', version: 1 });
+  await call(alice, 'link', { kind: 'dependency', source: 'kj:orders-spec@1', source_element: 'O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' });
+  const upstream = (c: typeof alice) => call(c, 'lineage', { node: 'orders-spec', direction: 'upstream' });
+  const named = { edges: [{ kind: 'dependency', source: 'kj:orders-spec@1#O1', target: 'kj:billing/checkout@1#R1~q({"exact":"sent monthly"})' }], next: null };
+  const hidden = { edges: [{ kind: 'dependency', source: 'kj:orders-spec@1#O1', target: null, target_hidden: 'in another kolab you can\'t read' }], next: null };
+
+  // The holder of Read sees it; another session of the same kolab learns only that the link exists.
+  expect(await upstream(alice)).toMatchObject(named);
+  const carolSees = await upstream(carol);
+  expect(JSON.stringify(carolSees)).not.toMatch(/checkout|billing|R1|sent monthly/);
+  expect(carolSees).toMatchObject(hidden);
+
+  // Downstream, a kolab sees only its own links (D49): bob learns nothing of orders.
+  expect(JSON.stringify(await call(bob, 'lineage', { node: 'checkout', direction: 'downstream' }))).not.toMatch(/orders|O1/);
+
+  // Read goes, and what she sees goes with it; it comes back, and so does the name.
+  await call(admin, 'admin_revoke', { kolab: 'billing', to: 'alice' });
+  expect(await upstream(alice)).toMatchObject(hidden);
+  await call(admin, 'admin_grant', { kolab: 'billing', to: 'alice', level: 'read' });
+  expect(await upstream(alice)).toMatchObject(named);
+  await server.close();
+});
+
 test('tokens: no token, a wrong token, and a revoked token are all refused; agents cannot use admin verbs', async () => {
   const { server, admin } = await boot();
   const res = await fetch(server.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });

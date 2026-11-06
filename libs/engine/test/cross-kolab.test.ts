@@ -77,6 +77,46 @@ test('a link into another kolab needs Read there, follows its commits, and keeps
   expect((await kolab.db.query(`select v.seq from edge e join version v on v.id = e.target_version_id where e.id = $1`, [edge])).rows).toStrictEqual([{ seq: 3 }]);
 });
 
+test('a session\'s lineage shows a link into a kolab it can\'t read as no more than a link; its own kolab\'s links and a reader of the other kolab see names (W7.1, LNK8)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'write', { layers: ['functional'] });
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'orders' });
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await commitReviewed(kolab, alice, carol, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast.' }) });
+  await kolab.createNode(alice, 'prototype', 'FAQ', 'faq');
+  const f1 = await commitReviewed(kolab, alice, carol, 'faq', { elements: els({ F1: 'Invoices come monthly.', F2: 'Orders ship fast.' }) });
+  const across = await linkAcross(kolab, alice, f1, 'F1', 'kj:billing/checkout#R1');
+  const own = await kolab.link(alice, { kind: 'dependency', source: f1, sourceElement: 'F2', target: o1, targetElement: 'O2' });
+  const up = async (session: string, version = f1) => (await kolab.lineagePage({ session }, version, 'upstream')).items;
+  const hidden = { edge: across, kind: 'dependency', source: 'kj:faq@1#F1', target: null, target_hidden: 'in another kolab you can\'t read' };
+  const ownLink = { edge: own, kind: 'dependency', source: 'kj:faq@1#F2', target: 'kj:orders-spec@1#O2' };
+  const sorted = <T extends { edge: string }>(items: T[]) => [...items].sort((a, b) => a.edge.localeCompare(b.edge));
+
+  expect(sorted(await up(alice))).toStrictEqual(sorted([{ edge: across, kind: 'dependency', source: 'kj:faq@1#F1', target: 'kj:billing/checkout@1#R1' }, ownLink]));
+  expect(sorted(await up(carol))).toStrictEqual(sorted([hidden, ownLink]));
+
+  // Paged, a link it can't read holds its place: the same links, a page at a time.
+  const first = await kolab.lineagePage({ session: carol }, f1, 'upstream', { limit: 1 });
+  const second = await kolab.lineagePage({ session: carol }, f1, 'upstream', { cursor: first.next!, limit: 1 });
+  expect(sorted([...first.items, ...second.items])).toStrictEqual(sorted([hidden, ownLink]));
+  expect(second.next).toBeNull();
+
+  // The links of a version waiting for review, walked by its reviewer, hide the same way.
+  const v2 = await kolab.draft(alice, 'faq', { elements: els({ F1: 'Invoices come every month.', F2: 'Orders ship fast.' }) });
+  expect(JSON.stringify(await up(carol, v2))).not.toMatch(/checkout|billing|R1/);
+
+  // Downstream, from either side: bob learns nothing of orders, and alice's kolab sees its own link by name.
+  const toCheckout = (await kolab.latestCommitted(checkout))!.id;
+  expect((await kolab.lineagePage({ session: bob }, toCheckout, 'downstream')).items).toStrictEqual([]);
+  expect((await kolab.lineagePage({ session: carol }, o1, 'downstream')).items).toStrictEqual([ownLink]);
+
+  // Read gone, the holder sees what carol sees; Kolab itself still reads the whole link.
+  await kolab.revoke('billing', 'alice');
+  expect(sorted(await up(alice))).toStrictEqual(sorted([hidden, ownLink]));
+  expect(await kolab.lineage(f1, 'upstream')).toContainEqual(expect.objectContaining({ target: 'kj:billing/checkout@1#R1' }));
+});
+
 test('a commit\'s marks downstream are its own kolab\'s: none a link puts in another kolab, and another kolab\'s session is told none (P18, D49)', async () => {
   const { kolab, alice, bob, checkout } = await twoKolabs();
   // alice's spec in orders relies on checkout#R1; so does bob's FAQ, in billing.

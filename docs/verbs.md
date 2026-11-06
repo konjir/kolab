@@ -639,7 +639,7 @@ Call before your first change: the full operating instructions for working throu
 konjir lineage node=<string> direction=<upstream|downstream> [version=<int>] [cursor=<string>] [limit=<int>]
 ```
 
-Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. By link id. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. By link id. A link into a kolab you can't read shows only that it exists: target is null, with target_hidden. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

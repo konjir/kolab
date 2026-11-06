@@ -352,7 +352,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_lineage',
-    description: `Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. By link id.${PAGED}`,
+    description: `Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. By link id. A link into a kolab you can't read shows only that it exists: target is null, with target_hidden.${PAGED}`,
     schema: lineage,
     annotations: { readOnlyHint: true },
   })
@@ -362,7 +362,7 @@ export class AgentTools {
       const n = await this.kolab.nodeIn(s, node, 'walking lineage');
       const v = version === undefined ? await this.kolab.latestCommitted(n.id) : (await this.kolab.locateVersion({ session: s }, { node: n.name, version })).version;
       if (!v) throw new Error(version === undefined ? `${n.name} has no committed version` : `${n.name} has no version ${version}`);
-      const { items, next } = await this.kolab.lineagePage(v.id, direction, { cursor, limit });
+      const { items, next } = await this.kolab.lineagePage({ session: s }, v.id, direction, { cursor, limit });
       return { node: n.name, version: v.seq, direction, edges: items, next };
     });
   }
