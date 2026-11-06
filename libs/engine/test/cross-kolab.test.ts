@@ -104,7 +104,10 @@ test('a session\'s lineage shows a link into a kolab it can\'t read as no more t
 
   // The links of a version waiting for review, walked by its reviewer, hide the same way.
   const v2 = await kolab.draft(alice, 'faq', { elements: els({ F1: 'Invoices come every month.', F2: 'Orders ship fast.' }) });
-  expect(JSON.stringify(await up(carol, v2))).not.toMatch(/checkout|billing|R1/);
+  const inReview = await linkAcross(kolab, alice, v2, 'F1', 'kj:billing/checkout#R2');
+  await kolab.submit(alice, v2);
+  expect(await up(carol, v2)).toContainEqual({ edge: inReview, kind: 'dependency', source: 'kj:faq@2#F1', target: null, target_hidden: 'in another kolab you can\'t read' });
+  expect(await up(alice, v2)).toContainEqual({ edge: inReview, kind: 'dependency', source: 'kj:faq@2#F1', target: 'kj:billing/checkout@1#R2' });
 
   // Downstream, from either side: bob learns nothing of orders, and alice's kolab sees its own link by name.
   const toCheckout = (await kolab.latestCommitted(checkout))!.id;
@@ -115,6 +118,26 @@ test('a session\'s lineage shows a link into a kolab it can\'t read as no more t
   await kolab.revoke('billing', 'alice');
   expect(sorted(await up(alice))).toStrictEqual(sorted([hidden, ownLink]));
   expect(await kolab.lineage(f1, 'upstream')).toContainEqual(expect.objectContaining({ target: 'kj:billing/checkout@1#R1' }));
+});
+
+test('a session\'s lineage names a link\'s target in a public kolab, though it holds no grant there, beside one it can\'t read (W7.1, LNK8)', async () => {
+  const { kolab, alice } = await twoKolabs();
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'read');
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'orders' });
+  await kolab.addActor('dan');
+  await kolab.createKolab('pub', { owner: 'dan' });
+  const inPub = await kolab.openSession('dan', 'product', { kolab: 'pub' });
+  await kolab.commit(inPub, await kolab.createNode(inPub, 'spec', 'Public', 'p'), { elements: els({ P1: 'Anyone may read this.' }) });
+  await kolab.db.query(`update kolab set visibility = 'public' where id = 'pub'`);
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders follow both.' }) });
+  const open = await linkAcross(kolab, alice, o1, 'O1', 'kj:pub/p#P1');
+  const closed = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.revoke('billing', 'alice');
+  const seen = (await kolab.lineagePage({ session: carol }, o1, 'upstream')).items;
+  expect(seen).toContainEqual({ edge: open, kind: 'dependency', source: 'kj:orders-spec@1#O1', target: 'kj:pub/p@1#P1' });
+  expect(seen).toContainEqual({ edge: closed, kind: 'dependency', source: 'kj:orders-spec@1#O1', target: null, target_hidden: 'in another kolab you can\'t read' });
 });
 
 test('a commit\'s marks downstream are its own kolab\'s: none a link puts in another kolab, and another kolab\'s session is told none (P18, D49)', async () => {
