@@ -138,7 +138,9 @@ test('konjir_lineage names a node of another kolab only to a session that reads 
   // The holder of Read sees it; another session of the same kolab learns only that the link exists.
   expect(await upstream(alice)).toMatchObject(named);
   const carolSees = await upstream(carol);
-  expect(JSON.stringify(carolSees)).not.toMatch(/checkout|billing|R1|sent monthly/);
+  // Not over the link's id, a ULID, which can spell R1 by chance.
+  const { edges } = carolSees as { edges: Array<Record<string, unknown>> };
+  expect(JSON.stringify(edges.map(({ edge: _edge, ...shown }) => shown))).not.toMatch(/checkout|billing|R1|sent monthly/);
   expect(carolSees).toMatchObject(hidden);
 
   // Downstream, a kolab sees only its own links (D49): bob learns nothing of orders.
