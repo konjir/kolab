@@ -2247,22 +2247,31 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
     // A plan from before D104, as production's is: the kind takes no new node now.
     await db.exec(`alter table node disable trigger user`);
     await node('kolab-plan', 'kolab', 'kolab-plan', 'plan', 'technical', PLAN, 'kolab-binding');
-    await db.exec(`alter table node enable trigger user`);
     await node('~01ARZ3NDEKTSV4RRFFQ69G5FAV', 'other', 'kolab', 'spec', 'functional', SPEC, null);
+    await node('~01ARZ3NDEKTSV4RRFFQ69G5FAW', 'other', 'kolab-binding', 'binding', 'technical', BINDING, '~01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    await node('~01ARZ3NDEKTSV4RRFFQ69G5FAX', 'other', 'kolab-plan', 'plan', 'technical', PLAN, '~01ARZ3NDEKTSV4RRFFQ69G5FAW');
+    await db.exec(`alter table node enable trigger user`);
     await node('notes', 'kolab', 'notes', 'binding', 'technical', PLAN, 'kolab');
+    await node('notes-2', 'kolab', 'notes-2', 'binding', 'technical', BINDING, 'kolab');
+    // As production's are: the mirrors were made before Kolab recorded who makes a node.
+    await db.query(`update node set created_by = null, created_at = null where id = 'kolab'`);
 
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44] });
     const titles = async () => Object.fromEntries((await db.query<{ id: string; title: string }>(`select id, title from node`)).rows.map((r) => [r.id, r.title]));
     expect(await titles()).toStrictEqual({
       kolab: 'Kolab — Functional Spec', 'kolab-binding': 'Kolab — Technical Binding', 'kolab-plan': 'Kolab — Plan (history, D104)',
-      '~01ARZ3NDEKTSV4RRFFQ69G5FAV': SPEC, notes: PLAN,
+      '~01ARZ3NDEKTSV4RRFFQ69G5FAV': SPEC, '~01ARZ3NDEKTSV4RRFFQ69G5FAW': BINDING, '~01ARZ3NDEKTSV4RRFFQ69G5FAX': PLAN, notes: PLAN, 'notes-2': BINDING,
     });
 
+    expect((await db.query(`select created_by, created_at from node where id = 'kolab'`)).rows).toStrictEqual([{ created_by: null, created_at: null }]);
+
     // A title changed since is left as it is, and running it over changes nothing.
-    await db.query(`update node set title = 'Our spec' where id = 'kolab'`);
+    await db.query(`update node set title = title || ' (ours)' where id in ('kolab', 'kolab-binding', 'kolab-plan')`);
     await db.exec(UNDO_0044);
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44] });
-    expect((await titles()).kolab).toBe('Our spec');
+    expect(await titles()).toMatchObject({
+      kolab: 'Kolab — Functional Spec (ours)', 'kolab-binding': 'Kolab — Technical Binding (ours)', 'kolab-plan': 'Kolab — Plan (history, D104) (ours)',
+    });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0044_retitle_mirrors\.sql, which this release of Kolab doesn't know/);
   });
