@@ -11086,37 +11086,44 @@ export class Kolab {
 
   /**
    * Edges into (upstream) or out of (downstream) a version, with human-readable addresses: the
-   * short form in the version's own kolab.
+   * short form in the version's own kolab. As Kolab sees them, whoever may read what they link.
    */
   async lineage(versionId: string, direction: 'upstream' | 'downstream', page?: PageOpts) {
-    return (await this.lineagePage(versionId, direction, page ?? { limit: Number.MAX_SAFE_INTEGER })).items;
+    return (await this.lineagePage({ system: (await this.version(versionId)).kolab_id! }, versionId, direction, page ?? { limit: Number.MAX_SAFE_INTEGER })).items;
   }
 
-  /** One page of a version's lineage, by link id (W2.21). */
-  async lineagePage(versionId: string, direction: 'upstream' | 'downstream', page: PageOpts = {}) {
+  /**
+   * One page of a version's lineage, by link id (W2.21), read from `where`. A session's read runs as
+   * kj_agent, so a link to a kolab it doesn't read has no target row: it shows that the link exists,
+   * and nothing of what it links to (W7.1, LNK8). The link itself is its own kolab's, so it still
+   * shows, with the id that removes it.
+   */
+  async lineagePage(where: Where, versionId: string, direction: 'upstream' | 'downstream', page: PageOpts = {}) {
     const size = page.limit === Number.MAX_SAFE_INTEGER ? page.limit : pageSize(page.limit);
     const list = scoped(`lineage:${direction}`, { version: versionId });
     const [after] = keyOf(list, page.cursor, ['text']) ?? [null];
     const cols = `e.id, e.kind, e.source_element_id, sn.name as source_node, sn.kolab_id as source_kolab, sv.seq as source_seq,
                   e.target_element_id, e.target_selector, tn.name as target_node, tn.kolab_id as target_kolab, tv.seq as target_seq
-             from edge e join version sv on sv.id = e.source_version_id join version tv on tv.id = e.target_version_id
-             join node sn on sn.id = sv.node_id join node tn on tn.id = tv.node_id`;
+             from edge e join version sv on sv.id = e.source_version_id join node sn on sn.id = sv.node_id
+             left join version tv on tv.id = e.target_version_id left join node tn on tn.id = tv.node_id`;
     // Links are their own kolab's: downstream, only links from this version's kolab show (D49).
     const sql = direction === 'upstream'
       ? `select ${cols} where e.source_version_id = $1 and $2::text is not null`
       : `select ${cols} where tv.node_id = (select node_id from version where id = $1) and e.kolab_id = $2 and ${LIVE('sv')}`;
     const paged = `${sql} and ($3::text is null or e.id > $3) order by e.id limit $4`;
     const from = (await this.version(versionId)).kolab_id!;
-    const rows = (await this.db.query<{
+    const rows = await this.read(where, async (q) => (await q.query<{
       id: string; kind: string; source_element_id: string | null; source_node: string; source_kolab: string; source_seq: number;
-      target_element_id: string | null; target_selector: QuoteSelector | null; target_node: string; target_kolab: string; target_seq: number;
-    }>(paged, [versionId, from, after, size === Number.MAX_SAFE_INTEGER ? null : size + 1])).rows;
+      target_element_id: string | null; target_selector: QuoteSelector | null; target_node: string | null; target_kolab: string | null; target_seq: number | null;
+    }>(paged, [versionId, from, after, size === Number.MAX_SAFE_INTEGER ? null : size + 1])).rows);
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
     return { next, items: shown.map((r) => ({
       edge: r.id,
       kind: r.kind,
       source: formatAddress({ kolab: r.source_kolab, node: r.source_node, version: r.source_seq, element: r.source_element_id ?? undefined }, { from }),
-      target: formatAddress({ kolab: r.target_kolab, node: r.target_node, version: r.target_seq, element: r.target_element_id ?? undefined, selector: r.target_selector ?? undefined }, { from }),
+      ...(r.target_node === null || r.target_seq === null
+        ? { target: null, target_hidden: 'in another kolab you can\'t read' }
+        : { target: formatAddress({ kolab: r.target_kolab!, node: r.target_node, version: r.target_seq, element: r.target_element_id ?? undefined, selector: r.target_selector ?? undefined }, { from }) }),
     })) };
   }
 
