@@ -179,7 +179,8 @@ test('konjir_unlink, konjir_draft\'s unlinked and konjir_read_node\'s removes na
   await call(alice, 'link', { kind: 'dependency', source: 'kj:orders-spec@1', source_element: 'O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' });
   const carol = await member('carol', 'orders');   // in orders with alice, and holds nothing in billing
   const { edges: [{ edge }] } = await call(carol, 'lineage', { node: 'orders-spec', direction: 'upstream' }) as { edges: { edge: string }[] };
-  const secret = /checkout|billing|R1|sent monthly/;
+  // R1 only as an element, an address's #R1 or a field's "R1": a generated id can hold the letters R1.
+  const secret = /checkout|billing|#R1\b|"R1"|sent monthly/;
   const hidden = (v: number) => [{ kind: 'dependency', source: `kj:orders-spec@${v}#O1`, target: null, target_hidden: 'in another kolab you can\'t read' }];
 
   // By address, carol is refused alike, whether the link is there or she guessed wrong.
