@@ -141,7 +141,8 @@ test('only the draft\'s author removes links, only in a draft, only links it has
     .toMatch(/^Error: b@1 has no link from b3 to kj:spec#R1, and neither has this draft/);
   expect(await rejection(kolab.unlink(engineer, draft, [{ link: 'no-such-link' }]))).toMatch(/^Error: b has no link no-such-link/);
   expect(await rejection(kolab.unlink(engineer, draft, [{ sourceElement: 'b3', target: 'kj:other/spec#R3' }])))
-    .toBe('Error: b@1 has no link from b3 to kj:other/spec#R3, and neither has this draft: konjir_lineage direction=upstream lists its links');   // a link into another kolab is removed as any other (LNK8), and this one isn't there
+    // A target in a kolab the session can't read is refused from the address alone, there or not (W7.4, LNK8): by its id, a link into it goes as any other.
+    .toBe('AccessError: you can\'t read kolab other, so a link into it is removed by its id, not its target: konjir_lineage node=b direction=upstream gives each link\'s id, then links=[{"link":"<its id>"}]');
   await expect(kolab.unlink(product, draft, [{ sourceElement: 'b3', target: 'kj:spec#R3' }])).rejects.toBeInstanceOf(RoleError);
   expect(await rejection(kolab.unlink(erin, draft, [{ sourceElement: 'b3', target: 'kj:spec#R3' }])))
     .toMatch(/RoleError: b@2 is bob's draft: only its author changes it/);
