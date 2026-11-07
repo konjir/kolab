@@ -792,6 +792,15 @@ test('a job\'s note is its agent\'s last "Handed to a person:" or "Cleared:" par
   expect(jobNote('Handed to a person: first.\n\nHanded to a person: second.')).toBe('Handed to a person: second.');
   expect(jobNote('I was told "Handed to a person: x" earlier.')).toBe('I was told "Handed to a person: x" earlier.');
   expect(jobNote('No marker here.')).toBe('No marker here.');
+  // Markdown around the marker is the same marker (W7.9).
+  expect(jobNote('Read it.\n\n**Handed to a person:** whether refunds are in scope.')).toBe('Handed to a person: whether refunds are in scope.');
+  expect(jobNote('### Cleared: b1 holds.')).toBe('Cleared: b1 holds.');
+  expect(jobNote('> _Handed to a person:_ scope.')).toBe('Handed to a person: scope.');
+  // A long hand-off keeps its start, where Kolab reads it, and is cut at its end; other output keeps its tail.
+  const long = jobNote(`Handed to a person: ${'x'.repeat(5000)}`);
+  expect(long.startsWith('Handed to a person: x')).toBe(true);
+  expect(long).toHaveLength(2000);
+  expect(jobNote(`${'a'.repeat(3000)}end`)).toBe(`${'a'.repeat(1997)}end`);
 });
 
 test('on a Kolab from before W5.11, which refuses kinds, the runner asks again without them, for builds and reviews, and doesn\'t send them again (JOB6)', async () => {

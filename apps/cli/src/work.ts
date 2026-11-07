@@ -60,10 +60,13 @@ const NOTE_TAIL = 2000;
  * its reason), alone, when it ends with one; otherwise the output's tail, as it was.
  */
 export function jobNote(output: string): string {
-  const starts = [...output.matchAll(/(?:^|\n)[ \t]*(?:Handed to a person:|Cleared:)/g)];
-  if (!starts.length) return output;
-  const from = starts[starts.length - 1].index! + (output[starts[starts.length - 1].index!] === '\n' ? 1 : 0);
-  return output.slice(from).split(/\n[ \t]*\n/)[0].trim();
+  // Markdown around the marker, as models write it (**Handed to a person:**, ### Cleared:), is the same marker.
+  const starts = [...output.matchAll(/(?:^|\n)[ \t]*(?:[*_#>][*_#> \t]*)?(Handed to a person:|Cleared:)(?:\*\*|__|\*|_)?/g)];
+  if (!starts.length) return output.slice(-NOTE_TAIL);
+  const last = starts[starts.length - 1];
+  const rest = output.slice(last.index! + last[0].length).split(/\n[ \t]*\n/)[0].replace(/^[*_]+/, '');
+  // From its start, however long: Kolab reads the marker there, so the cut is at the end.
+  return `${last[1]}${rest}`.trim().slice(0, NOTE_TAIL);
 }
 /** How long a stopped harness has to exit before it is killed. */
 const KILL_AFTER_MS = 10_000;
@@ -526,7 +529,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   const end = async (l: Live, outcome: 'done' | 'failed' | 'stopped', note: string): Promise<string | undefined> => {
     if (l.lost === 'refused') return l.endedAs;
     try {
-      const r = await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: jobNote(redacted(note, l.taken.token)).slice(-NOTE_TAIL) } : {}) }) as { outcome?: string };
+      const r = await deps.call('end_job', { job: l.taken.job, outcome, ...(note ? { note: jobNote(redacted(note, l.taken.token)) } : {}) }) as { outcome?: string };
       return typeof r?.outcome === 'string' ? clean(r.outcome) : undefined;
     } catch (e) {
       const msg = clean((e as Error).message);
