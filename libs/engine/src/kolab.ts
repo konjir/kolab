@@ -4182,7 +4182,7 @@ export class Kolab {
     const node = await this.node(nodeId);
     const s = await this.requireLayer(sessionId, node.layer, node.kolab_id);
     checkDraftInput(input);
-    return this.writeDraft(nodeId, node.layer, s, input, (fn, access) => this.asAgent(sessionId, fn, nodeId, { access }), true, input.links);
+    return this.writeDraft(nodeId, node.layer, { ...s, where: { session: sessionId } }, input, (fn, access) => this.asAgent(sessionId, fn, nodeId, { access }), true, input.links);
   }
 
   /**
@@ -4215,9 +4215,10 @@ export class Kolab {
 
   /**
    * A draft's version, with its elements and deltas, and the links it drops (`unlink`, which name
-   * links of the version it is built on), written by `as` (an agent's session, or Kolab).
+   * links of the version it is built on), written by `as` (an agent's session, or Kolab). The links
+   * to drop are found from `s.where`, the session that names them, or as Kolab without one.
    */
-  private async writeDraft(nodeId: string, layer: Layer, s: { actor_id: string; active_role: string; kolab: string },
+  private async writeDraft(nodeId: string, layer: Layer, s: { actor_id: string; active_role: string; kolab: string; where?: Where },
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] },
     as: (fn: (tx: Q, signal: Signal) => Promise<void>, access: boolean) => Promise<void>,
     /** A draft the actor makes, taken from its owner's draft rate in the transaction that writes it; not an applied ruling. */
@@ -4342,7 +4343,7 @@ export class Kolab {
     const named = [...(input.elements ?? []).map((e) => e.parent), ...(input.deltas ?? []).map((d) => d.parent)];
     const missing = named.find((p): p is string => typeof p === 'string' && !made.has(p));
     if (missing !== undefined) throw new GateError(`${quoteText(missing)} is named as a parent, but the version this draft makes has no element of that id`);
-    const removals = input.unlink?.length ? await this.linkIdentities(nodeId, latest?.id ?? null, null, input.unlink) : [];
+    const removals = input.unlink?.length ? await this.linkIdentities(s.where ?? { system: s.kolab }, nodeId, latest?.id ?? null, null, input.unlink) : [];
     const id = ulid();
     const once = new Map(links.map((e) => [JSON.stringify([e.kind, e.sourceElement ?? null, e.target, e.targetElement ?? null, e.selector ?? null]), e]));
     const plans: LinkPlan[] = [];
@@ -5601,9 +5602,10 @@ export class Kolab {
    * from the version it was built on (CAS3), and their open marks settle then, with what those
    * marks alone caused. A link the draft declared itself goes at once. The removal is part of the
    * version: it is reviewed with it, and nothing changes until the version commits; a draft that is
-   * abandoned, rejected or sent back changes nothing. Returns the links removed, as addresses.
+   * abandoned, rejected or sent back changes nothing. Returns the links removed, as addresses, each
+   * target named only if the session reads it (describeIdentity).
    */
-  async unlink(sessionId: string, versionId: string, refs: LinkRef[]): Promise<{ kind: string; source: string; target: string }[]> {
+  async unlink(sessionId: string, versionId: string, refs: LinkRef[]): Promise<LinkDescription[]> {
     if (!refs.length) throw new Error('name at least one link to remove');
     const v = await this.version(versionId);
     await this.requireNodeIn(sessionId, v.node_id);
@@ -5613,16 +5615,20 @@ export class Kolab {
     if (v.state !== 'drafted') {
       throw new GateError(`${here} is ${v.state}: links are removed in a draft, before it is submitted; draft a new version to remove them`);
     }
-    const ids = await this.linkIdentities(v.node_id, v.base_version_id, v.id, refs);
+    const where = { session: sessionId };
+    const ids = await this.linkIdentities(where, v.node_id, v.base_version_id, v.id, refs);
     await this.asAgent(sessionId, (tx) => applyRemovals(tx, v.id, ids), v.node_id);
-    return Promise.all(ids.map((x) => this.describeIdentity(v, x)));
+    return Promise.all(ids.map((x) => this.describeIdentity(where, v, x)));
   }
 
   /**
    * The links `refs` name, among those of `base` (the version a draft is built on) and of `draft`
-   * itself. Each must name at least one; a ref without a kind names links of every kind.
+   * itself, for the session `where` names. Each must name at least one; a ref without a kind names
+   * links of every kind. A target named by address in a kolab the session can't read is refused
+   * from the address alone, found or not, so neither a removal nor a "has no link" confirms a
+   * guessed target there (W7.4, LNK8): such a link is removed by its id.
    */
-  private async linkIdentities(nodeId: string, base: string | null, draft: string | null, refs: LinkRef[]): Promise<LinkIdentity[]> {
+  private async linkIdentities(where: Where, nodeId: string, base: string | null, draft: string | null, refs: LinkRef[]): Promise<LinkIdentity[]> {
     const node = await this.node(nodeId);
     const at = base ? `${node.name}@${(await this.version(base)).seq}` : node.name;
     const cols = `e.id, e.kind, e.source_element_id, t.node_id as target_node_id, e.target_element_id, e.target_selector, e.source_version_id`;
@@ -5642,8 +5648,14 @@ export class Kolab {
         const a = parseAddress(ref.target);
         what = `link from ${ref.sourceElement ?? 'the whole version'} to ${ref.target}`;
         // A link into another kolab is removed as any other (LNK8): found among the node's own links,
-        // so a removal names nothing of that kolab that the link didn't already.
-        const t = await this.findNode(this.db, a.kolab ?? node.kolab_id, a.node);
+        // so a removal names nothing of that kolab that the link didn't already. By address, only
+        // where the session reads that kolab: otherwise by its id, which konjir_lineage gives.
+        const kolab = a.kolab ?? node.kolab_id;
+        if (kolab !== node.kolab_id && 'session' in where && !(await this.holds((await this.session(where.session)).actor_id, kolab))) {
+          throw new AccessError(`you can't read kolab ${kolab}, so a link into it is removed by its id, not its target: `
+            + `konjir_lineage node=${node.name} direction=upstream gives each link's id, then links=[{"link":"<its id>"}]`);
+        }
+        const t = await this.findNode(this.db, kolab, a.node);
         rows = t ? await this.matchingLinks(cols, [base, draft], {
           kind: ref.kind ?? null, source_element_id: ref.sourceElement ?? null, target_node_id: t.id,
           target_element_id: a.element ?? null, target_selector: a.selector ?? null,
@@ -5671,21 +5683,31 @@ export class Kolab {
         x.target_selector ? JSON.stringify(x.target_selector) : null])).rows;
   }
 
-  /** A link's identity as addresses, read from version `v` of its source node. */
-  private async describeIdentity(v: VersionRow, x: Pick<LinkIdentity, 'kind' | 'source_element_id' | 'target_node_id' | 'target_element_id' | 'target_selector'>) {
+  /**
+   * A link's identity as addresses, read from version `v` of its source node, in the short form of
+   * its kolab. Its target is read from `where`, as the session under row-level security: in a kolab
+   * the session can't read, the link shows only that it exists, as konjir_lineage shows it (W7.1,
+   * W7.4, LNK8), with nothing of the node, element or quoted span it links to.
+   */
+  private async describeIdentity(where: Where, v: VersionRow, x: Pick<LinkIdentity, 'kind' | 'source_element_id' | 'target_node_id' | 'target_element_id' | 'target_selector'>): Promise<LinkDescription> {
+    const from = v.kolab_id!;
+    const t = await this.read(where, async (q) => (await q.query<{ name: string; kolab_id: string }>(
+      `select name, kolab_id from node where id = $1`, [x.target_node_id])).rows[0]);
     return {
       kind: x.kind,
-      source: formatAddress({ node: await this.nameOf(v.node_id), version: v.seq, element: x.source_element_id ?? undefined }),
-      target: formatAddress({ node: await this.nameOf(x.target_node_id), element: x.target_element_id ?? undefined, selector: x.target_selector ?? undefined }),
+      source: formatAddress({ kolab: from, node: await this.nameOf(v.node_id), version: v.seq, element: x.source_element_id ?? undefined }, { from }),
+      ...(t
+        ? { target: formatAddress({ kolab: t.kolab_id, node: t.name, element: x.target_element_id ?? undefined, selector: x.target_selector ?? undefined }, { from }) }
+        : { target: null, target_hidden: LINK_HIDDEN }),
     };
   }
 
-  /** The links version `v` removes (0012), as addresses: what its commit doesn't carry forward. */
-  async removedLinks(where: Where, v: VersionRow) {
+  /** The links version `v` removes (0012), as addresses: what its commit doesn't carry forward. Read from `where`, as describeIdentity. */
+  async removedLinks(where: Where, v: VersionRow): Promise<LinkDescription[]> {
     const rows = await this.read(where, (q) => q.query<LinkIdentity>(
       `select kind, source_element_id, target_node_id, target_element_id, target_selector from link_removal
         where version_id = $1 order by source_element_id nulls first, target_node_id, target_element_id, kind`, [v.id]));
-    return Promise.all(rows.rows.map((x) => this.describeIdentity(v, x)));
+    return Promise.all(rows.rows.map((x) => this.describeIdentity(where, v, x)));
   }
 
   /**
@@ -11165,7 +11187,7 @@ export class Kolab {
       kind: r.kind,
       source: formatAddress({ kolab: r.source_kolab, node: r.source_node, version: r.source_seq, element: r.source_element_id ?? undefined }, { from }),
       ...(r.target_node === null || r.target_seq === null
-        ? { target: null, target_hidden: 'in another kolab you can\'t read' }
+        ? { target: null, target_hidden: LINK_HIDDEN }
         : { target: formatAddress({ kolab: r.target_kolab!, node: r.target_node, version: r.target_seq, element: r.target_element_id ?? undefined, selector: r.target_selector ?? undefined }, { from }) }),
     })) };
   }
@@ -11697,6 +11719,12 @@ const NO_REVIEWER = (layer: Layer, plan?: Pick<ReviewPlan, 'policy' | 'writers'>
   ? `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`
   : `No person other than its author holds Write on the ${layer} layer, where the kolab's policy keeps approving for a person (AUT2), so these checks alone committed it, unreviewed (VER11).`);
 
+/** What a link into a kolab its reader can't read shows in place of its target (W7.1, W7.4, LNK8). */
+const LINK_HIDDEN = 'in another kolab you can\'t read';
+
+/** A link as addresses (describeIdentity): its target null, with target_hidden, where its reader can't read it. */
+export type LinkDescription = { kind: string; source: string } & ({ target: string } | { target: null; target_hidden: string });
+
 /**
  * An open mark as describeMarks gives it. One on a binding's work package names it (`work`) and its
  * state; while the package is at risk (PLN10), `at_risk`, what to `revisit`, and `next` says how to settle it.
@@ -11710,21 +11738,25 @@ export interface MarkView {
  * Why a mark is open, in words: konjir_list_stale, the inbox and the web page all say it so.
  * `trigger` gives the address of what triggered it, the linked element (`linked`) or the parent
  * node (not), or undefined when the reader can't read it (a version in another kolab it no longer
- * holds Read on, access_lost). The trigger is named only to a reader who can read it (D53).
+ * holds Read on, access_lost). The trigger is named only to a reader who can read it (D53), and
+ * to any other reader neither its kolab, which an access_lost mark's note names, nor its version
+ * is told (W7.4, LNK8).
  */
 export function markBecause(r: {
   reason: string; note: string | null; edge_id: string | null; trig_seq: number | null; cause_count: number;
 }, trigger: (linked: boolean) => string | undefined): string {
-  const lost = r.note ?? 'its holder can no longer read it';
   const linked = trigger(true);
   const parent = trigger(false)?.replace(/^kj:/, '');
+  const note = r.note ?? 'its holder can no longer read it';
+  // unvouched's note names the kolab its holder no longer reads: the other kolab, told only to its readers.
+  const lost = (r.edge_id ? linked : parent) ? note : note.replace(/can no longer read kolab \S+/, 'can no longer read that kolab');
   return r.reason === 'query_answered' ? r.note ?? 'your question was answered'
     : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
     : r.reason === 'access_lost' ? (r.edge_id
       ? (linked ? `${linked} is in another kolab: ${lost}` : `it links to a version in another kolab: ${lost}`)
       : (parent ? `parent ${parent} is in another kolab: ${lost}` : `its parent is a version in another kolab: ${lost}`))
     : r.note ? `review gate: ${r.note}`
-    : r.edge_id ? `${linked ?? 'a version in another kolab'} changed in version ${r.trig_seq}`
+    : r.edge_id ? (linked ? `${linked} changed in version ${r.trig_seq}` : 'a version in another kolab changed')
     : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
     : parent ? `parent ${parent} version ${r.trig_seq}` : `its parent, a version in another kolab, changed`;
 }
