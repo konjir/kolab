@@ -89,7 +89,7 @@ function standIn(top: string, modes: Record<string, string> = {}) {
   const path = join(dir, 'harness.mjs');
   writeFileSync(join(dir, 'modes.json'), JSON.stringify(modes));
   writeFileSync(path, `#!/usr/bin/env node
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,7 +112,9 @@ scan(dirname(dirname(mcpPath)));
 let prompt = '';
 process.stdin.on('data', (d) => { prompt += d; });
 process.stdin.on('end', async () => {
-  writeFileSync(out('.json'), JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2), env: process.env, prompt, mcp, mcpWasFifo, mcpGone, tokenInChildEnv: childEnv.includes(token), filesWithToken }));
+  // All at once: a test takes the file's being there to mean it can be read.
+  writeFileSync(out('.tmp'), JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2), env: process.env, prompt, mcp, mcpWasFifo, mcpGone, tokenInChildEnv: childEnv.includes(token), filesWithToken }));
+  renameSync(out('.tmp'), out('.json'));
   const mode = JSON.parse(readFileSync(here + '/modes.json', 'utf8'))[job] || 'wait';
   console.log('working on ' + process.env.KONJIR_ITEM);
   const commit = (name) => { writeFileSync(name, name + '\\n'); execFileSync('git', ['add', '-A']); execFileSync('git', ['commit', '-q', '-m', name]); };
