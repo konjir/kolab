@@ -933,7 +933,7 @@ test('a past date with a change that same day: in its node\'s file it marks noth
   expect((await kolab.auditLog({ kolab: 'test' })).filter((a) => a.action === 'ruling.backdated').map((a) => (a.detail as { ref: string }).ref).sort()).toStrictEqual(['D90', 'D91', 'D92', 'D93', 'D94', 'D95']);
 });
 
-test('on a fork, a move to the top level is put back by the upstream commit\'s rebase; a rerun reports it, and --update moves it again (pins today\'s behaviour, third review of #105)', async () => {
+test('on a fork, a move to the top level stays through an upstream commit\'s rebase and through a fold, so a rerun reports nothing to do (W7.2, OVR3)', async () => {
   const kolab = await openKolab();
   await people(kolab, 'ann', { layers: ['functional'] });
   const ann = await kolab.openSession('ann', 'product');
@@ -956,13 +956,33 @@ test('on a fork, a move to the top level is put back by the upstream commit\'s r
   expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', 'CHK']]);
   expect(await kolab.importKolab(lee2, moved)).toMatchObject({ complete: true, created: [] });
 
-  // Upstream commits something else: the fork's rebase puts the move back.
-  await kolab.commit(ann, 'shop', { elements: [...up.slice(0, 2), { id: 'CHK2', text: 'A receipt is emailed at once.', parent: 'CHK' }] });
+  // Upstream commits something else: the fork's rebase keeps the move, and takes what upstream changed.
+  const later = { id: 'CHK2', text: 'A receipt is emailed at once.', parent: 'CHK' };
+  await kolab.commit(ann, 'shop', { elements: [...up.slice(0, 2), later] });
   await kolab.drainOutbox();
-  expect((await parents())[1]).toStrictEqual(['CHK1', 'CHK']);
-  const rerun = await kolab.importKolab(lee2, moved);
-  expect(rerun).toMatchObject({ complete: false });
-  expect(outcomes(rerun)).toMatchObject({ 'version kj:forked/shop': 'differs' });
+  expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', 'CHK']]);
+  expect((await kolab.elements((await kolab.latestCommitted(node))!.id)).find((e) => e.element_id === 'CHK2')!.text).toBe(later.text);
+  const synced = { ...moved, spec: { ...moved.spec, elements: [up[0], { id: 'CHK1', text: up[1].text }, later] } };
+  expect(await kolab.importKolab(lee2, synced)).toMatchObject({ complete: true, created: [] });
+
+  // A move waiting in review when upstream commits: the approval folds it onto the rebase, with the move.
+  await kolab.addActor('rita');
+  await kolab.grant('forked', 'rita', 'write', { layers: ['functional'] });
+  const rita = await kolab.openSession('rita', 'product', { kolab: 'forked' });
+  const out = { ...synced, spec: { ...synced.spec, elements: [up[0], { id: 'CHK1', text: up[1].text }, { id: 'CHK2', text: later.text }] } };
+  expect(outcomes(await kolab.importKolab(lee2, out, { update: true }))).toMatchObject({ 'version kj:forked/shop': 'in_review' });
+  const waiting = (await kolab.db.query<{ id: string }>(`select id from version where node_id = $1 and state = 'in_review'`, [node])).rows[0].id;
+  const final = { id: 'CHK3', text: 'Upstream adds a line.', parent: 'CHK' };
+  await kolab.commit(ann, 'shop', { elements: [...up.slice(0, 2), later, final] });
+  await kolab.drainOutbox();
+  expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', 'CHK'], ['CHK3', 'CHK']]);
+  const fold = await kolab.recordReview(rita, waiting, { verdict: 'approve' });
+  expect(fold).toMatchObject({ ok: true });
+  expect(fold.version).not.toBe(waiting);
+  expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', null], ['CHK3', 'CHK']]);
+  await kolab.commit(ann, 'shop', { elements: [...up.slice(0, 2), later, { ...final, text: 'Upstream edits its line.' }] });
+  await kolab.drainOutbox();
+  expect(await parents()).toStrictEqual([['CHK', null], ['CHK1', null], ['CHK2', null], ['CHK3', 'CHK']]);
 });
 
 testOnOneDay('a ruling dated today in the file of its node marks nothing and isn\'t audited as backdated; in a rulings-only file it marks; tomorrow is refused (re-review of #105)', async (today) => {

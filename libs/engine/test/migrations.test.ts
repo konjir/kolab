@@ -1944,6 +1944,7 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
     const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
     expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
     // Each of these people and agents holds one open session, so 0040 goes back too, and 0041 and 0042 before it.
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
     await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
@@ -1951,7 +1952,7 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
     await db.exec(UNDO_0040);
     await db.exec(undo0039());
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42, 43, 44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42, 43, 44, 45] });
     // Every job as it was: its item and how it ended, the new items empty.
     expect((await db.query(`select * from job order by id`)).rows)
       .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
@@ -2005,13 +2006,14 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
     await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
     await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42, 43, 44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42, 43, 44, 45] });
     expect((await db.query(`select actor_id, machine_key, place, last_used_at from session order by actor_id`)).rows).toStrictEqual([
       { actor_id: 'alice', machine_key: `client:${s.client}`, place: null, last_used_at: null },
       { actor_id: 'alice-pm', machine_key: 'agent', place: null, last_used_at: null },
@@ -2077,6 +2079,7 @@ test('a database at 0040 with versions in review, review requests and answered q
 
   await withDb(async (db) => {
     const requests = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
     await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
@@ -2086,7 +2089,7 @@ test('a database at 0040 with versions in review, review requests and answered q
     // As the release before 0041 wrote it, alice-pm-2, an agent with Write on the layer, was asked too.
     await db.query(`insert into review_request(id, version_id, reviewer_id) values ('01ZZZZZZZZZZZZZZZZZZZZAGNT', $1, 'alice-pm-2')`, [v2]);
     const before = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42, 43, 44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42, 43, 44, 45] });
     // Nothing rewritten: each request as it was, of its version's own layer; no kolab has a policy row; no answer cites anything.
     expect((await db.query(`select * from review_request order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, product: false })));
     expect((await db.query(`select * from kolab_policy`)).rows).toStrictEqual([]);
@@ -2143,12 +2146,13 @@ test('a database at 0041 with rulings reaches 0042: every ruling is kept as it w
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
     await db.exec(UNDO_0043);
     await db.exec(UNDO_0042);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     const before = (await db.query<Record<string, unknown>>(`select * from ruling order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42, 43, 44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42, 43, 44, 45] });
     expect((await db.query(`select * from ruling order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, ref: null, recorded_at: null })));
     expect(await rejection(db.query(`insert into ruling(id, version_id, kolab_id, actor_id, text, effect, ref) select 'r2', version_id, kolab_id, actor_id, 'Two.', 'keep_intent', 'not a ref' from ruling limit 1`)))
       .toMatch(/ruling_ref_form/);
@@ -2202,6 +2206,7 @@ test('a database at 0042 with raised sessions, raise requests and past raises in
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
     await db.exec(UNDO_0043);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
@@ -2210,7 +2215,7 @@ test('a database at 0042 with raised sessions, raise requests and past raises in
     await db.query(`insert into admin_raise(id, session_id, actor_id, expires_at) values ($1, $2, 'lee', now() + interval '10 minutes')`, ['r'.repeat(43), session]);
     await db.query(`insert into oauth_request(id, state_key, provider, client_id, redirect_uri, code_challenge, expires_at, raise_id)
       values ($1, $2, 'github', 'konjir-raise', 'http://127.0.0.1:9/oauth/raise', $3, now() + interval '10 minutes', $4)`, ['b'.repeat(43), 's'.repeat(43), 'c'.repeat(43), 'r'.repeat(43)]);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [43, 44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [43, 44, 45] });
     expect((await db.query(`select client_id from oauth_request`)).rows).toStrictEqual([{ client_id: 'konjir-web' }]);
     expect((await db.query(`select to_regclass('admin_raise') as t`)).rows).toStrictEqual([{ t: null }]);
     for (const [table, column] of [['session', 'admin_until'], ['oauth_request', 'raise_id']]) {
@@ -2237,6 +2242,7 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
   const PLAN = 'Kolab — Plan (mirror of claude.ai, D32)';
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
     await db.query(`insert into account(id, kind, name, created_by) values ('konjir', 'organization', 'Konjir', 'admin')`);
     await db.query(`insert into kolab(id, owner_id, title, created_by) values ('kolab', 'konjir', 'Kolab', 'admin'), ('other', 'konjir', 'Other', 'admin')`);
@@ -2256,7 +2262,7 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
     // As production's are: the mirrors were made before Kolab recorded who makes a node.
     await db.query(`update node set created_by = null, created_at = null where id = 'kolab'`);
 
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44, 45] });
     const titles = async () => Object.fromEntries((await db.query<{ id: string; title: string }>(`select id, title from node`)).rows.map((r) => [r.id, r.title]));
     expect(await titles()).toStrictEqual({
       kolab: 'Kolab — Functional Spec', 'kolab-binding': 'Kolab — Technical Binding', 'kolab-plan': 'Kolab — Plan (history, D104)',
@@ -2267,12 +2273,66 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
 
     // A title changed since is left as it is, and running it over changes nothing.
     await db.query(`update node set title = title || ' (ours)' where id in ('kolab', 'kolab-binding', 'kolab-plan')`);
+    await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44, 45] });
     expect(await titles()).toMatchObject({
       kolab: 'Kolab — Functional Spec (ours)', 'kolab-binding': 'Kolab — Technical Binding (ours)', 'kolab-plan': 'Kolab — Plan (history, D104) (ours)',
     });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0044_retitle_mirrors\.sql, which this release of Kolab doesn't know/);
   });
+});
+
+const UNDO_0045 = `alter table delta drop column top_level;
+  delete from kj_migration where version = 45;`;
+
+test('a database at 0044 with moves on a variant reaches 0045: the moves that stand are recorded, nothing else is, and the next rebase keeps them (W7.2, OVR3)', async () => {
+  const store = await persistentStore();
+  const at = MIGRATIONS.findIndex((x) => x.name === 'delta_top_level');
+  expect(MIGRATIONS[at].version).toBe(45);
+  const up = [
+    { id: 'A', text: 'A section' }, { id: 'A1', text: 'One.', parent: 'A' }, { id: 'A2', text: 'Two.', parent: 'A' },
+    { id: 'A3', text: 'Three.', parent: 'A' }, { id: 'A4', text: 'Four.', parent: 'A' }, { id: 'T', text: 'Top.' },
+  ];
+  let kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  let variant: string;
+  try {
+    await people(kolab, 'lee', { layers: ['functional'] });
+    const lee = await kolab.openSession('lee', 'product');
+    await kolab.createNode(lee, 'spec', 'S', 's');
+    const p1 = await kolab.commit(lee, 's', { elements: up });
+    await kolab.createNode(lee, 'prototype', 'P', 'p');
+    variant = await kolab.commit(lee, 'p', { parent: p1, elements: [
+      up[0],
+      { id: 'A1', text: 'One.', parent: null },        // moved: the one to record
+      { id: 'A2', text: 'Two, its way.', parent: 'A' }, // kept, by name
+      { id: 'A3', text: 'Three, its way.' },            // kept, the parent left out: its row's parent is null too
+      { id: 'T', text: 'Top, its way.', parent: null }, // at the top level in the parent as well
+      { id: 'X', text: 'Its own.' },
+    ] });
+  } finally { await kolab.close(); }
+
+  await withDb(async (db) => {
+    await db.exec(UNDO_0045);
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [45] });
+    expect((await db.query(`select element_id from delta where version_id = $1 and top_level`, [variant])).rows).toStrictEqual([{ element_id: 'A1' }]);
+    expect((await db.query(`select 1 from delta where version_id = $1 and not top_level`, [variant])).rows.length).toBeGreaterThanOrEqual(4);
+    // A row can't both name a parent and say top level.
+    expect(await rejection(db.query(`update delta set top_level = true where version_id = $1 and element_id = 'A2'`, [variant]))).toMatch(/delta_top_level_has_no_parent/);
+    expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0045_delta_top_level\.sql, which this release of Kolab doesn't know/);
+  }, store);
+  expect(await withDb(async (db) => schemaOf(db), store)).toStrictEqual(await currentSchema());
+
+  kolab = await TestKolab.open(store);
+  drainAfterWrites(kolab);
+  try {
+    const lee = await kolab.endSession({ actor: 'lee' }).then(() => kolab.openSession('lee', 'product'));
+    await kolab.commit(lee, 's', { elements: up.map((e) => (e.id === 'A4' ? { ...e, text: 'Four, revised.' } : e)) });
+    await kolab.drainOutbox();
+    const now = await kolab.elements((await kolab.latestCommitted('p'))!.id);
+    expect(Object.fromEntries(now.map((e) => [e.element_id, e.parent_element_id]))).toMatchObject({ A1: null, A2: 'A', A3: 'A' });
+  } finally { await kolab.close(); }
 });

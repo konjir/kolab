@@ -315,6 +315,71 @@ test('a version approved and then folded ends settled as folded into the fold, w
   expect(mine[1].next).toMatch(/^Folded into kj:C@\d+, which carries this edit/);
 });
 
+test('on a variant, a move to the top level stays through rebases, folds, edits of its words, the parent coming to the same words, and adopting the parent\'s (W7.2, OVR3)', async () => {
+  const { kolab, product, dave } = await twoProductOwners();
+  const up = (e1: string, e2 = 'two', e3 = 'three') => [
+    { id: 'S', text: 'A section' }, { id: 'E1', text: e1, parent: 'S' }, { id: 'E2', text: e2, parent: 'S' }, { id: 'E3', text: e3, parent: 'S' },
+  ];
+  const upstream = async (e1: string, e2?: string, e3?: string) => {
+    const v = await commitReviewed(kolab, product, dave, 'P', { elements: up(e1, e2, e3) });
+    await kolab.drainOutbox();
+    return v;
+  };
+  const at = async (node: string) => Object.fromEntries((await kolab.elements((await kolab.latestCommitted(node))!.id)).map((e) => [e.element_id, [e.parent_element_id, e.text]]));
+  await kolab.createNode(product, 'spec', 'P', 'P');
+  const p1 = await commitReviewed(kolab, product, dave, 'P', { elements: up('one') });
+  await kolab.createNode(product, 'prototype', 'C', 'C');
+  const moved = [{ id: 'S', text: 'A section' }, { id: 'E1', text: 'one', parent: null }, { id: 'E2', text: 'two', parent: 'S' }, { id: 'E3', text: 'three', parent: 'S' }];
+  await commitReviewed(kolab, product, dave, 'C', { parent: p1, elements: moved });
+  expect((await at('C')).E1).toStrictEqual([null, 'one']);
+
+  // Upstream changes something else: the rebase keeps the move, and marks nothing.
+  await upstream('one', 'two, revised');
+  expect(await at('C')).toMatchObject({ E1: [null, 'one'], E2: ['S', 'two, revised'] });
+  expect(await kolab.openMarks()).toStrictEqual([]);
+
+  // A move waiting in review: the approval folds it, with the move, and nothing puts it back.
+  const draft = await kolab.draft(product, 'C', { elements: [moved[0], moved[1], { id: 'E2', text: 'two, revised', parent: null }, moved[3]] });
+  await kolab.review(draft);
+  await upstream('one', 'two, revised', 'three, revised');
+  expect((await at('C')).E2).toStrictEqual(['S', 'two, revised']);
+  const fold = await kolab.recordReview(dave, draft, { verdict: 'approve' });
+  expect(fold).toMatchObject({ ok: true });
+  expect(fold.version).not.toBe(draft);
+  expect(await at('C')).toMatchObject({ E1: [null, 'one'], E2: [null, 'two, revised'], E3: ['S', 'three, revised'] });
+  await upstream('one', 'two, revised', 'three, again');
+  expect(await at('C')).toMatchObject({ E1: [null, 'one'], E2: [null, 'two, revised'], E3: ['S', 'three, again'] });
+
+  // A delta on a moved element leaves it moved, and a later rebase too.
+  await commitReviewed(kolab, product, dave, 'C', { deltas: [{ kind: 'override', element: 'E2', text: 'two, its way' }] });
+  expect((await at('C')).E2).toStrictEqual([null, 'two, its way']);
+  await upstream('one', 'two, revised', 'three, once more');
+  expect(await at('C')).toMatchObject({ E1: [null, 'one'], E2: [null, 'two, its way'] });
+
+  // Upstream comes to the same words: the override has nothing left to say of them, but the move stands.
+  await upstream('one', 'two, its way', 'three, once more');
+  expect(await at('C')).toMatchObject({ E2: [null, 'two, its way'] });
+  expect(await kolab.openMarks()).toStrictEqual([]);
+  await upstream('one', 'two, later', 'three, once more');
+  expect(await at('C')).toMatchObject({ E2: [null, 'two, later'] });
+
+  // Upstream rewrites a moved element: its override goes stale, and stays moved. Adopting the parent's words keeps the move.
+  await upstream('one, rewritten', 'two, later', 'three, once more');
+  expect((await at('C')).E1).toStrictEqual([null, 'one']);
+  const [mark] = await kolab.openMarks();
+  expect(mark).toMatchObject({ reason: 'override_stale', element_id: 'E1' });
+  const { version } = await kolab.resolveOverride(product, mark.id, 'adopt_parent');
+  await kolab.recordReview(dave, version, { verdict: 'approve' });
+  expect((await at('C')).E1).toStrictEqual([null, 'one, rewritten']);
+
+  // So does the precedent that sets, on another variant in the same place.
+  await kolab.createNode(product, 'prototype', 'D', 'D');
+  await commitReviewed(kolab, product, dave, 'D', { parent: p1, elements: moved });
+  await upstream('one, rewritten', 'two, later', 'three, last');
+  expect((await at('D')).E1).toStrictEqual([null, 'one, rewritten']);
+  expect(await kolab.openMarks()).toStrictEqual([]);
+});
+
 test('an override resolution folded at approval still sets precedent and settles its mark (OVR8, OVR9)', async () => {
   const { kolab, product, dave } = await twoProductOwners();
   const P = await kolab.createNode(product, 'spec', 'P', 'P');
