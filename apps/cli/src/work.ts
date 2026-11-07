@@ -20,7 +20,8 @@
  * is an allowlist, and points konjir's credentials at a file that doesn't exist, so nothing in a job
  * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set). PATH starts
  * with a directory of the job's own holding `konjir`, which runs the runner's own konjir, so a job's
- * `konjir work deliver` needs no approval (W7.8). Each shell
+ * `konjir work deliver` needs no approval (W7.8). A runner starting sweeps what a killed one left
+ * there, but for jobs another runner on the machine still runs (sweepJobs, W7.12). Each shell
  * command the agent runs passes a guard hook first (guard.ts), which denies deleting, forcing or
  * mirroring a push, a push to the default branch, merging and the rest of deniedTools' list
  * however the command is quoted or wrapped.
@@ -39,7 +40,7 @@
  * (D89) is what guarantees it, and the denials here only keep a job from trying.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, chmodSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { accessSync, chmodSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -261,6 +262,38 @@ export function removeKonjirShim(dir: string) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+/** Whether process `pid` runs on this machine: one of another user's (EPERM) counts, as it may be a runner. */
+function running(pid: number) {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+/**
+ * Sweeps what killed runners left in `jobsDir` (W7.12): each job's konjir (.bin/<job>, its modes
+ * restored first, as removeKonjirShim does), its MCP config's FIFO (.mcp/<job>.json) and its marker
+ * (.live/<job>). A runner writes a job's marker, naming its own process, before anything else of the
+ * job and removes it last, so a job whose marker names a process still running on this machine is
+ * another runner's, still live, and is left alone; this runner's own pid, before it has taken
+ * anything, is one an earlier runner had. Returns the jobs swept.
+ */
+export function sweepJobs(jobsDir: string, alive: (pid: number) => boolean = running): string[] {
+  const list = (d: string) => { try { return readdirSync(d); } catch { return []; } };
+  const markers = join(jobsDir, '.live');
+  const runner = (job: string) => {
+    try { return Number.parseInt(readFileSync(join(markers, job), 'utf8'), 10); } catch { return NaN; }
+  };
+  const live = (job: string) => { const pid = runner(job); return Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid); };
+  const jobs = new Set([...list(join(jobsDir, '.bin')), ...list(markers), ...list(join(jobsDir, '.mcp')).map((n) => n.replace(/\.json$/, ''))]);
+  const swept: string[] = [];
+  for (const job of [...jobs].sort()) {
+    if (!JOB_ID.test(job) || live(job)) continue;
+    removeKonjirShim(join(jobsDir, '.bin', job));
+    rmSync(join(jobsDir, '.mcp', `${job}.json`), { force: true });
+    rmSync(join(markers, job), { force: true });
+    swept.push(job);
+  }
+  return swept;
+}
+
 /**
  * The settings a job's Claude Code runs with beside its own (`--settings`, W6.4): a PreToolUse hook
  * on the tools that run shell commands (Bash, and Monitor, which runs one to watch), `konjir work guard --branch <default branch>`, which reads each command as the shell
@@ -453,6 +486,9 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   const remote = remoteOf(deps.git, checkout, repo.url);
   const jobsDir = deps.jobsDir ?? join(homedir(), '.konjir', 'jobs');
   mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
+  // What a killed runner left: jobs another runner here still runs are kept (W7.12).
+  const swept = sweepJobs(jobsDir);
+  if (swept.length) log(`konjir work: swept what ${swept.length === 1 ? 'a job' : `${swept.length} jobs`} no runner here still runs left in ${jobsDir} (${swept.join(', ')})`);
 
   // Git that changes the checkout (fetch, worktree add and remove) runs one call at a time.
   let turn: Promise<unknown> = Promise.resolve();
@@ -616,6 +652,8 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
       const report: JobReport = { job: taken.job, kind: taken.kind, item: taken.item, agent: taken.agent, outcome: 'failed' };
       let started = false;
       let bin: string | undefined;
+      let mcpConfig: string | undefined;
+      let marker: string | undefined;
       try {
         if (!JOB_ID.test(taken.job)) throw new Error(`Kolab gave the job id ${JSON.stringify(clean(taken.job).slice(0, 140))}, which konjir work won't make a directory of`);
         const worktree = join(jobsDir, taken.job);
@@ -623,12 +661,16 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         if (l.stopping || l.lost) { report.outcome = 'stopped'; report.ledger = await end(l, 'stopped', 'stopped before it started'); return report; }
         await inTurn(() => shell(checkout.top, ['worktree', 'add', '--detach', '--quiet', worktree, base]));
         report.worktree = worktree;
+        // Its marker, first: the job is this runner's, which another runner starting here leaves alone (sweepJobs, W7.12).
+        mkdirSync(join(jobsDir, '.live'), { recursive: true, mode: 0o700 });
+        marker = join(jobsDir, '.live', taken.job);
+        writeFileSync(marker, `${process.pid}\n`, { mode: 0o600 });
         // The MCP config, with the job's token, goes through a FIFO of its own, read once (feedOnce).
         const fifos = join(jobsDir, '.mcp');
         mkdirSync(fifos, { recursive: true, mode: 0o700 });
-        const mcpConfig = join(fifos, `${taken.job}.json`);
-        rmSync(mcpConfig, { force: true });
-        await new Promise<void>((resolve, reject) => execFile('mkfifo', ['-m', '600', mcpConfig], (e) => (e ? reject(new Error(`couldn't make the FIFO its MCP config goes through (mkfifo: ${e.message})`)) : resolve())));
+        const fifo = mcpConfig = join(fifos, `${taken.job}.json`);
+        rmSync(fifo, { force: true });
+        await new Promise<void>((resolve, reject) => execFile('mkfifo', ['-m', '600', fifo], (e) => (e ? reject(new Error(`couldn't make the FIFO its MCP config goes through (mkfifo: ${e.message})`)) : resolve())));
         // The job's konjir, first on its PATH, which its guard hook runs too (W7.8).
         bin = join(jobsDir, '.bin', taken.job);
         const konjir = writeKonjirShim(bin, deps.konjir ?? konjirCommand(), env);
@@ -677,6 +719,8 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         log(`job ${clean(taken.job)}: couldn't start it: ${msg}`);
       }
       if (bin) removeKonjirShim(bin);
+      if (mcpConfig) rmSync(mcpConfig, { force: true });
+      if (marker) rmSync(marker, { force: true });
       const kept = report.worktree ? await tidy(report.worktree) : undefined;
       if (kept) report.kept = kept;
       if (report.ledger === undefined) delete report.ledger;
