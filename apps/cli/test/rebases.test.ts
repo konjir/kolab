@@ -82,3 +82,26 @@ test.each([['a variant', 'kj:P@1'], ['a fork', 'kj:test/P@1']])('over MCP, on %s
   expect(await places()).toMatchObject({ E1: [null, 'one'], E2: ['S', 'two, later'], E3: [null, 'three'] });
   expect(await kolab.openMarks()).toStrictEqual([]);
 });
+
+test('over MCP, konjir_admin_apply_ruling says top level with parent null, in a full list and a delta (W7.2)', async () => {
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: ADMIN, kolab });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_actor', { id: 'pm-agent' });
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
+  await call(admin, 'admin_grant', { kolab: 'test', to: 'pm-agent', level: 'write', layers: ['functional'] });
+  const pm = await connect(server.url, ((await call(admin, 'admin_open_session', { actor: 'pm-agent', role: 'product' })) as { token: string }).token);
+  closeAtEnd(pm);
+  const up = [{ id: 'S', text: 'A section' }, { id: 'E1', text: 'one', parent: 'S' }, { id: 'E2', text: 'two', parent: 'S' }];
+  await call(pm, 'create_node', { kind: 'spec', title: 'Storefront', id: 'P' });
+  const { version } = await call(pm, 'draft', { node: 'P', elements: up }) as { version: number };
+  expect(await call(pm, 'submit_for_review', { node: 'P', version })).toMatchObject({ ok: true });
+  await call(pm, 'create_node', { kind: 'prototype', title: 'Mine', id: 'V' });
+  const ruling = { ruling: 'D46', actor: 'pm-agent', node: 'V' };
+  expect(await call(admin, 'admin_apply_ruling', { ...ruling, parent: 'kj:P@1', elements: [up[0], { ...up[1], parent: null }, up[2]] })).toMatchObject({ ok: true });
+  expect(await call(admin, 'admin_apply_ruling', { ...ruling, deltas: [{ kind: 'override', element: 'E2', parent: null }] })).toMatchObject({ ok: true });
+  const id = (await kolab.db.query<{ id: string }>(`select v.id from version v join node n on n.id = v.node_id where n.name = 'V' and v.state = 'committed' order by v.seq desc limit 1`)).rows[0].id;
+  expect(Object.fromEntries((await kolab.elements(id)).map((e) => [e.element_id, e.parent_element_id]))).toMatchObject({ E1: null, E2: null });
+});

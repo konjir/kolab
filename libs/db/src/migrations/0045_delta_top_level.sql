@@ -4,15 +4,17 @@
 -- A delta's null parent_element_id means "keeps the parent's place", so a rebase or a fold, which
 -- applies the delta to a new parent, put a moved element back in its section. top_level says the
 -- delta moved it. The moves already standing are set too: a delta whose version holds its element at
--- the top level, where the version it builds on has it in a section. A move a rebase has put back
--- no longer stands, so it stays put back. Nothing else is rewritten.
+-- the top level, where the version it builds on has it in a section. For an orphaned delta that is
+-- the version its base names, since its parent no longer has the element. A move a rebase has put
+-- back no longer stands, so it stays put back. Nothing else is rewritten.
 alter table delta add column top_level boolean not null default false;
 
 update delta d set top_level = true
   from version v, element e, element p
  where v.id = d.version_id
    and e.version_id = d.version_id and e.element_id = d.element_id
-   and p.version_id = v.parent_version_id and p.element_id = d.element_id
+   and p.version_id = case when d.state = 'orphaned' then d.base_version_id else v.parent_version_id end
+   and p.element_id = d.element_id
    and d.kind = 'override' and d.parent_element_id is null
    and e.parent_element_id is null and p.parent_element_id is not null;
 

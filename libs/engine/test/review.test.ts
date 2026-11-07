@@ -403,7 +403,7 @@ describe.each(['variant', 'fork'])('on a %s, a move to the top level (W7.2, OVR3
     expect((await kolab.version((await kolab.latestCommitted(node))!.parent_version_id!)).kolab_id).toBe(TEST_KOLAB);
     const at = async () => Object.fromEntries((await kolab.elements((await kolab.latestCommitted(node))!.id)).map((e) => [e.element_id, [e.parent_element_id, e.text]]));
     return {
-      kolab, node, at, up, ann,
+      kolab, node, at, up, ann, s,
       mine: async (input: Parameters<typeof kolab.draft>[2]) => {
         const r = await kolab.submit(s, await kolab.draft(s, node, input));
         expect(r).toMatchObject({ ok: true });
@@ -461,6 +461,119 @@ describe.each(['variant', 'fork'])('on a %s, a move to the top level (W7.2, OVR3
     expect((await at()).E1).toStrictEqual(['S', 'one']);
   });
 
+  test('a move that leaves out the text keeps the element\'s own words, and so does moving it back into a section', async () => {
+    const { kolab, at, mine, rows } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', text: 'one, mine' }] });
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
+    expect((await at()).E1).toStrictEqual([null, 'one, mine']);
+    expect(await rows()).toStrictEqual([{ element_id: 'E1', top_level: true, text: 'one, mine' }]);
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: 'S' }] });
+    expect((await at()).E1).toStrictEqual(['S', 'one, mine']);
+    expect(await rows()).toStrictEqual([{ element_id: 'E1', top_level: false, text: 'one, mine' }]);
+    expect(await kolab.openMarks()).toStrictEqual([]);
+  });
+
+  test('a move leaves a question open on the element\'s words open, and adopting then keeps the move', async () => {
+    const { kolab, at, mine, upstream, s } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', text: 'one, mine' }] });
+    await upstream('one, new');
+    const [asked] = await kolab.openMarks();
+    expect(asked).toMatchObject({ reason: 'override_stale', element_id: 'E1' });
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
+    expect((await at()).E1).toStrictEqual([null, 'one, mine']);
+    const [still] = await kolab.openMarks();
+    expect(still).toMatchObject({ reason: 'override_stale', element_id: 'E1' });
+    await kolab.resolveOverride(s, still.id, 'adopt_parent');
+    expect((await at()).E1).toStrictEqual([null, 'one, new']);
+    expect(await kolab.openMarks()).toStrictEqual([]);
+  });
+
+  test('upstream moving it to the top level itself, with new words or the variant\'s, and back leaves it moved', async () => {
+    const { kolab, at, mine, upstream, rows, ann } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }, { kind: 'override', element: 'E2', text: 'two, mine', parent: null }] });
+    await kolab.commit(ann, 'up', { elements: [{ id: 'S', text: 'A section' }, { id: 'T', text: 'Another' }, { id: 'E1', text: 'one, new', parent: null }, { id: 'E2', text: 'two, mine', parent: null }] });
+    await kolab.drainOutbox();
+    expect(await rows()).toStrictEqual([{ element_id: 'E1', top_level: true, text: null }, { element_id: 'E2', top_level: true, text: null }]);
+    await upstream('one, new', 'two, mine');
+    expect(await at()).toMatchObject({ E1: [null, 'one, new'], E2: [null, 'two, mine'] });
+    expect(await kolab.openMarks()).toStrictEqual([]);
+  });
+
+  test('a draft while upstream has it at the top level too keeps the move, by a delta and by a full list', async () => {
+    const { kolab, at, mine, upstream, ann } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }, { kind: 'override', element: 'E2', parent: null }] });
+    const top = [{ id: 'S', text: 'A section' }, { id: 'T', text: 'Another' }, { id: 'E1', text: 'one', parent: null }, { id: 'E2', text: 'two', parent: null }];
+    await kolab.commit(ann, 'up', { elements: top });
+    await kolab.drainOutbox();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', text: 'one, mine', parent: null }] });
+    await upstream('one');
+    expect(await at()).toMatchObject({ E1: [null, 'one, mine'], E2: [null, 'two'] });
+    await kolab.commit(ann, 'up', { elements: top });
+    await kolab.drainOutbox();
+    await mine({ elements: top.map(({ id, text }) => ({ id, text })) });
+    await upstream('one');
+    expect(await at()).toMatchObject({ E1: [null, 'one'], E2: [null, 'two'] });
+  });
+
+  const intoSection = [{ id: 'S', text: 'A section' }, { id: 'T', text: 'Another', parent: 'S' }, { id: 'E1', text: 'one', parent: 'S' }, { id: 'E2', text: 'two', parent: 'S' }];
+
+  test('a delta saying parent null on what upstream has at the top level moves nothing, so it follows upstream into a section', async () => {
+    const { kolab, at, mine, rows, ann } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'T', text: 'another, mine', parent: null }] });
+    expect(await rows()).toStrictEqual([{ element_id: 'T', top_level: false, text: 'another, mine' }]);
+    await kolab.commit(ann, 'up', { elements: intoSection });
+    await kolab.drainOutbox();
+    expect((await at()).T).toStrictEqual(['S', 'another, mine']);
+  });
+
+  test('a full list saying parent null on what upstream has at the top level moves nothing, so it follows upstream into a section', async () => {
+    const { kolab, at, mine, rows, up, ann } = await moving();
+    await mine({ elements: up('one').map((e) => (e.id === 'T' ? { id: 'T', text: 'another, mine', parent: null } : e)) });
+    expect((await rows()).filter((r) => r.top_level)).toStrictEqual([]);
+    await kolab.commit(ann, 'up', { elements: intoSection });
+    await kolab.drainOutbox();
+    expect((await at()).T).toStrictEqual(['S', 'another, mine']);
+  });
+
+  test('a removal is never a move', async () => {
+    const { at, mine, rows } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
+    await mine({ deltas: [{ kind: 'remove', element: 'E1' }, { kind: 'remove', element: 'E2', parent: null }] });
+    expect(await rows()).toStrictEqual([{ element_id: 'E1', top_level: false, text: null }, { element_id: 'E2', top_level: false, text: null }]);
+    expect(Object.keys(await at()).sort()).toStrictEqual(['S', 'T']);
+  });
+
+  test('removing a section removes what the variant moved into it, whether the same draft edits that or not', async () => {
+    for (const also of [[], [{ kind: 'override' as const, element: 'E1', text: 'one, mine' }]]) {
+      const { at, mine, up } = await moving();
+      await mine({ elements: up('one').map((e) => (e.id === 'E1' ? { ...e, parent: 'T' } : e)) });
+      await mine({ deltas: [{ kind: 'remove', element: 'T' }, ...also] });
+      expect(Object.keys(await at()).sort()).toStrictEqual(['E2', 'S']);
+    }
+  });
+
+  test('what holds only the move, removed upstream and added back, follows upstream again and asks nothing', async () => {
+    const { kolab, at, mine, up, upstream, ann, rows } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
+    const without = up('one').filter((e) => e.id !== 'E1');
+    await kolab.commit(ann, 'up', { elements: without });
+    await kolab.drainOutbox();
+    expect((await at()).E1).toStrictEqual([null, 'one']);
+    await upstream('one');
+    expect((await at()).E1).toStrictEqual([null, 'one']);
+    expect(await rows()).toStrictEqual([{ element_id: 'E1', top_level: true, text: null }]);
+    expect(await kolab.openMarks()).toStrictEqual([]);
+    await upstream('one, after');
+    expect((await at()).E1).toStrictEqual([null, 'one, after']);
+    expect(await kolab.openMarks()).toStrictEqual([]);
+    // Added back with other words, it takes them.
+    await kolab.commit(ann, 'up', { elements: without });
+    await kolab.drainOutbox();
+    await upstream('one, back');
+    expect((await at()).E1).toStrictEqual([null, 'one, back']);
+    expect(await kolab.openMarks()).toStrictEqual([]);
+  });
+
   test('upstream removing what holds only the move leaves its words, and asks', async () => {
     const { kolab, at, mine, up, node, ann } = await moving();
     await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
@@ -486,6 +599,20 @@ test('on a variant of a binding, what holds only the move follows upstream\'s wo
   await kolab.drainOutbox();
   expect(await at()).toMatchObject({ W1: [null, 'M'], W2: [null, 'L'] });
   expect((await kolab.openMarks()).map((m) => [m.reason, m.element_id])).toStrictEqual([['override_stale', 'W2']]);
+});
+
+test('on a variant of a binding, a delta that leaves out the work fields keeps the element\'s own, by a move and by new words (W7.2, OVR3)', async () => {
+  const { kolab, product, engineer } = await setup();
+  await kolab.createNode(product, 'spec', 'The spec', 'spec');
+  await kolab.createNode(engineer, 'binding', 'B', 'b');
+  const v1 = await kolab.commit(engineer, 'b', { elements: [{ id: 'S', text: 'A section' }, { id: 'W1', text: 'One.', parent: 'S', work: { size: 'S' } }] });
+  await kolab.createNode(engineer, 'binding', 'C', 'c');
+  await kolab.commit(engineer, 'c', { parent: v1, deltas: [{ kind: 'override', element: 'W1', work: { size: 'L' } }] });
+  const w1 = async () => { const e = (await kolab.elements((await kolab.latestCommitted('c'))!.id)).find((x) => x.element_id === 'W1')!; return [e.parent_element_id, e.text, e.work?.size]; };
+  await kolab.commit(engineer, 'c', { deltas: [{ kind: 'override', element: 'W1', parent: null }] });
+  expect(await w1()).toStrictEqual([null, 'One.', 'L']);
+  await kolab.commit(engineer, 'c', { deltas: [{ kind: 'override', element: 'W1', text: 'One, mine.' }] });
+  expect(await w1()).toStrictEqual([null, 'One, mine.', 'L']);
 });
 
 test('an override resolution folded at approval still sets precedent and settles its mark (OVR8, OVR9)', async () => {
