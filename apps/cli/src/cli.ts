@@ -200,9 +200,10 @@ Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [
            it from a FIFO read once, so a review's tests find it nowhere. It renews each job's lease, ends the
            job when its harness exits, keeps a worktree with work not pushed, and waits while nothing is ready;
            Ctrl-C (or SIGTERM, SIGHUP) stops every job and gives back what it held, and a second Ctrl-C kills
-           them at once. --once takes one round and exits. --machine names this machine (its hostname); --harness
-           (or KONJIR_HARNESS) runs another command in Claude Code's place, split on spaces (no quoting). macOS
-           and Linux only, not Windows yet.
+           them at once. --once takes one job, whatever --jobs says, waits for it to end and exits; with nothing to
+           take, it says why and exits. --machine names this machine (its hostname); --harness (or KONJIR_HARNESS)
+           runs another command in Claude Code's place, split on spaces (no quoting). macOS and Linux only, not
+           Windows yet.
            konjir status [--json]: the kolab's queue by kind, its live jobs (person, machine, agent, item, since) and
            your room under the caps.
 Pages:     every list (and a long read) returns a page and next; while next isn't null, call it again with
@@ -255,6 +256,14 @@ function parseKv(argv: string[]): Record<string, unknown> {
     try { out[k] = JSON.parse(v); } catch { out[k] = v; }
   }
   return out;
+}
+
+/** What `konjir work`'s flags ask for. It takes them out of `args`, leaving only what it doesn't know. */
+export function workOptions(args: string[]) {
+  const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
+  const jobs = flag(args, 'jobs');
+  return { once: on('once'), allowAll: on('allow-all'), machine: flag(args, 'machine'), harness: flag(args, 'harness'), repo: flag(args, 'repo'),
+    ...(jobs !== undefined ? { jobs: Number(jobs) } : {}) };
 }
 
 function flag(argv: string[], name: string): string | undefined {
@@ -609,10 +618,7 @@ export async function main(argv: string[]) {
       const at = args.indexOf('-C');
       const dir = at >= 0 ? args.splice(at, 2)[1] : process.cwd();
       if (dir === undefined) throw new Error('-C names a directory');
-      const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
-      const jobs = flag(args, 'jobs');
-      const opts = { once: on('once'), allowAll: on('allow-all'), machine: flag(args, 'machine'), harness: flag(args, 'harness'), repo: flag(args, 'repo'),
-        ...(jobs !== undefined ? { jobs: Number(jobs) } : {}) };
+      const opts = workOptions(args);
       if (args.length) throw new Error(`konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>]: unknown ${args.join(' ')}`);
       const callIt = (verb: string, a: Record<string, unknown>) => call(client, verb, a);
       // The person's inbox changing (a review requested, say) looks for work at once, listening again

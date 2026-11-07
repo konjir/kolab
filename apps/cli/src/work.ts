@@ -31,6 +31,7 @@
  * worktree with work not yet pushed and removes the rest, and, while nothing is ready or Kolab can't
  * be reached, waits: polling with backoff, and woken early by a job ending or the person's inbox
  * changing. A job that can't start backs it off too, and three in a row stop it taking any more.
+ * --once takes one job, whatever --jobs says, waits for it to end and returns.
  * Stopping (SIGINT, SIGTERM, SIGHUP, or the runner failing) stops every harness and ends its job as
  * stopped, which gives back what it held. A job never merges or deploys; main's branch protection
  * (D89) is what guarantees it, and the denials here only keep a job from trying.
@@ -105,7 +106,7 @@ type Take = ({ taken: true } & TakenJob) | { taken: false; why: string; counts?:
 export interface WorkOptions {
   /** Jobs at once, at most (within the server's caps). */
   jobs?: number;
-  /** Takes at most one round of jobs, waits for them, and returns. */
+  /** Takes at most one job, whatever `jobs` says, waits for it to end, and returns. */
   once?: boolean;
   /** This machine's label in Kolab's job table; by default the hostname. */
   machine?: string;
@@ -390,7 +391,7 @@ interface Live {
 
 /**
  * `konjir work`: checks the session is a person's, the checkout is the kolab's registered repository
- * and a job could run here, then takes and runs jobs until stopped (or, with `once`, one round).
+ * and a job could run here, then takes and runs jobs until stopped (or, with `once`, one job).
  * Returns how each job ended.
  */
 export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobReport[]> {
@@ -398,8 +399,9 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   const log = deps.log ?? ((l: string) => console.error(l));
   const shell = deps.shell ?? gitShell;
   const env = deps.env ?? process.env;
-  const max = opts.jobs ?? DEFAULT_JOBS;
-  if (!Number.isInteger(max) || max < 1 || max > 32) throw new Error('--jobs is a whole number from 1 to 32 (Kolab caps a person\'s live jobs, 4 by default)');
+  const jobs = opts.jobs ?? DEFAULT_JOBS;
+  if (!Number.isInteger(jobs) || jobs < 1 || jobs > 32) throw new Error('--jobs is a whole number from 1 to 32 (Kolab caps a person\'s live jobs, 4 by default)');
+  const max = opts.once ? 1 : jobs;
   const machine = (opts.machine ?? hostname()).trim();
   if (!machine) throw new Error('--machine names this machine');
   const harness = opts.harness ?? env.KONJIR_HARNESS;
@@ -439,7 +441,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   if (!runnable(harnessCmd, env.PATH)) throw new Error(`the harness ${harnessCmd} isn't on PATH (or isn't executable): install Claude Code, or name another with --harness`);
   let round: Promise<{ base: string; branch: string }> = fetchBase().catch((e: Error) => { throw new Error(`konjir work couldn't fetch ${remote} (${repo.url}): ${e.message}`); });
   await round;
-  log(`konjir work: ${clean(me.actor)} in kolab ${clean(me.kolab)}, on ${machine}, in ${checkout.top} (${repo.url}, from ${remote}); up to ${max} job${max === 1 ? '' : 's'} at once${opts.allowAll ? ', with every permission (--allow-all)' : ''}.`);
+  log(`konjir work: ${clean(me.actor)} in kolab ${clean(me.kolab)}, on ${machine}, in ${checkout.top} (${repo.url}, from ${remote}); ${opts.once ? 'one job, then it exits (--once)' : `up to ${max} job${max === 1 ? '' : 's'} at once`}${opts.allowAll ? ', with every permission (--allow-all)' : ''}.`);
 
   const live = new Map<string, Live>();
   const reports: JobReport[] = [];
