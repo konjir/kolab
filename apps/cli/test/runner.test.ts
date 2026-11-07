@@ -15,7 +15,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, workOptions, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
 import { startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
@@ -296,6 +296,15 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   expect(out.lines.join('\n')).not.toContain('kjs_job_token');
 }, 60_000);
 
+test('konjir work reads --once and --jobs from its command line, in either order, and leaves what it doesn\'t know (W7.5)', () => {
+  expect(workOptions(['--once', '--jobs', '4'])).toMatchObject({ once: true, jobs: 4 });
+  expect(workOptions(['--jobs', '4', '--once'])).toMatchObject({ once: true, jobs: 4 });
+  expect(workOptions([])).toMatchObject({ once: false });
+  const rest = ['--once', '--twice'];
+  workOptions(rest);
+  expect(rest).toStrictEqual(['--twice']);
+});
+
 test('--once takes one job whatever --jobs says, waits for it to end and returns, leaving the rest ready (W7.5)', async () => {
   const r = repository();
   process.env = { ...process.env, ...GIT_ENV };
@@ -316,7 +325,18 @@ test('--once takes one job whatever --jobs says, waits for it to end and returns
   expect(kolab.items).toHaveLength(4);
   expect(out.lines[0]).toMatch(/; one job, then it exits \(--once\)\.$/);
   // A bad --jobs is refused all the same.
-  expect(await rejection(runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log }, { once: true, jobs: 0, harness: h.path, url: MCP }))).toMatch(/--jobs is a whole number/);
+  expect(await rejection(runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal }, { once: true, jobs: 0, harness: h.path, url: MCP }))).toMatch(/--jobs is a whole number/);
+}, 60_000);
+
+test('--once with a Kolab that can\'t be reached at the take fails, and takes nothing (W7.5)', async () => {
+  const r = repository();
+  process.env = { ...process.env, ...GIT_ENV };
+  const h = standIn(r.top);
+  const kolab = fakeKolab(r.root, { items: [{ kind: 'build', item: 'kj:test/p#W1' }] });
+  kolab.state.takeThrows = true;
+  const out = quiet();
+  expect(await rejection(runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal }, { once: true, harness: h.path, url: MCP }))).toMatch(/couldn't take a job \(fetch failed\)/);
+  expect(kolab.items).toHaveLength(1);
 }, 60_000);
 
 test('done-when: konjir work --once against a real Kolab: with nothing to take it says why and exits; with four free slots and three items ready it starts one job, waits for it and exits (W7.5)', async () => {

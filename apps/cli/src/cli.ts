@@ -258,6 +258,14 @@ function parseKv(argv: string[]): Record<string, unknown> {
   return out;
 }
 
+/** What `konjir work`'s flags ask for. It takes them out of `args`, leaving only what it doesn't know. */
+export function workOptions(args: string[]) {
+  const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
+  const jobs = flag(args, 'jobs');
+  return { once: on('once'), allowAll: on('allow-all'), machine: flag(args, 'machine'), harness: flag(args, 'harness'), repo: flag(args, 'repo'),
+    ...(jobs !== undefined ? { jobs: Number(jobs) } : {}) };
+}
+
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
   if (i < 0) return undefined;
@@ -610,10 +618,7 @@ export async function main(argv: string[]) {
       const at = args.indexOf('-C');
       const dir = at >= 0 ? args.splice(at, 2)[1] : process.cwd();
       if (dir === undefined) throw new Error('-C names a directory');
-      const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
-      const jobs = flag(args, 'jobs');
-      const opts = { once: on('once'), allowAll: on('allow-all'), machine: flag(args, 'machine'), harness: flag(args, 'harness'), repo: flag(args, 'repo'),
-        ...(jobs !== undefined ? { jobs: Number(jobs) } : {}) };
+      const opts = workOptions(args);
       if (args.length) throw new Error(`konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>]: unknown ${args.join(' ')}`);
       const callIt = (verb: string, a: Record<string, unknown>) => call(client, verb, a);
       // The person's inbox changing (a review requested, say) looks for work at once, listening again
