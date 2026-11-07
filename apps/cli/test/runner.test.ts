@@ -11,11 +11,11 @@
 // URL, and a harness not on PATH are refused before anything is taken. Inside a job, konjir never
 // falls back to a sign-in kept on the machine.
 import { afterEach, expect, jest, test } from '@jest/globals';
-import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, workOptions, removeKonjirShim, guardSettings, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, runWork, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, workOptions, removeKonjirShim, guardSettings, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, runWork, sweepJobs, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
 import { startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
@@ -465,6 +465,143 @@ test('done-when: a build job runs konjir from its PATH, the runner\'s own konjir
   expect(existsSync(bin)).toBe(false);
   expect(h.seen(job).filesWithToken).toEqual([]);
 }, 120_000);
+
+test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on this machine still runs, its modes restored first, and keeps a live runner\'s; the jobs directory then goes with rm -rf (W7.12)', async () => {
+  const jobs = join(realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-'))), 'jobs');
+  // Another runner, still running here: a process of its own.
+  const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' });
+  try {
+    const leave = (job: string, pid?: number) => {
+      writeKonjirShim(join(jobs, '.bin', job), ['/usr/bin/node', '/opt/konjir/main.js']);
+      mkdirSync(join(jobs, '.mcp'), { recursive: true });
+      execFileSync('mkfifo', ['-m', '600', join(jobs, '.mcp', `${job}.json`)]);
+      if (pid !== undefined) { mkdirSync(join(jobs, '.live'), { recursive: true }); writeFileSync(join(jobs, '.live', job), `${pid}\n`); }
+    };
+    const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' });
+    leave('JDEAD', Number(dead.stdout.trim()));
+    leave('JNONE');
+    leave('JSELF', process.pid);
+    leave('JLIVE', other.pid!);
+    // Only the FIFO is left of one, and only the marker of another; a name no job has is no job's.
+    execFileSync('mkfifo', ['-m', '600', join(jobs, '.mcp', 'JFIFO.json')]);
+    writeFileSync(join(jobs, '.live', 'JMARK'), 'not a pid\n');
+    writeFileSync(join(jobs, '.live', '.hidden'), '1\n');
+    // A person's rm -rf fails on a job's konjir, as it did after a killed runner (#116).
+    expect(spawnSync('rm', ['-rf', join(jobs, '.bin', 'JDEAD')]).status).not.toBe(0);
+    expect(existsSync(join(jobs, '.bin', 'JDEAD', 'konjir'))).toBe(true);
+
+    expect(sweepJobs(jobs, (pid) => pid === other.pid)).toEqual(['JDEAD', 'JFIFO', 'JMARK', 'JNONE', 'JSELF']);
+    expect(readdirSync(join(jobs, '.bin'))).toEqual(['JLIVE']);
+    expect(readdirSync(join(jobs, '.mcp'))).toEqual(['JLIVE.json']);
+    expect(readdirSync(join(jobs, '.live')).sort()).toEqual(['.hidden', 'JLIVE']);
+    // The live runner's are as it left them.
+    expect(statSync(join(jobs, '.bin', 'JLIVE')).mode & 0o777).toBe(0o500);
+    expect(statSync(join(jobs, '.mcp', 'JLIVE.json')).isFIFO()).toBe(true);
+    // As the machine sees it: the other runner's process is running, so it keeps its job.
+    expect(sweepJobs(jobs)).toEqual([]);
+    // Once it has gone (and been reaped), its job is no runner's.
+    await new Promise((resolve) => { other.once('exit', resolve); other.kill('SIGKILL'); });
+    expect(sweepJobs(jobs)).toEqual(['JLIVE']);
+    expect(spawnSync('rm', ['-rf', jobs]).status).toBe(0);
+    expect(existsSync(jobs)).toBe(false);
+    // Nothing there, nothing swept.
+    expect(sweepJobs(jobs)).toEqual([]);
+  } finally {
+    other.kill('SIGKILL');
+  }
+});
+
+test('done-when: a konjir work that was killed leaves its job\'s konjir behind; the next konjir work on the machine sweeps it, keeps what another runner there still runs, and the jobs directory then goes with rm -rf (W7.12)', async () => {
+  const r = repository();
+  const h = standIn(r.top);
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'test-admin-token', kolab });
+  const admin = await connect(server.url, 'test-admin-token');
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
+  const person = async (id: string, role: 'product' | 'engineer', grant: Record<string, unknown>) => {
+    await call(admin, 'admin_add_actor', { id });
+    await call(admin, 'admin_grant', { kolab: 'test', to: id, ...grant });
+    const { token } = await call(admin, 'admin_open_session', { actor: id, role }) as { token: string };
+    const c = await connect(server.url, token);
+    closeAtEnd(c);
+    return { c, token };
+  };
+  const pm = await person('pm', 'product', { level: 'write', layers: ['functional'] });
+  await call(pm.c, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
+  await call(pm.c, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });
+  await call(pm.c, 'submit_for_review', { node: 'orders', version: 1 });
+  const lead = await person('lead', 'engineer', { level: 'maintain' });
+  await call(lead.c, 'create_node', { kind: 'binding', title: 'On Postgres', id: 'orders-pg' });
+  await call(lead.c, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }], links: [{ source_element: 'b1', target: 'kj:orders@1#R1' }] });
+  await call(lead.c, 'submit_for_review', { node: 'orders-pg', version: 1 });
+  await call(lead.c, 'register_repository', { url: URL_, root_sha: r.root, binding: 'orders-pg' });
+  await call(lead.c, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' },
+    ...[1, 2].map((n) => ({ id: `W${n}`, text: `Build part ${n}.`, work: {} }))], links: [1, 2].map((n) => ({ source_element: `W${n}`, target: 'kj:orders-pg@1#b1' })) });
+  await call(lead.c, 'submit_for_review', { node: 'orders-pg', version: 2 });
+
+  // Two konjir works as the person runs them, each a process of its own, the CLI as built.
+  // Their git reaches the bare repository as r.shell's does, but for reading the remote's URL, which stays the registered one.
+  const bare = join(r.top, 'orders.git');
+  const gitBin = join(r.top, 'git-bin');
+  mkdirSync(gitBin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(gitBin, 'git'), `#!/bin/sh\ncase " $* " in *" remote "*) exec '${realGit}' "$@";; esac\nexec '${realGit}' -c 'url.${bare}.insteadOf=${URL_}.git' "$@"\n`, { mode: 0o755 });
+  const childEnv: NodeJS.ProcessEnv = { PATH: `${gitBin}:${process.env.PATH}`, HOME: r.top, TMPDIR: tmpdir(), ...GIT_ENV,
+    KONJIR_URL: server.url, KONJIR_TOKEN: lead.token, KONJIR_JOBS_DIR: r.jobsDir, KONJIR_CREDENTIALS: join(r.top, 'no-credentials.json') };
+  const runners: ReturnType<typeof spawn>[] = [];
+  // What the runners said, for a failure to show.
+  const said: string[] = [];
+  const runner = () => {
+    const p = spawn(process.execPath, [join(import.meta.dirname, '..', 'dist', 'main.js'), 'work', '--once', '--machine', 'lead-laptop', '--harness', h.path], { cwd: r.dir, env: childEnv, stdio: ['ignore', 'ignore', 'pipe'] });
+    p.stderr!.on('data', (b: Buffer) => { said.push(b.toString()); });
+    runners.push(p);
+    return { p, exited: new Promise<number | null>((resolve) => p.once('exit', (code) => resolve(code))) };
+  };
+  const started = () => readdirSync(h.dir).filter((f) => /^(?!modes)[^.]+\.json$/.test(f)).map((f) => f.replace(/\.json$/, ''));
+  try {
+    // One runner here takes a package and runs it; a second, started beside it, leaves its job alone.
+    const still = runner();
+    await until(() => started().length === 1, 60_000);
+    const [live] = started();
+    const killed = runner();
+    await until(() => started().length === 2, 60_000);
+    const gone = started().find((j) => j !== live)!;
+    expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
+    expect(readFileSync(join(r.jobsDir, '.live', gone), 'utf8')).toBe(`${killed.p.pid}\n`);
+    // The second is killed outright: nothing of it runs to remove its job's konjir. Its harness, left running, finishes.
+    killed.p.kill('SIGKILL');
+    await killed.exited;
+    h.go(gone);
+    expect(existsSync(join(r.jobsDir, '.bin', gone, 'konjir'))).toBe(true);
+    expect(spawnSync('rm', ['-rf', join(r.jobsDir, '.bin', gone)]).status).not.toBe(0);
+
+    // The next konjir work on the machine sweeps the killed runner's job, and keeps the live one's.
+    process.env = { ...process.env, ...GIT_ENV };
+    const out = quiet();
+    expect(await runWork({ call: (verb, args) => call(lead.c, verb, args), git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal },
+      { once: true, machine: 'lead-laptop', harness: h.path, url: server.url })).toEqual([]);
+    expect(out.lines).toContain(`konjir work: swept what a job no runner here still runs left in ${r.jobsDir} (${gone})`);
+    expect(existsSync(join(r.jobsDir, '.bin', gone))).toBe(false);
+    expect(existsSync(join(r.jobsDir, '.live', gone))).toBe(false);
+    expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
+    expect(readFileSync(join(r.jobsDir, '.live', live), 'utf8')).toBe(`${still.p.pid}\n`);
+
+    // The live job ends as ever, taking its own with it, and the jobs directory then goes.
+    h.go(live);
+    expect(await still.exited).toBe(0);
+    expect(readdirSync(join(r.jobsDir, '.bin'))).toEqual([]);
+    expect(readdirSync(join(r.jobsDir, '.live'))).toEqual([]);
+    expect(readdirSync(join(r.jobsDir, '.mcp'))).toEqual([]);
+    expect(spawnSync('rm', ['-rf', r.jobsDir]).status).toBe(0);
+    expect(existsSync(r.jobsDir)).toBe(false);
+  } catch (e) {
+    throw new Error(`${(e as Error).message}; the runners said:\n${said.join('')}`);
+  } finally {
+    for (const p of runners) p.kill('SIGKILL');
+  }
+}, 180_000);
 
 test('konjirCommand runs konjir as this process runs: node with its own options, which bin/konjir\'s tsx loads the source through, and its script; the shim it writes runs the source as bin/konjir does, guard and all (W7.8)', () => {
   const tsx = ['--require', '/n/tsx/dist/preflight.cjs', '--import', 'file:///n/tsx/dist/loader.mjs', '--conditions=@konjir/source'];
