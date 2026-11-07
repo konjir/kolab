@@ -23,7 +23,7 @@ const node = z.string().describe('A node in your kolab, by name (checkout), or <
 const elementInput = args({
   id: z.string().optional().describe('Stable element ID. Reuse the existing ID when editing an element; omit only for a brand-new element.'),
   text: z.string(),
-  parent: z.string().nullable().optional().describe('ID of the containing element (e.g. a section). null puts it at the top level, out of the section the version it builds on has it in; left out, it keeps its place.'),
+  parent: z.string().nullable().optional().describe('ID of the containing element (e.g. a section). null puts it at the top level, out of the section the version it builds on has it in. Left out, it takes the place that version gives it, and an element this variant moved to the top level stays there.'),
   work: workInput.nullable().optional().describe('A binding element\'s work fields, which make it a work package ({} for one with none yet). Left out, the element keeps its own (as in a delta); null clears them, making it a decision.'),
 });
 const deltaInput = args({
