@@ -2302,6 +2302,7 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
   let foldShaped: string;
   let orphaned: string;
   let imported: string;
+  let odd: string;
   try {
     await people(kolab, 'lee', { layers: ['functional'] });
     const lee = await kolab.openSession('lee', 'product');
@@ -2324,8 +2325,8 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     await kolab.createNode(lee, 'prototype', 'O', 'o');
     const o1 = await kolab.commit(lee, 'o', { elements: up });
     await kolab.createNode(lee, 'prototype', 'V', 'v');
-    await kolab.commit(lee, 'v', { parent: o1, elements: [up[0], { id: 'A1', text: 'One.', parent: null }, up[2], up[3], up[4], up[5]] });
-    await kolab.commit(lee, 'o', { elements: up.filter((e) => e.id !== 'A1') });
+    await kolab.commit(lee, 'v', { parent: o1, elements: [up[0], { id: 'A1', text: 'One.', parent: null }, up[2], up[3], up[4], { id: 'T', text: 'Top, its way.', parent: null }] });
+    await kolab.commit(lee, 'o', { elements: up.filter((e) => e.id !== 'A1' && e.id !== 'T') });
     await kolab.drainOutbox();
     orphaned = (await kolab.latestCommitted('v'))!.id;
     // An import's: a fork the file moves an element on, in another kolab.
@@ -2338,6 +2339,9 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     await kolab.submit(there, await kolab.draft(there, fork, { parent: p1, deltas: [] }));
     expect(await kolab.importKolab(there, { format: IMPORT_FORMAT, kolab: 'forked', spec: { name: 'shop', title: 'Fork', elements: [up[0], { id: 'A1', text: 'One.' }, ...up.slice(2)] } }, { update: true })).toMatchObject({ complete: true });
     imported = (await kolab.latestCommitted(fork))!.id;
+    // Two rows no release wrote, which the update must pass over: below, one is made an add and one names a parent.
+    await kolab.createNode(lee, 'prototype', 'Odd', 'odd');
+    odd = await kolab.commit(lee, 'odd', { parent: p1, elements: [up[0], { id: 'A1', text: 'One.', parent: null }, { id: 'A2', text: 'Two.', parent: null }, up[3], up[4], up[5]] });
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
@@ -2347,6 +2351,8 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     await db.query(`update element set parent_element_id = 'A' where version_id = $1 and element_id = 'A1'`, [foldShaped]);
     // An override's row on a version with no parent version: there's nothing it could have moved out of.
     await db.query(`insert into delta(id, version_id, element_id, kind, text, parent_element_id, base_fingerprint, state) values ('01ZZZZZZZZZZZZZZZZZZZZNOPV', $1, 'T', 'override', 'Top.', null, null, 'clean')`, [first]);
+    await db.query(`update delta set kind = 'add', base_version_id = null, base_fingerprint = null where version_id = $1 and element_id = 'A1'`, [odd]);
+    await db.query(`update delta set parent_element_id = 'A' where version_id = $1 and element_id = 'A2'`, [odd]);
     const before = (await db.query<Record<string, unknown>>(`select * from delta order by id`)).rows;
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [45] });
     // Nothing else is rewritten: every row as it was, with the new column.
@@ -2356,7 +2362,9 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     expect(await movedIn(imported)).toStrictEqual([{ element_id: 'A1' }]);
     expect(await movedIn(foldShaped)).toStrictEqual([]);
     expect(await movedIn(first)).toStrictEqual([]);
-    expect(await movedIn(orphaned)).toStrictEqual([]);
+    expect(await movedIn(odd)).toStrictEqual([]);
+    // An orphan's parent has no such element, so its base says where it was: A1 was moved, and T was at the top level all along.
+    expect(await movedIn(orphaned)).toStrictEqual([{ element_id: 'A1' }]);
     expect((await db.query(`select state, parent_element_id from delta where version_id = $1 and element_id = 'A1'`, [orphaned])).rows).toStrictEqual([{ state: 'orphaned', parent_element_id: null }]);
     expect((await db.query(`select 1 from delta where version_id = $1 and not top_level`, [variant])).rows.length).toBeGreaterThanOrEqual(4);
     // A row can't both name a parent and say top level.
@@ -2373,5 +2381,9 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     await kolab.drainOutbox();
     const now = await kolab.elements((await kolab.latestCommitted('p'))!.id);
     expect(Object.fromEntries(now.map((e) => [e.element_id, e.parent_element_id]))).toMatchObject({ A1: null, A2: 'A', A3: 'A' });
+    // The orphan keeps its move when upstream adds the element back to its section.
+    await kolab.commit(lee, 'o', { elements: up });
+    await kolab.drainOutbox();
+    expect((await kolab.elements((await kolab.latestCommitted('v'))!.id)).find((e) => e.element_id === 'A1')!.parent_element_id).toBeNull();
   } finally { await kolab.close(); }
 });

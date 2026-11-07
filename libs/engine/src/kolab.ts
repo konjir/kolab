@@ -4300,7 +4300,7 @@ export class Kolab {
       deltaRows = diff(parentEls, input.elements.map((e) => {
         const id = e.id ?? ulid();
         return { ...e, id, ...(e.parent === undefined && moved.has(id) ? { parent: null } : {}) };
-      }), parentId);
+      }), parentId, moved);
     } else {
       const byId = new Map(parentEls.map((e) => [e.element_id, e]));
       deltaRows = [...carried, ...(input.deltas ?? []).map((d) => {
@@ -4315,16 +4315,20 @@ export class Kolab {
           throw new Error(`cannot ${d.kind} ${d.element}: not in parent. The version this draft builds on has no element ${d.element}: check its id (it has ${ids.slice(0, 12).join(', ')}${ids.length > 12 ? `, and ${ids.length - 12} more` : ''}). If ${d.element} was new in a draft that came back, add it again (kind add)`);
         }
         const was = replaced.get(d.element);
+        // The exception it replaces, if it still holds the element: what the delta leaves out stays as that says.
+        const own = d.kind === 'override' && was && was.kind !== 'remove' ? was : undefined;
         // `parent: null` says top level; a parent left out keeps the place the live version gave it.
-        const topLevel = d.kind !== 'remove' && (d.parent === null ? !!base?.parent_element_id : d.parent === undefined && !!was?.top_level);
+        const topLevel = d.kind !== 'remove' && (d.parent === null ? !!base?.parent_element_id || !!was?.top_level : d.parent === undefined && !!was?.top_level);
+        // Saying only where the element sits answers nothing about its words: what they rest on, and a question open on them, stay.
+        const placeOnly = own?.kind === 'override' && d.text === undefined && d.work === undefined;
         return {
-          element_id: d.element, kind: d.kind, text: d.text ?? null,
+          element_id: d.element, kind: d.kind, text: d.text ?? own?.text ?? null,
           parent_element_id: topLevel || d.parent === null ? null : d.parent ?? was?.parent_element_id ?? base?.parent_element_id ?? null, ord: null,
           top_level: topLevel,
-          base_version_id: d.kind === 'add' ? null : parentId,
-          base_fingerprint: base?.fingerprint ?? null, state: 'clean' as const,
+          base_version_id: placeOnly ? own.base_version_id : d.kind === 'add' ? null : parentId,
+          base_fingerprint: placeOnly ? own.base_fingerprint : base?.fingerprint ?? null, state: placeOnly ? own.state : 'clean' as const,
           // Given, it replaces the element's work fields whole; left out, the element keeps its own.
-          work: d.kind === 'remove' ? null : d.work !== undefined ? d.work : base?.work ?? null,
+          work: d.kind === 'remove' ? null : d.work !== undefined ? d.work : own ? own.work : base?.work ?? null,
         };
       })];
     }
@@ -6269,18 +6273,18 @@ export class Kolab {
         kept.push({ ...rest, text: d.text ?? old.text, parent_element_id: old.parent_element_id, ord: old.ord, state: 'orphaned' });
         continue;
       }
+      if (await this.holdsOnlyMove(d)) {
+        // It says nothing of the words or the work fields, so it takes the parent's new ones and raises nothing.
+        kept.push(moveOnly(rest, pe, newParent.id));
+        continue;
+      }
       if (pe.fingerprint === d.base_fingerprint) {
         // Parent's text is what the override was written against (or reverted to it).
         kept.push({ ...rest, base_version_id: newParent.id, state: 'clean' });
         continue;
       }
-      if (await this.holdsOnlyMove(d)) {
-        // It says nothing of the words or the work fields, so it takes the parent's new ones and raises nothing.
-        if (keepsMove(rest, pe)) kept.push(moveOnly(rest, pe, newParent.id));
-        continue;
-      }
       if (d.kind === 'override' && elementFingerprint(d.text ?? pe.text, d.work) === pe.fingerprint) { // converged
-        if (keepsMove(rest, pe)) kept.push(moveOnly(rest, pe, newParent.id));
+        if (d.top_level) kept.push(moveOnly(rest, pe, newParent.id));
         continue;
       }
 
@@ -6291,7 +6295,7 @@ export class Kolab {
         [d.base_fingerprint, pe.fingerprint, childFp, child.kolab_id]);
       const prec = p.rows[0];
       if (prec?.resolution === 'adopt_parent') {
-        if (keepsMove(rest, pe)) kept.push(moveOnly(rest, pe, newParent.id));
+        if (d.top_level) kept.push(moveOnly(rest, pe, newParent.id));
         continue;
       }
       if (prec) {
@@ -6704,9 +6708,14 @@ export class Kolab {
     }
   }
 
-  /** Whether a delta says only that its element sits at the top level: no words of its own, and the work fields of the element it builds on. */
+  /**
+   * Whether a delta says only that its element sits at the top level: no words of its own, and the
+   * work fields of the element it builds on. An orphaned row holds words because the parent had none
+   * to lend, so it says only the move if they are what it builds on.
+   */
   private async holdsOnlyMove(d: DeltaRow): Promise<boolean> {
-    if (d.kind !== 'override' || !d.top_level || d.text !== null || !d.base_version_id) return false;
+    if (d.kind !== 'override' || !d.top_level || !d.base_version_id) return false;
+    if (d.text !== null) return d.state === 'orphaned' && elementFingerprint(d.text, d.work) === d.base_fingerprint;
     const base = (await this.elements(d.base_version_id)).find((e) => e.element_id === d.element_id);
     return !!base && elementFingerprint(base.text, d.work) === d.base_fingerprint;
   }
@@ -6729,7 +6738,7 @@ export class Kolab {
     const next = deltas.flatMap(({ id: _i, version_id: _v, ...rest }) => {
       if (rest.element_id !== d.element_id) return [rest];
       // Adopting the parent's text leaves a move to the top level standing: the question asks about the text.
-      if (resolution === 'adopt_parent') return pe && keepsMove(rest, pe) ? [moveOnly(rest, pe, v.parent_version_id!)] : [];
+      if (resolution === 'adopt_parent') return pe && rest.top_level ? [moveOnly(rest, pe, v.parent_version_id!)] : [];
       const text = resolution === 'amend' ? amendedText! : rest.text;
       if (!pe) return [{ ...rest, kind: 'add' as const, text, base_version_id: null, base_fingerprint: null, state: 'clean' as const }];
       return [{ ...rest, text, base_version_id: v.parent_version_id, base_fingerprint: pe.fingerprint, state: 'clean' as const }];
@@ -11801,7 +11810,9 @@ function draftWork(node: { name: string; kind: Kind }, input: { elements?: Eleme
 }
 
 function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
-  parentVersionId: string | null): Omit<DeltaRow, 'id' | 'version_id'>[] {
+  parentVersionId: string | null,
+  /** Elements the live version moved to the top level, which stay moved even where the parent has them there too. */
+  moved: ReadonlySet<string> = new Set()): Omit<DeltaRow, 'id' | 'version_id'>[] {
   const byId = new Map(parent.map((e) => [e.element_id, e]));
   const out: Omit<DeltaRow, 'id' | 'version_id'>[] = [];
   next.forEach((e, ord) => {
@@ -11811,9 +11822,9 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
     const work = e.work === undefined ? p?.work ?? null : e.work;
     const base = { element_id: id, text: e.text, parent_element_id: e.parent ?? null, ord, state: 'clean' as const, work };
     if (!p) out.push({ ...base, top_level: false, kind: 'add', base_version_id: null, base_fingerprint: null });
-    else if (p.fingerprint !== elementFingerprint(e.text, work) || p.parent_element_id !== (e.parent ?? null) || p.ord !== ord) {
+    else if (p.fingerprint !== elementFingerprint(e.text, work) || p.parent_element_id !== (e.parent ?? null) || p.ord !== ord || (e.parent === null && moved.has(id))) {
       // `parent: null` says top level; a parent left out keeps the element's place.
-      out.push({ ...base, top_level: e.parent === null && p.parent_element_id !== null, kind: 'override', base_version_id: parentVersionId, base_fingerprint: p.fingerprint });
+      out.push({ ...base, top_level: e.parent === null && (p.parent_element_id !== null || moved.has(id)), kind: 'override', base_version_id: parentVersionId, base_fingerprint: p.fingerprint });
     }
   });
   const nextIds = new Set(next.map((e) => e.id));
@@ -11825,9 +11836,6 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
   }
   return out;
 }
-
-/** Whether a delta whose words the parent's element has come to hold still says something: that the element sits at the top level, where the parent's doesn't. */
-const keepsMove = (d: Omit<DeltaRow, 'id' | 'version_id'>, parent: ElementRow) => d.top_level && parent.parent_element_id !== null;
 
 /**
  * That delta, holding only the move: no words, so the element reads the parent's, now and after the
