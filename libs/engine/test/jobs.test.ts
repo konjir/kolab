@@ -133,6 +133,55 @@ test('a person\'s session takes a review before a ready package; two takes give 
   expect(await take(kolab, lee)).toMatchObject({ kind: 'build', item: W('W3'), agent: 'lee-engineer-1' });
 });
 
+// What a review job is told to do beyond reading the code and running the tests (W7.6), each ask on
+// its own, so that dropping any one of them fails.
+const SHOW_TESTS_FAIL = /for each new or changed test, show it fails when the change it pins is broken/i;
+const CANT_FAIL = /assertions that can't fail/;
+const BY_CHANCE = /tests that can fail by chance/;
+const UNCOVERED_CASES = /Try the done-when's cases the tests don't cover/;
+const RUN_AND_READ = /Say in the note what you ran and what you only read\./;
+const NAME_THE_PART = /When any part of the done-when isn't met, name that part and request changes/;
+
+test('a review job tries to break what it reviews: its instructions, as a take gives them, ask for each thing and for a verdict that says what was run (W7.6, PLN16)', async () => {
+  const { kolab, bob, lee } = await planned(2);
+  expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { id: 'W1' } });
+  await kolab.submitWork(bob, W('W1'), { evidence: [COMMIT('a')] });
+  const work = await take(kolab, lee);
+  expect(work).toMatchObject({ kind: 'review', item: W('W1') });
+  const steps = playbookOf(work.instructions).split('\n');
+  const step = (n: number) => steps.find((l) => l.startsWith(`${n}. `))!;
+  // The asks come before the verdict, as steps of their own, and the verdict's note has room for what was run.
+  for (const ask of [SHOW_TESTS_FAIL, CANT_FAIL, BY_CHANCE, UNCOVERED_CASES]) expect(step(3)).toMatch(ask);
+  for (const ask of [RUN_AND_READ, NAME_THE_PART]) expect(step(4)).toMatch(ask);
+  expect(step(4)).toMatch(/verdict=approve note="<why it meets each part of its done-when; what you ran; what you only read>"/);
+  expect(step(4)).toMatch(/verdict=request_changes note="<what must change; what you ran; what you only read>"/);
+  // Breaking a change to show a test fails never reaches what it reviews.
+  expect(step(3)).toMatch(/in your own checkout, run the test, and put the change back, pushing none of it/);
+  expect(step(3)).toMatch(/read CI's Test on Postgres for the head you review \(gh run view\); if it hasn't passed, that part isn't met/);
+  expect(step(4)).toMatch(/however good the rest is; a defect step 3 finds in a test or a case the done-when asks for is such a part/);
+  expect(step(4)).toMatch(/A defect step 3 finds in any other test this change adds or changes is a reason to request changes too/);
+  expect(step(4)).toMatch(/something no job can do \(a merge, a deploy, a person's decision\), say so in the note: its builder hands it to a person/);
+
+  // A version built from a repository is asked what a version can be: it has no done-when of its own.
+  const build = await take(kolab, lee);
+  expect(build).toMatchObject({ kind: 'build', item: W('W2') });
+  const v = await kolab.draft(build.token, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', text: 'Binding element 1, revised.' }] });
+  expect(await kolab.submit(build.token, v)).toMatchObject({ in_review: true });
+  const version = await take(kolab, lee);
+  expect(version).toMatchObject({ kind: 'review', item: 'kj:orders-pg@3' });
+  const told = playbookOf(version.instructions);
+  for (const ask of [SHOW_TESTS_FAIL, CANT_FAIL, BY_CHANCE, RUN_AND_READ]) expect(told).toMatch(ask);
+  for (const ask of [UNCOVERED_CASES, NAME_THE_PART]) expect(told).not.toMatch(ask);
+  expect(told).toMatch(/pushing none of it/);
+  expect(told).toMatch(/verdict=approve note="<why; what you ran; what you only read>"/);
+  expect(told).toMatch(/A defect step 2 finds in a test is a reason to request changes/);
+
+  // The playbook as it is served holds both, and says what done is the same way.
+  const served = playbookText('review');
+  for (const ask of [SHOW_TESTS_FAIL, CANT_FAIL, BY_CHANCE, UNCOVERED_CASES, RUN_AND_READ, NAME_THE_PART]) expect(served).toMatch(ask);
+  expect(served).toMatch(/\nDone: .*what was run and what was only read.*naming any part of a work package's done-when that isn't met\.\n/);
+});
+
 test('a technical version in review is a review job too, never its author\'s; an agent reviews it as itself (JOB2, VER16)', async () => {
   const { kolab, bob, lee } = await planned(2);
   // A pool agent of lee's drafts the binding: its version waits in review.
@@ -333,7 +382,7 @@ test('a job\'s instructions are its kind\'s playbook filled in with its item, an
   const r = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p#W1', subject: 'work', author: 'ann-engineer-1' });
   expect(r).toMatch(/check out its pull request/i);
   expect(r).toMatch(/run the tests/);
-  expect(r).toMatch(/\nHow to do it:\n1\. Read it: konjir_read_work work=kj:p#W1 .*\n2\. .*\n3\. Give your verdict.*\n\nThen stop\./);
+  expect(r).toMatch(/\nHow to do it:\n1\. Read it: konjir_read_work work=kj:p#W1 .*\n2\. .*\n3\. Try to break it.*\n4\. Give your verdict.*\n\nThen stop\./);
   const v = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p@2', subject: 'version', author: 'ann-engineer-1', node: 'p', seq: 2 });
   expect(v).toMatch(/\nHow to do it:\n1\. Call konjir_instructions which=reviewer once.*\n2\. Read it: konjir_read_node node=p version=2,.*\n3\. .*\n4\. .*konjir_review node=p version=2 verdict=approve.*\n\nThen stop\./);
   // Nothing of the template is left in what a job is told, and what an item says is never read as a tag.
@@ -516,6 +565,28 @@ test('ending a job gives back only its own item: a build its own package, a revi
   // Ending it gives back W1 only, not W2.
   expect(await kolab.endJob(lee, { job: resumed.job, outcome: 'stopped' })).toMatchObject({ outcome: 'stopped', released: W('W1'), state: 'todo' });
   expect(await row(kolab, 'W2')).toMatchObject({ state: 'in_progress', assignee_id: 'lee-engineer-1' });
+});
+
+test('a package whose review leaves only what no job can do goes to a person: its builder asks and releases, no job takes it while the question is open, and an answer job hands the question on (W7.6, PLN19)', async () => {
+  const { kolab, lee } = await planned(1);
+  const built = await take(kolab, lee);
+  await kolab.submitWork(built.token, W('W1'), { evidence: [COMMIT('a')] });
+  await kolab.endJob(lee, { job: built.job, outcome: 'done' });
+  const review = await take(kolab, lee);
+  expect(review.instructions).toMatch(/something no job can do \(a merge, a deploy, a person's decision\), say so in the note/);
+  await kolab.reviewWork(review.token, W('W1'), { verdict: 'request_changes', note: 'Only the deploy is left, and no job can do that.' });
+  await kolab.endJob(lee, { job: review.job, outcome: 'done' });
+  const again = await take(kolab, lee);
+  expect(again).toMatchObject({ kind: 'build', item: W('W1') });
+  expect(again.instructions).toMatch(/If the review note says what's left is something no job can do, don't submit it again: ask a person for it with konjir_ask \(from=kj:orders-pg#W1\), then release it/);
+  await kolab.raiseQuery(again.token, W('W1'), 'Only the deploy is left. Will a person do it?', { from: W('W1') });
+  await kolab.releaseWork(again.token, W('W1'), { note: 'Only the deploy is left; see the question.' });
+  await kolab.endJob(lee, { job: again.job, outcome: 'done' });
+  // No build or review job takes the package while the question is open; an answer job takes the question, and is told to hand this on.
+  expect(await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ['build', 'review'] })).toMatchObject({ taken: false });
+  const answer = await take(kolab, lee);
+  expect(answer).toMatchObject({ kind: 'answer' });
+  expect(answer.instructions).toMatch(/something no job can do, such as a merge or a deploy\), don't answer it/);
 });
 
 test('an item whose last two jobs ended in the last hour without doing it is held back, and the refusal says how many (JOB2)', async () => {
