@@ -39,6 +39,8 @@ import {
 interface DeltaRow {
   id: string; version_id: string; element_id: string; kind: DeltaKind;
   text: string | null; parent_element_id: string | null; ord: number | null;
+  /** It moves its element to the top level, out of the section the parent has it in; a null parent alone keeps the parent's place. */
+  top_level: boolean;
   base_version_id: string | null; base_fingerprint: string | null;
   state: 'clean' | 'dirty' | 'orphaned';
   /**
@@ -4243,14 +4245,18 @@ export class Kolab {
     const latest = await this.latestCommitted(nodeId);
     let parentId = input.parent ?? latest?.id ?? null;
     let carried: Omit<DeltaRow, 'id' | 'version_id'>[] = [];
+    // The exceptions a delta replaces: one that doesn't name a parent stays where the exception put its element.
+    const replaced = new Map<string, DeltaRow>();
     if (!input.parent && latest?.parent_version_id
         && (await this.version(latest.parent_version_id)).node_id !== nodeId) {
       parentId = latest.parent_version_id;
       if (!input.elements) {
         const touched = new Set((input.deltas ?? []).map((d) => d.element));
-        carried = (await this.deltas(latest.id))
-          .filter((d) => !touched.has(d.element_id))
-          .map(({ id: _i, version_id: _v, ...rest }) => rest);
+        for (const d of await this.deltas(latest.id)) {
+          const { id: _i, version_id: _v, ...rest } = d;
+          if (touched.has(d.element_id)) replaced.set(d.element_id, d);
+          else carried.push(rest);
+        }
       }
     }
     let parentEls: ElementRow[] = [];
@@ -4304,9 +4310,12 @@ export class Kolab {
           const ids = parentEls.map((e) => e.element_id);
           throw new Error(`cannot ${d.kind} ${d.element}: not in parent. The version this draft builds on has no element ${d.element}: check its id (it has ${ids.slice(0, 12).join(', ')}${ids.length > 12 ? `, and ${ids.length - 12} more` : ''}). If ${d.element} was new in a draft that came back, add it again (kind add)`);
         }
+        const was = replaced.get(d.element);
+        const topLevel = d.kind !== 'remove' && d.parent === undefined && !!was?.top_level;
         return {
           element_id: d.element, kind: d.kind, text: d.text ?? null,
-          parent_element_id: d.parent ?? base?.parent_element_id ?? null, ord: null,
+          parent_element_id: topLevel ? null : d.parent ?? was?.parent_element_id ?? base?.parent_element_id ?? null, ord: null,
+          top_level: topLevel,
           base_version_id: d.kind === 'add' ? null : parentId,
           base_fingerprint: base?.fingerprint ?? null, state: 'clean' as const,
           // Given, it replaces the element's work fields whole; left out, the element keeps its own.
@@ -4315,7 +4324,7 @@ export class Kolab {
       })];
     }
 
-    const els = materialize(parentEls, deltaRows, new Set((input.elements ?? []).filter((e) => e.parent === null).map((e) => e.id!)));
+    const els = materialize(parentEls, deltaRows);
     checkVersion(els);
     // A new id holds no '~' either; one the version builds on is kept as it is (JOB6).
     checkElementIds(input, new Set(parentEls.map((e) => e.element_id)));
@@ -6259,7 +6268,10 @@ export class Kolab {
         kept.push({ ...rest, base_version_id: newParent.id, state: 'clean' });
         continue;
       }
-      if (d.kind === 'override' && elementFingerprint(d.text ?? pe.text, d.work) === pe.fingerprint) continue; // converged
+      if (d.kind === 'override' && elementFingerprint(d.text ?? pe.text, d.work) === pe.fingerprint) { // converged
+        if (keepsMove(rest, pe)) kept.push(moveOnly(rest, pe, newParent.id));
+        continue;
+      }
 
       const childFp = d.kind === 'remove' ? 'REMOVED' : elementFingerprint(d.text ?? pe.text, d.work);
       const p = await this.db.query<{ resolution: OverrideResolution; amended_text: string | null }>(
@@ -6267,7 +6279,10 @@ export class Kolab {
           where base_fingerprint = $1 and parent_fingerprint = $2 and child_fingerprint = $3 and kolab_id = $4`,
         [d.base_fingerprint, pe.fingerprint, childFp, child.kolab_id]);
       const prec = p.rows[0];
-      if (prec?.resolution === 'adopt_parent') continue;
+      if (prec?.resolution === 'adopt_parent') {
+        if (keepsMove(rest, pe)) kept.push(moveOnly(rest, pe, newParent.id));
+        continue;
+      }
       if (prec) {
         kept.push({
           ...rest, text: prec.resolution === 'amend' ? prec.amended_text : d.text,
@@ -6695,7 +6710,8 @@ export class Kolab {
 
     const next = deltas.flatMap(({ id: _i, version_id: _v, ...rest }) => {
       if (rest.element_id !== d.element_id) return [rest];
-      if (resolution === 'adopt_parent') return [];
+      // Adopting the parent's text leaves a move to the top level standing: the question asks about the text.
+      if (resolution === 'adopt_parent') return pe && keepsMove(rest, pe) ? [moveOnly(rest, pe, v.parent_version_id!)] : [];
       const text = resolution === 'amend' ? amendedText! : rest.text;
       if (!pe) return [{ ...rest, kind: 'add' as const, text, base_version_id: null, base_fingerprint: null, state: 'clean' as const }];
       return [{ ...rest, text, base_version_id: v.parent_version_id, base_fingerprint: pe.fingerprint, state: 'clean' as const }];
@@ -11776,25 +11792,32 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
     // Work fields left out keep the element's own, as a delta's do; null clears them (D98).
     const work = e.work === undefined ? p?.work ?? null : e.work;
     const base = { element_id: id, text: e.text, parent_element_id: e.parent ?? null, ord, state: 'clean' as const, work };
-    if (!p) out.push({ ...base, kind: 'add', base_version_id: null, base_fingerprint: null });
+    if (!p) out.push({ ...base, top_level: false, kind: 'add', base_version_id: null, base_fingerprint: null });
     else if (p.fingerprint !== elementFingerprint(e.text, work) || p.parent_element_id !== (e.parent ?? null) || p.ord !== ord) {
-      out.push({ ...base, kind: 'override', base_version_id: parentVersionId, base_fingerprint: p.fingerprint });
+      // `parent: null` says top level; a parent left out keeps the element's place.
+      out.push({ ...base, top_level: e.parent === null && p.parent_element_id !== null, kind: 'override', base_version_id: parentVersionId, base_fingerprint: p.fingerprint });
     }
   });
   const nextIds = new Set(next.map((e) => e.id));
   for (const p of parent) {
     if (!nextIds.has(p.element_id)) {
       out.push({ element_id: p.element_id, kind: 'remove', text: null, parent_element_id: p.parent_element_id,
-        ord: null, base_version_id: parentVersionId, base_fingerprint: p.fingerprint, state: 'clean', work: null });
+        ord: null, top_level: false, base_version_id: parentVersionId, base_fingerprint: p.fingerprint, state: 'clean', work: null });
     }
   }
   return out;
 }
 
+/** Whether a delta whose words the parent's element has come to hold still says something: that the element sits at the top level, where the parent's doesn't. */
+const keepsMove = (d: Omit<DeltaRow, 'id' | 'version_id'>, parent: ElementRow) => d.top_level && parent.parent_element_id !== null;
+
+/** That delta, holding the parent's words and work fields and only the move. */
+const moveOnly = (d: Omit<DeltaRow, 'id' | 'version_id'>, parent: ElementRow, parentVersionId: string): Omit<DeltaRow, 'id' | 'version_id'> => ({
+  ...d, text: parent.text, work: parent.work ?? null, base_version_id: parentVersionId, base_fingerprint: parent.fingerprint, state: 'clean',
+});
+
 /** Parent elements overlaid by deltas. Dirty and orphaned overrides still apply. */
-function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'version_id'>[],
-  /** Elements named as top level (`parent: null`, an import), which a null parent alone doesn't move. */
-  topLevel: ReadonlySet<string> = new Set()): ElementRow[] {
+function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'version_id'>[]): ElementRow[] {
   const map = new Map(parent.map((e) => [e.element_id, { ...e }]));
   let maxOrd = parent.reduce((m, e) => Math.max(m, e.ord), -1);
   const removed = new Set<string>();
@@ -11806,7 +11829,7 @@ function materialize(parent: ElementRow[], deltas: Omit<DeltaRow, 'id' | 'versio
     const work = d.work ?? undefined;
     map.set(d.element_id, {
       element_id: d.element_id,
-      parent_element_id: d.parent_element_id ?? (topLevel.has(d.element_id) ? null : existing?.parent_element_id ?? null),
+      parent_element_id: d.top_level ? null : d.parent_element_id ?? existing?.parent_element_id ?? null,
       ord: d.ord ?? existing?.ord ?? ++maxOrd,
       text,
       fingerprint: elementFingerprint(text, work),
@@ -12795,10 +12818,10 @@ async function writeVersion(tx: Q, v: Omit<VersionRow, 'state' | 'kolab_id'>, el
   for (const d of deltas) {
     await tx.query(
       `insert into delta(id, version_id, element_id, kind, text, parent_element_id, ord,
-                         base_version_id, base_fingerprint, state, work)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+                         base_version_id, base_fingerprint, state, work, top_level)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)`,
       [ulid(), v.id, d.element_id, d.kind, d.text, d.parent_element_id, d.ord,
-        d.base_version_id, d.base_fingerprint, d.state, d.work ? JSON.stringify(d.work) : null]);
+        d.base_version_id, d.base_fingerprint, d.state, d.work ? JSON.stringify(d.work) : null, d.top_level]);
   }
 }
 
