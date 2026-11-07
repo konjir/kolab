@@ -15,8 +15,9 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
-import { rejection } from '@konjir/engine/testing';
+import { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, leaseLeft, main, runWork, workStatus, type JobReport, type TakenJob } from '../src/cli.js';
+import { startServer } from '@konjir/server';
+import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
 const env = { ...process.env };
 // Every runner a test starts is stopped at its end, passed or failed, so no stand-in outlives it.
@@ -222,8 +223,9 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   const h = standIn(r.top);
   const kolab = fakeKolab(r.root, { items: [{ kind: 'build', item: 'kj:test/orders-plan#W1' }, { kind: 'review', item: 'kj:test/orders-plan#W2' }] });
   const out = quiet();
-  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, signal: stopper().signal },
-    { once: true, jobs: 4, machine: 'lee-laptop', harness: h.path, url: MCP });
+  const stop = stopper();
+  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, signal: stop.signal },
+    { jobs: 4, machine: 'lee-laptop', harness: h.path, url: MCP });
   // Both running at once: each has started, and neither has been let go.
   await until(() => h.started('J1') && h.started('J2'));
   const j1 = h.seen('J1');
@@ -275,6 +277,8 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   kolab.hold('J2');
   kolab.release('J2');
   h.go('J2');
+  await until(() => ['J1', 'J2'].every((j) => out.lines.some((l) => l.startsWith(`job ${j}: done`))));
+  stop.abort();
   const reports = await running;
   expect(reports.sort((a, b) => a.job.localeCompare(b.job))).toEqual([
     expect.objectContaining({ job: 'J1', outcome: 'done', ledger: 'submitted', exit: 0, kept: '1 commit(s) not pushed', worktree: j1.cwd }),
@@ -289,6 +293,83 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   expect(git(r.dir, 'worktree', 'list')).not.toContain(j2.cwd);
   expect(out.lines.join('\n')).not.toContain('kjs_job_token');
 }, 60_000);
+
+test('--once takes one job whatever --jobs says, waits for it to end and returns, leaving the rest ready (W7.5)', async () => {
+  const r = repository();
+  process.env = { ...process.env, ...GIT_ENV };
+  const h = standIn(r.top);
+  const kolab = fakeKolab(r.root, { items: [1, 2, 3, 4, 5].map((n) => ({ kind: 'build' as const, item: `kj:test/p#W${n}` })) });
+  const out = quiet();
+  let returned = false;
+  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, pollFirstMs: 20, pollLongestMs: 40, signal: stopper().signal },
+    { once: true, jobs: 8, machine: 'lee-laptop', harness: h.path, url: MCP }).finally(() => { returned = true; });
+  await until(() => h.started('J1'));
+  // It runs alone, for as long as it takes: heartbeats go by, and nothing more is taken.
+  await until(() => kolab.calls.filter(([v]) => v === 'renew_job').length >= 3);
+  expect(returned).toBe(false);
+  expect(kolab.calls.filter(([v]) => v === 'take_job')).toHaveLength(1);
+  h.go('J1');
+  expect(await running).toEqual([expect.objectContaining({ job: 'J1', outcome: 'done', ledger: 'submitted' })]);
+  expect(kolab.calls.filter(([v]) => v === 'take_job')).toHaveLength(1);
+  expect(kolab.items).toHaveLength(4);
+  expect(out.lines[0]).toMatch(/; one job, then it exits \(--once\)\.$/);
+  // A bad --jobs is refused all the same.
+  expect(await rejection(runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log }, { once: true, jobs: 0, harness: h.path, url: MCP }))).toMatch(/--jobs is a whole number/);
+}, 60_000);
+
+test('done-when: konjir work --once against a real Kolab: with nothing to take it says why and exits; with four free slots and three items ready it starts one job, waits for it and exits (W7.5)', async () => {
+  const r = repository();
+  const h = standIn(r.top);
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'test-admin-token', kolab });
+  const admin = await connect(server.url, 'test-admin-token');
+  closeAtEnd(server, admin);
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  await call(admin, 'admin_add_kolab', { name: 'test', owner: 'test-org' });
+  const person = async (id: string, role: 'product' | 'engineer', grant: Record<string, unknown>) => {
+    await call(admin, 'admin_add_actor', { id });
+    await call(admin, 'admin_grant', { kolab: 'test', to: id, ...grant });
+    const { token } = await call(admin, 'admin_open_session', { actor: id, role }) as { token: string };
+    const c = await connect(server.url, token);
+    closeAtEnd(c);
+    return { c, token };
+  };
+  const pm = await person('pm', 'product', { level: 'write', layers: ['functional'] });
+  await call(pm.c, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
+  await call(pm.c, 'draft', { node: 'orders', elements: [{ id: 'R1', text: 'Orders can be cancelled.' }] });
+  await call(pm.c, 'submit_for_review', { node: 'orders', version: 1 });
+  // Added after the spec committed, so it needed no review.
+  const lead = await person('lead', 'engineer', { level: 'maintain' });
+  await call(lead.c, 'create_node', { kind: 'binding', title: 'On Postgres', id: 'orders-pg' });
+  await call(lead.c, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }], links: [{ source_element: 'b1', target: 'kj:orders@1#R1' }] });
+  await call(lead.c, 'submit_for_review', { node: 'orders-pg', version: 1 });
+  await call(lead.c, 'register_repository', { url: URL_, root_sha: r.root, binding: 'orders-pg' });
+
+  process.env = { ...process.env, ...GIT_ENV };
+  const out = quiet();
+  const work = () => runWork({ call: (verb, args) => call(lead.c, verb, args), git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal },
+    { once: true, jobs: 4, machine: 'lead-laptop', harness: h.path, url: server.url });
+  const live = async () => (await call(lead.c, 'list_jobs', { live: true }) as { jobs: { job: string; item: string; machine: string }[]; queue: { build: number } });
+
+  expect(await work()).toEqual([]);
+  expect(out.lines.some((l) => /^nothing taken: .*\(your jobs 0\/4, the kolab's 0\/8\)$/.test(l))).toBe(true);
+  expect((await live()).jobs).toEqual([]);
+
+  await call(lead.c, 'draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' },
+    ...[1, 2, 3].map((n) => ({ id: `W${n}`, text: `Build part ${n}.`, work: {} }))], links: [1, 2, 3].map((n) => ({ source_element: `W${n}`, target: 'kj:orders-pg@1#b1' })) });
+  await call(lead.c, 'submit_for_review', { node: 'orders-pg', version: 2 });
+  let returned = false;
+  const running = work().finally(() => { returned = true; });
+  await until(() => readdirSync(h.dir).some((f) => /^(?!modes).*\.json$/.test(f)));
+  const job = readdirSync(h.dir).find((f) => /^(?!modes).*\.json$/.test(f))!.replace(/\.json$/, '');
+  const now = await live();
+  expect(now.jobs).toMatchObject([{ job, item: 'kj:orders-pg#W1', machine: 'lead-laptop' }]);
+  expect(now.queue.build).toBe(2);
+  expect(returned).toBe(false);
+  h.go(job);
+  expect(await running).toMatchObject([{ job, kind: 'build', item: 'kj:orders-pg#W1', outcome: 'done', exit: 0 }]);
+  expect((await live()).jobs).toEqual([]);
+}, 120_000);
 
 test('a job Kolab ended while its harness still runs is stopped, and reported lost with how Kolab ended it, without ending it again (JOB4)', async () => {
   const r = repository();
@@ -399,8 +480,11 @@ test('the token is redacted from a job\'s log and note, however its output cuts 
   process.env = { ...process.env, ...GIT_ENV };
   const h = standIn(r.top, { J1: 'leak', J2: 'branch' });
   const kolab = fakeKolab(r.root, { items: [{ kind: 'build', item: 'kj:test/p#W1' }, { kind: 'build', item: 'kj:test/p#W2' }, { kind: 'build', item: 'kj:test/p#W3', job: '../evil' }] });
-  const reports = await runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: () => undefined, signal: stopper().signal },
-    { once: true, harness: h.path, url: MCP });
+  const reports: JobReport[] = [];
+  for (let i = 0; i < 3; i++) {
+    reports.push(...await runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: () => undefined, signal: stopper().signal },
+      { once: true, harness: h.path, url: MCP }));
+  }
   const by = Object.fromEntries(reports.map((x) => [x.job, x]));
   expect(by.J1).toMatchObject({ outcome: 'done' });
   const log = readFileSync(join(r.jobsDir, 'J1.log'), 'utf8');
@@ -576,11 +660,11 @@ test('on a Kolab from before W5.11, which refuses kinds, the runner asks again w
   const h = standIn(r.top);
   const kolab = fakeKolab(r.root, { noKinds: true, items: [{ kind: 'build', item: 'kj:test/p#W1' }, { kind: 'review', item: 'kj:test/p#W2' }] });
   const out = quiet();
-  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, signal: stopper().signal },
-    { once: true, jobs: 4, machine: 'lee-laptop', harness: h.path, url: MCP });
+  const stop = stopper();
+  const running = runWork({ call: kolab.call, git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, heartbeatMs: 50, signal: stop.signal },
+    { jobs: 4, machine: 'lee-laptop', harness: h.path, url: MCP });
   await until(() => h.started('J1') && h.started('J2'));
-  h.go('J1');
-  h.go('J2');
+  stop.abort();
   await running;
   expect(kolab.calls.filter(([v]) => v === 'take_job').map(([, a]) => a)).toEqual([
     { machine: 'lee-laptop', kinds: ['build', 'review', 'answer', 'mark', 'serve'] }, { machine: 'lee-laptop' }, { machine: 'lee-laptop' }, { machine: 'lee-laptop' },

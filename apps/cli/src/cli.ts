@@ -200,9 +200,10 @@ Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [
            it from a FIFO read once, so a review's tests find it nowhere. It renews each job's lease, ends the
            job when its harness exits, keeps a worktree with work not pushed, and waits while nothing is ready;
            Ctrl-C (or SIGTERM, SIGHUP) stops every job and gives back what it held, and a second Ctrl-C kills
-           them at once. --once takes one round and exits. --machine names this machine (its hostname); --harness
-           (or KONJIR_HARNESS) runs another command in Claude Code's place, split on spaces (no quoting). macOS
-           and Linux only, not Windows yet.
+           them at once. --once takes one job, whatever --jobs says, waits for it to end and exits; with nothing to
+           take, it says why and exits. --machine names this machine (its hostname); --harness (or KONJIR_HARNESS)
+           runs another command in Claude Code's place, split on spaces (no quoting). macOS and Linux only, not
+           Windows yet.
            konjir status [--json]: the kolab's queue by kind, its live jobs (person, machine, agent, item, since) and
            your room under the caps.
 Pages:     every list (and a long read) returns a page and next; while next isn't null, call it again with
