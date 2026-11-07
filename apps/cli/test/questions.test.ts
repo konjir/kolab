@@ -107,6 +107,7 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      alter table delta drop constraint delta_top_level_has_no_parent, drop column top_level;
       drop index ruling_ref_per_kolab;
       alter table ruling drop constraint ruling_ruled_since;
       alter table ruling drop column ref;
