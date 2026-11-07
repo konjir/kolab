@@ -449,6 +449,34 @@ test('clearing a mark names nothing of a kolab its session can\'t read, in its r
   expect(JSON.stringify(rows)).not.toMatch(/checkout|billing|sent monthly/);
 });
 
+test('a revoke between clearing\'s first check and its transaction is caught in the transaction: the clear is refused, unnamed, and the link stays as it was (W7.13, W7.10, LNK8)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  const edge = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
+  await kolab.drainOutbox();
+  const changed = (await kolab.openMarks()).find((m) => m.edge_id === edge && m.reason !== 'access_lost')!;
+  const before = (await kolab.db.query(`select target_version_id, target_fingerprint, held_by from edge where id = $1`, [edge])).rows;
+  // alice reads billing as the clear first checks, and loses Read before its transaction starts.
+  const k = kolab as unknown as { holds: (...a: unknown[]) => Promise<boolean> };
+  const real = k.holds.bind(kolab);
+  k.holds = async (...a) => {
+    const held = await real(...a);
+    k.holds = real;
+    await kolab.revoke('billing', 'alice');
+    return held;
+  };
+  const said = await rejection(kolab.clear(alice, changed.id));
+  expect(said).toBe('AccessError: alice can\'t read the kolab this link is into, so can\'t check it; someone who reads that kolab clears it');
+  expect(said).not.toMatch(/checkout|billing|\bR1\b|sent/);
+  expect(k.holds).toBe(real);
+  // Nothing of the clear landed: the mark is open, the link pinned where it was, and the revoke's mark stands beside it.
+  expect((await kolab.db.query(`select state, cleared_by from invalidation where id = $1`, [changed.id])).rows).toStrictEqual([{ state: 'open', cleared_by: null }]);
+  expect((await kolab.db.query(`select target_version_id, target_fingerprint, held_by from edge where id = $1`, [edge])).rows).toStrictEqual(before);
+  expect((await kolab.openMarks()).filter((m) => m.edge_id === edge).map((m) => m.reason).sort()).toStrictEqual(['access_lost', changed.reason].sort());
+});
+
 test('a public kolab is read through clearing as row-level security reads it: a person with no grant checks a link into it, and an agent its owner can\'t lend that to can\'t (W7.10, LNK8, D56)', async () => {
   const { kolab, alice, bob, checkout } = await twoKolabs();
   await kolab.addActor('dave');

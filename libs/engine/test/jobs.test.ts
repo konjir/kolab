@@ -636,6 +636,29 @@ test('a question an answer job hands to a person waits on people however long: n
   expect((after as { counts?: Record<string, number> }).counts?.waiting_on_person ?? 0).toBe(0);
 });
 
+test('a question an answer job hands to a person between an agent\'s first check and its answer is refused in the answer\'s transaction, and stays open (W7.13, W7.9, JOB6)', async () => {
+  const { kolab, bob, lee } = await planned(1);
+  const asked = await kolab.raiseQuery(bob, W('W1'), 'Is W1 still in scope?');
+  const answer = await take(kolab, lee);
+  expect(answer).toMatchObject({ kind: 'answer', item: asked });
+  await people(kolab, 'lee-claude', { owner: 'lee', layers: ['technical'] });
+  const claude = await kolab.openSession('lee-claude', 'engineer');
+  // lee-claude's answer passes the first check; the job hands the question on before its transaction.
+  const k = kolab as unknown as { citesIn: (...a: unknown[]) => Promise<unknown> };
+  const real = k.citesIn.bind(kolab);
+  k.citesIn = async (...a) => {
+    k.citesIn = real;
+    await kolab.endJob(lee, { job: answer.job, outcome: 'done', note: 'Handed to a person: whether W1 is still in scope is product\'s to decide.' });
+    return real(...a);
+  };
+  expect(await rejection(kolab.answerQuery(claude, asked, 'Yes, it is.'))).toBe(
+    `AccessError: query ${asked} was handed to a person by an answer job (JOB6): lee-claude is an agent, so it stays open for a person to answer`);
+  expect(k.citesIn).toBe(real);
+  expect((await kolab.db.query(`select state, answered_by, handed_off_at is not null as handed from query where id = $1`, [asked])).rows)
+    .toStrictEqual([{ state: 'open', answered_by: null, handed: true }]);
+  expect(await kolab.readWork(lee, W('W1'))).toMatchObject({ ready: false });
+});
+
 test('an answer job that ends without answering and without handing over, or is stopped, leaves its question in the queue after the hour; a hand-off of a mark is still only for the hour (JOB6, W7.9)', async () => {
   const { kolab, lee, technical, technicalMark } = await queued();
   const a = await take(kolab, lee);
