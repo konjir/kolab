@@ -90,7 +90,7 @@ const review = args({
   version: z.number().int().optional(),
   work: z.string().optional().describe('A work package In review to review instead of a version: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2'),
   verdict: z.enum(REVIEW_VERDICTS).describe('For a version: approve commits it (one approval is enough); request_changes returns it to its author as a draft. For a work package: approve makes it Done; request_changes returns it to its assignee, In progress'),
-  note: z.string().optional().describe('What you checked, or what must change. Required with request_changes.'),
+  note: z.string().optional().describe('What you checked, or what must change, and what you ran and only read. Required with request_changes.'),
   findings: z.array(args({
     kind: z.enum(FINDING_KINDS).describe('contradiction: two elements that cannot both hold, or an element that makes what it links to impossible (blocks the commit). layer_leak: implementation in a functional spec, or a binding that changes behavior (commits, and raises a question to the layer that owns the answer).'),
     elements: z.array(z.string()).min(1).describe('The element IDs involved, from this version'),

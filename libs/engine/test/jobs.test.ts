@@ -157,6 +157,10 @@ test('a review job tries to break what it reviews: its instructions, as a take g
   expect(step(4)).toMatch(/verdict=request_changes note="<what must change; what you ran; what you only read>"/);
   // Breaking a change to show a test fails never reaches what it reviews.
   expect(step(3)).toMatch(/in your own checkout, run the test, and put the change back, pushing none of it/);
+  expect(step(3)).toMatch(/read CI's Test on Postgres for the head you review \(gh run view\); if it hasn't passed, that part isn't met/);
+  expect(step(4)).toMatch(/however good the rest is; a defect step 3 finds in a test or a case the done-when asks for is such a part/);
+  expect(step(4)).toMatch(/A defect step 3 finds in any other test this change adds or changes is a reason to request changes too/);
+  expect(step(4)).toMatch(/something no job can do \(a merge, a deploy, a person's decision\), say so in the note: its builder hands it to a person/);
 
   // A version built from a repository is asked what a version can be: it has no done-when of its own.
   const build = await take(kolab, lee);
@@ -168,6 +172,9 @@ test('a review job tries to break what it reviews: its instructions, as a take g
   const told = playbookOf(version.instructions);
   for (const ask of [SHOW_TESTS_FAIL, CANT_FAIL, BY_CHANCE, RUN_AND_READ]) expect(told).toMatch(ask);
   for (const ask of [UNCOVERED_CASES, NAME_THE_PART]) expect(told).not.toMatch(ask);
+  expect(told).toMatch(/pushing none of it/);
+  expect(told).toMatch(/verdict=approve note="<why; what you ran; what you only read>"/);
+  expect(told).toMatch(/A defect step 2 finds in a test is a reason to request changes/);
 
   // The playbook as it is served holds both, and says what done is the same way.
   const served = playbookText('review');
@@ -558,6 +565,28 @@ test('ending a job gives back only its own item: a build its own package, a revi
   // Ending it gives back W1 only, not W2.
   expect(await kolab.endJob(lee, { job: resumed.job, outcome: 'stopped' })).toMatchObject({ outcome: 'stopped', released: W('W1'), state: 'todo' });
   expect(await row(kolab, 'W2')).toMatchObject({ state: 'in_progress', assignee_id: 'lee-engineer-1' });
+});
+
+test('a package whose review leaves only what no job can do goes to a person: its builder asks and releases, no job takes it while the question is open, and an answer job hands the question on (W7.6, PLN19)', async () => {
+  const { kolab, lee } = await planned(1);
+  const built = await take(kolab, lee);
+  await kolab.submitWork(built.token, W('W1'), { evidence: [COMMIT('a')] });
+  await kolab.endJob(lee, { job: built.job, outcome: 'done' });
+  const review = await take(kolab, lee);
+  expect(review.instructions).toMatch(/something no job can do \(a merge, a deploy, a person's decision\), say so in the note/);
+  await kolab.reviewWork(review.token, W('W1'), { verdict: 'request_changes', note: 'Only the deploy is left, and no job can do that.' });
+  await kolab.endJob(lee, { job: review.job, outcome: 'done' });
+  const again = await take(kolab, lee);
+  expect(again).toMatchObject({ kind: 'build', item: W('W1') });
+  expect(again.instructions).toMatch(/If the review note says what's left is something no job can do, don't submit it again: ask a person for it with konjir_ask \(from=kj:orders-pg#W1\), then release it/);
+  await kolab.raiseQuery(again.token, W('W1'), 'Only the deploy is left. Will a person do it?', { from: W('W1') });
+  await kolab.releaseWork(again.token, W('W1'), { note: 'Only the deploy is left; see the question.' });
+  await kolab.endJob(lee, { job: again.job, outcome: 'done' });
+  // No build or review job takes the package while the question is open; an answer job takes the question, and is told to hand this on.
+  expect(await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ['build', 'review'] })).toMatchObject({ taken: false });
+  const answer = await take(kolab, lee);
+  expect(answer).toMatchObject({ kind: 'answer' });
+  expect(answer.instructions).toMatch(/something no job can do, such as a merge or a deploy\), don't answer it/);
 });
 
 test('an item whose last two jobs ended in the last hour without doing it is held back, and the refusal says how many (JOB2)', async () => {

@@ -352,6 +352,8 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
   const readme = readFileSync(fileURLToPath(new URL('../../../README.md', import.meta.url)), 'utf8');
   const reviewStep = readme.match(/^6\. \*\*Review:\*\*.*$/m)![0];
   const reviewingWork = loop.match(/^Reviewing work:.*$/m)![0];
+  expect(reviewingWork).toMatch(/needs Postgres and you can't run it, read CI's result/);
+  expect(reviewStep).toMatch(/the builder asks a person with `konjir_ask` and releases it/);
   for (const doc of [texts.reviewJob, texts.reviewPlaybook, reviewingWork, reviewStep]) {
     for (const ask of [/for each new or changed test, shows? it fails when the change it pins is broken/i, /assertions that can't fail/, /tests that can fail by chance/, /done-when's cases the tests don't cover/, /what (you ran|was run)(;| and) what (you only read|was only read)/, /When any part of the done-when isn't met, (the verdict names|name) that part and requests? changes/]) {
       expect([ask.source, doc.match(ask) !== null]).toStrictEqual([ask.source, true]);

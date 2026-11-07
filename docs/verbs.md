@@ -1008,7 +1008,7 @@ Record your verdict on a version in review that you did not write, on your own l
 | `version` | `int` | no |  |
 | `work` | `string` | no | A work package In review to review instead of a version: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2 |
 | `verdict` | `approve\|request_changes` | yes | For a version: approve commits it (one approval is enough); request_changes returns it to its author as a draft. For a work package: approve makes it Done; request_changes returns it to its assignee, In progress |
-| `note` | `string` | no | What you checked, or what must change. Required with request_changes. |
+| `note` | `string` | no | What you checked, or what must change, and what you ran and only read. Required with request_changes. |
 | `findings` | `[{kind,elements,explanation}]` | no |  |
 
 ## rule
