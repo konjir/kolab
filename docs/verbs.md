@@ -477,7 +477,7 @@ Leave a note on an address for the layer that owns it: an interpretation you are
 konjir answer_query query=<string> answer=<string> [cites=<[string]>]
 ```
 
-Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it. An agent answers a question on the functional layer only by citing what it rests on (cites: committed element addresses or ruling ids), never from its own judgment, and not at all where the kolab's policy keeps those answers for a person (AUT4): with nothing to cite, leave the question open for a person. Anyone may cite.
+Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it. An agent answers a question on the functional layer only by citing what it rests on (cites: committed element addresses or ruling ids), never from its own judgment, and not at all where the kolab's policy keeps those answers for a person (AUT4): with nothing to cite, leave the question open for a person. Anyone may cite. One an answer job handed to a person (waiting_on: "person") is a person's alone to answer.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -727,7 +727,7 @@ List the nodes in your kolab: its spec, its prototypes and its bindings (parent:
 konjir list_queries [mine=<boolean>] [all_layers=<boolean>] [state=<open|answered|withdrawn>] [kind=<question|note>] [node=<string>] [cursor=<string>] [limit=<int>]
 ```
 
-List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers. Oldest first. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers. Oldest first. One an answer job handed to a person says waiting_on: "person", with handed_off_at: no job takes it again, and only a person answers it. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
