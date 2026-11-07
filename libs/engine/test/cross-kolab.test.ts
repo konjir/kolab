@@ -129,7 +129,8 @@ test('unlinking, a version\'s removes and a mark name a link\'s target in anothe
   const o1 = await commitReviewed(kolab, alice, carol, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast.' }) });
   const r1 = await kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking', across: true });
   const edge = await kolab.link(alice, { kind: 'dependency', source: o1, sourceElement: 'O1', target: r1.id, targetElement: 'R1', selector: { exact: 'sent monthly' } });
-  const secret = /checkout|billing|R1|sent monthly/;
+  // R1 only as an element, an address's #R1 or a field's "R1": a generated id can hold the letters R1.
+  const secret = /checkout|billing|#R1\b|"R1"|sent monthly/;
   const named = { kind: 'dependency', source: 'kj:orders-spec@2#O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' };
   const hidden = { kind: 'dependency', source: 'kj:orders-spec@2#O1', target: null, target_hidden: 'in another kolab you can\'t read' };
   const same = els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast.' });
