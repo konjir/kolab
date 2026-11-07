@@ -394,8 +394,83 @@ test('konjir_rule takes a ref, and dates a ruling as it is given; a ref is uniqu
 const rulingsFile = (...rulings: Record<string, unknown>[]) => ({ format: IMPORT_FORMAT, kolab: TEST_KOLAB, rulings });
 const tick = () => new Promise((r) => setTimeout(r, 15));
 const step = (r: ImportReport, what: string) => r.steps.find((s) => s.what === what)!;
+const utcDay = () => new Date(Date.now()).toISOString().slice(0, 10);
+/** The UTC day `days` from the day `day`. */
+const dayFrom = (day: string, days: number) => new Date(Date.parse(day) + days * 86_400_000).toISOString().slice(0, 10);
 
-test('a dated ruling that changes the intent is marked by when its element last changed, not by the live version (review of #105)', async () => {
+/**
+ * Runs a scenario that takes today once, for a date in a file: the import reads that date against
+ * the clock and against when versions were written, so a run crossing midnight UTC would hold two
+ * days. If it fails and the day has changed since it took today, it runs afresh on the new day, in
+ * a Kolab of its own; a failure within one day is the test's failure.
+ */
+async function onOneDay(scenario: (today: string) => Promise<void>) {
+  const today = utcDay();
+  try {
+    await scenario(today);
+  } catch (e) {
+    if (utcDay() === today) throw e;
+    await scenario(utcDay());
+  }
+}
+/** A test of `onOneDay`'s, with the time for a second run. */
+const testOnOneDay = (name: string, scenario: (today: string) => Promise<void>) => test(name, () => onOneDay(scenario), 60_000);
+
+/** Sets when a version was written, so a test says which day and time, and no clock's skew decides what came first. */
+const writtenAt = (kolab: Kolab, node: string, seq: number, at: string) => kolab.db.exec(
+  `alter table version disable trigger user; update version set created_at = '${at}' where node_id = '${node}' and seq = ${seq}; alter table version enable trigger user;`);
+const openRuled = async (kolab: Kolab) => (await kolab.db.query(`select distinct element_id from invalidation where reason = 'ruled' and state = 'open' order by element_id`)).rows;
+/** The fixture with CHK2 changed, and these rulings: what a file holding a later version of the spec gives. */
+const changedChk2 = (...rulings: Record<string, unknown>[]) => {
+  const f = fixture();
+  f.spec.elements[2] = { id: 'CHK2', text: 'A receipt is emailed within five minutes of paying.', parent: 'CHK' };
+  f.rulings = rulings as unknown as Fixture['rulings'];
+  return f;
+};
+/** Dave, another person, changes CHK2 as version 2 of shop, and lee approves it. */
+async function daveChangesChk2(kolab: Awaited<ReturnType<typeof openKolab>>, as: (role: Role) => Promise<string>) {
+  await people(kolab, 'dave', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product');
+  const v = await kolab.draft(dave, 'shop', { elements: changedChk2().spec.elements });
+  await kolab.submit(dave, v);
+  await kolab.recordReview(await as('product'), v, { verdict: 'approve' });
+  expect(await kolab.latestCommitted('shop')).toMatchObject({ seq: 2, actor_id: 'dave' });
+}
+const sameDay = (on: string) => expect.stringMatching(new RegExp(`marks nothing: it is dated by day alone, ${on} last changed that same day, and it holds this file's text`));
+
+test('onOneDay runs a scenario again only when the day changed under it (W7.3)', async () => {
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-06-01T23:59:59Z'));
+  try {
+    const days: string[] = [];
+    await onOneDay(async (today) => {
+      days.push(today);
+      if (days.length === 1) {
+        clock.mockReturnValue(Date.parse('2026-06-02T00:00:01Z'));
+        throw new Error('it crossed midnight');
+      }
+    });
+    expect(days).toStrictEqual(['2026-06-01', '2026-06-02']);
+    // Crossing midnight excuses one failure, not a second.
+    let runs = 0;
+    clock.mockReturnValue(Date.parse('2026-06-02T23:59:59Z'));
+    expect(await rejection(onOneDay(async () => {
+      runs += 1;
+      clock.mockReturnValue(Date.parse('2026-06-03T00:00:01Z'));
+      throw new Error(`run ${runs} failed`);
+    }))).toMatch(/run 2 failed/);
+    // Within one day, a failure is the test's, the first time.
+    runs = 0;
+    expect(await rejection(onOneDay(async () => {
+      runs += 1;
+      throw new Error(`run ${runs} failed`);
+    }))).toMatch(/run 1 failed/);
+    expect(runs).toBe(1);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+testOnOneDay('a dated ruling that changes the intent is marked by when its element last changed, not by the live version (review of #105)', async (today) => {
   const { kolab, as, pass } = await lee();
   await pass('product');
   await tick();
@@ -420,7 +495,6 @@ test('a dated ruling that changes the intent is marked by when its element last 
   expect((await kolab.db.query(`select element_id from invalidation where reason = 'ruled' and state = 'open'`)).rows).toStrictEqual([{ element_id: 'CHK1' }]);
 
   // A date alone means the end of that day: one given today, the day this version was written, marks it.
-  const today = new Date().toISOString().slice(0, 10);
   const same = await pass('product', rulingsFile({ id: 'D23', date: today, text: 'Cards and wallets.', effect: 'change_intent', on: 'shop#CHK2' }));
   expect(same.failed).toStrictEqual([]);
   expect(same.steps[0]).toMatchObject({ outcome: 'created', mark: 'set' });
@@ -720,10 +794,9 @@ test('when an element last changed: a move or a links-only version isn\'t a chan
   expect((await kolab.db.query(`select element_id from invalidation where reason = 'ruled' and state = 'open' order by element_id`)).rows).toStrictEqual([{ element_id: 'CHK1' }, { element_id: 'DEC1' }]);
 });
 
-test('a ruling dated by day alone on the day of a first import is carried, by what was checked; a timed one after the last change marks, in any file; an older one before a change is carried; a later unrelated change leaves a mark open (third review of #105)', async () => {
+testOnOneDay('a ruling dated by day alone on the day of a first import is carried, by what was checked; a timed one after the last change marks, in any file; an older one before a change is carried; a later unrelated change leaves a mark open (third review of #105)', async (today) => {
   const { kolab, pass } = await lee();
-  const today = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const yesterday = dayFrom(today, -1);
   const first = fixture();
   first.rulings = [
     { id: 'D70', date: today, text: 'By day, on the import\'s day.', effect: 'change_intent', on: 'shop#CHK1' },
@@ -752,16 +825,112 @@ test('a ruling dated by day alone on the day of a first import is carried, by wh
   expect(await open()).toStrictEqual([{ element_id: 'CHK1' }]);
 });
 
-test('by day alone, in its node\'s file, a change on an earlier day doesn\'t carry it: only that day or later (third review of #105)', async () => {
+testOnOneDay('by day alone, in its node\'s file, a change on an earlier day doesn\'t carry it: only that day or later (third review of #105)', async (today) => {
   const { kolab, pass } = await lee();
   const first = fixture();
   first.rulings = [];
   await pass('product', first);
   await kolab.db.exec(`alter table version disable trigger user; update version set created_at = created_at - interval '3 days'; alter table version enable trigger user;`);
-  const today = new Date().toISOString().slice(0, 10);
   const f = fixture();
   f.rulings = [{ id: 'D74', date: today, text: 'Days after the change.', effect: 'change_intent', on: 'shop#CHK1' }] as unknown as Fixture['rulings'];
   expect(step(await pass('product', f), 'ruling D74').mark).toBe('set');
+});
+
+testOnOneDay('dated today by day alone, in its node\'s file, after another person\'s change that day: marks nothing, the gap D110 names; rulings-only, or with a time, it marks (W7.3)', async (today) => {
+  const { kolab, as, pass } = await lee();
+  const first = fixture();
+  first.rulings = [];
+  await pass('product', first);
+  await daveChangesChk2(kolab, as);
+  await writtenAt(kolab, 'shop', 2, `${today}T00:00:00Z`);
+  const inFile = await pass('product', changedChk2({ id: 'D80', date: today, text: 'By day, after Dave.', effect: 'change_intent', on: 'shop#CHK2' }));
+  expect(step(inFile, 'ruling D80')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop#CHK2') });
+  expect(await openRuled(kolab)).toStrictEqual([]);
+  expect(step(await pass('product', rulingsFile({ id: 'D81', date: today, text: 'By day, alone.', effect: 'change_intent', on: 'shop#CHK2' })), 'ruling D81')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect(await openRuled(kolab)).toStrictEqual([{ element_id: 'CHK2' }]);
+  // The step's way out: a time sets the mark, in the same file.
+  const timed = await pass('product', changedChk2({ id: 'D82', date: new Date().toISOString(), text: 'Timed, after Dave.', effect: 'change_intent', on: 'shop#CHK2' }));
+  expect(step(timed, 'ruling D82')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect((await kolab.auditLog({ kolab: 'test' })).map((a) => a.action)).not.toContain('ruling.backdated');
+});
+
+testOnOneDay('the same on a whole node: dated today by day alone, in its file, after another person\'s change that day, it marks nothing; rulings-only, it marks (W7.3)', async (today) => {
+  const { kolab, as, pass } = await lee();
+  const first = fixture();
+  first.rulings = [];
+  await pass('product', first);
+  await daveChangesChk2(kolab, as);
+  await writtenAt(kolab, 'shop', 2, `${today}T00:00:00Z`);
+  const inFile = await pass('product', changedChk2({ id: 'D83', date: today, text: 'By day, on the node.', effect: 'change_intent', on: 'shop' }));
+  expect(step(inFile, 'ruling D83')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop') });
+  expect(await openRuled(kolab)).toStrictEqual([]);
+  expect(step(await pass('product', rulingsFile({ id: 'D84', date: today, text: 'By day, on the node, alone.', effect: 'change_intent', on: 'shop' })), 'ruling D84')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect(await openRuled(kolab)).toStrictEqual([{ element_id: null }]);
+});
+
+testOnOneDay('an old element with an unrelated version today: dated today by day alone, in its node\'s file, the old element is marked; what that version changed, its section and the whole node are not (W7.3)', async (today) => {
+  const { kolab, pass } = await lee();
+  const first = fixture();
+  first.rulings = [];
+  await pass('product', first);
+  await pass('product', changedChk2(), { update: true });
+  expect((await kolab.latestCommitted('shop'))!.seq).toBe(2);
+  await writtenAt(kolab, 'shop', 1, `${dayFrom(today, -3)}T09:00:00Z`);
+  await writtenAt(kolab, 'shop', 2, `${today}T00:00:00Z`);
+  const r = await pass('product', changedChk2(
+    { id: 'D85', date: today, text: 'On the old element.', effect: 'change_intent', on: 'shop#CHK1' },
+    { id: 'D86', date: today, text: 'On what changed.', effect: 'change_intent', on: 'shop#CHK2' },
+    { id: 'D87', date: today, text: 'On its section.', effect: 'change_intent', on: 'shop#CHK' },
+    { id: 'D88', date: today, text: 'On the node.', effect: 'change_intent', on: 'shop' },
+  ));
+  expect(step(r, 'ruling D85')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect(step(r, 'ruling D86')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop#CHK2') });
+  expect(step(r, 'ruling D87')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop#CHK') });
+  expect(step(r, 'ruling D88')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop') });
+  expect(await openRuled(kolab)).toStrictEqual([{ element_id: 'CHK1' }]);
+});
+
+testOnOneDay('a whole node counts any version that day, even one that only adds links; an element in it doesn\'t (W7.3)', async (today) => {
+  const { kolab, pass } = await lee();
+  const noRulings = fixture();
+  noRulings.rulings = [];
+  const noLinks = fixture() as unknown as { binding: { elements: { relies_on?: string[] }[] }; rulings: unknown[] };
+  noLinks.rulings = [];
+  for (const e of noLinks.binding.elements) delete e.relies_on;
+  await pass('product', noRulings);
+  await pass('engineer', noLinks);
+  await pass('engineer', noRulings);
+  expect((await kolab.latestCommitted('shop-binding'))!.seq).toBe(2);
+  await writtenAt(kolab, 'shop-binding', 1, `${dayFrom(today, -3)}T09:00:00Z`);
+  await writtenAt(kolab, 'shop-binding', 2, `${today}T00:00:00Z`);
+  const r = await pass('engineer', { ...fixture(), rulings: [
+    { id: 'D96', date: today, text: 'On the node.', effect: 'change_intent', on: 'shop-binding' },
+    { id: 'D97', date: today, text: 'On an element.', effect: 'change_intent', on: 'shop-binding#DEC1' },
+  ] });
+  expect(step(r, 'ruling D96')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop-binding') });
+  expect(step(r, 'ruling D97')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect(await openRuled(kolab)).toStrictEqual([{ element_id: 'DEC1' }]);
+});
+
+test('a past date with a change that same day: in its node\'s file it marks nothing, on an element or the node; rulings-only it marks, since the date means that day\'s end; the day before is carried in both; each is audited (W7.3)', async () => {
+  const { kolab, as, pass } = await lee();
+  const first = fixture();
+  first.rulings = [];
+  await pass('product', first);
+  await writtenAt(kolab, 'shop', 1, '2026-03-10T09:00:00Z');
+  const ruling = (id: string, date: string, on: string) => ({ id, date, text: `Ruling ${id}.`, effect: 'change_intent', on });
+  const inFile = await pass('product', { ...fixture(), rulings: [ruling('D90', '2026-03-10', 'shop#CHK1'), ruling('D91', '2026-03-10', 'shop'), ruling('D92', '2026-03-09', 'shop#CHK2')] });
+  expect(step(inFile, 'ruling D90')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop#CHK1') });
+  expect(step(inFile, 'ruling D91')).toMatchObject({ outcome: 'created', mark: 'carried', detail: sameDay('shop') });
+  expect(step(inFile, 'ruling D92')).toMatchObject({ outcome: 'created', mark: 'carried', detail: expect.stringMatching(/shop#CHK2 last changed after that date/) });
+  expect(await openRuled(kolab)).toStrictEqual([]);
+  const alone = await pass('product', rulingsFile(ruling('D93', '2026-03-09', 'shop#CHK1'), ruling('D94', '2026-03-10', 'shop#CHK1'), ruling('D95', '2026-03-10', 'shop')));
+  expect(step(alone, 'ruling D93')).toMatchObject({ outcome: 'created', mark: 'carried', detail: expect.stringMatching(/shop#CHK1 last changed after that date/) });
+  expect(step(alone, 'ruling D94')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect(step(alone, 'ruling D95')).toMatchObject({ outcome: 'created', mark: 'set' });
+  expect(await openRuled(kolab)).toStrictEqual([{ element_id: 'CHK1' }, { element_id: null }]);
+  expect((await kolab.rulingsFor(await as('product'), { ref: 'D94' }))[0].ruled_at).toBe('2026-03-10T23:59:59.999Z');
+  expect((await kolab.auditLog({ kolab: 'test' })).filter((a) => a.action === 'ruling.backdated').map((a) => (a.detail as { ref: string }).ref).sort()).toStrictEqual(['D90', 'D91', 'D92', 'D93', 'D94', 'D95']);
 });
 
 test('on a fork, a move to the top level is put back by the upstream commit\'s rebase; a rerun reports it, and --update moves it again (pins today\'s behaviour, third review of #105)', async () => {
@@ -796,9 +965,8 @@ test('on a fork, a move to the top level is put back by the upstream commit\'s r
   expect(outcomes(rerun)).toMatchObject({ 'version kj:forked/shop': 'differs' });
 });
 
-test('a ruling dated today in the file of its node marks nothing and isn\'t audited as backdated; in a rulings-only file it marks; tomorrow is refused (re-review of #105)', async () => {
+testOnOneDay('a ruling dated today in the file of its node marks nothing and isn\'t audited as backdated; in a rulings-only file it marks; tomorrow is refused (re-review of #105)', async (today) => {
   const { kolab, pass } = await lee();
-  const today = new Date().toISOString().slice(0, 10);
   const f = fixture();
   f.rulings = [{ id: 'D60', date: today, text: 'Today, in the file.', replaces: '', effect: 'change_intent', on: 'shop#CHK1' }].map(({ replaces: _, ...r }) => r) as Fixture['rulings'];
   const r = await pass('product', f);
@@ -806,8 +974,7 @@ test('a ruling dated today in the file of its node marks nothing and isn\'t audi
   expect((await kolab.db.query(`select 1 from invalidation where reason = 'ruled'`)).rows).toStrictEqual([]);
   expect((await pass('product', rulingsFile({ id: 'D61', date: today, text: 'Today, alone.', effect: 'change_intent', on: 'shop#CHK2' }))).steps[0]).toMatchObject({ mark: 'set' });
   expect((await kolab.auditLog({ kolab: 'test' })).map((a) => a.action)).not.toContain('ruling.backdated');
-  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
-  expect(await rejection(pass('product', rulingsFile({ id: 'D62', date: tomorrow, text: 'Tomorrow.', on: 'shop#CHK2' })))).toMatch(/is in the future/);
+  expect(await rejection(pass('product', rulingsFile({ id: 'D62', date: dayFrom(today, 1), text: 'Tomorrow.', on: 'shop#CHK2' })))).toMatch(/is in the future/);
   // Inside the clocks' skew, a time is taken; a day never is.
   expect(rulingDate(new Date(Date.now() + 60_000).toISOString())).toBeInstanceOf(Date);
 });
