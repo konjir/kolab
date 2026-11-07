@@ -450,12 +450,15 @@ describe.each(['variant', 'fork'])('on a %s, a move to the top level (W7.2, OVR3
     expect((await rows()).filter((r) => r.top_level)).toStrictEqual([]);
   });
 
-  test('a delta on an element moved into another section keeps it there', async () => {
+  test('a delta on an element moved into another section keeps it there; a full list that leaves its parent out returns it', async () => {
     const { at, mine, up } = await moving();
     await mine({ elements: up('one').map((e) => (e.id === 'E1' ? { ...e, parent: 'T' } : e)) });
     expect((await at()).E1).toStrictEqual(['T', 'one']);
     await mine({ deltas: [{ kind: 'override', element: 'E1', text: 'one, mine' }] });
     expect((await at()).E1).toStrictEqual(['T', 'one, mine']);
+    // Only a move to the top level outlives a full list that leaves its parent out.
+    await mine({ elements: up('one').map(({ id, text }) => ({ id, text })) });
+    expect((await at()).E1).toStrictEqual(['S', 'one']);
   });
 
   test('upstream removing what holds only the move leaves its words, and asks', async () => {
