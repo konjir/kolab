@@ -382,7 +382,9 @@ test('a job\'s instructions are its kind\'s playbook filled in with its item, an
   const r = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p#W1', subject: 'work', author: 'ann-engineer-1' });
   expect(r).toMatch(/check out its pull request/i);
   expect(r).toMatch(/run the tests/);
-  expect(r).toMatch(/\nHow to do it:\n1\. Read it: konjir_read_work work=kj:p#W1 .*\n2\. .*\n3\. Try to break it.*\n4\. Give your verdict.*\n\nThen stop\./);
+  expect(r).toMatch(/\nHow to do it:\n1\. Read it: konjir_read_work work=kj:p#W1 .*\n2\. .*\n3\. Try to break it.*\n4\. Give your verdict.*\n5\. A package that must be released .*\n\nThen stop\./);
+  // A package that must be released is approved on everything else, never sent back for being unreleased (PLN16, W7.7).
+  expect(r).toMatch(/\n5\. A package that must be released \(konjir_read_work shows release: true\) is released after your verdict, by its merge and deploy: approve it on everything else, and never send it back for not being merged, deployed or released yet\./);
   const v = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p@2', subject: 'version', author: 'ann-engineer-1', node: 'p', seq: 2 });
   expect(v).toMatch(/\nHow to do it:\n1\. Call konjir_instructions which=reviewer once.*\n2\. Read it: konjir_read_node node=p version=2,.*\n3\. .*\n4\. .*konjir_review node=p version=2 verdict=approve.*\n\nThen stop\./);
   // Nothing of the template is left in what a job is told, and what an item says is never read as a tag.

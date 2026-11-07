@@ -7,6 +7,10 @@
  *   konjir repo register [--binding <binding>] [--url <https URL>] [--root <sha>] [-C <dir>]
  *   konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url or summary>]… [--note <text>]
  *                       [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]
+ *   konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>] [--repo <url>] [--dry-run] [-C <dir>]
+ *
+ * With --release, after the deploy, it records the package's release instead (konjir_record_release):
+ * the deploy run, and the commit it released, HEAD unless --commit names another (PLN16, W7.7).
  *
  * A commit belongs to a work package when its message carries the trailer
  * `Konjir-Work: kj:<kolab>/<binding>#<id>`, the one konjir_pull_work and konjir_read_work give (a commit from before D104
@@ -169,10 +173,10 @@ export function readCheckout(git: Git): Checkout {
 /** A commit that carries a work package's trailer: its sha, its subject and the paths it touched. */
 export interface TaggedCommit { sha: string; subject: string; files: string[] }
 
-/** A revision the user gave (`--since`), as the commit's sha it names, or a refusal; never read as an option. */
-function commitOf(git: Git, rev: string): string {
+/** A revision the user gave (`--since`, `--commit`), as the commit's sha it names, or a refusal; never read as an option. */
+function commitOf(git: Git, rev: string, what = '--since takes one commit, a branch or a tag, and delivers what HEAD has since it'): string {
   if (!rev || rev.startsWith('-') || /[\0\n\r]/.test(rev)) throw new Error(`${JSON.stringify(rev)} isn't a revision: give a commit, a branch or a tag`);
-  if (rev.startsWith('^') || rev.includes('..')) throw new Error(`${JSON.stringify(rev)} is a range or an exclusion: --since takes one commit, a branch or a tag, and delivers what HEAD has since it`);
+  if (rev.startsWith('^') || rev.includes('..')) throw new Error(`${JSON.stringify(rev)} is a range or an exclusion: ${what}`);
   let out: string;
   try { out = git(['rev-parse', '--verify', '--quiet', '--end-of-options', `${rev}^{commit}`]); } catch {
     throw new Error(`${JSON.stringify(rev)} names no commit in this checkout`);
@@ -303,6 +307,48 @@ async function readRound(call: Call, work: string): Promise<Round> {
   return { work: first.work, trailer: first.trailer, former_trailers: first.former_trailers, state: first.state, repository: first.repository, earlier };
 }
 
+/**
+ * The registered repository the checkout is, for package `pkg`: the one `named` names, or the
+ * package's own, or the one the checkout tracks; refused unless the checkout is a checkout of it
+ * (its root commit and a remote), and unless it is the package's own when the package has one.
+ */
+async function packageCheckout(call: Call, git: Git, pkg: Pick<Round, 'work' | 'repository'>, named?: string): Promise<Repository> {
+  const checkout = readCheckout(git);
+  const registered = await repositories(call);
+  let repo: Repository | undefined;
+  if (named) {
+    repo = namedRepository(registered, named);
+  } else if (pkg.repository) {
+    repo = registered.find((r) => r.url.toLowerCase() === pkg.repository!.url.toLowerCase());
+    if (!repo) throw new Error(`${pkg.work} is done in ${pkg.repository.url}, which this session can't find among the kolab's repositories. Nothing was sent.`);
+  } else {
+    repo = trackedRepository(registered, checkout, `, and ${pkg.work} has none of its own`);
+  }
+  if (pkg.repository && pkg.repository.url.toLowerCase() !== repo.url.toLowerCase()) {
+    throw new Error(`${pkg.work} is done in ${pkg.repository.url}, not ${repo.url}: deliver it from a checkout of ${pkg.repository.url}. Nothing was sent.`);
+  }
+  requireCheckoutOf(checkout, repo, !!named);
+  return repo;
+}
+
+/**
+ * `konjir work deliver <work> --release <run> [--commit <rev>]` (PLN16, W7.7): records, after the
+ * deploy, that the run at `run` released the commit `commit` names (HEAD by default) of the
+ * package's repository, which the checkout must be, as deliver checks it. A package approved and
+ * waiting for its release is then Done. Anyone with Write on the technical layer records one, not
+ * only its assignee, so the package is named, never found from what the session holds.
+ */
+export async function releaseDelivered(call: Call, git: Git, opts: { work?: string; run: string; commit?: string; repo?: string; title?: string; dryRun?: boolean }) {
+  if (!opts.work) throw new Error('name the work package that was released: konjir work deliver kj:<binding>#<id> --release <the deploy run\'s https link>');
+  const pkg = await readRound(call, opts.work);
+  const repo = await packageCheckout(call, git, pkg, opts.repo);
+  const sha = commitOf(git, opts.commit ?? 'HEAD', '--commit takes the one commit the deploy released');
+  const release = { work: pkg.work, run: opts.run, sha, repo: repo.url, ...(opts.title ? { title: opts.title } : {}) };
+  if (opts.dryRun) return { ...release, sent: false };
+  const r = await call('record_release', release) as { state: string; done: boolean; recorded: number; already: number; next?: string };
+  return { ...release, sent: true, state: r.state, done: r.done, recorded: r.recorded, already: r.already, ...(r.next ? { next: r.next } : {}) };
+}
+
 export interface DeliverOptions {
   /** The work package, kj:[<kolab>/]<binding>#<id>; by default the one the session holds In progress. */
   work?: string;
@@ -338,21 +384,7 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   const address = pkg.trailer.replace(/^Konjir-Work:\s*/, '').trim();
   // A package a plan had before D104 (migration 0033) keeps its commits: their trailers name the plan.
   const former = (pkg.former_trailers ?? []).map((t) => t.replace(/^Konjir-Work:\s*/, '').trim());
-  const checkout = readCheckout(git);
-  const registered = await repositories(call);
-  let repo: Repository | undefined;
-  if (opts.repo) {
-    repo = namedRepository(registered, opts.repo);
-  } else if (pkg.repository) {
-    repo = registered.find((r) => r.url.toLowerCase() === pkg.repository!.url.toLowerCase());
-    if (!repo) throw new Error(`${pkg.work} is done in ${pkg.repository.url}, which this session can't find among the kolab's repositories. Nothing was sent.`);
-  } else {
-    repo = trackedRepository(registered, checkout, `, and ${pkg.work} has none of its own`);
-  }
-  if (pkg.repository && pkg.repository.url.toLowerCase() !== repo.url.toLowerCase()) {
-    throw new Error(`${pkg.work} is done in ${pkg.repository.url}, not ${repo.url}: deliver it from a checkout of ${pkg.repository.url}. Nothing was sent.`);
-  }
-  requireCheckoutOf(checkout, repo, !!opts.repo);
+  const repo = await packageCheckout(call, git, pkg, opts.repo);
 
   // A reopened or released package starts a new round of work (PLN10): the commits an earlier round
   // recorded are that round's evidence, so they aren't sent again as this one's.

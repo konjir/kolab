@@ -160,8 +160,15 @@ const pullWork = args({
 });
 const releaseWork = args({ work, note: z.string().optional().describe(`Why, for whoever pulls it next. At most ${MAX_TEXT} characters`) });
 const reassignWork = args({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
+const recordRelease = args({
+  work,
+  run: z.string().describe(`The deploy run that released the work, by its https link (a CI run's page, such as https://github.com/acme/orders/actions/runs/123). At most ${MAX_EVIDENCE_URL} characters, with no user, password or credential-bearing query parameter in it`),
+  sha: z.string().describe('The commit it released, by its full sha: 40 hexadecimal characters (64 for SHA-256)'),
+  repo: z.string().optional().describe('The released commit\'s repository: the URL of one registered in your kolab. Leave it out to use the package\'s own (its repo, or its binding\'s implementation)'),
+  title: z.string().optional().describe(`A summary of the release ("deployed to production"). At most ${MAX_TEXT} characters`),
+});
 const evidenceItem = args({
-  kind: z.enum(EVIDENCE_KINDS).describe('commit, pull_request or test_run'),
+  kind: z.enum(EVIDENCE_KINDS.filter((k) => k !== 'release') as ['commit', 'pull_request', 'test_run']).describe('commit, pull_request or test_run; a release is recorded with konjir_record_release'),
   sha: z.string().optional().describe('A commit\'s full sha: 40 hexadecimal characters (64 for SHA-256)'),
   pr: z.number().int().optional().describe('A pull request\'s number'),
   url: z.string().optional().describe(`An https link: to the commit, the pull request (required for one) or the test run. At most ${MAX_EVIDENCE_URL} characters, with no user, password or credential-bearing query parameter (token, sig, key, X-Amz-…) in it`),
@@ -462,7 +469,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_review',
-    description: 'Record your verdict on a version in review that you did not write, on your own layer (node and version), or on a work package In review that you are not the assignee of (work, from an engineer session with Write on the technical layer): approve, or request_changes with a note (and, for a version, findings). For a work package, read it first with konjir_read_work, and check its evidence (commits, pull requests, test runs) against its done-when with your own access to the repository, outside Kolab: approve makes it Done; request_changes returns it to its assignee, In progress. Review requests for you are in your inbox (konjir_list_reviews). Read a version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or a binding element that conflicts with a requirement it links to: stricter, looser or different) only with request_changes. A layer_leak is content in the wrong layer that conflicts with nothing (implementation in a spec, or behavior a binding adds that its linked requirements don\'t mention); it can come with approve: the version commits and a question goes to the layer that owns the answer. Anything that conflicts is a contradiction. Send compound requirements back to be split. konjir_instructions which=reviewer has the full checklist.',
+    description: 'Record your verdict on a version in review that you did not write, on your own layer (node and version), or on a work package In review that you are not the assignee of (work, from an engineer session with Write on the technical layer): approve, or request_changes with a note (and, for a version, findings). For a work package, read it first with konjir_read_work, and check its evidence (commits, pull requests, test runs) against its done-when with your own access to the repository, outside Kolab: approve makes it Done, or, for one that must be released (release: true), leaves it In review, approved, until its release is recorded (konjir_record_release), so approve it on everything else and never request changes for its being unreleased; request_changes returns it to its assignee, In progress. Review requests for you are in your inbox (konjir_list_reviews). Read a version first with konjir_read_node. Report a contradiction (two elements that cannot both hold, or a binding element that conflicts with a requirement it links to: stricter, looser or different) only with request_changes. A layer_leak is content in the wrong layer that conflicts with nothing (implementation in a spec, or behavior a binding adds that its linked requirements don\'t mention); it can come with approve: the version commits and a question goes to the layer that owns the answer. Anything that conflicts is a contradiction. Send compound requirements back to be split. konjir_instructions which=reviewer has the full checklist.',
     schema: review,
   })
   review(a: z.infer<typeof review>, context?: McpToolContext) {
@@ -473,9 +480,11 @@ export class AgentTools {
         if (a.node !== undefined || a.version !== undefined) throw new Error('review a version (node and version) or a work package (work), not both');
         if (a.findings?.length) throw new Error('findings are a version\'s: for a work package, say what must change in the note');
         const r = await this.kolab.reviewWork(s, a.work, { verdict: a.verdict, note: a.note });
+        const confirms = r.confirmed_repositories.length ? ` Your approval confirms ${r.confirmed_repositories.join(', ')} (D98).` : '';
         return {
           ...r,
-          next: r.state === 'done' ? `Done. Its assignee is told in their answers.${r.confirmed_repositories.length ? ` Your approval confirms ${r.confirmed_repositories.join(', ')} (D98).` : ''}`
+          next: r.approved ? `Approved, and it must be released, so it waits In review for its release: ${r.next}. Its assignee is told in their answers. Nothing more to do now.${confirms}`
+            : r.state === 'done' ? `Done. Its assignee is told in their answers.${r.confirmed_repositories.length ? ` Your approval confirms ${r.confirmed_repositories.join(', ')} (D98).` : ''}`
             : r.state === 'in_progress' ? `Returned to ${r.assignee}, In progress, with a fresh lease; they are told in their answers. Nothing more to do.`
             : 'Its assignee can no longer write the technical layer, so it is To do, for anyone to pull. Nothing more to do.',
         };
@@ -795,7 +804,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_submit_work',
-    description: 'Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
+    description: 'Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done; or, for a package whose work field says release: true, approved and waiting In review until its release is recorded with konjir_record_release after the deploy), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
     schema: submitWork,
   })
   submitWork({ work, evidence, note }: z.infer<typeof submitWork>, context?: McpToolContext) {
@@ -808,6 +817,24 @@ export class AgentTools {
             ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request, and one approval makes it Done. The verdict comes back in your answers. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).`
             : `In review. ${nobodyCanReview('technical')} The verdict comes back in your answers. In a job, you are done: stop.`)
           : 'Done, unreviewed: no one else who may approve it holds Write on the technical layer. In a job, you are done: stop. Otherwise pull your next work package (konjir_pull_work).',
+      };
+    });
+  }
+
+  @McpTool({
+    name: 'konjir_record_release',
+    description: 'Record the release of a work package, kj:<binding>#<id>, after the deploy that released it, from an engineer session with Write on the technical layer (its assignee or anyone else): the deploy run, by its https link, and the commit it released, by its full sha, in a registered repository (the package\'s own unless repo names another). A package whose work field says release: true is approved and waits In review until its release is recorded, and this makes it Done (PLN16); one In progress, or In review not yet approved, keeps its state, and its approval makes it Done; on a Done one it is kept as a record. The same release recorded again is counted in already. Not a milestone, which is Done when its members are, nor a package To do. In a shell, konjir work deliver <work> --release <run> records it from the checkout, with HEAD as the released commit unless --commit names another. Counts as a draft against your hourly budget.',
+    schema: recordRelease,
+  })
+  recordRelease({ work, run, sha, repo, title }: z.infer<typeof recordRelease>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const r = await this.kolab.recordRelease(s, work, { run, sha, repo, title });
+      return {
+        ...r,
+        next: r.done ? 'Done: its release is recorded. Nothing more to do.'
+          : r.state === 'in_review' ? 'Recorded: it waits in review, and its approval makes it Done.'
+          : r.state === 'in_progress' ? 'Recorded: once it is submitted and approved, it is Done.'
+          : 'Recorded.',
       };
     });
   }

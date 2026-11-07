@@ -10,7 +10,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '@konjir/server';
-import { call, canonicalRemote, connect, deliverWork, gitIn, main, registerRepository } from '../src/cli.js';
+import { call, canonicalRemote, connect, deliverWork, gitIn, main, registerRepository, releaseDelivered } from '../src/cli.js';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
@@ -218,6 +218,38 @@ test('konjir work deliver finds a package\'s commits by the trailer it had as a 
   const r = await deliverWork(eng.call, gitIn(dir)) as { commits: { sha: string }[] };
   expect(r.commits.map((c) => c.sha)).toStrictEqual([c1, expect.any(String), old]);
 }, 60_000);
+
+test('konjir work deliver --release records, after the deploy, the run and the commit it released (HEAD, or --commit), and a package that must be released, approved, is then Done (PLN16, W7.7)', async () => {
+  const { server, eng, eng2, lee } = await planned();
+  const { dir, c1 } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  // W1 must be released: a binding version says so, approved by eng2.
+  await eng.call('draft', { node: 'orders-pg', elements: [{ id: 'b1', text: 'A cancel endpoint.' }, { id: 'b2', text: 'A queue.' },
+    { id: 'W1', text: 'Build the endpoint.', work: { release: true } }, { id: 'W2', text: 'Build the queue.', work: {} }] });
+  await eng.call('submit_for_review', { node: 'orders-pg', version: 3 });
+  expect(await eng2.call('review', { node: 'orders-pg', version: 3, verdict: 'approve' })).toMatchObject({ ok: true });
+  await eng.call('pull_work', {});
+  await deliverWork(eng.call, gitIn(dir), { submit: true });
+  expect(await eng2.call('review', { work: 'kj:orders-pg#W1', verdict: 'approve' })).toMatchObject({ state: 'in_review', approved: true, next: expect.stringMatching(/^Approved, and it must be released/) });
+  expect(await eng.call('list_work', {})).toMatchObject({ work: [{ id: 'W1', state: 'in_review', release: true, approved: true }, { id: 'W2', state: 'todo' }] });
+  const run = 'https://github.com/acme/orders/actions/runs/9';
+  // A release names its package; a dry run sends nothing.
+  expect(await rejection(releaseDelivered(eng2.call, gitIn(dir), { run }))).toMatch(/^Error: name the work package that was released/);
+  expect(await releaseDelivered(eng2.call, gitIn(dir), { work: 'kj:orders-pg#W1', run, dryRun: true }))
+    .toStrictEqual({ work: 'kj:orders-pg#W1', run, sha: git(dir, 'rev-parse', 'HEAD'), repo: 'https://github.com/acme/orders', sent: false });
+  expect(await rejection(releaseDelivered(eng2.call, gitIn(dir), { work: 'kj:orders-pg#W1', run, commit: 'HEAD~1..HEAD' }))).toMatch(/is a range or an exclusion: --commit takes the one commit the deploy released/);
+  // In a shell, by someone other than its assignee, with --commit: Done.
+  const out: string[] = [];
+  jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+  process.env.KONJIR_URL = server.url;
+  process.env.KONJIR_TOKEN = eng2.token;
+  await main(['work', 'deliver', 'kj:orders-pg#W1', '--release', run, '--commit', c1, '--title', 'deployed to production', '-C', dir]);
+  expect(JSON.parse(out.pop()!)).toMatchObject({ work: 'kj:orders-pg#W1', run, sha: c1, sent: true, state: 'done', done: true, recorded: 1, next: 'Done: its release is recorded. Nothing more to do.' });
+  const read = await eng.call('read_work', { work: 'kj:orders-pg#W1' }) as { state: string; evidence: Record<string, unknown>[] };
+  expect(read.state).toBe('done');
+  expect(read.evidence.filter((e) => e.kind === 'release')).toStrictEqual([expect.objectContaining({ sha: c1, url: run, title: 'deployed to production', recorded_by: 'eng2', repository: 'https://github.com/acme/orders' })]);
+  await expect(main(['work', 'deliver', 'kj:orders-pg#W1', '--release', run, '--submit', '-C', dir])).rejects.toThrow(/unknown --submit/);
+}, 120_000);
 
 test('in a shell: konjir repo register and konjir work deliver, with -C, --dry-run and --since; a package with no tagged commit is refused (D98)', async () => {
   const { server, eng, lee } = await planned();

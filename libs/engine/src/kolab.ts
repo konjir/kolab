@@ -10,7 +10,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  canonicalWork, checkEvidenceInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, milestoneStates, naturalCompare, workProblems,
+  canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, milestoneStates, naturalCompare, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
@@ -7991,6 +7991,8 @@ export class Kolab {
       ...(p.row.milestone && p.state !== 'done' && !p.row.removed_in_version_id ? { waiting: p.waiting } : {}),
       ...(p.row.removed_in_version_id ? { removed_in: formatAddress({ node: p.row.removed_node ?? p.binding.name, version: p.row.removed_seq ?? undefined }) } : {}),
       ...(p.row.unreviewed ? { unreviewed: true } : {}),
+      ...(p.work?.release ? { release: true as const } : {}),
+      ...(p.row.approved && p.state === 'in_review' ? { approved: true as const } : {}),
       ...(p.row.returned && p.state === 'in_progress' ? { returned: true } : {}),
       // At risk (PLN10): told, as marks are, only to those who belong to the kolab's work (D58).
       ...(belongs && atRisk(p) ? { at_risk: true as const } : {}),
@@ -8012,10 +8014,10 @@ export class Kolab {
    * change (AT_RISK_REASONS) sits on it in its binding's committed versions.
    */
   private async packagesAt(q: Q, at: { binding: string; element: string }[]) {
-    const out = new Map<string, { key: string; binding: string; kolab_id: string; name: string; element: string; state: WorkState; at_risk: boolean }>();
+    const out = new Map<string, { key: string; binding: string; kolab_id: string; name: string; element: string; state: WorkState; approved: boolean; at_risk: boolean }>();
     if (!at.length) return out;
-    const rows = (await q.query<{ binding: string; kolab_id: string; name: string; element: string; state: WorkState; at_risk: boolean }>(
-      `select w.binding_node_id as binding, n.kolab_id, n.name, w.element_id as element,
+    const rows = (await q.query<{ binding: string; kolab_id: string; name: string; element: string; state: WorkState; approved: boolean; at_risk: boolean }>(
+      `select w.binding_node_id as binding, n.kolab_id, n.name, w.element_id as element, w.approved,
               case when w.state = 'in_progress' and w.lease_until < clock_timestamp() then 'todo' else w.state end as state,
               (not w.milestone and w.removed_in_version_id is null
                and not (w.state = 'todo' or (w.state = 'in_progress' and w.lease_until < clock_timestamp()))
@@ -8378,6 +8380,14 @@ export class Kolab {
         await this.reopenIn(tx, signal, binding, v, r, v.actor_id, delivers.get(e.element_id) ?? [],
           `revised in ${at} while at risk: a binding edit opens new work, and never settles its mark on its own (PLN10, D98)`
           + (settled.length ? ` (settled ${settled.map((m) => `mark ${m}`).join(', ')})` : ''));
+        continue;
+      }
+      if (r.approved && r.state === 'in_review' && !milestone && !e.work?.release) {
+        // Approved, and no longer to be released: its approval makes it Done, as it would have (PLN16, W7.7).
+        await tx.query(`update work_package set state = 'done', updated_at = clock_timestamp() where binding_node_id = $1 and element_id = $2`, [binding.id, e.element_id]);
+        await event(e.element_id, 'approved', 'in_review', 'done', SYSTEM_ACTOR, { assigneeFrom: r.assignee_id, assigneeTo: r.assignee_id,
+          note: `${formatAddress({ node: binding.name, version: v.seq })} dropped its release field, so its approval makes it Done (PLN16)` });
+        if (r.assignee_id) told.add(r.assignee_id);
         continue;
       }
       if (r.milestone === milestone) continue;
@@ -8808,7 +8818,7 @@ export class Kolab {
       if ((await this.approvalsIn(tx, v, plan)).met) satisfied.push(v.id);
     }
     const packages = !opts.work ? [] : (await tx.query<{ binding_node_id: string; element_id: string; assignee_id: string }>(
-      `select binding_node_id, element_id, assignee_id from work_package where kolab_id = $1 and state = 'in_review' and assignee_id is not null
+      `select binding_node_id, element_id, assignee_id from work_package where kolab_id = $1 and state = 'in_review' and not approved and assignee_id is not null
         order by binding_node_id, element_id`, [kolab])).rows;
     for (const w of packages) {
       const n = await this.syncWorkRequestsIn(tx, w.binding_node_id, w.element_id, await this.workReviewersIn(tx, kolab, w.assignee_id));
@@ -9264,6 +9274,7 @@ export class Kolab {
         const byPerson = (await this.policyIn(tx, s.kolab)).approve_work === 'person';
         const noOther = byPerson ? 'no person other than its assignee holds Write on the technical layer, and the kolab\'s policy keeps reviewing work packages for a person (AUT3)'
           : 'no one other than its assignee holds Write on the technical layer';
+        if (r.approved && !r.removed_in_version_id) throw new GateError(`${at} is approved, and waits for its release (PLN16): ${RELEASE_NEXT(at)}`);
         if (r.state === 'in_review' && r.assignee_id === s.actor_id && !r.removed_in_version_id && !items.length) {
           // Submitted again while it waits: whoever can review it now is asked, and anyone who no longer can loses theirs.
           await this.syncWorkRequestsIn(tx, binding.id, id, writers);
@@ -9333,14 +9344,16 @@ export class Kolab {
    * A reviewer's verdict on a work package In review (konjir_review work=…; PLN16, VER17): a
    * different actor from its assignee, from an engineer session, holding Write on the technical
    * layer, checked again under the access lock. The reviewer checks the evidence against the
-   * done-when with its own access, outside Kolab. An approval makes it Done; a request for changes,
+   * done-when with its own access, outside Kolab. An approval makes it Done, unless its work field
+   * says release and no release is among its evidence yet: then it stays In review, approved, until
+   * one is recorded (recordRelease; PLN16, W7.7), and takes no other verdict meanwhile; a request for changes,
    * which needs a note, sends it back to In progress for the same assignee with a fresh lease, even
    * if they hold another package meanwhile (PLN18 as D98 amends it: `returned`), or to To do if
    * they can no longer write the technical layer. Either way the other requests are withdrawn.
    * Under the binding's lock, as every change of Done takes it.
    */
   reviewWork(sessionId: string, ref: string, input: { verdict: ReviewVerdictKind; note?: string }): Promise<{
-    work: string; verdict: ReviewVerdictKind; state: WorkState; assignee: string | null; confirmed_repositories: string[];
+    work: string; verdict: ReviewVerdictKind; state: WorkState; approved?: true; next?: string; assignee: string | null; confirmed_repositories: string[];
   }> {
     return this.packageScoped(sessionId, ref, async ({ s, binding, id }) => {
       this.requireEngineer(s, 'reviews no work');
@@ -9355,6 +9368,7 @@ export class Kolab {
         const lease = await this.workTx(tx, s, 'reviews no work');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
         if (r.state !== 'in_review') throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}: only a work package In review takes a verdict`);
+        if (r.approved) throw new GateError(`${at} is approved already, and waits for its release (PLN16): it takes no other verdict. Once it is deployed, record the release (konjir_record_release work=${at} run=<the deploy run's link> sha=<the commit it released>), and that makes it Done`);
         if (r.assignee_id === s.actor_id) throw new GateError(`${s.actor_id} is ${at}'s assignee; another actor with Write on the technical layer must review it (PLN16)`);
         // Only a reviewer the kolab's policy allows (AUT3, POL3), as the policy stands now (its lock taken first, below).
         await this.refuseByPolicyIn(tx, s, { work: at, assignee: r.assignee_id! });
@@ -9372,10 +9386,16 @@ export class Kolab {
         let state: WorkState;
         let confirmed: string[] = [];
         if (input.verdict === 'approve') {
-          state = 'done';
-          await tx.query(`update work_package set state = 'done', unreviewed = false, updated_at = clock_timestamp() where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
-          await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'approved', from: 'in_review', to: 'done', actor: s.actor_id,
-            assigneeFrom: assignee, assigneeTo: assignee, version: c.version.id, concerned: c.delivers, note });
+          // A package that must be released stays In review, approved, until its release is recorded (PLN16, W7.7),
+          // unless one is among its evidence already: deployed before its review.
+          const waits = !!(await this.packageWorkIn(tx, binding.id, id))?.release
+            && !(await this.roundEvidence(tx, binding.id, id)).some((e) => e.kind === 'release');
+          state = waits ? 'in_review' : 'done';
+          await tx.query(`update work_package set state = $3, approved = $4, unreviewed = false, updated_at = clock_timestamp() where binding_node_id = $1 and element_id = $2`,
+            [binding.id, id, state, waits]);
+          await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'approved', from: 'in_review', to: state, actor: s.actor_id,
+            assigneeFrom: assignee, assigneeTo: assignee, version: c.version.id, concerned: c.delivers,
+            note: waits ? `${note ? `${note} ` : ''}(approved; it must be released, so it waits In review for its release: konjir_record_release once it is deployed, PLN16)` : note });
           // The approval vouches for the repositories its evidence names (D98 ruling 1): the first by
           // someone other than a repository's registrar and the assignee confirms it.
           confirmed = await this.confirmRepositoriesIn(tx, binding, id, s.actor_id, assignee);
@@ -9397,8 +9417,57 @@ export class Kolab {
         }
         await signal({ inbox: 'actor', kolab: s.kolab, actor: assignee });
         await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
-        return { work: at, verdict: input.verdict, state, assignee: state === 'todo' ? null : assignee, confirmed_repositories: confirmed };
+        return { work: at, verdict: input.verdict, state, ...(input.verdict === 'approve' && state === 'in_review' ? { approved: true as const, next: RELEASE_NEXT(at) } : {}),
+          assignee: state === 'todo' ? null : assignee, confirmed_repositories: confirmed };
       }, binding.id, { access: true });
+    });
+  }
+
+  /**
+   * Records the release of a work package (konjir_record_release; PLN16, W7.7): evidence of kind
+   * `release`, naming the deploy run that released it (`run`, its https link) and the commit it
+   * released (`sha`, in `repo` or the package's own repository), recorded after the deploy by anyone
+   * with Write on the technical layer, from an engineer session, not only its assignee. A package
+   * approved and waiting for its release is then Done, and its milestones are worked out again; one
+   * In progress or In review not yet approved keeps its state, and its approval makes it Done; a Done
+   * one keeps the release as a record. The same release (the commit, its repository and the run)
+   * recorded again is counted, not recorded twice. Not a milestone, which is released by its
+   * members, nor a package To do or removed. Under the binding's lock. Counts as a draft (W2.21).
+   */
+  recordRelease(sessionId: string, ref: string, input: unknown): Promise<{ work: string; state: WorkState; done: boolean; recorded: number; already: number }> {
+    return this.packageScoped(sessionId, ref, async ({ s, binding, id }) => {
+      this.requireEngineer(s, 'records no release');
+      const { item, problems, limit } = checkReleaseInput(input);
+      if (!item) { const said = `${problems.join('; ')}.`; throw limit ? new LimitError(said) : new GateError(said); }
+      const at = formatAddress({ node: binding.name, element: id });
+      return this.rated(s.actor_id, 'draft', (hold) => this.inTransaction(async (tx, signal) => {
+        await this.workTx(tx, s, 'records no release');
+        const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
+        if (r.removed_in_version_id) throw new GateError(`${at} was removed from the binding (PLN4), so it takes no release`);
+        if (r.milestone) throw new GateError(`${at} is a milestone: it has no work of its own to release, and is Done when its members are (PLN3): record the release on each of them`);
+        if (r.state === 'todo' || r.lapsed) throw new GateError(`${at} is To do: it has no work to release yet`);
+        const [repository] = await this.pinEvidenceIn(tx, binding, id, [item]);
+        // Recorded already in this round of work: counted, and nothing changes (a package approved has none, or it would be Done).
+        const key = evidenceKey(item.kind, item.ref, item.url, item.title, repository);
+        if ((await this.roundEvidence(tx, binding.id, id)).some((e) => evidenceKey(e.kind, e.ref, e.url, e.title, e.repository_id) === key)) {
+          await this.useRate(tx, hold);
+          return { work: at, state: r.state, done: r.state === 'done', recorded: 0, already: 1 };
+        }
+        const c = await this.concernedIn(tx, binding.id, id);
+        const to: WorkState = r.approved ? 'done' : r.state;
+        if (to === 'done' && r.state === 'in_review') {
+          await tx.query(`update work_package set state = 'done', updated_at = clock_timestamp() where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
+        }
+        const ev = await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'release_recorded', from: r.state, to, actor: s.actor_id,
+          assigneeFrom: r.assignee_id, assigneeTo: r.assignee_id, version: c.version.id, concerned: c.delivers,
+          note: `${evidenceSummary([item])}${item.title ? `: ${item.title}` : ''}${r.approved ? ' (approved, so it is Done, PLN16)' : ''}`.slice(0, 2000) });
+        const { recorded, already } = await this.evidenceIn(tx, binding.id, id, [item], ev, s.actor_id, [repository]);
+        if (r.approved) await this.settleMilestonesIn(tx, binding, c.version);
+        if (r.assignee_id) await signal({ inbox: 'actor', kolab: s.kolab, actor: r.assignee_id });
+        await signal({ inbox: 'layer', kolab: s.kolab, layer: 'technical' });
+        await this.useRate(tx, hold);
+        return { work: at, state: to, done: to === 'done', recorded: recorded.length, already };
+      }, binding.id, { access: true }));
     });
   }
 
@@ -9667,7 +9736,7 @@ export class Kolab {
     const out: (string | null)[] = [];
     for (const [i, e] of items.entries()) {
       if (e.kind === 'test_run') { out.push(null); continue; }
-      const what = `evidence ${i + 1} (a ${e.kind === 'commit' ? 'commit' : 'pull request'})`;
+      const what = e.kind === 'release' ? 'the release' : `evidence ${i + 1} (a ${e.kind === 'commit' ? 'commit' : 'pull request'})`;
       let repo: RepositoryRow;
       if (e.repo) {
         repo = await this.repositoryNamed(tx, binding.kolab_id, e.repo, { live: true });
@@ -9680,7 +9749,8 @@ export class Kolab {
         throw new GateError(`${what} names no repository, and ${at} has none of its own (no repo, and its binding has no implementation): `
           + 'give repo=<its URL>, one of konjir_list_repositories, or have a person with Maintain register the binding\'s (konjir repo register --binding <binding>)');
       }
-      if (e.url && !insideRepository(e.url, repo.url)) {
+      // A release's link is its deploy run's, which may live outside the repository (another CI's).
+      if (e.url && e.kind !== 'release' && !insideRepository(e.url, repo.url)) {
         throw new GateError(`${what}'s url ${e.url} isn't inside its repository, ${repo.url}: a ${e.kind === 'commit' ? 'commit' : 'pull request'} of ${repo.url} links under it (D98)`);
       }
       out.push(repo.id);
@@ -10277,7 +10347,7 @@ export class Kolab {
          select w.binding_node_id, w.element_id, null::text as version_id, n.name as node, null::int as seq, w.assignee_id as author,
                 coalesce((select min(r.created_at) from review_request r where r.binding_node_id = w.binding_node_id and r.element_id = w.element_id and r.state = 'open'), w.updated_at) as since
            from work_package w join node n on n.id = w.binding_node_id
-          where $2 and w.kolab_id = $1 and w.state = 'in_review' and w.removed_in_version_id is null and w.assignee_id is not null
+          where $2 and w.kolab_id = $1 and w.state = 'in_review' and not w.approved and w.removed_in_version_id is null and w.assignee_id is not null
             and not exists (select 1 from job j where j.ended_at is null and j.binding_node_id = w.binding_node_id and j.element_id = w.element_id)
          union all
          select null, null, v.id, n.name, v.seq, v.actor_id,
@@ -11271,7 +11341,7 @@ export class Kolab {
           : trig(linked ? { element: r.t_element ?? undefined, selector: r.t_selector ?? undefined } : {})),
         next: NEXT_STEP[r.reason] ?? '',
         ...(p ? {
-          work, work_state: p.state,
+          work, work_state: p.state, ...(p.approved ? { work_approved: true as const } : {}),
           // Only a mark of a change puts it at risk; another (ruled, role_boundary…) keeps its own next step.
           ...(p.at_risk && AT_RISK_REASONS.includes(r.reason) ? {
             at_risk: true as const, ...(revisits.has(p.key) ? { revisit: revisits.get(p.key)! } : {}),
@@ -11765,6 +11835,8 @@ export type LinkDescription = { kind: string; source: string } & ({ target: stri
 export interface MarkView {
   mark: string; reason: string; link?: string; dirty: string; layer: Layer; because: string; next: string;
   work?: string; work_state?: WorkState; at_risk?: true; revisit?: WorkRevisit;
+  /** The package is In review, approved, waiting for its release (PLN16, W7.7). */
+  work_approved?: true;
 }
 
 /**
@@ -12179,9 +12251,11 @@ interface WorkRow {
   binding_node_id: string; element_id: string; kolab_id: string; state: WorkState; assignee_id: string | null;
   lease_until: Date | string | null; unreviewed: boolean; milestone: boolean; removed_in_version_id: string | null;
   returned: boolean; touched_at: Date | string | null; lapsed: boolean; removed_seq: number | null; removed_node: string | null;
+  /** In review, approved, waiting for its release (PLN16, W7.7; migration 0047). */
+  approved: boolean;
 }
 const WORK_ROWS = `select w.binding_node_id, w.element_id, w.kolab_id, w.state, w.assignee_id, w.lease_until, w.unreviewed, w.milestone,
-        w.removed_in_version_id, w.returned, w.touched_at, (w.state = 'in_progress' and w.lease_until < clock_timestamp()) as lapsed, rv.seq as removed_seq, rn.name as removed_node
+        w.removed_in_version_id, w.returned, w.approved, w.touched_at, (w.state = 'in_progress' and w.lease_until < clock_timestamp()) as lapsed, rv.seq as removed_seq, rn.name as removed_node
    from work_package w left join version rv on rv.id = w.removed_in_version_id left join node rn on rn.id = rv.node_id`;
 
 /** Why a package is blocked, with whether a question was raised by a mark (told only to those who belong, D58). */
@@ -12231,7 +12305,7 @@ const EVIDENCE_FROM = 'evidence e left join repository er on er.id = e.repositor
  */
 const evidenceView = (e: EvidenceRow): EvidenceView => ({
   id: e.id, kind: e.kind,
-  ...(e.kind === 'commit' && e.ref ? { sha: e.ref } : {}), ...(e.kind === 'pull_request' && e.ref ? { pr: Number(e.ref) } : {}),
+  ...((e.kind === 'commit' || e.kind === 'release') && e.ref ? { sha: e.ref } : {}), ...(e.kind === 'pull_request' && e.ref ? { pr: Number(e.ref) } : {}),
   ...(e.url ? { url: e.url } : {}), ...(e.title ? { title: e.title } : {}), ...(e.files ? { files: e.files } : {}),
   recorded_by: e.recorded_by, at: iso(e.at)!, event: e.event_id,
   ...(e.kind === 'test_run' ? {} : { repository: e.repository_url, confirmed: !!e.repository_confirmed, ...(e.before_repositories ? { before_repositories: true as const } : {}) }),
@@ -12273,6 +12347,10 @@ const MARK_NOTES = new Set<WorkEventKind>(['confirmed', 'reopened', 'at_risk']);
 
 /** A state as a sentence says it. */
 const STATE_WORDS: Record<WorkState, string> = { todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
+/** What to do with a package approved and waiting for its release (PLN16, W7.7). */
+const RELEASE_NEXT = (at: string) =>
+  `once it is deployed, someone with Write on the technical layer records the release, naming the deploy run and the commit it released `
+  + `(konjir_record_release work=${at} run=<the deploy run's https link> sha=<the released commit>, or konjir work deliver ${at} --release <run> from the checkout), and that makes it Done`;
 
 /** The git trailer a commit carries for a work package (D98): its full address, kolab included. */
 const workTrailer = (kolab: string, binding: string, id: string) => `Konjir-Work: ${formatAddress({ kolab, node: binding, element: id })}`;
