@@ -179,7 +179,7 @@ test('unlinking, a version\'s removes and a mark name a link\'s target in anothe
   expect(JSON.stringify(await kolab.marksFor(alice))).not.toMatch(secret);
   // Once carol reads billing herself, she is told all of it.
   await kolab.grant('billing', 'carol', 'read');
-  expect(await because(carol)).toEqual(expect.arrayContaining([`kj:billing/checkout#R1~q({"exact":"sent monthly"}) is in another kolab: ${lost} kolab billing`]));
+  expect(await because(carol)).toEqual(expect.arrayContaining([`kj:billing/checkout#R1~q({"exact":"sent monthly"}) is in another kolab: ${lost} that kolab`]));
   expect((await markDetails(kolab, carol)).find((m) => m.reason === 'access_lost')).toMatchObject({ target_node: 'checkout', target_element: 'R1' });
 });
 
@@ -232,7 +232,7 @@ test('revoking Read marks the link access_lost in the same change; its target\'s
   await kolab.revoke('billing', 'alice');
   expect(await marks(kolab, 'orders')).toStrictEqual([['access_lost', 'kj:orders-spec@1#O1'], ['upstream_dirty', 'kj:faq@1#F1']]);
   expect((await kolab.describeMarks({ kolab: 'orders' }))[0].because)
-    .toBe('kj:billing/checkout#R1 is in another kolab: alice, whose access it rests on, can no longer read kolab billing');
+    .toBe('kj:billing/checkout#R1 is in another kolab: alice, whose access it rests on, can no longer read that kolab');
   // Revoking again, or any other change of access, marks it once.
   await kolab.revoke('billing', 'alice');
   expect(await marks(kolab, 'orders')).toHaveLength(2);
@@ -247,7 +247,7 @@ test('revoking Read marks the link access_lost in the same change; its target\'s
   // alice can't make a new link into billing now, nor clear what she can't check.
   expect(await rejection(linkAcross(kolab, alice, o1, 'O2', 'kj:billing/checkout#R2'))).toBe('Error: no node checkout in kolab billing');
   const lost = (await kolab.openMarks()).find((m) => m.reason === 'access_lost')!;
-  expect(await rejection(kolab.clear(alice, lost.id))).toMatch(/AccessError: alice can't read kolab billing either/);
+  expect(await rejection(kolab.clear(alice, lost.id))).toBe('AccessError: alice can\'t read that kolab either: only someone who reads it can hold this link');
 
   // Read comes back: the mark settles, with what it caused, and the link is checked against
   // billing's latest version, where R1 has changed since.
@@ -270,14 +270,14 @@ test('someone who reads the other kolab takes a link over by clearing its mark; 
   const lost = (await kolab.openMarks()).find((m) => m.reason === 'access_lost')!;
 
   // carol can't read billing either; once she can, she holds the link, and it is checked.
-  expect(await rejection(kolab.clear(carol, lost.id))).toMatch(/AccessError: carol can't read kolab billing either/);
+  expect(await rejection(kolab.clear(carol, lost.id))).toBe('AccessError: carol can\'t read that kolab either: only someone who reads it can hold this link');
   await kolab.grant('billing', 'carol', 'read');
   await kolab.clear(carol, lost.id);
   expect((await kolab.db.query(`select held_by from edge where id = $1`, [edge])).rows).toStrictEqual([{ held_by: 'carol' }]);
   expect(await marks(kolab, 'orders')).toStrictEqual([['changed', 'kj:orders-spec@1#O1']]);
   // alice can't clear the change (she can't check it); carol can.
   const changed = (await kolab.openMarks()).find((m) => m.reason === 'changed')!;
-  expect(await rejection(kolab.clear(alice, changed.id))).toMatch(/AccessError: alice can't read kolab billing, so can't check this link into it/);
+  expect(await rejection(kolab.clear(alice, changed.id))).toBe('AccessError: alice can\'t read the kolab this link is into, so can\'t check it; someone who reads that kolab clears it');
   await kolab.clear(carol, changed.id);
   expect(await marks(kolab, 'orders')).toStrictEqual([]);
 
@@ -339,6 +339,108 @@ test('clearing a link\'s change as someone who reads the other kolab also settle
   await kolab.grant('billing', 'carol', 'read');
   await kolab.clear(carol, (await kolab.openMarks()).find((m) => m.reason === 'changed')!.id);
   expect(await marks(kolab, 'orders')).toStrictEqual([]);
+});
+
+test('clearing a mark names nothing of a kolab its session can\'t read, in its refusals or in the marks it closes, as row-level security has it, for an agent capped by its owner too (W7.10, LNK8)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  // carol writes orders and can't read billing; her agent was granted Read there while she held it, and is capped now she doesn't.
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'carol', 'read');
+  await kolab.addActor('carol-bot', { owner: 'carol' });
+  await kolab.grant('orders', 'carol-bot', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'carol-bot', 'read');
+  await kolab.revoke('billing', 'carol');
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'orders' });
+  const bot = await kolab.openSession('carol-bot', 'product', { kolab: 'orders' });
+  // orders' spec is a fork of billing's; a screen of it links into billing too.
+  await kolab.createNode(alice, 'spec', 'EU', 'eu-spec');
+  const parent = await kolab.versionIn(alice, 'kj:billing/checkout@1', { what: 'a variant (a fork)', across: true });
+  await commitReviewed(kolab, alice, carol, 'eu-spec', { parent: parent.id, deltas: [{ kind: 'override', element: 'R2', text: 'Invoices are in euros and pounds.' }] });
+  await kolab.createNode(alice, 'prototype', 'Orders', 'orders-proto');
+  const o1 = await commitReviewed(kolab, alice, carol, 'orders-proto', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  // Refusals are short: no generated id in them, so R1 or a version may not appear at all.
+  const secret = /checkout|billing|\bR1\b|sent monthly|version|@\d/;
+  const refused = async (s: string, reason: 'changed' | 'access_lost') => {
+    const m = (await kolab.openMarks()).find((x) => x.edge_id && (reason === 'access_lost') === (x.reason === 'access_lost'))!;
+    return rejection(kolab.clear(s, m.id));
+  };
+  const cantCheck = (who: string) => `AccessError: ${who} can't read the kolab this link is into, so can't check it; someone who reads that kolab clears it`;
+
+  // R1 changes. Neither carol nor her capped agent can check it, and neither is told where it is.
+  await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
+  await kolab.drainOutbox();
+  for (const [s, who] of [[carol, 'carol'], [bot, 'carol-bot']]) {
+    const said = await refused(s, 'changed');
+    expect(said).toBe(cantCheck(who));
+    expect(said).not.toMatch(secret);
+  }
+  // Kolab's check agrees with row-level security: the agent's lineage hides the target as carol's does, and alice's names it.
+  const target = async (s: string) => (await kolab.lineagePage({ session: s }, o1, 'upstream')).items[0].target;
+  expect([await target(carol), await target(bot), await target(alice)]).toStrictEqual([null, null, 'kj:billing/checkout@1#R1']);
+
+  // alice loses Read: the link and the fork are marked access_lost, and taking either over is refused alike, unnamed.
+  await kolab.revoke('billing', 'alice');
+  const forkLost = (await kolab.openMarks()).find((m) => m.reason === 'access_lost' && !m.edge_id)!;
+  for (const [s, who] of [[carol, 'carol'], [bot, 'carol-bot']]) {
+    const link = await refused(s, 'access_lost');
+    const fork = await rejection(kolab.clear(s, forkLost.id));
+    expect([link, fork]).toStrictEqual([
+      `AccessError: ${who} can't read that kolab either: only someone who reads it can hold this link`,
+      `AccessError: ${who} can't read that kolab either: only someone who reads it can hold this fork`,
+    ]);
+    expect(`${link} ${fork}`).not.toMatch(secret);
+  }
+
+  // Once carol reads billing she takes both over, and clears the change: each mark is closed as hers.
+  await kolab.grant('billing', 'carol', 'read');
+  const lost = (await kolab.openMarks()).filter((m) => m.reason === 'access_lost').map((m) => m.id);
+  for (const m of lost) await kolab.clear(carol, m);
+  const changed = (await kolab.openMarks()).find((m) => m.edge_id)!.id;
+  await kolab.clear(carol, changed);
+  await kolab.drainOutbox();
+  expect(await marks(kolab, 'orders')).toStrictEqual([]);
+  expect((await kolab.db.query(`select id, cleared_by from invalidation where id = any($1) order by id`, [[...lost, changed]])).rows)
+    .toStrictEqual([...lost, changed].sort().map((id) => ({ id, cleared_by: 'carol' })));
+
+  // Every mark of orders, open or closed, as a session there that can't read billing reads it (one
+  // that belongs to orders' work: 0022): nothing of billing.
+  await kolab.addActor('dave');
+  await kolab.grant('orders', 'dave', 'write', { layers: ['functional'] });
+  const dave = await kolab.openSession('dave', 'product', { kolab: 'orders' });
+  const rows = await asAgent(kolab, dave, `select note, cleared_by from invalidation`);
+  expect(rows.length).toBeGreaterThanOrEqual(3);
+  expect(JSON.stringify(rows)).not.toMatch(/checkout|billing|sent monthly/);
+});
+
+test('a public kolab is read through clearing as row-level security reads it: a person with no grant checks a link into it, and an agent its owner can\'t lend that to can\'t (W7.10, LNK8, D56)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.addActor('dave');
+  await kolab.grant('orders', 'dave', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'dave', 'read');
+  await kolab.addActor('dave-bot', { owner: 'dave' });
+  await kolab.grant('orders', 'dave-bot', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'dave-bot', 'read');
+  await kolab.db.query(`update kolab set visibility = 'public' where id = 'billing'`);
+  // dave now reads billing only because it is public, which lends his agent nothing.
+  await kolab.revoke('billing', 'dave');
+  const dave = await kolab.openSession('dave', 'product', { kolab: 'orders' });
+  const bot = await kolab.openSession('dave-bot', 'product', { kolab: 'orders' });
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await commitReviewed(kolab, alice, dave, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
+  await kolab.drainOutbox();
+  const changed = (await kolab.openMarks()).find((m) => m.reason === 'changed')!.id;
+  const target = async (s: string) => (await kolab.lineagePage({ session: s }, o1, 'upstream')).items[0].target;
+
+  expect(await target(bot)).toBeNull();
+  expect(await rejection(kolab.clear(bot, changed))).toBe('AccessError: dave-bot can\'t read the kolab this link is into, so can\'t check it; someone who reads that kolab clears it');
+  expect(await target(dave)).toBe('kj:billing/checkout@1#R1');
+  await kolab.clear(dave, changed);
+  expect(await marks(kolab, 'orders')).toStrictEqual([]);
+  expect((await kolab.db.query(`select held_by from edge where source_version_id = $1`, [o1])).rows).toStrictEqual([{ held_by: 'dave' }]);
 });
 
 test('a holder who leaves the dependent\'s kolab is no channel into it: the fork and the link are marked access_lost at once, and the other kolab\'s commits stop (review repro)', async () => {
