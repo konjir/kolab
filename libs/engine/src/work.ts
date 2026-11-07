@@ -77,6 +77,12 @@ export function checkWork(element: string, w: unknown): { work: WorkFields | nul
     else if (textLength(o.repo.trim()) > MAX_WORK_REPO) { limit = true; problems.push(`${element}'s repo is ${textLength(o.repo.trim())} characters; the limit is ${MAX_WORK_REPO}`); }
     else out.repo = o.repo.trim();
   }
+  if (o.release !== undefined && o.release !== null) {
+    if (o.release !== true) problems.push(`${element}'s release is ${JSON.stringify(o.release)}: a work package that must be released says release: true, and one that needn't be leaves release out`);
+    // A milestone has no work of its own to release (PLN3): its members are released, and it is Done when they are.
+    else if (out.milestone) problems.push(`${element} is a milestone, which has no work of its own to release (PLN3): set release on its members, and leave it out here`);
+    else out.release = true;
+  }
   // In WORK_FIELDS order, so the same fields are always stored alike.
   const ordered = Object.fromEntries(WORK_FIELDS.filter((k) => out[k] !== undefined).map((k) => [k, out[k]])) as WorkFields;
   return { work: problems.length ? null : ordered, problems, limit };
@@ -240,6 +246,45 @@ export interface CheckedEvidence {
 }
 
 const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'summary', 'files', 'repo'] as const;
+/** The kinds of evidence a package's own work records (konjir_add_evidence, konjir_submit_work): all but a release, which konjir_record_release records (W7.7). */
+const SUBMITTED_KINDS = EVIDENCE_KINDS.filter((k) => k !== 'release');
+const RELEASE_KEYS = ['run', 'sha', 'repo', 'title'] as const;
+
+/**
+ * A release as a client gives it (konjir_record_release; PLN16, W7.7), checked: the deploy run that
+ * released the work, by its https link (`run`), and the commit it released, by its full sha (`sha`),
+ * in a repository registered in the kolab (`repo`, or the package's own), with an optional summary
+ * (`title`). Nothing given is dropped quietly. `problems` names each refusal; `limit` is set when one
+ * of them is a size limit.
+ */
+export function checkReleaseInput(input: unknown): { item: CheckedEvidence | null; problems: string[]; limit: boolean } {
+  const problems: string[] = [];
+  let limit = false;
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return { item: null, problems: ['a release names its deploy run and the commit it released: { run: "https://…", sha: "…" }'], limit };
+  }
+  const o = input as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(RELEASE_KEYS as readonly string[]).includes(k) && o[k] !== undefined);
+  if (unknown.length) problems.push(`a release has ${unknown.join(', ')}, which it doesn't take: it takes ${RELEASE_KEYS.join(', ')}`);
+  const out: CheckedEvidence = { kind: 'release', ref: null, url: null, title: null, files: null, repo: null };
+  if (o.run === undefined || o.run === null) problems.push('a release names the deploy run that released it, by its https link, as run');
+  else {
+    const u = evidenceUrl('the release', o.run);
+    if (u.problem) { problems.push(u.problem.replace("the release's url", "the release's run")); if (u.limit) limit = true; } else out.url = u.url!;
+  }
+  if (typeof o.sha !== 'string' || !SHA.test(o.sha.trim().toLowerCase())) problems.push(`a release names the commit it released by its full sha: 40 hexadecimal characters (64 for SHA-256), not ${JSON.stringify(o.sha ?? null)}`);
+  else out.ref = o.sha.trim().toLowerCase();
+  if (o.repo !== undefined && o.repo !== null) {
+    const r = repositoryUrl(o.repo);
+    if (r.problem) problems.push(`the release's repo: ${r.problem}`); else out.repo = r.url!;
+  }
+  if (o.title !== undefined && o.title !== null) {
+    if (typeof o.title !== 'string' || !o.title.trim()) problems.push("the release's title is text");
+    else if (textLength(o.title.trim()) > MAX_TEXT) { limit = true; problems.push(`the release's title is ${textLength(o.title.trim()).toLocaleString('en')} characters; the limit is ${MAX_TEXT.toLocaleString('en')}`); }
+    else out.title = o.title.trim();
+  }
+  return { item: problems.length ? null : out, problems, limit };
+}
 
 /**
  * A repository's URL in the one form Kolab stores and compares (W5.2a; migration 0032's repository_url):
@@ -362,11 +407,12 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
   const items: CheckedEvidence[] = [];
   input.forEach((x, i) => {
     const what = `evidence ${i + 1}`;
-    if (typeof x !== 'object' || x === null || Array.isArray(x)) { problems.push(`${what} is an object, with a kind: ${EVIDENCE_KINDS.join(', ')}`); return; }
+    if (typeof x !== 'object' || x === null || Array.isArray(x)) { problems.push(`${what} is an object, with a kind: ${SUBMITTED_KINDS.join(', ')}`); return; }
     const o = x as Record<string, unknown>;
     const unknown = Object.keys(o).filter((k) => !(EVIDENCE_KEYS as readonly string[]).includes(k));
     if (unknown.length) problems.push(`${what} has ${unknown.join(', ')}, which evidence doesn't take: it takes ${EVIDENCE_KEYS.join(', ')}`);
-    if (!(EVIDENCE_KINDS as readonly unknown[]).includes(o.kind)) { problems.push(`${what}'s kind is one of ${EVIDENCE_KINDS.join(', ')}, not ${JSON.stringify(o.kind ?? null)}`); return; }
+    if (o.kind === 'release') { problems.push(`${what} is a release, which is recorded after the deploy with konjir_record_release (or konjir work deliver --release), not as the work's own evidence`); return; }
+    if (!(SUBMITTED_KINDS as readonly unknown[]).includes(o.kind)) { problems.push(`${what}'s kind is one of ${SUBMITTED_KINDS.join(', ')}, not ${JSON.stringify(o.kind ?? null)}`); return; }
     const kind = o.kind as EvidenceKind;
     const given = (k: string) => o[k] !== undefined && o[k] !== null;
     const refuse = (keys: string[]) => {
@@ -425,11 +471,13 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
  */
 export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null, repository: string | null = null): string {
   return kind === 'commit' ? `commit:${repository ?? ''}:${ref}` : kind === 'pull_request' ? `pr:${sameLink(url ?? '').toLowerCase()}`
+    : kind === 'release' ? `release:${repository ?? ''}:${ref}:${sameLink(url ?? '')}`
     : url ? `test:${sameLink(url)}` : `test-summary:${title ?? ''}`;
 }
 
 /** A line naming evidence, for an event's note: each commit's short sha, each pull request's link, each test run. */
 export function evidenceSummary(items: CheckedEvidence[]): string {
-  return items.map((e) => (e.kind === 'commit' ? `commit ${e.ref!.slice(0, 12)}` : e.kind === 'pull_request' ? `pull request ${e.url}` : `test run ${e.url ?? e.title}`))
+  return items.map((e) => (e.kind === 'commit' ? `commit ${e.ref!.slice(0, 12)}` : e.kind === 'pull_request' ? `pull request ${e.url}`
+    : e.kind === 'release' ? `release of commit ${e.ref!.slice(0, 12)} by ${e.url}` : `test run ${e.url ?? e.title}`))
     .join(', ').slice(0, 1000);
 }

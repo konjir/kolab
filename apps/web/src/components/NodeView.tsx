@@ -315,6 +315,7 @@ function Work({ work, state, name }: { work: WorkFields; state?: WebWorkState; n
   if (work.milestone) facts.push(work.target_date ? `Milestone, due ${work.target_date}` : 'Milestone');
   if (work.size) facts.push(`Size ${work.size}`);
   if (work.repo) facts.push(`In ${work.repo}`);
+  if (work.release) facts.push('Done once released');
   return (
     <dl className="work" aria-label="Work package">
       {state && <WorkStateLine state={state} name={name} />}
@@ -340,7 +341,7 @@ function WorkStateLine({ state, name }: { state: WebWorkState; name: string }) {
   return (
     <div className="work-state">
       <dt>State</dt>
-      <dd><Pill tone={state.state === 'done' ? 'clean' : why.length && !state.milestone ? 'question' : 'stale'}>{STATE_LABEL[state.state]}</Pill>{state.at_risk && <> <Pill tone="stale">At risk</Pill></>}{held}
+      <dd><Pill tone={state.state === 'done' ? 'clean' : why.length && !state.milestone ? 'question' : 'stale'}>{STATE_LABEL[state.state]}</Pill>{state.approved && <> <Pill tone="clean">Approved, waiting for its release</Pill></>}{state.at_risk && <> <Pill tone="stale">At risk</Pill></>}{held}
         {why.length > 0 && !state.milestone && <span className="blocked"> · Blocked by {why.join(', ')}</span>}</dd>
     </div>
   );

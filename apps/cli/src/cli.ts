@@ -21,6 +21,7 @@
  *   konjir repo register [--binding B] [--url U] [--root SHA] [-C dir]
  *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
  *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
+ *   konjir work deliver <work> --release URL [--commit REV] [--title T] [--repo URL] [--dry-run] [-C dir]
  *                                        -> records the commits carrying the package's Konjir-Work trailer (W5.2a, D98)
  *   konjir work [--jobs 4] [--once] [--machine M] [--allow-all] [--harness CMD] [--repo URL] [-C dir]
  *                                        -> sets this machine to work: takes jobs from Kolab and runs one headless
@@ -41,7 +42,7 @@ import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setup } from './login.js';
-import { deliverWork, gitIn, registerRepository } from './deliver.js';
+import { deliverWork, gitIn, registerRepository, releaseDelivered } from './deliver.js';
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { guardHook } from './guard.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
@@ -49,7 +50,7 @@ import { toolsListing, verbHelp } from './verbs.js';
 import { importKolab } from './import.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
-export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, taggedCommits, type Git } from './deliver.js';
+export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, releaseDelivered, taggedCommits, type Git } from './deliver.js';
 export { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, guardSettings, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, runWork, workStatus, removeKonjirShim, writeKonjirShim, type JobReport, type TakenJob } from './work.js';
 export { guardHook, lineDenial, simpleCommands } from './guard.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
@@ -180,6 +181,8 @@ Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|sum
            (Konjir-Work: kj:<kolab>/<binding>#<id>, from pull_work or read_work), checks the checkout is the registered
            repository (its root commit and a remote), and records them as evidence; --submit submits the package.
            Run again, it records only what is new. Kolab itself never reads git.
+           konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>], after the deploy: records
+           that the run released the commit (HEAD by default); a package with release: true, approved, is then Done.
            konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a
            person with Maintain or Admin (never an agent): registers its repository, pinned by its root commit.
 Import:    konjir import <file.json> [--dry-run] [--update], signed in as yourself (never an agent or a job): imports
@@ -681,6 +684,15 @@ export async function main(argv: string[]) {
         result = await registerRepository(callIt, git, opts);
       } else {
         const on = (name: string) => { const i = args.indexOf(`--${name}`); if (i >= 0) args.splice(i, 1); return i >= 0; };
+        const run = flag(args, 'release');
+        if (run !== undefined) {
+          // After the deploy: the package's release, not its work's evidence (PLN16, W7.7).
+          const opts = { run, commit: flag(args, 'commit'), title: flag(args, 'title'), repo: flag(args, 'repo'), dryRun: on('dry-run') };
+          const work = args[0] !== undefined && !args[0].startsWith('-') ? args.shift() : undefined;
+          if (args.length) throw new Error(`konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>] [--repo <url>] [--dry-run] [-C <dir>]: unknown ${args.join(' ')}`);
+          console.log(JSON.stringify(await releaseDelivered(callIt, git, { work, ...opts }), null, 2));
+          return;
+        }
         const tests: string[] = [];
         for (let t = flag(args, 'test'); t !== undefined; t = flag(args, 'test')) tests.push(t);
         const opts = { submit: on('submit'), dryRun: on('dry-run'), pr: flag(args, 'pr'), note: flag(args, 'note'), since: flag(args, 'since'), repo: flag(args, 'repo'), tests };

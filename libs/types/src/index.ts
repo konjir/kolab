@@ -272,20 +272,22 @@ export const nobodyCanReview = (layer: Layer) =>
 /** A work package's size (PLN1): it feeds the forecast, and nobody is asked for hours. */
 export const WORK_SIZES = ['S', 'M', 'L'] as const;
 export type WorkSize = typeof WORK_SIZES[number];
-/** The fields a work package may carry, in the order Kolab stores and shows them (migration 0029's kj_work_valid). */
-export const WORK_FIELDS = ['done_when', 'depends_on', 'size', 'milestone', 'target_date', 'repo'] as const;
+/** The fields a work package may carry, in the order Kolab stores and shows them (migration 0047's kj_work_valid). */
+export const WORK_FIELDS = ['done_when', 'depends_on', 'size', 'milestone', 'target_date', 'repo', 'release'] as const;
 /**
  * A work package's fields (PLN1, PLN3, D98, D104), on an element of a binding and nowhere else
  * (migrations 0029, 0033): its definition of done, the work packages of the same binding version it
  * depends on (by element id), its size, whether it is a milestone (no work of its own: its members
  * are what it depends on), a milestone's target date (YYYY-MM-DD; only a milestone carries one,
- * PLN2), and the repository it is done in, when not its binding's own (KON7). An element with a work
+ * PLN2), the repository it is done in, when not its binding's own (KON7), and whether it must be
+ * released (`release: true`; PLN16, W7.7): an approval then leaves it In review, approved, until
+ * evidence of its release is recorded, which makes it Done. An element with a work
  * field is a work package, `{}` for one whose fields are still to be given; one without is a decision.
  * What it serves and relies on are not fields: they are dependency links, into the spec or its own
  * binding (PLN1).
  */
 export interface WorkFields {
-  done_when?: string; depends_on?: string[]; size?: WorkSize; milestone?: boolean; target_date?: string; repo?: string;
+  done_when?: string; depends_on?: string[]; size?: WorkSize; milestone?: boolean; target_date?: string; repo?: string; release?: boolean;
 }
 /**
  * A work package's state (PLN12), as on an agile board: To do, In progress, In review or Done.
@@ -297,20 +299,23 @@ export type WorkState = typeof WORK_STATES[number];
  * What a work package's event records (PLN4, PLN5): its binding adding, removing or restoring it; a
  * pull, a release, a reassignment and a lease that lapsed (PLN14, PLN15); evidence, submission,
  * review and reopening (PLN16, PLN10, W5.1c and W5.2); a milestone Kolab finds Done, or no
- * longer Done (PLN3); and a mark that puts work at risk, told to its last assignee (PLN10, W5.2b).
- * Migration 0035's work_event_kind_check.
+ * longer Done (PLN3); a mark that puts work at risk, told to its last assignee (PLN10, W5.2b); and
+ * evidence of its release recorded (PLN16, W7.7), which makes a package approved and waiting for its
+ * release Done. Migration 0047's work_event_kind_check.
  */
 export const WORK_EVENT_KINDS = [
   'added', 'removed', 'restored', 'pulled', 'released', 'reassigned', 'lapsed',
   'evidence', 'submitted', 'approved', 'changes_requested', 'done_unreviewed', 'reopened', 'confirmed',
-  'milestone_done', 'milestone_reopened', 'at_risk',
+  'milestone_done', 'milestone_reopened', 'at_risk', 'release_recorded',
 ] as const;
 export type WorkEventKind = typeof WORK_EVENT_KINDS[number];
 /**
- * What a work package's evidence is (PLN16, D98): a commit, a pull request or a test run. Each is an
- * attributed claim, which its reviewer checks outside Kolab (D36). Migration 0031's evidence_kind_check.
+ * What a work package's evidence is (PLN16, D98): a commit, a pull request or a test run; and a
+ * release (W7.7), naming the deploy run by its link and the commit it released by its sha, recorded
+ * after the deploy with konjir_record_release. Each is an attributed claim, which its reviewer checks
+ * outside Kolab (D36). Migration 0047's evidence_kind_check.
  */
-export const EVIDENCE_KINDS = ['commit', 'pull_request', 'test_run'] as const;
+export const EVIDENCE_KINDS = ['commit', 'pull_request', 'test_run', 'release'] as const;
 export type EvidenceKind = typeof EVIDENCE_KINDS[number];
 /**
  * One item of evidence as a client gives it (konjir_add_evidence, konjir_submit_work): a commit by
@@ -492,6 +497,14 @@ export interface WorkItemView {
   removed_in?: string;
   /** Done on submission with no reviewer (PLN16). */
   unreviewed?: boolean;
+  /** It must be released (its `release` field; PLN16, W7.7): Done only once evidence of its release is recorded. */
+  release?: true;
+  /**
+   * In review, approved, and waiting for its release (PLN16, W7.7): its reviewer approved it, and it
+   * is Done once someone with Write on the technical layer records the deploy that released it
+   * (konjir_record_release). It takes no other verdict meanwhile.
+   */
+  approved?: true;
   /** In progress again after a request for changes (PLN16, PLN18): it doesn't count against its assignee's one pull. */
   returned?: boolean;
   /**

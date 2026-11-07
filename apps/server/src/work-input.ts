@@ -13,4 +13,5 @@ export const workInput = args({
   milestone: z.boolean().optional().describe('A milestone has no work of its own: it depends on its members, its done-when is their exit criterion, and it links nothing.'),
   target_date: z.string().optional().describe('YYYY-MM-DD. Only a milestone carries a target date.'),
   repo: z.string().optional().describe('The repository it is done in, when not its binding\'s own (KON7).'),
+  release: z.boolean().optional().describe('true: it must be released. Its approval leaves it In review, approved, until its release (the deploy run and the commit it released) is recorded with konjir_record_release, which makes it Done (PLN16). Not on a milestone.'),
 }).describe('A work package\'s fields, on a binding\'s elements only: an element with them is a work package ({} for one whose fields are still to come), one without is a decision. What it serves and relies on are not fields: each is a dependency link from it to a spec element or a decision of its binding (links).');

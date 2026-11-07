@@ -13,7 +13,11 @@ import type {
  * it and until when, and why it is blocked. Agents pull and release through MCP; the page has no
  * board yet (M6).
  */
-export interface WebWorkState { state: WorkState; assignee: string | null; lease_until: string | null; blocked: WorkBlock[]; milestone: boolean; at_risk?: true }
+export interface WebWorkState {
+  state: WorkState; assignee: string | null; lease_until: string | null; blocked: WorkBlock[]; milestone: boolean; at_risk?: true;
+  /** In review, approved, waiting for its release (PLN16, W7.7). */
+  approved?: true;
+}
 
 /**
  * The header the web page sets, to `push`, on a read it makes by itself after a pushed event
