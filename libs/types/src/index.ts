@@ -706,6 +706,12 @@ export interface Query {
   asked_of?: string;
   /** It moved, and its element's text in the version it is on now differs from the version it was asked of. */
   element_changed?: true;
+  /**
+   * An answer job handed it to a person, at handed_off_at (JOB6): it waits on people, no job takes
+   * it again, and only a person answers it. Only while it is open, and only in its own kolab.
+   */
+  waiting_on?: 'person';
+  handed_off_at?: string;
 }
 
 /** One side of a case file: a claim and its evidence (CASE1), and, once ruled on, its verdict (CASE2). */

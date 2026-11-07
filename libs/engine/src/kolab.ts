@@ -7002,12 +7002,14 @@ export class Kolab {
    * names none; or a ruling's id, of the session's kolab. An agent answers a question on the
    * functional layer only with cites, and not at all where the kolab's policy keeps those answers for a
    * person: either way the refusal leaves the question open, for a person. Anyone else may cite too.
+   * A question or note an answer job handed to a person is a person's alone to answer (JOB6, W7.9).
    */
   async answerQuery(sessionId: string, queryId: string, answer: string, opts: { cites?: unknown } = {}) {
     checkText('the answer', answer);
     const q = (await this.db.query<{
       version_id: string; element_id: string | null; invalidation_id: string | null; state: string;
       kind: QueryKind; question: string; raised_by: string | null; from_version_id: string | null; from_element_id: string | null;
+      handed_off_at: Date | null;
     }>(`select * from query where id = $1`, [queryId])).rows[0];
     // Who may answer comes first, so the query's state, and whether a mark raised it, are told only
     // to the layer that owns the answer. Another kolab's query reads as one that isn't there.
@@ -7022,6 +7024,10 @@ export class Kolab {
     if (mark && mark.reason !== 'role_boundary') {
       throw new GateError(`query ${queryId} is about a dirty mark; resolve it with konjir_resolve_override or konjir_clear_mark`);
     }
+    // A question or note an answer job handed to a person waits on people (JOB6, W7.9): no agent
+    // answers it, so none unblocks the work it holds. Checked again as the answer is recorded.
+    const handedOff = () => new AccessError(`query ${queryId} was handed to a person by an answer job (JOB6): ${s.actor_id} is an agent, so it stays open for a person to answer`);
+    if (q.handed_off_at && s.kind === 'agent') throw handedOff();
     const cited = await this.citesIn(sessionId, opts.cites);
     const cites = cited.map((c) => c.cite);
     // Its source is something other than what it was asked about (AUT4): a ruling, or an element
@@ -7050,10 +7056,12 @@ export class Kolab {
     await this.asSystem(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock_shared($1)`, [POLICY_LOCK]);
       await refuseAgent(tx);
-      const r = await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3, answer_cites = $4 where id = $1 and state = 'open' returning id`,
-        [queryId, answer, s.actor_id, cites.length ? JSON.stringify(cites) : null]);
+      const r = await tx.query(`update query set state = 'answered', answer = $2, answered_by = $3, answer_cites = $4
+                                 where id = $1 and state = 'open' and (handed_off_at is null or not $5) returning id`,
+        [queryId, answer, s.actor_id, cites.length ? JSON.stringify(cites) : null, s.kind === 'agent']);
       if (!r.rows.length) {
         const now = (await tx.query<{ state: QueryState }>(`select state from query where id = $1`, [queryId])).rows[0].state;
+        if (now === 'open') throw handedOff();
         throw new GateError(`query ${queryId} is already ${now}`);
       }
       await signal({ inbox: 'layer', kolab: v.kolab_id, layer: v.layer });
@@ -9785,8 +9793,12 @@ export class Kolab {
       taken: false,
       why: why
         + (held.count ? `; and ${held.count} item${held.count === 1 ? ' is' : 's are'} held back: the last two jobs on ${held.count === 1 ? 'it' : 'each'} ended in the last hour without doing it (JOB2)` : '')
-        + (held.handed ? `; and ${held.handed} question${held.handed === 1 ? ', mark or spec element is' : 's, marks or spec elements are'} held back: handed to a person, or not done, by a job that ended in the last hour (JOB6)` : ''),
-      counts: { ...(await this.jobQueue(sessionId, s.kolab, held)).counts, ...extra, held_back: held.count, ...(held.handed ? { handed_off: held.handed } : {}) },
+        + (held.handed ? `; and ${held.handed} question${held.handed === 1 ? ', mark or spec element is' : 's, marks or spec elements are'} held back: handed to a person, or not done, by a job that ended in the last hour (JOB6)` : '')
+        + (held.waiting ? `; and ${held.waiting} question${held.waiting === 1 ? ' or note waits' : 's or notes wait'} on a person: a job handed ${held.waiting === 1 ? 'it' : 'them'} over, and no job takes ${held.waiting === 1 ? 'it' : 'them'} again (JOB6)` : ''),
+      counts: {
+        ...(await this.jobQueue(sessionId, s.kolab, held)).counts, ...extra, held_back: held.count,
+        ...(held.handed ? { handed_off: held.handed } : {}), ...(held.waiting ? { waiting_on_person: held.waiting } : {}),
+      },
       caps: await this.jobCapsIn(this.db, s.actor_id, s.kolab), now: await this.dbNow(),
     });
     const full = jobsFull(await this.jobCapsIn(this.db, s.actor_id, s.kolab), s.kolab);
@@ -10196,8 +10208,10 @@ export class Kolab {
    * reviewed), so a take moves on rather than start it a third time. A question, a mark or a spec
    * element is held back once its last job ended in the last hour without doing it (JOB6): a job
    * hands such an item to a person by ending without doing it, its note saying what they must
-   * decide, and another job mustn't take it straight back. A job lasts at most four hours, so the
-   * jobs that started in the last five are enough to find each item's last two.
+   * decide, and another job mustn't take it straight back. A question or note an answer job handed
+   * to a person isn't held back here: it is out of the answer queue for good (ANSWER_ITEMS), counted
+   * as `waiting`, until a person answers it (W7.9). A job lasts at most four hours, so the jobs
+   * that started in the last five are enough to find each item's last two.
    */
   private async heldBackIn(q: Q, kolab: string): Promise<HeldBack> {
     const rows = (await q.query<{ binding_node_id: string | null; element_id: string | null; version_id: string | null; query_id: string | null; mark_id: string | null; spec_node_id: string | null; spec_element_id: string | null }>(
@@ -10207,12 +10221,13 @@ export class Kolab {
                 row_number() over (partition by j.version_id, j.binding_node_id, j.element_id, j.query_id, j.mark_id, j.spec_node_id, j.spec_element_id
                                    order by j.started_at desc, j.id desc) as n
            from job j where j.kolab_id = $1 and j.started_at > now() - interval '5 hours') x
-        where x.n <= 2
+        where x.n <= 2 and (x.query_id is null or not exists (select 1 from query hq where hq.id = x.query_id and hq.handed_off_at is not null))
         group by binding_node_id, element_id, version_id, query_id, mark_id, spec_node_id, spec_element_id
        having case when bool_or(x.query_id is not null or x.mark_id is not null or x.spec_node_id is not null)
                    then bool_or(x.n = 1 and x.missed)
                    else count(*) filter (where x.missed) = 2 end`, [kolab, [...DID_OUTCOMES]])).rows;
-    const out: HeldBack = { packages: new Set(), versions: new Set(), queries: new Set(), marks: new Set(), specElements: new Set(), count: 0, handed: 0 };
+    const waiting = (await q.query<{ n: number }>(`select count(*)::int as n from query where kolab_id = $1 and state = 'open' and handed_off_at is not null`, [kolab])).rows[0].n;
+    const out: HeldBack = { packages: new Set(), versions: new Set(), queries: new Set(), marks: new Set(), specElements: new Set(), count: 0, handed: 0, waiting };
     for (const r of rows) {
       if (r.query_id) out.queries.add(r.query_id);
       else if (r.mark_id) out.marks.add(r.mark_id);
@@ -10562,14 +10577,21 @@ export class Kolab {
    * ended it and the note; its agent's session ended (ENF4), its streams told. A build's own package,
    * if its agent still holds it In progress, goes back To do: lapsed with the job, by Kolab, or
    * released by `by` with `releaseNote`; nothing else the agent holds is touched. A review's request
-   * that Kolab gave the agent is withdrawn if it is still open: no verdict came. Returns whether
-   * the package went back.
+   * that Kolab gave the agent is withdrawn if it is still open: no verdict came. An answer job
+   * released with a note that hands its question or note to a person records the hand-off on it
+   * (W7.9). Returns whether the package went back.
    */
   private async endJobIn(tx: Q, signal: Signal, j: JobRow,
     e: { outcome: JobOutcome; said?: JobEnd; note: string | null; releaseNote?: string; by: string }): Promise<boolean> {
     await tx.query(`update job set ended_at = clock_timestamp(), outcome = $2, said = $3, note = $4, ended_by = $5 where id = $1 and ended_at is null`,
       [j.id, e.outcome, e.said ?? null, e.note, e.by]);
     await this.endAgentSessionIn(tx, signal, j.agent_id, j.session_id, e.by);
+    // An answer job that hands its question or note to a person (JOB6): it waits on people for good,
+    // out of the answer queue, and only a person answers it (W7.9).
+    if (j.kind === 'answer' && e.outcome === 'released' && e.note !== null && HANDED_OFF.test(e.note)) {
+      const h = await tx.query(`update query set handed_off_at = clock_timestamp(), handed_off_job_id = $2 where id = $1 and state = 'open' returning kolab_id`, [j.query_id, j.id]);
+      if (h.rows.length) await signal({ inbox: 'layer', kolab: j.kolab_id, layer: 'technical' });
+    }
     if (j.review_request_id) {
       const w = await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where id = $1 and state = 'open' returning id`, [j.review_request_id]);
       if (w.rows.length) await signal({ inbox: 'layer', kolab: j.kolab_id, layer: 'technical' });
@@ -11277,8 +11299,9 @@ export class Kolab {
       selector: QuoteSelector | null; question: string; state: string; answer: string | null; answered_by: string | null;
       raised_by: string | null; mark: string | null; from_node: string | null; from_kolab: string | null; from_seq: number | null; from_element_id: string | null;
       asked_seq: number | null; asked_id: string | null; version_id: string; asked_committed: boolean; answer_cites: string[] | null;
+      handed_off_at: Date | string | null;
     }>(
-      `select q.id, q.kind, n.name as node, v.seq, q.element_id, q.kolab_id, q.selector, q.question, q.state, q.answer, q.answered_by, q.answer_cites,
+      `select q.id, q.kind, n.name as node, v.seq, q.element_id, q.kolab_id, q.selector, q.question, q.state, q.answer, q.answered_by, q.answer_cites, q.handed_off_at,
               q.raised_by, q.invalidation_id as mark, fn.name as from_node, fn.kolab_id as from_kolab, fv.seq as from_seq, q.from_element_id,
               av.seq as asked_seq,
               (q.asked_version_id is null or exists (select 1 from version a where a.id = q.asked_version_id and a.state = 'committed')) as asked_committed,
@@ -11330,6 +11353,8 @@ export class Kolab {
       // The version in review it was asked of, if it has moved since (D65): never told outside its kolab.
       ...(r.asked_seq !== null && !outside(r) ? { asked_of: formatAddress({ kolab: r.kolab_id, node: r.node, version: r.asked_seq }, { from: filter.from ?? r.kolab_id }) } : {}),
       ...(changed.has(r.id) ? { element_changed: true } : {}),
+      // Handed to a person by an answer job (JOB6, W7.9): it waits on people. Only in its own kolab.
+      ...(r.state === 'open' && r.handed_off_at && !outside(r) ? { waiting_on: 'person' as const, handed_off_at: iso(r.handed_off_at)! } : {}),
     }));
   }
 
@@ -12279,10 +12304,15 @@ interface ReturnedItem { binding_node_id: string; element_id: string; agent: str
 interface HeldBack {
   packages: Set<string>; versions: Set<string>; count: number;
   queries: Set<string>; marks: Set<string>; specElements: Set<string>; handed: number;
+  /** Open questions and notes an answer job handed to a person: they wait on people, out of the queue for good (W7.9). */
+  waiting: number;
 }
 
 /** Nothing held back: what insertJob reads an item again with. */
-const NO_HOLD: HeldBack = { packages: new Set(), versions: new Set(), count: 0, queries: new Set(), marks: new Set(), specElements: new Set(), handed: 0 };
+/** A job's note that hands its item to a person (JOB6): as the runner keeps it, it begins so (jobNote). */
+const HANDED_OFF = /^\s*Handed to a person:/;
+
+const NO_HOLD: HeldBack = { packages: new Set(), versions: new Set(), count: 0, queries: new Set(), marks: new Set(), specElements: new Set(), handed: 0, waiting: 0 };
 
 /** How many of each of JOB6's queues a take reads, oldest first: enough to find one an agent of the person's can take. */
 const JOB_QUEUE_READ = 50;
@@ -12309,6 +12339,7 @@ const ANSWER_ITEMS = `select q.* from query q join version v on v.id = q.version
      and not exists (select 1 from version fv join node fn on fn.id = fv.node_id
                       where fv.id = q.from_version_id and (fn.name ~ ${UNSAFE_NAME_SQL} or coalesce(q.from_element_id, '') ~ ${UNSAFE_NAME_SQL}))
      and not exists (select 1 from job j where j.ended_at is null and j.query_id = q.id)
+     and q.handed_off_at is null
      and q.id <> all($2::text[])`;
 const MARK_ITEMS = `select i.* from invalidation i join version v on v.id = i.version_id join node n on n.id = v.node_id
    where i.kolab_id = $1 and i.state = 'open' and v.layer = 'technical' and v.state = 'committed'

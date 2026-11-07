@@ -5,7 +5,7 @@
 // to To do; the runner's heartbeat and the agent's calls renew the lease, never past four hours.
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
-import { fillPlaybook, fillTemplate, oneLineId, UnsafeSpecificError, jobMachine, jobOutcome, PLAYBOOK_KINDS, PLAYBOOKS, playbookText, PRECEDENT_BEGIN, PRECEDENT_END, type Kolab } from '@konjir/engine';
+import { fillPlaybook, fillTemplate, oneLineId, UnsafeSpecificError, jobMachine, jobOutcome, PLAYBOOK_KINDS, PLAYBOOKS, playbookText, PRECEDENT_BEGIN, PRECEDENT_END, queryDetailsPage, type Kolab } from '@konjir/engine';
 import { els, openKolab, people, registeredRepository, rejection, TEST_KOLAB } from '@konjir/engine/testing';
 import { ADMIN_DOER, JOB_KINDS, type ElementInput } from '@konjir/types';
 import { formatAddress } from '@konjir/address';
@@ -589,6 +589,65 @@ test('a package whose review leaves only what no job can do goes to a person: it
   expect(answer.instructions).toMatch(/something no job can do, such as a merge or a deploy\), don't answer it/);
 });
 
+test('a question an answer job hands to a person waits on people however long: no job takes it, it is listed as waiting on a person, no agent answers it, and a person\'s answer makes the package it held ready again (W7.9, JOB6, PLN19)', async () => {
+  const { kolab, bob, lee } = await planned(1);
+  const asked = await kolab.raiseQuery(bob, W('W1'), 'Is W1 still in scope?');
+  expect(await kolab.readWork(lee, W('W1'))).toMatchObject({ ready: false, blocked: [{ reason: 'question', query: asked }] });
+  const answer = await take(kolab, lee);
+  expect(answer).toMatchObject({ kind: 'answer', item: asked });
+  expect(answer.instructions).toContain('and it then waits on people: no job takes it again, and only a person answers it.');
+  expect(answer.instructions).not.toContain('held back for an hour');
+  const handOff = 'Handed to a person: whether W1 is still in scope is product\'s to decide.';
+  expect(await kolab.endJob(lee, { job: answer.job, outcome: 'done', note: handOff })).toMatchObject({ outcome: 'released', state: 'open' });
+
+  // A month on, no job takes it, nor the package it holds; the refusal counts it.
+  await kolab.db.query(`alter table job disable trigger job_fixed`);
+  await kolab.db.query(`update job set started_at = started_at - interval '30 days', ended_at = ended_at - interval '30 days', lease_until = lease_until - interval '30 days' where id = $1`, [answer.job]);
+  await kolab.db.query(`alter table job enable trigger job_fixed`);
+  const refused = await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ALL });
+  expect(refused).toMatchObject({ taken: false, counts: { answer: 0, ready: 0, waiting_on_person: 1 } });
+  expect(refused).not.toHaveProperty('counts.handed_off');
+  expect((await kolab.listJobs(lee)).queue).toMatchObject({ answer: 0, build: 0 });
+
+  // It is listed as waiting on a person, in konjir_list_queries and on the web; the asker sees it too.
+  const listed = async (session: string) => (await kolab.queriesPage(session, { layer: 'technical', state: 'open' })).items.find((x) => x.id === asked);
+  for (const session of [lee, bob]) expect(await listed(session)).toMatchObject({ waiting_on: 'person', handed_off_at: expect.any(String) });
+  expect((await queryDetailsPage(kolab, lee, { open: true })).items.find((x) => x.id === asked)).toMatchObject({ handed_off_at: expect.any(String) });
+
+  // No agent answers it, a job's or one working with its person; the package stays blocked.
+  await people(kolab, 'lee-claude', { owner: 'lee', layers: ['technical'] });
+  const claude = await kolab.openSession('lee-claude', 'engineer');
+  expect(await rejection(kolab.answerQuery(claude, asked, 'Yes, it is.'))).toMatch(
+    new RegExp(`^AccessError: query ${asked} was handed to a person by an answer job \\(JOB6\\): lee-claude is an agent, so it stays open for a person to answer$`));
+  expect(await kolab.readWork(lee, W('W1'))).toMatchObject({ ready: false });
+
+  // A person's answer clears it: nothing waits, and the package is ready again, for a build job.
+  await kolab.answerQuery(lee, asked, 'Yes: product confirmed W1 is in scope.');
+  expect(await listed(lee)).toBeUndefined();
+  expect((await kolab.queriesPage(lee, { layer: 'technical', state: 'answered' })).items.find((x) => x.id === asked)).not.toHaveProperty('waiting_on');
+  expect((await queryDetailsPage(kolab, lee, { open: false })).items.find((x) => x.id === asked)).toMatchObject({ handed_off_at: null });
+  expect(await kolab.readWork(lee, W('W1'))).toMatchObject({ ready: true, blocked: [] });
+  expect(await take(kolab, lee)).toMatchObject({ kind: 'build', item: W('W1') });
+});
+
+test('an answer job that ends without answering and without handing over, or is stopped, leaves its question in the queue after the hour; a hand-off of a mark is still only for the hour (JOB6, W7.9)', async () => {
+  const { kolab, lee, technical, technicalMark } = await queued();
+  const a = await take(kolab, lee);
+  expect(a).toMatchObject({ kind: 'answer', item: technical });
+  await kolab.endJob(lee, { job: a.job, outcome: 'failed', note: 'The harness crashed. Handed to a person: not at the start of the note.' });
+  const b = await take(kolab, lee);
+  expect(b).toMatchObject({ kind: 'mark', item: technicalMark });
+  await kolab.endJob(lee, { job: b.job, outcome: 'done', note: 'Handed to a person: does R1\'s change reach b1?' });
+  expect((await kolab.db.query(`select handed_off_at from query where id = $1`, [technical])).rows).toStrictEqual([{ handed_off_at: null }]);
+  await anHourOn(kolab, 'query_id = $1 or mark_id = $2', [technical, technicalMark]);
+  const again = await take(kolab, lee);
+  expect(again).toMatchObject({ kind: 'answer', item: technical });
+  // Stopped by its runner, a hand-off's words or not, it is no hand-off: the person stopped it.
+  await kolab.endJob(lee, { job: again.job, outcome: 'stopped', note: 'Handed to a person: stopped mid-way.' });
+  expect((await kolab.db.query(`select handed_off_at from query where id = $1`, [technical])).rows).toStrictEqual([{ handed_off_at: null }]);
+  expect((await take(kolab, lee)).item).toBe(technicalMark);
+});
+
 test('an item whose last two jobs ended in the last hour without doing it is held back, and the refusal says how many (JOB2)', async () => {
   const { kolab, lee } = await planned(2);
   for (let i = 0; i < 2; i++) {
@@ -815,7 +874,7 @@ test('a question a mark raised, a role_boundary question among them, is never an
   expect((await kolab.listJobs(lee)).queue).toMatchObject({ answer: 0 });
 });
 
-test('ending each kind of job records what its agent did: answered, cleared, or submitted; a hand-off is released, its note for the job\'s person and the kolab\'s Admins alone, and holds its item back for the hour (JOB1, JOB6)', async () => {
+test('ending each kind of job records what its agent did: answered, cleared, or submitted; a hand-off is released, its note for the job\'s person and the kolab\'s Admins alone, and a note handed over waits on a person (JOB1, JOB6, W7.9)', async () => {
   const { kolab, bob, lee, build, technical, technicalMark } = await queued();
   const note = await kolab.raiseQuery(bob, 'kj:orders-pg#b1', 'Assuming b1 holds for refunds.', { kind: 'note' });
 
@@ -860,15 +919,16 @@ test('ending each kind of job records what its agent did: answered, cleared, or 
   expect(await kolab.endJob(lee, { job: s.job, outcome: 'done' })).toStrictEqual({ job: s.job, ended: true, outcome: 'submitted' });
   expect(await take(kolab, lee)).toMatchObject({ kind: 'review', item: expect.stringMatching(/^kj:orders-pg@\d+$/) });
 
-  // Nothing is left: the note is held back, and the refusal says so.
+  // Nothing is left: the note waits on a person, and the refusal says so.
   await kolab.endJob(lee, { job: build.job, outcome: 'done' });
   expect(await take(kolab, bob, 'bob-desktop')).toMatchObject({ kind: 'build', item: W('W1') });
   const held = await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ALL });
-  expect(held).toMatchObject({ taken: false, counts: { answer: 0, mark: 0, serve: 0, handed_off: 1 } });
-  expect(held.taken === false && held.why).toMatch(/; and 1 question, mark or spec element is held back: handed to a person, or not done, by a job that ended in the last hour \(JOB6\)$/);
-  // An hour on, it is taken again.
+  expect(held).toMatchObject({ taken: false, counts: { answer: 0, mark: 0, serve: 0, waiting_on_person: 1 } });
+  expect(held).not.toHaveProperty('counts.handed_off');
+  expect(held.taken === false && held.why).toMatch(/; and 1 question or note waits on a person: a job handed it over, and no job takes it again \(JOB6\)$/);
+  // An hour on, it still waits (W7.9).
   await anHourOn(kolab, 'query_id = $1', [note]);
-  expect(await take(kolab, lee)).toMatchObject({ kind: 'answer', item: note });
+  expect(await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ALL })).toMatchObject({ taken: false, counts: { answer: 0, waiting_on_person: 1 } });
 });
 
 test('a mark or a spec element handed to a person is held back for the hour too, after one job (JOB6)', async () => {

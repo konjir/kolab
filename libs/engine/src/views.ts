@@ -506,6 +506,8 @@ export interface QueryDetailRow {
   cites: string[] | null;
   from_node: string | null; from_seq: number | null; from_element: string | null;
   mark: string | null; mark_reason: MarkReason | null;
+  /** When an answer job handed it to a person (JOB6, W7.9), while it is open; null otherwise, and outside its kolab. */
+  handed_off_at: string | null;
 }
 
 /**
@@ -567,6 +569,7 @@ async function queryRows(kolab: Kolab, session: string, only: { nodeId?: string;
             q.raised_by, q.created_at as at, q.answer, q.answered_by, q.answer_cites as cites,
             fn.name as from_node, fv.seq as from_seq, q.from_element_id as from_element,
             q.invalidation_id as mark, i.reason as mark_reason, q.created_at::text as at_key,
+            case when q.state = 'open' then q.handed_off_at end as handed_off_at,
             ${only.per === undefined ? 'null::int as rn, null::int as total' : `row_number() over (partition by q.element_id order by q.created_at desc, q.id desc)::int as rn,
             count(*) over (partition by q.element_id)::int as total`}
        from query q
@@ -584,7 +587,8 @@ async function queryRows(kolab: Kolab, session: string, only: { nodeId?: string;
       only.element === undefined ? null : only.element === null, only.element ?? null, only.per ?? null])).rows);
   const { rows: shown, next } = size === undefined ? { rows, next: null } : pageOf(rows, size, list, (r) => [r.at_key, r.id]);
   return { next, items: shown.map(({ at_key, rn, total, ...r }) => ({
-    ...r, at: iso(r.at), ...(outside ? { mark: null, mark_reason: null, from_node: null, from_seq: null, from_element: null } : {}),
+    ...r, at: iso(r.at), handed_off_at: outside || !r.handed_off_at ? null : iso(r.handed_off_at),
+    ...(outside ? { mark: null, mark_reason: null, from_node: null, from_seq: null, from_element: null } : {}),
     // Cites are stored in the full form (Kolab.answerQuery); in the reader's own kolab, the short one.
     cites: r.cites?.map((c) => (c.startsWith(`kj:${own}/`) ? `kj:${c.slice(own.length + 4)}` : c)) ?? null,
     // The last shown of an element's newest `per`, when it has more: the cursor to the rest.

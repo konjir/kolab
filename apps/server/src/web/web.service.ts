@@ -925,7 +925,7 @@ const ruling = (r: RulingView): WebRuling => ({ ...r, ...subject(r.on) });
 /** A question on another kolab's node, as its reader sees it: its address in the full form, and no mark (D49). */
 const foreignQuery = (q: WebQuery, kolab: string): WebQuery => ({
   ...q, address: formatAddress({ kolab, node: q.node, version: q.seq, element: q.element ?? undefined }),
-  from: null, mark: null, mark_reason: null,
+  from: null, mark: null, mark_reason: null, handed_off_at: undefined,
 });
 
 const query = (q: QueryDetailRow): WebQuery => ({
@@ -936,9 +936,10 @@ const query = (q: QueryDetailRow): WebQuery => ({
   ...(q.cites?.length ? { cites: q.cites } : {}),
   from: q.from_node ? formatAddress({ node: q.from_node, version: q.from_seq ?? undefined, element: q.from_element ?? undefined }) : null,
   mark: q.mark, mark_reason: q.mark_reason,
+  ...(q.handed_off_at ? { handed_off_at: q.handed_off_at } : {}),
 });
 
-const mark = (m: MarkDetailRow): WebMark => ({
+const mark =(m: MarkDetailRow): WebMark => ({
   id: m.id, reason: m.reason, node: m.node, seq: m.seq, element: m.element, layer: m.layer,
   because: m.because, next: m.next, at: m.at,
   target: m.target_node ? {

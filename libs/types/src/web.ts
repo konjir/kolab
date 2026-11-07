@@ -112,6 +112,8 @@ export interface WebQuery {
   from: string | null;
   /** The mark it is about: such a question settles with the mark (resolve or clear), not with an answer, unless it is a role_boundary one. */
   mark: string | null; mark_reason: MarkReason | null;
+  /** When an answer job handed it to a person, while it is open (JOB6): it waits on people, and only a person answers it. */
+  handed_off_at?: string;
 }
 
 export interface WebMark {

@@ -93,6 +93,7 @@ export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me:
       <div className="by">
         {q.state === 'answered' ? <Pill tone="clean">answered</Pill> : q.state === 'withdrawn' ? <Pill tone="boundary">withdrawn</Pill> : q.mark_reason === 'role_boundary' ? <Pill tone="boundary">boundary</Pill> : <Pill tone="question">{q.kind === 'note' ? 'note' : 'asks'}</Pill>}
         {' '}{q.raised_by ?? 'Kolab'} {q.kind === 'note' ? 'noted' : 'asked'} {ago(q.at)} on <Addr>{q.address}</Addr>
+        {q.state === 'open' && q.handed_off_at ? <> <Pill tone="boundary">waits on a person</Pill> <span className="why-not">a job handed it over {ago(q.handed_off_at)}</span></> : null}
       </div>
       {q.quote && <div className="why-not">“{q.quote}”</div>}
       <blockquote>{q.question}</blockquote>

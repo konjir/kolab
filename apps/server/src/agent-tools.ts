@@ -384,7 +384,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_queries',
-    description: `List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers. Oldest first.${PAGED}`,
+    description: `List questions and notes. Default: open ones your layer owns the answer to. mine=true: the ones you raised, with their answers. Oldest first. One an answer job handed to a person says waiting_on: "person", with handed_off_at: no job takes it again, and only a person answers it.${PAGED}`,
     schema: listQueries,
     annotations: { readOnlyHint: true },
   })
@@ -627,7 +627,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_answer_query',
-    description: 'Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it. An agent answers a question on the functional layer only by citing what it rests on (cites: committed element addresses or ruling ids), never from its own judgment, and not at all where the kolab\'s policy keeps those answers for a person (AUT4): with nothing to cite, leave the question open for a person. Anyone may cite.',
+    description: 'Answer an open question, or reply to a note, that your layer owns. If the answer settles or changes intent, also amend the spec element: the answer reaches only the asker, the amendment reaches everyone who depends on it. An agent answers a question on the functional layer only by citing what it rests on (cites: committed element addresses or ruling ids), never from its own judgment, and not at all where the kolab\'s policy keeps those answers for a person (AUT4): with nothing to cite, leave the question open for a person. Anyone may cite. One an answer job handed to a person (waiting_on: "person") is a person\'s alone to answer.',
     schema: answerQuery,
   })
   answerQuery({ query, answer, cites }: z.infer<typeof answerQuery>, context?: McpToolContext) {
