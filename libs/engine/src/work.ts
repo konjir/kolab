@@ -272,7 +272,7 @@ export function checkReleaseInput(input: unknown): { item: CheckedEvidence | nul
     const u = evidenceUrl('the release', o.run);
     if (u.problem) { problems.push(u.problem.replace("the release's url", "the release's run")); if (u.limit) limit = true; } else out.url = u.url!;
   }
-  if (typeof o.sha !== 'string' || !SHA.test(o.sha.trim().toLowerCase())) problems.push(`a release names the commit it released by its full sha: 40 hexadecimal characters (64 for SHA-256), not ${JSON.stringify(o.sha ?? null)}`);
+  if (typeof o.sha !== 'string' || !RELEASE_SHA.test(o.sha.trim().toLowerCase())) problems.push(`a release names the commit it released by its full sha: 40 hexadecimal characters, not ${JSON.stringify(o.sha ?? null)}`);
   else out.ref = o.sha.trim().toLowerCase();
   if (o.repo !== undefined && o.repo !== null) {
     const r = repositoryUrl(o.repo);
@@ -349,7 +349,24 @@ export function insideRepository(link: string, repo: string): boolean {
   return sameLink(link).toLowerCase().startsWith(`${repo.toLowerCase()}/`);
 }
 
+/**
+ * Whether `link` is a GitHub Actions run of the repository at `repo` (a canonical URL): exactly
+ * `<repo>/actions/runs/<id>`, or one attempt of it, on github.com, with no query (W7.7: a release
+ * names the deploy run that released it). Whether the run exists, or deployed anything, Kolab
+ * can't tell: it doesn't reach GitHub.
+ */
+export function isActionsRun(link: string, repo: string): boolean {
+  let u: URL, r: URL;
+  try { u = new URL(link); r = new URL(repo); } catch { return false; }
+  if (u.protocol !== 'https:' || r.host.toLowerCase() !== 'github.com' || u.host.toLowerCase() !== 'github.com' || u.search || u.username || u.password) return false;
+  const base = r.pathname.replace(/\/+$/, '').toLowerCase();
+  const path = u.pathname.replace(/\/+$/, '').toLowerCase();
+  return path.startsWith(`${base}/actions/runs/`) && /^[1-9][0-9]{0,19}(\/attempts\/[1-9][0-9]{0,5})?$/.test(path.slice(`${base}/actions/runs/`.length));
+}
+
 const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+/** A release names its commit by a full SHA-1 sha (W7.7): 40 hexadecimal characters. */
+const RELEASE_SHA = /^[0-9a-f]{40}$/;
 
 /**
  * An https link with no user or password in it, at most MAX_EVIDENCE_URL characters, as the

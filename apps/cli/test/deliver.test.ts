@@ -238,6 +238,10 @@ test('konjir work deliver --release records, after the deploy, the run and the c
   expect(await releaseDelivered(eng2.call, gitIn(dir), { work: 'kj:orders-pg#W1', run, dryRun: true }))
     .toStrictEqual({ work: 'kj:orders-pg#W1', run, sha: git(dir, 'rev-parse', 'HEAD'), repo: 'https://github.com/acme/orders', sent: false });
   expect(await rejection(releaseDelivered(eng2.call, gitIn(dir), { work: 'kj:orders-pg#W1', run, commit: 'HEAD~1..HEAD' }))).toMatch(/is a range or an exclusion: --commit takes the one commit the deploy released/);
+  // Kolab refuses its assignee's, and a run that isn't a GitHub Actions run of its repository.
+  expect(await rejection(releaseDelivered(eng.call, gitIn(dir), { work: 'kj:orders-pg#W1', run }))).toMatch(/is kj:orders-pg#W1's assignee: someone else with Write on the technical layer records its release/);
+  expect(await rejection(releaseDelivered(eng2.call, gitIn(dir), { work: 'kj:orders-pg#W1', run: 'https://example.com/not-a-deploy' })))
+    .toMatch(/the release's run https:\/\/example\.com\/not-a-deploy isn't a GitHub Actions run of https:\/\/github\.com\/acme\/orders/);
   // In a shell, by someone other than its assignee, with --commit: Done.
   const out: string[] = [];
   jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
