@@ -1,6 +1,8 @@
 // The instructions for an agent connected only over MCP, with no konjir CLI: its client shows the
 // prompts to the person, not to the model, so the same texts are a tool, konjir_instructions, and
 // two resources. Each serves exactly what the matching prompt serves, scoped to the session's kolab.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { expect, jest, test } from '@jest/globals';
 import type { Client } from '@modelcontextprotocol/client';
 import { startServer } from '@konjir/server';
@@ -346,6 +348,15 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
   expect(job).toContain('git commit --trailer "Konjir-Work: kj:anns/b#W1"');
   expect(job).toContain('konjir work deliver kj:b#W1 --submit');
   expect(job).toMatch(/don't patch the behavior/);
+  // W7.6: the docs that say how work is reviewed agree with the review playbook, each on each ask.
+  const readme = readFileSync(fileURLToPath(new URL('../../../README.md', import.meta.url)), 'utf8');
+  const reviewStep = readme.match(/^6\. \*\*Review:\*\*.*$/m)![0];
+  const reviewingWork = loop.match(/^Reviewing work:.*$/m)![0];
+  for (const doc of [texts.reviewJob, texts.reviewPlaybook, reviewingWork, reviewStep]) {
+    for (const ask of [/for each new or changed test, shows? it fails when the change it pins is broken/i, /assertions that can't fail/, /tests that can fail by chance/, /done-when's cases the tests don't cover/, /what (you ran|was run)(;| and) what (you only read|was only read)/, /When any part of the done-when isn't met, (the verdict names|name) that part and requests? changes/]) {
+      expect([ask.source, doc.match(ask) !== null]).toStrictEqual([ask.source, true]);
+    }
+  }
   expect(await toolText(admin)).toContain('The build loop (engineer), step by step:');
   await server.close();
 });
