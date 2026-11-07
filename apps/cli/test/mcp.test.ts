@@ -154,6 +154,59 @@ test('konjir_lineage names a node of another kolab only to a session that reads 
   await server.close();
 });
 
+test('konjir_unlink, konjir_draft\'s unlinked and konjir_read_node\'s removes name a link\'s target in another kolab only to a session that reads it; by address, unlinking there confirms nothing (W7.4, LNK8)', async () => {
+  const { server, admin } = await boot();
+  await call(admin, 'admin_add_organization', { id: 'test-org' });
+  for (const name of ['billing', 'orders']) await call(admin, 'admin_add_kolab', { name, owner: 'test-org' });
+  const member = async (actor: string, kolab: string) => {
+    await call(admin, 'admin_add_actor', { id: actor });
+    await call(admin, 'admin_grant', { kolab, to: actor, level: 'write', layers: ['functional'] });
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'product', kolab }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  const bob = await member('bob', 'billing');
+  const alice = await member('alice', 'orders');
+  await call(bob, 'create_node', { kind: 'spec', title: 'Checkout', id: 'checkout' });
+  await call(bob, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Invoices are sent monthly.' }] });
+  await call(bob, 'submit_for_review', { node: 'checkout', version: 1 });
+  await call(admin, 'admin_grant', { kolab: 'billing', to: 'alice', level: 'read' });
+  await call(alice, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders-spec' });
+  const o1 = [{ id: 'O1', text: 'Orders are invoiced monthly.' }];
+  await call(alice, 'draft', { node: 'orders-spec', elements: o1 });
+  await call(alice, 'submit_for_review', { node: 'orders-spec', version: 1 });
+  await call(alice, 'link', { kind: 'dependency', source: 'kj:orders-spec@1', source_element: 'O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' });
+  const carol = await member('carol', 'orders');   // in orders with alice, and holds nothing in billing
+  const { edges: [{ edge }] } = await call(carol, 'lineage', { node: 'orders-spec', direction: 'upstream' }) as { edges: { edge: string }[] };
+  const secret = /checkout|billing|R1|sent monthly/;
+  const hidden = (v: number) => [{ kind: 'dependency', source: `kj:orders-spec@${v}#O1`, target: null, target_hidden: 'in another kolab you can\'t read' }];
+
+  // By address, carol is refused alike, whether the link is there or she guessed wrong.
+  await call(carol, 'draft', { node: 'orders-spec', elements: o1 });
+  const refusal = async (target: string) => (await rejection(call(carol, 'unlink', { node: 'orders-spec', version: 2, links: [{ source_element: 'O1', target }] })))
+    .replace(/kolab \w+,/, 'kolab K,');
+  const refused = await refusal('kj:billing/checkout#R1');
+  expect(refused).toMatch(/you can't read kolab K, so a link into it is removed by its id/);
+  expect(await refusal('kj:billing/checkout#R9')).toBe(refused);
+  expect(await refusal('kj:nowhere/checkout#R1')).toBe(refused);
+
+  // By its id, it goes, and she is told nothing of what it linked; nor is her version's reader, unless they read billing.
+  const unlinked = await call(carol, 'unlink', { node: 'orders-spec', version: 2, links: [{ link: edge }] });
+  expect(unlinked).toMatchObject({ unlinked: hidden(2) });
+  expect(JSON.stringify(unlinked)).not.toMatch(secret);
+  const removes = async (c: typeof alice) => (await call(c, 'read_node', { node: 'orders-spec', version: 2 }) as { removes_links: unknown }).removes_links;
+  expect(await removes(carol)).toStrictEqual(hidden(2));
+  expect(await removes(alice)).toStrictEqual([{ kind: 'dependency', source: 'kj:orders-spec@2#O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' }]);
+
+  // konjir_draft's unlink says the same.
+  await call(carol, 'abandon', { node: 'orders-spec', version: 2 });
+  const drafted = await call(carol, 'draft', { node: 'orders-spec', elements: o1, unlink: [{ link: edge }] });
+  expect(drafted).toMatchObject({ version: 3, unlinked: hidden(3) });
+  expect(JSON.stringify(drafted)).not.toMatch(secret);
+  await server.close();
+});
+
 test('tokens: no token, a wrong token, and a revoked token are all refused; agents cannot use admin verbs', async () => {
   const { server, admin } = await boot();
   const res = await fetch(server.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });

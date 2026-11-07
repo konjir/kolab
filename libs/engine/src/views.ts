@@ -148,7 +148,8 @@ async function markRows(kolab: Kolab, session: string, only: { node?: string }, 
   const rows = await kolab.readAs(session, async (q) => (await q.query<Omit<MarkDetailRow, 'because' | 'next'> & { at: Date | string; at_key: string; note: string | null; edge_id: string | null;
     target_selector: QuoteSelector | null; trig_node: string | null; trig_kolab: string | null; trig_seq: number | null; cause_count: number }>(
     `select i.id, i.reason, n.name as node, v.seq, v.layer, i.element_id as element, i.created_at as at,
-            etn.name as target_node, e.target_element_id as target_element, etv.seq as target_pinned,
+            -- The link is this kolab's, but what it names in a kolab the session can't read is told only with its node (W7.4, LNK8).
+            etn.name as target_node, case when etn.id is null then null else e.target_element_id end as target_element, etv.seq as target_pinned,
             (select max(l.seq) from version l where l.node_id = etv.node_id and l.state = 'committed') as target_now,
             (select x.text from element x where x.version_id = e.target_version_id and x.element_id = e.target_element_id) as target_before,
             (select x.text from element x where x.element_id = e.target_element_id and x.version_id =
@@ -157,7 +158,7 @@ async function markRows(kolab: Kolab, session: string, only: { node?: string }, 
             (select x.text from element x where x.version_id = d.base_version_id and x.element_id = d.element_id) as parent_before,
             (select x.text from element x where x.version_id = v.parent_version_id and x.element_id = d.element_id) as parent_now,
             (select qq.id from query qq where qq.invalidation_id = i.id and qq.state = 'open' order by qq.id limit 1) as question,
-            i.note, i.edge_id, e.target_selector, tn.name as trig_node, tn.kolab_id as trig_kolab, tv.seq as trig_seq,
+            i.note, i.edge_id, case when etn.id is null then null else e.target_selector end as target_selector, tn.name as trig_node, tn.kolab_id as trig_kolab, tv.seq as trig_seq,
             (select count(*)::int from invalidation_cause c where c.mark_id = i.id) as cause_count, i.created_at::text as at_key
        from invalidation i
        left join version tv on tv.id = i.triggered_by left join node tn on tn.id = tv.node_id

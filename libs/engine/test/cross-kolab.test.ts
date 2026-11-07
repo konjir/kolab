@@ -120,6 +120,68 @@ test('a session\'s lineage shows a link into a kolab it can\'t read as no more t
   expect(await kolab.lineage(f1, 'upstream')).toContainEqual(expect.objectContaining({ target: 'kj:billing/checkout@1#R1' }));
 });
 
+test('unlinking, a version\'s removes and a mark name a link\'s target in another kolab only to a session that reads it, and unlinking by address there confirms nothing (W7.4, LNK8)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'write', { layers: ['functional'] });
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'orders' });
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await commitReviewed(kolab, alice, carol, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast.' }) });
+  const r1 = await kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking', across: true });
+  const edge = await kolab.link(alice, { kind: 'dependency', source: o1, sourceElement: 'O1', target: r1.id, targetElement: 'R1', selector: { exact: 'sent monthly' } });
+  const secret = /checkout|billing|R1|sent monthly/;
+  const named = { kind: 'dependency', source: 'kj:orders-spec@2#O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' };
+  const hidden = { kind: 'dependency', source: 'kj:orders-spec@2#O1', target: null, target_hidden: 'in another kolab you can\'t read' };
+  const same = els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast.' });
+
+  // carol, who can't read billing, removes the link by its id: she is told it went, and nothing of what it linked.
+  const v2 = await kolab.draft(carol, 'orders-spec', { elements: same });
+  expect(await kolab.unlink(carol, v2, [{ link: edge }])).toStrictEqual([hidden]);
+  // Her version's removes, read by her, the same; by alice, who reads billing, named with its kolab and quoted span.
+  const removes = async (s: string) => (await kolab.readNode(s, 'orders-spec', 2)).removes;
+  expect(await removes(carol)).toStrictEqual([hidden]);
+  expect(await removes(alice)).toStrictEqual([named]);
+  await kolab.abandon(carol, v2);
+
+  // By address, a target in a kolab she can't read is refused alike whether the link, the node or the kolab is there or not.
+  const byAddress = async (target: string) => {
+    const d = await kolab.draft(carol, 'orders-spec', { elements: same });
+    const refused = await rejection(kolab.unlink(carol, d, [{ sourceElement: 'O1', target }]));
+    await kolab.abandon(carol, d);
+    const inDraft = await rejection(kolab.draft(carol, 'orders-spec', { elements: same, unlink: [{ sourceElement: 'O1', target }] }));
+    return [refused, inDraft].map((m) => m.replace(/kolab \w+,/, 'kolab K,'));
+  };
+  const refusal = await byAddress('kj:billing/checkout#R1');
+  expect(refusal[0]).toMatch(/^AccessError: you can't read kolab K, so a link into it is removed by its id, not its target: konjir_lineage node=orders-spec/);
+  expect(refusal[1]).toBe(refusal[0]);
+  for (const guess of ['kj:billing/checkout#R2', 'kj:billing/nothing#R1', 'kj:nowhere/checkout#R1']) expect(await byAddress(guess)).toStrictEqual(refusal);
+  // alice, who reads billing, still removes it by its address, and a wrong guess of hers is told so.
+  const v3 = await kolab.draft(alice, 'orders-spec', { elements: same });
+  expect(await kolab.unlink(alice, v3, [{ sourceElement: 'O1', target: 'kj:billing/checkout#R1~q({"exact":"sent monthly"})' }]))
+    .toStrictEqual([{ ...named, source: `kj:orders-spec@${(await kolab.version(v3)).seq}#O1` }]);
+  expect(await rejection(kolab.unlink(alice, v3, [{ sourceElement: 'O1', target: 'kj:billing/checkout#R2' }]))).toMatch(/has no link from O1 to kj:billing\/checkout#R2/);
+  await kolab.abandon(alice, v3);
+
+  // A change of R1 marks O1: carol is told only that a version in another kolab changed; alice, which and when.
+  await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent weekly.', R2: 'Invoices are in euros.' }) });
+  await kolab.drainOutbox();
+  const because = async (s: string) => (await kolab.marksPage(s, {}, {}, { revisit: true })).items.map((m) => m.because);
+  expect(await because(carol)).toStrictEqual(['a version in another kolab changed']);
+  expect(await because(alice)).toStrictEqual(['kj:billing/checkout#R1~q({"exact":"sent monthly"}) changed in version 2']);
+  expect(JSON.stringify([await kolab.marksFor(carol), await markDetails(kolab, carol)])).not.toMatch(secret);
+
+  // alice loses Read: the mark's note says she can't read billing, which carol, who can't either, isn't told by name.
+  await kolab.revoke('billing', 'alice');
+  const lost = 'alice, whose access it rests on, can no longer read';
+  expect(await because(carol)).toEqual(expect.arrayContaining([`it links to a version in another kolab: ${lost} that kolab`]));
+  expect(JSON.stringify([await kolab.marksFor(carol), await markDetails(kolab, carol)])).not.toMatch(secret);
+  expect(JSON.stringify(await kolab.marksFor(alice))).not.toMatch(secret);
+  // Once carol reads billing herself, she is told all of it.
+  await kolab.grant('billing', 'carol', 'read');
+  expect(await because(carol)).toEqual(expect.arrayContaining([`kj:billing/checkout#R1~q({"exact":"sent monthly"}) is in another kolab: ${lost} kolab billing`]));
+  expect((await markDetails(kolab, carol)).find((m) => m.reason === 'access_lost')).toMatchObject({ target_node: 'checkout', target_element: 'R1' });
+});
+
 test('a session\'s lineage names a link\'s target in a public kolab, though it holds no grant there, beside one it can\'t read (W7.1, LNK8)', async () => {
   const { kolab, alice } = await twoKolabs();
   await kolab.addActor('carol');
@@ -342,11 +404,12 @@ test('removing a link into another kolab is recorded in the draft, and settles i
   const { kolab, alice, checkout } = await twoKolabs();
   await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
   const o1 = await kolab.commit(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
-  await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  const edge = await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
   await kolab.revoke('billing', 'alice');
   expect(await marks(kolab, 'orders')).toStrictEqual([['access_lost', 'kj:orders-spec@1#O1']]);
-  // alice can't read billing any more, yet drops the link she can no longer keep.
-  const d = await kolab.draft(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }), unlink: [{ sourceElement: 'O1', target: 'kj:billing/checkout#R1' }] });
+  // alice can't read billing any more, yet drops the link she can no longer keep: by its id, since
+  // by its target would let a session that can't read billing test a guess at what is there (W7.4).
+  const d = await kolab.draft(alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }), unlink: [{ link: edge }] });
   expect((await kolab.db.query(`select kolab_id, target_kolab_id, target_node_id from link_removal where version_id = $1`, [d])).rows)
     .toStrictEqual([{ kolab_id: 'orders', target_kolab_id: 'billing', target_node_id: checkout }]);
   expect((await kolab.review(d)).ok).toBe(true);

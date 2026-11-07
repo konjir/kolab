@@ -570,7 +570,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_unlink',
-    description: 'Remove links in a draft of yours, so its commit doesn\'t carry them forward: a link you no longer rely on, or an orphaned one whose target is gone (re-point it by linking the replacement, then remove the old one). Name each by its id (konjir_lineage, konjir_list_stale) or by its source element and target. The removal is part of the draft: it is reviewed with it, and the links and their open marks settle only when it commits. A link the draft declared itself goes at once. Linking the same link again in the draft takes the removal back.',
+    description: 'Remove links in a draft of yours, so its commit doesn\'t carry them forward: a link you no longer rely on, or an orphaned one whose target is gone (re-point it by linking the replacement, then remove the old one). Name each by its id (konjir_lineage, konjir_list_stale) or by its source element and target; a link into a kolab you can\'t read only by its id, and its target shows as null, with target_hidden. The removal is part of the draft: it is reviewed with it, and the links and their open marks settle only when it commits. A link the draft declared itself goes at once. Linking the same link again in the draft takes the removal back.',
     schema: unlink,
   })
   unlink(a: z.infer<typeof unlink>, context?: McpToolContext) {
