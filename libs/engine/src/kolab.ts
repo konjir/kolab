@@ -5954,11 +5954,13 @@ export class Kolab {
    * Why `holder` no longer vouches for a link or fork from kolab `own` (its dependent's, on
    * `layer`) into kolab `target`, or undefined if they do (LNK8, D53): a holder must still read
    * the other kolab and still write the dependent's layer in its own, so someone who has left the
-   * dependent's kolab is no channel into it.
+   * dependent's kolab is no channel into it. The reason is an access_lost mark's note, which
+   * anyone in the dependent's kolab reads, open or closed, so it never names the other kolab
+   * (W7.10): a reader of it is told it by the mark's address (markBecause).
    */
   private async unvouched(holder: string | null | undefined, target: string, own: string, layer: Layer, q: Q = this.db): Promise<string | undefined> {
     if (!holder) return 'it has no holder';
-    if (!(await accessIn(q, holder, target)).level) return `${holder}, whose access it rests on, can no longer read kolab ${target}`;
+    if (!(await accessIn(q, holder, target)).level) return `${holder}, whose access it rests on, can no longer read that kolab`;
     if (!(await accessIn(q, holder, own)).layers.includes(layer)) return `${holder}, whose access it rests on, can no longer write the ${layer} layer of kolab ${own}`;
     return undefined;
   }
@@ -6003,15 +6005,16 @@ export class Kolab {
    * its mark, or revised the element that relies on it. An open access_lost mark settles, and the
    * link is checked against its target's latest version, which it may not have followed. Under the
    * access lock (shared) and then the dependent's lock, before any row is written. Returns
-   * whether a mark settled.
+   * whether a mark settled. The mark is closed `by` that (by default "held by <actor>"): never
+   * naming the other kolab, since anyone in the dependent's kolab reads its marks (W7.10).
    */
-  private async holdLink(edgeId: string, actor: string): Promise<boolean> {
+  private async holdLink(edgeId: string, actor: string, by?: string): Promise<boolean> {
     const e0 = (await this.db.query<EdgeRow & { node_id: string }>(
       `select e.*, s.node_id from edge e join version s on s.id = e.source_version_id where e.id = $1`, [edgeId])).rows[0];
-    return this.asSystem((tx, signal) => this.holdLinkIn(tx, signal, edgeId, actor), e0.node_id, { access: true });
+    return this.asSystem((tx, signal) => this.holdLinkIn(tx, signal, edgeId, actor, by), e0.node_id, { access: true });
   }
 
-  private async holdLinkIn(tx: Q, signal: Signal, edgeId: string, actor: string): Promise<boolean> {
+  private async holdLinkIn(tx: Q, signal: Signal, edgeId: string, actor: string, by?: string): Promise<boolean> {
     const was = (await tx.query<EdgeRow>(`select * from edge where id = $1`, [edgeId])).rows[0];
     // Only someone who vouches for it holds it (checked again here, under the lock). One who no
     // longer does changes nothing, but if the holder it has doesn't either, it is marked now.
@@ -6021,7 +6024,7 @@ export class Kolab {
       return false;
     }
     const e = (await tx.query<EdgeRow>(`update edge set held_by = $2 where id = $1 returning *`, [edgeId, actor])).rows[0];
-    return this.restoreLinkIn(tx, signal, e, `held by ${actor}, who reads kolab ${e.target_kolab_id}`);
+    return this.restoreLinkIn(tx, signal, e, by ?? `held by ${actor}`);
   }
 
   /** Settles a link's open access_lost mark, if it has one, and checks the link against its target's latest version. In `tx`. */
@@ -6802,7 +6805,8 @@ export class Kolab {
    * kolabs only someone who reads the target's kolab can check, and they hold the link from then
    * on (LNK8). An access_lost mark is cleared by someone who reads what its holder no longer does:
    * they hold the link or fork, the mark settles, and the link is checked, or the fork caught up,
-   * against the other kolab's latest version.
+   * against the other kolab's latest version. Its refusals, and the notes it closes marks with,
+   * never name the other kolab (W7.10): a mark it closes is recorded as cleared by its actor.
    */
   async clear(sessionId: string, markId: string) {
     const m = await this.markRow(markId);
@@ -6815,7 +6819,7 @@ export class Kolab {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
       const across = e.target_kolab_id !== e.kolab_id;
       if (across && !(await this.holds(s.actor_id, e.target_kolab_id))) {
-        throw new AccessError(`${s.actor_id} can't read kolab ${e.target_kolab_id}, so can't check this link into it; someone who reads it clears it`);
+        throw new AccessError(cantCheck(s.actor_id));
       }
       const tNode = (await this.version(e.target_version_id)).node_id;
       const source = (await this.version(e.source_version_id)).node_id;
@@ -6824,7 +6828,7 @@ export class Kolab {
       // so a revoke can't land between the check and the link it allows (LNK8).
       await this.asSystem(async (tx, signal) => {
         if (across && await this.unvouchedLink({ ...e, held_by: s.actor_id }, tx)) {
-          throw new AccessError(`${s.actor_id} can't read kolab ${e.target_kolab_id}, so can't check this link into it; someone who reads it clears it`);
+          throw new AccessError(cantCheck(s.actor_id));
         }
         // A mark cleared already (by another clear, a revision or a reopening) stays as it was
         // settled: who settled it, and how, isn't rewritten.
@@ -6842,7 +6846,7 @@ export class Kolab {
         // cleared it while it was open, however many clears race.
         await this.confirmIn(tx, signal, { ...m, state: was }, s.actor_id);
         // They hold the link now, so an access_lost mark its earlier holder left settles too.
-        if (across) await this.restoreLinkIn(tx, signal, now, `held by ${s.actor_id}, who reads kolab ${e.target_kolab_id}`);
+        if (across) await this.restoreLinkIn(tx, signal, now, s.actor_id);
       }, source, { access: across });
       return;
     }
@@ -6859,24 +6863,28 @@ export class Kolab {
     return (await tx.query<{ state: MarkRow['state'] }>(`select state from invalidation where id = $1 for update`, [markId])).rows[0]?.state;
   }
 
-  /** clear, for an access_lost mark: `actor`, who must read the other kolab, holds the link or fork now. */
+  /**
+   * clear, for an access_lost mark: `actor`, who must read the other kolab, holds the link or fork
+   * now, and the mark is recorded as cleared by them. Refused, the other kolab goes unnamed: the
+   * refusal is only ever given to someone who can't read it (W7.10, LNK8).
+   */
   private async takeOver(actor: string, m: MarkRow, v: VersionRow) {
     if (m.state !== 'open') throw new GateError(`mark ${m.id} is already cleared`);
     if (m.edge_id) {
       const e = (await this.db.query<EdgeRow>(`select * from edge where id = $1`, [m.edge_id])).rows[0];
       if (!(await this.holds(actor, e.target_kolab_id))) {
-        throw new AccessError(`${actor} can't read kolab ${e.target_kolab_id} either: only someone who reads it can hold this link`);
+        throw new AccessError(`${actor} can't read that kolab either: only someone who reads it can hold this link`);
       }
-      await this.holdLink(e.id, actor);
+      await this.holdLink(e.id, actor, actor);
       return;
     }
     const parent = await this.version(v.parent_version_id!);
     if (!(await this.holds(actor, parent.kolab_id!))) {
-      throw new AccessError(`${actor} can't read kolab ${parent.kolab_id} either: only someone who reads it can hold this fork`);
+      throw new AccessError(`${actor} can't read that kolab either: only someone who reads it can hold this fork`);
     }
     await this.asSystem(async (tx, signal) => {
       await tx.query(`update version set parent_held_by = $2 where id = $1`, [v.id, actor]);
-      await this.closeMarkIn(tx, signal, m.id, `held by ${actor}, who reads kolab ${parent.kolab_id}`);
+      await this.closeMarkIn(tx, signal, m.id, actor);
     }, v.node_id, { access: true });
     await this.catchUp(v.node_id);
   }
@@ -11852,7 +11860,7 @@ export function markBecause(r: {
   const linked = trigger(true);
   const parent = trigger(false)?.replace(/^kj:/, '');
   const note = r.note ?? 'its holder can no longer read it';
-  // unvouched's note names the kolab its holder no longer reads: the other kolab, told only to its readers.
+  // unvouched's note named the kolab its holder no longer reads before W7.10: on a mark written then, the other kolab, told only to its readers.
   const lost = (r.edge_id ? linked : parent) ? note : note.replace(/can no longer read kolab \S+/, 'can no longer read that kolab');
   return r.reason === 'query_answered' ? r.note ?? 'your question was answered'
     : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
@@ -11864,6 +11872,13 @@ export function markBecause(r: {
     : r.reason === 'upstream_dirty' ? `${r.cause_count} upstream mark(s) are open`
     : parent ? `parent ${parent} version ${r.trig_seq}` : `its parent, a version in another kolab, changed`;
 }
+
+/**
+ * konjir_clear_mark's refusal to `actor`, who can't read the kolab a link is into: it names
+ * neither that kolab nor anything in it, since only someone who can't read it is told (W7.10, LNK8).
+ */
+const cantCheck = (actor: string) =>
+  `${actor} can't read the kolab this link is into, so can't check it; someone who reads that kolab clears it`;
 
 export const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',

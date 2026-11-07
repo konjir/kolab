@@ -70,7 +70,7 @@ async function step(kolab: TestKolab, w: World, o: Op) {
     if (!mine.length) return;
     // Refused when `who` can't read up; that's part of the property too: nothing changes then.
     await kolab.clear(w.sessions[o.who], mine[o.k % mine.length].id).catch((e) => {
-      if (!/can't read kolab/.test(String(e))) throw e;
+      if (!/can't read (the|that) kolab/.test(String(e))) throw e;
     });
   }
 }
