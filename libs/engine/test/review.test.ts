@@ -488,6 +488,17 @@ describe.each(['variant', 'fork'])('on a %s, a move to the top level (W7.2, OVR3
     expect(await kolab.openMarks()).toStrictEqual([]);
   });
 
+  test('a move leaves what the words rest on: upstream going back to them settles the question', async () => {
+    const { kolab, at, mine, upstream } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', text: 'one, mine' }] });
+    await upstream('one, new');
+    await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
+    expect(await kolab.openMarks()).toHaveLength(1);
+    await upstream('one');
+    expect((await at()).E1).toStrictEqual([null, 'one, mine']);
+    expect(await kolab.openMarks()).toStrictEqual([]);
+  });
+
   test('upstream moving it to the top level itself, with new words or the variant\'s, and back leaves it moved', async () => {
     const { kolab, at, mine, upstream, rows, ann } = await moving();
     await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }, { kind: 'override', element: 'E2', text: 'two, mine', parent: null }] });
@@ -574,6 +585,15 @@ describe.each(['variant', 'fork'])('on a %s, a move to the top level (W7.2, OVR3
     expect(await kolab.openMarks()).toStrictEqual([]);
   });
 
+  test('a move with words of its own, removed upstream and added back, keeps them', async () => {
+    const { kolab, at, mine, up, upstream, ann } = await moving();
+    await mine({ deltas: [{ kind: 'override', element: 'E1', text: 'one, mine', parent: null }] });
+    await kolab.commit(ann, 'up', { elements: up('one').filter((e) => e.id !== 'E1') });
+    await kolab.drainOutbox();
+    await upstream('one');
+    expect((await at()).E1).toStrictEqual([null, 'one, mine']);
+  });
+
   test('upstream removing what holds only the move leaves its words, and asks', async () => {
     const { kolab, at, mine, up, node, ann } = await moving();
     await mine({ deltas: [{ kind: 'override', element: 'E1', parent: null }] });
@@ -605,7 +625,7 @@ test('on a variant of a binding, a delta that leaves out the work fields keeps t
   const { kolab, product, engineer } = await setup();
   await kolab.createNode(product, 'spec', 'The spec', 'spec');
   await kolab.createNode(engineer, 'binding', 'B', 'b');
-  const v1 = await kolab.commit(engineer, 'b', { elements: [{ id: 'S', text: 'A section' }, { id: 'W1', text: 'One.', parent: 'S', work: { size: 'S' } }] });
+  const v1 = await kolab.commit(engineer, 'b', { elements: [{ id: 'S', text: 'A section' }, { id: 'W1', text: 'One.', parent: 'S', work: { size: 'S' } }, { id: 'W2', text: 'Two.', parent: 'S', work: { size: 'S' } }] });
   await kolab.createNode(engineer, 'binding', 'C', 'c');
   await kolab.commit(engineer, 'c', { parent: v1, deltas: [{ kind: 'override', element: 'W1', work: { size: 'L' } }] });
   const w1 = async () => { const e = (await kolab.elements((await kolab.latestCommitted('c'))!.id)).find((x) => x.element_id === 'W1')!; return [e.parent_element_id, e.text, e.work?.size]; };
@@ -613,6 +633,10 @@ test('on a variant of a binding, a delta that leaves out the work fields keeps t
   expect(await w1()).toStrictEqual([null, 'One.', 'L']);
   await kolab.commit(engineer, 'c', { deltas: [{ kind: 'override', element: 'W1', text: 'One, mine.' }] });
   expect(await w1()).toStrictEqual([null, 'One, mine.', 'L']);
+  // A removal holds no work fields to keep: bringing the element back brings the parent's.
+  await kolab.commit(engineer, 'c', { deltas: [{ kind: 'remove', element: 'W2' }] });
+  await kolab.commit(engineer, 'c', { deltas: [{ kind: 'override', element: 'W2', text: 'Two, back.' }] });
+  expect((await kolab.elements((await kolab.latestCommitted('c'))!.id)).find((x) => x.element_id === 'W2')!.work).toStrictEqual({ size: 'S' });
 });
 
 test('an override resolution folded at approval still sets precedent and settles its mark (OVR8, OVR9)', async () => {

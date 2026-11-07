@@ -2303,6 +2303,7 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
   let orphaned: string;
   let imported: string;
   let odd: string;
+  let followed: string;
   try {
     await people(kolab, 'lee', { layers: ['functional'] });
     const lee = await kolab.openSession('lee', 'product');
@@ -2339,6 +2340,14 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     await kolab.submit(there, await kolab.draft(there, fork, { parent: p1, deltas: [] }));
     expect(await kolab.importKolab(there, { format: IMPORT_FORMAT, kolab: 'forked', spec: { name: 'shop', title: 'Fork', elements: [up[0], { id: 'A1', text: 'One.' }, ...up.slice(2)] } }, { update: true })).toMatchObject({ complete: true });
     imported = (await kolab.latestCommitted(fork))!.id;
+    // A stale override, whose element followed upstream to the top level: its base has it in a section, and it moved nothing.
+    await kolab.createNode(lee, 'prototype', 'Q', 'q');
+    const q1 = await kolab.commit(lee, 'q', { elements: up });
+    await kolab.createNode(lee, 'prototype', 'R', 'r');
+    await kolab.commit(lee, 'r', { parent: q1, elements: [up[0], up[1], { id: 'A2', text: 'Two, its way.' }, up[3], up[4], up[5]] });
+    await kolab.commit(lee, 'q', { elements: [up[0], up[1], { id: 'A2', text: 'Two, moved upstream.', parent: null }, up[3], up[4], up[5]] });
+    await kolab.drainOutbox();
+    followed = (await kolab.latestCommitted('r'))!.id;
     // Two rows no release wrote, which the update must pass over: below, one is made an add and one names a parent.
     await kolab.createNode(lee, 'prototype', 'Odd', 'odd');
     odd = await kolab.commit(lee, 'odd', { parent: p1, elements: [up[0], { id: 'A1', text: 'One.', parent: null }, { id: 'A2', text: 'Two.', parent: null }, up[3], up[4], up[5]] });
@@ -2363,6 +2372,8 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     expect(await movedIn(foldShaped)).toStrictEqual([]);
     expect(await movedIn(first)).toStrictEqual([]);
     expect(await movedIn(odd)).toStrictEqual([]);
+    expect((await db.query(`select state from delta where version_id = $1 and element_id = 'A2'`, [followed])).rows).toStrictEqual([{ state: 'dirty' }]);
+    expect(await movedIn(followed)).toStrictEqual([]);
     // An orphan's parent has no such element, so its base says where it was: A1 was moved, and T was at the top level all along.
     expect(await movedIn(orphaned)).toStrictEqual([{ element_id: 'A1' }]);
     expect((await db.query(`select state, parent_element_id from delta where version_id = $1 and element_id = 'A1'`, [orphaned])).rows).toStrictEqual([{ state: 'orphaned', parent_element_id: null }]);
