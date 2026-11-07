@@ -539,7 +539,7 @@ export interface ElementInput { id?: string; text: string; parent?: string | nul
  * A change to one element. On an add or an override, `work` replaces the element's work fields
  * whole (null clears them); left out, the element keeps the ones it has.
  */
-export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string; work?: WorkFields | null }
+export interface DeltaInput { kind: DeltaKind; element: string; text?: string; parent?: string | null; work?: WorkFields | null }
 /**
  * A link a draft drops, so its next version doesn't carry it forward (CAS3, LNK6, D48): by its id,
  * as konjir_lineage and konjir_list_stale give it, or by what it links: the source element (none

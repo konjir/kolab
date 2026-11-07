@@ -9,7 +9,7 @@ import { expect, test } from '@jest/globals';
 import {
   BASELINE, MIGRATIONS, checkMigrations, checksum, loadMigrations, migrate, openDb, statements, type Db, type Migration,
 } from '@konjir/db';
-import { Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
+import { IMPORT_FORMAT, Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
 import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testPolicy, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
@@ -2298,11 +2298,16 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
   let kolab = await TestKolab.open(store);
   drainAfterWrites(kolab);
   let variant: string;
+  let first: string;
+  let foldShaped: string;
+  let orphaned: string;
+  let imported: string;
   try {
     await people(kolab, 'lee', { layers: ['functional'] });
     const lee = await kolab.openSession('lee', 'product');
     await kolab.createNode(lee, 'spec', 'S', 's');
     const p1 = await kolab.commit(lee, 's', { elements: up });
+    first = p1;
     await kolab.createNode(lee, 'prototype', 'P', 'p');
     variant = await kolab.commit(lee, 'p', { parent: p1, elements: [
       up[0],
@@ -2312,13 +2317,47 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
       { id: 'T', text: 'Top, its way.', parent: null }, // at the top level in the parent as well
       { id: 'X', text: 'Its own.' },
     ] });
+    // A fold's rows, once the UNDO below has made them as the release before wrote them.
+    await kolab.createNode(lee, 'prototype', 'F', 'f');
+    foldShaped = await kolab.commit(lee, 'f', { parent: p1, elements: [up[0], { id: 'A1', text: 'One.', parent: null }, up[2], up[3], up[4], up[5]] });
+    // An orphan's: a separate upstream, which then deletes the element the variant moved.
+    await kolab.createNode(lee, 'prototype', 'O', 'o');
+    const o1 = await kolab.commit(lee, 'o', { elements: up });
+    await kolab.createNode(lee, 'prototype', 'V', 'v');
+    await kolab.commit(lee, 'v', { parent: o1, elements: [up[0], { id: 'A1', text: 'One.', parent: null }, up[2], up[3], up[4], up[5]] });
+    await kolab.commit(lee, 'o', { elements: up.filter((e) => e.id !== 'A1') });
+    await kolab.drainOutbox();
+    orphaned = (await kolab.latestCommitted('v'))!.id;
+    // An import's: a fork the file moves an element on, in another kolab.
+    await kolab.createKolab('forked', { owner: 'test-org' });
+    await kolab.addActor('mia');
+    await kolab.grant('forked', 'mia', 'admin');
+    await kolab.grant('test', 'mia', 'read');
+    const there = await kolab.openSession('mia', 'product', { kolab: 'forked' });
+    const fork = await kolab.createNode(there, 'spec', 'Fork', 'shop');
+    await kolab.submit(there, await kolab.draft(there, fork, { parent: p1, deltas: [] }));
+    expect(await kolab.importKolab(there, { format: IMPORT_FORMAT, kolab: 'forked', spec: { name: 'shop', title: 'Fork', elements: [up[0], { id: 'A1', text: 'One.' }, ...up.slice(2)] } }, { update: true })).toMatchObject({ complete: true });
+    imported = (await kolab.latestCommitted(fork))!.id;
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
     await db.exec(UNDO_0045);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    // As a fold wrote it before this release: the row says nothing of the move, and the version doesn't hold it.
+    await db.query(`update element set parent_element_id = 'A' where version_id = $1 and element_id = 'A1'`, [foldShaped]);
+    // An override's row on a version with no parent version: there's nothing it could have moved out of.
+    await db.query(`insert into delta(id, version_id, element_id, kind, text, parent_element_id, base_fingerprint, state) values ('01ZZZZZZZZZZZZZZZZZZZZNOPV', $1, 'T', 'override', 'Top.', null, null, 'clean')`, [first]);
+    const before = (await db.query<Record<string, unknown>>(`select * from delta order by id`)).rows;
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [45] });
-    expect((await db.query(`select element_id from delta where version_id = $1 and top_level`, [variant])).rows).toStrictEqual([{ element_id: 'A1' }]);
+    // Nothing else is rewritten: every row as it was, with the new column.
+    expect((await db.query<Record<string, unknown>>(`select * from delta order by id`)).rows.map(({ top_level: _, ...r }) => r)).toStrictEqual(before);
+    const movedIn = async (v: string) => (await db.query(`select element_id from delta where version_id = $1 and top_level`, [v])).rows;
+    expect(await movedIn(variant)).toStrictEqual([{ element_id: 'A1' }]);
+    expect(await movedIn(imported)).toStrictEqual([{ element_id: 'A1' }]);
+    expect(await movedIn(foldShaped)).toStrictEqual([]);
+    expect(await movedIn(first)).toStrictEqual([]);
+    expect(await movedIn(orphaned)).toStrictEqual([]);
+    expect((await db.query(`select state, parent_element_id from delta where version_id = $1 and element_id = 'A1'`, [orphaned])).rows).toStrictEqual([{ state: 'orphaned', parent_element_id: null }]);
     expect((await db.query(`select 1 from delta where version_id = $1 and not top_level`, [variant])).rows.length).toBeGreaterThanOrEqual(4);
     // A row can't both name a parent and say top level.
     expect(await rejection(db.query(`update delta set top_level = true where version_id = $1 and element_id = 'A2'`, [variant]))).toMatch(/delta_top_level_has_no_parent/);

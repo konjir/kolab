@@ -4247,16 +4247,17 @@ export class Kolab {
     let carried: Omit<DeltaRow, 'id' | 'version_id'>[] = [];
     // The exceptions a delta replaces: one that doesn't name a parent stays where the exception put its element.
     const replaced = new Map<string, DeltaRow>();
-    if (!input.parent && latest?.parent_version_id
-        && (await this.version(latest.parent_version_id)).node_id !== nodeId) {
-      parentId = latest.parent_version_id;
-      if (!input.elements) {
-        const touched = new Set((input.deltas ?? []).map((d) => d.element));
-        for (const d of await this.deltas(latest.id)) {
-          const { id: _i, version_id: _v, ...rest } = d;
-          if (touched.has(d.element_id)) replaced.set(d.element_id, d);
-          else carried.push(rest);
-        }
+    // Elements the live version moved to the top level: a full list that leaves out their parent keeps them there.
+    const moved = new Set<string>();
+    if (latest?.parent_version_id && (await this.version(latest.parent_version_id)).node_id !== nodeId) {
+      if (!input.parent) parentId = latest.parent_version_id;
+      const touched = new Set((input.deltas ?? []).map((d) => d.element));
+      for (const d of await this.deltas(latest.id)) {
+        const { id: _i, version_id: _v, ...rest } = d;
+        if (input.elements) { if (d.top_level) moved.add(d.element_id); }
+        else if (input.parent) continue;
+        else if (touched.has(d.element_id)) replaced.set(d.element_id, d);
+        else carried.push(rest);
       }
     }
     let parentEls: ElementRow[] = [];
@@ -4296,7 +4297,10 @@ export class Kolab {
 
     let deltaRows: Omit<DeltaRow, 'id' | 'version_id'>[];
     if (input.elements) {
-      deltaRows = diff(parentEls, input.elements.map((e) => ({ ...e, id: e.id ?? ulid() })), parentId);
+      deltaRows = diff(parentEls, input.elements.map((e) => {
+        const id = e.id ?? ulid();
+        return { ...e, id, ...(e.parent === undefined && moved.has(id) ? { parent: null } : {}) };
+      }), parentId);
     } else {
       const byId = new Map(parentEls.map((e) => [e.element_id, e]));
       deltaRows = [...carried, ...(input.deltas ?? []).map((d) => {
@@ -4311,10 +4315,11 @@ export class Kolab {
           throw new Error(`cannot ${d.kind} ${d.element}: not in parent. The version this draft builds on has no element ${d.element}: check its id (it has ${ids.slice(0, 12).join(', ')}${ids.length > 12 ? `, and ${ids.length - 12} more` : ''}). If ${d.element} was new in a draft that came back, add it again (kind add)`);
         }
         const was = replaced.get(d.element);
-        const topLevel = d.kind !== 'remove' && d.parent === undefined && !!was?.top_level;
+        // `parent: null` says top level; a parent left out keeps the place the live version gave it.
+        const topLevel = d.kind !== 'remove' && (d.parent === null ? !!base?.parent_element_id : d.parent === undefined && !!was?.top_level);
         return {
           element_id: d.element, kind: d.kind, text: d.text ?? null,
-          parent_element_id: topLevel ? null : d.parent ?? was?.parent_element_id ?? base?.parent_element_id ?? null, ord: null,
+          parent_element_id: topLevel || d.parent === null ? null : d.parent ?? was?.parent_element_id ?? base?.parent_element_id ?? null, ord: null,
           top_level: topLevel,
           base_version_id: d.kind === 'add' ? null : parentId,
           base_fingerprint: base?.fingerprint ?? null, state: 'clean' as const,
@@ -6260,12 +6265,18 @@ export class Kolab {
       if (!pe) {
         if (d.kind === 'remove') continue; // parent removed it too: converged
         const old = oldEls.get(d.element_id)!;
-        kept.push({ ...rest, parent_element_id: old.parent_element_id, ord: old.ord, state: 'orphaned' });
+        // A row that holds no words of its own takes the element's: the parent no longer has any to lend.
+        kept.push({ ...rest, text: d.text ?? old.text, parent_element_id: old.parent_element_id, ord: old.ord, state: 'orphaned' });
         continue;
       }
       if (pe.fingerprint === d.base_fingerprint) {
         // Parent's text is what the override was written against (or reverted to it).
         kept.push({ ...rest, base_version_id: newParent.id, state: 'clean' });
+        continue;
+      }
+      if (await this.holdsOnlyMove(d)) {
+        // It says nothing of the words or the work fields, so it takes the parent's new ones and raises nothing.
+        if (keepsMove(rest, pe)) kept.push(moveOnly(rest, pe, newParent.id));
         continue;
       }
       if (d.kind === 'override' && elementFingerprint(d.text ?? pe.text, d.work) === pe.fingerprint) { // converged
@@ -6691,6 +6702,13 @@ export class Kolab {
         version_id: v.id, element_id: d.element_id, delta_id: d.id, triggered_by: v.parent_version_id!, reason,
       }, question);
     }
+  }
+
+  /** Whether a delta says only that its element sits at the top level: no words of its own, and the work fields of the element it builds on. */
+  private async holdsOnlyMove(d: DeltaRow): Promise<boolean> {
+    if (d.kind !== 'override' || !d.top_level || d.text !== null || !d.base_version_id) return false;
+    const base = (await this.elements(d.base_version_id)).find((e) => e.element_id === d.element_id);
+    return !!base && elementFingerprint(base.text, d.work) === d.base_fingerprint;
   }
 
   /** Resolve a stale or orphaned override. Records precedent for the triple. */
@@ -11811,9 +11829,12 @@ function diff(parent: ElementRow[], next: (ElementInput & { id: string })[],
 /** Whether a delta whose words the parent's element has come to hold still says something: that the element sits at the top level, where the parent's doesn't. */
 const keepsMove = (d: Omit<DeltaRow, 'id' | 'version_id'>, parent: ElementRow) => d.top_level && parent.parent_element_id !== null;
 
-/** That delta, holding the parent's words and work fields and only the move. */
+/**
+ * That delta, holding only the move: no words, so the element reads the parent's, now and after the
+ * parent changes them, and the parent's work fields, which a delta's null would clear.
+ */
 const moveOnly = (d: Omit<DeltaRow, 'id' | 'version_id'>, parent: ElementRow, parentVersionId: string): Omit<DeltaRow, 'id' | 'version_id'> => ({
-  ...d, text: parent.text, work: parent.work ?? null, base_version_id: parentVersionId, base_fingerprint: parent.fingerprint, state: 'clean',
+  ...d, text: null, work: parent.work ?? null, base_version_id: parentVersionId, base_fingerprint: parent.fingerprint, state: 'clean',
 });
 
 /** Parent elements overlaid by deltas. Dirty and orphaned overrides still apply. */
@@ -12388,7 +12409,7 @@ const jobEnded = (j: JobRow) => new GateError(`job ${j.id} ended ${j.outcome ===
  * fine: an address reads its element as everything after its first '#' up to a '~'. That each
  * parent named is an element of the version is checked once it is made (writeDraft).
  */
-function checkElementIds(input: { elements?: { id?: string; parent?: string | null }[]; deltas?: { kind: string; element: string; parent?: string }[] }, prior: ReadonlySet<string> | null) {
+function checkElementIds(input: { elements?: { id?: string; parent?: string | null }[]; deltas?: { kind: string; element: string; parent?: string | null }[] }, prior: ReadonlySet<string> | null) {
   const ids = [
     ...(input.elements ?? []).flatMap((e) => (e.id === undefined ? [] : [e.id])),
     ...(input.deltas ?? []).flatMap((d) => (d.kind === 'add' ? [d.element] : [])),

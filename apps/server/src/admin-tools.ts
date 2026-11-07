@@ -126,8 +126,8 @@ const applyRuling = args({
   actor: z.string().describe('Who the version is written as, e.g. mirror-product; it writes in the role of the node\'s layer'),
   node: z.string().describe('The node, as <kolab>/<node> (e.g. kolab/kolab-binding), or its name alone when no other kolab has a node of that name'),
   // Strict, as konjir_draft's: a misplaced field is refused, not dropped. Work left out is kept (D98).
-  elements: z.array(args({ id: z.string().optional(), text: z.string(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
-  deltas: z.array(args({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().optional(), work: workInput.nullable().optional() })).optional(),
+  elements: z.array(args({ id: z.string().optional(), text: z.string(), parent: z.string().nullable().optional(), work: workInput.nullable().optional() })).optional(),
+  deltas: z.array(args({ kind: z.enum(DELTA_KINDS), element: z.string(), text: z.string().optional(), parent: z.string().nullable().optional(), work: workInput.nullable().optional() })).optional(),
   parent: z.string().optional().describe('For a variant: the committed parent version, e.g. kj:storefront@2, in the node\'s kolab'),
   unlink: z.array(linkRef).optional().describe('Links of the node\'s live version that the ruling drops, so they aren\'t carried forward, and their open marks settle: [{"source_element":"b1","target":"kj:kolab#R1"}] or [{"link":"<id>"}]; targets in the node\'s kolab'),
 });
