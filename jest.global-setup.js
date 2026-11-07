@@ -8,6 +8,11 @@
  * the shape of the RDS master user that the test server runs as.
  */
 export default async function globalSetup() {
+  // Not a Konjir job's: run inside one (W7.8), the suites would see its KONJIR_JOB, which the CLI
+  // refuses serve, login, connect and import under, and its token and URL. Cleared here, before
+  // the workers start, so neither they nor anything they spawn inherits them; a test that wants
+  // a job's environment sets it.
+  for (const k of ['KONJIR_JOB', 'KONJIR_ITEM', 'KONJIR_JOB_KIND', 'KONJIR_TOKEN', 'KONJIR_URL']) delete process.env[k];
   // Names this run's databases, so jest.global-teardown.js drops exactly them. Always fresh,
   // never inherited: Nx runs the projects in parallel, and each must drop only its own. It
   // starts with the time in seconds, base 36, so the teardown can sweep old runs' leftovers.
