@@ -100,7 +100,14 @@ jobs:
       # The test suites run apart, two projects at a time with two Jest workers each: Nx's three
       # at once, each with a worker per core and a PGlite database per suite, ran the arm64
       # runner out of memory, and it was shut down mid-run.
+      # In a Konjir job's environment, as a job runs them (W7.8): the suites clear it for themselves.
       - name: Test
+        env:
+          KONJIR_JOB: ci
+          KONJIR_ITEM: kj:kolab/kolab-binding#W7.8
+          KONJIR_JOB_KIND: build
+          KONJIR_TOKEN: kjs_not_a_real_token
+          KONJIR_URL: http://127.0.0.1:9/mcp
         run: npx nx affected -t test --parallel=2 --output-style=static -- --maxWorkers=2
 
       # konjir connect claude end to end, with no person (apps/cli/scripts/e2e-connect.mjs).
@@ -145,6 +152,12 @@ jobs:
 
       # The cli's tests build first (a start test runs the compiled CLI); Nx runs that build.
       - name: Test
+        env: # a Konjir job's environment, as on PGlite (W7.8)
+          KONJIR_JOB: ci
+          KONJIR_ITEM: kj:kolab/kolab-binding#W7.8
+          KONJIR_JOB_KIND: build
+          KONJIR_TOKEN: kjs_not_a_real_token
+          KONJIR_URL: http://127.0.0.1:9/mcp
         run: npx nx affected -t test --output-style=static
 
       # Evidence in the log that Testcontainers pulled Postgres 18 and Ryuk into the runner's

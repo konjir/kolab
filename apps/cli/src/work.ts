@@ -18,7 +18,9 @@
  * but for a build job's, which `konjir work deliver` needs, no environment: what a review job runs,
  * its tests among them, can't read it. It is redacted from the job's log and note. The environment
  * is an allowlist, and points konjir's credentials at a file that doesn't exist, so nothing in a job
- * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set). Each shell
+ * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set). PATH starts
+ * with a directory of the job's own holding `konjir`, which runs the runner's own konjir, so a job's
+ * `konjir work deliver` needs no approval (W7.8). Each shell
  * command the agent runs passes a guard hook first (guard.ts), which denies deleting, forcing or
  * mirroring a push, a push to the default branch, merging and the rest of deniedTools' list
  * however the command is quoted or wrapped.
@@ -37,7 +39,7 @@
  * (D89) is what guarantees it, and the denials here only keep a job from trying.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, rmSync, statSync, writeSync } from 'node:fs';
+import { accessSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -142,8 +144,8 @@ export interface WorkDeps {
   heartbeatMs?: number; pollFirstMs?: number; pollLongestMs?: number;
   /** The environment a harness's is drawn from (through HARNESS_ENV), and where KONJIR_HARNESS is read. */
   env?: NodeJS.ProcessEnv;
-  /** How a job's guard hook runs konjir: konjirCommand() by default. */
-  guard?: string[];
+  /** How a job's konjir runs, on its PATH and as its guard hook: konjirCommand() by default. */
+  konjir?: string[];
 }
 
 /** How one job ended, as `konjir work` reports it. */
@@ -219,12 +221,29 @@ const JOB_VERBS: Record<string, string> = { build: 'build', review: 'review', an
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
- * How this konjir runs itself: node and its script, or a compiled konjir alone (Bun's single-file
- * executable, whose script is inside it).
+ * How this konjir runs itself: node, its own options and its script, or a compiled konjir alone
+ * (Bun's single-file executable, whose script is inside it). The options are what run the source
+ * (W7.8): bin/konjir's tsx loads its loaders and the @konjir/source condition through them, and
+ * node with the script alone can't load it.
  */
-export function konjirCommand(): string[] {
-  const script = process.argv[1];
-  return script && !script.startsWith('/$bunfs') && !/^[A-Z]:\\~BUN\\/.test(script) && existsSync(script) ? [process.execPath, script] : [process.execPath];
+export function konjirCommand(proc: Pick<NodeJS.Process, 'argv' | 'execArgv' | 'execPath'> = process): string[] {
+  const script = proc.argv[1];
+  return script && !script.startsWith('/$bunfs') && !/^[A-Z]:\\~BUN\\/.test(script) && existsSync(script) ? [proc.execPath, ...proc.execArgv, script] : [proc.execPath];
+}
+
+/**
+ * Writes `konjir` into `dir` (W7.8): a shell script that runs `command`, konjir as this runner runs
+ * it, with tsx's tsconfig when it is set (bin/konjir sets it). The runner puts `dir` first on a job's
+ * PATH, so `konjir work deliver` runs in the job as written, under Bash(konjir *), which needs no
+ * approval; and the job's guard hook runs it too. Returns its path.
+ */
+export function writeKonjirShim(dir: string, command: string[] = konjirCommand(), env: NodeJS.ProcessEnv = process.env): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, 'konjir');
+  const tsconfig = env.TSX_TSCONFIG_PATH ? `TSX_TSCONFIG_PATH=${shellQuote(env.TSX_TSCONFIG_PATH)} ` : '';
+  rmSync(path, { force: true });
+  writeFileSync(path, `#!/bin/sh\n# konjir, as the konjir work that started this job runs it (W7.8).\n${tsconfig}exec ${command.map(shellQuote).join(' ')} "$@"\n`, { mode: 0o755 });
+  return path;
 }
 
 /**
@@ -263,9 +282,10 @@ export const TOKEN_KINDS: ReadonlySet<string> = new Set(['build']);
  * `allowAll` --dangerously-skip-permissions; deniedTools and the guard hook (guardSettings) either
  * way. The environment is HARNESS_ENV's, with KONJIR_URL, KONJIR_JOB, KONJIR_ITEM, KONJIR_JOB_KIND
  * and KONJIR_CREDENTIALS naming `credentials`, a file that doesn't exist; and for a build job
- * (TOKEN_KINDS), KONJIR_TOKEN, so `konjir work deliver` inside it works as the job's agent.
+ * (TOKEN_KINDS), KONJIR_TOKEN, so `konjir work deliver` inside it works as the job's agent. With
+ * `bin`, the directory of the job's konjir (writeKonjirShim), PATH has it first (W7.8).
  */
-export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: boolean; harness?: string; worktree: string; branch: string; credentials: string; mcpConfig: string; guard?: string[]; personCredentials?: string; env?: NodeJS.ProcessEnv }) {
+export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: boolean; harness?: string; worktree: string; branch: string; credentials: string; mcpConfig: string; guard?: string[]; bin?: string; personCredentials?: string; env?: NodeJS.ProcessEnv }) {
   const [command, ...pre] = (opts.harness?.trim() || 'claude').split(/\s+/);
   const mcp = JSON.stringify({ mcpServers: { konjir: { type: 'http', url: opts.url, headers: { Authorization: `Bearer ${job.token}` } } } });
   const personDir = dirname(opts.personCredentials ?? credentialsPath(opts.env ?? process.env));
@@ -276,6 +296,7 @@ export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: bo
     '--disallowedTools', ...deniedTools(opts.branch, personDir)];
   const env: Record<string, string> = { ...harnessEnv(opts.env ?? process.env), KONJIR_URL: opts.url, KONJIR_CREDENTIALS: opts.credentials,
     KONJIR_JOB: job.job, KONJIR_ITEM: job.item, KONJIR_JOB_KIND: job.kind, ...(TOKEN_KINDS.has(job.kind) ? { KONJIR_TOKEN: job.token } : {}) };
+  if (opts.bin) env.PATH = env.PATH ? `${opts.bin}${delimiter}${env.PATH}` : opts.bin;
   const prompt = [
     `Konjir job ${job.job}: ${JOB_VERBS[job.kind] ?? 'build'} ${job.item}, as ${job.agent}, in the worktree ${opts.worktree}.`,
     ...(job.trailer ? [`Every commit for it carries the trailer "${job.trailer}" (git commit --trailer "${job.trailer}"); konjir work deliver records them.`] : []),
@@ -577,6 +598,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
     l.done = (async (): Promise<JobReport> => {
       const report: JobReport = { job: taken.job, kind: taken.kind, item: taken.item, agent: taken.agent, outcome: 'failed' };
       let started = false;
+      let bin: string | undefined;
       try {
         if (!JOB_ID.test(taken.job)) throw new Error(`Kolab gave the job id ${JSON.stringify(clean(taken.job).slice(0, 140))}, which konjir work won't make a directory of`);
         const worktree = join(jobsDir, taken.job);
@@ -590,7 +612,10 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         const mcpConfig = join(fifos, `${taken.job}.json`);
         rmSync(mcpConfig, { force: true });
         await new Promise<void>((resolve, reject) => execFile('mkfifo', ['-m', '600', mcpConfig], (e) => (e ? reject(new Error(`couldn't make the FIFO its MCP config goes through (mkfifo: ${e.message})`)) : resolve())));
-        const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env, mcpConfig, guard: deps.guard,
+        // The job's konjir, first on its PATH, which its guard hook runs too (W7.8).
+        bin = join(jobsDir, '.bin', taken.job);
+        const konjir = writeKonjirShim(bin, deps.konjir ?? konjirCommand(), env);
+        const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env, mcpConfig, guard: [konjir], bin,
           credentials: join(jobsDir, '.no-credentials', taken.job, 'credentials.json') });
         log(`job ${taken.job}: ${clean(taken.kind)} ${clean(taken.item)} as ${clean(taken.agent)}, in ${worktree}`);
         const out = createWriteStream(join(jobsDir, `${taken.job}.log`), { flags: 'a', mode: 0o600 });
@@ -634,6 +659,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         report.ledger = await end(l, report.outcome, `konjir work couldn't start it: ${msg}`);
         log(`job ${clean(taken.job)}: couldn't start it: ${msg}`);
       }
+      if (bin) rmSync(bin, { recursive: true, force: true });
       const kept = report.worktree ? await tidy(report.worktree) : undefined;
       if (kept) report.kept = kept;
       if (report.ledger === undefined) delete report.ledger;
