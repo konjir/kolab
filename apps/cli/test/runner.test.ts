@@ -15,7 +15,7 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, workOptions, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, runWork, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, workOptions, removeKonjirShim, guardSettings, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, runWork, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
 import { startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
@@ -459,7 +459,7 @@ test('done-when: a build job runs konjir from its PATH, the runner\'s own konjir
   expect(w.state).toBe('in_review');
   expect(w.evidence.map((e) => e.kind)).toEqual(expect.arrayContaining(['commit']));
   // The guard hook runs the same konjir, and denies a delete.
-  expect(seen.hook).toBe(`'${join(bin, 'konjir')}' 'work' 'guard' '--branch' 'main'`);
+  expect(seen.hook).toBe(`'${join(bin, 'konjir')}' 'work' 'guard' '--branch' 'main' || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }`);
   expect(seen.guard).toMatchObject({ status: 2, out: expect.stringMatching(/^Denied in a Konjir job: the refspec :main deletes main/) });
   // The shim goes when its job ends; it never held the token.
   expect(existsSync(bin)).toBe(false);
@@ -477,7 +477,20 @@ test('konjirCommand runs konjir as this process runs: node with its own options,
   const top = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-shim-')));
   const shim = writeKonjirShim(join(top, "b'in"), ['/usr/bin/node', "/opt/kon'jir/main.js"], { TSX_TSCONFIG_PATH: '/k/tsconfig.json' });
   expect(readFileSync(shim, 'utf8')).toBe(`#!/bin/sh\n# konjir, as the konjir work that started this job runs it (W7.8).\nTSX_TSCONFIG_PATH='/k/tsconfig.json' exec '/usr/bin/node' '/opt/kon'\\''jir/main.js' "$@"\n`);
-  expect(statSync(shim).mode & 0o777).toBe(0o755);
+  // Read and run only, in a directory nothing can be added to, and edits to it are denied: the guard hook runs it.
+  expect(statSync(shim).mode & 0o777).toBe(0o555);
+  expect(statSync(join(top, "b'in")).mode & 0o777).toBe(0o500);
+  expect(deniedTools('main', '/home/lee/.config/konjir', join(top, "b'in"))).toContain(`Edit(/${join(top, "b'in")}/**)`);
+  expect(deniedTools('main', '/home/lee/.config/konjir')).not.toContainEqual(expect.stringContaining(top));
+  // Written again over a job's earlier one, and removed, all the same.
+  writeKonjirShim(join(top, "b'in"), ['/usr/bin/node', '/opt/konjir/main.js']);
+  removeKonjirShim(join(top, "b'in"));
+  expect(existsSync(join(top, "b'in"))).toBe(false);
+
+  // A guard that can't run denies: Claude Code lets a command through on any exit but 2.
+  const missing = JSON.parse(guardSettings([join(top, 'gone', 'konjir')], 'main')).hooks.PreToolUse[0].hooks[0].command;
+  const failed = spawnSync('sh', ['-c', missing], { encoding: 'utf8', input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } }) });
+  expect({ status: failed.status, stderr: failed.stderr }).toEqual({ status: 2, stderr: expect.stringMatching(/Denied in a Konjir job: its guard could not check this command/) });
 
   // From the source, as bin/konjir runs it: a runner started under tsx writes a shim that runs the
   // same source, with no TSX_TSCONFIG_PATH in its environment (a job's has none), and its guard denies.
@@ -492,6 +505,10 @@ else await import(${JSON.stringify(main)});
   const guard = spawnSync(written, ['work', 'guard', '--branch', 'main'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME },
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin :main' } }) });
   expect({ status: guard.status, stderr: guard.stderr }).toEqual({ status: 2, stderr: expect.stringMatching(/^Denied in a Konjir job: the refspec :main deletes main/) });
+  // And one that fails before it checks anything (here, no --branch) denies too, with the exit Claude Code blocks on.
+  expect(spawnSync(written, ['work', 'guard'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME }, input: '{}' }).status).toBe(2);
+  expect(spawnSync(written, ['work', 'nonsense'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME } }).status).toBe(1);
+  removeKonjirShim(join(top, 'bin'));
 }, 60_000);
 
 test('a job Kolab ended while its harness still runs is stopped, and reported lost with how Kolab ended it, without ending it again (JOB4)', async () => {
@@ -689,7 +706,7 @@ test('the harness\'s command: Claude Code headless, Kolab its only MCP server, e
   expect(c.args[c.args.indexOf('--mcp-config') + 1]).toBe('/jobs/.mcp/J9.json');
   expect(JSON.parse(c.mcp)).toEqual({ mcpServers: { konjir: { type: 'http', url: 'https://kolab.example.com/mcp', headers: { Authorization: 'Bearer kjs_secret' } } } });
   expect(JSON.parse(c.args[c.args.indexOf('--settings') + 1])).toEqual({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash|Monitor', hooks: [{ type: 'command',
-    command: `'/usr/bin/node' '/opt/kon'\\''jir/main.js' 'work' 'guard' '--branch' 'main'` }] }] } });
+    command: `'/usr/bin/node' '/opt/kon'\\''jir/main.js' 'work' 'guard' '--branch' 'main' || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }` }] }] } });
   expect(c.args).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits', '--allowedTools', ...ALLOWED_TOOLS, '--disallowedTools', ...deniedTools('main', '/home/lee/.config/konjir')]));
   expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir']));
   expect(deniedTools('main', '/home/lee/.config/konjir')).toEqual(expect.arrayContaining(['Bash(gh api*)', 'Bash(gh pr merge*)', 'Bash(git -c*)', 'Bash(git push --force*)', 'Bash(git push * +*)',
