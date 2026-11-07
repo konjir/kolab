@@ -337,7 +337,42 @@ test('clearing a link\'s change as someone who reads the other kolab also settle
   await kolab.revoke('billing', 'alice');
   expect((await marks(kolab, 'orders')).map(([r]) => r).sort()).toStrictEqual(['access_lost', 'changed']);
   await kolab.grant('billing', 'carol', 'read');
+  const both = (await kolab.openMarks()).map((m) => m.id);
   await kolab.clear(carol, (await kolab.openMarks()).find((m) => m.reason === 'changed')!.id);
+  expect(await marks(kolab, 'orders')).toStrictEqual([]);
+  // Both are closed as carol's, naming nothing of billing: anyone in orders reads them (W7.10).
+  expect((await kolab.db.query(`select id, cleared_by from invalidation where id = any($1) order by id`, [both])).rows)
+    .toStrictEqual([...both].sort().map((id) => ({ id, cleared_by: 'carol' })));
+});
+
+test('a link held again by declaring it or revising its element closes its access_lost mark naming nothing of the other kolab (W7.10, LNK8)', async () => {
+  const { kolab, alice, bob, checkout } = await twoKolabs();
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'write', { layers: ['functional'] });
+  await kolab.grant('billing', 'carol', 'read');
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'orders' });
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await commitReviewed(kolab, alice, carol, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast.' }) });
+  await linkAcross(kolab, alice, o1, 'O1', 'kj:billing/checkout#R1');
+  await linkAcross(kolab, alice, o1, 'O2', 'kj:billing/checkout#R2');
+  await kolab.commit(bob, checkout, { elements: els({ R1: 'Invoices are sent monthly.', R2: 'Invoices are in euros and pounds.' }) });
+  await kolab.revoke('billing', 'alice');
+  const lost = async () => (await kolab.openMarks()).filter((m) => m.reason === 'access_lost');
+  expect((await kolab.openMarks()).map((m) => [m.reason, m.element_id]).sort())
+    .toStrictEqual([['access_lost', 'O1'], ['access_lost', 'O2'], ['changed', 'O2']]);
+  const closedAs = async (id: string) => (await kolab.db.query<{ state: string; cleared_by: string }>(
+    `select state, cleared_by from invalidation where id = $1`, [id])).rows[0];
+
+  // carol, who reads billing, declares O1's link again: she holds it, and its mark is closed as hers.
+  const o1Lost = (await lost()).find((m) => m.element_id === 'O1')!.id;
+  await linkAcross(kolab, carol, o1, 'O1', 'kj:billing/checkout#R1');
+  expect(await closedAs(o1Lost)).toStrictEqual({ state: 'cleared', cleared_by: 'held by carol' });
+
+  // R2 changed before alice lost Read. carol revises O2, which relies on it: she holds that link too, and its mark closes the same way.
+  const o2Lost = (await lost()).find((m) => m.element_id === 'O2')!.id;
+  await commitReviewed(kolab, carol, alice, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.', O2: 'Orders ship fast, in euros or pounds.' }) });
+  await kolab.drainOutbox();
+  expect(await closedAs(o2Lost)).toStrictEqual({ state: 'cleared', cleared_by: 'held by carol' });
   expect(await marks(kolab, 'orders')).toStrictEqual([]);
 });
 
