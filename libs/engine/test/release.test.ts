@@ -128,7 +128,7 @@ test('a package with release set stays In review after its approval, shown as ap
   expect(await rejection(kolab.recordRelease(carol, W('W1.1'), { run: RUN, sha: sha('c') }))).toMatch(/^AccessError: carol may not write the technical layer/);
   // Someone other than its assignee, with Write on the technical layer, records it after the deploy: Done.
   const rel = await kolab.recordRelease(frank, W('W1.1'), { run: RUN, sha: sha('c'), title: 'deployed to production' });
-  expect(rel).toStrictEqual({ work: W('W1.1'), state: 'done', done: true, recorded: 1, already: 0 });
+  expect(rel).toStrictEqual({ work: W('W1.1'), state: 'done', done: true, recorded: 1 });
   expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'done', approved: false });
   const read = await kolab.readWork(bob, W('W1.1'));
   expect(read).not.toHaveProperty('approved');
@@ -141,25 +141,94 @@ test('a package with release set stays In review after its approval, shown as ap
   ]);
   // And the milestone is Done with it.
   expect((await kolab.listWork(bob)).items.find((w) => w.id === 'M1')).toMatchObject({ state: 'done' });
-  // The same release again is counted, and changes nothing.
-  expect(await kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('c') })).toStrictEqual({ work: W('W1.1'), state: 'done', done: true, recorded: 0, already: 1 });
+  // A Done package takes no release, the same one or another.
+  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('c') })))
+    .toBe('GateError: kj:orders-pg#W1.1 is Done: it is Done already, and takes no release (PLN16)');
 });
 
-test('a release recorded before the approval makes the approval Done; one on a package without the field changes nothing; a milestone, a package To do and another repository take none (W7.7)', async () => {
+test('a release is recorded only on a package In review and approved: before the approval, To do, without the field, a milestone and another repository are refused (PLN16, W7.7)', async () => {
   const { kolab, bob, eve } = await planned();
   await submitted(kolab, bob, 'W1.1');
-  expect(await rejection(kolab.recordRelease(eve, W('W1.2'), { run: RUN, sha: sha('c') }))).toBe('GateError: kj:orders-pg#W1.2 is To do: it has no work to release yet');
+  expect(await rejection(kolab.recordRelease(eve, W('W1.2'), { run: RUN, sha: sha('c') })))
+    .toBe('GateError: kj:orders-pg#W1.2 is To do: its work field doesn\'t say release, so its approval makes it Done, and it takes no release (PLN16)');
   expect(await rejection(kolab.recordRelease(eve, W('M1'), { run: RUN, sha: sha('c') }))).toMatch(/^GateError: kj:orders-pg#M1 is a milestone: it has no work of its own to release/);
-  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('c'), repo: 'https://github.com/acme/other' }))).toMatch(/^GateError: no repository https:\/\/github\.com\/acme\/other|^GateError: .*acme\/other/);
   expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN }))).toMatch(/^GateError: a release names the commit it released/);
-  // Deployed before its review: recorded In review, then the approval makes it Done.
-  expect(await kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('c') })).toMatchObject({ state: 'in_review', done: false, recorded: 1 });
-  expect(await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' })).toMatchObject({ state: 'done' });
-  expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'done', approved: false });
-  // A package without the field: a release recorded on it is kept, its state as it was.
+  // Deployed before its review: refused, and the approval leaves it waiting for a release recorded after it.
+  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('c') }))).toBe('GateError: kj:orders-pg#W1.1 is In review, not yet approved: '
+    + 'a release is recorded only after its approval, on a package In review, approved: it is reviewed first (konjir_review), then deployed, and then its release is recorded (PLN16)');
+  expect((await kolab.readWork(bob, W('W1.1'))).evidence.filter((e) => e.kind === 'release')).toStrictEqual([]);
+  expect(await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' })).toMatchObject({ state: 'in_review', approved: true });
+  expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'in_review', approved: true });
+  // Approved: still only in its own repository.
+  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('c'), repo: 'https://github.com/acme/other' }))).toMatch(/^GateError: .*acme\/other/);
+  // A package without the field, In review: refused, its state as it was, and its approval makes it Done.
   await submitted(kolab, bob, 'W1.2');
-  expect(await kolab.recordRelease(eve, W('W1.2'), { run: RUN, sha: sha('d') })).toMatchObject({ state: 'in_review', done: false, recorded: 1 });
+  expect(await rejection(kolab.recordRelease(eve, W('W1.2'), { run: RUN, sha: sha('d') })))
+    .toBe('GateError: kj:orders-pg#W1.2 is In review, not yet approved: its work field doesn\'t say release, so its approval makes it Done, and it takes no release (PLN16)');
   expect(await kolab.reviewWork(eve, W('W1.2'), { verdict: 'approve' })).toMatchObject({ state: 'done' });
+});
+
+test('a release is never its assignee\'s, nor a job\'s: a job never merges or deploys (PLN16, JOB4, W7.7)', async () => {
+  const { kolab, bob, frank } = await planned();
+  await people(kolab, 'lee', { level: 'admin' });
+  const lee = await kolab.openSession('lee', 'engineer');
+  await submitted(kolab, bob, 'W1.1');
+  // A review job approves W1.1; its agent's session records no release, though it writes the technical layer.
+  const job = await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ['review'] });
+  if (!job.taken) throw new Error(job.why);
+  expect(job.item).toBe(W('W1.1'));
+  expect(await kolab.reviewWork(job.token, W('W1.1'), { verdict: 'approve' })).toMatchObject({ state: 'in_review', approved: true });
+  expect(await rejection(kolab.recordRelease(job.token, W('W1.1'), { run: RUN, sha: sha('c') })))
+    .toBe('GateError: this session is a job\'s, and a job never merges or deploys (JOB4), so it records no release: a person, or an agent outside a job, records kj:orders-pg#W1.1\'s release once it is deployed');
+  // Nor its assignee.
+  expect(await rejection(kolab.recordRelease(bob, W('W1.1'), { run: RUN, sha: sha('c') })))
+    .toBe('GateError: bob is kj:orders-pg#W1.1\'s assignee: someone else with Write on the technical layer records its release, once it is deployed (PLN16)');
+  expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'in_review', approved: true });
+  // Someone else, outside a job, does.
+  expect(await kolab.recordRelease(frank, W('W1.1'), { run: RUN, sha: sha('c') })).toMatchObject({ state: 'done', done: true });
+});
+
+test('a release\'s run is a GitHub Actions run of the package\'s repository, and its sha a full 40-hex sha (W7.7)', async () => {
+  const { kolab, bob, eve } = await planned();
+  await submitted(kolab, bob, 'W1.1');
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' });
+  const notARun = (run: string) => `GateError: the release's run ${run} isn't a GitHub Actions run of https://github.com/acme/orders: it is https://github.com/acme/orders/actions/runs/<run id>, the deploy run that released kj:orders-pg#W1.1`;
+  for (const run of ['https://example.com/not-a-deploy', 'https://github.com/acme/other/actions/runs/123', 'https://github.com/acme/orders/pull/1',
+    'https://github.com/acme/orders/actions/runs/', 'https://github.com/acme/orders/actions/runs/12x', 'https://github.com/acme/orders/actions/runs/123/job/4',
+    'https://gitlab.com/acme/orders/actions/runs/123', 'https://github.com/acme/orders-other/actions/runs/123']) {
+    expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run, sha: sha('c') }))).toBe(notARun(run));
+  }
+  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: 'c'.repeat(64) }))).toMatch(/^GateError: a release names the commit it released by its full sha: 40 hexadecimal characters, not "c{64}"/);
+  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: 'c'.repeat(12) }))).toMatch(/^GateError: a release names the commit it released by its full sha/);
+  expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'in_review', approved: true });
+  // An attempt of the run, in any case, is one.
+  expect(await kolab.recordRelease(eve, W('W1.1'), { run: 'https://GitHub.com/Acme/Orders/actions/runs/123/attempts/2', sha: sha('C') })).toMatchObject({ state: 'done' });
+});
+
+test('a release before a request for changes is refused, so it never counts for the work resubmitted after it (PLN16, W7.7)', async () => {
+  const { kolab, bob, eve } = await planned();
+  await submitted(kolab, bob, 'W1.1');
+  // Deployed before its review: refused, so nothing of it is left to count.
+  expect(await rejection(kolab.recordRelease(eve, W('W1.1'), { run: RUN, sha: sha('a') }))).toMatch(/^GateError: kj:orders-pg#W1\.1 is In review, not yet approved/);
+  await kolab.reviewWork(eve, W('W1.1'), { verdict: 'request_changes', note: 'Handle a missing order.' });
+  await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT('e')] });
+  // The approval of the new round waits for the new commit's release.
+  expect(await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' })).toMatchObject({ state: 'in_review', approved: true });
+  expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'in_review', approved: true });
+});
+
+test('a release among a round\'s evidence confirms no repository at its approval: only the work\'s own commits and pull requests do (D98, W7.7)', async () => {
+  const { kolab, bob, eve } = await planned();
+  const other = await registeredRepository(kolab, { url: 'https://github.com/acme/deploys' });
+  await submitted(kolab, bob, 'W1.1');
+  // Kolab records none before the approval; the database is given one, in another repository, to show the approval passes it over.
+  await kolab.db.query(
+    `insert into evidence(id, binding_node_id, element_id, event_id, kind, ref, url, recorded_by, repository_id, before_repositories)
+     select 'xrelease', binding_node_id, element_id, event_id, 'release', $1, $2, 'bob', $3, false from evidence where element_id = 'W1.1' and kind = 'commit'`,
+    [sha('c'), 'https://github.com/acme/deploys/actions/runs/1', other.id]);
+  const r = await kolab.reviewWork(eve, W('W1.1'), { verdict: 'approve' });
+  expect(r.confirmed_repositories).toStrictEqual(['https://github.com/acme/orders']);
+  expect((await kolab.db.query(`select confirmed_at from repository where id = $1`, [other.id])).rows[0]).toStrictEqual({ confirmed_at: null });
 });
 
 test('a release is not a package\'s own evidence: konjir_add_evidence and konjir_submit_work refuse it (W7.7)', async () => {

@@ -335,8 +335,9 @@ async function packageCheckout(call: Call, git: Git, pkg: Pick<Round, 'work' | '
  * `konjir work deliver <work> --release <run> [--commit <rev>]` (PLN16, W7.7): records, after the
  * deploy, that the run at `run` released the commit `commit` names (HEAD by default) of the
  * package's repository, which the checkout must be, as deliver checks it. A package approved and
- * waiting for its release is then Done. Anyone with Write on the technical layer records one, not
- * only its assignee, so the package is named, never found from what the session holds.
+ * waiting for its release is then Done; Kolab refuses any other package, and a release from its
+ * assignee or a job's session (JOB4). Someone other than its assignee records one, so the package is
+ * named, never found from what the session holds.
  */
 export async function releaseDelivered(call: Call, git: Git, opts: { work?: string; run: string; commit?: string; repo?: string; title?: string; dryRun?: boolean }) {
   if (!opts.work) throw new Error('name the work package that was released: konjir work deliver kj:<binding>#<id> --release <the deploy run\'s https link>');
@@ -345,8 +346,8 @@ export async function releaseDelivered(call: Call, git: Git, opts: { work?: stri
   const sha = commitOf(git, opts.commit ?? 'HEAD', '--commit takes the one commit the deploy released');
   const release = { work: pkg.work, run: opts.run, sha, repo: repo.url, ...(opts.title ? { title: opts.title } : {}) };
   if (opts.dryRun) return { ...release, sent: false };
-  const r = await call('record_release', release) as { state: string; done: boolean; recorded: number; already: number; next?: string };
-  return { ...release, sent: true, state: r.state, done: r.done, recorded: r.recorded, already: r.already, ...(r.next ? { next: r.next } : {}) };
+  const r = await call('record_release', release) as { state: string; done: boolean; recorded: number; next?: string };
+  return { ...release, sent: true, state: r.state, done: r.done, recorded: r.recorded, ...(r.next ? { next: r.next } : {}) };
 }
 
 export interface DeliverOptions {

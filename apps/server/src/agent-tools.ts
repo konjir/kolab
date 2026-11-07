@@ -162,8 +162,8 @@ const releaseWork = args({ work, note: z.string().optional().describe(`Why, for 
 const reassignWork = args({ work, to: z.string().describe('The actor to give it to: a person or an agent with Write on the technical layer') });
 const recordRelease = args({
   work,
-  run: z.string().describe(`The deploy run that released the work, by its https link (a CI run's page, such as https://github.com/acme/orders/actions/runs/123). At most ${MAX_EVIDENCE_URL} characters, with no user, password or credential-bearing query parameter in it`),
-  sha: z.string().describe('The commit it released, by its full sha: 40 hexadecimal characters (64 for SHA-256)'),
+  run: z.string().describe(`The deploy run that released the work: a GitHub Actions run of the package's repository, by its link, <repository URL>/actions/runs/<id> (such as https://github.com/acme/orders/actions/runs/123). At most ${MAX_EVIDENCE_URL} characters`),
+  sha: z.string().describe('The commit it released, by its full sha: 40 hexadecimal characters'),
   repo: z.string().optional().describe('The released commit\'s repository: the URL of one registered in your kolab. Leave it out to use the package\'s own (its repo, or its binding\'s implementation)'),
   title: z.string().optional().describe(`A summary of the release ("deployed to production"). At most ${MAX_TEXT} characters`),
 });
@@ -823,7 +823,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_record_release',
-    description: 'Record the release of a work package, kj:<binding>#<id>, after the deploy that released it, from an engineer session with Write on the technical layer (its assignee or anyone else): the deploy run, by its https link, and the commit it released, by its full sha, in a registered repository (the package\'s own unless repo names another). A package whose work field says release: true is approved and waits In review until its release is recorded, and this makes it Done (PLN16); one In progress, or In review not yet approved, keeps its state, and its approval makes it Done; on a Done one it is kept as a record. The same release recorded again is counted in already. Not a milestone, which is Done when its members are, nor a package To do. In a shell, konjir work deliver <work> --release <run> records it from the checkout, with HEAD as the released commit unless --commit names another. Counts as a draft against your hourly budget.',
+    description: 'Record the release of a work package, kj:<binding>#<id>, after the deploy that released it, from an engineer session with Write on the technical layer: the deploy run, a GitHub Actions run of the package\'s repository (<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha. Only on a package whose work field says release: true, In review and approved, waiting for its release: the approval comes first, and this makes it Done (PLN16). Refused on any other package, from its assignee, and from a job\'s session (a job never merges or deploys, JOB4). Kolab can\'t check the run or the sha against GitHub: they are your word. A release confirms no repository. In a shell, konjir work deliver <work> --release <run> records it from the checkout, with HEAD as the released commit unless --commit names another. Counts as a draft against your hourly budget.',
     schema: recordRelease,
   })
   recordRelease({ work, run, sha, repo, title }: z.infer<typeof recordRelease>, context?: McpToolContext) {
@@ -831,10 +831,7 @@ export class AgentTools {
       const r = await this.kolab.recordRelease(s, work, { run, sha, repo, title });
       return {
         ...r,
-        next: r.done ? 'Done: its release is recorded. Nothing more to do.'
-          : r.state === 'in_review' ? 'Recorded: it waits in review, and its approval makes it Done.'
-          : r.state === 'in_progress' ? 'Recorded: once it is submitted and approved, it is Done.'
-          : 'Recorded.',
+        next: 'Done: its release is recorded. Nothing more to do.',
       };
     });
   }
