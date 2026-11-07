@@ -12360,7 +12360,7 @@ const STATE_WORDS: Record<WorkState, string> = { todo: 'To do', in_progress: 'In
  */
 const RELEASE_NEXT = (at: string) =>
   `once it is deployed, after this approval, its release is recorded by someone with Write on the technical layer other than its assignee, `
-  + `from an engineer session outside any job (a job never merges or deploys, JOB4), naming the deploy run, a GitHub Actions run of the package's registered repository `
+  + `from an engineer session outside any job (a job never merges or deploys, JOB4), naming the deploy run, a GitHub Actions run of the package's registered repository, or for a package with none of its own the registered one its evidence named with repo= `
   + `(<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha `
   + `(konjir_record_release work=${at} run=<the run's https link> sha=<the full sha>, or konjir work deliver ${at} --release <run> from a checkout of that repository), and that makes it Done`;
 
