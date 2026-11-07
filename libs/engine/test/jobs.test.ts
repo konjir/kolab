@@ -628,6 +628,10 @@ test('a question an answer job hands to a person waits on people however long: n
   expect((await queryDetailsPage(kolab, lee, { open: false })).items.find((x) => x.id === asked)).toMatchObject({ handed_off_at: null });
   expect(await kolab.readWork(lee, W('W1'))).toMatchObject({ ready: true, blocked: [] });
   expect(await take(kolab, lee)).toMatchObject({ kind: 'build', item: W('W1') });
+  // And the refusal no longer counts it as waiting on a person.
+  const after = await kolab.takeJob(lee, { machine: 'lee-laptop', kinds: ALL });
+  expect(after).toMatchObject({ taken: false });
+  expect((after as { counts?: Record<string, number> }).counts?.waiting_on_person ?? 0).toBe(0);
 });
 
 test('an answer job that ends without answering and without handing over, or is stopped, leaves its question in the queue after the hour; a hand-off of a mark is still only for the hour (JOB6, W7.9)', async () => {
