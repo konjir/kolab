@@ -39,7 +39,7 @@
  * (D89) is what guarantees it, and the denials here only keep a job from trying.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { accessSync, chmodSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -173,7 +173,7 @@ export const ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Writ
  * the shell splits it and denies those too (W6.4). Both are a fence, not a wall: main's branch
  * protection, which requires CI and binds admins (D89), is what keeps a job from merging or deploying.
  */
-export function deniedTools(branch: string, credentialsDir: string): string[] {
+export function deniedTools(branch: string, credentialsDir: string, bin?: string): string[] {
   const b = branch;
   const dir = `/${credentialsDir.replace(/\/+$/, '')}/**`;
   return [
@@ -186,6 +186,8 @@ export function deniedTools(branch: string, credentialsDir: string): string[] {
     `Bash(git push *:${b})`, `Bash(git push *:${b} *)`, `Bash(git push *:refs/heads/${b}*)`, `Bash(git push * ${b})`, `Bash(git push * ${b} *)`,
     // Edit(path) covers every tool that edits a file; Write(path) and MultiEdit(path) match nothing.
     `Read(${dir})`, `Edit(${dir})`,
+    // The job's own konjir, which its guard hook runs (W7.8): a job that rewrote it would turn the guard off.
+    ...(bin ? [`Edit(/${bin.replace(/\/+$/, '')}/**)`] : []),
   ];
 }
 
@@ -239,11 +241,21 @@ export function konjirCommand(proc: Pick<NodeJS.Process, 'argv' | 'execArgv' | '
  */
 export function writeKonjirShim(dir: string, command: string[] = konjirCommand(), env: NodeJS.ProcessEnv = process.env): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
   const path = join(dir, 'konjir');
   const tsconfig = env.TSX_TSCONFIG_PATH ? `TSX_TSCONFIG_PATH=${shellQuote(env.TSX_TSCONFIG_PATH)} ` : '';
   rmSync(path, { force: true });
-  writeFileSync(path, `#!/bin/sh\n# konjir, as the konjir work that started this job runs it (W7.8).\n${tsconfig}exec ${command.map(shellQuote).join(' ')} "$@"\n`, { mode: 0o755 });
+  writeFileSync(path, `#!/bin/sh\n# konjir, as the konjir work that started this job runs it (W7.8).\n${tsconfig}exec ${command.map(shellQuote).join(' ')} "$@"\n`, { mode: 0o555 });
+  // Read and run only, and nothing added beside it: the guard hook runs it (removeKonjirShim undoes this).
+  chmodSync(path, 0o555);
+  chmodSync(dir, 0o500);
   return path;
+}
+
+/** Removes a job's konjir and its directory (writeKonjirShim), whose modes forbid writing. */
+export function removeKonjirShim(dir: string) {
+  try { chmodSync(dir, 0o700); } catch { /* already gone */ }
+  rmSync(dir, { recursive: true, force: true });
 }
 
 /**
@@ -256,7 +268,9 @@ export function writeKonjirShim(dir: string, command: string[] = konjirCommand()
  * checks out, say) doesn't turn this one off; without it, it did (found running it).
  */
 export function guardSettings(guard: string[], branch: string): string {
-  const command = [...guard, 'work', 'guard', '--branch', branch].map(shellQuote).join(' ');
+  // Claude Code blocks a command only when its hook exits 2; any other failure of the hook (its konjir
+  // gone, node missing, a crash) would let the command through, so each of those is a denial too.
+  const command = `${[...guard, 'work', 'guard', '--branch', branch].map(shellQuote).join(' ')} || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }`;
   return JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: GUARDED_TOOLS.join('|'), hooks: [{ type: 'command', command }] }] } });
 }
 
@@ -293,7 +307,7 @@ export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: bo
     '--settings', guardSettings(opts.guard ?? konjirCommand(), opts.branch),
     '--append-system-prompt', JOB_RULES,
     ...(opts.allowAll ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'acceptEdits', '--allowedTools', ...ALLOWED_TOOLS]),
-    '--disallowedTools', ...deniedTools(opts.branch, personDir)];
+    '--disallowedTools', ...deniedTools(opts.branch, personDir, opts.bin)];
   const env: Record<string, string> = { ...harnessEnv(opts.env ?? process.env), KONJIR_URL: opts.url, KONJIR_CREDENTIALS: opts.credentials,
     KONJIR_JOB: job.job, KONJIR_ITEM: job.item, KONJIR_JOB_KIND: job.kind, ...(TOKEN_KINDS.has(job.kind) ? { KONJIR_TOKEN: job.token } : {}) };
   if (opts.bin) env.PATH = env.PATH ? `${opts.bin}${delimiter}${env.PATH}` : opts.bin;
@@ -659,7 +673,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         report.ledger = await end(l, report.outcome, `konjir work couldn't start it: ${msg}`);
         log(`job ${clean(taken.job)}: couldn't start it: ${msg}`);
       }
-      if (bin) rmSync(bin, { recursive: true, force: true });
+      if (bin) removeKonjirShim(bin);
       const kept = report.worktree ? await tidy(report.worktree) : undefined;
       if (kept) report.kept = kept;
       if (report.ledger === undefined) delete report.ledger;
