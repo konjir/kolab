@@ -4526,13 +4526,13 @@ export class Kolab {
    * author, naming PLN2.
    */
   private async workChecks(v: VersionRow, passed: CheckResult, q: Q = this.db): Promise<CheckResult> {
-    const binding = (await q.query<{ id: string; kolab_id: string }>(`select id, kolab_id from node where id = $1`, [v.node_id])).rows[0];
+    const binding = (await q.query<{ id: string; kolab_id: string; parent_node_id: string | null }>(`select id, kolab_id, parent_node_id from node where id = $1`, [v.node_id])).rows[0];
     // A variant's or a fork's own work only: what it inherits unchanged is its parent's (D104).
     const els = await this.ownWork(q, v);
     if (!els.some((e) => e.work)) return passed;
     const live = new Set(els.map((e) => e.element_id));
-    const rows = (await q.query<{ own: boolean; source_element_id: string | null; target_element_id: string | null; target_seq: number; target_name: string; target_kolab: string; target_node: string }>(
-      `select e.source_version_id = $1 as own, e.source_element_id, e.target_element_id, t.seq as target_seq, n.name as target_name, n.kolab_id as target_kolab, n.id as target_node
+    const rows = (await q.query<{ own: boolean; kind: string; source_element_id: string | null; target_element_id: string | null; target_seq: number; target_name: string; target_kolab: string; target_node: string }>(
+      `select e.source_version_id = $1 as own, e.kind, e.source_element_id, e.target_element_id, t.seq as target_seq, n.name as target_name, n.kolab_id as target_kolab, n.id as target_node
          from edge e join version t on t.id = e.target_version_id join node n on n.id = t.node_id
         where e.source_version_id = $1
            or (e.source_version_id = $2 and not exists (select 1 from link_removal r where r.version_id = $1 and ${REMOVES('r', 'e', 't')}))
@@ -4540,7 +4540,8 @@ export class Kolab {
     const links: WorkLink[] = rows
       .filter((l) => l.own || l.source_element_id === null || live.has(l.source_element_id))
       .map((l) => ({
-        source_element_id: l.source_element_id, target_element_id: l.target_element_id, into_self: l.target_node === binding.id,
+        source_element_id: l.source_element_id, target_element_id: l.target_element_id, kind: l.kind,
+        into_self: l.target_node === binding.id, into_spec: l.target_node === binding.parent_node_id,
         target: `${l.target_kolab === binding.kolab_id ? '' : `${l.target_kolab}/`}${l.target_name}@${l.target_seq}${l.target_element_id ? `#${l.target_element_id}` : ''}`,
       }));
     // What this version adds or changes, against the version it was built on (W5.7).
@@ -4550,7 +4551,19 @@ export class Kolab {
       const was = prior.get(e.element_id);
       return !was || canonicalWork(was) !== canonicalWork(e.work);
     }).map((e) => e.element_id));
-    const problems = workProblems(els, links, changed);
+    // WRK11's check, new in W8.3, reads the packages whose work this version adds or changes against
+    // the version it was written on (its own work there, so a variant's rebase never counts its own
+    // packages as new), and those it drops a link from (konjir_unlink).
+    const base = v.base_version_id ? (await q.query<VersionRow>(`select * from version where id = $1`, [v.base_version_id])).rows[0] : undefined;
+    const before = base ? new Map((await this.ownWork(q, base)).map((e) => [e.element_id, e.work])) : new Map<string, WorkFields | null | undefined>();
+    const linked = new Set(els.filter((e) => {
+      if (!e.work) return false;
+      const was = before.get(e.element_id);
+      return !was || canonicalWork(was) !== canonicalWork(e.work);
+    }).map((e) => e.element_id));
+    for (const r of (await q.query<{ source_element_id: string }>(
+      `select distinct source_element_id from link_removal where version_id = $1 and source_element_id is not null`, [v.id])).rows) linked.add(r.source_element_id);
+    const problems = workProblems(els, links, changed, linked);
     // A work package's repo names a repository registered in the binding's kolab, and live (KON7, W5.2a).
     const named = els.filter((e) => e.work?.repo);
     if (named.length) {
@@ -5407,7 +5420,7 @@ export class Kolab {
    * A version that waits in review (it has reviewers) throws a GateError; draft and review it apart.
    */
   async commit(sessionId: string, nodeId: string,
-    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[] }): Promise<string> {
+    input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[]; links?: LinkInput[] }): Promise<string> {
     const id = await this.draft(sessionId, nodeId, input);
     // Submitted by whoever drafted it: this session's actor (W2.20).
     const result = await this.review(id, { by: (await this.version(id)).actor_id });
@@ -8249,8 +8262,10 @@ export class Kolab {
     const former = (await this.db.query<{ plan: string; element: string }>(
       `select p.name as plan, m.plan_element_id as element from work_package_moved m join node p on p.id = m.plan_node_id
         where m.binding_node_id = $1 and m.element_id = $2 order by p.name`, [binding.id, id])).rows.map((r) => workTrailer(s.kolab, r.plan, r.element));
+    const inReview = await this.versionsChangingWork(binding, id, p.row.removed_in_version_id ? null : p.work);
     return {
       ...item, trailer: workTrailer(s.kolab, binding.name, id), ...(former.length ? { former_trailers: former } : {}),
+      ...(inReview.length ? { in_review: inReview } : {}),
       ...(p.row.lapsed ? { lapsed: { lease_until: iso(p.row.lease_until), held_by: p.row.assignee_id } } : {}),
       ...(await this.workContext(sessionId, p, s.kolab)),
       evidence, reviews,
@@ -8259,6 +8274,24 @@ export class Kolab {
       ...(s.access.layers.length > 0 ? { open_marks: await this.packageMarks(binding.id, id) } : {}),
       events, events_next: next,
     };
+  }
+
+  /**
+   * The versions of `binding` in review that change package `id`'s work (WRK12): adding it, changing
+   * its work fields (a split's depends_on, or making it a milestone), or making it a decision or
+   * dropping it, against `work`, its work as the binding last committed it. Oldest first, so a
+   * build job that finds one releases the package naming it, rather than split or build it.
+   */
+  private async versionsChangingWork(binding: NodeRow, id: string, work: WorkFields | null): Promise<{ version: string; by: string }[]> {
+    const versions = (await this.db.query<VersionRow>(`select * from version where node_id = $1 and state = 'in_review' order by seq`, [binding.id])).rows;
+    const out: { version: string; by: string }[] = [];
+    for (const v of versions) {
+      const then = (await this.ownWork(this.db, v)).find((e) => e.element_id === id)?.work ?? null;
+      if (!then && !work) continue;
+      if (then && work && canonicalWork(then) === canonicalWork(work)) continue;
+      out.push({ version: formatAddress({ node: binding.name, version: v.seq }), by: v.actor_id });
+    }
+    return out;
   }
 
   /** The open marks on a work package's element, in its binding's committed versions, oldest first: what makes it at risk (PLN10). */
@@ -10915,7 +10948,7 @@ export class Kolab {
         if (!verdict.ok) problems.push(`the ${what}: ${verdict.note}`);
         if (what === 'binding') {
           const links: WorkLink[] = file.binding!.elements.flatMap((e) => [
-            ...e.serves.map((t) => ({ source_element_id: e.id, target: `${file.spec!.name}#${t}`, target_element_id: t })),
+            ...e.serves.map((t) => ({ source_element_id: e.id, target: `${file.spec!.name}#${t}`, target_element_id: t, into_spec: true })),
             ...e.relies_on.map((t) => ({ source_element_id: e.id, target: `${file.binding!.name}#${t}`, target_element_id: t, into_self: true })),
           ]);
           const work = workProblems(rows, links);

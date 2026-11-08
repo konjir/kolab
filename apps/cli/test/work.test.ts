@@ -42,7 +42,7 @@ async function planned() {
     { id: 'W1', text: 'Build the endpoint.', work: { done_when: 'It cancels.', size: 'S' } },
     { id: 'W2', text: 'Build the queue.', work: { depends_on: ['W1'] } },
     { id: 'W10', text: 'Document it.', work: {} },
-  ], links: [{ source_element: 'W1', target: 'kj:orders-pg@1#b1' }, { source_element: 'W2', target: 'kj:orders-pg@1#b2' }] });
+  ], links: [{ source_element: 'W1', target: 'kj:orders-pg@1#b1' }, { source_element: 'W2', target: 'kj:orders-pg@1#b2' }, { source_element: 'W10', target: 'kj:orders-pg@1#b2' }] });
   await call(eng.c, 'submit_for_review', { node: 'orders-pg', version: 2 });
   // Added after the binding committed, so it needed no review.
   const eng2 = await agent('eng2', 'engineer');

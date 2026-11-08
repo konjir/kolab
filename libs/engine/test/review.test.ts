@@ -283,8 +283,10 @@ test('a binding version with work packages is reviewed like any binding version:
   await people(kolab, 'erin', { layers: ['technical'] });
   await kolab.openSession('erin', 'engineer');   // another engineer: a reviewer of bindings, and of their work
   await kolab.createNode(product, 'spec', 'Spec', 'spec');
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'A thing is done.' }) });
   const b = await kolab.createNode(engineer, 'binding', 'B', 'b');
-  const v = await kolab.draft(engineer, b, { elements: [{ id: 'b1', text: 'A queue.' }, { id: 'W1', text: 'Do a thing.', work: { done_when: 'It is done.' } }] });
+  const v = await kolab.draft(engineer, b, { elements: [{ id: 'b1', text: 'A queue.' }, { id: 'W1', text: 'Do a thing.', work: { done_when: 'It is done.' } }],
+    links: [{ kind: 'dependency', sourceElement: 'W1', target: s1, targetElement: 'R1' }] });
   const r = await kolab.review(v);
   expect(r).toMatchObject({ ok: false, version: v, in_review: true, reviewers: ['erin'] });
   expect((await kolab.db.query(`select reviewer_id from review_request where version_id = $1`, [v])).rows).toStrictEqual([{ reviewer_id: 'erin' }]);
@@ -608,11 +610,14 @@ describe.each(['variant', 'fork'])('on a %s, a move to the top level (W7.2, OVR3
 test('on a variant of a binding, what holds only the move follows upstream\'s work fields, and asks nothing; a move with work fields of its own is asked about (W7.2, OVR3)', async () => {
   const { kolab, product, engineer } = await setup();
   await kolab.createNode(product, 'spec', 'The spec', 'spec');
+  // Each package serves R1 (WRK11).
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'It is done.' }) });
+  const serves = (...ids: string[]) => ids.map((id) => ({ kind: 'dependency' as const, sourceElement: id, target: s1, targetElement: 'R1' }));
   const up = (w1: object, w2: object) => [{ id: 'S', text: 'A section' }, { id: 'W1', text: 'One.', parent: 'S', work: w1 }, { id: 'W2', text: 'Two.', parent: 'S', work: w2 }];
   await kolab.createNode(engineer, 'binding', 'B', 'b');
-  const v1 = await kolab.commit(engineer, 'b', { elements: up({ size: 'S' }, { size: 'S' }) });
+  const v1 = await kolab.commit(engineer, 'b', { elements: up({ size: 'S' }, { size: 'S' }), links: serves('W1', 'W2') });
   await kolab.createNode(engineer, 'binding', 'C', 'c');
-  await kolab.commit(engineer, 'c', { parent: v1, deltas: [{ kind: 'override', element: 'W1', parent: null }, { kind: 'override', element: 'W2', parent: null, work: { size: 'L' } }] });
+  await kolab.commit(engineer, 'c', { parent: v1, deltas: [{ kind: 'override', element: 'W1', parent: null }, { kind: 'override', element: 'W2', parent: null, work: { size: 'L' } }], links: serves('W2') });
   const at = async () => Object.fromEntries((await kolab.elements((await kolab.latestCommitted('c'))!.id)).map((e) => [e.element_id, [e.parent_element_id, e.work?.size]]));
   expect(await at()).toMatchObject({ W1: [null, 'S'], W2: [null, 'L'] });
   await kolab.commit(engineer, 'b', { elements: up({ size: 'M' }, { size: 'M' }) });
@@ -624,10 +629,13 @@ test('on a variant of a binding, what holds only the move follows upstream\'s wo
 test('on a variant of a binding, a delta that leaves out the work fields keeps the element\'s own, by a move and by new words (W7.2, OVR3)', async () => {
   const { kolab, product, engineer } = await setup();
   await kolab.createNode(product, 'spec', 'The spec', 'spec');
+  // Each package serves R1 (WRK11).
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'It is done.' }) });
+  const serves = (...ids: string[]) => ids.map((id) => ({ kind: 'dependency' as const, sourceElement: id, target: s1, targetElement: 'R1' }));
   await kolab.createNode(engineer, 'binding', 'B', 'b');
-  const v1 = await kolab.commit(engineer, 'b', { elements: [{ id: 'S', text: 'A section' }, { id: 'W1', text: 'One.', parent: 'S', work: { size: 'S' } }, { id: 'W2', text: 'Two.', parent: 'S', work: { size: 'S' } }] });
+  const v1 = await kolab.commit(engineer, 'b', { elements: [{ id: 'S', text: 'A section' }, { id: 'W1', text: 'One.', parent: 'S', work: { size: 'S' } }, { id: 'W2', text: 'Two.', parent: 'S', work: { size: 'S' } }], links: serves('W1', 'W2') });
   await kolab.createNode(engineer, 'binding', 'C', 'c');
-  await kolab.commit(engineer, 'c', { parent: v1, deltas: [{ kind: 'override', element: 'W1', work: { size: 'L' } }] });
+  await kolab.commit(engineer, 'c', { parent: v1, deltas: [{ kind: 'override', element: 'W1', work: { size: 'L' } }], links: serves('W1') });
   const w1 = async () => { const e = (await kolab.elements((await kolab.latestCommitted('c'))!.id)).find((x) => x.element_id === 'W1')!; return [e.parent_element_id, e.text, e.work?.size]; };
   await kolab.commit(engineer, 'c', { deltas: [{ kind: 'override', element: 'W1', parent: null }] });
   expect(await w1()).toStrictEqual([null, 'One.', 'L']);

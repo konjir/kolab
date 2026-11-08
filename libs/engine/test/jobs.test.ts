@@ -371,13 +371,15 @@ test('a job\'s instructions are its kind\'s playbook filled in with its item, an
   expect(b).toMatch(/^You are ann-engineer-1, an engineer agent of ann's, running one job in kolab k of Konjir\. Your job is one item: build the work package kj:p#W1\. Kolab has already pulled it for you/);
   expect(b).toMatch(/\n {2}Do it\.\n {2}Well\.\n\nDone when: its text above is met \(it names no done-when of its own\)\.\n\nHow to do it:\n1\. /);
   expect(b).not.toMatch(/repository https|changes requested|already open/);
-  expect(b).toMatch(/\n3\. .*\n4\. No repository is registered for it, .*\n5\. .*\n\nThen stop\. This job is kj:p#W1 and nothing else/);
+  expect(b).toMatch(/\n4\. .*\n5\. No repository is registered for it, .*\n6\. .*\n\nThen stop\. This job is kj:p#W1 and nothing else/);
+  // A package too big for one job is split, and one a version in review already changes is released, naming it (WRK12).
+  expect(b).toMatch(/\n2\. If konjir_read_work lists a version in in_review, .*konjir_release_work work=kj:p#W1 note="<the version> changes its work and waits in review"\. If it is too big for one job, split it instead of building it \(PLN20\)\. .*give kj:p#W1 a depends_on that names every child.*make it a milestone .*konjir_release_work work=kj:p#W1 note="split in <the version>"\. Then stop/);
   // A package resumed, with a done-when and a repository: the other side of each part.
   const resumed = fillPlaybook('build', { ...brief, done_when: 'It works.', repository: 'https://github.com/a/b', resumed: true });
   expect(resumed).toMatch(/It was returned to you with changes requested/);
   expect(resumed).toMatch(/\n\nDone when: It works\.\n\nIt is done in the repository https:\/\/github\.com\/a\/b: work in a checkout of it\.\n\nHow to do it:\n/);
   expect(resumed).toMatch(/its events, the review note among them\./);
-  expect(resumed).toMatch(/\n3\. .*\(or push to the one already open\)\.\n4\. Deliver and submit it from the checkout: konjir work deliver kj:p#W1 --submit .*\n5\. /);
+  expect(resumed).toMatch(/\n4\. .*\(or push to the one already open\)\.\n5\. Deliver and submit it from the checkout: konjir work deliver kj:p#W1 --submit .*\n6\. /);
   expect(resumed).not.toMatch(/No repository is registered|already pulled it/);
   const r = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p#W1', subject: 'work', author: 'ann-engineer-1' });
   expect(r).toMatch(/check out its pull request/i);
@@ -466,7 +468,7 @@ test('each kind of job item has a playbook, served as written: what done is, its
   expect(playbookText('serve')).toContain('konjir_draft node={{binding}} deltas=[{"kind":"add"');
   expect(playbookText('build')).toContain('konjir_read_work work={{work}}');
   expect(playbookText('build')).toContain('git commit --trailer "{{trailer}}"');
-  expect(playbookText('build')).toMatch(/\{\{#repository\}\}\n4\. Deliver .*\n\{\{\/repository\}\}\n\{\{\^repository\}\}\n4\. No repository/);
+  expect(playbookText('build')).toMatch(/\{\{#repository\}\}\n5\. Deliver .*\n\{\{\/repository\}\}\n\{\{\^repository\}\}\n5\. No repository/);
   expect(playbookText('review')).toContain('konjir_review work={{item}} verdict=approve');
   expect(playbookText('review')).toContain('konjir_read_node node={{node}} version={{seq}}');
 });
@@ -780,7 +782,8 @@ test('takes at once: one person on two machines gets two agents and two items, a
 test('with work in several bindings, a build job pulls from the first, by name, that has a ready package, naming it to the pull (JOB2, D104)', async () => {
   const { kolab, bob, lee } = await planned(1);
   await kolab.createNode(bob, 'binding', 'Orders API', 'orders-api');
-  const v = await kolab.draft(bob, 'orders-api', { elements: [{ id: 'A1', text: 'Build the API.', work: { done_when: 'It answers.' } }] });
+  const v = await kolab.draft(bob, 'orders-api', { elements: [{ id: 'A1', text: 'Build the API.', work: { done_when: 'It answers.' } }],
+    links: [{ kind: 'dependency', sourceElement: 'A1', target: (await kolab.latestCommitted('orders'))!.id, targetElement: 'R1' }] });
   const r = await kolab.submit(bob, v);
   if (r.in_review) expect(await kolab.recordReview(lee, v, { verdict: 'approve' })).toMatchObject({ ok: true });
   // A bare pull with work in two bindings asks which; a job names it.
@@ -1211,7 +1214,7 @@ test('an id the version builds on is kept as it is, a "~" in it too, when a full
   await kolab.db.query(`insert into element(version_id, element_id, ord, text, fingerprint, kolab_id) values ($1, 'old~id', 98, 'An old decision.', 'x', $2)`, [v.id, TEST_KOLAB]);
   const now = await kolab.elements(v.id);
   const full = [...now.map((e) => ({ id: e.element_id, text: e.text, ...(e.element_id === 'W1' ? { work: {} } : {}) })), { id: 'api/v1', text: 'Build the v1 API.', work: {} }];
-  const d = await kolab.draft(bob, 'orders-pg', { elements: full });
+  const d = await kolab.draft(bob, 'orders-pg', { elements: full, links: [{ kind: 'dependency', sourceElement: 'api/v1', target: v.id, targetElement: 'b1' }] });
   await kolab.submit(bob, d);
   expect(await kolab.recordReview(lee, d, { verdict: 'approve' })).toMatchObject({ ok: true });
   // Sent again, whole, with both: accepted.

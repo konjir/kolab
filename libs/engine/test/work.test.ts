@@ -41,9 +41,15 @@ async function reliesOn(ctx: Ctx, from: string, to: string) {
   return { kind: 'dependency' as const, sourceElement: from, target: (await ctx.kolab.latestCommitted('orders-pg'))!.id, targetElement: to };
 }
 
-/** Drafts the binding with its decisions and `elements`, with `links` ([work package, decision]), and submits it: the outcome. */
+/**
+ * Drafts the binding with its decisions and `elements`, with `links` ([work package, decision]), and submits it: the outcome.
+ * A work package that isn't a milestone and that `links` leaves out serves R1 of the spec, so it has something behind it (WRK11).
+ */
 async function submitPlan(ctx: Ctx, elements: ElementInput[], links: [string, string][] = []) {
-  const id = await ctx.kolab.draft(ctx.engineer, 'orders-pg', { elements: [...DECISIONS, ...elements], links: await Promise.all(links.map(([f, t]) => reliesOn(ctx, f, t))) });
+  const linked = new Set(links.map(([f]) => f));
+  const serves = elements.filter((e) => e.work && !e.work.milestone && !linked.has(e.id!))
+    .map((e) => ({ kind: 'dependency' as const, sourceElement: e.id!, target: ctx.s1, targetElement: 'R1' }));
+  const id = await ctx.kolab.draft(ctx.engineer, 'orders-pg', { elements: [...DECISIONS, ...elements], links: [...await Promise.all(links.map(([f, t]) => reliesOn(ctx, f, t))), ...serves] });
   return { id, ...(await ctx.kolab.submit(ctx.engineer, id)) };
 }
 
@@ -114,7 +120,7 @@ test('deltas and full element lists alike keep an element\'s work fields unless 
     { kind: 'override', element: 'W1.10', work: null },
     { kind: 'override', element: 'M1', work: { ...PLAN[4].work, depends_on: ['W1.1', 'W1.2', 'W2.1'] } },
     { kind: 'add', element: 'W2.2', text: 'Track a cancelled order.', work: { depends_on: ['W2.1'] } },
-  ] });
+  ], links: [await reliesOn(ctx, 'W2.2', 'b3')] });
   expect(await work(v2)).toStrictEqual({
     'W1.1': PLAN[0].work, 'W1.2': { done_when: 'Orders leave the queue within a day.', size: 'L' }, 'W1.10': undefined,
     'W2.1': PLAN[3].work, 'M1': { ...PLAN[4].work, depends_on: ['W1.1', 'W1.2', 'W2.1'] }, 'W2.2': { depends_on: ['W2.1'] },
@@ -197,12 +203,31 @@ test('only a milestone carries a target date: a dated work package is refused as
   expect(await draft({ milestone: false, size: 'S' })).toBe("GateError: W1's milestone is false: a milestone says milestone: true, and a work package that isn't one leaves milestone out.");
   // A milestone has no work of its own, so no size (PLN2, PLN3; W5.7); its done-when is its members' exit criterion.
   expect(await draft({ milestone: true, depends_on: ['W0'], size: 'M' })).toBe('GateError: W1 is a milestone, which has no work of its own to size (PLN2, PLN3): size its members, and leave size out.');
-  expect(workProblems([{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'], size: 'S', done_when: 'W0 is done.' } }], []))
+  const serves = [{ source_element_id: 'W0', target: 'orders@1#R1', target_element_id: 'R1', into_spec: true }];
+  expect(workProblems([{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'], size: 'S', done_when: 'W0 is done.' } }], serves))
     .toStrictEqual(['M1 is a milestone, and carries a size: a milestone has no work of its own to size (PLN2, PLN3); its members do']);
   // At submit, only on a milestone the version adds or changes: one carried forward unchanged passes.
   const sized = [{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'], size: 'S' as const } }];
-  expect(workProblems(sized, [], new Set(['W0']))).toStrictEqual([]);
-  expect(workProblems(sized, [], new Set(['M1']))).toHaveLength(1);
+  expect(workProblems(sized, serves, new Set(['W0']))).toStrictEqual([]);
+  expect(workProblems(sized, serves, new Set(['M1']))).toHaveLength(1);
+  // Work has something behind it (WRK11): a dependency link into the spec, or to a decision of its own binding.
+  const nothing = /^W0 has nothing behind it \(WRK11, PLN11\): link it to the spec element it serves or the decision of its binding it relies on .*withdraw it and konjir_ask the binding instead/;
+  const pkg = [{ element_id: 'W0', work: {} }, { element_id: 'b1' }, { element_id: 'W9', work: { size: 'S' as const } }];
+  const w9 = { source_element_id: 'W9', target: 'orders@1#R2', target_element_id: 'R2', into_spec: true };
+  expect(workProblems(pkg, [w9])).toEqual([expect.stringMatching(nothing)]);
+  expect(workProblems(pkg, [w9, ...serves])).toStrictEqual([]);
+  expect(workProblems(pkg, [w9, { source_element_id: 'W0', target: 'orders-pg@1#b1', target_element_id: 'b1', into_self: true }])).toStrictEqual([]);
+  // A link to another binding's element, to a whole node, of another kind, or to a work package isn't something behind it.
+  for (const l of [{ target: 'other-pg@1#b1', target_element_id: 'b1' }, { target: 'orders@1', target_element_id: null, into_spec: true },
+    { target: 'orders@1#R1', target_element_id: 'R1', into_spec: true, kind: 'equivalence' }]) {
+    expect(workProblems(pkg, [w9, { source_element_id: 'W0', ...l }])).toEqual([expect.stringMatching(nothing)]);
+  }
+  expect(workProblems(pkg, [w9, { source_element_id: 'W0', target: 'orders-pg@1#W9', target_element_id: 'W9', into_self: true }]))
+    .toEqual([expect.stringMatching(/W0 links orders-pg@1#W9, which is a work package/), expect.stringMatching(nothing)]);
+  // A milestone needs none; and, as W5.7's checks, only a package the version adds, changes or drops a link from is checked.
+  expect(workProblems([{ element_id: 'W0', work: {} }, { element_id: 'M1', work: { milestone: true, depends_on: ['W0'] } }], serves)).toStrictEqual([]);
+  expect(workProblems(pkg, [w9], undefined, new Set(['W9']))).toStrictEqual([]);
+  expect(workProblems(pkg, [w9], undefined, new Set(['W9', 'W0']))).toEqual([expect.stringMatching(nothing)]);
   // A work field beside the text, not inside work, is refused, not dropped (review M1).
   expect(await rejection(kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'W1', text: 'Build it.', done_when: 'Built.' } as ElementInput] })))
     .toBe('GateError: W1 has done_when beside its text: work fields go inside work, as {"work":{"done_when":…}}.');
@@ -273,11 +298,11 @@ test('a work package serves spec elements and relies on its binding\'s decisions
   expect(await rejection(link({ sourceElement: 'M1' })))
     .toBe('GateError: M1 is a milestone, and a milestone has no work of its own (PLN2, PLN3): link orders-pg@2#b1 from the work package that serves or relies on it, and make the milestone depend on that package');
   expect(await rejection(link({ sourceElement: 'M1', target: s1, targetElement: 'R1' }))).toMatch(/M1 is a milestone, and a milestone has no work of its own/);
-  // The ones that pass: W1 relies on decision b1, and serves R1 of the spec.
+  // The ones that pass: W1 relies on decision b1, and serves R2 of the spec, beside R1, which it served already.
   await link({});
-  await link({ target: s1, targetElement: 'R1' });
+  await link({ target: s1, targetElement: 'R2' });
   expect((await kolab.readWork(engineer, 'kj:orders-pg#W1')).elements.map((e) => [e.address, e.node_kind])).toStrictEqual([
-    ['kj:orders@1#R1', 'spec'], ['kj:orders-pg@2#b1', 'binding'],
+    ['kj:orders@1#R1', 'spec'], ['kj:orders@1#R2', 'spec'], ['kj:orders-pg@2#b1', 'binding'],
   ]);
 });
 
@@ -305,8 +330,9 @@ test('the work checks are Kolab\'s own: a substituted check doesn\'t stand in fo
   await kolab.createNode(product, 'spec', 'Orders', 'orders');
   await kolab.commit(product, 'orders', { elements: els({ R1: 'Orders can be cancelled.' }) });
   await kolab.createNode(engineer, 'binding', 'Orders on Postgres', 'orders-pg');
-  await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.' }) });
-  const id = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'A cancel endpoint.' }, { id: 'W1', text: 'Build it.', work: { depends_on: ['W1'] } }] });
+  const b1 = await kolab.commit(engineer, 'orders-pg', { elements: els({ b1: 'A cancel endpoint.' }) });
+  const id = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'A cancel endpoint.' }, { id: 'W1', text: 'Build it.', work: { depends_on: ['W1'] } }],
+    links: [{ kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1' }] });
   expect(await kolab.submit(engineer, id)).toMatchObject({ ok: false, note: 'Work checks failed (PLN2): W1 depends on itself.' });
 });
 
@@ -334,14 +360,16 @@ test('a link from an element that has become a milestone is refused, whichever c
   const { kolab, engineer } = ctx;
   const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.', work: {} }, { id: 'W2', text: 'Ship it.', work: {} }])).id;
   const milestone: ElementInput[] = [...DECISIONS, { id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.', work: {} }];
+  // Making W1 a milestone drops what it served, which W2 carries.
+  const unlink = [{ sourceElement: 'W1', target: 'kj:orders#R1' }];
   // The link first, on the committed version a draft that makes W1 a milestone is built on: the draft carries it, and is refused.
-  const draft = await kolab.draft(engineer, 'orders-pg', { elements: milestone });
+  const draft = await kolab.draft(engineer, 'orders-pg', { elements: milestone, unlink });
   const link = await kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W1', target: v1, targetElement: 'b1' });
   expect(await kolab.submit(engineer, draft)).toMatchObject({ ok: false, note: expect.stringContaining('W1 is a milestone, and links orders-pg@2#b1') });
   await kolab.abandon(engineer, draft);
   await kolab.db.query(`delete from edge where id = $1`, [link]);
   // The commit first: a link added afterwards to the version it superseded is refused, under the node's lock.
-  await kolab.commit(engineer, 'orders-pg', { elements: milestone });
+  await kolab.commit(engineer, 'orders-pg', { elements: milestone, unlink });
   expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: v1, sourceElement: 'W1', target: (await kolab.latestCommitted('orders-pg'))!.id, targetElement: 'b1' })))
     .toBe('GateError: W1 is a milestone, and a milestone has no work of its own (PLN2, PLN3): link orders-pg@4#b1 from the work package that serves or relies on it, and make the milestone depend on that package');
 });
@@ -377,7 +405,8 @@ test('a ruling that fails PLN2 in its commit step, after a link slipped in, is r
     }
     return r;
   };
-  const r = await kolab.applyRuling('orders-pg', { elements: [...DECISIONS, { id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.', work: {} }] },
+  const r = await kolab.applyRuling('orders-pg', { elements: [...DECISIONS, { id: 'W1', text: 'Build it.', work: { milestone: true, depends_on: ['W2'] } }, { id: 'W2', text: 'Ship it.', work: {} }],
+    unlink: [{ sourceElement: 'W1', target: 'kj:orders#R1' }] },
     { id: 'D98', actor: 'bob', by: ADMIN_DOER });
   expect(calls).toBe(2);
   expect(r).toMatchObject({ ok: false, note: expect.stringContaining('W1 is a milestone, and links orders-pg@2#b1') });
@@ -399,15 +428,59 @@ test('no work package links another, over the whole version: a decision a packag
   const { kolab, engineer } = ctx;
   const v1 = (await submitPlan(ctx, [{ id: 'W1', text: 'Build it.', work: {} }], [['W1', 'b1']])).id;
   // b1, a decision W1 relies on, gains a work field: the link W1 carries is now between two packages.
-  const r = await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', work: {} }] }));
+  // b1, a package now, serves R1 (WRK11).
+  const serves = { kind: 'dependency' as const, sourceElement: 'b1', target: ctx.s1, targetElement: 'R1' };
+  const r = await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', work: {} }], links: [serves] }));
   expect(r).toMatchObject({ ok: false });
   expect(r.note).toBe("Work checks failed (PLN2): W1 links orders-pg@2#b1, which is a work package of this version: work packages don't link to each other (D99); name it in W1's depends_on, and remove the link.");
   await kolab.abandon(engineer, r.version);
   // Removing the link and naming b1 in W1's depends_on instead: it passes.
   expect(await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [
     { kind: 'override', element: 'b1', work: {} }, { kind: 'override', element: 'W1', work: { depends_on: ['b1'] } },
-  ], unlink: [{ sourceElement: 'W1', target: 'kj:orders-pg#b1' }] }))).toMatchObject({ ok: true });
+  ], links: [serves, { ...serves, sourceElement: 'W1' }], unlink: [{ sourceElement: 'W1', target: 'kj:orders-pg#b1' }] }))).toMatchObject({ ok: true });
   void v1;
+});
+
+test('a work package has something behind it: one with no link is refused at submit, naming it; a link to a spec element, or to a decision, commits; dropping its last link is refused (WRK11, PLN11)', async () => {
+  const ctx = await planned();
+  const { kolab, engineer, s1 } = ctx;
+  const nothing = (ids: string) => `${ids} has nothing behind it (WRK11, PLN11): link it to the spec element it serves or the decision of its binding it relies on (konjir_link, a dependency link), or, if there is none, withdraw it and konjir_ask the binding instead: work with nothing behind it is a question to the binding layer`;
+  // No link at all, a `{}` package too: refused, still drafted, naming it; a milestone beside it needs none.
+  const bare = await kolab.draft(engineer, 'orders-pg', { elements: [...DECISIONS, { id: 'W1', text: 'Build it.', work: {} }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
+  expect(await kolab.submit(engineer, bare)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W1')}.` });
+  expect((await kolab.version(bare)).state).toBe('drafted');
+  // A link of another kind, or to a whole node, isn't something behind it.
+  await kolab.link(engineer, { kind: 'equivalence', source: bare, sourceElement: 'W1', target: s1, targetElement: 'R1' });
+  await kolab.link(engineer, { kind: 'dependency', source: bare, sourceElement: 'W1', target: s1 });
+  expect(await kolab.submit(engineer, bare)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W1')}.` });
+  await kolab.abandon(engineer, bare);
+  // Serving a spec element, it commits.
+  const v1 = await kolab.draft(engineer, 'orders-pg', { elements: [...DECISIONS, { id: 'W1', text: 'Build it.', work: {} }],
+    links: [{ kind: 'dependency', sourceElement: 'W1', target: s1, targetElement: 'R1' }] });
+  expect(await kolab.submit(engineer, v1)).toMatchObject({ ok: true });
+  // Relying on a decision of its binding, it commits too.
+  const v2 = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'add', element: 'W2', text: 'Ship it.', work: { size: 'S' } }], links: [await reliesOn(ctx, 'W2', 'b2')] });
+  expect(await kolab.submit(engineer, v2)).toMatchObject({ ok: true });
+  expect((await kolab.readWork(engineer, 'kj:orders-pg#W2')).elements.map((e) => e.address)).toStrictEqual(['kj:orders-pg@4#b2']);
+  // Two at once are named together.
+  const two = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'add', element: 'W3', text: 'Track it.', work: {} }, { kind: 'add', element: 'W4', text: 'Tell people.', work: {} }] });
+  expect(await kolab.submit(engineer, two)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W3, W4').replace('has nothing behind it', 'have nothing behind them').replace('link it to', 'link each to')}.` });
+  await kolab.abandon(engineer, two);
+  // Dropping W1's last link is refused, naming it, though its work is unchanged.
+  const dropped = await kolab.draft(engineer, 'orders-pg', { deltas: [], unlink: [{ sourceElement: 'W1', target: 'kj:orders#R1' }] });
+  expect(await kolab.submit(engineer, dropped)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W1')}.` });
+  await kolab.abandon(engineer, dropped);
+  // Dropping one of two links, so another stays behind it, passes.
+  const kept = await kolab.draft(engineer, 'orders-pg', { deltas: [], links: [await reliesOn(ctx, 'W1', 'b1')] });
+  expect(await kolab.submit(engineer, kept)).toMatchObject({ ok: true });
+  expect(await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [], unlink: [{ sourceElement: 'W1', target: 'kj:orders#R1' }] }))).toMatchObject({ ok: true });
+  // As W5.7's checks: a package committed with nothing behind it (before this check) never stops its binding's next version.
+  await kolab.db.query(`delete from edge where source_element_id = 'W2'`);
+  const next = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W1', text: 'Build it well.' }] });
+  expect(await kolab.submit(engineer, next)).toMatchObject({ ok: true });
+  // But changing its work brings it under the check.
+  const sized = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W2', work: { size: 'M' } }] });
+  expect(await kolab.submit(engineer, sized)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W2')}.` });
 });
 
 test('a test run\'s evidence takes its summary as summary or as title, as konjir_add_evidence says; a commit or pull request takes no summary (WRK5, W5.7)', () => {
