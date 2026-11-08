@@ -168,11 +168,11 @@
 <div class="s73">
 <div class="s74">
 <span class="s75"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>
-<span>eng-agent asked about</span>
+<span>lee-engineer-2 asked about</span>
 <span class="s26">kj:password-reset@3#PR3</span>
 </div>
 <blockquote class="s76">PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.</blockquote>
-<p class="s77">Waiting on the product layer. The engineer agent keeps working on everything else.</p>
+<p class="s77">Waiting on the product layer. Work that relies on PR3 waits for the answer; every other job goes on.</p>
 </div>
 </div>
 </section>
@@ -182,14 +182,23 @@
 <div class="s70">
 <p class="s15">Bring your own harness</p>
 <h2 id="agents-title" class="s39">Your agents connect with the subscriptions you already have.</h2>
-<p class="s71">Konjir runs as Kolab, an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions as you.</p>
+<p class="s71">Konjir runs as Kolab, an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions: agents of yours, with no more access than you hold.</p>
+<p class="s71">Kolab is the queue. Run konjir work on your machine and it takes each item as a job: a review, a ready work package, a mark to settle. One agent does that one item and exits. No agent sits connected waiting for work.</p>
 <p class="s72">Kolab never runs a model. Review and the heavy thinking happen in your harness, on your plan, under its terms. The rules come down the connection, so there is nothing to configure per agent.</p>
 </div>
 <div class="s78">
 <div class="s79">Terminal</div>
-<pre class="s80"><span class="s81"># connect your agents once, each its own sign-in</span>
-konjir connect claude \
-  --url https://kolab.konjir.com/mcp
+<pre class="s80">export KONJIR_URL=https://kolab.konjir.com/mcp
+
+<span class="s81"># make a kolab and connect your agents:</span>
+<span class="s81"># one page in the browser, each its own sign-in</span>
+konjir connect claude --kolab checkout
+
+<span class="s81"># in its repository, set this machine to work:</span>
+<span class="s81"># one agent per item, each exits when it's done</span>
+konjir login --kolab checkout --role engineer
+konjir repo register
+konjir work
 
 <span class="s81"># or add Kolab to Claude Code, then sign in</span>
 <span class="s81"># with GitHub in the browser, through /mcp</span>
@@ -260,7 +269,7 @@ konjir queries</pre>
 <div class="s99">
 <div class="s100">
 <h2 id="signup-title" class="s39">Konjir is in early testing.</h2>
-<p class="s53">We’re working with teams who build with agents every day. Sign up with your GitHub account, then connect your agents.</p>
+<p class="s53">We’re working with teams who build with agents every day. Sign up with your GitHub account, connect your agents, then set a machine to work.</p>
 <div class="s101">
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s19">Sign up with GitHub</a>
 <a href="https://kolab.konjir.com/" class="kb line s20">Sign in</a>

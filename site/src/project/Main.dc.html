@@ -189,11 +189,11 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <div style="flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--question); border-radius: 6px; padding: 20px 22px; background: var(--raised);">
 <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; font-size: 14px; color: var(--ink-muted);">
 <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--question); color: var(--question); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>
-<span>eng-agent asked about</span>
+<span>lee-engineer-2 asked about</span>
 <span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 500; color: var(--secondary);">kj:password-reset@3#PR3</span>
 </div>
 <blockquote style="margin: 0; font-size: 16px; line-height: 26px;">PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.</blockquote>
-<p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted); border-top: 1px solid var(--line); padding-top: 12px;">Waiting on the product layer. The engineer agent keeps working on everything else.</p>
+<p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted); border-top: 1px solid var(--line); padding-top: 12px;">Waiting on the product layer. Work that relies on PR3 waits for the answer; every other job goes on.</p>
 </div>
 </div>
 </section>
@@ -203,14 +203,23 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 18px;">
 <p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Bring your own harness</p>
 <h2 id="agents-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Your agents connect with the subscriptions you already have.</h2>
-<p style="margin: 0; max-width: 32em;">Konjir runs as Kolab, an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions as you.</p>
+<p style="margin: 0; max-width: 32em;">Konjir runs as Kolab, an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions: agents of yours, with no more access than you hold.</p>
+<p style="margin: 0; max-width: 32em;">Kolab is the queue. Run konjir work on your machine and it takes each item as a job: a review, a ready work package, a mark to settle. One agent does that one item and exits. No agent sits connected waiting for work.</p>
 <p style="margin: 0; color: var(--ink-muted); max-width: 32em;">Kolab never runs a model. Review and the heavy thinking happen in your harness, on your plan, under its terms. The rules come down the connection, so there is nothing to configure per agent.</p>
 </div>
 <div style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
 <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
-<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># connect your agents once, each its own sign-in</span>
-konjir connect claude \
-  --url https://kolab.konjir.com/mcp
+<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;">export KONJIR_URL=https://kolab.konjir.com/mcp
+
+<span style="color: var(--secondary);"># make a kolab and connect your agents:</span>
+<span style="color: var(--secondary);"># one page in the browser, each its own sign-in</span>
+konjir connect claude --kolab checkout
+
+<span style="color: var(--secondary);"># in its repository, set this machine to work:</span>
+<span style="color: var(--secondary);"># one agent per item, each exits when it's done</span>
+konjir login --kolab checkout --role engineer
+konjir repo register
+konjir work
 
 <span style="color: var(--secondary);"># or add Kolab to Claude Code, then sign in</span>
 <span style="color: var(--secondary);"># with GitHub in the browser, through /mcp</span>
@@ -281,7 +290,7 @@ konjir queries</pre>
 <div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px; align-items: stretch;">
 <div style="flex: 1 1 440px; min-width: 0; display: flex; flex-direction: column; gap: 18px; justify-content: center;">
 <h2 id="signup-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Konjir is in early testing.</h2>
-<p style="margin: 0; color: var(--ink-muted); max-width: 30em;">We’re working with teams who build with agents every day. Sign up with your GitHub account, then connect your agents.</p>
+<p style="margin: 0; color: var(--ink-muted); max-width: 30em;">We’re working with teams who build with agents every day. Sign up with your GitHub account, connect your agents, then set a machine to work.</p>
 <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px;">
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
 <a href="https://kolab.konjir.com/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">Sign in</a>
