@@ -693,20 +693,43 @@ Publishing runs only in GitHub Actions, by hand: **Actions › Release CLI › R
 
 1. **Build konjir release** (read-only) sets the version in the runner and commits nothing. It refuses a version that already has a tag or is on npm. It builds the tarball and the binaries, checks both against a Kolab it starts from the checkout, runs `npm publish --dry-run`, and uploads the files with `SHA256SUMS`. A dry run stops here.
 2. **Draft GitHub release** attests the files' build provenance (`gh attestation verify <file> --repo konjir/kolab` checks a download). It creates the release `konjir@<version>` as a draft, with the files and notes generated from the merged pull requests.
-3. **Publish konjir to npm** runs in the `npm-release` environment, with no checkout and no dependencies. It publishes the tested tarball, with provenance, through npm 11.
+3. **Publish konjir to npm** runs in the `npm-release` environment, with no checkout and no dependencies. It publishes the tested tarball, with provenance, through npm 11 and trusted publishing alone: there is no npm token, and konjir accepts none. It logs npm at verbose level, so a failed token exchange says why.
 4. **Publish GitHub release** takes the draft out of draft. That creates the tag on the built commit, and the next release reads its version from that tag.
 
-Before the first release, Lee sets up:
+Lee sets up, once:
 
-- **A GitHub environment** named `npm-release` (Settings › Environments), with deployment branches limited to `main`, and a required reviewer if wanted. A copy of the workflow on another branch then can't reach the npm credentials.
-- **npm trusted publishing**, preferred. On npmjs.com, konjir's settings › Trusted publishing › GitHub Actions: repository `konjir/kolab`, workflow `release-cli.yml`, environment `npm-release`. No secret is needed. A package must exist before trusted publishing can be configured on npm, so the first publish may need the fallback.
-- **Or the fallback:** an `NPM_TOKEN` secret in the `npm-release` environment, a granular npm token with write access to `konjir`. npm caps such tokens at 90 days, so it needs rotating.
+- **A GitHub environment** named `npm-release` (Settings › Environments), with deployment branches limited to `main`, and a required reviewer if wanted. A copy of the workflow on another branch then can't publish, because konjir trusts the workflow only in that environment.
+- **npm trusted publishing**, from his machine, in an interactive terminal:
+
+  ```
+  npm login
+  npm run release:trust                  # pass -- --dry-run to see what it would do, changing nothing
+  ```
+
+  `release:trust` runs `tools/npm-trust.sh`. It makes konjir trust `release-cli.yml` in `konjir/kolab`, run in the `npm-release` environment (`npm trust github … --allow-publish`), unless konjir trusts it already. It then sets konjir to "Require two-factor authentication and disallow tokens" (`npm access set mfa=publish`), so a leaked npm token can't publish it; trusted publishing still works. Finally it lists who can publish konjir, and Lee's npm tokens, for him to review: revoke any no longer needed with `npm token revoke <id>`, and delete any `NPM_TOKEN` secret left in the `npm-release` environment, which nothing reads now. Every npm call needs a one-time password, so the script asks for a code from his authenticator app and reuses it until npm rejects it: expect a new code about every 30 seconds, not one per call. It refuses to run without a terminal or an npm login.
+
+New trust starts out "Pending validation" and expires unless a publish uses it within about 48 hours, so release soon after adding it. `npm trust list` doesn't show that trust expired; konjir's settings page on npmjs.com does. Expired trust makes *Publish konjir to npm* fail with `OIDC token exchange error - package not found` (visible because the job logs npm at verbose level) and then `404 Not Found - PUT`. To replace it, run `npm run release:trust -- --renew`, then release, or re-run the failed job, within the 48 hours.
 
 If a run fails, what to do depends on how far it got. Before *Publish konjir to npm*, nothing is published: delete the draft release if there is one (`gh release delete konjir@<version>`), then run again. If npm has the version but *Publish GitHub release* failed, re-run that job, or run `gh release edit konjir@<version> --draft=false`. A new run for a version npm already has stops in its first job.
 
 A release doesn't change what the test server's web page shows: bump `cli_npm_spec` and deploy (see *Deploying to AWS*).
 
 The published CLI is licensed under the Apache License 2.0 (D63): `apps/cli/package.json` and the published `package.json` declare `Apache-2.0`, and `apps/cli/LICENSE` holds the full licence text. `package.mjs` copies `LICENSE` into the npm package, beside `THIRD-PARTY-NOTICES.md`, and beside the binaries, so the release carries both too. `package.mjs` refuses to build if `apps/cli/package.json` declares any other licence, and `apps/cli/scripts/check-licence.sh`, which both workflows run on the packed tarball and the binaries, fails if `LICENSE` or the notices are missing or the tarball declares anything else. The bundled packages are Apache-2.0 (the MCP SDK, with its MIT-licensed earlier contributions) and MIT (eventsource-parser, pkce-challenge, zod), all of which allow redistribution under Apache-2.0 with their notices. The rest of the repository is FSL-1.1-ALv2 (see *Licence*), so konjir must carry none of it: `package.mjs` fails the build if the bundle inlines any first-party source outside `apps/cli/src` and `libs/login/src`, if either package stops declaring `Apache-2.0`, or if any bundled package is FSL-licensed, and `check-licence.sh` fails if the notices name a `@konjir/*` package or an FSL licence, or if `libs/login` lacks `apps/cli`'s `LICENSE`.
+
+### Checking a download
+
+Anyone can check that a konjir they downloaded was built and published by this repository's release workflow:
+
+```
+# The npm package: in a project that installed it (npm i konjir@<version>), checks the registry's
+# signature and provenance attestation of every installed package, konjir among them.
+npm audit signatures
+
+# A binary, or any other file of a GitHub release: checks its build provenance attestation.
+gh attestation verify konjir-darwin-arm64 --repo konjir/kolab
+```
+
+`npm audit signatures` counts konjir among the packages with verified attestations, and fails if a signature or attestation doesn't verify. `gh attestation verify` succeeds only for a file the *Draft GitHub release* job attested, and names the workflow and commit that built it. The release's `SHA256SUMS` only checks a file against the list beside it, so it proves less than the attestation.
 
 ## Who pays for which model calls
 
