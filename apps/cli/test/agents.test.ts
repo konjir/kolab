@@ -285,6 +285,18 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
   });
   expect(await call(alice, 'read_node', { node: 'checkout' })).toMatchObject({ node: 'checkout', elements: [{ address: 'kj:checkout@1#R1' }] });
 
+  // Renamed, as Kolab's trusted role may (DAT22): its old name still finds it, and the answer names it as it is now.
+  await server.kolab.db.transaction(async (tx) => {
+    await tx.exec('set local role kj_system');
+    await tx.query(`insert into node_name(kolab_id, name, node_id) select kolab_id, 'invoicing', id from node where kolab_id = 'billing' and name = 'checkout'`);
+    await tx.query(`update node set name = 'invoicing' where kolab_id = 'billing' and name = 'checkout'`);
+  });
+  expect(await call(alice, 'resolve', { address: 'kj:billing/checkout@1#R1' })).toStrictEqual({
+    address: 'kj:billing/checkout@1#R1', node: 'invoicing', status: 'ok', version: 1, content: 'Invoices are sent monthly.' });
+  expect(await call(alice, 'resolve', { address: 'kj:billing/invoicing@1#R1' })).not.toHaveProperty('node');
+  expect(await call(alice, 'read_node', { node: 'billing/checkout' })).toMatchObject({ node: 'billing/invoicing', elements: [{ address: 'kj:billing/invoicing@2#R1' }] });
+  expect(await call(bob, 'read_node', { node: 'checkout' })).toMatchObject({ node: 'invoicing', version: 2 });
+
   // A link and a fork may cross into a kolab alice reads (LNK8, KON9); a question, and drafting there, may not.
   await call(alice, 'draft', { node: 'checkout', elements: [{ id: 'R1', text: 'Orders ship within a day.' }, { id: 'R2', text: 'Invoices follow billing.' }] });
   expect(await call(alice, 'link', { kind: 'dependency', source: 'kj:checkout@2#R2', target: 'kj:billing/checkout#R1' })).toMatchObject({ edge: expect.any(String) });

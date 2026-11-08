@@ -107,6 +107,10 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger node_named on node;
+      drop function kj_node_named();
+      drop table node_name;
+      drop function kj_node_name_kept();
       drop trigger work_approved on work_package;
       drop function kj_work_approved();
       alter table work_package drop column approved;

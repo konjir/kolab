@@ -61,7 +61,7 @@ const listQueries = args({
 const createNode = args({
   kind: z.enum(KINDS, { error: (iss) => notAKind(iss.input) }).describe('spec: the kolab\'s one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. binding: how the spec is built on one stack, its decisions and its work packages (elements with a work field); it names the spec. plan is retired (D104): work is planned in the binding, and no plan is made'),
   title: z.string(),
-  id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID. Set once: no verb renames a node.'),
+  id: z.string().regex(/^[A-Za-z0-9_-]+$/).optional().describe('Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID. Set once: no verb renames a node. A name another node of your kolab has had is refused, since its old addresses still find that node.'),
   parent: z.string().optional().describe('The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab\'s one spec). A spec and a prototype take none.'),
 }, {
   name: 'A node\'s name is its id (id=checkout), given when it is made: no verb renames a node, and a kolab holds one spec, so name it in this call',
@@ -276,7 +276,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_resolve',
-    description: 'Resolve an address to its current content: kj:<node>… in your kolab, or kj:<kolab>/<node>… in any kolab you can read. Use this instead of caching spec text. Status is ok, fuzzy or orphan. For a quoted span: ok means the exact words, with the prefix or suffix you quoted still around them (or no prefix or suffix was quoted). fuzzy means the span changed: either its wording was edited, or the exact words now appear only without their quoted context, such as a copy in another statement. Both kinds of fuzzy mark whatever links to the span (fuzzy_reanchor). orphan means it is gone.',
+    description: 'Resolve an address to its current content: kj:<node>… in your kolab, or kj:<kolab>/<node>… in any kolab you can read. A name a node had before still finds it, and node gives its name now. Use this instead of caching spec text. Status is ok, fuzzy or orphan. For a quoted span: ok means the exact words, with the prefix or suffix you quoted still around them (or no prefix or suffix was quoted). fuzzy means the span changed: either its wording was edited, or the exact words now appear only without their quoted context, such as a copy in another statement. Both kinds of fuzzy mark whatever links to the span (fuzzy_reanchor). orphan means it is gone.',
     schema: resolve,
     annotations: { readOnlyHint: true },
   })
@@ -284,7 +284,10 @@ export class AgentTools {
     return asAgent(context, async (s) => {
       const r = await this.kolab.resolve(a, { session: s });
       const v = r.versionId ? await this.kolab.version(r.versionId) : undefined;
-      return { address: a, status: r.status, version: v?.seq ?? null, content: 'content' in r ? r.content : null };
+      // An address by a name the node had before still finds it (DAT22), and says what it is called now.
+      const now = v ? (await this.kolab.node(v.node_id)).name : undefined;
+      return { address: a, ...(now !== undefined && now !== parseAddress(a).node ? { node: now } : {}),
+        status: r.status, version: v?.seq ?? null, content: 'content' in r ? r.content : null };
     });
   }
 

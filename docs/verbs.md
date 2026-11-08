@@ -561,7 +561,7 @@ Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and pr
 | --- | --- | --- | --- |
 | `kind` | `spec\|prototype\|binding\|plan` | yes | spec: the kolab's one spec (a kolab holds exactly one). prototype: a working representation of the spec, its elements the screens or states, each linked by equivalence to the requirements it shows. binding: how the spec is built on one stack, its decisions and its work packages (elements with a work field); it names the spec. plan is retired (D104): work is planned in the binding, and no plan is made |
 | `title` | `string` | yes |  |
-| `id` | `string` | no | Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID. Set once: no verb renames a node. |
+| `id` | `string` | no | Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID. Set once: no verb renames a node. A name another node of your kolab has had is refused, since its old addresses still find that node. |
 | `parent` | `string` | no | The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab's one spec). A spec and a prototype take none. |
 
 ## draft
@@ -991,7 +991,7 @@ Open new work on a Done work package, kj:<binding>#<id>, from an engineer sessio
 konjir resolve address=<string>
 ```
 
-Resolve an address to its current content: kj:<node>… in your kolab, or kj:<kolab>/<node>… in any kolab you can read. Use this instead of caching spec text. Status is ok, fuzzy or orphan. For a quoted span: ok means the exact words, with the prefix or suffix you quoted still around them (or no prefix or suffix was quoted). fuzzy means the span changed: either its wording was edited, or the exact words now appear only without their quoted context, such as a copy in another statement. Both kinds of fuzzy mark whatever links to the span (fuzzy_reanchor). orphan means it is gone.
+Resolve an address to its current content: kj:<node>… in your kolab, or kj:<kolab>/<node>… in any kolab you can read. A name a node had before still finds it, and node gives its name now. Use this instead of caching spec text. Status is ok, fuzzy or orphan. For a quoted span: ok means the exact words, with the prefix or suffix you quoted still around them (or no prefix or suffix was quoted). fuzzy means the span changed: either its wording was edited, or the exact words now appear only without their quoted context, such as a copy in another statement. Both kinds of fuzzy mark whatever links to the span (fuzzy_reanchor). orphan means it is gone.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
