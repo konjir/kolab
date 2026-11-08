@@ -429,13 +429,16 @@ export async function main(argv: string[]) {
     // Ctrl-C is claude's to handle, and a SIGTERM or SIGHUP sent to konjir is passed on to it:
     // konjir waits for it to exit, rather than leaving it behind on the terminal.
     let child: ReturnType<typeof spawn> | undefined;
-    const pass = (sig: NodeJS.Signals) => () => { if (sig !== 'SIGINT') child?.kill(sig); };
+    let early: NodeJS.Signals | undefined;
+    const pass = (sig: NodeJS.Signals) => () => { if (sig !== 'SIGINT') { if (child) child.kill(sig); else early = sig; } };
     const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) => [sig, pass(sig)] as const);
     for (const [sig, h] of handlers) process.on(sig, h);
     try {
       process.exitCode = await startClaude(label, args, { cwd: process.cwd(), env: process.env }, {
         warn: (l) => console.error(l), ignored: gitIgnored,
         run: (cmd, a, o) => new Promise((resolve) => {
+          // One that came before claude started ends konjir instead.
+          if (early) { resolve(128 + (osConstants.signals[early] ?? 0)); return; }
           child = spawn(cmd, a, { cwd: o.cwd, stdio: 'inherit' });
           child.on('error', () => resolve(-1));
           child.on('exit', (code, signal) => resolve(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : -1)));
