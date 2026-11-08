@@ -39,10 +39,10 @@
  * stopped, which gives back what it held. A job never merges or deploys; main's branch protection
  * (D89) is what guarantees it, and the denials here only keep a job from trying.
  */
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, chmodSync, closeSync, constants, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { accessSync, chmodSync, closeSync, constants, createWriteStream, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { canonicalRemote, checkoutRepository, type Call, type Git } from './deliver.js';
 import { credentialsPath } from './login.js';
@@ -256,10 +256,67 @@ export function writeKonjirShim(dir: string, command: string[] = konjirCommand()
   return path;
 }
 
-/** Removes a job's konjir and its directory (writeKonjirShim), whose modes forbid writing. */
-export function removeKonjirShim(dir: string) {
-  try { chmodSync(dir, 0o700); } catch { /* already gone */ }
-  rmSync(dir, { recursive: true, force: true });
+/** `path`'s own lstat, never a link's target's, or undefined when nothing is there. */
+function lstatOf(path: string) {
+  try { return lstatSync(path); } catch { return undefined; }
+}
+
+/** Whether `path` is a directory itself, not a link to one, whose real path is `real`. */
+function realDir(path: string, real: string) {
+  const st = lstatOf(path);
+  if (!st?.isDirectory() || st.isSymbolicLink()) return false;
+  try { return realpathSync(path) === real; } catch { return false; }
+}
+
+/**
+ * Removes `name` from `dir`, a directory itself whose real path is `real` (W7.12): never through a
+ * link. A link, or anything whose real path isn't directly inside `real`, is left as it is, and
+ * said. A directory of this user's has its modes restored first (writeKonjirShim's 500), through a
+ * descriptor opened without following a link, and is then removed with what is in it, rmSync
+ * following no link inside. Returns whether it is gone.
+ */
+function removeIn(dir: string, real: string, name: string, log: (line: string) => void): boolean {
+  const path = join(dir, name);
+  const st = lstatOf(path);
+  if (!st) return true;
+  const leave = (why: string) => { log(`konjir work: left ${path}: ${why}`); return false; };
+  if (st.isSymbolicLink()) return leave('it is a link, which konjir work never follows');
+  let at: string;
+  try { at = realpathSync(path); } catch (e) { return leave((e as Error).message); }
+  if (at !== join(real, name)) return leave(`it is ${at}, outside ${real}`);
+  if (st.isDirectory()) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+      const own = fstatSync(fd);
+      if (!own.isDirectory() || own.ino !== st.ino || own.dev !== st.dev) return leave('it changed as konjir work looked at it');
+      if (own.uid !== process.getuid?.()) return leave('it is another user\'s');
+      fchmodSync(fd, 0o700);
+    } catch (e) {
+      return leave((e as Error).message);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  }
+  try { rmSync(path, { recursive: true, force: true }); } catch (e) { return leave((e as Error).message); }
+  return true;
+}
+
+/**
+ * Removes a job's konjir and its directory (writeKonjirShim), whose modes forbid writing, as
+ * removeIn does: only when it and the directory it is in are directories themselves, never links.
+ */
+export function removeKonjirShim(dir: string, log: (line: string) => void = () => {}) {
+  removeFile(dir, log);
+}
+
+/** Removes `path` as removeIn does, when the directory it is in is a directory itself, not a link. */
+function removeFile(path: string, log: (line: string) => void) {
+  const parent = dirname(path);
+  let real: string;
+  try { real = realpathSync(parent); } catch { return; }
+  if (!realDir(parent, real)) { log(`konjir work: left ${path}: ${parent} isn't a directory itself`); return; }
+  removeIn(parent, real, basename(path), log);
 }
 
 /** Whether process `pid` runs on this machine: one of another user's (EPERM) counts, as it may be a runner. */
@@ -267,29 +324,84 @@ function running(pid: number) {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
 }
 
+/** This machine, as a job's marker names it: its hostname and the id of this boot of it ('' when unknown). */
+export interface Machine { host: string; boot: string }
+
+let thisBoot: string | undefined;
+/** This machine (Machine): its boot from the kernel's boot id, Linux's or macOS's. */
+export function thisMachine(): Machine {
+  if (thisBoot === undefined) {
+    thisBoot = '';
+    try {
+      thisBoot = process.platform === 'darwin'
+        ? execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim()
+        : readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    } catch { /* unknown */ }
+  }
+  return { host: hostname(), boot: thisBoot };
+}
+
+/** A job's marker (sweepJobs): the process that runs it, and the machine and boot it runs on. */
+export const markerText = (pid: number, machine: Machine = thisMachine()) => `${pid}\n${machine.host}\n${machine.boot}\n`;
+
+const SWEPT = ['.bin', '.mcp', '.live'] as const;
+
 /**
  * Sweeps what killed runners left in `jobsDir` (W7.12): each job's konjir (.bin/<job>, its modes
  * restored first, as removeKonjirShim does), its MCP config's FIFO (.mcp/<job>.json) and its marker
- * (.live/<job>). A runner writes a job's marker, naming its own process, before anything else of the
- * job and removes it last, so a job whose marker names a process still running on this machine is
- * another runner's, still live, and is left alone; this runner's own pid, before it has taken
- * anything, is one an earlier runner had. Returns the jobs swept.
+ * (.live/<job>). A runner writes a job's marker (markerText), naming its own process, machine and
+ * boot, before anything else of the job and removes it last. A job is left alone while it may be
+ * live: its marker names another machine (a container or a home shared with this one, whose
+ * processes this one can't see), or this boot of this one and a process still running on it other
+ * than this runner, which before it has taken anything has a pid an earlier runner had. Nothing is
+ * followed through a link: .bin, .mcp or .live when one isn't a directory itself is left with what
+ * is in it, and an entry that is a link, or whose real path isn't directly in it, is left (removeIn).
+ * Returns the jobs swept.
  */
-export function sweepJobs(jobsDir: string, alive: (pid: number) => boolean = running): string[] {
-  const list = (d: string) => { try { return readdirSync(d); } catch { return []; } };
-  const markers = join(jobsDir, '.live');
-  const runner = (job: string) => {
-    try { return Number.parseInt(readFileSync(join(markers, job), 'utf8'), 10); } catch { return NaN; }
+export function sweepJobs(jobsDir: string, opts: { alive?: (pid: number) => boolean; machine?: Machine; log?: (line: string) => void } = {}): string[] {
+  const alive = opts.alive ?? running;
+  const log = opts.log ?? (() => {});
+  let real: string;
+  try { real = realpathSync(jobsDir); } catch { return []; }
+  if (!realDir(jobsDir, real)) { log(`konjir work: left ${jobsDir} as it is: it isn't a directory itself`); return []; }
+  const dirs = new Map<string, string>();
+  for (const sub of SWEPT) {
+    const path = join(jobsDir, sub);
+    const st = lstatOf(path);
+    if (!st) continue;
+    if (!realDir(path, join(real, sub))) { log(`konjir work: left ${path} as it is: it isn't a directory itself, which konjir work never follows`); continue; }
+    dirs.set(sub, path);
+  }
+  const list = (sub: string) => { const d = dirs.get(sub); if (!d) return []; try { return readdirSync(d); } catch { return []; } };
+  const machine = opts.machine ?? thisMachine();
+  const live = (job: string) => {
+    const markers = dirs.get('.live');
+    if (!markers) return false;
+    const path = join(markers, job);
+    // Only a file is read: a FIFO would never answer, and a link is never followed.
+    if (!lstatOf(path)?.isFile()) return false;
+    let text: string;
+    try {
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try { text = fstatSync(fd).isFile() ? readFileSync(fd, 'utf8') : ''; } finally { closeSync(fd); }
+    } catch { return false; }
+    const [pidLine, host = '', boot = ''] = text.split('\n');
+    const pid = /^\d+$/.test(pidLine ?? '') ? Number(pidLine) : NaN;
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+    if (host !== machine.host) return true;
+    if (boot && machine.boot && boot !== machine.boot) return false;
+    return pid !== process.pid && alive(pid);
   };
-  const live = (job: string) => { const pid = runner(job); return Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid); };
-  const jobs = new Set([...list(join(jobsDir, '.bin')), ...list(markers), ...list(join(jobsDir, '.mcp')).map((n) => n.replace(/\.json$/, ''))]);
+  const jobs = new Set([...list('.bin'), ...list('.live'), ...list('.mcp').map((n) => n.replace(/\.json$/, ''))]);
   const swept: string[] = [];
   for (const job of [...jobs].sort()) {
     if (!JOB_ID.test(job) || live(job)) continue;
-    removeKonjirShim(join(jobsDir, '.bin', job));
-    rmSync(join(jobsDir, '.mcp', `${job}.json`), { force: true });
-    rmSync(join(markers, job), { force: true });
-    swept.push(job);
+    let gone = true;
+    for (const [sub, name] of [['.bin', job], ['.mcp', `${job}.json`], ['.live', job]] as const) {
+      const d = dirs.get(sub);
+      if (d && !removeIn(d, join(real, sub), name, log)) gone = false;
+    }
+    if (gone) swept.push(job);
   }
   return swept;
 }
@@ -477,6 +589,12 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   if (!machine) throw new Error('--machine names this machine');
   const harness = opts.harness ?? env.KONJIR_HARNESS;
 
+  const jobsDir = deps.jobsDir ?? join(homedir(), '.konjir', 'jobs');
+  mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
+  // What a killed runner left, first, as it needs no Kolab: jobs another runner here still runs are kept (W7.12).
+  const swept = sweepJobs(jobsDir, { log });
+  if (swept.length) log(`konjir work: swept what ${swept.length === 1 ? 'a job' : `${swept.length} jobs`} no runner here still runs left in ${jobsDir} (${swept.join(', ')})`);
+
   const me = await deps.call('whoami', {}) as { kind: string; actor: string; kolab: string };
   if (me.kind !== 'person') {
     throw new Error(`this session is ${clean(me.actor)}, an agent: konjir work runs as a person, who sets their machine to work and whose pool agents do the jobs (D103). `
@@ -484,11 +602,6 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   }
   const { checkout, repo } = await checkoutRepository(deps.call, deps.git, opts.repo);
   const remote = remoteOf(deps.git, checkout, repo.url);
-  const jobsDir = deps.jobsDir ?? join(homedir(), '.konjir', 'jobs');
-  mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
-  // What a killed runner left: jobs another runner here still runs are kept (W7.12).
-  const swept = sweepJobs(jobsDir);
-  if (swept.length) log(`konjir work: swept what ${swept.length === 1 ? 'a job' : `${swept.length} jobs`} no runner here still runs left in ${jobsDir} (${swept.join(', ')})`);
 
   // Git that changes the checkout (fetch, worktree add and remove) runs one call at a time.
   let turn: Promise<unknown> = Promise.resolve();
@@ -664,7 +777,10 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         // Its marker, first: the job is this runner's, which another runner starting here leaves alone (sweepJobs, W7.12).
         mkdirSync(join(jobsDir, '.live'), { recursive: true, mode: 0o700 });
         marker = join(jobsDir, '.live', taken.job);
-        writeFileSync(marker, `${process.pid}\n`, { mode: 0o600 });
+        {
+          const fd = openSync(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+          try { writeSync(fd, markerText(process.pid)); } finally { closeSync(fd); }
+        }
         // The MCP config, with the job's token, goes through a FIFO of its own, read once (feedOnce).
         const fifos = join(jobsDir, '.mcp');
         mkdirSync(fifos, { recursive: true, mode: 0o700 });
@@ -718,9 +834,9 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         report.ledger = await end(l, report.outcome, `konjir work couldn't start it: ${msg}`);
         log(`job ${clean(taken.job)}: couldn't start it: ${msg}`);
       }
-      if (bin) removeKonjirShim(bin);
-      if (mcpConfig) rmSync(mcpConfig, { force: true });
-      if (marker) rmSync(marker, { force: true });
+      if (bin) removeKonjirShim(bin, log);
+      if (mcpConfig) removeFile(mcpConfig, log);
+      if (marker) removeFile(marker, log);
       const kept = report.worktree ? await tidy(report.worktree) : undefined;
       if (kept) report.kept = kept;
       if (report.ledger === undefined) delete report.ledger;

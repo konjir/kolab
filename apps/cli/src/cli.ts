@@ -51,7 +51,7 @@ import { importKolab } from './import.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, releaseDelivered, taggedCommits, type Git } from './deliver.js';
-export { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, guardSettings, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, runWork, workStatus, removeKonjirShim, sweepJobs, writeKonjirShim, type JobReport, type TakenJob } from './work.js';
+export { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, guardSettings, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, markerText, runWork, workStatus, removeKonjirShim, sweepJobs, thisMachine, writeKonjirShim, type JobReport, type Machine, type TakenJob } from './work.js';
 export { guardHook, lineDenial, simpleCommands } from './guard.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 

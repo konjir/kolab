@@ -12,10 +12,10 @@
 // falls back to a sign-in kept on the machine.
 import { afterEach, expect, jest, test } from '@jest/globals';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALLOWED_TOOLS, Redactor, workOptions, removeKonjirShim, guardSettings, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, runWork, sweepJobs, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
+import { ALLOWED_TOOLS, Redactor, workOptions, removeKonjirShim, guardSettings, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, markerText, runWork, sweepJobs, thisMachine, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
 import { startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 
@@ -475,7 +475,7 @@ test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on
       writeKonjirShim(join(jobs, '.bin', job), ['/usr/bin/node', '/opt/konjir/main.js']);
       mkdirSync(join(jobs, '.mcp'), { recursive: true });
       execFileSync('mkfifo', ['-m', '600', join(jobs, '.mcp', `${job}.json`)]);
-      if (pid !== undefined) { mkdirSync(join(jobs, '.live'), { recursive: true }); writeFileSync(join(jobs, '.live', job), `${pid}\n`); }
+      if (pid !== undefined) { mkdirSync(join(jobs, '.live'), { recursive: true }); writeFileSync(join(jobs, '.live', job), markerText(pid)); }
     };
     const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' });
     leave('JDEAD', Number(dead.stdout.trim()));
@@ -490,7 +490,8 @@ test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on
     expect(spawnSync('rm', ['-rf', join(jobs, '.bin', 'JDEAD')]).status).not.toBe(0);
     expect(existsSync(join(jobs, '.bin', 'JDEAD', 'konjir'))).toBe(true);
 
-    expect(sweepJobs(jobs, (pid) => pid === other.pid)).toEqual(['JDEAD', 'JFIFO', 'JMARK', 'JNONE', 'JSELF']);
+    // This runner's own pid is one an earlier runner had (a reboot, a container), though it is running.
+    expect(sweepJobs(jobs, { alive: (pid) => pid === other.pid || pid === process.pid })).toEqual(['JDEAD', 'JFIFO', 'JMARK', 'JNONE', 'JSELF']);
     expect(readdirSync(join(jobs, '.bin'))).toEqual(['JLIVE']);
     expect(readdirSync(join(jobs, '.mcp'))).toEqual(['JLIVE.json']);
     expect(readdirSync(join(jobs, '.live')).sort()).toEqual(['.hidden', 'JLIVE']);
@@ -509,6 +510,107 @@ test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on
   } finally {
     other.kill('SIGKILL');
   }
+});
+
+// Everything outside a jobs directory a sweep might be pointed at through a link: its files and modes, to compare after.
+const snapshot = (dir: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  const walk = (d: string) => {
+    for (const n of readdirSync(d).sort()) {
+      const p = join(d, n);
+      const st = lstatSync(p);
+      out[p] = `${(st.mode & 0o7777).toString(8)} ${st.isDirectory() ? 'dir' : st.isFile() ? readFileSync(p, 'utf8') : 'other'}`;
+      if (st.isDirectory()) walk(p);
+    }
+  };
+  walk(dir);
+  return out;
+};
+
+test('sweepJobs and removeKonjirShim never follow a link: .bin, .mcp or .live that is one, or an entry in them that is one, is left, and what it points to keeps its files and modes (W7.12)', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-links-')));
+  // Outside the jobs directory: what a job's agent might point a link at, as it might at a home directory.
+  const outside = join(root, 'outside');
+  const fill = (d: string, mode = 0o700) => {
+    mkdirSync(join(d, 'JOUT'), { recursive: true });
+    writeFileSync(join(d, 'JOUT', 'keep'), 'kept\n');
+    writeFileSync(join(d, 'JOUT.json'), '{"kept":true}\n');
+    writeFileSync(join(d, 'JFILE'), 'kept\n');
+    chmodSync(join(d, 'JOUT'), 0o500);
+    chmodSync(d, mode);
+  };
+  for (const d of ['bin', 'mcp', 'live', 'entry']) fill(join(outside, d));
+  fill(join(outside, 'r500'), 0o500);
+  writeFileSync(join(outside, 'file'), 'kept\n');
+  const before = snapshot(outside);
+  const logged: string[] = [];
+  const log = (l: string) => { logged.push(l); };
+  try {
+    // .bin, .mcp and .live, each a link to a directory outside.
+    const a = join(root, 'a', 'jobs');
+    mkdirSync(a, { recursive: true });
+    symlinkSync(join(outside, 'bin'), join(a, '.bin'));
+    symlinkSync(join(outside, 'mcp'), join(a, '.mcp'));
+    symlinkSync(join(outside, 'live'), join(a, '.live'));
+    expect(sweepJobs(a, { log })).toEqual([]);
+    expect(logged.filter((l) => l.includes('isn\'t a directory itself'))).toHaveLength(3);
+
+    // .bin, .mcp and .live directories themselves, with entries that are links: to a directory of mode 500, a directory, a file.
+    const b = join(root, 'b', 'jobs');
+    for (const d of ['.bin', '.mcp', '.live']) mkdirSync(join(b, d), { recursive: true });
+    symlinkSync(join(outside, 'r500'), join(b, '.bin', 'JLINK'));
+    symlinkSync(join(outside, 'entry'), join(b, '.bin', 'JDIR'));
+    symlinkSync(join(outside, 'file'), join(b, '.mcp', 'JLINK.json'));
+    symlinkSync(join(outside, 'file'), join(b, '.live', 'JDIR'));
+    // And a job of its own, which goes.
+    writeKonjirShim(join(b, '.bin', 'JOWN'), ['/usr/bin/node']);
+    expect(sweepJobs(b, { log })).toEqual(['JOWN']);
+    expect(readdirSync(join(b, '.bin')).sort()).toEqual(['JDIR', 'JLINK']);
+    expect(lstatSync(join(b, '.bin', 'JLINK')).isSymbolicLink()).toBe(true);
+    expect(statSync(join(outside, 'r500')).mode & 0o777).toBe(0o500);
+
+    // At a job's end: its konjir's directory a link, or the directory it is in a link.
+    const c = join(root, 'c');
+    mkdirSync(c);
+    symlinkSync(join(outside, 'r500'), join(c, 'bin'));
+    removeKonjirShim(join(c, 'bin'), log);
+    expect(lstatSync(join(c, 'bin')).isSymbolicLink()).toBe(true);
+    symlinkSync(join(outside, 'bin'), join(c, '.bin'));
+    removeKonjirShim(join(c, '.bin', 'JOUT'), log);
+
+    // Everything outside is as it was.
+    expect(snapshot(outside)).toEqual(before);
+  } finally {
+    for (const d of ['bin', 'mcp', 'live', 'entry', 'r500']) { try { chmodSync(join(outside, d), 0o700); chmodSync(join(outside, d, 'JOUT'), 0o700); } catch { /* gone */ } }
+  }
+});
+
+test('sweepJobs keeps a job whose marker names another machine, whose processes this one can\'t see, and sweeps one of an earlier boot of this one (W7.12)', () => {
+  const jobs = join(realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-machine-'))), 'jobs');
+  const here = { host: 'this-host', boot: 'boot-2' };
+  mkdirSync(join(jobs, '.live'), { recursive: true });
+  for (const job of ['JOTHER', 'JREBOOT', 'JHERE']) writeKonjirShim(join(jobs, '.bin', job), ['/usr/bin/node']);
+  // A container beside this one, or another machine sharing this home: a pid this one has no running process of.
+  writeFileSync(join(jobs, '.live', 'JOTHER'), markerText(4242, { host: 'other-host', boot: 'boot-2' }));
+  // This machine, before it rebooted: its pid may be running again, as another process.
+  writeFileSync(join(jobs, '.live', 'JREBOOT'), markerText(4242, { host: 'this-host', boot: 'boot-1' }));
+  writeFileSync(join(jobs, '.live', 'JHERE'), markerText(4242, here));
+  expect(sweepJobs(jobs, { machine: here, alive: () => true })).toEqual(['JREBOOT']);
+  expect(sweepJobs(jobs, { machine: here, alive: () => false })).toEqual(['JHERE']);
+  expect(readdirSync(join(jobs, '.bin'))).toEqual(['JOTHER']);
+  // Each runner names its machine as the kernel does: its hostname and this boot's id.
+  expect(thisMachine().host).toBe(hostname());
+  expect(thisMachine().boot).toMatch(/^[0-9A-Fa-f-]{36}$/);
+});
+
+test('konjir work sweeps what a killed runner left before it reaches Kolab, so a Kolab out of reach leaves nothing behind (W7.12)', async () => {
+  const jobs = join(realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-offline-'))), 'jobs');
+  writeKonjirShim(join(jobs, '.bin', 'JDEAD'), ['/usr/bin/node']);
+  const out = quiet();
+  await expect(runWork({ call: async () => { throw new Error('Kolab is out of reach'); }, git: () => { throw new Error('no git'); }, jobsDir: jobs, log: out.log },
+    { once: true, machine: 'here', harness: 'claude', url: 'http://127.0.0.1:9' })).rejects.toThrow('Kolab is out of reach');
+  expect(readdirSync(join(jobs, '.bin'))).toEqual([]);
+  expect(out.lines).toContain(`konjir work: swept what a job no runner here still runs left in ${jobs} (JDEAD)`);
 });
 
 test('done-when: a konjir work that was killed leaves its job\'s konjir behind; the next konjir work on the machine sweeps it, keeps what another runner there still runs, and the jobs directory then goes with rm -rf (W7.12)', async () => {
@@ -569,7 +671,7 @@ test('done-when: a konjir work that was killed leaves its job\'s konjir behind; 
     await until(() => started().length === 2, 60_000);
     const gone = started().find((j) => j !== live)!;
     expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
-    expect(readFileSync(join(r.jobsDir, '.live', gone), 'utf8')).toBe(`${killed.p.pid}\n`);
+    expect(readFileSync(join(r.jobsDir, '.live', gone), 'utf8')).toBe(markerText(killed.p.pid!));
     // The second is killed outright: nothing of it runs to remove its job's konjir. Its harness, left running, finishes.
     killed.p.kill('SIGKILL');
     await killed.exited;
@@ -586,7 +688,7 @@ test('done-when: a konjir work that was killed leaves its job\'s konjir behind; 
     expect(existsSync(join(r.jobsDir, '.bin', gone))).toBe(false);
     expect(existsSync(join(r.jobsDir, '.live', gone))).toBe(false);
     expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
-    expect(readFileSync(join(r.jobsDir, '.live', live), 'utf8')).toBe(`${still.p.pid}\n`);
+    expect(readFileSync(join(r.jobsDir, '.live', live), 'utf8')).toBe(markerText(still.p.pid!));
 
     // The live job ends as ever, taking its own with it, and the jobs directory then goes.
     h.go(live);
