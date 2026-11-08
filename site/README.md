@@ -21,7 +21,7 @@ Everything else here except this README is generated from `src/`, and `terraform
 
    With no arguments it reads `site/src/project/Main.dc.html` and `site/src/images/`; `node deploy/site/build.mjs <Main.dc.html> <image-folder>` reads others. It always reads `site/src/hands-on.md`. It rewrites `index.html`, `404.html`, `hands-on/index.html`, `robots.txt`, `favicon.svg` and the files in `assets/`, and never touches `src/` or this README. It reads nothing from the network. It keeps the hashed assets that `origin/main`'s pages use (at the merge base with it), and those of every commit since on the branch, so a page cached just before a deploy still finds them and rebuilding a committed build changes nothing; it removes older ones. Without an `origin/main` it keeps HEAD's. CI's *Test on PGlite* rebuilds and fails if anything in `site/` changes or is added, so commit the build with the source.
 3. Look at it: serve `site/` (for example `npx http-server site`) and check the page renders, the theme switch works, and the console shows no errors.
-4. Commit the source and the build together, then `terraform apply`.
+4. Commit the source and the build together, in a pull request. Merging it to main publishes it: CI's deploy applies it (D73), and nobody applies by hand.
 
 ## Publishing the artifact
 

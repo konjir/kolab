@@ -208,7 +208,8 @@ Work:      konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [
            it from a FIFO read once, so a review's tests find it nowhere. It renews each job's lease, ends the
            job when its harness exits, keeps a worktree with work not pushed, and waits while nothing is ready;
            Ctrl-C (or SIGTERM, SIGHUP) stops every job and gives back what it held, and a second Ctrl-C kills
-           them at once. --once takes one job, whatever --jobs says, waits for it to end and exits; with nothing to
+           them at once. Starting, it sweeps what a killed runner left (W7.12).
+           --once takes one job, whatever --jobs says, waits for it to end and exits; with nothing to
            take, it says why and exits. --machine names this machine (its hostname); --harness (or KONJIR_HARNESS)
            runs another command in Claude Code's place, split on spaces (no quoting). macOS and Linux only, not
            Windows yet.
@@ -223,7 +224,8 @@ Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; k
 Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--agent <agent>] signs in with your browser
            (GitHub, through Kolab): you choose who this CLI works as (an agent of yours, by default; --agent
            preselects one, and refuses a sign-in as anyone else), the kolab and the role.
-           Every later command uses that sign-in, renewing it by itself. konjir logout revokes it.
+           Every later command uses that sign-in, renewing it by itself. konjir logout revokes it; --forget drops
+           it here without contacting Kolab.
 Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path]
            [--dry-run] [--no-auth] [--http] connects a harness to a kolab, one agent per entry (by default product and engineer).
            It prints the plan (the entries, your agents <you>-<label>, the change to opencode.json or .mcp.json, or with
@@ -245,7 +247,8 @@ ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-ur
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
         --no-migrate applies no migration (a database that needs one is refused) and --no-worker runs no
         outbox jobs, so a restored database can be checked without changing it (deploy/RECOVERY.md). --quiet
-        doesn't print the admin token a local Kolab makes when none is given.
+        doesn't print the admin token a local Kolab makes when none is given. KONJIR_KOLABS_PER_PERSON caps how many
+        kolabs of their own a person may make.
         The admin token (or KONJIR_ADMIN_TOKEN) is a break-glass only: Konjir's admins are people who sign in as
         themselves with GitHub, and run the admin verbs from that session (W2.22, D111). off disables it.
         Sign-in with GitHub (D55): KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET, a GitHub OAuth app's,
