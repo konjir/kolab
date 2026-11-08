@@ -112,6 +112,28 @@ test('REV9: a request for changes doesn\'t remove a finding either; the resubmis
   expect((await kolab.readWork(bob, W(other))).findings).toBeUndefined();
 });
 
+test('REV9: releasing a package and pulling it again doesn\'t remove a finding: the next submission\'s request, the web and the approval carry it', async () => {
+  const { kolab, bob, eve } = await planned();
+  const id = await pull(kolab, bob);
+  await kolab.addEvidence(bob, W(id), [RUN([{ address: R('R1'), result: 'failed' }])]);
+  await kolab.releaseWork(bob, W(id), { note: 'Back later.' });
+  expect(await pull(kolab, bob)).toBe(id);
+  const sub = await kolab.submitWork(bob, W(id), { evidence: [COMMIT()] });
+  expect(sub).toMatchObject({ state: 'in_review', findings: [{ kind: 'acceptance_failed', element: R('R1'), recorded_by: 'bob' }] });
+  expect((await kolab.reviewRequests({ kolab: TEST_KOLAB, reviewer: 'eve' }))[0].findings).toMatchObject([{ element: R('R1') }]);
+  const web = (await workReviewDetails(kolab, eve, [{ binding: 'orders-pg', element: id }])).get(`orders-pg#${id}`)!;
+  expect(web.findings).toMatchObject([{ kind: 'acceptance_failed', element: R('R1') }]);
+  expect((await kolab.reviewWork(eve, W(id), { verdict: 'approve' })).findings).toMatchObject([{ element: R('R1') }]);
+});
+
+test('REV9: one call resolves at most 200 checks in all, refused before anything is looked up or recorded', async () => {
+  const { kolab, bob } = await planned();
+  const id = await pull(kolab, bob);
+  const run = (n: number, from: number) => RUN(Array.from({ length: n }, (_, i) => ({ address: `kj:orders#R${from + i}`, result: 'passed' })), `run ${from}`);
+  expect(await rejection(kolab.addEvidence(bob, W(id), [run(150, 0), run(51, 150)]))).toBe('LimitError: that call lists 201 acceptance checks in all; the limit is 200 a call: send the rest in another');
+  expect((await kolab.db.query(`select 1 from evidence`)).rows).toStrictEqual([]);
+});
+
 test('REV9: an address that doesn\'t resolve to a committed spec element is refused, and nothing is recorded', async () => {
   const { kolab, product, bob } = await planned();
   const id = await pull(kolab, bob);
