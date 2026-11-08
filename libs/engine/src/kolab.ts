@@ -9542,7 +9542,7 @@ export class Kolab {
       const reviewers = out.state === 'in_review' ? await this.ableToReview({ layer: 'technical', kolab_id: s.kolab }, out.writers) : [];
       const nobody = out.state === 'in_review' && !out.writers.length
         ? `kolab ${s.kolab}'s policy keeps reviewing work packages for a person (AUT3), and no person other than its assignee holds Write on the technical layer: ${NOBODY_HELP}` : undefined;
-      // What its reviewers see with the request (REV9): the failed acceptance checks of the round submitted.
+      // What its reviewers see with the request (REV9): every failed acceptance check it has recorded, in any round.
       const findings = acceptanceFindings(await this.checkedEvidence(this.db, binding.id, id));
       return { work: at, state: out.state, in_review: out.state === 'in_review', reviewers, ...(nobody ? { nobody } : {}), unreviewed: out.state === 'done', recorded: out.recorded, already: out.already,
         ...(findings.length ? { findings } : {}) };
@@ -9592,7 +9592,7 @@ export class Kolab {
         }
         await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where binding_node_id = $1 and element_id = $2 and state = 'open'`, [binding.id, id]);
         // Kolab's own findings on the round under review (REV9): in the verdict's result whatever it is,
-        // and refusing none. Read before a request for changes can send it to To do, which ends the round.
+        // and refusing none. Read from every round, so where the verdict sends it changes nothing.
         const findings = acceptanceFindings(await this.checkedEvidence(tx, binding.id, id));
         const c = await this.concernedIn(tx, binding.id, id);
         const assignee = r.assignee_id!;
@@ -11729,7 +11729,7 @@ export class Kolab {
         where ($4::text is null or (x.created_at, x.reviewer, x.id) > ($4::timestamptz, $5::text, $6::text))
         order by x.created_at, x.reviewer, x.id limit $7`,
       [filter.reviewer ?? null, filter.layer ?? null, filter.kolab ?? null, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null, limit ?? null])).rows;
-    // Kolab's own findings on each work package in review (REV9): the failed acceptance checks of the round submitted.
+    // Kolab's own findings on each work package in review (REV9): every failed acceptance check it has recorded, in any round.
     const found = new Map<string, AcceptanceFinding[]>();
     for (const r of rows) {
       if (r.subject_kind !== 'work' || found.has(`${r.binding_id}#${r.element_id}`)) continue;
@@ -11742,7 +11742,7 @@ export class Kolab {
         const risk = r.open_marks ? `It is at risk: ${r.open_marks === 1 ? 'an open mark says' : `${r.open_marks} open marks say`} something it serves or relies on changed since its work began (PLN10, D102); check the work against the latest before approving. ` : '';
         const findings = found.get(`${binding_id}#${r.element_id}`) ?? [];
         const failed = findings.length
-          ? `Its evidence records ${findings.length === 1 ? 'a failed acceptance check' : `${findings.length} failed acceptance checks`} (${findings.map((f) => f.element).join(', ')}): each is a finding, acceptance_failed, that stays on its record whatever your verdict (REV9); weigh it before approving. `
+          ? `Its evidence records ${findings.length === 1 ? 'a failed acceptance check' : `${findings.length} failed acceptance checks`} (${findings.map((f) => f.element).join(', ')}): each is a finding, acceptance_failed, that stays on its record whatever your verdict (REV9), an earlier round's or an approved one's included; weigh it before approving. `
           : '';
         return {
           ...common, subject: work, subject_kind: 'work' as const, ...(r.open_marks ? { open_marks: r.open_marks } : {}), ...(findings.length ? { findings } : {}),
