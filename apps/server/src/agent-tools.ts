@@ -179,7 +179,7 @@ const evidenceItem = args({
   checks: z.array(args({
     address: z.string().describe('The spec element the check checks: kj:<kolab>/<spec>#<id>, an element of a committed spec version (its latest, or one @<version> pins). One that doesn\'t resolve refuses the call'),
     result: z.enum(ACCEPTANCE_RESULTS).describe('passed or failed'),
-  })).optional().describe(`A test run's: the acceptance checks it ran (REV9), at most ${MAX_EVIDENCE_CHECKS}, each element once. A failed one is an acceptance_failed finding on the package's review, which stays on its record whatever the verdict`),
+  })).optional().describe(`A test run's: the acceptance checks it ran (REV9), at most ${MAX_EVIDENCE_CHECKS}, each element once, and at most ${MAX_EVIDENCE_CHECKS} across the call's test runs. A failed one is an acceptance_failed finding on the package's review, which stays on its record whatever the verdict`),
 });
 const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","summary":"npm test: 120 passed","checks":[{"address":"kj:shop/checkout#R1","result":"passed"}]}]; a commit or pull request may name its repo`);
 const addEvidence = args({ work, evidence: evidenceList });
