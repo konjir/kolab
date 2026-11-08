@@ -4131,7 +4131,9 @@ export class Kolab {
     const word = KIND_WORDS[want];
     let p: typeof of[number] | undefined;
     if (given !== undefined) {
-      p = of.find((n) => n.name === given);
+      // A name the spec had before still names it (DAT22).
+      const found = of.find((n) => n.name === given) ? undefined : await this.findNode(this.db, kolab, given);
+      p = of.find((n) => n.name === given || n.id === found?.id);
       if (!p) {
         throw new GateError(`a ${KIND_WORDS[kind]} names the ${word} it binds, in its own kolab (D78), and ${given} is no ${word} of kolab ${kolab}`
           + (of.length ? `: its ${word}${of.length === 1 ? ' is' : 's are'} ${of.map((n) => n.name).join(', ')}` : ''));
