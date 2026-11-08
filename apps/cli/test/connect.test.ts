@@ -401,6 +401,11 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   });
   for (const s of [...store.values()].flatMap((t) => [t.access_token, t.refresh_token!])) expect(text).not.toContain(s);
   expect(text).not.toMatch(/kj[sr]_/);
+  // The project's .konjir.json (API26): the kolab and Kolab's URL, said in the plan before the browser, and no token.
+  const projectFile = readFileSync(join(project, '.konjir.json'), 'utf8');
+  expect(projectFile).toBe(`{\n  "kolab": "anns",\n  "url": "${server.url}"\n}\n`);
+  expect(said.indexOf(`Will write ${join(project, '.konjir.json')}: kolab anns at ${server.url}, and no token`)).toBeLessThan(said.indexOf('Opening your browser'));
+  expect(said).toContain(`Wrote ${join(project, '.konjir.json')}: kolab anns at ${server.url}. It holds no token.`);
   // OpenCode's setup issued no agent sign-in (its entries sign in by themselves), kept nothing, and
   // left no grant as Ann: the setup token is used up and revoked.
   expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);
@@ -414,6 +419,8 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   expect(again.lines).toContain('Set up for ann: kolab anns; ann-product, ann-engineer.');
   expect(again.lines).toContain('  konjir-product  as ann-product, product');   // named, from the entries already there
   expect(again.lines).toContain(`${join(project, 'opencode.json')} already says exactly this.`);
+  expect(again.lines).toContain(`${join(project, '.konjir.json')} already names kolab anns at ${server.url}.`);
+  expect(readFileSync(join(project, '.konjir.json'), 'utf8')).toBe(projectFile);
   expect(again.lines.join('\n')).toContain('opencode mcp auth konjir-engineer');
   expect(readFileSync(join(project, 'opencode.json'), 'utf8')).toBe(text);
   expect((await kolab.listActors({ owner: 'ann' })).map((a) => a.id)).toStrictEqual(['ann-engineer', 'ann-product']);
@@ -586,7 +593,14 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
   expect(dry.lines.at(-1)).toBe('Dry run: nothing made, written or signed in.');
   expect(opened).toStrictEqual([]);
   expect(existsSync(join(plain, '.mcp.json'))).toBe(false);
+  expect(existsSync(join(plain, '.konjir.json'))).toBe(false);
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
+  // A .konjir.json konjir couldn't have written stops it before any browser opens, untouched.
+  const broken = scratch();
+  writeFileSync(join(broken, '.konjir.json'), '{"kolab": 1}');
+  expect(await rejection(connectHarness(options(server, broken), io()))).toMatch(/\.konjir\.json names a kolab badly/);
+  expect(readFileSync(join(broken, '.konjir.json'), 'utf8')).toBe('{"kolab": 1}');
+  expect(opened).toStrictEqual([]);
 
   // And from the shell: --dry-run, --yes kept as a no-op, a harness it doesn't know, a URL with credentials in it.
   process.chdir(plain);
@@ -619,6 +633,8 @@ test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to 
   const g = world(server, idp, async () => 0);
   await connectHarness(options(server, project, { global: true, auth: false, env: { XDG_CONFIG_HOME: home } }), g);
   expect(Object.keys(JSON.parse(readFileSync(join(home, 'opencode', 'opencode.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
+  // --global sets up no project, so it writes no .konjir.json.
+  expect(g.lines.join('\n')).not.toContain('.konjir.json');
 });
 
 /**

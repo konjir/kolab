@@ -12,7 +12,9 @@
 // OAuth client and credentials store `konjir login` uses, is bundled; the others reach the CLI as types only.
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
-// with it, for `konjir --version`.
+// with it, for `konjir --version`. It also defines KONJIR_DEFAULT_URL as the hosted Kolab (API25):
+// the Kolab a published konjir talks to with no --url, KONJIR_URL or project file, where a
+// checkout, which can serve, talks to the local one.
 //
 // Bun is pinned in apps/cli/bun-runtimes.json: its version, the sha256 of each release zip this
 // script uses, and the integrity of the same build's npm tarball (@oven/<the zip's name>). Every
@@ -38,6 +40,8 @@ const root = join(app, '../..');
 const manifest = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
 const pinned = JSON.parse(readFileSync(join(app, 'bun-runtimes.json'), 'utf8'));
 const entry = join(app, 'src/main.ts');
+/** The hosted Kolab, a published konjir's default (API25): src/cli.ts's HOSTED_URL. */
+const HOSTED_URL = 'https://kolab.konjir.com/mcp';
 if (manifest.license !== 'Apache-2.0') throw new Error(`apps/cli/package.json declares the licence ${manifest.license}, but konjir is Apache-2.0`);
 // The targets we ship, and the Bun release zip each compiles on. x64 uses Bun's baseline
 // runtime, which runs on CPUs without AVX2. `binaries` with no arguments builds them all.
@@ -66,7 +70,7 @@ function checkBun() {
 // The @konjir/source condition bundles @konjir/login from its source, as tsx runs it, so the bundle
 // needs no tsc build of the library first.
 const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server', '--conditions=@konjir/source',
-  '--define', `KONJIR_VERSION=${JSON.stringify(manifest.version)}`, ...args], { stdio: 'inherit', cwd: app });
+  '--define', `KONJIR_VERSION=${JSON.stringify(manifest.version)}`, '--define', `KONJIR_DEFAULT_URL=${JSON.stringify(HOSTED_URL)}`, ...args], { stdio: 'inherit', cwd: app });
 
 /**
  * The first-party code the bundle may inline: the CLI's own source and @konjir/login's, nothing

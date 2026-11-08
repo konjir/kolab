@@ -99,6 +99,18 @@ jobs:
       - name: Check the licence ships
         run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/pack/konjir-*.tgz apps/cli/dist-bin
 
+      # A published konjir talks to the hosted Kolab by default (API25), checked without connecting
+      # to it: its help names it, and with nothing signed in it refuses, naming it, before any request.
+      - name: The published builds default to the hosted Kolab
+        run: |
+          check() {
+            env -u KONJIR_URL -u KONJIR_TOKEN "$@" help | grep -F 'KONJIR_URL (default https://kolab.konjir.com/mcp)'
+            if out=$(env -u KONJIR_URL -u KONJIR_TOKEN KONJIR_CREDENTIALS="$RUNNER_TEMP/none/credentials.json" "$@" whoami 2>&1); then echo "::error::konjir whoami succeeded with nothing signed in"; exit 1; fi
+            echo "$out" | grep -F 'konjir keeps no sign-in for https://kolab.konjir.com/mcp, the default'
+          }
+          (cd "$RUNNER_TEMP" && check "$GITHUB_WORKSPACE/apps/cli/dist-bin/konjir-linux-arm64")
+          (cd "$RUNNER_TEMP" && check node "$GITHUB_WORKSPACE/apps/cli/dist-npm/konjir.mjs")
+
       - name: Choose a throwaway admin token for the test Kolab
         run: |
           token=$(openssl rand -hex 18)
