@@ -123,7 +123,7 @@ const revoke = args({ kolab: z.string(), to: z.string() });
 const access = args({ actor: z.string(), kolab: z.string() });
 const applyRuling = args({
   ruling: z.string().regex(/^D\d+$/).describe('The ruling being applied, by its Decisions Log ID, e.g. D46'),
-  actor: z.string().describe('Who the version is written as, e.g. mirror-product; it writes in the role of the node\'s layer'),
+  actor: z.string().describe('Who the version is written as, an actor with Write on the node\'s layer; it writes in the role of that layer'),
   node: z.string().describe('The node, as <kolab>/<node> (e.g. kolab/kolab-binding), or its name alone when no other kolab has a node of that name'),
   // Strict, as konjir_draft's: a misplaced field is refused, not dropped. Work left out is kept (D98).
   elements: z.array(args({ id: z.string().optional(), text: z.string(), parent: z.string().nullable().optional(), work: workInput.nullable().optional() })).optional(),

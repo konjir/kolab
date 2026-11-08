@@ -860,7 +860,7 @@ test('a binding\'s page shows each work package\'s fields, read only, beside its
   await kolab.commit(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
     { id: 'W1', text: 'Build the cancel endpoint.', work: { done_when: 'An Open order can be cancelled.', size: 'M' } },
     { id: 'M1', text: 'Cancelling works.', work: { milestone: true, depends_on: ['W1'], target_date: '2026-12-01' } },
-  ] });
+  ], links: [{ kind: 'dependency', sourceElement: 'W1', target: (await kolab.latestCommitted('orders-pg'))!.id, targetElement: 'b1' }] });
   const bob = await signIn(await serve(kolab), engineer);
   const view = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(view.elements.map((e) => [e.id, e.work])).toStrictEqual([
@@ -868,21 +868,26 @@ test('a binding\'s page shows each work package\'s fields, read only, beside its
     ['W1', { done_when: 'An Open order can be cancelled.', size: 'M' }],
     ['M1', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
   ]);
-  // The page edits text; the fields stay as they were. An element added in the page may carry them.
-  const out = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 2, changes: [
+  // An element added in the page may carry work fields, but the page adds no link, so a work package
+  // added there has nothing behind it and is refused, naming it (WRK11): konjir_link gives it one.
+  const bare = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 2, changes: [
     { kind: 'override', element: 'W1', text: 'Build the cancel endpoint, idempotently.' },
     { kind: 'add', element: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'], size: 'S' } },
   ] })).body;
-  expect(out).toMatchObject({ ok: true, committed: true, seq: 3 });
+  expect(bare).toMatchObject({ ok: false, committed: false, abandoned: true, note: expect.stringContaining('W2 has nothing behind it (WRK11, PLN11)') });
+  // The page edits text; the fields stay as they were.
+  const out = (await bob.call<WebOutcome>('nodes/orders-pg/submit', { base: 2, changes: [
+    { kind: 'override', element: 'W1', text: 'Build the cancel endpoint, idempotently.' },
+  ] })).body;
+  expect(out).toMatchObject({ ok: true, committed: true, seq: 4 });
   const after = (await bob.call<WebNodeView>('nodes/orders-pg')).body;
   expect(after.elements.map((e) => [e.id, e.text, e.work])).toStrictEqual([
     ['b1', 'orders.status allows cancel from Open.', undefined], ['b2', 'Refunds go through the payments queue.', undefined],
     ['W1', 'Build the cancel endpoint, idempotently.', { done_when: 'An Open order can be cancelled.', size: 'M' }],
     ['M1', 'Cancelling works.', { depends_on: ['W1'], milestone: true, target_date: '2026-12-01' }],
-    ['W2', 'Refund on cancel.', { depends_on: ['W1'], size: 'S' }],
   ]);
   // The page doesn't change work fields: an override that carries them is refused, not ignored (review nit).
-  const refused = await bob.call<{ error: string; message: string }>('nodes/orders-pg/submit', { base: 3, changes: [{ kind: 'override', element: 'W1', text: 'x', work: { size: 'L' } }] });
+  const refused = await bob.call<{ error: string; message: string }>('nodes/orders-pg/submit', { base: 4, changes: [{ kind: 'override', element: 'W1', text: 'x', work: { size: 'L' } }] });
   expect(refused.status).toBe(400);
   expect(refused.body.message).toBe("the page changes W1's text, not its work fields: change those with konjir_draft");
   // A spec's elements carry none.
@@ -895,7 +900,7 @@ test('a binding\'s page shows each work package\'s state on its latest version, 
   const v1 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
     { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'] } },
     { id: 'M1', text: 'Cancelling works.', work: { milestone: true, depends_on: ['W1', 'W2'] } },
-  ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }] });
+  ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }, { kind: 'dependency', sourceElement: 'W2', target: b, targetElement: 'b2' }] });
   expect((await kolab.submit(engineer, v1)).ok).toBe(true);
   await kolab.pullWork(engineer);
   const bobBase = await serve(kolab);
@@ -978,7 +983,8 @@ test('a binding\'s page shows a work package with work at risk while a mark is o
 
 test('the page resubmits a returned binding draft whose milestone became a work package, carrying the link it relies on (verification Low 1)', async () => {
   const { kolab, engineer } = await specAndBinding();
-  await kolab.commit(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' }, { id: 'W1', text: 'Build it.', work: {} }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }] });
+  await kolab.commit(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' }, { id: 'W1', text: 'Build it.', work: {} }, { id: 'M1', text: 'Ship it.', work: { milestone: true, depends_on: ['W1'] } }],
+  links: [{ kind: 'dependency', sourceElement: 'W1', target: (await kolab.latestCommitted('orders-pg'))!.id, targetElement: 'b1' }] });
   // A draft that makes M1 a work package relying on b2, returned by PLN2 for an unrelated problem.
   const b = (await kolab.latestCommitted('orders-pg'))!.id;
   const draft = await kolab.draft(engineer, 'orders-pg', {

@@ -97,7 +97,7 @@ test('a binding names the spec it binds, its kolab\'s one spec, set when it is m
 });
 
 test('a binding holds its own work: no plan is made any more, by Kolab or by any role in the database (KON5, D104)', async () => {
-  const { kolab, engineer } = await specAndBinding();
+  const { kolab, engineer, b1 } = await specAndBinding();
   expect(await rejection(kolab.createNode(engineer, 'plan', 'Plan', 'orders-plan')))
     .toBe(`GateError: ${PLAN_RETIRED}. Draft the work packages in the binding itself`);
   expect(await kolab.listNodes('plan', TEST_KOLAB)).toStrictEqual([]);
@@ -105,7 +105,8 @@ test('a binding holds its own work: no plan is made any more, by Kolab or by any
     `insert into node(id, name, kind, layer, title, kolab_id, parent_node_id, created_by) values ($1, $1, 'plan', 'technical', 'X', $2, $3, 'admin')`, [id, TEST_KOLAB, parent]);
   expect(await rejection(insert('plan-3', 'orders-pg'))).toMatch(/node: the plan kind is retired \(D104\)/);
   // Its work packages are its own elements, with a work field.
-  await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }), { id: 'W1', text: 'Build the cancel endpoint.', work: {} }] });
+  await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }), { id: 'W1', text: 'Build the cancel endpoint.', work: {} }],
+    links: [{ kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1' }] });
   expect((await kolab.listWork(engineer)).items.map((i) => [i.work, i.binding])).toStrictEqual([['kj:orders-pg#W1', 'orders-pg']]);
 });
 
@@ -132,9 +133,11 @@ test('a node\'s layer follows from its kind, and its kind, layer and parent neve
 });
 
 test('a binding\'s work packages serve its own spec and rely on its decisions; one never links another; a binding serves its own spec (D78, D99, KON6, D104)', async () => {
-  const { kolab, engineer, s1 } = await specAndBinding();
+  const { kolab, engineer, s1, b1 } = await specAndBinding();
+  // Each committed with something behind it (WRK11): both relied on b2, of the version before.
   const w1 = await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }),
-    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }] });
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }],
+  links: [{ kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b2' }, { kind: 'dependency', sourceElement: 'W2', target: b1, targetElement: 'b2' }] });
   // A work package serves its spec's requirement, and relies on its binding's decision.
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: s1, targetElement: 'R1' });
   await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: w1, targetElement: 'b1' });
@@ -178,10 +181,9 @@ test('a prototype\'s screens are marked when the requirement they show changes, 
   const { kolab, product, engineer, b1 } = await specAndBinding();
   // Work packages of the binding that rely on its decisions.
   const w1 = await kolab.commit(engineer, 'orders-pg', { elements: [...els({ b1: 'A cancel endpoint.', b2: 'A shipping queue.' }),
-    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }] });
-  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W1', target: w1, targetElement: 'b1' });
-  await kolab.link(engineer, { kind: 'dependency', source: w1, sourceElement: 'W2', target: w1, targetElement: 'b2' });
-  void b1;
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Build the queue.', work: {} }],
+  links: [{ kind: 'dependency', sourceElement: 'W1', target: b1, targetElement: 'b1' }, { kind: 'dependency', sourceElement: 'W2', target: b1, targetElement: 'b2' }] });
+  void w1;
   // A prototype of the spec: each screen a URL, linked by equivalence to the requirement it shows.
   await kolab.createNode(product, 'prototype', 'Orders screens', 'orders-ui');
   const p1 = await kolab.commit(product, 'orders-ui', { elements: els({ cancel: 'https://example.com/orders/cancel', track: 'https://example.com/orders/track' }) });
