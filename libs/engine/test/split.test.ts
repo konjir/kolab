@@ -105,9 +105,9 @@ test("the split's derivation links are never re-resolved by later versions of th
   await kolab.commit(product, 'spec', { elements: els({ R1a: 'Carts expire after 31 days.', R2: 'Checkout takes two pages.' }) });
   expect(await marksOn(kolab, 'spec')).toStrictEqual([]);
   expect(await linksOf(kolab, 'spec')).toStrictEqual(['derivation R1a -> spec@1#R1']);
-  // b1's orphan still names what R1 was split into.
+  // b1's orphan names what R1 lives on as now.
   const [listed] = await kolab.describeMarks({ node: 'b' });
-  expect(listed).toMatchObject({ reason: 'orphaned', because: expect.stringMatching(/split it into kj:spec#R1a and kj:spec#R1b/) });
+  expect(listed).toMatchObject({ reason: 'orphaned', because: 'kj:spec#R1 was retired by version 2, which split it; after later versions it lives on as kj:spec#R1a: re-point the link to the one it relies on' });
 });
 
 test('a derivation link into an earlier version of another node is re-resolved as any link', async () => {
@@ -184,4 +184,90 @@ test("a split's orphan from another kolab names the derived elements only to a r
   // carol, who can't read billing, is told only that a version there changed.
   expect(await because(carol)).toStrictEqual(['a version in another kolab changed']);
   expect(JSON.stringify(await kolab.marksFor(carol))).not.toMatch(/checkout|billing|R1a|R1b/);
+});
+
+test('a split of an element derived by an earlier split names what the old element lives on as now, and re-pointing to any of them settles its orphan (CAS10)', async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  const { s2 } = await split(ctx);
+  const [orphan] = await marksOn(kolab, 'b');
+  // spec@3 splits R1a, itself derived from R1, into R1a1 and R1a2.
+  const s3 = await kolab.draft(product, 'spec', { elements: els({ R1a1: 'Carts expire.', R1a2: 'After 30 days.', R1b: 'Carts hold 50 items.', R2: 'Checkout takes one page.' }) });
+  for (const el of ['R1a1', 'R1a2']) await kolab.link(product, { kind: 'derivation', source: s3, sourceElement: el, target: s2, targetElement: 'R1a' });
+  expect(await kolab.review(s3)).toMatchObject({ ok: true });
+  expect(await marksOn(kolab, 'b')).toStrictEqual([expect.objectContaining({ id: orphan.id, reason: 'orphaned' })]);
+  const [listed] = await kolab.describeMarks({ node: 'b' });
+  expect(listed.because).toBe('kj:spec#R1 was retired by version 2, which split it; after later versions it lives on as '
+    + 'kj:spec#R1a1, kj:spec#R1a2 and kj:spec#R1b: re-point the link to the one it relies on');
+  expect(await marksOn(kolab, 'spec')).toStrictEqual([]);
+
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b1', text: 'A nightly job expires carts.' }] });
+  await kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s3, targetElement: 'R1a1' });
+  expect(await kolab.removedLinks({ session: engineer }, await kolab.version(draft)))
+    .toStrictEqual([{ kind: 'dependency', source: 'kj:b@2#b1', target: 'kj:spec#R1' }]);
+  await kolab.review(draft);
+  expect(await markRow(kolab, orphan.id)).toStrictEqual({ state: 'cleared', cleared_by: 'its link was removed by b@2' });
+  expect(await marksOn(kolab, 'b')).toStrictEqual([]);
+  expect(await linksOf(kolab, 'b')).toStrictEqual(['dependency b1 -> spec@3#R1a1', 'dependency b2 -> spec@3#R2']);
+});
+
+test('a link already marked changed when a split retires its target is orphaned, naming the derived elements, and re-pointing settles it (CAS10)', async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  await kolab.createNode(product, 'spec', 'Spec', 'spec');
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 30 days, and hold 50 items.' }) });
+  await kolab.createNode(engineer, 'binding', 'Binding', 'b');
+  const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A nightly job expires carts, and a check caps them.' }) });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: 'R1' });
+  const s2 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 31 days, and hold 50 items.' }) });
+  const [changed] = await marksOn(kolab, 'b');
+  expect(changed).toMatchObject({ reason: 'changed', element_id: 'b1' });
+  // spec@3 splits R1 while b1's link is still marked changed.
+  const s3 = await kolab.draft(product, 'spec', { elements: els({ R1a: 'Carts expire after 31 days.', R1b: 'Carts hold 50 items.' }) });
+  for (const el of ['R1a', 'R1b']) await kolab.link(product, { kind: 'derivation', source: s3, sourceElement: el, target: s2, targetElement: 'R1' });
+  expect(await kolab.review(s3)).toMatchObject({ ok: true });
+  expect(await markRow(kolab, changed.id)).toStrictEqual({ state: 'cleared', cleared_by: 'its target was retired by a split, in spec@3' });
+  const [orphan] = await marksOn(kolab, 'b');
+  expect(await marksOn(kolab, 'b')).toHaveLength(1);
+  expect(orphan).toMatchObject({ reason: 'orphaned', element_id: 'b1' });
+  expect((await kolab.describeMarks({ node: 'b' }))[0].because)
+    .toBe('kj:spec#R1 was retired by version 3, which split it into kj:spec#R1a and kj:spec#R1b: re-point the link to the one it relies on');
+
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b1', text: 'A nightly job expires carts.' }] });
+  await kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s3, targetElement: 'R1a' });
+  await kolab.review(draft);
+  expect((await markRow(kolab, orphan.id)).state).toBe('cleared');
+  expect(await marksOn(kolab, 'b')).toStrictEqual([]);
+  expect(await linksOf(kolab, 'b')).toStrictEqual(['dependency b1 -> spec@3#R1a']);
+});
+
+test("a parent's split, rebased into a variant, orphans links into the variant's old element naming its split elements, and re-pointing settles it (CAS10)", async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  await kolab.createNode(product, 'spec', 'Storefront', 'P');
+  const p1 = await kolab.commit(product, 'P', { elements: els({ E1: 'Background is white, and the logo sits top-left.', E2: 'Checkout takes one page.' }) });
+  await kolab.createNode(product, 'prototype', 'Storefront for Acme', 'V');
+  const v1 = await kolab.commit(product, 'V', { parent: p1, deltas: [{ kind: 'override', element: 'E2', text: 'Checkout takes two pages.' }] });
+  await kolab.createNode(engineer, 'binding', 'Binding', 'b');
+  const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'The theme sets both.' }) });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: v1, targetElement: 'E1' });
+  // P@2 splits E1, and V rebases onto it.
+  const p2 = await kolab.draft(product, 'P', { elements: els({ E1a: 'Background is white.', E1b: 'The logo sits top-left.', E2: 'Checkout takes one page.' }) });
+  for (const el of ['E1a', 'E1b']) await kolab.link(product, { kind: 'derivation', source: p2, sourceElement: el, target: p1, targetElement: 'E1' });
+  expect(await kolab.review(p2)).toMatchObject({ ok: true });
+  await kolab.drainOutbox();
+  const v2 = (await kolab.latestCommitted('V'))!;
+  expect(v2.seq).toBe(2);
+  const [orphan] = await marksOn(kolab, 'b');
+  expect(await marksOn(kolab, 'b')).toHaveLength(1);
+  expect(orphan).toMatchObject({ reason: 'orphaned', element_id: 'b1' });
+  expect((await kolab.describeMarks({ node: 'b' }))[0].because)
+    .toBe('kj:V#E1 was retired by version 2, which split it into kj:V#E1a and kj:V#E1b: re-point the link to the one it relies on');
+
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b1', text: 'The theme sets the background.' }] });
+  await kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: v2.id, targetElement: 'E1a' });
+  await kolab.review(draft);
+  expect((await markRow(kolab, orphan.id)).state).toBe('cleared');
+  expect(await marksOn(kolab, 'b')).toStrictEqual([]);
+  expect(await linksOf(kolab, 'b')).toStrictEqual(['dependency b1 -> V@2#E1a']);
 });
