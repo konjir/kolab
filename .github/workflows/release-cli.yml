@@ -13,14 +13,15 @@ name: Release CLI
 # 2. "Draft GitHub release" (contents, attestations): attests the files' build provenance and
 #    creates the release as a draft, with the files and generated notes. A draft has no tag yet.
 # 3. "Publish konjir to npm" (id-token, the npm-release environment): publishes the tarball the
-#    first job tested, byte for byte, with provenance. No checkout and no dependencies.
+#    first job tested, byte for byte, with provenance, through npm trusted publishing alone. No
+#    checkout, no dependencies and no npm token: konjir disallows tokens (tools/npm-trust.sh).
 # 4. "Publish GitHub release" (contents): takes the draft out of draft, which creates the tag
 #    konjir@<version> on the commit the run built. The next run reads the version from that tag.
 # With dry-run on (the default), only the first job runs.
 #
 # Set up once (README, "Releasing the CLI"): a GitHub environment named npm-release whose
 # deployment branches are main only, and npm trusted publishing for konjir (this repository, this
-# workflow, that environment), or else an NPM_TOKEN secret in that environment.
+# workflow, that environment), which `npm run release:trust` (tools/npm-trust.sh) sets up.
 #
 # Recovery: a run that stops before job 3 has published nothing; delete its draft release, if
 # any, and run again. If job 3 published and job 4 failed, re-run job 4 ("Re-run failed jobs"),
@@ -221,8 +222,8 @@ jobs:
     needs: [build, draft]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
-    # Holds the npm credentials: trusted publishing for this workflow and environment, or an
-    # NPM_TOKEN secret. Its deployment branches must be main only.
+    # konjir trusts this workflow in this environment alone (trusted publishing); there is no npm
+    # secret anywhere. Its deployment branches must be main only.
     environment: npm-release
     permissions:
       id-token: write # npm trusted publishing and provenance
@@ -244,19 +245,14 @@ jobs:
         working-directory: release
         run: grep ' konjir-.*\.tgz$' SHA256SUMS | sha256sum -c -
 
+      # npm exchanges this job's OIDC token for a short-lived token that can publish konjir alone.
+      # Expired or missing trust fails with "OIDC token exchange error" (README, "Releasing the
+      # CLI"), which npm logs only at verbose level: without it, the failure is a bare 404 on the PUT.
       - name: npm publish
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_LOGLEVEL: verbose
           VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          # With trusted publishing set up, npm uses this job's OIDC token and needs no secret.
-          # The token, if set, is read from the environment; it is never written to disk.
-          if [ -n "$NPM_TOKEN" ]; then
-            # shellcheck disable=SC2016 # npm expands ${NPM_TOKEN} itself
-            printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$RUNNER_TEMP/.npmrc"
-            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
-          fi
-          npm publish "./release/konjir-$VERSION.tgz" --provenance --access public --tag latest
+        run: npm publish "./release/konjir-$VERSION.tgz" --provenance --access public --tag latest
 
   release:
     name: Publish GitHub release

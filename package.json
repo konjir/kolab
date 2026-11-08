@@ -18,7 +18,8 @@
     "serve": "bin/konjir serve",
     "konjir": "bin/konjir",
     "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test",
-    "e2e:connect": "node apps/cli/scripts/e2e-connect.mjs",
+    "release:trust": "bash tools/npm-trust.sh",
+    "e2e:connect":"node apps/cli/scripts/e2e-connect.mjs",
     "verbs": "tsx --conditions=@konjir/source apps/cli/scripts/verbs.ts"
   },
   "devDependencies": {
