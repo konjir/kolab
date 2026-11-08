@@ -26,7 +26,7 @@ import {
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
-  MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type AcceptanceFinding, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
+  MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type AcceptanceFinding, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
   REVISIT_FILES, type WorkRevisit,
   DEFAULT_POLICY, FUNCTIONAL_ANSWERERS, POLICY_SETTINGS, VERSION_APPROVERS, WORK_APPROVERS,
   type KolabPolicy, type PolicySet, type PolicyView, type VersionApprover, type WorkApprover,
@@ -9286,6 +9286,12 @@ export class Kolab {
   private async resolveChecks(sessionId: string, items: CheckedEvidence[]): Promise<(StoredCheck[] | null)[]> {
     const out: (StoredCheck[] | null)[] = [];
     const problems: string[] = [];
+    // Resolving runs before the rate limit and the lease are checked, so a call carries at most
+    // MAX_EVIDENCE_CHECKS in all, and each spec version is looked up once, its elements in one read.
+    const total = items.reduce((n, e) => n + (e.checks?.length ?? 0), 0);
+    if (total > MAX_EVIDENCE_CHECKS) throw new LimitError(`that call lists ${total} acceptance checks in all; the limit is ${MAX_EVIDENCE_CHECKS} a call: send the rest in another`);
+    const versions = new Map<string, Promise<{ node: NodeRow; version?: VersionRow }>>();
+    const elements = new Map<string, Promise<Set<string>>>();
     for (const [i, e] of items.entries()) {
       if (!e.checks?.length) { out.push(null); continue; }
       const stored: StoredCheck[] = [];
@@ -9297,10 +9303,14 @@ export class Kolab {
         if (!a.element || a.selector) { refuse('names no element: an acceptance check names one element of a spec, kj:<kolab>/<spec>#<id>'); continue; }
         let node: NodeRow;
         let v: VersionRow | undefined;
-        try { ({ node, version: v } = await this.locateVersion({ session: sessionId }, a)); } catch { refuse('doesn\'t resolve: no node of that name that you can read'); continue; }
+        const key = formatAddress({ kolab: a.kolab, node: a.node, version: a.version });
+        if (!versions.has(key)) versions.set(key, this.locateVersion({ session: sessionId }, a));
+        try { ({ node, version: v } = await versions.get(key)!); } catch { refuse('doesn\'t resolve: no node of that name that you can read'); continue; }
         if (node.kind !== 'spec') { refuse(`names an element of a ${node.kind}, and an acceptance check names a spec's (REV9)`); continue; }
         if (!v || v.state !== 'committed') { refuse(`doesn't resolve: ${a.version === undefined ? 'its spec has no committed version' : `version ${a.version} of its spec isn't committed`}`); continue; }
-        const there = await this.read({ session: sessionId }, async (q) => (await q.query(`select 1 from element where version_id = $1 and element_id = $2`, [v!.id, a.element])).rows.length > 0);
+        const vid = v.id;
+        if (!elements.has(vid)) elements.set(vid, this.read({ session: sessionId }, async (q) => new Set((await q.query<{ element_id: string }>(`select element_id from element where version_id = $1`, [vid])).rows.map((r) => r.element_id))));
+        const there = (await elements.get(vid)!).has(a.element);
         if (!there) { refuse(`doesn't resolve: ${formatAddress({ kolab: node.kolab_id, node: node.name, version: v.seq })} has no element ${a.element}`); continue; }
         const address = formatAddress({ kolab: node.kolab_id, node: node.name, element: a.element });
         if (stored.some((x) => x.address === address)) { refuse(`names ${address} again: a test run checks each element once`); continue; }
@@ -9344,6 +9354,19 @@ export class Kolab {
       recorded.push(id);
     }
     return { recorded, already: items.length - fresh.length };
+  }
+
+  /**
+   * A package's evidence that records a failed acceptance check, in every round, on `q`, oldest first:
+   * what Kolab's findings on its review request are read from (REV9), so neither a verdict nor a
+   * release, a lapsed lease or a return to To do takes one off.
+   */
+  private async checkedEvidence(q: Q, binding: string, element: string): Promise<EvidenceRow[]> {
+    return (await q.query<EvidenceRow>(
+      `select ${EVIDENCE_COLUMNS} from ${EVIDENCE_FROM}
+        where e.binding_node_id = $1 and e.element_id = $2
+          and e.checks is not null and exists (select 1 from jsonb_array_elements(e.checks) c where c->'passed' = 'false'::jsonb)
+        order by e.at, e.id`, [binding, element])).rows;
   }
 
   /**
@@ -9415,7 +9438,7 @@ export class Kolab {
           note: `${items.length} item${items.length === 1 ? '' : 's'} of evidence: ${evidenceSummary(items)}` });
         const { recorded, already } = await this.evidenceIn(tx, binding.id, id, items, ev, s.actor_id, repositories, checks);
         await this.useRate(tx, hold);
-        const findings = acceptanceFindings(await this.roundEvidence(tx, binding.id, id));
+        const findings = acceptanceFindings(await this.checkedEvidence(tx, binding.id, id));
         return { recorded: recorded.length, already, lease_until: iso(until), ...(findings.length ? { findings } : {}) };
       }, undefined, { access: true }));
       return { work: at, ...out };
@@ -9520,7 +9543,7 @@ export class Kolab {
       const nobody = out.state === 'in_review' && !out.writers.length
         ? `kolab ${s.kolab}'s policy keeps reviewing work packages for a person (AUT3), and no person other than its assignee holds Write on the technical layer: ${NOBODY_HELP}` : undefined;
       // What its reviewers see with the request (REV9): the failed acceptance checks of the round submitted.
-      const findings = acceptanceFindings(await this.roundEvidence(this.db, binding.id, id));
+      const findings = acceptanceFindings(await this.checkedEvidence(this.db, binding.id, id));
       return { work: at, state: out.state, in_review: out.state === 'in_review', reviewers, ...(nobody ? { nobody } : {}), unreviewed: out.state === 'done', recorded: out.recorded, already: out.already,
         ...(findings.length ? { findings } : {}) };
     });
@@ -9570,7 +9593,7 @@ export class Kolab {
         await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where binding_node_id = $1 and element_id = $2 and state = 'open'`, [binding.id, id]);
         // Kolab's own findings on the round under review (REV9): in the verdict's result whatever it is,
         // and refusing none. Read before a request for changes can send it to To do, which ends the round.
-        const findings = acceptanceFindings(await this.roundEvidence(tx, binding.id, id));
+        const findings = acceptanceFindings(await this.checkedEvidence(tx, binding.id, id));
         const c = await this.concernedIn(tx, binding.id, id);
         const assignee = r.assignee_id!;
         let state: WorkState;
@@ -11710,7 +11733,7 @@ export class Kolab {
     const found = new Map<string, AcceptanceFinding[]>();
     for (const r of rows) {
       if (r.subject_kind !== 'work' || found.has(`${r.binding_id}#${r.element_id}`)) continue;
-      found.set(`${r.binding_id}#${r.element_id}`, acceptanceFindings(await this.roundEvidence(this.db, r.binding_id!, r.element_id!)));
+      found.set(`${r.binding_id}#${r.element_id}`, acceptanceFindings(await this.checkedEvidence(this.db, r.binding_id!, r.element_id!)));
     }
     return rows.map(({ binding_id, ...r }) => {
       const common = { key: [r.at_key, r.reviewer, r.id] as [string, string, string], request: r.id, author: r.author, reviewer: r.reviewer, requested_at: new Date(r.created_at).toISOString() };

@@ -435,17 +435,14 @@ export async function workReviewDetails(kolab: Kolab, session: string, packages:
            left join lateral (select t.at, t.id from work_event t where t.binding_node_id = e.binding_node_id and t.element_id = e.element_id
                                and t.to_state = 'in_progress' and t.from_state is distinct from 'in_progress' order by t.at desc, t.id desc limit 1) rs on true
        ) x where x.i <= $4 order by x.at, x.id`, [here, bindings, elements, REVIEW_EVIDENCE_SHOWN])).rows;
-    // Kolab's own findings on each (REV9): the failed acceptance checks recorded since it was last To do.
+    // Kolab's own findings on each (REV9): every failed acceptance check it has recorded, in any round.
     const failed = (await q.query<{ binding: string; element: string; id: string; url: string | null; title: string | null; recorded_by: string; at: Date | string;
       checks: { address: string; version: number; passed: boolean }[] }>(
       `select n.name as binding, e.element_id as element, e.id, e.url, e.title, e.recorded_by, e.at, e.checks
          from unnest($2::text[], $3::text[]) as p(binding, element)
          join node n on n.kolab_id = $1 and n.name = p.binding
          join evidence e on e.binding_node_id = n.id and e.element_id = p.element
-         join work_event ev on ev.id = e.event_id
         where e.checks is not null and exists (select 1 from jsonb_array_elements(e.checks) c where c->'passed' = 'false'::jsonb)
-          and (ev.at, ev.id) > coalesce((select (t.at, t.id) from work_event t where t.binding_node_id = e.binding_node_id and t.element_id = e.element_id
-                                          and t.to_state = 'todo' order by t.at desc, t.id desc limit 1), ('-infinity'::timestamptz, ''::text))
         order by e.at, e.id`, [here, bindings, elements])).rows;
     for (const r of rows) {
       const mine = ev.filter((e) => e.binding === r.binding && e.element === r.element);
