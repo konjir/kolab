@@ -18,6 +18,7 @@ import { closeAtEnd, openKolab, rejection } from '@konjir/engine/testing';
 import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main, setup } from '../src/cli.js';
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
+import { claudeSession, startClaude, systemPrompt } from '../src/claude.js';
 import { MAX_CONFIG_BYTES, bridgeCommand, claudeBridgeEntry, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
@@ -477,8 +478,19 @@ test('W3.8: konjir connect claude, five agents in one go: one page, each agent s
   writer.releaseIdleLock();
   expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);   // the CLI's own sign-in: none, as before
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where person_id = 'ann' and actor_id = 'ann'`)).rows[0]).toStrictEqual({ n: 0 });
-  // The last line is the command to run.
-  expect(io.lines.at(-1)).toBe(`claude --dangerously-load-development-channels ${entries.map((e) => `server:${e.name}`).join(' ')}`);
+  // The last lines are one konjir claude command per agent (W9.1, API24), not one session for them all.
+  expect(io.lines.slice(-entries.length - 1)).toStrictEqual([`Start each agent's own Claude Code session, one terminal each, from ${project}:`, ...entries.map((e) => `konjir claude ${e.label}`)]);
+  expect(io.lines.join('\n')).not.toContain('claude --dangerously-load-development-channels');
+  // Each starts claude with that agent's entry alone, its channel and its system prompt.
+  for (const e of entries) {
+    const ran: string[][] = [];
+    const code = await startClaude(e.label, ['--model', 'opus'], { cwd: project, env }, { warn: () => {}, ignored: () => true, run: async (cmd, args) => { ran.push([cmd, ...args]); return 0; } });
+    expect(code).toBe(0);
+    const file = join(project, '.claude', `${e.name}.json`);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toStrictEqual({ mcpServers: { [e.name]: JSON.parse(text).mcpServers[e.name] } });
+    expect(ran).toStrictEqual([['claude', '--strict-mcp-config', '--mcp-config', file, '--dangerously-load-development-channels', `server:${e.name}`,
+      '--append-system-prompt', systemPrompt({ agent: e.agent, role: e.role, kolab: 'm5-check' }, e.name), '--model', 'opus']]);
+  }
   expect(io.lines.join('\n')).toContain('Each agent is signed in, in its own file under');
 
   // Run again: the same agents, signed in afresh in place of the sign-ins kept, which are revoked.
@@ -596,8 +608,12 @@ test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to 
     mcpServers: { 'konjir-pm': { type: 'http', url: server.url, oauth: { scopes: 'konjir kolab:anns role:product agent:ann-pm' } } },
   });
   const said = io.lines.join('\n');
-  expect(said).toContain('Run claude, and type /mcp.');
-  expect(said).toContain('Choose konjir-pm, then Authenticate. Kolab\'s page is for ann-pm alone, in kolab anns as product: check it, then Allow.');
+  expect(said).toContain('in it, type /mcp, choose the entry, then Authenticate.');
+  expect(said).toContain('konjir-pm: Kolab\'s page is for ann-pm alone, in kolab anns as product: check it, then Allow.');
+  expect(io.lines.at(-1)).toBe('konjir claude pm');
+  // konjir claude starts it with that entry alone, and no channel: an HTTP entry has none.
+  const s = claudeSession('pm', [], { cwd: project, env: { HOME: scratch() } });
+  expect(s.args).toStrictEqual(['--strict-mcp-config', '--mcp-config', join(project, '.claude', 'konjir-pm.json'), '--append-system-prompt', systemPrompt({ agent: 'ann-pm', role: 'product', kolab: 'anns' }, 'konjir-pm')]);
 
   const home = scratch();
   const g = world(server, idp, async () => 0);

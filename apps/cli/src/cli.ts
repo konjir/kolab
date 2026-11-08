@@ -18,6 +18,9 @@
  *                                        -> one browser page sets up the kolab and your agents; one MCP entry per agent
  *                                           in the harness's config (W3.7, D59); for Claude Code, the Konjir channel
  *                                           bridge (W3.8, D61), each agent signed in, or with --http its HTTP entry
+ *   konjir claude <label> [claude's arguments…]
+ *                                        -> one agent's Claude Code session: its konjir-<label> entry and channel alone,
+ *                                           and a system prompt naming it (W9.1, API24)
  *   konjir repo register [--binding B] [--url U] [--root SHA] [-C dir]
  *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
  *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--check ADDRESS=passed|failed]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
@@ -38,6 +41,7 @@
  * token, the one sign-in it keeps, when it keeps exactly one (D106).
  */
 import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from '@modelcontextprotocol/client';
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
@@ -46,6 +50,7 @@ import { deliverWork, gitIn, registerRepository, releaseDelivered } from './deli
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { guardHook } from './guard.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
+import { gitIgnored, startClaude } from './claude.js';
 import { toolsListing, verbHelp } from './verbs.js';
 import { importKolab } from './import.js';
 
@@ -236,10 +241,13 @@ Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]
            that is new, and grants each in the kolab in its role, never more than you hold. --dry-run prints the plan
            and stops. --force replaces konjir-<label> entries already there; --force-path writes a config file that
            links outside the project. For Claude Code each entry is the Konjir channel (from this checkout): Kolab's
-           tools and the inbox pushed into the session, each agent already signed in; it ends with the claude command
-           to run. --http writes Claude Code's plain HTTP entry instead, with no channel; OpenCode's and --http's entries
-           each sign in by themselves, on a page locked to their agent. Run it again: the same kolab and agents, signed
-           in afresh.
+           tools and the inbox pushed into the session, each agent already signed in; it ends with one konjir claude
+           command per agent. --http writes Claude Code's plain HTTP entry instead, with no channel; OpenCode's and
+           --http's entries each sign in by themselves, on a page locked to their agent. Run it again: the same kolab
+           and agents, signed in afresh.
+           konjir claude <label> [claude's arguments…] starts one agent's Claude Code session: only its konjir-<label>
+           entry and channel (written alone to .claude/konjir-<label>.json), and a system prompt naming the agent, its
+           role and kolab. Everything after the label goes to claude.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
            token, the sign-in konjir login keeps for that URL. With neither URL nor token, the one sign-in konjir
            keeps, when it keeps exactly one (konjir login and connect still default to the local URL).
@@ -412,6 +420,27 @@ export function connectionUrl(o: { given?: string; token?: string; cmd?: string;
 }
 
 export async function main(argv: string[]) {
+  // One agent's Claude Code session (W9.1, API24). It talks to no Kolab, and everything after the
+  // label is claude's, --url and --token included, so it is taken before konjir reads its own flags.
+  if (argv[0] === 'claude') {
+    if (process.env.KONJIR_JOB?.trim()) throw new Error('konjir claude doesn\'t run inside a Konjir job (KONJIR_JOB is set): a job is its own session already');
+    const [label, ...args] = argv.slice(1);
+    // Ctrl-C is claude's to handle: konjir waits for it to exit, rather than leaving it behind.
+    const onSigint = () => { /* claude's */ };
+    process.on('SIGINT', onSigint);
+    try {
+      process.exitCode = await startClaude(label, args, { cwd: process.cwd(), env: process.env }, {
+        warn: (l) => console.error(l), ignored: gitIgnored,
+        run: (cmd, a, o) => new Promise((resolve) => {
+          const child = spawn(cmd, a, { cwd: o.cwd, stdio: 'inherit' });
+          child.on('error', () => resolve(-1));
+          child.on('exit', (code, signal) => resolve(code ?? (signal ? 128 : -1)));
+        }),
+      });
+    } finally { process.off('SIGINT', onSigint); }
+    return;
+  }
+
   // A job's guard hook (W6.4): Claude Code runs it before each shell command, inside the job, with
   // its PreToolUse input on stdin. It talks to no Kolab and needs no session.
   if (argv[0] === 'work' && argv[1] === 'guard') {
