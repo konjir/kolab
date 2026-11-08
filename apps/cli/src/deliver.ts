@@ -340,7 +340,7 @@ async function packageCheckout(call: Call, git: Git, pkg: Pick<Round, 'work' | '
  * named, never found from what the session holds.
  */
 export async function releaseDelivered(call: Call, git: Git, opts: { work?: string; run: string; commit?: string; repo?: string; title?: string; dryRun?: boolean }) {
-  if (!opts.work) throw new Error('name the work package that was released: konjir work deliver kj:<binding>#<id> --release <the deploy run\'s https link>');
+  if (!opts.work) throw new Error('name the work package that was released: konjir work deliver kj:<binding>#<id> --release <the deploy run\'s https link, a GitHub Actions run of its registered repository>');
   const pkg = await readRound(call, opts.work);
   const repo = await packageCheckout(call, git, pkg, opts.repo);
   const sha = commitOf(git, opts.commit ?? 'HEAD', '--commit takes the one commit the deploy released');

@@ -181,8 +181,11 @@ Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|sum
            (Konjir-Work: kj:<kolab>/<binding>#<id>, from pull_work or read_work), checks the checkout is the registered
            repository (its root commit and a remote), and records them as evidence; --submit submits the package.
            Run again, it records only what is new. Kolab itself never reads git.
-           konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>], after the deploy: records
-           that the run released the commit (HEAD by default); a package with release: true, approved, is then Done.
+           konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>], after the package's approval
+           and then the deploy, in a checkout of its registered repository: records that the run, a GitHub Actions run
+           of that repository (<repository URL>/actions/runs/<id>), released the commit (HEAD by default, sent as its
+           full 40-hex sha); a package with release: true, approved, is then Done. Only someone with Write on the
+           technical layer other than the package's assignee records it, from an engineer session outside any job.
            konjir repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>], in a checkout, as a
            person with Maintain or Admin (never an agent): registers its repository, pinned by its root commit.
 Import:    konjir import <file.json> [--dry-run] [--update], signed in as yourself (never an agent or a job): imports

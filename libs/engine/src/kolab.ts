@@ -9368,7 +9368,7 @@ export class Kolab {
         const lease = await this.workTx(tx, s, 'reviews no work');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
         if (r.state !== 'in_review') throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}: only a work package In review takes a verdict`);
-        if (r.approved) throw new GateError(`${at} is approved already, and waits for its release (PLN16): it takes no other verdict. Once it is deployed, record the release (konjir_record_release work=${at} run=<the deploy run's link> sha=<the commit it released>), and that makes it Done`);
+        if (r.approved) throw new GateError(`${at} is approved already, and waits for its release (PLN16): it takes no other verdict: ${RELEASE_NEXT(at)}`);
         if (r.assignee_id === s.actor_id) throw new GateError(`${s.actor_id} is ${at}'s assignee; another actor with Write on the technical layer must review it (PLN16)`);
         // Only a reviewer the kolab's policy allows (AUT3, POL3), as the policy stands now (its lock taken first, below).
         await this.refuseByPolicyIn(tx, s, { work: at, assignee: r.assignee_id! });
@@ -9394,7 +9394,7 @@ export class Kolab {
             [binding.id, id, state, waits]);
           await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'approved', from: 'in_review', to: state, actor: s.actor_id,
             assigneeFrom: assignee, assigneeTo: assignee, version: c.version.id, concerned: c.delivers,
-            note: waits ? `${note ? `${note} ` : ''}(approved; it must be released, so it waits In review for its release: konjir_record_release once it is deployed, PLN16)` : note });
+            note: waits ? `${note ? `${note} ` : ''}(approved; it must be released, so it waits In review for its release: konjir_record_release once it is deployed, by someone other than its assignee, outside any job, PLN16)` : note });
           // The approval vouches for the repositories its evidence names (D98 ruling 1): the first by
           // someone other than a repository's registrar and the assignee confirms it.
           confirmed = await this.confirmRepositoriesIn(tx, binding, id, s.actor_id, assignee);
@@ -12354,10 +12354,15 @@ const MARK_NOTES = new Set<WorkEventKind>(['confirmed', 'reopened', 'at_risk']);
 
 /** A state as a sentence says it. */
 const STATE_WORDS: Record<WorkState, string> = { todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
-/** What to do with a package approved and waiting for its release (PLN16, W7.7). */
+/**
+ * What to do with a package approved and waiting for its release (PLN16, W7.7, W7.11): who may
+ * record it and how, as recordRelease takes it.
+ */
 const RELEASE_NEXT = (at: string) =>
-  `once it is deployed, someone with Write on the technical layer records the release, naming the deploy run and the commit it released `
-  + `(konjir_record_release work=${at} run=<the deploy run's https link> sha=<the released commit>, or konjir work deliver ${at} --release <run> from the checkout), and that makes it Done`;
+  `once it is deployed, after this approval, its release is recorded by someone with Write on the technical layer other than its assignee, `
+  + `from an engineer session outside any job (a job never merges or deploys, JOB4), naming the deploy run, a GitHub Actions run of the package's registered repository, or for a package with none of its own the registered one its evidence named with repo= `
+  + `(<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha `
+  + `(konjir_record_release work=${at} run=<the run's https link> sha=<the full sha>, or konjir work deliver ${at} --release <run> from a checkout of that repository), and that makes it Done`;
 
 /** The git trailer a commit carries for a work package (D98): its full address, kolab included. */
 const workTrailer = (kolab: string, binding: string, id: string) => `Konjir-Work: ${formatAddress({ kolab, node: binding, element: id })}`;
