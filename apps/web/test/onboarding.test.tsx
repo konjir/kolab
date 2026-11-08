@@ -55,7 +55,9 @@ test('the page shows konjir connect first: one command per harness, naming this 
   // Claude Code's entry is the Konjir channel (W3.8), which runs from a checkout even when the CLI is published; --http is the plain entry.
   expect(within(one).getByLabelText('Connect Claude Code with konjir connect').textContent).toBe('~/kolab/bin/konjir connect claude --url https://kolab.example.com --kolab anns');
   expect(within(one).getByLabelText('Get the Konjir channel from its repository').textContent).toBe('git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)');
-  expect(within(one).getByLabelText('Start Claude Code with the Konjir channel').textContent).toBe('claude --dangerously-load-development-channels server:konjir-product server:konjir-engineer');
+  // One session per agent (W9.1, API24), each with its own entry and channel alone.
+  expect(within(one).getByLabelText('Start konjir-product\'s Claude Code session').textContent).toBe('~/kolab/bin/konjir claude product');
+  expect(within(one).getByLabelText('Start konjir-engineer\'s Claude Code session').textContent).toBe('~/kolab/bin/konjir claude engineer');
   expect(within(one).getByLabelText('Connect Claude Code over HTTP, with no channel').textContent).toBe('npx konjir@1.2.3 connect claude --url https://kolab.example.com --kolab anns --http');
   expect(one.textContent).toMatch(/one Konjir server with Kolab’s tools, which also pushes your inbox into the session/);
   expect(one.textContent).toMatch(/Channels need Claude Code signed in with a claude.ai account/);

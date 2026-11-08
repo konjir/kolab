@@ -64,8 +64,8 @@ export const konjirConnectChannel = (origin: string, kolab: string) => `${CHECKO
 export const DEFAULT_AGENT_LABELS = ['product', 'engineer'] as const;
 /** Claude Code's server name for an agent's entry, as konjir connect writes it. */
 export const entryName = (label: string) => `konjir-${label}`;
-/** Starting Claude Code with the channel entries konjir connect claude writes for `labels`, loaded as development channels. */
-export const claudeWithChannel = (labels: readonly string[] = DEFAULT_AGENT_LABELS) => `claude --dangerously-load-development-channels ${labels.map((l) => `server:${entryName(l)}`).join(' ')}`;
+/** Starting one agent's Claude Code session with its entry and channel alone, as konjir connect claude ends (W9.1, API24). */
+export const claudeSession = (label: string) => `${CHECKOUT}/bin/konjir claude ${label}`;
 
 /** Where the konjir CLI comes from, when it isn't published: a checkout of the repository. */
 function GetTheCli({ cli }: { cli: WebCli | undefined }) {
@@ -105,8 +105,8 @@ export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; 
         <p className="why-not">For Claude Code, each entry is the Konjir channel: one Konjir server with Kolab’s tools, which also pushes your inbox into the session as it changes, on one sign-in per agent. It runs from a checkout of <span className="mono">github.com/konjir/kolab</span> at <span className="mono">{CHECKOUT}</span>{cli?.npm ? ', so make one first' : ''}, and each agent is signed in at the setup, so no more pages open when Claude Code starts. It prints the command to start Claude Code last.</p>
         {cli?.npm && <Command label="Get the Konjir channel from its repository" text={`git clone https://github.com/konjir/kolab ${CHECKOUT} && (cd ${CHECKOUT} && npm ci)`} />}
         <Command label="Connect Claude Code with konjir connect" text={konjirConnectChannel(origin, me.kolab)} />
-        <p className="why-not">Then start Claude Code in your project with the channel. Channels are a research preview, so it loads as a development channel: choose “I am using this for local development” at the warning. Name one <span className="mono">server:konjir-&lt;label&gt;</span> per agent you connected. Channels need Claude Code signed in with a claude.ai account; without one the tools still work, and no channel messages arrive.</p>
-        <Command label="Start Claude Code with the Konjir channel" text={claudeWithChannel()} />
+        <p className="why-not">Then start each agent’s own Claude Code session in your project, one terminal each, with <span className="mono">konjir claude &lt;label&gt;</span>: only that agent’s entry and channel, and a system prompt naming the agent, its role and kolab, so your prompt to it carries only the task. Channels are a research preview, so it loads as a development channel: choose “I am using this for local development” at the warning. Channels need Claude Code signed in with a claude.ai account; without one the tools still work, and no channel messages arrive.</p>
+        {DEFAULT_AGENT_LABELS.map((l) => <Command key={l} label={`Start ${entryName(l)}'s Claude Code session`} text={claudeSession(l)} />)}
         <p className="why-not">Don’t want channels? <span className="mono">--http</span> writes Claude Code’s plain HTTP entry instead, signed in from <span className="mono">/mcp</span>.</p>
         <Command label="Connect Claude Code over HTTP, with no channel" text={`${konjirConnect(cli, 'claude', origin, me.kolab)} --http`} />
         <p className="why-not">Choose the agents with <span className="mono">--agent &lt;label&gt;[:product|engineer]</span>, once for each; <span className="mono">--global</span> writes your own settings rather than the project’s.</p>

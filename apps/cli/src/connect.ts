@@ -369,6 +369,9 @@ function readText(path: string): string {
   } finally { closeSync(fd); }
 }
 
+/** A config file's text, as konjir connect reads it (readText), for konjir claude. */
+export const readConfigText = (path: string) => readText(path);
+
 /** What `konjir connect` is asked to do. */
 export interface ConnectOptions {
   harness: Harness;
@@ -436,12 +439,20 @@ const YOU = '<you>';
 /** How to start Claude Code with the Konjir channel entries (a development channel, during the research preview). */
 function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: boolean): string[] {
   return [
-    ...(global ? [] : ['Claude Code asks first whether to use the servers in this project\'s .mcp.json: approve the konjir- ones. They name this checkout\'s absolute path, so don\'t commit them.']),
+    ...(global ? [] : ['The entries in this project\'s .mcp.json name this checkout\'s absolute path, as konjir claude\'s files in .claude/ do, so don\'t commit them.']),
     'At its development-channels warning, choose "I am using this for local development". Channels need Claude Code signed in with a claude.ai account.',
     ...(signedIn ? [] : ['Each entry signs in by itself in your browser when Claude Code first starts it, on a page locked to its agent.']),
-    `Start Claude Code${global ? '' : ` from ${cwd}`}:`,
-    `claude --dangerously-load-development-channels ${entries.map((e) => `server:${e.name}`).join(' ')}`,
+    ...sessionSteps(entries, cwd),
   ];
+}
+
+/**
+ * One `konjir claude <label>` per agent (API24): each starts Claude Code with that agent's entry and
+ * channel alone, and its system prompt, rather than one session that loads every agent's channel.
+ */
+function sessionSteps(entries: Entry[], cwd: string): string[] {
+  return [`Start each agent's own Claude Code session, one terminal each, from ${cwd}:`,
+    ...entries.map((e) => `konjir claude ${e.label}`)];
 }
 
 /** The steps that sign an entry in by hand, per harness. */
@@ -450,10 +461,9 @@ function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: bo
     return [`Sign each entry in, one at a time${global ? '' : `, from ${cwd}`}:`,
       ...entries.map((e) => `  opencode mcp auth ${e.name}     # Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow`)];
   }
-  return [`Sign each entry in, one at a time, from Claude Code${global ? '' : ` started in ${cwd}`}:`,
-    '  1. Run claude, and type /mcp.',
-    ...(global ? [] : ['     Claude Code asks first whether to use the servers in this project\'s .mcp.json: approve the konjir- ones.']),
-    ...entries.map((e, k) => `  ${k + 2}. Choose ${e.name}, then Authenticate. Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow.`)];
+  return ['Each entry signs in the first time its session starts: in it, type /mcp, choose the entry, then Authenticate.',
+    ...entries.map((e) => `  ${e.name}: Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow.`),
+    ...sessionSteps(entries, cwd)];
 }
 
 /** A kolab name `--kolab` may give: Kolab's grammar (lowercase letters, digits and '-', starting with a letter or digit, at most 100). */

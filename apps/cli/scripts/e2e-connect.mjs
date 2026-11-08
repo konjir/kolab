@@ -210,8 +210,8 @@ async function main() {
   const first = await connect(dir, mcp, agents.map(([l, r]) => `${l}:${r}`));
   check(first.code === 0, `konjir connect exited ${first.code}:\n${first.out}${first.err}`);
   check(first.page.includes(`Set up 2 agents in <code>${KOLAB}</code>`) && first.page.includes('New: made now, private, yours'), `the setup page didn't offer a new kolab ${KOLAB} with 2 agents:\n${first.page}`);
-  const last = first.out.trim().split('\n').pop();
-  check(last.startsWith('claude --dangerously-load-development-channels server:konjir-writer'), `connect's last line isn't the claude command: ${last}`);
+  const last = first.out.trim().split('\n').slice(-2);
+  check(last.join('\n') === 'konjir claude writer\nkonjir claude builder', `connect's last lines aren't one konjir claude command per agent: ${last.join(' / ')}`);
 
   const mcpJson = join(dir, '.mcp.json');
   check(existsSync(mcpJson), '.mcp.json was not written');
