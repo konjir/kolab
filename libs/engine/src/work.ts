@@ -118,9 +118,34 @@ export function canonicalWork(work: WorkFields): string {
 
 /**
  * A link from a binding version, as its work checks see it: carried forward from its base, or its own;
- * `into_self` when it targets an element of the binding itself.
+ * `into_self` when it targets an element of the binding itself, `into_spec` when it targets its
+ * binding's spec; `kind` its edge kind (a dependency when not given).
  */
-export interface WorkLink { source_element_id: string | null; target: string; target_element_id?: string | null; into_self?: boolean }
+export interface WorkLink { source_element_id: string | null; target: string; target_element_id?: string | null; into_self?: boolean; into_spec?: boolean; kind?: string }
+
+/**
+ * The packages WRK11's check applies to (W8.3), scoped as W5.7's checks are, so a package committed
+ * with nothing behind it never stops an unrelated version: each package whose work this version adds
+ * or changes against `before` (the work of the version it was written on, element by element), each
+ * it drops a link from (`dropped`), and each that relies, by a link it holds, on a decision `before`
+ * held that this version removes or makes a work package (a milestone too): what was behind it.
+ */
+export function behindScope(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[],
+  before: ReadonlyMap<string, WorkFields | null | undefined>, dropped: Iterable<string> = []): Set<string> {
+  const work = new Map(elements.filter((e) => e.work).map((e) => [e.element_id, e.work!]));
+  const ids = new Set(elements.map((e) => e.element_id));
+  const scope = new Set(dropped);
+  for (const [id, w] of work) {
+    const was = before.get(id);
+    if (!was || canonicalWork(was) !== canonicalWork(w)) scope.add(id);
+  }
+  for (const l of links) {
+    const t = l.target_element_id;
+    if (!l.source_element_id || !t || !l.into_self || (l.kind ?? 'dependency') !== 'dependency') continue;
+    if (before.has(t) && !before.get(t) && (!ids.has(t) || work.has(t))) scope.add(l.source_element_id);
+  }
+  return scope;
+}
 
 /**
  * PLN2's checks on a binding version's work packages (D98, D104), beyond the structural ones every
@@ -128,12 +153,16 @@ export interface WorkLink { source_element_id: string | null; target: string; ta
  * package of the same version (an element with a work field, not a decision), and not itself; no
  * cycle in Depends on; a milestone depends on its members and has no work of its own, so links
  * nothing and carries no size (PLN3); only a milestone carries a target date; and no work package links another of
- * the version's, however the link came (D99): a decision it linked may have become a work package.
+ * the version's, however the link came (D99): a decision it linked may have become a work package;
+ * and every work package that isn't a milestone has something behind it (WRK11, PLN11): a dependency
+ * link at element scope into its binding's spec, or to a decision of its own binding.
  * Each problem is named in words a refusal can quote; none means the version goes on to review.
  */
 export function workProblems(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[],
   /** The packages whose work this version adds or changes; checks that are new since a binding committed apply only to these (W5.7). All, when undefined. */
-  changed?: ReadonlySet<string>): string[] {
+  changed?: ReadonlySet<string>,
+  /** The packages WRK11's check applies to, as behindScope finds them (W8.3). All, when undefined. */
+  linked?: ReadonlySet<string>): string[] {
   const problems: string[] = [];
   const work = new Map(elements.filter((e) => e.work).map((e) => [e.element_id, e.work!]));
   const ids = new Set(elements.map((e) => e.element_id));
@@ -184,6 +213,15 @@ export function workProblems(elements: { element_id: string; work?: WorkFields |
     if (!work.has(from) || work.get(from)!.milestone || !work.has(l.target_element_id)) continue;
     const p = `${from} links ${l.target}, which is a work package of this version: work packages don't link to each other (D99); name it in ${from}'s depends_on, and remove the link`;
     if (!said.has(p)) { said.add(p); problems.push(p); }
+  }
+  // Work has something behind it (WRK11, PLN11): what it serves in the spec, or a decision it relies on.
+  // New in W8.3, so, as W5.7's checks, only on a package this version adds, changes the work of or drops a link from.
+  const behind = new Set(links.filter((l) => l.source_element_id && l.target_element_id && (l.kind ?? 'dependency') === 'dependency'
+    && (l.into_spec || (l.into_self && ids.has(l.target_element_id) && !work.has(l.target_element_id)))).map((l) => l.source_element_id!));
+  const bare = [...work].filter(([id, w]) => !w.milestone && !behind.has(id) && (!linked || linked.has(id))).map(([id]) => id);
+  if (bare.length) {
+    const one = bare.length === 1;
+    problems.push(`${bare.join(', ')} ${one ? 'has' : 'have'} nothing behind ${one ? 'it' : 'them'} (WRK11, PLN11): link ${one ? 'it' : 'each'} to the spec element it serves or the decision of its binding it relies on (konjir_link, a dependency link), or, if there is none, withdraw it and konjir_ask the binding instead: work with nothing behind it is a question to the binding layer`);
   }
   return problems;
 }

@@ -13,12 +13,12 @@ Or install it with `npm install -g konjir@<version>`. Always name the exact vers
 Sign in with your browser, where Kolab asks you who the CLI works as (an agent of yours, by default), in which kolab and role:
 
 ```
-konjir login --url https://kolab.example.com/mcp [--kolab <name>] [--role product|engineer]
+konjir login --url https://kolab.example.com/mcp [--kolab <name>] [--role product|engineer] [--agent <agent>]
 konjir whoami
 konjir logout                # revokes the sign-in
 ```
 
-The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command uses it while `KONJIR_TOKEN` is unset or empty.
+The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command for that URL uses it while `KONJIR_TOKEN` is unset or empty. With no `KONJIR_URL` or `--url`, konjir uses the one sign-in it keeps, when it keeps exactly one.
 
 Or point it at a Kolab server with a session token:
 
@@ -26,7 +26,7 @@ Or point it at a Kolab server with a session token:
 export KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<your session token>
 konjir whoami
 konjir instructions          # the operating rules and precedent: read this first
-konjir tools                 # every verb, one line each
+konjir tools                 # every verb with its parameters
 konjir watch --once          # wait for the next change to your inbox
 ```
 
