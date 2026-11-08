@@ -5601,7 +5601,7 @@ export class Kolab {
           order by e.id`, [src.base_version_id, kind, sourceElement, targetNode])).rows;
       const derived: typeof found = [];
       for (const x of found) {
-        if (x.target_element_id && (await this.derivedFrom(this.db, targetVersion, x.target_element_id)).includes(targetElement)) derived.push(x);
+        if (x.target_element_id && (await this.splitInto(this.db, targetVersion, x.target_element_id)).els.includes(targetElement)) derived.push(x);
       }
       found = derived;
       if (found.length > 1) {
@@ -5771,22 +5771,26 @@ export class Kolab {
 
     // 1. Direct: every live edge pinned to an older version of this node. A retired plan's are
     //    history (D104, migration 0033): its packages and their links are its binding's now. A
-    //    split's derivation links into this node stay where they are (CAS10).
-    const inbound = await this.db.query<EdgeRow>(
-      `select e.* from edge e
+    //    split's derivation links into this node stay where they are (CAS10). An edge with an open
+    //    mark waits for it to settle, unless this version retires its target element: a split's
+    //    orphan names what the element lives on as now (checkEdgeIn).
+    const inbound = await this.db.query<EdgeRow & { marked: boolean }>(
+      `select e.*, exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open') as marked from edge e
          join version t on t.id = e.target_version_id
          join version s on s.id = e.source_version_id
         where t.node_id = $1 and t.seq < $2::int
           and ${LIVE('s')}
           and not ${SPLIT_DERIVATION('e', 's', 't')}
           and not exists (select 1 from node sn where sn.id = s.node_id and sn.kind = 'plan')
-          and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`,
+          and (e.target_element_id is not null or not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open'))`,
       [v.node_id, v.seq]);
+    const has = inbound.rows.some((e) => e.marked) ? new Set((await this.elements(v.id)).map((x) => x.element_id)) : undefined;
     // Only edges pinned to versions older than this one: a cascade run late (W1.8) never touches an
     // edge a newer version's commit, or its dependent's catch-up, has re-pinned already.
     // A link from another kolab is that kolab's work: its own rebase job, below.
     const elsewhere = new Set<string>();
     for (const e of inbound.rows) {
+      if (e.marked && has!.has(e.target_element_id!)) continue;
       if (e.kolab_id !== v.kolab_id) elsewhere.add(e.source_version_id);
       else await this.checkEdge(e, v.id);
     }
@@ -5799,7 +5803,7 @@ export class Kolab {
          from edge e join version t on t.id = e.target_version_id join version s on s.id = e.source_version_id
         where e.source_version_id = $1
           and not ${SPLIT_DERIVATION('e', 's', 't')}
-          and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`,
+          and (e.target_element_id is not null or not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open'))`,
       [v.id]);
     for (const e of outbound.rows) {
       if (e.latest === e.target_version_id) continue;
@@ -5941,7 +5945,9 @@ export class Kolab {
    * any node's lock, so a change of access can't land between the check and the mark.
    */
   private async checkEdgeIn(tx: Q, signal: Signal, e: EdgeRow, against: string): Promise<void> {
-    if ((await tx.query(`select 1 from invalidation where edge_id = $1 and state = 'open'`, [e.id])).rows.length) return;
+    const open = (await tx.query<{ id: string; reason: string; note: string | null }>(
+      `select id, reason, note from invalidation where edge_id = $1 and state = 'open' order by id`, [e.id])).rows;
+    if (open.length) return this.splitMarkedIn(tx, signal, e, against, open);
     if (e.target_kolab_id !== e.kolab_id) {
       const why = await this.unvouchedLink(e, tx);
       if (why) {
@@ -5959,10 +5965,15 @@ export class Kolab {
     // An element retired by a split (CAS10): the mark names the elements derived from it, so the
     // link's owner can re-point it to one of them. Its note holds their ids, told only to a reader
     // of the target (markBecause).
-    const derived = reason === 'orphaned' && e.target_element_id ? await this.derivedFrom(tx, against, e.target_element_id) : [];
+    const into = reason === 'orphaned' && e.target_element_id ? await this.splitInto(tx, against, e.target_element_id) : undefined;
+    await this.markEdgeIn(tx, signal, e, against, reason, into);
+  }
+
+  /** Marks edge `e`, found `reason` against version `against`, with its transitive marks; a split's orphan names what its target was split into. In `tx`. */
+  private async markEdgeIn(tx: Q, signal: Signal, e: EdgeRow, against: string, reason: string, into?: { els: string[]; since: boolean }) {
     const m = {
       version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: against, reason,
-      ...(derived.length ? { note: `${SPLIT_NOTE}${derived.join(', ')}` } : {}),
+      ...(into?.els.length ? { note: splitNote(into) } : {}),
     };
     const id = await this.markIn(tx, signal, m);
     await this.propagateIn(tx, signal, { id, ...m });
@@ -5970,16 +5981,73 @@ export class Kolab {
   }
 
   /**
-   * The elements of version `v` derived from element `old` of an earlier version of its node by a
-   * split (CAS10): the sources of its derivation links into it, in order. In `q`.
+   * An edge with open marks, checked against version `against` (CAS10). If a split there, or in a
+   * parent it was rebased onto, has retired its target element, its orphan names what that element
+   * lives on as now, after every split since, and a `changed` or `fuzzy_reanchor` mark it had
+   * settles for an orphan that does. Otherwise it waits until its marks settle. In `tx`.
    */
-  private async derivedFrom(q: Q, v: string, old: string): Promise<string[]> {
-    return (await q.query<{ el: string }>(
-      `select distinct e.source_element_id as el from edge e
+  private async splitMarkedIn(tx: Q, signal: Signal, e: EdgeRow, against: string, open: { id: string; reason: string; note: string | null }[]) {
+    if (!e.target_element_id || open.some((m) => !['orphaned', 'changed', 'fuzzy_reanchor'].includes(m.reason))) return;
+    if (e.target_kolab_id !== e.kolab_id && await this.unvouchedLink(e, tx)) return;
+    const into = await this.splitInto(tx, against, e.target_element_id);
+    if (!into.els.length) return;
+    const orphan = open.find((m) => m.reason === 'orphaned');
+    if (orphan) {
+      const note = splitNote(into);
+      if (orphan.note !== note) {
+        await tx.query(`update invalidation set note = $2 where id = $1`, [orphan.id, note]);
+        await this.signalLayerOf(tx, signal, e.source_version_id);
+      }
+      return;
+    }
+    const at = (await tx.query<{ name: string; seq: number }>(
+      `select n.name, v.seq from version v join node n on n.id = v.node_id where v.id = $1`, [against])).rows[0];
+    for (const m of open) await this.closeMarkIn(tx, signal, m.id, `its target was retired by a split, in ${at.name}@${at.seq}`);
+    await this.markEdgeIn(tx, signal, e, against, 'orphaned', into);
+  }
+
+  /**
+   * What element `old` of an earlier version lives on as in version `v` after splits (CAS10): the
+   * elements of `v` reached from it by derivation links into earlier versions of their own node,
+   * one split after another, along `v`'s node and the nodes it was rebased from (a variant's split
+   * elements came from its parent's split), in order. `since` when some element the first split
+   * made has been split or removed since, so they are no longer just what that split made. In `q`.
+   */
+  private async splitInto(q: Q, v: string, old: string): Promise<{ els: string[]; since: boolean }> {
+    const pairs = (await q.query<{ old: string; el: string }>(
+      `with recursive chain(id, node_id, seq, parent) as (
+         select id, node_id, seq, parent_version_id from version where id = $1
+         union
+         select p.id, p.node_id, p.seq, p.parent_version_id from chain c join version p on p.id = c.parent
+       ), tops as (select node_id, max(seq) as seq from chain group by node_id)
+       select distinct e.target_element_id as old, e.source_element_id as el from edge e
          join version s on s.id = e.source_version_id join version t on t.id = e.target_version_id
-        where e.source_version_id = $1 and e.target_element_id = $2 and e.source_element_id is not null
-          and ${SPLIT_DERIVATION('e', 's', 't')}
-        order by 1`, [v, old])).rows.map((r) => r.el);
+         join tops on tops.node_id = s.node_id and s.seq <= tops.seq
+        where s.state = 'committed' and e.source_element_id is not null and e.target_element_id is not null
+          and ${SPLIT_DERIVATION('e', 's', 't')}`, [v])).rows;
+    const live = new Set((await this.elements(v, q)).map((e) => e.element_id));
+    if (live.has(old)) return { els: [], since: false };
+    const children = new Map<string, string[]>();
+    for (const x of pairs) children.set(x.old, [...(children.get(x.old) ?? []), x.el]);
+    const found = new Set<string>();
+    const seen = new Set([old]);
+    let since = false;
+    for (let level = [old], depth = 0; level.length; depth++) {
+      const next: string[] = [];
+      for (const el of level) {
+        for (const c of children.get(el) ?? []) {
+          if (seen.has(c)) continue;
+          seen.add(c);
+          if (live.has(c)) found.add(c);
+          else {
+            next.push(c);
+            if (depth === 0) since = true;
+          }
+        }
+      }
+      level = next;
+    }
+    return { els: [...found].sort(), since };
   }
 
   // ---- links and forks across kolabs (LNK8, KON9) ----------------------------
@@ -6157,7 +6225,7 @@ export class Kolab {
          from edge e join version t on t.id = e.target_version_id
         where e.source_version_id = (select id from version where node_id = $1 and state = 'committed' order by seq desc limit 1)
           and e.target_kolab_id <> e.kolab_id
-          and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`, [node]);
+          and (e.target_element_id is not null or not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open'))`, [node]);
     for (const e of outbound.rows) {
       claim?.check();
       if (e.latest !== e.target_version_id) await this.checkEdge(e, e.latest);
@@ -11874,6 +11942,9 @@ const NO_REVIEWER = (layer: Layer, plan?: Pick<ReviewPlan, 'policy' | 'writers'>
 
 /** How an orphaned mark's note begins when a split retired its target (CAS10): the derived elements' ids follow, comma-separated. */
 const SPLIT_NOTE = 'split into: ';
+/** How it begins when an element the split made was split or removed since: what the target lives on as now follows. */
+const SPLIT_SINCE_NOTE = 'split, and lives on as: ';
+const splitNote = (into: { els: string[]; since: boolean }) => `${into.since ? SPLIT_SINCE_NOTE : SPLIT_NOTE}${into.els.join(', ')}`;
 
 /** A list in words: "a", "a and b", "a, b and c". */
 const inWords = (xs: string[]) => xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
@@ -11912,10 +11983,15 @@ export function markBecause(r: {
   // unvouched's note named the kolab its holder no longer reads before W7.10: on a mark written then, the other kolab, told only to its readers.
   const lost = (r.edge_id ? linked : parent) ? note : note.replace(/can no longer read kolab \S+/, 'can no longer read that kolab');
   // A split's orphan (CAS10) names the elements derived from the retired one, to a reader of it only.
-  const split = r.reason === 'orphaned' && r.note?.startsWith(SPLIT_NOTE) ? r.note.slice(SPLIT_NOTE.length).split(', ') : undefined;
+  const since = r.reason === 'orphaned' && !!r.note?.startsWith(SPLIT_SINCE_NOTE);
+  const split = r.reason === 'orphaned' && (since || r.note?.startsWith(SPLIT_NOTE))
+    ? r.note!.slice((since ? SPLIT_SINCE_NOTE : SPLIT_NOTE).length).split(', ') : undefined;
   const node = trigger(false);
+  const named = split && inWords(split.map((x) => `${node}#${x}`));
   return split ? (linked && node
-    ? `${linked} was retired by version ${r.trig_seq}, which split it into ${inWords(split.map((x) => `${node}#${x}`))}: re-point the link to the one it relies on`
+    ? (since
+      ? `${linked} was retired by version ${r.trig_seq}, which split it; after later versions it lives on as ${named}: re-point the link to the one it relies on`
+      : `${linked} was retired by version ${r.trig_seq}, which split it into ${named}: re-point the link to the one it relies on`)
     : 'a version in another kolab changed')
     : r.reason === 'query_answered' ? r.note ?? 'your question was answered'
     : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
