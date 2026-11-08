@@ -55,6 +55,8 @@ export const MAX_EVIDENCE_PER_PACKAGE = 500;
 export const MAX_EVIDENCE_FILES = 500;
 /** Characters in one path a commit touched (D98). */
 export const MAX_EVIDENCE_PATH = 1024;
+/** Acceptance checks one test run lists (REV9; migration 0048's kj_evidence_checks_valid). */
+export const MAX_EVIDENCE_CHECKS = 200;
 /** Characters in an evidence link (D98; migration 0031's evidence_url). */
 export const MAX_EVIDENCE_URL = 2000;
 /** Findings in one review verdict. */

@@ -329,10 +329,32 @@ export interface EvidenceInput {
    * be left out when the package has its repository (its `repo` field, or its binding's implementation).
    */
   repo?: string;
+  /**
+   * A test run's acceptance checks (REV9): each spec element it checked, by its address, and whether
+   * the check passed. Each must resolve to a committed element of a spec.
+   */
+  checks?: AcceptanceCheckInput[];
+}
+/** What an acceptance check's result is (REV9). */
+export const ACCEPTANCE_RESULTS = ['passed', 'failed'] as const;
+export type AcceptanceResult = typeof ACCEPTANCE_RESULTS[number];
+/** One acceptance check a test run ran, as a client gives it (REV9): a spec element's address, and its result. */
+export interface AcceptanceCheckInput { address: string; result: AcceptanceResult }
+/** One acceptance check as Kolab keeps it: the element's full address, the committed version it resolved to when recorded, and its result. */
+export interface AcceptanceCheckView { address: string; version: number; result: AcceptanceResult }
+/**
+ * What Kolab itself finds on a work package's review (REV9, VER15): a failed acceptance check among
+ * its evidence, naming the spec element, the evidence item and who recorded it. No verdict removes
+ * one, and none is refused because of one: it is read from the evidence, which is never edited (PLN5).
+ */
+export interface AcceptanceFinding {
+  kind: 'acceptance_failed'; element: string; version: number; evidence: string; recorded_by: string; at: string; explanation: string;
 }
 /** One item of a work package's evidence, as readers see it. */
 export interface EvidenceView {
   id: string; kind: EvidenceKind; sha?: string; pr?: number; url?: string; title?: string; files?: string[];
+  /** A test run's acceptance checks (REV9). */
+  checks?: AcceptanceCheckView[];
   recorded_by: string; at: string;
   /** The event that recorded it: evidence while the work was under way, or a submission. */
   event: string;
@@ -649,6 +671,8 @@ export interface ReviewRequestView {
   requested_at: string; next: string;
   /** A work package's: how many open marks make it at risk (PLN10, D102), which its reviewer sees before approving. */
   open_marks?: number;
+  /** A work package's: the failed acceptance checks among its evidence this round (REV9), which its reviewer sees with the request. */
+  findings?: AcceptanceFinding[];
   /**
    * A binding version's product review (VER13): its kolab requires a product approval of bindings,
    * so a reviewer from a product session checks that it doesn't change behavior.

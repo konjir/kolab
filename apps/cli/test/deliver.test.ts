@@ -202,6 +202,30 @@ test('after a reopen, konjir work deliver sends only the new round\'s commits: t
   expect(ev).toContain(c6);
 }, 120_000);
 
+test('konjir work deliver --check: the test run\'s acceptance checks go with it, a failed one is a finding its approval keeps, and one that doesn\'t resolve sends nothing (REV9, W8.4)', async () => {
+  const { eng, eng2, lee } = await planned();
+  const { dir } = checkout();
+  await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
+  await eng.call('pull_work', {});
+  // Checks need exactly one --test, and each is <address>=passed|failed: refused before anything is sent.
+  expect(await rejection(deliverWork(eng.call, gitIn(dir), { checks: ['kj:test/orders#R1=passed'] }))).toMatch(/give exactly one --test with it, not 0\. Nothing was sent/);
+  expect(await rejection(deliverWork(eng.call, gitIn(dir), { tests: ['a', 'b'], checks: ['kj:test/orders#R1=passed'] }))).toMatch(/not 2/);
+  expect(await rejection(deliverWork(eng.call, gitIn(dir), { tests: ['a'], checks: ['kj:test/orders#R1'] }))).toMatch(/--check kj:test\/orders#R1: give the spec element and the result/);
+  // One that doesn't resolve refuses the submission whole: nothing is recorded.
+  expect(await rejection(deliverWork(eng.call, gitIn(dir), { submit: true, tests: ['npm test: 3 passed'], checks: ['kj:test/orders#R9=passed'] })))
+    .toMatch(/kj:test\/orders#R9, doesn't resolve: kj:test\/orders@1 has no element R9\. Nothing was recorded/);
+  expect((await eng.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: unknown[] }).evidence).toHaveLength(0);
+  const r = await deliverWork(eng.call, gitIn(dir), { submit: true, tests: ['npm test: 3 passed'], checks: ['kj:test/orders#R1=passed', 'kj:orders#R2=failed'] }) as Record<string, unknown>;
+  expect(r).toMatchObject({ state: 'in_review', findings: [{ kind: 'acceptance_failed', element: 'kj:test/orders#R2', recorded_by: 'eng' }] });
+  expect(await eng2.call('list_reviews', {})).toMatchObject({ for_you: [{ subject: 'kj:orders-pg#W1', findings: [{ element: 'kj:test/orders#R2' }] }] });
+  expect(await eng2.call('review', { work: 'kj:orders-pg#W1', verdict: 'approve' })).toMatchObject({ state: 'done', findings: [{ element: 'kj:test/orders#R2' }] });
+  const w = await eng2.call('read_work', { work: 'kj:orders-pg#W1' }) as { evidence: Record<string, unknown>[]; findings: unknown[] };
+  expect(w.evidence.find((e) => e.kind === 'test_run')).toMatchObject({ title: 'npm test: 3 passed', checks: [
+    { address: 'kj:test/orders#R1', version: 1, result: 'passed' }, { address: 'kj:test/orders#R2', version: 1, result: 'failed' },
+  ] });
+  expect(w.findings).toMatchObject([{ kind: 'acceptance_failed', element: 'kj:test/orders#R2', recorded_by: 'eng' }]);
+}, 120_000);
+
 test('konjir work deliver finds a package\'s commits by the trailer it had as a plan\'s package, before D104 (migration 0033), as by its own', async () => {
   const { kolab, eng, lee } = await planned();
   const { dir, c1 } = checkout();
