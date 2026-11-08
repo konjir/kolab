@@ -5,7 +5,7 @@
 // mark. The split's own derivation links stay pinned to that version and are never marked.
 import { expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { els, marksOn, rejection, setup } from '@konjir/engine/testing';
+import { commitReviewed, els, marksOn, openKolab, rejection, setup } from '@konjir/engine/testing';
 
 type Ctx = Awaited<ReturnType<typeof setup>>;
 
@@ -120,4 +120,68 @@ test('a derivation link into an earlier version of another node is re-resolved a
   await kolab.commit(product, 'spec', { elements: els({ R1a: 'Carts expire after 30 days.', R1b: 'Carts hold 50 items.', R2: 'Checkout takes two pages.' }) });
   expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason]).sort()).toStrictEqual([['b1', 'orphaned'], ['b2', 'changed'], ['b3', 'changed']]);
   expect(await rejection(kolab.clear(engineer, (await marksOn(kolab, 'b'))[0].id))).toMatch(/the target no longer exists/);
+});
+
+test("a whole-version mark on a split node never walks into the split's own derivation links", async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  await kolab.createNode(product, 'spec', 'Spec', 'spec');
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 30 days.' }) });
+  await kolab.createNode(engineer, 'binding', 'Binding', 'b');
+  const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A nightly job expires carts, and a check caps them.' }) });
+  await kolab.link(engineer, { kind: 'dependency', source: b1, target: s1 });
+  // b@2 splits b1 into b1a and b1b, each derived from b@1#b1.
+  const draft = await kolab.draft(engineer, 'b', { elements: els({ b1a: 'A nightly job expires carts.', b1b: 'A check caps them.' }) });
+  for (const el of ['b1a', 'b1b']) await kolab.link(engineer, { kind: 'derivation', source: draft, sourceElement: el, target: b1, targetElement: 'b1' });
+  expect(await kolab.review(draft)).toMatchObject({ ok: true });
+  expect(await marksOn(kolab, 'b')).toStrictEqual([]);
+  // spec@2 changes R1: b is marked as a whole, and its derivation links are not.
+  await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 31 days.' }) });
+  expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason])).toStrictEqual([[null, 'changed']]);
+});
+
+test('re-pointing is refused when two orphaned links from the element are into elements the new target was split from, naming how to choose', async () => {
+  const ctx = await setup();
+  const { kolab, product, engineer } = ctx;
+  await kolab.createNode(product, 'spec', 'Spec', 'spec');
+  const s1 = await kolab.commit(product, 'spec', { elements: els({ R1: 'Carts expire after 30 days.', R2: 'Carts hold 50 items.' }) });
+  await kolab.createNode(engineer, 'binding', 'Binding', 'b');
+  const b1 = await kolab.commit(engineer, 'b', { elements: els({ b1: 'A nightly job expires carts, and a check caps them.' }) });
+  for (const el of ['R1', 'R2']) await kolab.link(engineer, { kind: 'dependency', source: b1, sourceElement: 'b1', target: s1, targetElement: el });
+  // spec@2 retires R1 and R2 for R3, derived from both: b1's two links are orphaned.
+  const s2 = await kolab.draft(product, 'spec', { elements: els({ R3: 'Carts expire after 30 days and hold 50 items.' }) });
+  for (const el of ['R1', 'R2']) await kolab.link(product, { kind: 'derivation', source: s2, sourceElement: 'R3', target: s1, targetElement: el });
+  expect(await kolab.review(s2)).toMatchObject({ ok: true });
+  expect((await marksOn(kolab, 'b')).map((m) => [m.element_id, m.reason])).toStrictEqual([['b1', 'orphaned'], ['b1', 'orphaned']]);
+  const draft = await kolab.draft(engineer, 'b', { deltas: [{ kind: 'override', element: 'b1', text: 'A nightly job expires carts.' }] });
+  expect(await rejection(kolab.link(engineer, { kind: 'dependency', source: draft, sourceElement: 'b1', target: s2, targetElement: 'R3' })))
+    .toMatch(/^GateError: more than one orphaned link from b1 is into an element R3 was split from; name the one this replaces: konjir_unlink/);
+});
+
+test("a split's orphan from another kolab names the derived elements only to a reader of the split node's kolab (LNK8)", async () => {
+  const kolab = await openKolab();
+  for (const a of ['alice', 'bob', 'carol']) await kolab.addActor(a);
+  await kolab.createKolab('orders', { owner: 'alice' });
+  await kolab.createKolab('billing', { owner: 'bob' });
+  const alice = await kolab.openSession('alice', 'product');
+  const bob = await kolab.openSession('bob', 'product');
+  await kolab.grant('billing', 'alice', 'read');
+  await kolab.grant('orders', 'carol', 'write', { layers: ['functional'] });
+  const carol = await kolab.openSession('carol', 'product', { kolab: 'orders' });
+  await kolab.createNode(bob, 'spec', 'Checkout', 'checkout');
+  const c1 = await kolab.commit(bob, 'checkout', { elements: els({ R1: 'Invoices are sent monthly, in euros.' }) });
+  await kolab.createNode(alice, 'spec', 'Orders', 'orders-spec');
+  const o1 = await commitReviewed(kolab, alice, carol, 'orders-spec', { elements: els({ O1: 'Orders are invoiced monthly.' }) });
+  const r1 = await kolab.versionIn(alice, 'kj:billing/checkout#R1', { what: 'linking', across: true });
+  await kolab.link(alice, { kind: 'dependency', source: o1, sourceElement: 'O1', target: r1.id, targetElement: 'R1' });
+  // bob splits R1 into R1a and R1b: alice's O1 is orphaned.
+  const split = await kolab.draft(bob, 'checkout', { elements: els({ R1a: 'Invoices are sent monthly.', R1b: 'Invoices are in euros.' }) });
+  for (const el of ['R1a', 'R1b']) await kolab.link(bob, { kind: 'derivation', source: split, sourceElement: el, target: c1, targetElement: 'R1' });
+  expect(await kolab.review(split)).toMatchObject({ ok: true });
+  await kolab.drainOutbox();
+  const because = async (s: string) => (await kolab.marksPage(s, {}, {}, { revisit: true })).items.map((m) => m.because);
+  expect(await because(alice)).toStrictEqual(['kj:billing/checkout#R1 was retired by version 2, which split it into kj:billing/checkout#R1a and kj:billing/checkout#R1b: re-point the link to the one it relies on']);
+  // carol, who can't read billing, is told only that a version there changed.
+  expect(await because(carol)).toStrictEqual(['a version in another kolab changed']);
+  expect(JSON.stringify(await kolab.marksFor(carol))).not.toMatch(/checkout|billing|R1a|R1b/);
 });
