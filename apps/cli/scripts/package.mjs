@@ -14,23 +14,24 @@
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
 // with it, for `konjir --version`.
 //
-// Bun is pinned in apps/cli/bun-runtimes.json: its version, and the sha256 of each release zip this
-// script uses. Every build checks that the bun on PATH is that version. The binaries are compiled on
-// runtimes this script downloads from Bun's GitHub release and checks against those hashes
-// (--compile-executable-path), not on runtimes bun fetches itself. A new Bun means new hashes there:
-// take them from the release's SHASUMS256.txt. The download retries a 5xx or a network error a few
-// times (scripts/download.mjs); the hash is checked on whatever it gets.
+// Bun is pinned in apps/cli/bun-runtimes.json: its version, the sha256 of each release zip this
+// script uses, and the integrity of the same build's npm tarball (@oven/<the zip's name>). Every
+// build checks that the bun on PATH is that version. The binaries are compiled on runtimes this
+// script downloads and checks against those pins (--compile-executable-path), not on runtimes bun
+// fetches itself: from Bun's GitHub release, retrying a 5xx or a network error a few times
+// (scripts/download.mjs), or, when the zip still fails, from npm (scripts/bun-runtime.mjs, W7.18).
+// A new Bun means new pins there: take the sha256s from the release's SHASUMS256.txt, and each
+// integrity from `npm view @oven/<name>@<version> dist.integrity`.
 //
 // konjir is licensed Apache-2.0 (D63; apps/cli/LICENSE, the full licence text). LICENSE, and
 // THIRD-PARTY-NOTICES.md, which lists every package the bundle inlines (from Bun's metafile) with
 // its licence text, and the Bun runtime the binaries embed, ship in the npm package and with the
 // binaries. The build refuses a manifest that declares any other licence.
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { download } from './download.mjs';
+import { installBun, runtime as fetchRuntime } from './bun-runtime.mjs';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(app, '../..');
@@ -49,29 +50,8 @@ const TARGETS = {
 };
 const cache = join(root, 'node_modules/.cache/konjir-bun', pinned.version);
 
-/** Download a pinned Bun release zip, check its sha256, unzip it and return the bun executable's path. */
-async function runtime(name) {
-  const zip = `${name}.zip`;
-  const want = pinned.sha256[zip];
-  if (!want) throw new Error(`apps/cli/bun-runtimes.json has no sha256 for ${zip}`);
-  const exe = join(cache, name, name.startsWith('bun-windows') ? 'bun.exe' : 'bun');
-  const file = join(cache, zip);
-  if (!existsSync(file)) {
-    const url = `https://github.com/oven-sh/bun/releases/download/bun-v${pinned.version}/${zip}`;
-    const body = await download(url);
-    mkdirSync(cache, { recursive: true });
-    writeFileSync(`${file}.part`, body);
-    execFileSync('mv', [`${file}.part`, file]);
-  }
-  const got = createHash('sha256').update(readFileSync(file)).digest('hex');
-  if (got !== want) {
-    rmSync(file, { force: true });
-    throw new Error(`${zip} has sha256 ${got}, but apps/cli/bun-runtimes.json pins ${want}; refusing to use it`);
-  }
-  rmSync(join(cache, name), { recursive: true, force: true });
-  execFileSync('unzip', ['-q', '-o', file, '-d', cache]);
-  return exe;
-}
+/** A pinned Bun build's executable, checked against its pin (scripts/bun-runtime.mjs). */
+const runtime = (name) => fetchRuntime(name, { pinned, cache });
 
 function checkBun() {
   let have;
@@ -174,11 +154,7 @@ if (mode === 'bun') {
   const host = `${process.platform}-${process.arch}`;
   const name = TARGETS[host];
   if (!name) throw new Error(`no pinned Bun for ${host}`);
-  const exe = await runtime(name);
-  mkdirSync(rest[0], { recursive: true });
-  copyFileSync(exe, join(rest[0], 'bun'));
-  chmodSync(join(rest[0], 'bun'), 0o755);
-  console.log(join(rest[0], 'bun'));
+  console.log(await installBun(name, rest[0], { pinned, cache }));
 } else if (mode === 'npm') {
   checkBun();
   const out = join(app, 'dist-npm');

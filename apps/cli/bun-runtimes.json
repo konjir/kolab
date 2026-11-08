@@ -6,5 +6,12 @@
     "bun-linux-aarch64.zip": "4e9deb6814a7ec7f68725ddd97d0d7b4065bcda9a850f69d497567e995a7fa33",
     "bun-linux-x64-baseline.zip": "bbe4632ac03d7495177d542ecefa8f21f9849273106525f6bb13172ec8e4ab2c",
     "bun-windows-x64-baseline.zip": "74f4dad7b4873ee70f63add9918400334e31acab9ba3fce9ef9906d96646e231"
+  },
+  "integrity": {
+    "@oven/bun-darwin-aarch64": "sha512-hPERz4IgXCM6Y6GdEEsJAFceyJMt29f3HlFzsvE/k+TQjChRhar6S+JggL35b9VmFfsdxyCOOTPqgnSrdV0etA==",
+    "@oven/bun-darwin-x64-baseline": "sha512-ArHVWpCRZI3vGLoN2/8ud8Kzqlgn1Gv+fNw+pMB9x18IzgAEhKxFxsWffnoaH21amam4tAOhpeewRIgdNtB0Cw==",
+    "@oven/bun-linux-aarch64": "sha512-rq0nNckobtS+ONoB95/Frfqr8jCtmSjjjEZlN4oyUx0KEBV11Vj4v3cDVaWzuI34ryL8FCog3HaqjfKn8R82Tw==",
+    "@oven/bun-linux-x64-baseline": "sha512-3IkS3TuVOzMqPW6Gg9/8FEoKF/rpKZ9DZUfNy9GQ54+k4PGcXpptU3+dy8D4iDFCt4qe6bvoiAOdM44OOsZ+Wg==",
+    "@oven/bun-windows-x64-baseline": "sha512-K6qBUKAZLXsjAwFxGTG87dsWlDjyDl2fqjJr7+x7lmv2m+aSEzmLOK+Z5pSvGkpjBp3LXV35UUgj8G0UTd0pPg=="
   }
 }

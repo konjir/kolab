@@ -97,7 +97,8 @@ jobs:
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # The Bun apps/cli/bun-runtimes.json pins, checked against its sha256. Not dirname "$(…)": bash -e
+      # The Bun apps/cli/bun-runtimes.json pins, checked against its pin: GitHub's zip, or npm's
+      # tarball when the zip won't download (W7.18). Not dirname "$(…)": bash -e
       # doesn't stop on a failure inside a command substitution whose outer command succeeds (W7.17).
       - name: Install Bun
         run: |
