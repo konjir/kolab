@@ -231,7 +231,7 @@ Admin: apply a ruling of Lee's to a node (D47): a new version, written as the ac
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ruling` | `string` | yes | The ruling being applied, by its Decisions Log ID, e.g. D46 |
-| `actor` | `string` | yes | Who the version is written as, e.g. mirror-product; it writes in the role of the node's layer |
+| `actor` | `string` | yes | Who the version is written as, an actor with Write on the node's layer; it writes in the role of that layer |
 | `node` | `string` | yes | The node, as <kolab>/<node> (e.g. kolab/kolab-binding), or its name alone when no other kolab has a node of that name |
 | `elements` | `[{id?,text,parent?,work?}]` | no |  |
 | `deltas` | `[{kind,element,text?,parent?,work?}]` | no |  |

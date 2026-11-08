@@ -19,7 +19,7 @@ deploy/demo/run-local.sh              # embedded Postgres (PGlite) in a temporar
 deploy/demo/run-local.sh --postgres   # Postgres 18 in a Docker container, removed afterwards
 ```
 
-**Against a running Kolab**, such as the test server:
+**Against a running Kolab**, such as production:
 
 ```
 KONJIR_URL=https://kolab.konjir.com/mcp KONJIR_TOKEN=$(deploy/konjir-ops.sh admin-token) \
@@ -29,7 +29,7 @@ KONJIR_URL=https://kolab.konjir.com/mcp KONJIR_TOKEN=$(deploy/konjir-ops.sh admi
   node deploy/demo/m1-walkthrough.mjs cleanup ~/.konjir-demo/<run>.json
 ```
 
-Every name the run creates ends in a fresh run id, for example `acme-demo-1017k3x9`, and the run stops before writing anything if one of its kolab names is taken. So it never touches an existing kolab, the mirror kolab `kolab` included. With the admin token, a run can't skip review on any node but its own: `admin_apply_ruling` is given the demo kolab's node by its full name.
+Every name the run creates ends in a fresh run id, for example `acme-demo-1017k3x9`, and the run stops before writing anything if one of its kolab names is taken. So it never touches an existing kolab, Konjir's own `kolab` included. With the admin token, a run can't skip review on any node but its own: `admin_apply_ruling` is given the demo kolab's node by its full name.
 
 No token is printed. The agents' tokens go to the state file (`~/.konjir-demo/<run>.json`, mode 600), so that `cleanup` can end their sessions. Kolab's refusals are scrubbed of tokens before they are shown.
 
@@ -47,11 +47,11 @@ No token is printed. The agents' tokens go to the state file (`~/.konjir-demo/<r
 
 ### Cleanup, and what stays
 
-`cleanup` touches only what its run created: it ends the run's sessions, then archives its two kolabs (`acme-demo-<run>`, `globex-demo-<run>`), its two organizations and its seven actors with `admin_archive`, each by name (D52). **Nothing is deleted.** An archived kolab, organization or actor is left out of `admin_list_kolabs` and `admin_list_actors`, and can't be used: no session opens in it or as it, and nothing in an archived kolab can change. Its data is kept for audit, and its name stays reserved, so a later run can't take it; the walkthrough's preflight lists archived kolabs too (`archived=true`), so it stops before writing anything if a name is taken either way. `admin_unarchive` restores one, with its grants and memberships. So on the test server a run leaves archived rows behind for good: run it there when it is worth it, not as a smoke test. Against a Kolab from before archiving, the archive steps are refused and only the sessions end.
+`cleanup` touches only what its run created: it ends the run's sessions, then archives its two kolabs (`acme-demo-<run>`, `globex-demo-<run>`), its two organizations and its seven actors with `admin_archive`, each by name (D52). **Nothing is deleted.** An archived kolab, organization or actor is left out of `admin_list_kolabs` and `admin_list_actors`, and can't be used: no session opens in it or as it, and nothing in an archived kolab can change. Its data is kept for audit, and its name stays reserved, so a later run can't take it; the walkthrough's preflight lists archived kolabs too (`archived=true`), so it stops before writing anything if a name is taken either way. `admin_unarchive` restores one, with its grants and memberships. So on production a run leaves archived rows behind for good: run it there when it is worth it, not as a smoke test. Against a Kolab from before archiving, the archive steps are refused and only the sessions end.
 
 ## What each step shows
 
-The IDs are the requirements of *Kolab — Functional Spec* that each step demonstrates.
+The IDs are the requirements of Kolab's spec, `kj:kolab/kolab`, that each step demonstrates.
 
 | # | Step | What the audience sees | Spec |
 | --- | --- | --- | --- |
@@ -77,14 +77,14 @@ The IDs are the requirements of *Kolab — Functional Spec* that each step demon
 - **Nothing commits without review, and review is by agents (VER2, VER6, VER16).** Kolab runs no model and holds no model credentials (VER7). Each reviewing agent works in its owner's harness, on its owner's account. Separation of duty is per agent, so one person's two agents can review each other.
 - **Precision of the cascade (LNK3).** One requirement edit marks one binding element (step 10), not the whole binding. This is the measurement that decided element-level links: 4 dirty versions instead of 202.
 - **Questions route to whoever owns the answer (Q1, Q2).** The engineer doesn't guess and doesn't edit the spec. The answer reaches the element that waited on it, even though the spec text never changed.
-- **Rulings are approvals (D47, CASE3).** A decision that has already been made goes in without a second review, under the actor it is written as, and is recorded as a ruling. Only the admin token can do it.
+- **Rulings are approvals (D47, CASE3).** A decision that has already been made goes in without a second review, under the actor it is written as, and is recorded as a ruling. Only a Konjir admin's own session or the break-glass token can do it (D111).
 - **Waits are durable (REV3).** A review request is a row, so it outlives a restart. The outbox finishes what each commit owes, exactly once.
 - **Tenancy (TEN12).** Another company on the same Kolab learns nothing, not even whether a kolab exists.
 - **The setup is one token (DEL2).** Every agent here is a shell with `KONJIR_URL` and `KONJIR_TOKEN`. Claude Code would add the same URL and token as an MCP server.
 
-What an outside team will notice is missing today: tenancy is managed only through the admin token, since a kolab's own Admins can't grant access yet. Tokens are bearer tokens with no expiry or OAuth. Nothing imports another tool's spec files (FIL2), and there is no plan or work-package flow (PLN). Kolabs and accounts are archived, never removed (D52), and can't be renamed or transferred yet (TEN5).
+What the walkthrough leaves out of what Kolab does today: it sets tenancy up with the admin token and hand-issued session tokens, while people sign in with GitHub and a kolab's own Admins invite and grant access on the web page; and it plans and builds no work packages (PLN). Nothing imports another tool's spec files (FIL2). Kolabs and accounts are archived, never removed (D52), and can't be renamed or transferred yet (TEN5).
 
 ## Rough edges it steers around
 
 - **A link to a quoted span could be left with a mark nothing could settle** (fixed since, D50). The quoted words changing ("7 days" to "14 days") with their prefix and suffix intact gave an `orphaned` mark that `clear_mark` refused, and that revising the element, linking it again or removing the element left open. Now that edit is a change (`fuzzy_reanchor`, ADR8); linking the element to the new words in a draft re-points the link, and the mark settles when the draft commits; `konjir_unlink` removes a link in a draft, settling its mark when the draft commits; and removing the element settles its marks. Step 8 still quotes words the walkthrough never changes, and links b2 to R3 as a whole element.
-- **An agent session calling an admin verb is refused with `Insufficient scope: required "agent admin"`**. That reads as if both scopes were needed, and it doesn't say that only the admin token may call the verb.
+- **An agent session calling an admin verb is refused** (step 12). The CLI says it is an admin verb that only a Konjir admin's own session or the break-glass token may call (`apps/cli/src/cli.ts`).

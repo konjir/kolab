@@ -2,7 +2,7 @@
 
 The targets (P12, D75, D81): a recovery point at RDS's documented guarantee, through point-in-time recovery, and a restore in under 1 hour, proven by a restore drill. RDS uploads the log every 5 minutes, so a restore can lose up to about 5 to 6 minutes of writes, and each drill records the real figure (D81). This runbook is the written procedure, and `deploy/recovery-drill.sh` is the drill. Export per kolab comes later, with the FIL file format.
 
-**Who does what.** Lee, the operator, runs every step from a checkout with the `icedlee337` profile. The one exception is a Terraform apply: once W2.23 has landed, it runs in CI (D73), approved in the `production` environment by Claude, after reading the plan, or by Lee (D107). Before W2.23, Lee runs applies from the laptop, as today. An agent may prepare commands and read their output, but it doesn't run the steps that change production, which are 4 to 7, nor step 2, which creates a billed instance.
+**Who does what.** Lee, the operator, runs every step from a checkout with the `icedlee337` profile. The one exception is a Terraform apply: it runs in CI (D73, W2.23), approved in the `production` environment by Claude, after reading the plan, or by Lee (D107). An agent may prepare commands and read their output, but it doesn't run the steps that change production, which are 4 to 7, nor step 2, which creates a billed instance.
 
 ## What protects the database
 
@@ -40,7 +40,7 @@ avail() { until [ "$(aws rds describe-db-instances --db-instance-identifier "$1"
 | 3. Verify the new instance | Lee, with `deploy/recovery-drill.sh verify` | 5 minutes |
 | 4. Cut over | Lee | 5 minutes, about 1 of them with Kolab down |
 | 5. Roll back (only before step 6) | Lee | 5 minutes |
-| 6. Bring Terraform into line, then resume deploys | Lee; after W2.23, the apply is approved in CI (Claude or Lee, D107) | 20 minutes, a few with Kolab down |
+| 6. Bring Terraform into line, then resume deploys | Lee; the apply is approved in CI (Claude or Lee, D107) | 20 minutes, a few with Kolab down |
 | 7. Clean up, a week later | Lee | 5 minutes |
 
 Steps 1 to 4 make the hour, measured from the start of step 2. If a release caused the damage, follow [If a release caused it](#if-a-release-caused-it) instead of steps 4 to 6.
@@ -55,8 +55,7 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
 
 Pause deploys until step 6 is done. A Terraform apply between steps 4 and 6 would point the database URL back at the old instance, and any release would restart Kolab on it.
 
-- **Before W2.23:** applies run only from Lee's laptop. Don't run one.
-- **After W2.23:** `.github/workflows/deploy.yml` deploys production once a run is approved in the `production` environment (by Claude or Lee, D107), and only while the repository variable `DEPLOY_FROM_CI` is `true`. The pause is `DEPLOY_FROM_CI=false`, plus cancelling every run that is pending or waiting: the variable stops new runs from building a release, but a run already past that point would still apply once approved. Don't touch the `production` environment. GitHub has no way to disable one, and deleting it removes its required reviewers: the next run would recreate it without them.
+- `.github/workflows/deploy.yml` deploys production once a run is approved in the `production` environment (by Claude or Lee, D107), and only while the repository variable `DEPLOY_FROM_CI` is `true`. The pause is `DEPLOY_FROM_CI=false`, plus cancelling every run that is pending or waiting: the variable stops new runs from building a release, but a run already past that point would still apply once approved. Don't touch the `production` environment. GitHub has no way to disable one, and deleting it removes its required reviewers: the next run would recreate it without them.
 
   ```
   gh variable set DEPLOY_FROM_CI --body false
@@ -169,7 +168,7 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
 deploy/konjir-ops.sh status
 ```
 
-Then fix the state. After W2.23, run these as `deploy/konjir-ops.sh --env $ENV terraform …`, which uses the environment's own state. Before W2.23, run `terraform -chdir=deploy/terraform …`.
+Then fix the state. Run these as `deploy/konjir-ops.sh --env $ENV terraform …`, which uses the environment's own state.
 
 ```
 terraform state rm module.database.aws_db_instance.this
@@ -179,10 +178,7 @@ terraform plan
 
 The plan must change the instance in place, never replace it. Expect it to set the master password to the same value (an import can't read it), along with `skip_final_snapshot`, `final_snapshot_identifier`, `delete_automated_backups` and `apply_immediately`, and nothing else of note. The SSM parameter shows no change, because the renamed instance has the original address. If the plan replaces anything, stop and ask.
 
-Then apply:
-
-- **Before W2.23:** Lee applies from the laptop.
-- **After W2.23:** Lee resumes deploys as step 0 says (`DEPLOY_FROM_CI=true`, then `gh workflow run deploy.yml --ref main`) and the production run is approved, which applies the same plan. The `state rm` and `import` still need write access to the state bucket from Lee's laptop. If W2.23 narrows the laptop's access, they need a way of their own: a break-glass role with write access to the state, assumed with Lee's MFA, or a `workflow_dispatch` job that runs exactly these three commands. That choice belongs to W2.23, and the binding's Today column records it.
+Then apply: Lee resumes deploys as step 0 says (`DEPLOY_FROM_CI=true`, then `gh workflow run deploy.yml --ref main`) and the production run is approved, which applies the same plan. The `state rm` and `import` are local state edits, the one part that runs from Lee's laptop, with his own credentials and their write access to the state bucket (W2.24).
 
 ### 7. Clean up
 
@@ -213,7 +209,7 @@ Suppose a release did the damage, for example with a migration. Then the live re
    avail $OLD
    aws rds modify-db-instance --db-instance-identifier $NEW --new-db-instance-identifier $DB --apply-immediately
    avail $DB
-   terraform state rm module.database.aws_db_instance.this          # as in step 6: through konjir-ops.sh after W2.23
+   terraform state rm module.database.aws_db_instance.this          # as in step 6: through konjir-ops.sh
    terraform import module.database.aws_db_instance.this $DB
    terraform plan                                                     # in place only, as step 6 says
    ```
@@ -224,7 +220,7 @@ Suppose a release did the damage, for example with a migration. Then the live re
    aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript --parameters 'commands=["systemctl enable konjir"]'
    ```
 
-   Then deploy: before W2.23, Lee applies from the laptop. After it, Lee resumes deploys as step 0 says, and that run is approved. The install starts the earlier release, which finds the copy at exactly its migrations. Pause deploys again as soon as the run is done.
+   Then deploy: Lee resumes deploys as step 0 says, and that run is approved. The install starts the earlier release, which finds the copy at exactly its migrations. Pause deploys again as soon as the run is done.
 6. **Check.** Run `deploy/konjir-ops.sh status`, then a read such as `admin_list_actors`. Keep deploys paused until the release's fix is ready.
 
 Steps 1 to 3 fit in the hour. The revert's deploy adds its own time.
@@ -247,4 +243,4 @@ The drill is steps 2 and 3 against a scratch instance, followed by its deletion.
 
 It never modifies the environment's database or any parameter. It only describes the database, restores from its backups, and reads it through read-only sessions. It deletes only an instance named `<db>-drill-…` that carries both of its tags. The second Kolab it starts for the smoke check runs read-only on the Kolab server, on `127.0.0.1:7499`, for under a minute.
 
-Record each drill's summary line in the binding's DEP6 row: its date, the recovery point's lag, the times to available and to the end of verification, and whether the verification passed. Only a drill whose verification passed proves the hour.
+Record each drill's summary line in Kolab, as a note on the binding's database decision, kj:kolab/kolab-binding#DEP6 (`konjir annotate`; the binding keeps no status of its own, D110): its date, the recovery point's lag, the times to available and to the end of verification, and whether the verification passed. Only a drill whose verification passed proves the hour.
