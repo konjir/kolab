@@ -10,7 +10,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, workProblems,
+  behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
@@ -4553,17 +4553,13 @@ export class Kolab {
     }).map((e) => e.element_id));
     // WRK11's check, new in W8.3, reads the packages whose work this version adds or changes against
     // the version it was written on (its own work there, so a variant's rebase never counts its own
-    // packages as new), and those it drops a link from (konjir_unlink).
+    // packages as new), those it drops a link from (konjir_unlink), and those relying on a decision it
+    // removes or makes a work package (behindScope).
     const base = v.base_version_id ? (await q.query<VersionRow>(`select * from version where id = $1`, [v.base_version_id])).rows[0] : undefined;
     const before = base ? new Map((await this.ownWork(q, base)).map((e) => [e.element_id, e.work])) : new Map<string, WorkFields | null | undefined>();
-    const linked = new Set(els.filter((e) => {
-      if (!e.work) return false;
-      const was = before.get(e.element_id);
-      return !was || canonicalWork(was) !== canonicalWork(e.work);
-    }).map((e) => e.element_id));
-    for (const r of (await q.query<{ source_element_id: string }>(
-      `select distinct source_element_id from link_removal where version_id = $1 and source_element_id is not null`, [v.id])).rows) linked.add(r.source_element_id);
-    const problems = workProblems(els, links, changed, linked);
+    const dropped = (await q.query<{ source_element_id: string }>(
+      `select distinct source_element_id from link_removal where version_id = $1 and source_element_id is not null`, [v.id])).rows.map((r) => r.source_element_id);
+    const problems = workProblems(els, links, changed, behindScope(els, links, before, dropped));
     // A work package's repo names a repository registered in the binding's kolab, and live (KON7, W5.2a).
     const named = els.filter((e) => e.work?.repo);
     if (named.length) {
@@ -10951,7 +10947,18 @@ export class Kolab {
             ...e.serves.map((t) => ({ source_element_id: e.id, target: `${file.spec!.name}#${t}`, target_element_id: t, into_spec: true })),
             ...e.relies_on.map((t) => ({ source_element_id: e.id, target: `${file.binding!.name}#${t}`, target_element_id: t, into_self: true })),
           ]);
-          const work = workProblems(rows, links);
+          // WRK11's check as a draft of the file would meet it (W8.3): on a binding that has committed,
+          // only the packages the file adds or changes, those it drops a link from (an update unlinks a
+          // link the file doesn't give) and those relying on a decision it removes or makes work.
+          const latest = binding?.kind === 'binding' && spec ? await this.latestCommitted(binding.id) : undefined;
+          let scope: Set<string> | undefined;
+          if (latest) {
+            const desired = new Set(file.binding!.elements.flatMap((e) => [
+              ...e.serves.map((t) => linkKey(e.id, spec!.id, t)), ...e.relies_on.map((t) => linkKey(e.id, binding!.id, t))]));
+            const dropped = (await this.linksBeyond(latest.id, desired, s.kolab)).flatMap((l) => (l.source ? [l.source] : []));
+            scope = behindScope(rows, links, new Map((await this.ownWork(this.db, latest)).map((e) => [e.element_id, e.work])), dropped);
+          }
+          const work = workProblems(rows, links, undefined, scope);
           if (work.length) problems.push(`the binding's work (PLN2): ${work.join('; ')}`);
         }
       } catch (e) {

@@ -543,6 +543,34 @@ test('a link the file no longer gives is a difference, and --update unlinks it (
   expect(await pass('engineer', dropped)).toMatchObject({ complete: true, created: [], differs: [] });
 });
 
+test('an import checks that work has something behind it as a draft of the file would: every package of a first import, and on --update only those it adds, changes or takes a link from (WRK11, W8.3)', async () => {
+  const { kolab, pass } = await lee();
+  const nothing = /W1\.2 has nothing behind it \(WRK11, PLN11\)/;
+  const w12 = (size = 'S') => ({ id: 'W1.2', title: 'Receipts', text: 'Email a receipt after payment.', work: { done_when: 'A receipt arrives within a minute.', depends_on: ['W1.1'], size }, serves: [], relies_on: [] });
+  const bare = (size?: string) => {
+    const f = fixture();
+    f.binding.elements[3] = w12(size);
+    return f;
+  };
+  await pass('product');
+  // A first import, where every package is new: W1.2, with nothing behind it, is refused.
+  expect(await rejection(pass('engineer', bare()))).toMatch(nothing);
+  await pass('engineer');
+  // Taking W1.2's links away on --update is refused too, naming it, and nothing is written.
+  expect(await rejection(pass('engineer', bare(), { update: true }))).toMatch(nothing);
+  const seq = (await kolab.latestCommitted('shop-binding'))!.seq;
+  // A package committed with nothing behind it (before the check) stops no update of something else.
+  await kolab.db.query(`delete from edge where source_element_id = 'W1.2'`);
+  const other = bare();
+  other.binding.elements[0] = { id: 'DEC1', text: 'Payments go through the card gateway, with retries.', serves: ['CHK1'] };
+  expect(outcomes(await pass('engineer', other, { update: true }))).toMatchObject({ 'version kj:test/shop-binding': 'created' });
+  expect((await kolab.latestCommitted('shop-binding'))!.seq).toBe(seq + 1);
+  // But changing its work brings it under the check.
+  const sized = bare('M');
+  sized.binding.elements[0] = other.binding.elements[0];
+  expect(await rejection(pass('engineer', sized, { update: true }))).toMatch(nothing);
+});
+
 test('a ruling\'s date before 2000, or on a day that doesn\'t exist, is refused before anything is written; the database holds to the floor (review of #105)', async () => {
   const { kolab, as, pass } = await lee();
   for (const date of ['0001-01-01', '0000-01-01', '1999-12-31', '1999-12-31T23:00:00-00:30', '2026-02-31', '2026-02-31T10:00:00Z', '2026-13-01', '2026-01-01T25:00:00Z', 'soon']) {
