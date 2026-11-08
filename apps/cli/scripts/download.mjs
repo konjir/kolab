@@ -5,17 +5,20 @@
 
 /** The waits between tries, in milliseconds: four tries in all, over about 35 seconds. */
 export const BACKOFF_MS = [5_000, 10_000, 20_000];
+/** How long one try may take, its body included, before it counts as a network error. */
+export const TRY_TIMEOUT_MS = 120_000;
 
 /**
  * GET url and return its body. A 5xx or a network error is tried again after each wait in
  * backoff; the error once they run out, or on any other status, names the URL and the last
  * status (or network error).
  */
-export async function download(url, { backoff = BACKOFF_MS, log = (line) => console.error(line) } = {}) {
+export async function download(url, { backoff = BACKOFF_MS, timeout = TRY_TIMEOUT_MS, log = (line) => console.error(line) } = {}) {
   for (let attempt = 0; ; attempt++) {
     let failure;
     try {
-      const res = await fetch(url);
+      // A stalled connection or body counts as a network error, so it is tried again, not waited on for good.
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
       if (res.ok) return Buffer.from(await res.arrayBuffer());
       failure = `HTTP ${res.status}`;
       if (res.status < 500) backoff = [];

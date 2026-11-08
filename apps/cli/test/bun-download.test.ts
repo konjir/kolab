@@ -28,6 +28,7 @@ let base: string;
 beforeAll(async () => {
   server = createServer((req, res) => {
     const path = req.url ?? '';
+    if (path === '/stalls.zip') return; // never answers: each try times out
     const n = (hits[path] = (hits[path] ?? 0) + 1);
     const list = answers[path] ?? [404];
     const status = list[Math.min(n, list.length) - 1];
@@ -44,7 +45,7 @@ afterAll(async () => {
 /** Run download(url) in a child node with short waits, as package.mjs does but without its own Bun pin. */
 function run(url: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const script = `import { download } from ${JSON.stringify(DOWNLOAD)};
-process.stdout.write(await download(process.argv[1], { backoff: [10, 20, 40] }));`;
+process.stdout.write(await download(process.argv[1], { backoff: [10, 20, 40], timeout: 200 }));`;
   return new Promise((done) => {
     execFile(process.execPath, ['--input-type=module', '-e', script, url], { encoding: 'utf8' }, (err, stdout, stderr) =>
       done({ code: err ? ((err as { code?: number }).code ?? 1) : 0, stdout, stderr }));
@@ -131,3 +132,9 @@ test.each(['cli.yml', 'release-cli.yml'])("%s's Install Bun step fails when pack
   expect(ok.status).toBe(0);
   expect(readFileSync(githubPath, 'utf8')).toBe(`${dir}/bun\n`);
 });
+
+test('a server that never answers times each try out and fails after four, naming the URL', async () => {
+  const r = await run(`${base}/stalls.zip`);
+  expect(r.code).not.toBe(0);
+  expect(r.stderr).toMatch(new RegExp(`downloading ${base.replace(/[.]/g, '\\.')}/stalls\\.zip: network error: .*, after 4 tries`));
+}, 20_000);
