@@ -1,7 +1,7 @@
 // apps/cli/scripts/download.mjs fetches the Bun release zips package.mjs pins (W7.17). These run
 // it against a local server: a 5xx is tried again until the body comes, a 5xx every time fails
 // naming the URL and the status, and other statuses fail at once. And each workflow step that
-// installs Bun fails when package.mjs bun does, as GitHub runs it (bash -e -o pipefail), rather
+// installs Bun fails when package.mjs bun does, as GitHub runs it (bash -e, with no pipefail), rather
 // than passing on to "no bun on PATH" in the next step.
 import { afterAll, beforeAll, expect, test } from '@jest/globals';
 import { execFile, spawnSync } from 'node:child_process';
@@ -115,8 +115,9 @@ test.each(['cli.yml', 'release-cli.yml'])("%s's Install Bun step fails when pack
   chmodSync(join(bin, 'node'), 0o755);
   const githubPath = join(dir, `path-${workflow}`);
   writeFileSync(githubPath, '');
-  // GitHub runs a step's script with bash --noprofile --norc -eo pipefail.
-  const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
+  // A step that sets no shell: runs as bash -e {0}, with no pipefail, and so does this: a step written
+  // as a pipe would fail open on CI, and here too.
+  const r = spawnSync('bash', ['-e', '-c', script], {
     encoding: 'utf8',
     env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP: dir, GITHUB_PATH: githubPath },
   });
@@ -125,7 +126,7 @@ test.each(['cli.yml', 'release-cli.yml'])("%s's Install Bun step fails when pack
 
   // And the same step passes, adding the directory, when it succeeds.
   writeFileSync(join(bin, 'node'), `#!/bin/sh\necho "$RUNNER_TEMP/bun/bun"\n`);
-  const ok = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
+  const ok = spawnSync('bash', ['-e', '-c', script], {
     encoding: 'utf8',
     env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP: dir, GITHUB_PATH: githubPath },
   });
