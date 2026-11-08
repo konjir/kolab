@@ -5534,7 +5534,7 @@ export class Kolab {
     const r = await this.resolveIn(e.target, e.targetElement ?? null, e.selector ?? null);
     if (r.status !== 'ok') throw new Error(await this.linkRefusal(tgt, e.targetElement ?? null, e.selector ?? null, r.status));
     const repoint = src.state === 'drafted' && src.actor_id === s.actor_id
-      ? await this.repointed(src, e.kind, e.sourceElement ?? null, tgt.node_id, e.targetElement ?? null, e.selector ?? null) : undefined;
+      ? await this.repointed(src, e.kind, e.sourceElement ?? null, tgt.node_id, tgt.id, e.targetElement ?? null, e.selector ?? null) : undefined;
     return { id: ulid(), e, across, targetNode: tgt.node_id, fingerprint: r.fingerprint!, actor: s.actor_id, repoint };
   }
 
@@ -5575,7 +5575,7 @@ export class Kolab {
    * it with konjir_unlink.
    */
   private async repointed(src: Pick<VersionRow, 'base_version_id'>, kind: string, sourceElement: string | null, targetNode: string,
-    targetElement: string | null, selector: QuoteSelector | null): Promise<LinkIdentity[] | undefined> {
+    targetVersion: string, targetElement: string | null, selector: QuoteSelector | null): Promise<LinkIdentity[] | undefined> {
     if (!src.base_version_id) return undefined;
     let found = (await this.db.query<EdgeRow & { target_node_id: string }>(
       `select e.*, t.node_id as target_node_id from edge e join version t on t.id = e.target_version_id
@@ -5588,6 +5588,24 @@ export class Kolab {
       found = found.filter((x) => same(x.target_selector?.prefix, selector.prefix) && same(x.target_selector?.suffix, selector.suffix));
       if (found.length !== 1) {
         throw new GateError(`more than one marked link from ${sourceElement ?? 'the whole version'} quotes that element; `
+          + `name the one this replaces: konjir_unlink node=<node> version=<this draft> links=[{"link":"<its id>"}] (konjir_lineage gives each link's id), then link again`);
+      }
+    }
+    // An element a split retired (CAS10): a link to one derived from it replaces the orphaned link
+    // into it, from the same element, of the same kind, whole or quoted. Of two, the owner names one.
+    if (!found.length && targetElement) {
+      found = (await this.db.query<EdgeRow & { target_node_id: string }>(
+        `select e.*, t.node_id as target_node_id from edge e join version t on t.id = e.target_version_id
+          where e.source_version_id = $1 and e.kind = $2 and e.source_element_id is not distinct from $3 and t.node_id = $4
+            and exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open' and i.reason = 'orphaned')
+          order by e.id`, [src.base_version_id, kind, sourceElement, targetNode])).rows;
+      const derived: typeof found = [];
+      for (const x of found) {
+        if (x.target_element_id && (await this.derivedFrom(this.db, targetVersion, x.target_element_id)).includes(targetElement)) derived.push(x);
+      }
+      found = derived;
+      if (found.length > 1) {
+        throw new GateError(`more than one orphaned link from ${sourceElement ?? 'the whole version'} is into an element ${targetElement} was split from; `
           + `name the one this replaces: konjir_unlink node=<node> version=<this draft> links=[{"link":"<its id>"}] (konjir_lineage gives each link's id), then link again`);
       }
     }
@@ -5752,13 +5770,15 @@ export class Kolab {
     await this.clearAddressed(v, changes);
 
     // 1. Direct: every live edge pinned to an older version of this node. A retired plan's are
-    //    history (D104, migration 0033): its packages and their links are its binding's now.
+    //    history (D104, migration 0033): its packages and their links are its binding's now. A
+    //    split's derivation links into this node stay where they are (CAS10).
     const inbound = await this.db.query<EdgeRow>(
       `select e.* from edge e
          join version t on t.id = e.target_version_id
          join version s on s.id = e.source_version_id
         where t.node_id = $1 and t.seq < $2::int
           and ${LIVE('s')}
+          and not ${SPLIT_DERIVATION('e', 's', 't')}
           and not exists (select 1 from node sn where sn.id = s.node_id and sn.kind = 'plan')
           and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`,
       [v.node_id, v.seq]);
@@ -5776,8 +5796,9 @@ export class Kolab {
     const outbound = await this.db.query<EdgeRow & { latest: string }>(
       `select e.*, (select l.id from version l where l.node_id = t.node_id and l.state = 'committed'
                      order by l.seq desc limit 1) as latest
-         from edge e join version t on t.id = e.target_version_id
+         from edge e join version t on t.id = e.target_version_id join version s on s.id = e.source_version_id
         where e.source_version_id = $1
+          and not ${SPLIT_DERIVATION('e', 's', 't')}
           and not exists (select 1 from invalidation i where i.edge_id = e.id and i.state = 'open')`,
       [v.id]);
     for (const e of outbound.rows) {
@@ -5935,12 +5956,30 @@ export class Kolab {
       return;
     }
     const reason = r.status === 'orphan' ? 'orphaned' : r.status === 'fuzzy' ? 'fuzzy_reanchor' : 'changed';
+    // An element retired by a split (CAS10): the mark names the elements derived from it, so the
+    // link's owner can re-point it to one of them. Its note holds their ids, told only to a reader
+    // of the target (markBecause).
+    const derived = reason === 'orphaned' && e.target_element_id ? await this.derivedFrom(tx, against, e.target_element_id) : [];
     const m = {
       version_id: e.source_version_id, element_id: e.source_element_id, edge_id: e.id, triggered_by: against, reason,
+      ...(derived.length ? { note: `${SPLIT_NOTE}${derived.join(', ')}` } : {}),
     };
     const id = await this.markIn(tx, signal, m);
     await this.propagateIn(tx, signal, { id, ...m });
     await this.settleScreenQuestionIn(tx, signal, e, against, reason);
+  }
+
+  /**
+   * The elements of version `v` derived from element `old` of an earlier version of its node by a
+   * split (CAS10): the sources of its derivation links into it, in order. In `q`.
+   */
+  private async derivedFrom(q: Q, v: string, old: string): Promise<string[]> {
+    return (await q.query<{ el: string }>(
+      `select distinct e.source_element_id as el from edge e
+         join version s on s.id = e.source_version_id join version t on t.id = e.target_version_id
+        where e.source_version_id = $1 and e.target_element_id = $2 and e.source_element_id is not null
+          and ${SPLIT_DERIVATION('e', 's', 't')}
+        order by 1`, [v, old])).rows.map((r) => r.el);
   }
 
   // ---- links and forks across kolabs (LNK8, KON9) ----------------------------
@@ -6184,6 +6223,7 @@ export class Kolab {
           where (w.element_id is null or e.target_element_id is null or e.target_element_id = w.element_id)
             and not (e.source_version_id = $3 and ($4::text is null or e.source_element_id is not distinct from $4::text))
             and ${LIVE('s')}
+            and not ${SPLIT_DERIVATION('e', 's', 't')}   -- a split's own derivation links are never marked (CAS10)
             and not exists (select 1 from node sn where sn.id = s.node_id and sn.kind = 'plan')   -- a retired plan's links are history (D104)
        )
        select version_id, element_id from walk
@@ -11832,6 +11872,12 @@ const NO_REVIEWER = (layer: Layer, plan?: Pick<ReviewPlan, 'policy' | 'writers'>
   ? `No one other than its author holds Write on the ${layer} layer, so these checks alone committed it, unreviewed (VER11).`
   : `No person other than its author holds Write on the ${layer} layer, where the kolab's policy keeps approving for a person (AUT2), so these checks alone committed it, unreviewed (VER11).`);
 
+/** How an orphaned mark's note begins when a split retired its target (CAS10): the derived elements' ids follow, comma-separated. */
+const SPLIT_NOTE = 'split into: ';
+
+/** A list in words: "a", "a and b", "a, b and c". */
+const inWords = (xs: string[]) => xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+
 /** What a link into a kolab its reader can't read shows in place of its target (W7.1, W7.4, LNK8). */
 const LINK_HIDDEN = 'in another kolab you can\'t read';
 
@@ -11865,7 +11911,13 @@ export function markBecause(r: {
   const note = r.note ?? 'its holder can no longer read it';
   // unvouched's note named the kolab its holder no longer reads before W7.10: on a mark written then, the other kolab, told only to its readers.
   const lost = (r.edge_id ? linked : parent) ? note : note.replace(/can no longer read kolab \S+/, 'can no longer read that kolab');
-  return r.reason === 'query_answered' ? r.note ?? 'your question was answered'
+  // A split's orphan (CAS10) names the elements derived from the retired one, to a reader of it only.
+  const split = r.reason === 'orphaned' && r.note?.startsWith(SPLIT_NOTE) ? r.note.slice(SPLIT_NOTE.length).split(', ') : undefined;
+  const node = trigger(false);
+  return split ? (linked && node
+    ? `${linked} was retired by version ${r.trig_seq}, which split it into ${inWords(split.map((x) => `${node}#${x}`))}: re-point the link to the one it relies on`
+    : 'a version in another kolab changed')
+    : r.reason === 'query_answered' ? r.note ?? 'your question was answered'
     : r.reason === 'ruled' ? r.note ?? 'a ruling changed its intent'
     : r.reason === 'access_lost' ? (r.edge_id
       ? (linked ? `${linked} is in another kolab: ${lost}` : `it links to a version in another kolab: ${lost}`)
@@ -11886,7 +11938,7 @@ const cantCheck = (actor: string) =>
 export const NEXT_STEP: Record<string, string> = {
   changed: 'Check whether this still holds against the new upstream text. If yes, konjir_clear_mark; if not, draft a new version that addresses it, or that removes the link (konjir_unlink) if the element no longer relies on it.',
   fuzzy_reanchor: 'The quoted span changed: its words were edited, or they now appear only without the prefix and suffix you quoted (a copy elsewhere). Re-read the target, then, in a draft of yours, konjir_link your element to the current words with their current context (that replaces this link, and the mark settles when the draft commits), or remove the link with konjir_unlink; or konjir_clear_mark if it still holds.',
-  orphaned: 'The target no longer exists. In a draft of yours, konjir_link your element to the same target element\'s current words (that replaces this link), or remove the link: konjir_unlink node=<your node> version=<your draft> links=[{"link":"<this mark\'s link>"}], or konjir_draft\'s unlink. The mark settles when that version commits. Removing your element settles it too.',
+  orphaned: 'The target no longer exists. If it was split, this mark names the elements derived from it: in a draft of yours, konjir_link your element to the one it relies on (that replaces this link). Otherwise, in a draft of yours, konjir_link your element to the same target element\'s current words (that replaces this link), or remove the link: konjir_unlink node=<your node> version=<your draft> links=[{"link":"<this mark\'s link>"}], or konjir_draft\'s unlink. The mark settles when that version commits. Removing your element settles it too.',
   upstream_dirty: 'Something this depends on is dirty. Wait for that mark to clear, or check it yourself and clear the upstream mark.',
   override_stale: 'The parent changed text you override. konjir_resolve_override with reaffirm, adopt_parent, or amend.',
   override_orphaned: 'The parent deleted text you override. konjir_resolve_override with reaffirm (keep as your own) or adopt_parent (drop it).',
@@ -11916,6 +11968,15 @@ function BEHIND(node: string) {
 function LIVE(alias: string) {
   return `not exists (select 1 from version later where later.node_id = ${alias}.node_id
             and later.seq > ${alias}.seq and later.state = 'committed')`;
+}
+
+/**
+ * Whether edge `e`, from version `s` into version `t`, is a split's derivation link (CAS10): one
+ * into an earlier version of its own node. It stays pinned to the version its element was retired
+ * from, so no later version of the node re-resolves it, and its retirement never marks it.
+ */
+function SPLIT_DERIVATION(e: string, s: string, t: string) {
+  return `(${e}.kind = 'derivation' and ${t}.node_id = ${s}.node_id and ${t}.seq < ${s}.seq)`;
 }
 
 /** Why a milestone's link is refused (PLN2, PLN3). */
