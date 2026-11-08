@@ -86,6 +86,12 @@ test('the database holds a node to one name in its kolab, and its id to that nam
   expect(await rejection(insert('a/b', 'a/b', 'orders'))).toMatch(/node_name_check/);
   await insert('~01JBBBBBBBBBBBBBBBBBBBBBBB', 'returns', 'orders');   // a generated id
   expect(await rejection(kolab.db.query(`update node set name = 'refunds' where id = 'checkout'`))).toMatch(/a node's name changes only as Kolab renames it/);
+  // Only the trusted role renames: Kolab's own login is refused even when it writes the new name's row in the same transaction.
+  expect(await rejection(kolab.db.transaction(async (tx) => {
+    await tx.query(`insert into node_name(kolab_id, name, node_id, named_at) values ('orders', 'refunds', 'checkout', now())`);
+    await tx.query(`update node set name = 'refunds' where id = 'checkout'`);
+  }))).toMatch(/a node's name changes only as Kolab renames it/);
+  expect((await kolab.db.query<{ name: string }>(`select name from node where id = 'checkout'`)).rows).toStrictEqual([{ name: 'checkout' }]);
   expect(await rejection(kolab.db.query(`update node set id = '~01JCCCCCCCCCCCCCCCCCCCCCCC' where id = $1`, [theirs]))).toMatch(/a node's id never changes once written/);
   expect(await rejection(kolab.db.query(`insert into node(id, kind, layer, title, kolab_id) values ('nameless', 'prototype', 'functional', 'X', 'orders')`))).toMatch(/"name"/);
 });
