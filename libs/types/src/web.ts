@@ -4,7 +4,7 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, QueryKind,
+  AcceptanceFinding, Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, QueryKind,
   QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkState,
 } from './index.js';
 
@@ -258,12 +258,14 @@ export type WebReviewEvidence = Omit<EvidenceView, 'files' | 'event'>;
  * since it last went In progress), `earlier` the rounds before; each shows at most a few, with
  * `evidence_more` and `earlier_count` saying how many there are. Evidence is its assignee's claim,
  * which the reviewer checks against the done-when outside Kolab. `open_marks` counts the marks that
- * put it at risk (PLN10).
+ * put it at risk (PLN10). `findings` are Kolab's own: the failed acceptance checks its evidence
+ * records since it was last To do (REV9), which stay on its record whatever the verdict.
  */
 export interface WebWorkReview {
   kind: 'work'; subject: string; binding: string; id: string; title: string | null; done_when: string | null;
   assignee: string; at: string; note: string | null; repository: { url: string; confirmed: boolean } | null;
   evidence: WebReviewEvidence[]; evidence_more: number; earlier: WebReviewEvidence[]; earlier_count: number; open_marks: number;
+  findings: AcceptanceFinding[];
   missing?: true;
 }
 

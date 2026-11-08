@@ -420,6 +420,7 @@ export class WebService {
           title: d?.text ?? null, done_when: d?.done_when ?? null, assignee: r.author, at: r.submitted_at ?? r.at, note: r.submitted_note,
           repository: d?.repository ?? null, open_marks: d?.open_marks ?? 0,
           evidence: d?.evidence ?? [], evidence_more: d?.evidence_more ?? 0, earlier: d?.earlier ?? [], earlier_count: d?.earlier_count ?? 0,
+          findings: d?.findings ?? [],
           ...(d && d.text !== null ? {} : { missing: true as const }),
         };
       }),

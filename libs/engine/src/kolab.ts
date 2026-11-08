@@ -10,7 +10,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, workProblems,
+  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type StoredCheck, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
@@ -12567,10 +12567,8 @@ const evidenceView = (e: EvidenceRow): EvidenceView => ({
  * failed acceptance check, naming the spec element, the evidence item and who recorded it. Read from
  * the evidence, which is never edited or removed (PLN5), so no verdict removes one.
  */
-const acceptanceFindings = (evidence: EvidenceRow[]): AcceptanceFinding[] => evidence.flatMap((e) => (e.checks ?? []).filter((c) => !c.passed).map((c) => ({
-  kind: 'acceptance_failed' as const, element: c.address, version: c.version, evidence: e.id, recorded_by: e.recorded_by, at: iso(e.at)!,
-  explanation: `${e.recorded_by}'s test run ${e.url ?? (e.title ? `"${e.title}"` : e.id)} records the acceptance check of ${c.address} (version ${c.version}) as failed`,
-})));
+const acceptanceFindings = (evidence: EvidenceRow[]): AcceptanceFinding[] =>
+  evidence.flatMap((e) => (e.checks ?? []).filter((c) => !c.passed).map((c) => acceptanceFinding(e, c)));
 
 /**
  * Who counts as someone other than a repository's registrar and the package's assignee, to confirm

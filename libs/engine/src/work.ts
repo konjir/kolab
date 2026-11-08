@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
 import {
   ACCEPTANCE_RESULTS, EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_REPOSITORY_URL, MAX_TEXT, MAX_WORK_REPO,
-  WORK_FIELDS, WORK_SIZES, textLength, type EvidenceKind, type WorkFields,
+  WORK_FIELDS, WORK_SIZES, textLength, type AcceptanceFinding, type EvidenceKind, type WorkFields,
 } from '@konjir/types';
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -287,6 +287,18 @@ export interface CheckedEvidence {
 
 /** An acceptance check as Kolab stores it (migration 0048's evidence.checks): the element's full address, the committed version it resolved to, and whether it passed. */
 export interface StoredCheck { address: string; version: number; passed: boolean }
+
+/**
+ * The acceptance_failed finding Kolab itself reports for failed check `c` of test run `e` (REV9,
+ * VER15): the spec element, the evidence item and who recorded it. Read from the evidence, which is
+ * never edited or removed (PLN5), so no verdict removes one.
+ */
+export function acceptanceFinding(e: { id: string; url: string | null; title: string | null; recorded_by: string; at: Date | string }, c: StoredCheck): AcceptanceFinding {
+  return {
+    kind: 'acceptance_failed', element: c.address, version: c.version, evidence: e.id, recorded_by: e.recorded_by, at: new Date(e.at).toISOString(),
+    explanation: `${e.recorded_by}'s test run ${e.url ?? (e.title ? `"${e.title}"` : e.id)} records the acceptance check of ${c.address} (version ${c.version}) as failed`,
+  };
+}
 
 const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'summary', 'files', 'repo', 'checks'] as const;
 const CHECK_KEYS = ['address', 'result'] as const;
