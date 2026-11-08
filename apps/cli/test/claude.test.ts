@@ -110,6 +110,11 @@ test('from a subfolder it finds the project\'s .mcp.json and writes beside it; a
   const repo = join(outer.cwd, 'repo');
   mkdirSync(join(repo, '.git'), { recursive: true });
   expect(() => claudeSession('writer', [], { cwd: repo, env: outer.env })).toThrow(/There is no konjir-writer entry/);
+  // Outside a repository, only the folder it runs in: a .mcp.json further up is no project of this one.
+  const loose = project({ 'konjir-writer': bridge('writer', 'product') });
+  const below = join(loose.cwd, 'notes');
+  mkdirSync(below);
+  expect(() => claudeSession('writer', [], { cwd: below, env: loose.env })).toThrow(/There is no konjir-writer entry/);
   // A broken project file is refused, though Claude Code's settings hold an entry of that name.
   writeFileSync(join(p.cwd, '.mcp.json'), '{ "mcpServers": ');
   writeFileSync(join(p.env.HOME, '.claude.json'), JSON.stringify({ mcpServers: { 'konjir-writer': bridge('writer', 'engineer') } }));

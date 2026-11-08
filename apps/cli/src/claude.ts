@@ -48,13 +48,15 @@ function whoIn(entry: unknown): Who | undefined {
 }
 
 /**
- * The project konjir claude runs in: the nearest folder from `cwd` up that holds a .mcp.json, looking
- * no higher than the repository's root; else `cwd`. So it runs the same from a subfolder.
+ * The project konjir claude runs in: in a repository, the nearest folder from `cwd` up to its root
+ * that holds a .mcp.json, so it runs the same from a subfolder; outside one, or with none, `cwd`.
  */
 export function projectDir(cwd: string): string {
+  const up: string[] = [];
   for (let dir = cwd; ; dir = dirname(dir)) {
-    if (existsSync(join(dir, '.mcp.json'))) return dir;
-    if (existsSync(join(dir, '.git')) || dirname(dir) === dir) return cwd;
+    up.push(dir);
+    if (existsSync(join(dir, '.git'))) return up.find((d) => existsSync(join(d, '.mcp.json'))) ?? cwd;
+    if (dirname(dir) === dir) return cwd;
   }
 }
 
