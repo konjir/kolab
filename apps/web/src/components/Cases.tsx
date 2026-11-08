@@ -70,7 +70,7 @@ export function CaseBox({ c, me, act, go }: { c: WebCase; me: WebMe; act: Act; g
         ))}
         {open && c.positions.length === 1 && (
           <div className="position"><div className="side">The other side</div>
-            <p className="why-not">Not taken yet. Work goes on meanwhile: an open case file blocks nothing (CASE7).</p></div>
+            <p className="why-not">Not taken yet. Work under way goes on meanwhile: an open case file only keeps what it touches from being pulled anew (CASE7, PLN19).</p></div>
         )}
       </div>
       {c.ruling && <RulingBox ruling={c.ruling} me={me} go={go} showOn={false} />}

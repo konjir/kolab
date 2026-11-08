@@ -42,11 +42,11 @@ async function served(c: Client, who: string): Promise<Record<string, string>> {
   return out;
 }
 
-/** The source of what Kolab shows outside MCP: the web interface, the server's own pages and refusals, the CLI's output and help, and docs/verbs.md. */
+/** The source of what Kolab shows outside MCP: the web interface, the server's own pages and refusals, the CLI's output and help, sign-in's output, address parse errors, the migrations' refusals, and docs/verbs.md. */
 function shown(): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const dir of ['apps/web/src', 'apps/server/src', 'apps/cli/src', 'apps/channel-bridge/src', 'libs/engine/src', 'libs/types/src']) {
-    for (const f of readdirSync(join(ROOT, dir), { recursive: true, encoding: 'utf8' }).filter((f) => /\.(tsx?|html|css)$/.test(f))) {
+  for (const dir of ['apps/web/src', 'apps/server/src', 'apps/cli/src', 'apps/channel-bridge/src', 'libs/engine/src', 'libs/types/src', 'libs/login/src', 'libs/address/src', 'libs/db/src/migrations']) {
+    for (const f of readdirSync(join(ROOT, dir), { recursive: true, encoding: 'utf8' }).filter((f) => /\.(tsx?|html|css|sql)$/.test(f))) {
       out[`${dir}/${f}`] = readFileSync(join(ROOT, dir, f), 'utf8');
     }
   }
