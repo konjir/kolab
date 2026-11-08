@@ -12,7 +12,7 @@
 // falls back to a sign-in kept on the machine.
 import { afterEach, expect, jest, test } from '@jest/globals';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ALLOWED_TOOLS, Redactor, workOptions, removeKonjirShim, guardSettings, TOKEN_KINDS, ToolRefusal, call, connect, deniedTools, feedOnce, formatStatus, gitIn, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, main, markerText, runWork, sweepJobs, thisMachine, workStatus, writeKonjirShim, type JobReport, type TakenJob } from '../src/cli.js';
@@ -514,7 +514,7 @@ test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on
 
 // Everything outside a jobs directory a sweep might be pointed at through a link: its files and modes, to compare after.
 const snapshot = (dir: string): Record<string, string> => {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = { [dir]: (lstatSync(dir).mode & 0o7777).toString(8) };
   const walk = (d: string) => {
     for (const n of readdirSync(d).sort()) {
       const p = join(d, n);
@@ -527,61 +527,67 @@ const snapshot = (dir: string): Record<string, string> => {
   return out;
 };
 
-test('sweepJobs and removeKonjirShim never follow a link: .bin, .mcp or .live that is one, or an entry in them that is one, is left, and what it points to keeps its files and modes (W7.12)', () => {
+// A jobs directory beside a directory outside it, of files and a directory of mode 500, which a job's agent might point a link at as it might at a home directory.
+const besideOutside = () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-links-')));
-  // Outside the jobs directory: what a job's agent might point a link at, as it might at a home directory.
   const outside = join(root, 'outside');
-  const fill = (d: string, mode = 0o700) => {
-    mkdirSync(join(d, 'JOUT'), { recursive: true });
-    writeFileSync(join(d, 'JOUT', 'keep'), 'kept\n');
-    writeFileSync(join(d, 'JOUT.json'), '{"kept":true}\n');
-    writeFileSync(join(d, 'JFILE'), 'kept\n');
-    chmodSync(join(d, 'JOUT'), 0o500);
-    chmodSync(d, mode);
-  };
-  for (const d of ['bin', 'mcp', 'live', 'entry']) fill(join(outside, d));
-  fill(join(outside, 'r500'), 0o500);
-  writeFileSync(join(outside, 'file'), 'kept\n');
-  const before = snapshot(outside);
-  const logged: string[] = [];
-  const log = (l: string) => { logged.push(l); };
+  mkdirSync(join(outside, 'JOUT'), { recursive: true });
+  writeFileSync(join(outside, 'JOUT', 'keep'), 'kept\n');
+  writeFileSync(join(outside, 'JOUT.json'), '{"kept":true}\n');
+  writeFileSync(join(outside, 'JFILE'), 'kept\n');
+  chmodSync(join(outside, 'JOUT'), 0o500);
+  const jobs = join(root, 'jobs');
+  for (const d of ['.bin', '.mcp', '.live']) mkdirSync(join(jobs, d), { recursive: true });
+  return { root, outside, jobs };
+};
+
+test.each([
+  ['.bin a link to a directory outside', (jobs: string, outside: string) => { rmSync(join(jobs, '.bin'), { recursive: true }); symlinkSync(outside, join(jobs, '.bin')); }],
+  ['.mcp a link to a directory outside', (jobs: string, outside: string) => { rmSync(join(jobs, '.mcp'), { recursive: true }); symlinkSync(outside, join(jobs, '.mcp')); }],
+  ['.live a link to a directory outside', (jobs: string, outside: string) => { rmSync(join(jobs, '.live'), { recursive: true }); symlinkSync(outside, join(jobs, '.live')); }],
+  ['an entry in .bin a link to a directory outside of mode 500', (jobs: string, outside: string) => { chmodSync(outside, 0o500); symlinkSync(outside, join(jobs, '.bin', 'JLINK')); }],
+  ['entries in .mcp and .live links to files outside', (jobs: string, outside: string) => {
+    symlinkSync(join(outside, 'JOUT.json'), join(jobs, '.mcp', 'JLINK.json'));
+    symlinkSync(join(outside, 'JFILE'), join(jobs, '.live', 'JLINK'));
+  }],
+])('sweepJobs never follows a link: with %s, what it points to keeps its files and modes, and the link is left (W7.12)', (_, plant) => {
+  const { outside, jobs } = besideOutside();
   try {
-    // .bin, .mcp and .live, each a link to a directory outside.
-    const a = join(root, 'a', 'jobs');
-    mkdirSync(a, { recursive: true });
-    symlinkSync(join(outside, 'bin'), join(a, '.bin'));
-    symlinkSync(join(outside, 'mcp'), join(a, '.mcp'));
-    symlinkSync(join(outside, 'live'), join(a, '.live'));
-    expect(sweepJobs(a, { log })).toEqual([]);
-    expect(logged.filter((l) => l.includes('isn\'t a directory itself'))).toHaveLength(3);
-
-    // .bin, .mcp and .live directories themselves, with entries that are links: to a directory of mode 500, a directory, a file.
-    const b = join(root, 'b', 'jobs');
-    for (const d of ['.bin', '.mcp', '.live']) mkdirSync(join(b, d), { recursive: true });
-    symlinkSync(join(outside, 'r500'), join(b, '.bin', 'JLINK'));
-    symlinkSync(join(outside, 'entry'), join(b, '.bin', 'JDIR'));
-    symlinkSync(join(outside, 'file'), join(b, '.mcp', 'JLINK.json'));
-    symlinkSync(join(outside, 'file'), join(b, '.live', 'JDIR'));
+    plant(jobs, outside);
+    const before = snapshot(outside);
     // And a job of its own, which goes.
-    writeKonjirShim(join(b, '.bin', 'JOWN'), ['/usr/bin/node']);
-    expect(sweepJobs(b, { log })).toEqual(['JOWN']);
-    expect(readdirSync(join(b, '.bin')).sort()).toEqual(['JDIR', 'JLINK']);
-    expect(lstatSync(join(b, '.bin', 'JLINK')).isSymbolicLink()).toBe(true);
-    expect(statSync(join(outside, 'r500')).mode & 0o777).toBe(0o500);
+    if (!lstatSync(join(jobs, '.bin')).isSymbolicLink()) writeKonjirShim(join(jobs, '.bin', 'JOWN'), ['/usr/bin/node']);
+    const logged: string[] = [];
+    const swept = sweepJobs(jobs, { log: (l) => { logged.push(l); } });
+    expect(snapshot(outside)).toEqual(before);
+    expect(swept.filter((j) => j !== 'JOWN')).toEqual([]);
+    expect(logged.some((l) => /link|isn't a directory itself/.test(l))).toBe(true);
+    if (!lstatSync(join(jobs, '.bin')).isSymbolicLink()) expect(existsSync(join(jobs, '.bin', 'JOWN'))).toBe(false);
+  } finally {
+    chmodSync(outside, 0o700);
+  }
+});
 
-    // At a job's end: its konjir's directory a link, or the directory it is in a link.
-    const c = join(root, 'c');
-    mkdirSync(c);
-    symlinkSync(join(outside, 'r500'), join(c, 'bin'));
-    removeKonjirShim(join(c, 'bin'), log);
-    expect(lstatSync(join(c, 'bin')).isSymbolicLink()).toBe(true);
-    symlinkSync(join(outside, 'bin'), join(c, '.bin'));
-    removeKonjirShim(join(c, '.bin', 'JOUT'), log);
-
-    // Everything outside is as it was.
+test.each([
+  ['its konjir\'s directory a link to a directory outside of mode 500', (jobs: string, outside: string) => {
+    chmodSync(outside, 0o500);
+    symlinkSync(outside, join(jobs, '.bin', 'JLINK'));
+    return join(jobs, '.bin', 'JLINK');
+  }],
+  ['the directory its konjir is in a link to a directory outside', (jobs: string, outside: string) => {
+    rmSync(join(jobs, '.bin'), { recursive: true });
+    symlinkSync(outside, join(jobs, '.bin'));
+    return join(jobs, '.bin', 'JOUT');
+  }],
+])('removeKonjirShim, at a job\'s end, never follows a link: with %s, what it points to keeps its files and modes (W7.12)', (_, plant) => {
+  const { outside, jobs } = besideOutside();
+  try {
+    const dir = plant(jobs, outside);
+    const before = snapshot(outside);
+    removeKonjirShim(dir);
     expect(snapshot(outside)).toEqual(before);
   } finally {
-    for (const d of ['bin', 'mcp', 'live', 'entry', 'r500']) { try { chmodSync(join(outside, d), 0o700); chmodSync(join(outside, d, 'JOUT'), 0o700); } catch { /* gone */ } }
+    chmodSync(outside, 0o700);
   }
 });
 
