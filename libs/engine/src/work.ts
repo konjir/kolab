@@ -381,7 +381,7 @@ function evidenceUrl(what: string, u: unknown): { url?: string; problem?: string
   if (parsed.username || parsed.password) return { problem: `${what}'s url carries a user or password: give the link without it` };
   if (parsed.protocol !== 'https:' || !/^https:\/\/[^/@\s]+(\/\S*)?$/.test(t)) return { problem: `${what}'s url is an https link, with no spaces in it` };
   // Evidence is readable by every session of the kolab, and kept: a link that carries a credential
-  // (a pre-signed or token-bearing link to a CI run, an artifact or a log) is refused, not stored.
+  // (a pre-signed or token-bearing link to a CI run, a CI artifact or a log) is refused, not stored.
   // In the query, and in the fragment, where OAuth's implicit flow and many CI and log viewers carry
   // tokens: its key=value pairs, and a query after it (#?…, #/…?…).
   const frag = parsed.hash.replace(/^#/, '');
