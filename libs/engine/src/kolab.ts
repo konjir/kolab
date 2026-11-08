@@ -9821,7 +9821,8 @@ export class Kolab {
   /**
    * How many jobs may be live at once and how long one lasts (JOB1, JOB3; AUT7's defaults, from
    * JOB_LIMITS): per person, across every kolab, per kolab, and at most four hours a job, however
-   * often its lease is renewed. Constants until P23 makes them settings.
+   * often its lease is renewed. The server's own limits: a kolab's policy may set lower caps
+   * (jobs_per_person, jobs_per_kolab; W6.2), never higher.
    */
   readonly jobLimits: { perPerson: number; perKolab: number; maxS: number } = {
     perPerson: JOB_LIMITS.perPerson, perKolab: JOB_LIMITS.perKolab, maxS: JOB_LIMITS.maxHours * 3600,
