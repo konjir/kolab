@@ -54,7 +54,7 @@ async function pull(kolab: Kolab, session: string): Promise<string> {
 
 const RUN = (checks: { address: string; result: string }[], title = 'npm test: 120 passed') => ({ kind: 'test_run' as const, title, checks });
 
-test('REV9: a failed check recorded on a package is on its review request, in the approval\'s result, and still on its record after approval', async () => {
+test('kj:kolab/kolab#VER15: a failed check recorded on a package is on its review request, in the approval\'s result, and still on its record after approval (REV9)', async () => {
   const { kolab, bob, eve } = await planned();
   const id = await pull(kolab, bob);
   // Short and full addresses alike, each kept by its full address and the version it resolved to.
