@@ -4,7 +4,7 @@
 // finding on the package's review request, in each verdict's result, and on its record for good,
 // whatever the verdict. On PGlite, and on Postgres with KONJIR_TEST_POSTGRES=1.
 import { expect, test } from '@jest/globals';
-import { type Kolab } from '@konjir/engine';
+import { workReviewDetails, type Kolab } from '@konjir/engine';
 import { els, openKolab, people, registeredRepository, rejection, TEST_KOLAB } from '@konjir/engine/testing';
 import { ADMIN_DOER } from '@konjir/types';
 
@@ -99,6 +99,10 @@ test('REV9: a request for changes doesn\'t remove a finding either; the resubmis
   // The fix's passing run is recorded beside the failed one, which stays.
   await kolab.submitWork(bob, W(id), { evidence: [COMMIT('b'), RUN([{ address: R('R1'), result: 'passed' }], 'npm test: 121 passed')] });
   expect((await kolab.reviewRequests({ kolab: TEST_KOLAB, reviewer: 'eve' }))[0].findings).toMatchObject([{ element: R('R1') }]);
+  // The web's review list reads the same, though the failed run came before the request for changes.
+  const web = (await workReviewDetails(kolab, eve, [{ binding: 'orders-pg', element: id }])).get(`orders-pg#${id}`)!;
+  expect(web.findings).toMatchObject([{ kind: 'acceptance_failed', element: R('R1'), recorded_by: 'bob' }]);
+  expect(web.earlier.find((e) => e.kind === 'test_run')).toBeDefined();
   expect((await kolab.reviewWork(eve, W(id), { verdict: 'approve' })).findings).toMatchObject([{ element: R('R1') }]);
   expect((await kolab.readWork(bob, W(id))).findings).toHaveLength(1);
   // A package whose checks all pass has none.

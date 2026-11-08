@@ -209,7 +209,8 @@ function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: 
       <div className="row"><Pill tone="question">in review</Pill>
         <button type="button" className="chip" onClick={() => go(`node/${r.binding}#${r.id}`)}>{r.subject}</button>
         <span>work package by {r.assignee} · submitted {ago(r.at)}</span>
-        {r.open_marks ? <Pill tone="stale">at risk</Pill> : null}</div>
+        {r.open_marks ? <Pill tone="stale">at risk</Pill> : null}
+        {r.findings.length ? <Pill tone="stale">acceptance failed</Pill> : null}</div>
       {r.missing ? <p className="why-not" role="alert">Kolab couldn’t read this package’s details just now. Open it on its binding, or read it with konjir read_work.</p>
         : <div className="q">{r.title}</div>}
       <dl className="work-fields">
@@ -220,6 +221,10 @@ function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: 
         {r.earlier_count ? <><dt>Earlier rounds</dt><dd>
           <details><summary>{r.earlier_count} item{r.earlier_count > 1 ? 's' : ''} of evidence from before it last went In progress</summary>
             <EvidenceList items={r.earlier} more={r.earlier_count - r.earlier.length} /></details></dd></> : null}
+        {r.findings.length ? <><dt>Failed acceptance checks</dt><dd>
+          <ul className="evidence">{r.findings.map((f) => <li key={`${f.evidence}-${f.element}`}>
+            <span className="mono">{f.element}</span> · failed in {f.recorded_by}’s test run, {ago(f.at)}</li>)}</ul>
+          <span className="why-not">Each stays on its record whatever your verdict.</span></dd></> : null}
         <dt>Repository</dt>
         <dd>{r.repository ? <><span className="mono">{r.repository.url}</span> · {r.repository.confirmed ? 'confirmed'
           : 'not confirmed yet: approving confirms it, unless you registered it or built this package'}</> : <span className="why-not">None named.</span>}</dd>

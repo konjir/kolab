@@ -21,7 +21,7 @@ const work = (over: Partial<WebWorkReview> = {}): WebWorkReview => ({
     { id: 'e3', kind: 'test_run', title: 'npm test: 120 passed', url: 'https://ci.example.com/runs/812', recorded_by: 'bob', at },
     { id: 'e4', kind: 'pull_request', url: 'javascript:alert(1)', title: 'Not a link', recorded_by: 'bob', at, repository: null, confirmed: false },
   ],
-  evidence_more: 0, earlier: [], earlier_count: 0,
+  evidence_more: 0, earlier: [], earlier_count: 0, findings: [],
   ...over,
 });
 const page = (for_me: WebReviewsView['for_me']): WebReviewsView => ({ for_me, mine: [], next: null });
@@ -76,6 +76,21 @@ test('a work package waits beside a version, with its done-when, assignee, evide
   expect(routes.at(-1)).toBe('node/orders-pg#W1');
   // Only the work package takes a verdict here.
   expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
+});
+
+test('a failed acceptance check shows with the request, naming the spec element and who recorded it, and says it stays whatever the verdict (REV9)', async () => {
+  reply = page([work({ findings: [{
+    kind: 'acceptance_failed', element: 'kj:test/orders#R2', version: 1, evidence: 'e3', recorded_by: 'bob', at,
+    explanation: 'bob\'s test run https://ci.example.com/runs/812 records the acceptance check of kj:test/orders#R2 (version 1) as failed',
+  }] })]);
+  show();
+  expect(await screen.findByText('kj:test/orders#R2')).toBeTruthy();
+  expect(screen.getByText('acceptance failed')).toBeTruthy();
+  expect(screen.getByText(/failed in bob’s test run/)).toBeTruthy();
+  expect(screen.getByText('Each stays on its record whatever your verdict.')).toBeTruthy();
+  // Approving isn't refused because of it.
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+  await waitFor(() => expect(posts()).toHaveLength(1));
 });
 
 test('this submission\'s evidence shows; earlier rounds are folded away and counted; a commit recorded before repositories links nowhere', async () => {

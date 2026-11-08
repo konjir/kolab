@@ -6,9 +6,10 @@
  */
 import type { QuoteSelector } from '@konjir/address';
 import { formatAddress } from '@konjir/address';
-import type { EvidenceKind, Kind, Layer, MarkReason, QueryKind, QueryState, ReviewRequestState, VersionState } from '@konjir/types';
+import type { AcceptanceFinding, EvidenceKind, Kind, Layer, MarkReason, QueryKind, QueryState, ReviewRequestState, VersionState } from '@konjir/types';
 import { markBecause, NEXT_STEP, type Kolab } from './kolab.js';
 import { cursorFor, keyOf, pageOf, pageSize, scoped, type PageOpts } from './page.js';
+import { acceptanceFinding } from './work.js';
 
 /** A page of a read model (W2.21): its rows, and the cursor to the next page, or null on the last. */
 export interface RowsPage<T> { items: T[]; next: string | null }
@@ -383,6 +384,8 @@ export interface WorkReviewDetailRow {
   /** The open marks on it, which put it at risk (PLN10). */
   open_marks: number;
   evidence: ReviewEvidenceRow[]; evidence_more: number; earlier: ReviewEvidenceRow[]; earlier_count: number;
+  /** The failed acceptance checks among its evidence since it was last To do (REV9), as konjir_list_reviews gives them. */
+  findings: AcceptanceFinding[];
 }
 
 /**
@@ -432,6 +435,18 @@ export async function workReviewDetails(kolab: Kolab, session: string, packages:
            left join lateral (select t.at, t.id from work_event t where t.binding_node_id = e.binding_node_id and t.element_id = e.element_id
                                and t.to_state = 'in_progress' and t.from_state is distinct from 'in_progress' order by t.at desc, t.id desc limit 1) rs on true
        ) x where x.i <= $4 order by x.at, x.id`, [here, bindings, elements, REVIEW_EVIDENCE_SHOWN])).rows;
+    // Kolab's own findings on each (REV9): the failed acceptance checks recorded since it was last To do.
+    const failed = (await q.query<{ binding: string; element: string; id: string; url: string | null; title: string | null; recorded_by: string; at: Date | string;
+      checks: { address: string; version: number; passed: boolean }[] }>(
+      `select n.name as binding, e.element_id as element, e.id, e.url, e.title, e.recorded_by, e.at, e.checks
+         from unnest($2::text[], $3::text[]) as p(binding, element)
+         join node n on n.kolab_id = $1 and n.name = p.binding
+         join evidence e on e.binding_node_id = n.id and e.element_id = p.element
+         join work_event ev on ev.id = e.event_id
+        where e.checks is not null and exists (select 1 from jsonb_array_elements(e.checks) c where c->'passed' = 'false'::jsonb)
+          and (ev.at, ev.id) > coalesce((select (t.at, t.id) from work_event t where t.binding_node_id = e.binding_node_id and t.element_id = e.element_id
+                                          and t.to_state = 'todo' order by t.at desc, t.id desc limit 1), ('-infinity'::timestamptz, ''::text))
+        order by e.at, e.id`, [here, bindings, elements])).rows;
     for (const r of rows) {
       const mine = ev.filter((e) => e.binding === r.binding && e.element === r.element);
       const view = (e: typeof ev[number]): ReviewEvidenceRow => ({
@@ -448,6 +463,7 @@ export async function workReviewDetails(kolab: Kolab, session: string, packages:
         repository: named ? { url: named.repository_url!, confirmed: named.confirmed } : r.repo_url ? { url: r.repo_url, confirmed: !!r.repo_confirmed } : null,
         open_marks: r.open_marks, evidence: current.map(view), evidence_more: Math.max(0, (current[0]?.n ?? 0) - current.length),
         earlier: earlier.map(view), earlier_count: earlier[0]?.n ?? 0,
+        findings: failed.filter((e) => e.binding === r.binding && e.element === r.element).flatMap((e) => e.checks.filter((c) => !c.passed).map((c) => acceptanceFinding(e, c))),
       });
     }
   });
