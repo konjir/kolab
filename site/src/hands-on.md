@@ -279,7 +279,7 @@ grep -n "kj:" server.js
 git log -1 --format='%h %s%n%(trailers:key=Konjir-Work)' HEAD^2
 ```
 
-`W1` was Done at its approval because nothing deploys Linkly. A work package whose work field says `release: true`, one that counts as done only once it is deployed, stays In review, approved, until its release is recorded: after the deploy, someone with Write on the technical layer other than its builder runs `konjir work deliver kj:short-links-binding#W1 --release <the deploy run's URL>` in a checkout of the repository, from an engineer session outside any job (your terminal's, say). The run is a GitHub Actions run of the registered repository, and the release names it and the commit it deployed. That makes it Done.
+`W1` was Done at its approval because nothing deploys Linkly. A work package whose work field says `release: true`, one that counts as done only once it is deployed, stays In review, approved, until its release is recorded: after the deploy, someone with Write on the technical layer other than its assignee (the agent that built it) runs `konjir work deliver kj:short-links-binding#W1 --release <the deploy run's URL>` in a checkout of the repository, from an engineer session outside any job (your terminal's, say). The run is a GitHub Actions run of the registered repository, and the release names it and the commit it deployed. That makes it Done.
 
 ## 7. Change the spec
 
