@@ -7,7 +7,8 @@
  * its kolab, so a person's prompt to it carries only the task. Further arguments go to claude.
  */
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { claudeUserConfig, readConfigText, writeAtomically } from './connect.js';
 
 /** A label, as konjir connect's --agent takes it. */
@@ -17,17 +18,20 @@ const LABEL = /^[a-z0-9][a-z0-9-]{0,23}$/;
 export interface Who { agent: string; role: string; kolab: string }
 
 /** One agent's session: the file to write, what it holds, and claude's arguments. */
-export interface ClaudeSession { name: string; who: Who; path: string; text: string; args: string[]; from: string }
+export interface ClaudeSession { name: string; who: Who; path: string; dir: string; text: string; args: string[]; from: string }
 
 /** The system prompt API24 describes: who the agent is, where, and where its rules come from. */
 export const systemPrompt = (w: Who, name: string) =>
   `You are ${w.agent}, an agent working in Konjir kolab ${w.kolab} in the ${w.role} role, through the ${name} tools. ` +
   'Call konjir_instructions before your first change, and konjir_instructions which=reviewer before you review a version; follow them.';
 
-/** The entries of one config file's `mcpServers`, or {} when it has none or can't be read as JSON. */
+/**
+ * The entries of one config file's `mcpServers`, or {} when there is no file or it has none. One that
+ * isn't JSON is refused, rather than passed over for another file's entry of the same name.
+ */
 function serversIn(path: string): Record<string, unknown> {
   let config: unknown;
-  try { config = JSON.parse(readConfigText(path) || '{}'); } catch { return {}; }
+  try { config = JSON.parse(readConfigText(path) || '{}'); } catch { throw new Error(`${path} isn't valid JSON, so konjir claude can't read its entries: fix it, or run konjir connect claude again`); }
   const s = config && typeof config === 'object' && !Array.isArray(config) ? (config as { mcpServers?: unknown }).mcpServers : undefined;
   return s && typeof s === 'object' && !Array.isArray(s) ? s as Record<string, unknown> : {};
 }
@@ -44,6 +48,34 @@ function whoIn(entry: unknown): Who | undefined {
 }
 
 /**
+ * The project konjir claude runs in: the nearest folder from `cwd` up that holds a .mcp.json, looking
+ * no higher than the repository's root; else `cwd`. So it runs the same from a subfolder.
+ */
+export function projectDir(cwd: string): string {
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.mcp.json'))) return dir;
+    if (existsSync(join(dir, '.git')) || dirname(dir) === dir) return cwd;
+  }
+}
+
+/**
+ * claude's own arguments, with any system prompt the person appends joined to konjir's: claude keeps
+ * one --append-system-prompt, so a second would replace API24's prompt.
+ */
+function withPrompt(prompt: string, rest: string[]): string[] {
+  const out: string[] = [];
+  const theirs: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--') { out.push(...rest.slice(i)); break; }
+    if (a === '--append-system-prompt' && i + 1 < rest.length) theirs.push(rest[++i]);
+    else if (a.startsWith('--append-system-prompt=')) theirs.push(a.slice('--append-system-prompt='.length));
+    else out.push(a);
+  }
+  return ['--append-system-prompt', [prompt, ...theirs].join('\n\n'), ...out];
+}
+
+/**
  * The session `konjir claude <label>` starts, without starting it: the entry, from the project's
  * `.mcp.json` or else the person's Claude Code settings; the file it is written to alone; and the
  * arguments to claude. Refuses a label with no `konjir-<label>` entry, naming the entries there are.
@@ -51,7 +83,8 @@ function whoIn(entry: unknown): Who | undefined {
 export function claudeSession(label: string, rest: string[], opts: { cwd: string; env: Record<string, string | undefined> }): ClaudeSession {
   if (!LABEL.test(label ?? '')) throw new Error('konjir claude <label> [claude\'s own arguments…]: the label of an agent konjir connect claude set up, such as product, up to 24 lowercase letters, digits and \'-\'');
   const name = `konjir-${label}`;
-  const places = [join(opts.cwd, '.mcp.json'), claudeUserConfig(opts.env)];
+  const dir = projectDir(opts.cwd);
+  const places = [join(dir, '.mcp.json'), claudeUserConfig(opts.env)];
   const found = places.map((path) => ({ path, servers: serversIn(path) }));
   const hit = found.find((f) => Object.hasOwn(f.servers, name));
   if (!hit) {
@@ -64,13 +97,13 @@ export function claudeSession(label: string, rest: string[], opts: { cwd: string
   const who = whoIn(entry);
   if (!who) throw new Error(`${hit.path}: ${name} doesn't say which agent, role and kolab it signs in as (KONJIR_SCOPE, or its OAuth scopes), so it isn't an entry konjir connect claude wrote: run it again`);
   const channel = (entry as { type?: unknown }).type === 'stdio';
-  const path = join(opts.cwd, '.claude', `${name}.json`);
+  const path = join(dir, '.claude', `${name}.json`);
   return {
-    name, who, path, from: hit.path,
+    name, who, path, dir, from: hit.path,
     text: `${JSON.stringify({ mcpServers: { [name]: entry } }, null, 2)}\n`,
     args: ['--strict-mcp-config', '--mcp-config', path,
       ...(channel ? ['--dangerously-load-development-channels', `server:${name}`] : []),
-      '--append-system-prompt', systemPrompt(who, name), ...rest],
+      ...withPrompt(systemPrompt(who, name), rest)],
   };
 }
 
@@ -92,10 +125,11 @@ export const gitIgnored = (path: string, cwd: string): boolean | undefined => {
 /** Writes the session's file and runs claude; resolves with claude's exit code. */
 export async function startClaude(label: string, rest: string[], opts: { cwd: string; env: Record<string, string | undefined> }, io: ClaudeIO): Promise<number> {
   const s = claudeSession(label, rest, opts);
-  writeAtomically(s.path, s.text, { within: opts.cwd });
+  // Only its owner reads it: it is the entry as written, whatever headers a person added to it.
+  writeAtomically(s.path, s.text, { within: s.dir, mode: 0o600 });
   // It names the checkout's absolute path and the agent, as .mcp.json does: keep it out of git.
-  if (io.ignored(s.path, opts.cwd) === false) io.warn(`konjir claude: git doesn't ignore ${s.path}, which names this machine's paths as .mcp.json does: add .claude/ to .gitignore`);
-  const code = await io.run('claude', s.args, { cwd: opts.cwd });
+  if (io.ignored(s.path, s.dir) === false) io.warn(`konjir claude: git doesn't ignore ${s.path}, which names this machine's paths as .mcp.json does: add .claude/konjir-*.json to .gitignore`);
+  const code = await io.run('claude', s.args, { cwd: s.dir });
   if (code === -1) throw new Error('claude didn\'t start: is Claude Code installed, and claude on your PATH?');
   return code;
 }

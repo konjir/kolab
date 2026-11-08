@@ -37,3 +37,7 @@ test-results/
 playwright-report/
 # Restore drill logs (deploy/recovery-drill.sh)
 deploy/drills/
+
+# konjir connect's harness entries and konjir claude's session files name this machine's paths
+/.mcp.json
+/.claude/konjir-*.json
