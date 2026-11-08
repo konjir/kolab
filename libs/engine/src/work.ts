@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
 import {
-  EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_REPOSITORY_URL, MAX_TEXT, MAX_WORK_REPO,
+  ACCEPTANCE_RESULTS, EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_REPOSITORY_URL, MAX_TEXT, MAX_WORK_REPO,
   WORK_FIELDS, WORK_SIZES, textLength, type EvidenceKind, type WorkFields,
 } from '@konjir/types';
 
@@ -281,9 +281,15 @@ export interface CheckedEvidence {
   url: string | null; title: string | null; files: string[] | null;
   /** A commit's or pull request's repository as given (repositoryUrl's canonical form), or null to use the package's own (W5.2a). */
   repo: string | null;
+  /** A test run's acceptance checks as given (REV9), each address still to resolve; absent or null for none. */
+  checks?: { address: string; passed: boolean }[] | null;
 }
 
-const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'summary', 'files', 'repo'] as const;
+/** An acceptance check as Kolab stores it (migration 0048's evidence.checks): the element's full address, the committed version it resolved to, and whether it passed. */
+export interface StoredCheck { address: string; version: number; passed: boolean }
+
+const EVIDENCE_KEYS = ['kind', 'sha', 'pr', 'url', 'title', 'summary', 'files', 'repo', 'checks'] as const;
+const CHECK_KEYS = ['address', 'result'] as const;
 /** The kinds of evidence a package's own work records (konjir_add_evidence, konjir_submit_work): all but a release, which konjir_record_release records (W7.7). */
 const SUBMITTED_KINDS = EVIDENCE_KINDS.filter((k) => k !== 'release');
 const RELEASE_KEYS = ['run', 'sha', 'repo', 'title'] as const;
@@ -513,26 +519,65 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
     } else {
       refuse(['sha', 'pr', 'files', 'repo']);
       if (!given('url') && !given('title') && !given('summary')) problems.push(`${what} is a test run: give its url, or its summary ("npm test: 120 passed") as summary or title`);
+      if (given('checks')) {
+        const c = checkAcceptanceInput(what, o.checks);
+        problems.push(...c.problems);
+        if (c.limit) limit = true;
+        out.checks = c.checks;
+      }
     }
+    if (kind !== 'test_run' && given('checks')) problems.push(`${what} is a ${kind.replace('_', ' ')}: only a test run lists acceptance checks`);
     items.push(out);
   });
   return { items: problems.length ? [] : items, problems, limit };
 }
 
 /**
- * What makes two items of a package's evidence the same: a commit's sha in its repository (`repository`,
- * its id; none for one recorded before repositories, W5.2a), a pull request's link (sameLink), a test
- * run's link or else its summary.
+ * A test run's acceptance checks as a client gives them (REV9): a list of at most MAX_EVIDENCE_CHECKS,
+ * each `{ address: "kj:<kolab>/<node>#<id>", result: "passed" | "failed" }`, each element once. Only
+ * their shape is checked here; the engine resolves each address to a committed spec element.
  */
-export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null, repository: string | null = null): string {
-  return kind === 'commit' ? `commit:${repository ?? ''}:${ref}` : kind === 'pull_request' ? `pr:${sameLink(url ?? '').toLowerCase()}`
-    : kind === 'release' ? `release:${repository ?? ''}:${ref}:${sameLink(url ?? '')}`
-    : url ? `test:${sameLink(url)}` : `test-summary:${title ?? ''}`;
+function checkAcceptanceInput(what: string, input: unknown): { checks: { address: string; passed: boolean }[]; problems: string[]; limit: boolean } {
+  const shape = `${what}'s checks lists the acceptance checks it ran: [{ address: "kj:<kolab>/<spec>#<id>", result: "passed" }, { address: "…", result: "failed" }]`;
+  if (!Array.isArray(input) || !input.length) return { checks: [], problems: [shape], limit: false };
+  if (input.length > MAX_EVIDENCE_CHECKS) return { checks: [], problems: [`${what} lists ${input.length} acceptance checks; the limit is ${MAX_EVIDENCE_CHECKS} a test run: give the rest as another test run`], limit: true };
+  const problems: string[] = [];
+  const checks: { address: string; passed: boolean }[] = [];
+  input.forEach((x, i) => {
+    const which = `${what}'s check ${i + 1}`;
+    if (typeof x !== 'object' || x === null || Array.isArray(x)) { problems.push(`${which} is an object: { address: "kj:<kolab>/<spec>#<id>", result: "passed" }`); return; }
+    const o = x as Record<string, unknown>;
+    const unknown = Object.keys(o).filter((k) => !(CHECK_KEYS as readonly string[]).includes(k));
+    if (unknown.length) problems.push(`${which} has ${unknown.join(', ')}, which a check doesn't take: it takes ${CHECK_KEYS.join(', ')}`);
+    if (typeof o.address !== 'string' || !o.address.trim()) problems.push(`${which}'s address is the spec element it checks: kj:<kolab>/<spec>#<id>`);
+    else if (textLength(o.address.trim()) > MAX_CHECK_ADDRESS) problems.push(`${which}'s address is longer than ${MAX_CHECK_ADDRESS} characters`);
+    if (!(ACCEPTANCE_RESULTS as readonly unknown[]).includes(o.result)) problems.push(`${which}'s result is ${ACCEPTANCE_RESULTS.join(' or ')}, not ${JSON.stringify(o.result ?? null)}`);
+    if (typeof o.address === 'string' && o.address.trim()) checks.push({ address: o.address.trim(), passed: o.result === 'passed' });
+  });
+  return { checks, problems, limit: false };
 }
 
-/** A line naming evidence, for an event's note: each commit's short sha, each pull request's link, each test run. */
+/** The longest address a check takes (migration 0048's kj_evidence_checks_valid). */
+const MAX_CHECK_ADDRESS = 1000;
+
+/**
+ * What makes two items of a package's evidence the same: a commit's sha in its repository (`repository`,
+ * its id; none for one recorded before repositories, W5.2a), a pull request's link (sameLink), a test
+ * run's link or else its summary, with its acceptance checks (REV9), so a run given again with other
+ * checks is recorded, not dropped as one already there.
+ */
+export function evidenceKey(kind: string, ref: string | null, url: string | null, title: string | null, repository: string | null = null,
+  checks: { address: string; passed: boolean }[] | null = null): string {
+  const checked = checks?.length ? `:checks:${checks.map((c) => `${c.address}=${c.passed ? 'passed' : 'failed'}`).sort().join(',')}` : '';
+  return kind === 'commit' ? `commit:${repository ?? ''}:${ref}` : kind === 'pull_request' ? `pr:${sameLink(url ?? '').toLowerCase()}`
+    : kind === 'release' ? `release:${repository ?? ''}:${ref}:${sameLink(url ?? '')}`
+    : url ? `test:${sameLink(url)}${checked}` : `test-summary:${title ?? ''}${checked}`;
+}
+
+/** A line naming evidence, for an event's note: each commit's short sha, each pull request's link, each test run, with how many of its acceptance checks failed. */
 export function evidenceSummary(items: CheckedEvidence[]): string {
   return items.map((e) => (e.kind === 'commit' ? `commit ${e.ref!.slice(0, 12)}` : e.kind === 'pull_request' ? `pull request ${e.url}`
-    : e.kind === 'release' ? `release of commit ${e.ref!.slice(0, 12)} by ${e.url}` : `test run ${e.url ?? e.title}`))
+    : e.kind === 'release' ? `release of commit ${e.ref!.slice(0, 12)} by ${e.url}`
+    : `test run ${e.url ?? e.title}${e.checks?.length ? ` (${e.checks.length} acceptance check${e.checks.length === 1 ? '' : 's'}, ${e.checks.filter((c) => !c.passed).length} failed)` : ''}`))
     .join(', ').slice(0, 1000);
 }

@@ -5,7 +5,7 @@ import { args } from './args.js';
 import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
@@ -176,8 +176,12 @@ const evidenceItem = args({
   summary: z.string().optional().describe('A test run\'s summary, as title takes it ("npm test: 120 passed"): give one or the other. A test run needs a url or a summary'),
   files: z.array(z.string()).optional().describe(`A commit's: the paths it touched, at most ${MAX_EVIDENCE_FILES}`),
   repo: z.string().optional().describe('A commit\'s or pull request\'s repository: the URL of one registered in your kolab (konjir_list_repositories). Leave it out to use the package\'s own (its repo, or its binding\'s implementation); another repository than the package\'s own is refused. A pull request\'s url, and a commit\'s, must sit under it'),
+  checks: z.array(args({
+    address: z.string().describe('The spec element the check checks: kj:<kolab>/<spec>#<id>, an element of a committed spec version (its latest, or one @<version> pins). One that doesn\'t resolve refuses the call'),
+    result: z.enum(ACCEPTANCE_RESULTS).describe('passed or failed'),
+  })).optional().describe(`A test run's: the acceptance checks it ran (REV9), at most ${MAX_EVIDENCE_CHECKS}, each element once. A failed one is an acceptance_failed finding on the package's review, which stays on its record whatever the verdict`),
 });
-const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","summary":"npm test: 120 passed"}]; a commit or pull request may name its repo`);
+const evidenceList = z.array(evidenceItem).describe(`At most ${MAX_EVIDENCE_PER_CALL} items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","summary":"npm test: 120 passed","checks":[{"address":"kj:shop/checkout#R1","result":"passed"}]}]; a commit or pull request may name its repo`);
 const addEvidence = args({ work, evidence: evidenceList });
 const submitWork = args({
   work,

@@ -5,7 +5,7 @@
  * agent calls (konjir_add_evidence, konjir_submit_work, konjir_register_repository).
  *
  *   konjir repo register [--binding <binding>] [--url <https URL>] [--root <sha>] [-C <dir>]
- *   konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url or summary>]… [--note <text>]
+ *   konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url or summary>]… [--check <spec address>=passed|failed]… [--note <text>]
  *                       [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]
  *   konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>] [--repo <url>] [--dry-run] [-C <dir>]
  *
@@ -354,12 +354,35 @@ export interface DeliverOptions {
   /** The work package, kj:[<kolab>/]<binding>#<id>; by default the one the session holds In progress. */
   work?: string;
   submit?: boolean; pr?: string; tests?: string[]; note?: string;
+  /**
+   * The acceptance checks the test run ran (REV9), each `<spec address>=passed` or `=failed`, as
+   * `--check` gives them: they go with the one `--test`, which they need.
+   */
+  checks?: string[];
   /** Only commits in <since>..HEAD; by default every commit reachable from HEAD. */
   since?: string;
   /** The registered repository this checkout is, when none of its remotes is its URL. */
   repo?: string;
   /** Says what it would send, and sends nothing. */
   dryRun?: boolean;
+}
+
+/**
+ * The acceptance checks `--check` gives (REV9): each `<spec address>=passed` or `=failed`, the
+ * address as Kolab resolves it, for the one test run they go with. Refused, before anything is
+ * sent, without exactly one `--test`, or with a check that isn't of that form. Kolab resolves each
+ * address, and refuses the call if one doesn't resolve.
+ */
+export function acceptanceChecks(given: string[], tests: string[]): { address: string; result: 'passed' | 'failed' }[] {
+  if (!given.length) return [];
+  if (tests.length !== 1) {
+    throw new Error(`--check names an acceptance check a test run ran, so it goes with one --test: give exactly one --test with it, not ${tests.length}. Nothing was sent.`);
+  }
+  return given.map((c) => {
+    const m = /^(kj:\S+)=(passed|failed)$/.exec(c.trim());
+    if (!m) throw new Error(`--check ${c}: give the spec element and the result, --check kj:<kolab>/<spec>#<id>=passed (or =failed). Nothing was sent.`);
+    return { address: m[1], result: m[2] as 'passed' | 'failed' };
+  });
 }
 
 /**
@@ -381,6 +404,7 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
     }
     work = held[0].work;
   }
+  const checks = acceptanceChecks(opts.checks ?? [], opts.tests ?? []);
   const pkg = await readRound(call, work);
   const address = pkg.trailer.replace(/^Konjir-Work:\s*/, '').trim();
   // A package a plan had before D104 (migration 0033) keeps its commits: their trailers name the plan.
@@ -404,7 +428,9 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
     const n = prNumber(opts.pr);
     evidence.push({ kind: 'pull_request', url: opts.pr, repo: repo.url, ...(n ? { pr: n } : {}) });
   }
-  for (const t of opts.tests ?? []) evidence.push(/^https:\/\//i.test(t.trim()) ? { kind: 'test_run', url: t.trim() } : { kind: 'test_run', title: t });
+  for (const t of opts.tests ?? []) {
+    evidence.push({ ...(/^https:\/\//i.test(t.trim()) ? { kind: 'test_run', url: t.trim() } : { kind: 'test_run', title: t }), ...(checks.length ? { checks } : {}) });
+  }
   if (!commits.length && !opts.pr && earlier.length) {
     throw new Error(`every commit reachable from HEAD${opts.since ? ` since ${opts.since}` : ''} that carries the trailer "Konjir-Work: ${address}" (${earlier.map((x) => x.slice(0, 12)).join(', ')}) `
       + `was recorded in an earlier round of ${pkg.work}, before it was last To do: commit this round's work with the trailer and run it again. Nothing was sent.`);
@@ -433,9 +459,9 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   }
   if (last === undefined) return { ...summary, sent: true, recorded, already, state: 'in_progress' };
   const r = await call('submit_work', { work: pkg.work, ...(last.length ? { evidence: last } : {}), ...(opts.note ? { note: opts.note } : {}) }) as
-    { state: string; in_review: boolean; reviewers: string[]; unreviewed: boolean; recorded: number; already: number; next?: string };
+    { state: string; in_review: boolean; reviewers: string[]; unreviewed: boolean; recorded: number; already: number; next?: string; findings?: unknown[] };
   return { ...summary, sent: true, recorded: recorded + r.recorded, already: already + r.already, state: r.state, in_review: r.in_review, reviewers: r.reviewers,
-    unreviewed: r.unreviewed, ...(r.next ? { next: r.next } : {}) };
+    unreviewed: r.unreviewed, ...(r.findings?.length ? { findings: r.findings } : {}), ...(r.next ? { next: r.next } : {}) };
 }
 
 /**

@@ -101,7 +101,7 @@ test('konjir tools lists each verb with its parameters, from the schemas; docs/v
   const create = tools.find((t) => t.name === 'konjir_create_node')!;
   expect(usageLine(create)).toBe('create_node kind=<spec|prototype|binding|plan> title=<string> [id=<string>] [parent=<string>]');
   expect(toolsListing(tools)).toMatch(/^create_node kind=<spec\|prototype\|binding\|plan> title=<string> \[id=<string>\] \[parent=<string>\]\n {4}Create a node in your kolab\./m);
-  expect(usageLine(tools.find((t) => t.name === 'konjir_add_evidence')!)).toMatch(/^add_evidence work=<string> evidence=<\[\{kind,sha\?,pr\?,url\?,title\?,summary\?,files\?,repo\?\}\]>$/);
+  expect(usageLine(tools.find((t) => t.name === 'konjir_add_evidence')!)).toMatch(/^add_evidence work=<string> evidence=<\[\{kind,sha\?,pr\?,url\?,title\?,summary\?,files\?,repo\?,checks\?\}\]>$/);
   // `npm run verbs` writes it; run it after changing a verb.
   const doc = readFileSync(fileURLToPath(new URL('../../../docs/verbs.md', import.meta.url)), 'utf8');
   expect(doc).toBe(verbsMarkdown(tools));

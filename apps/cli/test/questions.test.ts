@@ -143,7 +143,7 @@ test('a database from the previous release is migrated on open', async () => {
       drop function kj_plan_retired();
       drop table evidence;
       drop table repository;
-      drop function kj_evidence_fixed(), kj_evidence_pinned(), kj_repository_binding(), kj_repository_fixed();
+      drop function kj_evidence_fixed(), kj_evidence_pinned(), kj_repository_binding(), kj_repository_fixed(), kj_evidence_checks_valid(jsonb);
       alter table review_request drop constraint review_request_work_kolab_fkey, drop constraint review_request_subject;
       drop index one_open_work_request_per_reviewer, review_request_work;
       alter table review_request drop column binding_node_id, drop column element_id;

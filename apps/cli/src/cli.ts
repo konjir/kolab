@@ -20,7 +20,7 @@
  *                                           bridge (W3.8, D61), each agent signed in, or with --http its HTTP entry
  *   konjir repo register [--binding B] [--url U] [--root SHA] [-C dir]
  *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
- *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
+ *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--check ADDRESS=passed|failed]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
  *   konjir work deliver <work> --release URL [--commit REV] [--title T] [--repo URL] [--dry-run] [-C dir]
  *                                        -> records the commits carrying the package's Konjir-Work trailer (W5.2a, D98)
  *   konjir work [--jobs 4] [--once] [--machine M] [--allow-all] [--harness CMD] [--repo URL] [-C dir]
@@ -180,7 +180,9 @@ Git:       konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|sum
            [--repo <url>] [--dry-run] [-C <dir>], in a checkout: finds the commits whose trailer is the package's
            (Konjir-Work: kj:<kolab>/<binding>#<id>, from pull_work or read_work), checks the checkout is the registered
            repository (its root commit and a remote), and records them as evidence; --submit submits the package.
-           Run again, it records only what is new. Kolab itself never reads git.
+           Run again, it records only what is new. Kolab itself never reads git. --check kj:<kolab>/<spec>#<id>=passed
+           (or =failed), repeated, lists the acceptance checks the one --test ran; each must resolve to a committed spec
+           element, and a failed one is a finding on the package's review that stays on its record (REV9).
            konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>], after the package's approval
            and then the deploy, in a checkout of its registered repository: records that the run, a GitHub Actions run
            of that repository (<repository URL>/actions/runs/<id>), released the commit (HEAD by default, sent as its
@@ -705,9 +707,11 @@ export async function main(argv: string[]) {
         }
         const tests: string[] = [];
         for (let t = flag(args, 'test'); t !== undefined; t = flag(args, 'test')) tests.push(t);
-        const opts = { submit: on('submit'), dryRun: on('dry-run'), pr: flag(args, 'pr'), note: flag(args, 'note'), since: flag(args, 'since'), repo: flag(args, 'repo'), tests };
+        const checks: string[] = [];
+        for (let c = flag(args, 'check'); c !== undefined; c = flag(args, 'check')) checks.push(c);
+        const opts = { submit: on('submit'), dryRun: on('dry-run'), pr: flag(args, 'pr'), note: flag(args, 'note'), since: flag(args, 'since'), repo: flag(args, 'repo'), tests, checks };
         const work = args[0] !== undefined && !args[0].startsWith('-') ? args.shift() : undefined;
-        if (args.length) throw new Error(`konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--note <text>] [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]: unknown ${args.join(' ')}`);
+        if (args.length) throw new Error(`konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--check <spec address>=passed|failed]… [--note <text>] [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]: unknown ${args.join(' ')}`);
         result = await deliverWork(callIt, git, { work, ...opts });
       }
       console.log(JSON.stringify(result, null, 2));

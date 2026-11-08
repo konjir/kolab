@@ -99,7 +99,7 @@ Abandon a draft or a version in review that you wrote: it is rejected, and its r
 ## add_evidence
 
 ```
-konjir add_evidence work=<string> evidence=<[{kind,sha?,pr?,url?,title?,summary?,files?,repo?}]>
+konjir add_evidence work=<string> evidence=<[{kind,sha?,pr?,url?,title?,summary?,files?,repo?,checks?}]>
 ```
 
 Record evidence of the work package you hold In progress, kj:<binding>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). A commit or pull request is in a registered repository: the package's own (its repo, or its binding's implementation) unless it has none, when repo names one; its link sits under the repository's URL. In a shell, konjir work deliver reads the commits that carry the package's trailer from your checkout and sends them, after checking the checkout is the registered repository. Each is your claim, which the package's reviewer checks outside Kolab. It renews the package's lease. An item already recorded on it since it was last To do is counted in already, not recorded again. At most 50 items a call. A link carrying a user, a password or a credential in its query (token, sig, X-Amz-…) is refused: evidence is kept, and every session of the kolab reads it. Counts as a draft against your hourly budget. Refused once your lease has lapsed.
@@ -107,7 +107,7 @@ Record evidence of the work package you hold In progress, kj:<binding>#<id>, as 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `work` | `string` | yes | A work package of your kolab: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2. An address from before D104, kj:<plan>#<id>, names the package where it moved |
-| `evidence` | `[{kind,sha?,pr?,url?,title?,summary?,files?,repo?}]` | yes | At most 50 items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","summary":"npm test: 120 passed"}]; a commit or pull request may name its repo |
+| `evidence` | `[{kind,sha?,pr?,url?,title?,summary?,files?,repo?,checks?}]` | yes | At most 50 items: [{"kind":"commit","sha":"…","title":"…","files":["src/a.ts"]}, {"kind":"pull_request","url":"https://github.com/o/r/pull/7","pr":7}, {"kind":"test_run","summary":"npm test: 120 passed","checks":[{"address":"kj:shop/checkout#R1","result":"passed"}]}]; a commit or pull request may name its repo |
 
 ## add_position
 
@@ -1092,7 +1092,7 @@ Submit a draft. Kolab runs its structural checks; if they fail, the draft stays 
 ## submit_work
 
 ```
-konjir submit_work work=<string> [evidence=<[{kind,sha?,pr?,url?,title?,summary?,files?,repo?}]>] [note=<string>]
+konjir submit_work work=<string> [evidence=<[{kind,sha?,pr?,url?,title?,summary?,files?,repo?,checks?}]>] [note=<string>]
 ```
 
 Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done; or, for a package whose work field says release: true, approved and waiting In review until its release is recorded with konjir_record_release after the deploy, by someone other than you, outside any job), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.
@@ -1100,7 +1100,7 @@ Submit the work package you hold In progress, kj:<binding>#<id>, for review, onc
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `work` | `string` | yes | A work package of your kolab: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2. An address from before D104, kj:<plan>#<id>, names the package where it moved |
-| `evidence` | `[{kind,sha?,pr?,url?,title?,summary?,files?,repo?}]` | no | Evidence to record with the submission, as konjir_add_evidence takes it |
+| `evidence` | `[{kind,sha?,pr?,url?,title?,summary?,files?,repo?,checks?}]` | no | Evidence to record with the submission, as konjir_add_evidence takes it |
 | `note` | `string` | no | What you did, for the reviewer. At most 4000 characters |
 
 ## take_job
