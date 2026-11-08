@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { args } from './args.js';
-import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, cursorFor, keyOf } from '@konjir/engine';
+import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
   CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
@@ -556,13 +556,13 @@ export class AgentTools {
         };
       })() : { stale_after_commit: [] }),
       next: r.ok ? `Committed${r.unreviewed ? ', unreviewed: no one else who may approve it holds Write on this layer (its review says why)' : ''}.${r.cascade ? ' Its cascade (marks downstream, variants rebased) is queued behind an earlier one of this node and runs once that one is done.' : ''}${r.rebases ? ` ${r.rebases === 1 ? 'One variant\'s rebase is' : `${r.rebases} variants' rebases are`} queued: Kolab rebases them in the background, level by level, and any override they conflict with comes back as a mark and a question.` : ''} Others can now link to it; check konjir_list_stale.`
-        : r.in_review ? (r.nobody
+        : r.in_review ? `${r.nobody
           ? `In review. ${r.nobody} The verdict comes back in your answers (konjir_list_reviews).`
           : r.product_reviewers
             ? `In review, for two approvals, since your kolab requires a product approval of bindings (VER13): one from ${r.reviewers?.length ? r.reviewers.join(', ') : 'a technical reviewer'}, and one from ${r.product_reviewers.length ? r.product_reviewers.join(', ') : 'a product reviewer'}, who checks it doesn't change behavior. Carry on; the verdicts come back in your answers (konjir_list_reviews).`
           : r.reviewers?.length
             ? `In review: ${r.reviewers.join(', ')} ${r.reviewers.length > 1 ? 'each have' : 'has'} a review request in their inbox, and one approval commits it. Carry on; the verdict comes back in your answers (konjir_list_reviews).`
-            : `In review. ${nobodyCanReview(v.layer)} The verdict comes back in your answers (konjir_list_reviews).`)
+            : `In review. ${nobodyCanReview(v.layer)} The verdict comes back in your answers (konjir_list_reviews).`} Each reviewer is asked: "${SPLIT_STEP}"`
         : r.stale ? `Stale: someone else committed to ${node} after this was drafted. Nothing was wrong with the draft. Re-read the node with konjir_read_node and redraft on its current version.`
         : `Not committed: the checks found what the review names. The draft stays yours, drafted: draft a new version that fixes it (and konjir_abandon node=${node} version=${submitted ?? v.seq}), or resubmit it if the finding was wrong.`,
     };

@@ -2,7 +2,7 @@
 // annotates the spec, the answer comes back to the element that waited on it,
 // and every inbox change is pushed to subscribed agents.
 import { expect, test } from '@jest/globals';
-import { Kolab, RoleError, sessionKey } from '@konjir/engine';
+import { Kolab, RoleError, SPLIT_STEP, sessionKey } from '@konjir/engine';
 import { nobodyCanReview, type KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
@@ -502,7 +502,7 @@ test('over MCP: an engineer agent asks about a version in review, and konjir_sub
   const submitted = await call(pat, 'submit_for_review', { node: 'checkout', version: 1 }) as { in_review: string; reviewers: string[]; review: string; next: string };
   expect(submitted).toMatchObject({ ok: false, in_review: 'kj:checkout@1', reviewers: [] });
   expect(submitted.review).toContain(nobodyCanReview('functional'));
-  expect(submitted.next).toBe(`In review. ${nobodyCanReview('functional')} The verdict comes back in your answers (konjir_list_reviews).`);
+  expect(submitted.next).toBe(`In review. ${nobodyCanReview('functional')} The verdict comes back in your answers (konjir_list_reviews). Each reviewer is asked: "${SPLIT_STEP}"`);
   // The engineer agent is not asked to review a layer its role can't write.
   expect(await call(eng, 'list_reviews', {})).toMatchObject({ for_you: [] });
 

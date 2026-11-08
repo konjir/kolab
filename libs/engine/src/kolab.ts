@@ -15,7 +15,7 @@ import {
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
-import { fillPlaybook, jobInstructions, oneLineId, quoteText, UnsafeSpecificError, type BriefOf } from './playbooks.js';
+import { fillPlaybook, jobInstructions, oneLineId, quoteText, SPLIT_STEP, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
   ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
@@ -8623,7 +8623,10 @@ export class Kolab {
           if (from === 'todo') {
             if (target === s.actor_id) throw new GateError(`${at} is To do: pull it (konjir_pull_work) rather than give it to yourself`);
             const p = (await this.bindingBoard(tx, binding)).find((x) => x.id === id);
-            if (p?.blocked.length) throw new GateError(`${at} is blocked (PLN19), so it is given to no one until it is ready: konjir_read_work says why`);
+            if (p?.blocked.length) {
+              const cases = caseFilesNamed([p]);
+              throw new GateError(`${at} is blocked (PLN19), so it is given to no one until it is ready${cases ? ` (it waits on ${cases}, until ruled)` : ''}: konjir_read_work says why`);
+            }
           }
           const was = from === 'in_progress' ? r.assignee_id : null;
           if (was === target) throw new GateError(`${target} already holds ${at}`);
@@ -11522,7 +11525,7 @@ export class Kolab {
       }
       return {
         ...common, subject: `kj:${r.node_id}@${r.seq}`, subject_kind: 'version' as const,
-        next: `Read it with konjir_read_node node=${r.node_id} version=${r.seq}. Check each element states one testable intent, that no two contradict each other or what they link to, and that none belongs to the other layer. Then konjir_review node=${r.node_id} version=${r.seq} verdict=approve, or verdict=request_changes with a note and findings (contradiction or layer_leak, naming the elements). The konjir_reviewer_instructions prompt says how.`,
+        next: `Read it with konjir_read_node node=${r.node_id} version=${r.seq}. ${SPLIT_STEP} Check that no two elements contradict each other or what they link to, and that none belongs to the other layer. Then konjir_review node=${r.node_id} version=${r.seq} verdict=approve, or verdict=request_changes with a note and findings (contradiction or layer_leak, naming the elements). The konjir_reviewer_instructions prompt says how.`,
       };
     });
   }
@@ -12607,6 +12610,17 @@ function checkElementIds(input: { elements?: { id?: string; parent?: string | nu
 /** A pull that found nothing ready: thrown inside its transaction, so its rate hold is given back. */
 class NothingReady extends Error { name = 'NothingReady'; }
 
+/**
+ * The open case files that block `packages`, each once, named with the element it is on: what a
+ * pull or a reassignment refused by one says, so its opener and its ruler can be found (WRK7).
+ */
+function caseFilesNamed(packages: BoardPackage[]): string {
+  const cases = new Map<string, string>();
+  for (const p of packages) for (const b of p.blocked) if (b.reason === 'case_file') cases.set(b.case, b.on);
+  const named = [...cases].slice(0, 5).map(([id, on]) => `case file ${id} on ${on}`);
+  return `${named.join(', ')}${cases.size > named.length ? ` and ${cases.size - named.length} more` : ''}`;
+}
+
 /** Why a pull found nothing ready in binding `binding` (PLN13, PLN19): how many are blocked, and by what. */
 function nothingReady(binding: string, board: BoardPackage[]): { why: string; counts: Record<string, number> } {
   const todo = board.filter((p) => p.state === 'todo' && !p.row.removed_in_version_id && !p.row.milestone);
@@ -12622,7 +12636,8 @@ function nothingReady(binding: string, board: BoardPackage[]): { why: string; co
   const why = !board.length ? `${binding} has no work packages yet`
     : !todo.length ? `nothing in ${binding} is To do: ${counts.in_progress} In progress, ${counts.in_review} In review, ${counts.done} Done`
       : `every work package To do in ${binding} is blocked: ${counts.blocked_by_dependencies} by a work package it depends on that isn't Done, `
-        + `${counts.blocked_by_questions} by an open question and ${counts.blocked_by_case_files} by an open case file on it or an element it serves or relies on (PLN19). `
+        + `${counts.blocked_by_questions} by an open question and ${counts.blocked_by_case_files} by an open case file on it or an element it serves or relies on`
+        + `${counts.blocked_by_case_files ? ` (${caseFilesNamed(todo)}, until ruled)` : ''} (PLN19). `
         + 'konjir_list_work shows each one\'s reasons';
   return { why, counts };
 }

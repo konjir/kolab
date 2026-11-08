@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { McpPrompt, McpResource, McpTool, type McpHandlerContext, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { args } from './args.js';
-import { Kolab, PLAYBOOK_KINDS, playbookText } from '@konjir/engine';
+import { Kolab, PLAYBOOK_KINDS, SPLIT_STEP, playbookText } from '@konjir/engine';
 import { fail, sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
 
@@ -34,7 +34,7 @@ You review one version of one node that another actor wrote, on a layer where yo
 3. Check the layers.
    - A functional spec states intent and user-visible behavior. It must not prescribe implementation: technologies, storage, data structures, algorithms, libraries, code structure.
    - A technical binding maps a functional spec onto a stack. It may choose any implementation, but its behavior must meet each requirement it links to as written.
-4. Check each element states one testable intent. Send a compound requirement back to be split, with request_changes.
+4. ${SPLIT_STEP} A compound element is not a finding kind: say so in the note.
 5. Report what is wrong as findings, each {"kind": …, "elements": [element IDs of this version], "explanation": one or two sentences a busy author can act on}. Decide the kind this way: anything that conflicts is a contradiction; a layer_leak conflicts with nothing.
    - contradiction: two elements of this version that cannot both be true, or a binding element whose behavior conflicts with a requirement it links to, so that the requirement as written can no longer be met: stricter, looser or different counts. Example: the spec says carts expire after 30 days, and the binding expires them after 7. Cite every element involved. A contradiction stops the commit (VER9), so report it only with request_changes.
    - layer_leak: content in the wrong layer that conflicts with nothing. A functional element that prescribes implementation, or a binding element that adds user-visible behavior its linked requirements don't mention. Cite the element. A layer leak doesn't stop the commit: you may approve with it. When the version commits, Kolab raises a role_boundary mark on the element and a question to the layer that owns the answer: implementation in a spec goes back to its author, and behavior added in a binding goes to the spec it links to.
