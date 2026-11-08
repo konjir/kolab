@@ -43,6 +43,7 @@
 import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from '@modelcontextprotocol/client';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { constants as osConstants } from 'node:os';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setup } from './login.js';
@@ -425,19 +426,22 @@ export async function main(argv: string[]) {
   if (argv[0] === 'claude') {
     if (process.env.KONJIR_JOB?.trim()) throw new Error('konjir claude doesn\'t run inside a Konjir job (KONJIR_JOB is set): a job is its own session already');
     const [label, ...args] = argv.slice(1);
-    // Ctrl-C is claude's to handle: konjir waits for it to exit, rather than leaving it behind.
-    const onSigint = () => { /* claude's */ };
-    process.on('SIGINT', onSigint);
+    // Ctrl-C is claude's to handle, and a SIGTERM or SIGHUP sent to konjir is passed on to it:
+    // konjir waits for it to exit, rather than leaving it behind on the terminal.
+    let child: ReturnType<typeof spawn> | undefined;
+    const pass = (sig: NodeJS.Signals) => () => { if (sig !== 'SIGINT') child?.kill(sig); };
+    const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) => [sig, pass(sig)] as const);
+    for (const [sig, h] of handlers) process.on(sig, h);
     try {
       process.exitCode = await startClaude(label, args, { cwd: process.cwd(), env: process.env }, {
         warn: (l) => console.error(l), ignored: gitIgnored,
         run: (cmd, a, o) => new Promise((resolve) => {
-          const child = spawn(cmd, a, { cwd: o.cwd, stdio: 'inherit' });
+          child = spawn(cmd, a, { cwd: o.cwd, stdio: 'inherit' });
           child.on('error', () => resolve(-1));
-          child.on('exit', (code, signal) => resolve(code ?? (signal ? 128 : -1)));
+          child.on('exit', (code, signal) => resolve(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : -1)));
         }),
       });
-    } finally { process.off('SIGINT', onSigint); }
+    } finally { for (const [sig, h] of handlers) process.off(sig, h); }
     return;
   }
 

@@ -317,7 +317,7 @@ export function unifiedDiff(path: string, before: string, after: string, exists:
  * so never through a link left there), with the file's own mode if it has one, then moved into
  * place. A path that is a symbolic link is written where it leads, so the link stays.
  */
-export function writeAtomically(path: string, text: string, opts: { within?: string } = {}) {
+export function writeAtomically(path: string, text: string, opts: { within?: string; mode?: number } = {}) {
   let target = path;
   const link = linkTarget(path);
   if (link) {
@@ -326,8 +326,9 @@ export function writeAtomically(path: string, text: string, opts: { within?: str
   }
   const dir = dirname(target);
   mkdirSync(dir, { recursive: true });
-  let mode = 0o644;
-  try { mode = statSync(target).mode & 0o777; } catch { /* new */ }
+  // A mode given is kept to; else the file's own, or 0644 for a new one.
+  let mode = opts.mode ?? 0o644;
+  if (opts.mode === undefined) try { mode = statSync(target).mode & 0o777; } catch { /* new */ }
   const tmp = join(dir, `.${basename(target)}.${randomBytes(6).toString('hex')}.tmp`);
   writeFileSync(tmp, text, { mode, flag: 'wx' });
   try {
