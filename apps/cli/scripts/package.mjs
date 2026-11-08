@@ -18,7 +18,8 @@
 // script uses. Every build checks that the bun on PATH is that version. The binaries are compiled on
 // runtimes this script downloads from Bun's GitHub release and checks against those hashes
 // (--compile-executable-path), not on runtimes bun fetches itself. A new Bun means new hashes there:
-// take them from the release's SHASUMS256.txt.
+// take them from the release's SHASUMS256.txt. The download retries a 5xx or a network error a few
+// times (scripts/download.mjs); the hash is checked on whatever it gets.
 //
 // konjir is licensed Apache-2.0 (D63; apps/cli/LICENSE, the full licence text). LICENSE, and
 // THIRD-PARTY-NOTICES.md, which lists every package the bundle inlines (from Bun's metafile) with
@@ -29,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { download } from './download.mjs';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(app, '../..');
@@ -56,10 +58,9 @@ async function runtime(name) {
   const file = join(cache, zip);
   if (!existsSync(file)) {
     const url = `https://github.com/oven-sh/bun/releases/download/bun-v${pinned.version}/${zip}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`downloading ${url}: HTTP ${res.status}`);
+    const body = await download(url);
     mkdirSync(cache, { recursive: true });
-    writeFileSync(`${file}.part`, Buffer.from(await res.arrayBuffer()));
+    writeFileSync(`${file}.part`, body);
     execFileSync('mv', [`${file}.part`, file]);
   }
   const got = createHash('sha256').update(readFileSync(file)).digest('hex');

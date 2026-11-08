@@ -55,6 +55,7 @@
           "production",
           "^production",
           "{projectRoot}/scripts/package.mjs",
+          "{projectRoot}/scripts/download.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
             "externalDependencies": [
@@ -73,6 +74,7 @@
           "production",
           "^production",
           "{projectRoot}/scripts/package.mjs",
+          "{projectRoot}/scripts/download.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
             "externalDependencies": [

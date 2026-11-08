@@ -71,9 +71,12 @@ jobs:
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # The Bun apps/cli/bun-runtimes.json pins, checked against its sha256.
+      # The Bun apps/cli/bun-runtimes.json pins, checked against its sha256. Not dirname "$(…)": bash -e
+      # doesn't stop on a failure inside a command substitution whose outer command succeeds (W7.17).
       - name: Install Bun
-        run: dirname "$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")" >> "$GITHUB_PATH"
+        run: |
+          bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
+          dirname "$bun" >> "$GITHUB_PATH"
 
       # A pull request builds the binary this runner can run; main builds all five.
       - name: Bundle for npm and compile the binaries
