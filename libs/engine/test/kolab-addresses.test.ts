@@ -8,6 +8,18 @@ import type { CheckContext, Resolution } from '@konjir/types';
 import { els, openKolab, rejection } from '@konjir/engine/testing';
 
 const text = (r: Resolution) => (r.status === 'orphan' ? r.status : r.content);
+
+/**
+ * Renames node `id` to `to`, as Kolab's trusted role may (DAT22): no verb renames a node yet. The new
+ * name's row is written in the same transaction, or taken back if the node had it before; a name
+ * another node has had is refused by node_name's key.
+ */
+const renameNode = (kolab: Kolab, id: string, to: string) => kolab.db.transaction(async (tx) => {
+  await tx.exec('set local role kj_system');
+  const back = await tx.query(`update node_name set named_at = now() where node_id = $1 and name = $2 returning name`, [id, to]);
+  if (!back.rows.length) await tx.query(`insert into node_name(kolab_id, name, node_id) select kolab_id, $2, id from node where id = $1`, [id, to]);
+  await tx.query(`update node set name = $2 where id = $1`, [id, to]);
+});
 /** An id Kolab generates when another kolab's node holds the name as its id already. */
 const GENERATED = /^~[0-9A-Z]{26}$/;
 
@@ -73,9 +85,80 @@ test('the database holds a node to one name in its kolab, and its id to that nam
   expect(await rejection(insert('~not-a-ulid', 'returns', 'orders'))).toMatch(/node_id_name_check/);
   expect(await rejection(insert('a/b', 'a/b', 'orders'))).toMatch(/node_name_check/);
   await insert('~01JBBBBBBBBBBBBBBBBBBBBBBB', 'returns', 'orders');   // a generated id
-  expect(await rejection(kolab.db.query(`update node set name = 'refunds' where id = 'checkout'`))).toMatch(/a node's id and name never change once written/);
-  expect(await rejection(kolab.db.query(`update node set id = '~01JCCCCCCCCCCCCCCCCCCCCCCC' where id = $1`, [theirs]))).toMatch(/never change once written/);
+  expect(await rejection(kolab.db.query(`update node set name = 'refunds' where id = 'checkout'`))).toMatch(/a node's name changes only as Kolab renames it/);
+  expect(await rejection(kolab.db.query(`update node set id = '~01JCCCCCCCCCCCCCCCCCCCCCCC' where id = $1`, [theirs]))).toMatch(/a node's id never changes once written/);
   expect(await rejection(kolab.db.query(`insert into node(id, kind, layer, title, kolab_id) values ('nameless', 'prototype', 'functional', 'X', 'orders')`))).toMatch(/"name"/);
+});
+
+test('a renamed node is found by every name it has had, named as it is now, and its versions are untouched (DAT22, ADR11)', async () => {
+  const { kolab, alice, bob, mine } = await twoCheckouts();
+  await renameNode(kolab,mine, 'cart');
+  await renameNode(kolab,mine, 'basket');
+  for (const name of ['checkout', 'cart', 'basket']) {
+    expect(text(await kolab.resolve(`kj:${name}#R1`, { session: alice }))).toBe('Orders ship within a day.');
+    expect(text(await kolab.resolve(`kj:orders/${name}@1#R1`, { session: alice }))).toBe('Orders ship within a day.');
+    expect(await kolab.nodeIn(alice, name)).toMatchObject({ id: mine, name: 'basket' });
+  }
+  expect((await kolab.listNodes(undefined, 'orders')).map((n) => n.name)).toStrictEqual(['basket']);
+  expect((await kolab.readNode(alice, 'cart')).version.seq).toBe(1);
+  // It commits on, by any of its names.
+  await kolab.commit(alice, (await kolab.nodeIn(alice, 'checkout')).id, { elements: els({ R1: 'Orders ship within an hour.' }) });
+  expect(text(await kolab.resolve('kj:cart#R1', { session: alice }))).toBe('Orders ship within an hour.');
+
+  // Another kolab's reader finds its former names only where it holds Read, as its name now (TEN12).
+  expect(await rejection(kolab.resolve('kj:orders/cart#R1', { session: bob }))).toBe('Error: no node cart in kolab orders');
+  await kolab.grant('orders', 'bob', 'read');
+  expect((await kolab.locateNode({ session: bob }, 'orders/cart')).name).toBe('basket');
+  // Bob's own kolab never had the name, so his short form doesn't reach it.
+  expect(await rejection(kolab.locateNode({ session: bob }, 'cart'))).toBe('Error: no node cart in kolab billing');
+
+  // Taking back a name of its own is a rename like any other.
+  await renameNode(kolab,mine, 'checkout');
+  expect((await kolab.nodeIn(alice, 'basket')).name).toBe('checkout');
+});
+
+test('a name a node has had is never given to another: Kolab refuses it, and so does the database, for every role (DAT22, ADR11)', async () => {
+  const { kolab, alice, bob, mine } = await twoCheckouts();
+  await renameNode(kolab,mine, 'cart');
+  expect(await rejection(kolab.createNode(alice, 'prototype', 'Old', 'checkout'))).toBe(
+    'GateError: the node name checkout is taken in kolab orders: it was a name of cart, and a name a node has had is never given to another (ADR11); choose another');
+  expect(await rejection(kolab.createNode(alice, 'prototype', 'Now', 'cart'))).toBe('GateError: the node name cart is taken in kolab orders; choose another');
+  // Names are a kolab's own: another kolab may use it.
+  await kolab.createNode(bob, 'prototype', 'Cart', 'cart');
+
+  const returns = await kolab.createNode(alice, 'prototype', 'Returns', 'returns');
+  expect(await rejection(renameNode(kolab,returns, 'checkout'))).toMatch(/node_name_pkey/);
+  expect(await rejection(kolab.db.query(
+    `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('~01JDDDDDDDDDDDDDDDDDDDDDDD', 'checkout', 'prototype', 'functional', 'X', 'orders', 'admin')`))).toMatch(/node_name_pkey/);
+  const asSystem = (sql: string) => kolab.db.transaction(async (tx) => { await tx.exec('set local role kj_system'); return tx.query(sql); });
+  expect(await rejection(asSystem(
+    `insert into node(id, name, kind, layer, title, kolab_id, created_by) values ('~01JDDDDDDDDDDDDDDDDDDDDDDD', 'checkout', 'prototype', 'functional', 'X', 'orders', 'admin')`))).toMatch(/node_name_pkey/);
+
+  // A name's row stays its node's: never moved, renamed or removed, by Kolab's login or its trusted role.
+  for (const run of [(sql: string) => kolab.db.query(sql), asSystem]) {
+    expect(await rejection(run(`update node_name set node_id = '${returns}' where kolab_id = 'orders' and name = 'checkout'`))).toMatch(/never given to another|permission denied/);
+    expect(await rejection(run(`delete from node_name where kolab_id = 'orders' and name = 'checkout'`))).toMatch(/never given to another|permission denied/);
+  }
+  // Even the trusted role renames only by writing the new name's row in the same transaction.
+  expect(await rejection(asSystem(`update node set name = 'refunds' where id = '${returns}'`))).toMatch(/a node's name changes only as Kolab renames it/);
+  await kolab.db.query(`insert into node_name(kolab_id, name, node_id, named_at) values ('orders', 'refunds', $1, now() - interval '1 day')`, [returns]);
+  expect(await rejection(asSystem(`update node set name = 'refunds' where id = '${returns}'`))).toMatch(/a node's name changes only as Kolab renames it/);
+
+  // An agent's session reads names under row-level security, and writes none.
+  await kolab.db.transaction(async (tx) => {
+    await tx.exec('set local role kj_agent');
+    await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(bob)]);
+    expect((await tx.query(`select kolab_id, name from node_name order by name`)).rows).toStrictEqual([
+      { kolab_id: 'billing', name: 'cart' }, { kolab_id: 'billing', name: 'checkout' },
+    ]);
+  });
+  for (const sql of [`insert into node_name(kolab_id, name, node_id) values ('billing', 'x', '${returns}')`, `update node_name set named_at = now()`]) {
+    expect(await rejection(kolab.db.transaction(async (tx) => {
+      await tx.exec('set local role kj_agent');
+      await tx.query(`select set_config('kj.session', $1, true)`, [sessionKey(bob)]);
+      await tx.query(sql);
+    }))).toMatch(/permission denied/);
+  }
 });
 
 test('the full form resolves wherever its reader holds Read, and elsewhere is no node at all (TEN12)', async () => {

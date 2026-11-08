@@ -1820,11 +1820,16 @@ export class Kolab {
   }
 
   /**
-   * The node called `name` in `kolab`, if there is one. Not who made it: kj_agent can't read that
-   * column, and reads it only for its own kolab's nodes (kj_node_creator, migration 0024).
+   * The node called `name` in `kolab`, if there is one: the node whose name it is now, or else the
+   * one that had it before (DAT22, ADR11), read from node_name under the same row-level security as
+   * node. Its row gives its current name. Not who made it: kj_agent can't read that column, and
+   * reads it only for its own kolab's nodes (kj_node_creator, migration 0024).
    */
   private async findNode(q: Q, kolab: string, name: string): Promise<NodeRow | undefined> {
-    return (await q.query<NodeRow>(`select ${NODE_COLUMNS} from node where kolab_id = $1 and name = $2`, [kolab, name])).rows[0];
+    return (await q.query<NodeRow>(
+      `select ${NODE_COLUMNS} from node
+        where kolab_id = $1 and (name = $2 or id = (select nn.node_id from node_name nn where nn.kolab_id = $1 and nn.name = $2))
+        order by name = $2 desc limit 1`, [kolab, name])).rows[0];
   }
 
   /**
@@ -1857,12 +1862,14 @@ export class Kolab {
 
   /**
    * The node the admin token names (it works in no kolab): `<kolab>/<node>`, or a name alone when
-   * exactly one kolab has a node of that name. A name several kolabs have is refused, naming them.
+   * exactly one kolab has a node of that name, now or before (DAT22). A name several kolabs have is
+   * refused, naming them.
    */
   async nodeForAdmin(ref: string): Promise<NodeRow> {
     const r = parseNodeRef(ref);
     if (r.kolab !== undefined) return this.locateNode({ system: r.kolab }, r);
-    const all = (await this.db.query<NodeRow>(`select ${NODE_COLUMNS} from node where name = $1 order by kolab_id`, [r.node])).rows;
+    const all = (await this.db.query<NodeRow>(
+      `select ${NODE_COLUMNS} from node where id in (select node_id from node_name where name = $1) order by kolab_id`, [r.node])).rows;
     if (all.length === 1) return all[0];
     if (!all.length) throw new Error(`no node ${r.node} in any kolab`);
     throw new GateError(`kolabs ${all.map((n) => n.kolab_id).join(', ')} each have a node ${r.node}: name it as <kolab>/${r.node}`);
@@ -4077,8 +4084,15 @@ export class Kolab {
     if (!isNodeName(name)) throw new GateError(`${quoteText(name)} isn't a valid node name: it may not contain '/', '@', '#', '~', whitespace or a control character`);
     checkText('the title', title, MAX_TITLE);
     const s = await this.requireLayer(sessionId, LAYER_OF_KIND[kind]);
-    const taken = () => new GateError(`the node name ${name} is taken in kolab ${s.kolab}; choose another`);
-    if (await this.findNode(this.db, s.kolab, name)) throw taken();
+    // A name a node has had stays that node's (DAT22, ADR11): the refusal names the node that holds it now.
+    const holder = async () => {
+      const n = await this.findNode(this.db, s.kolab, name);
+      return n && n.name !== name ? n : undefined;
+    };
+    const taken = (by?: NodeRow) => new GateError(by
+      ? `the node name ${name} is taken in kolab ${s.kolab}: it was a name of ${by.name}, and a name a node has had is never given to another (ADR11); choose another`
+      : `the node name ${name} is taken in kolab ${s.kolab}; choose another`);
+    if (await this.findNode(this.db, s.kolab, name)) throw taken(await holder());
     const spec = async () => (await this.db.query<{ name: string }>(`select name from node where kolab_id = $1 and kind = 'spec'`, [s.kolab])).rows[0];
     const secondSpec = (held: string) => new GateError(`kolab ${s.kolab} already holds its spec, ${held}, and a kolab holds exactly one (KON1, D77). `
       + `Write its prototypes as prototype nodes, or a variant of it in another kolab, as a fork (KON9)`);
@@ -4091,7 +4105,8 @@ export class Kolab {
           [id, name, kind, LAYER_OF_KIND[kind], title, s.kolab, parent?.id ?? null, s.actor_id]);
         return id;
       } catch (e) {
-        if (String(e).includes('node_kolab_name_key')) throw taken();   // made by another call since the check
+        // Made, or renamed, by another call since the check.
+        if (String(e).includes('node_kolab_name_key') || String(e).includes('node_name_pkey')) throw taken(await holder());
         // Made by another call since the checks: the database holds to the limits (0027).
         if (String(e).includes('node_one_spec_per_kolab')) throw secondSpec((await spec())?.name ?? 'another');
         if (!String(e).includes('node_pkey')) throw e;
