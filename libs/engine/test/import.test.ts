@@ -1056,7 +1056,7 @@ test('a Done package stays when --update keeps it, and --update refuses to drop 
   expect(step(r, 'version kj:test/shop-binding')).toMatchObject({ outcome: 'differs', detail: expect.stringMatching(/--update would drop work from shop-binding: W1\.1 \(done\)/) });
   const milestone = fixture() as unknown as { binding: { elements: Record<string, unknown>[] } };
   milestone.binding.elements = milestone.binding.elements.filter((e) => e.id !== 'W1.2' && e.id !== 'M1').map((e) => (e.id === 'W1.1' ? { id: 'W1.1', text: 'Now a milestone.', work: { milestone: true, depends_on: ['W9'] } } : e));
-  milestone.binding.elements.push({ id: 'W9', text: 'A member.', work: { done_when: 'It is done.' } });
+  milestone.binding.elements.push({ id: 'W9', text: 'A member.', work: { done_when: 'It is done.' }, serves: ['CHK1'], relies_on: [] });
   expect(step(await pass('engineer', milestone, { update: true }), 'version kj:test/shop-binding').outcome).toBe('differs');
   expect((await kolab.latestCommitted('shop-binding'))!.seq).toBe(2);
   // Dropping a milestone that has no work of its own goes through, and W1.1 stays Done.

@@ -13,6 +13,10 @@ import { ADMIN_DOER, type ElementInput } from '@konjir/types';
 
 const POSTGRES = !!process.env.KONJIR_TEST_DATABASE_URL;
 
+/** A link from work package `from` to requirement `to` of spec `spec`'s live version, which it serves, so it has something behind it (WRK11). */
+const serves = async (kolab: Kolab, from: string, to = 'R1', spec = 'orders') =>
+  ({ kind: 'dependency' as const, sourceElement: from, target: (await kolab.latestCommitted(spec))!.id, targetElement: to });
+
 /** The M5 check's work: four work packages, W2.1 after W1.1, and milestone M1 gathering them. */
 const PLAN: ElementInput[] = [
   { id: 'W1.1', text: 'Build the cancel endpoint.', work: { done_when: 'POST /orders/:id/cancel cancels an order.', size: 'M' } },
@@ -168,7 +172,7 @@ test('a binding named, or the only one with work: a kolab with two bindings hold
   await kolab.createNode(bob, 'binding', 'Orders on Lambda', 'orders-fn');
   await commitReviewed(kolab, bob, eve, 'orders-fn', { elements: els({ f1: 'A function.' }) });
   expect(await kolab.pullWork(eve)).toMatchObject({ pulled: true, item: { work: 'kj:orders-pg#W1.1' } });
-  await commitReviewed(kolab, bob, eve, 'orders-fn', { elements: [...els({ f1: 'A function.' }), { id: 'X1', text: 'Deploy it.', work: {} }] });
+  await commitReviewed(kolab, bob, eve, 'orders-fn', { elements: [...els({ f1: 'A function.' }), { id: 'X1', text: 'Deploy it.', work: {} }], links: [await serves(kolab, 'X1')] });
   expect(await rejection(kolab.pullWork(bob))).toMatch(/kolab test has work in bindings orders-fn, orders-pg: name the one to pull from, binding=<name>/);
   expect(await kolab.pullWork(bob, { binding: 'orders-fn' })).toMatchObject({ pulled: true, item: { work: 'kj:orders-fn#X1', binding: 'orders-fn' } });
   expect(await rejection(kolab.pullWork(bob, { binding: 'orders' }))).toMatch(/orders is a spec, not a binding/);
@@ -324,9 +328,9 @@ test('reassign tells nothing of another kolab\'s work, nor of who exists: one re
   const sb = await kolab.openSession('bob', 'engineer', { kolab: 'secret' });
   const sa = await kolab.openSession('alice', 'product', { kolab: 'secret' });
   await kolab.createNode(sa, 'spec', 'S', 's');
-  await kolab.commit(sa, 's', { elements: els({ R1: 'Hush.' }) });
+  const hush = await kolab.commit(sa, 's', { elements: els({ R1: 'Hush.' }) });
   await kolab.createNode(sb, 'binding', 'B', 'b');
-  await kolab.commit(sb, 'b', { elements: [...els({ b1: 'Hush.' }), { id: 'X1', text: 'Hush it.', work: {} }] });
+  await kolab.commit(sb, 'b', { elements: [...els({ b1: 'Hush.' }), { id: 'X1', text: 'Hush it.', work: {} }], links: [{ kind: 'dependency', sourceElement: 'X1', target: hush, targetElement: 'R1' }] });
   expect(await kolab.pullWork(sb)).toMatchObject({ pulled: true });
   await people(kolab, 'zed', { level: 'maintain' });
   const zed = await kolab.openSession('zed', 'engineer');
@@ -396,20 +400,40 @@ test('a milestone is Done when every member is, a milestone of milestones too, a
 });
 
 test('a job splits a package too big for one job: it drafts child packages that the parent depends on, or makes the parent a milestone over them (PLN20, D104)', async () => {
-  const { kolab, bob, commitWork, delivers } = await planned();
+  const { kolab, bob, frank, commitWork, delivers } = await planned();
   expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { id: 'W1.1' } });
-  // bob finds W1.1 too big: a binding version adds its children, and W1.1 depends on them.
-  await commitWork(bob, { deltas: [
+  // bob finds W1.1 too big: one binding version adds its children, each with something behind it
+  // (WRK11), and W1.1 depends on them (WRK12).
+  const split = await kolab.draft(bob, 'orders-pg', { deltas: [
     { kind: 'add', element: 'W1.1.a', text: 'The cancel endpoint\'s happy path.', work: { size: 'S' } },
     { kind: 'add', element: 'W1.1.b', text: 'The cancel endpoint\'s refusals.', work: { size: 'S' } },
     { kind: 'override', element: 'W1.1', work: { ...PLAN[0].work, depends_on: ['W1.1.a', 'W1.1.b'] } },
-  ] });
-  // Work already In progress continues (PLN19), blocked now; bob gives it back, and pulls the first child.
-  expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.1')).toMatchObject({ state: 'in_progress', blocked: [
+  ], links: [await delivers('W1.1.a', 'b1'), await serves(kolab, 'W1.1.b')] });
+  expect(await kolab.submit(bob, split)).toMatchObject({ ok: false, in_review: true });
+  const splitAt = `kj:orders-pg@${(await kolab.version(split)).seq}`;
+  // While it waits in review, read_work of the parent names it, so a second job doesn't split it again;
+  // a package it doesn't change names nothing.
+  expect((await kolab.readWork(frank, 'kj:orders-pg#W1.1')).in_review).toStrictEqual([{ version: splitAt, by: 'bob' }]);
+  expect(await kolab.readWork(frank, 'kj:orders-pg#W1.2')).not.toHaveProperty('in_review');
+  // bob releases the parent, naming the version.
+  await kolab.releaseWork(bob, 'kj:orders-pg#W1.1', { note: `Split in ${splitAt} (PLN20).` });
+  expect((await kolab.readWork(bob, 'kj:orders-pg#W1.1')).events.at(-1)).toMatchObject({ kind: 'released', actor: 'bob', note: `Split in ${splitAt} (PLN20).` });
+  // Once it commits: the children are ready, the parent blocked until they are Done, and in review no more.
+  expect(await kolab.recordReview(frank, split, { verdict: 'approve' })).toMatchObject({ ok: true });
+  const parent = await kolab.readWork(bob, 'kj:orders-pg#W1.1');
+  expect(parent).toMatchObject({ state: 'todo', ready: false, depends_on: [{ work: 'kj:orders-pg#W1.1.a', state: 'todo' }, { work: 'kj:orders-pg#W1.1.b', state: 'todo' }] });
+  expect(parent).not.toHaveProperty('in_review');
+  expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.1')).toMatchObject({ state: 'todo', ready: false, blocked: [
     { reason: 'depends_on', work: 'kj:orders-pg#W1.1.a', state: 'todo' }, { reason: 'depends_on', work: 'kj:orders-pg#W1.1.b', state: 'todo' }] });
-  await kolab.releaseWork(bob, 'kj:orders-pg#W1.1', { note: 'Split into W1.1.a and W1.1.b (PLN20).' });
+  expect((await kolab.listWork(bob)).items.filter((i) => i.id.startsWith('W1.1.')).map((i) => [i.id, i.ready])).toStrictEqual([['W1.1.a', true], ['W1.1.b', true]]);
   expect(await kolab.pullWork(bob)).toMatchObject({ pulled: true, item: { id: 'W1.1.a' } });
-  expect((await kolab.listWork(bob)).items.find((i) => i.id === 'W1.1')).toMatchObject({ state: 'todo', ready: false });
+  // A split must give each child something behind it: one without is refused, naming it.
+  const bare = await kolab.draft(bob, 'orders-pg', { deltas: [
+    { kind: 'add', element: 'W1.2.a', text: 'The queue\'s consumer.', work: { size: 'S' } },
+    { kind: 'override', element: 'W1.2', work: { size: 'S', depends_on: ['W1.2.a'] } },
+  ] });
+  expect(await kolab.submit(bob, bare)).toMatchObject({ ok: false, note: expect.stringMatching(/^Work checks failed \(PLN2\): W1\.2\.a has nothing behind it \(WRK11, PLN11\)/) });
+  await kolab.abandon(bob, bare);
   // Or the parent has no work of its own left: a milestone over its children, never pulled, Done
   // when they are (PLN3); what it relied on, its children rely on.
   await commitWork(bob, { deltas: [
@@ -430,7 +454,7 @@ test('a variant or a fork of a binding holds work only on the elements its own d
   expect((await kolab.listWork(bob)).items.every((i) => i.binding === 'orders-pg')).toBe(true);
   // A package the parent adds reaches the variant by its rebase, and is still the parent's alone; a
   // pull needs no binding=, since the variant holds no work.
-  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W3', text: 'Archive cancelled orders.', work: { size: 'S' } }] });
+  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W3', text: 'Archive cancelled orders.', work: { size: 'S' } }], links: [await serves(kolab, 'W3')] });
   await kolab.drainOutbox();
   const ddb = (await kolab.latestCommitted('orders-ddb'))!;
   expect((await kolab.elements(ddb.id)).find((e) => e.element_id === 'W3')?.work).toStrictEqual({ size: 'S' });
@@ -440,7 +464,7 @@ test('a variant or a fork of a binding holds work only on the elements its own d
   await commitReviewed(kolab, bob, frank, 'orders-ddb', { deltas: [
     { kind: 'add', element: 'D1', text: 'Provision the table.', work: { size: 'M' } },
     { kind: 'override', element: 'W1.2', work: { size: 'L' } },
-  ] });
+  ], links: [await serves(kolab, 'D1'), await serves(kolab, 'W1.2', 'R2')] });
   expect(await rows('orders-ddb')).toStrictEqual(['D1', 'W1.2']);
   expect((await kolab.listWork(bob, { binding: 'orders-ddb' })).items.map((i) => i.id)).toStrictEqual(['D1', 'W1.2']);
   expect(await rejection(kolab.pullWork(frank))).toMatch(/has work in bindings orders-ddb, orders-pg: name the one to pull from/);
@@ -463,7 +487,7 @@ test('a variant or a fork of a binding holds work only on the elements its own d
   expect((await kolab.listWork(eve2)).items).toStrictEqual([]);
   const mia = await kolab.openSession('mia', 'engineer');
   await kolab.registerRepository(mia, { url: 'https://github.com/acme/queue', root_sha: testRoot('d') });
-  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W4', text: 'Queue in its own repository.', work: { repo: 'https://github.com/acme/queue' } }] });
+  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W4', text: 'Queue in its own repository.', work: { repo: 'https://github.com/acme/queue' } }], links: [await serves(kolab, 'W4', 'R2')] });
   await kolab.drainOutbox();
   const fork = (await kolab.latestCommitted('orders-fork'))!;
   expect((await kolab.elements(fork.id)).find((e) => e.element_id === 'W4')?.work).toStrictEqual({ repo: 'https://github.com/acme/queue' });
@@ -474,7 +498,7 @@ test('a variant or a fork of a binding holds work only on the elements its own d
 test('a binding whose packages are all removed holds no work, so a pull needs no binding=; and an open question on a spec element a package serves blocks it (PLN19, D104)', async () => {
   const { kolab, product, bob, eve, commitWork, delivers } = await planned();
   await kolab.createNode(bob, 'binding', 'Orders on Lambda', 'orders-fn');
-  await commitReviewed(kolab, bob, eve, 'orders-fn', { elements: [...els({ f1: 'A function.' }), { id: 'X1', text: 'Deploy it.', work: {} }] });
+  await commitReviewed(kolab, bob, eve, 'orders-fn', { elements: [...els({ f1: 'A function.' }), { id: 'X1', text: 'Deploy it.', work: {} }], links: [await serves(kolab, 'X1')] });
   expect(await rejection(kolab.pullWork(bob))).toMatch(/has work in bindings orders-fn, orders-pg/);
   // X1 becomes a decision: its row stays, flagged removed, and orders-fn holds no work.
   await commitReviewed(kolab, bob, eve, 'orders-fn', { deltas: [{ kind: 'override', element: 'X1', work: null }] });
@@ -493,7 +517,7 @@ test('a package that becomes a milestone stops its work; one that stops being a 
     { kind: 'override', element: 'W1.1', work: { milestone: true, depends_on: ['W1.2'] } },
     { kind: 'override', element: 'W2.1', work: { size: 'L' } },
     { kind: 'override', element: 'M1', work: { done_when: 'All done.' } },
-  ], unlink: [{ sourceElement: 'W1.1', target: 'kj:orders-pg#b1' }] });
+  ], unlink: [{ sourceElement: 'W1.1', target: 'kj:orders-pg#b1' }], links: [await serves(kolab, 'M1')] });
   expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'todo', assignee_id: null });
   expect((await kolab.readWork(bob, 'kj:orders-pg#W1.1')).events.at(-1)).toMatchObject({ kind: 'released', actor: 'kolab', note: expect.stringMatching(/made it a milestone/) });
   expect((await kolab.listWork(bob)).items.find((i) => i.id === 'M1')).toMatchObject({ milestone: false, ready: true });
@@ -597,9 +621,9 @@ test('work stays in its kolab: another kolab\'s session reads none of it, and on
   await kolab.endSession({ actor: 'alice' });
   const alice = await kolab.openSession('alice', 'product', { kolab: 'other' });
   await kolab.createNode(alice, 'spec', 'S', 's');
-  await kolab.commit(alice, 's', { elements: els({ R1: 'One.' }) });
+  const one = await kolab.commit(alice, 's', { elements: els({ R1: 'One.' }) });
   await kolab.createNode(bob2, 'binding', 'B', 'b');
-  await kolab.commit(bob2, 'b', { elements: [...els({ b1: 'One.' }), { id: 'X1', text: 'Do one.', work: {} }] });
+  await kolab.commit(bob2, 'b', { elements: [...els({ b1: 'One.' }), { id: 'X1', text: 'Do one.', work: {} }], links: [{ kind: 'dependency', sourceElement: 'X1', target: one, targetElement: 'R1' }] });
   expect(await rejection(kolab.pullWork(bob2))).toMatch(/GateError: bob already holds kj:test\/orders-pg#W1\.1 In progress/);
   // The database holds it too: a second package pulled by bob anywhere is refused (0031: a returned one isn't counted).
   expect(await rejection(kolab.db.query(`update work_package set state = 'in_progress', assignee_id = 'bob', lease_until = now() + interval '1 hour', touched_at = now() where element_id = 'X1'`)))
@@ -659,7 +683,8 @@ test('a session that holds only Read sees the board, but no open case file and n
 test('many agents pulling at once each get a different package, and together take every ready one (PLN14)', async () => {
   const { kolab, bob, commitWork } = await planned();
   // Twelve independent packages more, so pulls contend.
-  await commitWork(bob, { deltas: Array.from({ length: 12 }, (_, i) => ({ kind: 'add' as const, element: `X${i + 1}`, text: `Extra ${i + 1}.`, work: {} })) });
+  await commitWork(bob, { deltas: Array.from({ length: 12 }, (_, i) => ({ kind: 'add' as const, element: `X${i + 1}`, text: `Extra ${i + 1}.`, work: {} })),
+    links: await Promise.all(Array.from({ length: 12 }, (_, i) => serves(kolab, `X${i + 1}`))) });
   const agents = Array.from({ length: 16 }, (_, i) => `ag${i}`);
   await people(kolab, agents, { owner: 'bob', layers: ['technical'] }).catch(async () => {
     for (const a of agents) { await kolab.addActor(a, { owner: 'bob' }); await kolab.grant(TEST_KOLAB, a, 'write', { layers: ['technical'] }); }
