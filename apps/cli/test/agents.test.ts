@@ -292,7 +292,8 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
     await tx.query(`update node set name = 'invoicing' where kolab_id = 'billing' and name = 'checkout'`);
   });
   expect(await call(alice, 'resolve', { address: 'kj:billing/checkout@1#R1' })).toStrictEqual({
-    address: 'kj:billing/checkout@1#R1', node: 'invoicing', status: 'ok', version: 1, content: 'Invoices are sent monthly.' });
+    address: 'kj:billing/checkout@1#R1', node: 'billing/invoicing', status: 'ok', version: 1, content: 'Invoices are sent monthly.' });
+  expect(await call(bob, 'resolve', { address: 'kj:checkout@1#R1' })).toMatchObject({ node: 'invoicing', status: 'ok' });
   expect(await call(alice, 'resolve', { address: 'kj:billing/invoicing@1#R1' })).not.toHaveProperty('node');
   expect(await call(alice, 'read_node', { node: 'billing/checkout' })).toMatchObject({ node: 'billing/invoicing', elements: [{ address: 'kj:billing/invoicing@2#R1' }] });
   expect(await call(bob, 'read_node', { node: 'checkout' })).toMatchObject({ node: 'invoicing', version: 2 });

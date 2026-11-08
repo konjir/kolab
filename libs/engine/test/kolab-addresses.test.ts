@@ -118,6 +118,14 @@ test('a renamed node is found by every name it has had, named as it is now, and 
   // Bob's own kolab never had the name, so his short form doesn't reach it.
   expect(await rejection(kolab.locateNode({ session: bob }, 'cart'))).toBe('Error: no node cart in kolab billing');
 
+  // A new binding names its spec by any of them too (D78).
+  await kolab.addActor('carol');
+  await kolab.grant('orders', 'carol', 'write');
+  const engineer = await kolab.openSession('carol', 'engineer', { kolab: 'orders' });
+  await kolab.createNode(engineer, 'binding', 'Checkout on Postgres', 'checkout-pg', { parent: 'cart' });
+  expect((await kolab.listNodes(undefined, 'orders')).find((n) => n.name === 'checkout-pg')).toMatchObject({ parent: 'basket' });
+  expect(await rejection(kolab.createNode(engineer, 'binding', 'Nowhere', 'nowhere-pg', { parent: 'trolley' }))).toMatch(/trolley is no spec of kolab orders: its spec is basket/);
+
   // Taking back a name of its own is a rename like any other.
   await renameNode(kolab,mine, 'checkout');
   expect((await kolab.nodeIn(alice, 'basket')).name).toBe('checkout');

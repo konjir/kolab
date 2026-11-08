@@ -285,8 +285,11 @@ export class AgentTools {
       const r = await this.kolab.resolve(a, { session: s });
       const v = r.versionId ? await this.kolab.version(r.versionId) : undefined;
       // An address by a name the node had before still finds it (DAT22), and says what it is called now.
-      const now = v ? (await this.kolab.node(v.node_id)).name : undefined;
-      return { address: a, ...(now !== undefined && now !== parseAddress(a).node ? { node: now } : {}),
+      // Another kolab's node is named with its kolab, as read_node names it.
+      const n = v ? await this.kolab.node(v.node_id) : undefined;
+      const now = n && n.name !== parseAddress(a).node
+        ? (n.kolab_id === await this.kolab.sessionKolab(s) ? n.name : `${n.kolab_id}/${n.name}`) : undefined;
+      return { address: a, ...(now !== undefined ? { node: now } : {}),
         status: r.status, version: v?.seq ?? null, content: 'content' in r ? r.content : null };
     });
   }
