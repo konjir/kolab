@@ -432,7 +432,9 @@ test('no work package links another, over the whole version: a decision a packag
   const serves = { kind: 'dependency' as const, sourceElement: 'b1', target: ctx.s1, targetElement: 'R1' };
   const r = await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', work: {} }], links: [serves] }));
   expect(r).toMatchObject({ ok: false });
-  expect(r.note).toBe("Work checks failed (PLN2): W1 links orders-pg@2#b1, which is a work package of this version: work packages don't link to each other (D99); name it in W1's depends_on, and remove the link.");
+  // And W1, whose only link was to the decision b1, now has nothing behind it (WRK11).
+  expect(r.note).toBe("Work checks failed (PLN2): W1 links orders-pg@2#b1, which is a work package of this version: work packages don't link to each other (D99); name it in W1's depends_on, and remove the link; "
+    + 'W1 has nothing behind it (WRK11, PLN11): link it to the spec element it serves or the decision of its binding it relies on (konjir_link, a dependency link), or, if there is none, withdraw it and konjir_ask the binding instead: work with nothing behind it is a question to the binding layer.');
   await kolab.abandon(engineer, r.version);
   // Removing the link and naming b1 in W1's depends_on instead: it passes.
   expect(await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [
@@ -481,6 +483,22 @@ test('a work package has something behind it: one with no link is refused at sub
   // But changing its work brings it under the check.
   const sized = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W2', work: { size: 'M' } }] });
   expect(await kolab.submit(engineer, sized)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W2')}.` });
+  await kolab.abandon(engineer, sized);
+  // So does removing the decision W1 relies on, its only link, or making it work, a milestone too:
+  // W1 is named, and W2, still with nothing behind it, isn't.
+  const removed = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'remove', element: 'b1' }] });
+  expect(await kolab.submit(engineer, removed)).toMatchObject({ ok: false, note: `Work checks failed (PLN2): ${nothing('W1')}.` });
+  await kolab.abandon(engineer, removed);
+  for (const work of [{}, { milestone: true, depends_on: ['W1'] }]) {
+    const made = await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'b1', work }],
+      links: work.milestone ? [] : [{ kind: 'dependency', sourceElement: 'b1', target: s1, targetElement: 'R1' }] });
+    const r = await kolab.submit(engineer, made);
+    expect(r).toMatchObject({ ok: false, note: expect.stringContaining(`; ${nothing('W1')}.`) });
+    expect(r.note).not.toContain('W2 has nothing');
+    await kolab.abandon(engineer, made);
+  }
+  // Removing a decision no package relies on stops nothing.
+  expect(await kolab.submit(engineer, await kolab.draft(engineer, 'orders-pg', { deltas: [{ kind: 'remove', element: 'b3' }] }))).toMatchObject({ ok: true });
 });
 
 test('a test run\'s evidence takes its summary as summary or as title, as konjir_add_evidence says; a commit or pull request takes no summary (WRK5, W5.7)', () => {

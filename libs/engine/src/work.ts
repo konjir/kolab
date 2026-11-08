@@ -124,6 +124,30 @@ export function canonicalWork(work: WorkFields): string {
 export interface WorkLink { source_element_id: string | null; target: string; target_element_id?: string | null; into_self?: boolean; into_spec?: boolean; kind?: string }
 
 /**
+ * The packages WRK11's check applies to (W8.3), scoped as W5.7's checks are, so a package committed
+ * with nothing behind it never stops an unrelated version: each package whose work this version adds
+ * or changes against `before` (the work of the version it was written on, element by element), each
+ * it drops a link from (`dropped`), and each that relies, by a link it holds, on a decision `before`
+ * held that this version removes or makes a work package (a milestone too): what was behind it.
+ */
+export function behindScope(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[],
+  before: ReadonlyMap<string, WorkFields | null | undefined>, dropped: Iterable<string> = []): Set<string> {
+  const work = new Map(elements.filter((e) => e.work).map((e) => [e.element_id, e.work!]));
+  const ids = new Set(elements.map((e) => e.element_id));
+  const scope = new Set(dropped);
+  for (const [id, w] of work) {
+    const was = before.get(id);
+    if (!was || canonicalWork(was) !== canonicalWork(w)) scope.add(id);
+  }
+  for (const l of links) {
+    const t = l.target_element_id;
+    if (!l.source_element_id || !t || !l.into_self || (l.kind ?? 'dependency') !== 'dependency') continue;
+    if (before.has(t) && !before.get(t) && (!ids.has(t) || work.has(t))) scope.add(l.source_element_id);
+  }
+  return scope;
+}
+
+/**
  * PLN2's checks on a binding version's work packages (D98, D104), beyond the structural ones every
  * version passes (no empty or duplicate element), run at submit: every Depends on names a work
  * package of the same version (an element with a work field, not a decision), and not itself; no
@@ -137,7 +161,7 @@ export interface WorkLink { source_element_id: string | null; target: string; ta
 export function workProblems(elements: { element_id: string; work?: WorkFields | null }[], links: WorkLink[],
   /** The packages whose work this version adds or changes; checks that are new since a binding committed apply only to these (W5.7). All, when undefined. */
   changed?: ReadonlySet<string>,
-  /** The packages WRK11's check applies to: those whose work this version adds or changes against the version it was written on, and those it drops a link from (W8.3). All, when undefined. */
+  /** The packages WRK11's check applies to, as behindScope finds them (W8.3). All, when undefined. */
   linked?: ReadonlySet<string>): string[] {
   const problems: string[] = [];
   const work = new Map(elements.filter((e) => e.work).map((e) => [e.element_id, e.work!]));

@@ -495,6 +495,22 @@ test('a variant or a fork of a binding holds work only on the elements its own d
   expect(await rows('orders-fork')).toStrictEqual([]);
 }, 120_000);
 
+test('a variant\'s rebase never counts its own packages as new: one of its own with nothing behind it (before WRK11\'s check) doesn\'t fail the rebase (W8.3)', async () => {
+  const { kolab, bob, frank, commitWork, plan } = await planned();
+  await kolab.createNode(bob, 'binding', 'Orders on DynamoDB', 'orders-ddb');
+  await commitReviewed(kolab, bob, frank, 'orders-ddb', { parent: plan, deltas: [{ kind: 'add', element: 'D1', text: 'Provision the table.', work: { size: 'M' } }], links: [await serves(kolab, 'D1')] });
+  // D1, the variant's own, loses what was behind it, as a package committed before the check would have.
+  await kolab.db.query(`delete from edge where source_element_id = 'D1'`);
+  const before = (await kolab.latestCommitted('orders-ddb'))!.seq;
+  // The parent's next version rebases the variant: against its parent, D1 is new; against the version it was written on, it isn't.
+  await commitWork(bob, { deltas: [{ kind: 'add', element: 'W3', text: 'Archive cancelled orders.', work: { size: 'S' } }], links: [await serves(kolab, 'W3')] });
+  await kolab.drainOutbox();
+  expect((await kolab.openMarks()).filter((m) => m.reason === 'rebase_failed')).toStrictEqual([]);
+  const ddb = (await kolab.latestCommitted('orders-ddb'))!;
+  expect(ddb.seq).toBe(before + 1);
+  expect((await kolab.elements(ddb.id)).filter((e) => e.element_id === 'D1' || e.element_id === 'W3').map((e) => e.element_id).sort()).toStrictEqual(['D1', 'W3']);
+}, 60_000);
+
 test('a binding whose packages are all removed holds no work, so a pull needs no binding=; and an open question on a spec element a package serves blocks it (PLN19, D104)', async () => {
   const { kolab, product, bob, eve, commitWork, delivers } = await planned();
   await kolab.createNode(bob, 'binding', 'Orders on Lambda', 'orders-fn');
