@@ -431,9 +431,10 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
         <p className="why-not">A kolab of your own, private until you share it. You’ll work in it as {overview.me.name} ({overview.me.role}); this session ends and one opens there.</p>
         <form onSubmit={async (e) => { e.preventDefault(); if (await onCreateKolab(kName, kTitle)) { setKTitle(''); setKName(''); setKTouched(false); } }}>
           <div className="field"><label htmlFor="kTitle">Name</label>
-            <input id="kTitle" value={kTitle} maxLength={60} autoComplete="off" placeholder="Billing" onChange={(e) => { setKTitle(e.target.value); if (!kTouched) setKName(slug(e.target.value)); }} /></div>
+            <input id="kTitle" value={kTitle} maxLength={60} autoComplete="off" aria-describedby="kTitle-hint" onChange={(e) => { setKTitle(e.target.value); if (!kTouched) setKName(slug(e.target.value)); }} />
+            <span className="hint" id="kTitle-hint">What people read, for example “Billing”.</span></div>
           <div className="field"><label htmlFor="kName">Short name</label>
-            <input id="kName" value={kName} maxLength={40} autoComplete="off" spellCheck={false} placeholder="billing" onChange={(e) => { setKName(e.target.value); setKTouched(true); }} />
+            <input id="kName" value={kName} maxLength={40} autoComplete="off" spellCheck={false} onChange={(e) => { setKName(e.target.value); setKTouched(true); }} />
             <span className="hint">Lowercase letters, digits and hyphens, unique across all of Konjir so the kolab can move to another owner. Its addresses are <span className="addr">kj:{kName || 'billing'}/…</span>, or just <span className="addr">kj:…</span> inside it.</span></div>
           <div className="edit-row"><button type="submit" className="btn primary" disabled={!kTitle.trim() || !kName.trim()}>Create kolab</button></div>
         </form>
@@ -447,9 +448,10 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
             <div className="field"><label htmlFor="nKind">Kind</label>
               <select id="nKind" value={shown} onChange={(e) => setKind(e.target.value as Kind)}>{kinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}</select>
               {shown === 'binding' && <span className="hint">It binds this kolab’s spec{hasSpec ? '' : ', which it needs first'}. Its elements are its decisions and its work packages.</span>}</div>
-            <div className="field"><label htmlFor="nTitle">Title</label><input id="nTitle" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Checkout" /></div>
-            <div className="field"><label htmlFor="nName">Name</label><input id="nName" value={name} spellCheck={false} onChange={(e) => setName(e.target.value)} placeholder="checkout" />
-              <span className="hint">No spaces, and no “/”, “@”, “#” or “~”. Unique in this kolab.</span></div>
+            <div className="field"><label htmlFor="nTitle">Title</label><input id="nTitle" value={title} onChange={(e) => setTitle(e.target.value)} aria-describedby="nTitle-hint" />
+              <span className="hint" id="nTitle-hint">For example “Checkout”.</span></div>
+            <div className="field"><label htmlFor="nName">Name</label><input id="nName" value={name} spellCheck={false} onChange={(e) => setName(e.target.value)} />
+              <span className="hint">For example “checkout”. No spaces, and no “/”, “@”, “#” or “~”. Unique in this kolab.</span></div>
             <div className="edit-row"><button type="submit" className="btn primary" disabled={!title.trim() || !name.trim()}>Create</button></div>
           </form>
         </section>
