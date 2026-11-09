@@ -85,10 +85,10 @@ export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: Web
   const myMarks = marks?.items ?? [];
   const open = cases?.items ?? [];
   const total = c.reviews + c.waiting + c.stale + c.cases;
-  const section = (id: string, title: string, count: number, empty: string, body: ReactNode[], more?: () => void, busy?: boolean, error?: string) => (
+  const section = (id: string, title: string, count: number, empty: string, body: ReactNode[], more?: () => void, busy?: boolean, error?: string, reading = false) => (
     <section aria-labelledby={id} className="inbox-section">
       <h2 className="section-title" id={id}>{title} <span className="count-word">{count}</span></h2>
-      {error ? <p className="empty" role="alert">{error}</p> : body.length === 0 ? <p className="empty">{count === 0 ? empty : 'Reading…'}</p> : <ul className="inbox">{body}</ul>}
+      {error ? <p className="empty" role="alert">{error}</p> : body.length === 0 ? <p className="empty">{reading ? 'Reading…' : count === 0 ? empty : `${empty} It was settled since the count was taken.`}</p> : <ul className="inbox">{body}</ul>}
       <More more={more} busy={!!busy} what={title.toLowerCase()} />
     </section>
   );
@@ -102,16 +102,16 @@ export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: Web
         forMe.map((r) => r.kind === 'version'
           ? <Item key={r.subject} pill={<Pill tone="question">review</Pill>} where={r.subject} text={`submitted by ${r.author}${r.product_review ? ', for a product review' : ''}`} at={r.at} href={`node/${r.node}@${r.seq}`} />
           : <Item key={r.subject} pill={<Pill tone="question">work</Pill>} where={r.subject} text={`${r.title ?? ''} · by ${r.assignee}`} at={r.at} href="reviews" />),
-        reviews.more, reviews.busy, reviews.error)}
+        reviews.more, reviews.busy, reviews.error, !reviews.pages)}
       {section('in-questions', `Questions ${me.role} answers`, c.waiting, 'No question waits on your layer.',
         waiting.map((q) => <Item key={q.id} pill={<Pill tone="question">{q.kind}</Pill>} where={q.address} text={q.question} at={q.at} href={routeTo(q.address, me.kolab)} />),
-        undefined, false, queries?.error)}
+        undefined, false, queries?.error, !queries)}
       {section('in-marks', 'Marks on your layer', c.stale, 'Nothing on your layer is marked: everything it relies on still holds.',
         myMarks.map((m) => <Item key={m.id} pill={<Pill tone="stale">{m.reason.replace(/_/g, ' ')}</Pill>} where={addr(m.node, m.seq, m.element)} text={m.because} at={m.at} href={`node/${m.node}${m.element ? `#${m.element}` : ''}`} />),
-        undefined, false, marks?.error)}
+        undefined, false, marks?.error, !marks)}
       {belongs && section('in-cases', 'Case files on your layer', c.cases, 'No case file is open on your layer.',
         open.map((x) => <Item key={x.case} pill={<Pill tone="boundary">case file</Pill>} where={x.on} text={x.question ?? 'a case file'} at={x.opened_at ?? undefined} href="cases" />),
-        undefined, false, cases?.error)}
+        undefined, false, cases?.error, !cases)}
       <p className="why-not">The spec and each binding are in the rail. <button type="button" className="btn quiet" onClick={() => go('work')}>See the work board</button></p>
     </>
   );
@@ -209,9 +209,13 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
  */
 export function RulingsView({ me, tick, go, focus }: { me: WebMe; tick: number; go(r: string): void; focus?: string }) {
   // A ruling named in the address is read by its name, however old; otherwise the newest, to search.
-  const read = usePaged<WebRulingsView>(focus ? `rulings?ref=${encodeURIComponent(focus)}` : 'rulings?limit=200', tick);
+  // Rulings are named in capitals (D104): a hand-typed #/rulings/d104 finds the same one.
+  const ref = focus && /^d\d+$/i.test(focus) ? focus.toUpperCase() : focus;
+  const read = usePaged<WebRulingsView>(ref ? `rulings?ref=${encodeURIComponent(ref)}` : 'rulings?limit=200', tick);
   const [q, setQ] = useState(focus ?? '');
-  useEffect(() => { setQ(focus ?? ''); }, [focus]);
+  // The search shows the ruling the address names; leaving it clears the search, unless the person is typing one of their own.
+  const shownRef = useRef(ref);
+  useEffect(() => { setQ((was) => (ref ? ref : was === shownRef.current ? '' : was)); shownRef.current = ref; }, [ref]);
   const belongs = me.access.layers.length > 0;
   useEffect(() => {
     if (focus && read.pages) // The route takes only a name of letters, digits, '.', '_' and '-', so it is safe in a selector.
@@ -233,7 +237,7 @@ export function RulingsView({ me, tick, go, focus }: { me: WebMe; tick: number; 
       </section>
       <form className="search" role="search" onSubmit={(e) => { e.preventDefault(); if (/^d\d+$/i.test(q.trim())) go(`rulings/${q.trim().toUpperCase()}`); else if (focus) go('rulings'); }}>
         <label htmlFor="r-search">Search the rulings</label>
-        <input id="r-search" type="search" value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off" aria-describedby="r-count" />
+        <input id="r-search" type="search" value={q} onChange={(e) => { setQ(e.target.value); if (ref && e.target.value !== ref) go('rulings'); }} autoComplete="off" aria-describedby="r-count" />
         <span id="r-count" className="hint" role="status">{words ? `${shown.length} of ${all.length}${read.more ? '+' : ''} match` : `${all.length}${read.more ? '+' : ''} rulings`}. A name such as D104 finds that ruling.</span>
       </form>
       {shown.length ? <ul className="qlist">{shown.map((r) => <li key={r.ruling} className="qitem" data-ref={r.ref ?? undefined}><RulingBox ruling={r} me={me} go={go} /></li>)}</ul>
