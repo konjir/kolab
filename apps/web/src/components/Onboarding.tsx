@@ -132,6 +132,12 @@ export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; 
         <Command label="Sign the konjir CLI in" text={`${konjir} login --url ${mcp} --kolab ${me.kolab} --role ${me.role}`} />
         <Command label="Read the instructions with the konjir CLI" text={`${konjir} instructions`} />
       </section>
+      <section className="newk" aria-labelledby="c-work">
+        <h2 className="section-title" id="c-work">Put a machine to work: konjir work</h2>
+        <p className="why-not">Rather than drive agents yourself, set a machine to work on {me.kolab}: in a checkout of its repository, <span className="mono">konjir work</span> takes what is ready (reviews, work packages, questions and marks on the technical layer) and gives each to an agent of yours in its own worktree, one job at a time per slot. It never merges or deploys. Sign in first, as yourself.</p>
+        <Command label="Sign in to put this machine to work" text={`${konjir} login --url ${mcp} --kolab ${me.kolab}`} />
+        <Command label="Put this machine to work, in a checkout of the kolab's repository" text={`${konjir} work`} />
+      </section>
     </>
   );
 }

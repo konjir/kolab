@@ -128,7 +128,7 @@ test('a ruling is precedent beside its element, and a ruled mark settles only wi
 
 test('a case file is opened from its element, and a ruling given directly, on it or the whole node', async () => {
   view(lee, spec({}, [el('PR3', 'Same response.')]));
-  fireEvent.click(await screen.findByRole('button', { name: 'Dispute' }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Dispute / }));
   fireEvent.change(screen.getByLabelText('The question in dispute'), { target: { value: 'Timing too?' } });
   fireEvent.click(screen.getByLabelText('Keep the intent as written'));
   fireEvent.change(screen.getByLabelText('Your claim'), { target: { value: 'It already says the same response.' } });
@@ -138,7 +138,7 @@ test('a case file is opened from its element, and a ruling given directly, on it
     node: 'password-reset', seq: 3, element: 'PR3', question: 'Timing too?', claim: 'It already says the same response.', evidence: ['kj:password-reset@3#PR3'], seeks: 'keep_intent',
   } });
 
-  fireEvent.click(screen.getByRole('button', { name: 'Rule' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Rule on [A-Z][A-Z0-9.]*$/ }));
   fireEvent.click(screen.getByLabelText(/^Changes the intent/));
   fireEvent.change(screen.getByLabelText('What it says, as agents will be served it'), { target: { value: 'Timing must match too.' } });
   fireEvent.change(screen.getByLabelText(/What it replaces/), { target: { value: 'q3’s answer' } });
@@ -153,12 +153,12 @@ test('a case file is opened from its element, and a ruling given directly, on it
 
 test('who may not: an engineer can dispute the spec but not rule on it, and a reader sees no case files', async () => {
   view(eli, spec({ can_write: false }, [el('PR3', 'Same response.')]));
-  expect(await screen.findByRole('button', { name: 'Dispute' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Rule' })).toBeNull();
+  expect(await screen.findByRole('button', { name: /^Dispute / })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Rule on [A-Z][A-Z0-9.]*$/ })).toBeNull();
   cleanup();
   view(reader, spec({ can_write: false }, [el('PR3', 'Same response.')]));
   await screen.findByText('Same response.');
-  expect(screen.queryByRole('button', { name: 'Dispute' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Dispute / })).toBeNull();
   cleanup();
   replies['/api/cases'] = { cases: [], belongs: false };
   replies['/api/rulings'] = { rulings: [] };

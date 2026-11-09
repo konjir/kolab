@@ -26,8 +26,8 @@ test('a product owner does what the prototype simulates, against the real server
   const lee = await (await browser.newContext()).newPage();
   await signIn(lee, 'lee');
   // The spec, with the open question beside PR3, and the summary of what waits.
-  await expect(lee.getByRole('heading', { name: 'Password reset', level: 2 })).toBeVisible();
-  await expect(lee.getByRole('heading', { level: 1 })).toHaveText('1 question waits on you.');
+  await expect(lee.getByRole('heading', { name: 'Password reset', level: 1 })).toBeVisible();
+  await expect(lee.locator('.summary-lead')).toHaveText('1 question waits on you.');
   const pr3 = lee.locator('li.el', { has: lee.getByRole('button', { name: 'PR3', exact: true }) });
   await expect(pr3.getByText(/Should the response time be indistinguishable too/)).toBeVisible();
   await shot(lee, '1-spec');
@@ -82,7 +82,7 @@ test('a product owner does what the prototype simulates, against the real server
     await eng.getByRole('button', { name: 'Still holds' }).first().click();
     await expect(eng.getByRole('button', { name: 'Still holds' })).toHaveCount(n - 1);
   }
-  await expect(eng.getByRole('heading', { level: 1 })).toHaveText('Everything holds.');
+  await expect(eng.locator('.summary-lead')).toHaveText('Everything holds.');
 
   // Lee asks the binding a question; it waits on the engineer.
   await lee.getByRole('button', { name: 'Password reset on Postgres' }).click();
@@ -163,7 +163,7 @@ test('a product owner does what the prototype simulates, against the real server
   await lee.getByRole('button', { name: 'All kolabs' }).click();
   await lee.locator('article.kcard', { hasText: 'Checkout' }).getByRole('button', { name: 'Read here' }).click();
   await lee.getByRole('button', { name: 'kj:checkout/checkout@2' }).click();
-  await expect(lee.getByRole('heading', { name: 'Checkout', level: 2 })).toBeVisible();
+  await expect(lee.getByRole('heading', { name: 'Checkout', level: 1 })).toBeVisible();
   await expect(lee.getByText(/Read in place from kolab/)).toBeVisible();
   await expect(lee.getByText('Pressing Pay more than once, or retrying after a timeout, charges the card once.')).toBeVisible();
   await expect(lee.getByText(/If the email provider is down/)).toBeVisible();
@@ -183,16 +183,18 @@ test('a product owner does what the prototype simulates, against the real server
   await lee.locator('#kTitle').fill('Billing');
   await expect(lee.getByLabel('Short name')).toHaveValue('billing');
   await lee.getByRole('button', { name: 'Create kolab' }).click();
-  await expect(lee.getByRole('heading', { level: 1 })).toHaveText('Nothing written yet. Start with the spec.');
+  await expect(lee.locator('.summary-lead')).toHaveText('Nothing written yet. Start with the spec.');
   await expect(lee.locator('.kolab-btn .nm')).toHaveText('Billing');
   // She switches to the engineer role there, and back to Accounts through the picker, as product.
+  // Each switch ends the session, so the page asks first: she confirms.
+  lee.on('dialog', (d) => void d.accept());
   await lee.getByRole('radio', { name: 'engineer' }).click();
   await expect(lee.getByRole('radio', { name: 'engineer' })).toHaveAttribute('aria-checked', 'true');
   await lee.locator('.kolab-btn').click();
   await lee.getByRole('button', { name: /Accounts/ }).click();
   await expect(lee.locator('.kolab-btn .nm')).toHaveText('Accounts');
   await lee.getByRole('radio', { name: 'product' }).click();
-  await expect(lee.getByRole('heading', { name: 'Password reset', level: 2 })).toBeVisible();
+  await expect(lee.getByRole('heading', { name: 'Password reset', level: 1 })).toBeVisible();
 
   // Signing out ends the session and returns to the sign-in page.
   await lee.getByRole('button', { name: 'Sign out' }).click();

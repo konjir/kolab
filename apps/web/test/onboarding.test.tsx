@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import type { InvitePreview, InviteView, WebMe, WebOverview } from '@konjir/types';
 import { ConnectView, GettingStarted, InviteCard, PeopleView, accessWords, inviteLink } from '../src/components/Onboarding.js';
 import type { Act } from '../src/components/Marks.js';
-import { inviteOf, parseRoute } from '../src/App.js';
+import { inviteOf, parseRoute, shortTitle } from '../src/App.js';
 
 const ann: WebMe = { actor: 'ann', name: 'Ann', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'anns', access: { level: 'admin', layers: ['functional', 'technical'] } };
 const eli: WebMe = { ...ann, actor: 'eli', name: 'Eli', role: 'engineer', layer: 'technical', access: { level: 'write', layers: ['technical'] } };
@@ -149,6 +149,28 @@ test('routes: #/people and #/connect; an invite\'s link carries only a well-form
   expect(parseRoute(`#/invite/${TOKEN}`)).toStrictEqual({ view: 'home' });
   expect(inviteLink(TOKEN, 'https://kolab.example.com')).toBe(`https://kolab.example.com/#/invite/${TOKEN}`);
   expect(accessWords({ level: 'maintain', layers: ['functional', 'technical'] })).toBe('Maintain');
+});
+
+test('an address the page has no place for is said to be missing, never shown as home; an empty one is home', () => {
+  expect(parseRoute('#/work')).toStrictEqual({ view: 'missing', what: 'work' });
+  expect(parseRoute('#/nosuchplace/x')).toStrictEqual({ view: 'missing', what: 'nosuchplace/x' });
+  expect(parseRoute('#/')).toStrictEqual({ view: 'home' });
+  expect(parseRoute('')).toStrictEqual({ view: 'home' });
+});
+
+test('the rail names a document without the kolab title its own title repeats', () => {
+  expect(shortTitle('Kolab — Technical Binding', 'Kolab')).toBe('Technical Binding');
+  expect(shortTitle('Kolab: Functional Spec', 'Kolab')).toBe('Functional Spec');
+  expect(shortTitle('Kolab', 'Kolab')).toBe('Kolab');
+  expect(shortTitle('Kolabs everywhere', 'Kolab')).toBe('Kolabs everywhere');
+  expect(shortTitle('Checkout', undefined)).toBe('Checkout');
+});
+
+test('Connect a harness says how to put a machine to work with konjir work (DEL8)', () => {
+  render(<ConnectView me={eli} cli={{ npm: 'konjir@1.2.3' }} origin="https://kolab.example.com" />);
+  expect(screen.getByRole('heading', { name: /konjir work/ })).toBeTruthy();
+  expect(screen.getByLabelText('Put this machine to work, in a checkout of the kolab\'s repository').textContent).toBe('npx konjir@1.2.3 work');
+  expect(screen.getByLabelText('Sign in to put this machine to work').textContent).toBe('npx konjir@1.2.3 login --url https://kolab.example.com/mcp --kolab anns');
 });
 
 test('an Admin sees the kolab\'s policy beside who holds access, and changes a setting; Kolab decides (W6.2, POL2)', async () => {

@@ -131,18 +131,21 @@ export async function seed(kolab: Kolab) {
   await link(b1);
   const q1 = await kolab.raiseQuery(eng, 'kj:password-reset#PR7', 'PR7 says "all of the user\'s other sessions" are signed out. Other than which session? Should a successful reset sign the user in with a new session that survives, or leave them signed out with every session revoked?', { from: 'kj:password-reset-pg#B8' });
   const q2 = await kolab.raiseQuery(eng, 'kj:password-reset#PR6', 'If a user requests several resets, does a new link (or a completed reset) invalidate the other unexpired links? PR6 only says a link works once.');
-  await kolab.answerQuery(pm, q1, 'Sign in, revoke the rest: a successful reset signs the user in with a new session, and every session that existed before the reset is revoked. PR7 is amended in v2.');
-  await kolab.answerQuery(pm, q2, 'Only the newest link is valid. Issuing a new link invalidates earlier ones, and a successful reset invalidates all outstanding links. PR6 is amended in v2.');
+  // A question about intent is answered by a person: an agent may answer one only by citing what it rests on (AUT4).
+  await kolab.answerQuery(lee, q1, 'Sign in, revoke the rest: a successful reset signs the user in with a new session, and every session that existed before the reset is revoked. PR7 is amended in v2.');
+  await kolab.answerQuery(lee, q2, 'Only the newest link is valid. Issuing a new link invalidates earlier ones, and a successful reset invalidates all outstanding links. PR6 is amended in v2.');
   await commit(pm, lee, 'password-reset', els(specV2));
   const b2 = await commit(eng, qa, 'password-reset-pg', els(bindV2));
   await link(b2, ['B12', 'B13']);
   // What v2 of the spec marked and the binding's v2 didn't revise still holds against it.
   for (const m of await kolab.describeMarks({ layer: 'technical', kolab: 'accounts' })) await kolab.clear(eng, m.mark);
-  await commit(lee, pm, 'password-reset', els({ ...specV2, PR8: 'At most 3 reset requests per email address per hour. Requests over the limit get the same response as PR3.' }));
+  // A person reviews a functional version (AUT2): Pat, who holds Write on that layer too.
+  const pat = await kolab.openSession('pat', 'product', { kolab: 'accounts', ...admin });
+  await commit(lee, pat, 'password-reset', els({ ...specV2, PR8: 'At most 3 reset requests per email address per hour. Requests over the limit get the same response as PR3.' }));
   await kolab.raiseQuery(eng, 'kj:password-reset#PR3', 'PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.');
   // The people's sessions, for the web interface; the agents' stay with the agents.
   return {
-    lee, pat: await kolab.openSession('pat', 'product', { kolab: 'accounts', ...admin }), eli: await kolab.openSession('eli', 'engineer', { kolab: 'accounts', ...admin }),
+    lee, pat, eli: await kolab.openSession('eli', 'engineer', { kolab: 'accounts', ...admin }),
   };
 }
 
