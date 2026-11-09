@@ -6,8 +6,9 @@ import type { Request, Response } from 'express';
 import { BROWSER_SECRET, Kolab, maskTokens, webMachine } from '@konjir/engine';
 import type {
   InvitePreview, WebAnswer, WebChangeGrant, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
-  WebCli, WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
+  WebCli, WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict, WorkState,
 } from '@konjir/types';
+import { WORK_STATES } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
 import {
   Limit, WEB_CALLBACK, WEB_CLIENT, bindingCookieAttrs, clearInviteCookie, clientAddress, cookieOf, originOf, sameSecret, setInviteCookie,
@@ -279,6 +280,14 @@ export class WebController {
     const st = one('state', state);
     if (st !== undefined && st !== 'open' && st !== 'settled') throw new BadRequestException({ error: 'bad_request', message: 'the state is open or settled' });
     return run(() => this.web.queries(s, { open: st === undefined ? undefined : st === 'open' }, page(c, l)));
+  }
+
+  /** ?binding= for one binding's packages, ?state= for one state (todo, in_progress, in_review or done). */
+  @Get('work')
+  work(@WebSession() s: string, @Query('binding') binding?: unknown, @Query('state') state?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    const st = one('state', state);
+    if (st !== undefined && !(WORK_STATES as readonly string[]).includes(st)) throw new BadRequestException({ error: 'bad_request', message: `the state is one of ${WORK_STATES.join(', ')}` });
+    return run(() => this.web.work(s, { binding: one('binding', binding), state: st as WorkState | undefined }, page(c, l)));
   }
 
   @Get('marks') marks(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.marks(s, page(c, l))); }

@@ -38,8 +38,8 @@ test('the consent form and the web interface\'s changes carry Kolab\'s own Origi
 
   // Someone new makes their first kolab here, private, named after them.
   await expect(page.getByRole('radio', { name: /A new private kolab of your own/ })).toBeChecked();
-  await expect(page.getByLabel('The new kolab\'s short name')).toHaveValue(login);
-  await page.getByLabel('The new kolab\'s title').fill('My first kolab');
+  await expect(page.getByLabel(/^The new kolab's name/)).toHaveValue(login);
+  await page.getByLabel(/^The new kolab's title/).fill('My first kolab');
   await page.getByRole('button', { name: 'Allow' }).click();
   await expect(page.getByText(/^Working as/)).toBeVisible();
   expect(new URL(page.url()).pathname).toBe('/');

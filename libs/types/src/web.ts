@@ -5,7 +5,7 @@
  */
 import type {
   AcceptanceFinding, Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, QueryKind,
-  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkState,
+  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkItemView, WorkState,
 } from './index.js';
 
 /**
@@ -241,6 +241,9 @@ export interface WebRulingsView extends WebPaged { rulings: WebRuling[] }
 
 export interface WebQueriesView extends WebPaged { queries: WebQuery[] }
 export interface WebMarksView extends WebPaged { marks: WebMark[] }
+
+/** The work board (PLN12, PLN19): the kolab's work packages, binding by binding in natural ID order, each with its state, who holds it and why it is blocked, as konjir_list_work gives them. */
+export interface WebWorkView extends WebPaged { work: WorkItemView[] }
 
 /** A version in review that waits for the session's verdict. */
 /** A version in review that waits for the session's verdict; with `product_review`, a binding's product review (VER13), from a product session. */

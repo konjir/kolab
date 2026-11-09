@@ -4,7 +4,7 @@ import {
   type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
-import { addr, ago } from '../util.js';
+import { addr, ago, parseKj, routeOf } from '../util.js';
 import { Addr, Pill } from './bits.js';
 import { QueryBox, type Act } from './Marks.js';
 
@@ -282,16 +282,49 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
   );
 }
 
-export function ActivityView({ tick }: { tick: number }) {
+/** The kind of an activity line, from its verb: what the filter offers. */
+const ACTIVITY_KINDS: { key: string; label: string; test: RegExp }[] = [
+  { key: 'versions', label: 'Versions', test: /^(made|committed|submitted|.* was rejected)/ },
+  { key: 'reviews', label: 'Reviews', test: /^(approved|requested changes)/ },
+  { key: 'questions', label: 'Questions and notes', test: /^(asked|left a note|answered)/ },
+  { key: 'marks', label: 'Marks', test: /^(marked|cleared|settled)/ },
+  { key: 'cases', label: 'Case files', test: /(case file|ruled)/ },
+];
+
+/**
+ * What Kolab records, newest first, with who did it: filtered by actor, by kind and by words, and
+ * every address a link to where it points.
+ */
+export function ActivityView({ tick, here }: { tick: number; here: string }) {
   const { pages, error, more, busy } = usePaged<WebActivityView>('activity', tick);
+  const [actor, setActor] = useState('');
+  const [kind, setKind] = useState('');
+  const [words, setWords] = useState('');
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!pages) return <p className="empty">Reading the activity…</p>;
-  const data = { items: pages.flatMap((p) => p.items) };
+  const all = pages.flatMap((p) => p.items);
+  const actors = [...new Set(all.map((l) => l.actor))].sort();
+  const k = ACTIVITY_KINDS.find((x) => x.key === kind);
+  const w = words.trim().toLowerCase();
+  const items = all.filter((l) => (!actor || l.actor === actor) && (!k || k.test.test(l.text)) && (!w || `${l.actor} ${l.text}`.toLowerCase().includes(w)));
+  const link = (address: string, key: number) => {
+    const a = parseKj(address);
+    return a ? <a key={key} className="addr" href={`#/${routeOf(a, here)}`}>{address}</a> : <Addr key={key}>{address}</Addr>;
+  };
   return (
     <section aria-labelledby="act-title"><h2 className="section-title" id="act-title">Activity</h2>
-      <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: nodes as they were made, versions as they were written, verdicts, questions and marks, each with who made it.</p>
-      <ol className="log">{data.items.map((l, i) => (
-        <li key={i}><time dateTime={l.at}>{ago(l.at)}</time><span><span className="actor">{l.actor}</span> {l.text.split(/(kj:[^\s·:]+)/).map((part, j) => part.startsWith('kj:') ? <Addr key={j}>{part}</Addr> : part)}</span></li>
+      <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: nodes as they were made, versions as they were written, verdicts, questions and marks, each with who made it. “kolab” is Kolab itself, acting on its own.</p>
+      <form className="filters-row" role="search" aria-label="Filter the activity" onSubmit={(e) => e.preventDefault()}>
+        <div className="field"><label htmlFor="act-actor">Who</label>
+          <select id="act-actor" value={actor} onChange={(e) => setActor(e.target.value)}><option value="">Anyone</option>{actors.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+        <div className="field"><label htmlFor="act-kind">What</label>
+          <select id="act-kind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">Everything</option>{ACTIVITY_KINDS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}</select></div>
+        <div className="field"><label htmlFor="act-words">Words or address</label>
+          <input id="act-words" type="search" value={words} autoComplete="off" onChange={(e) => setWords(e.target.value)} /></div>
+      </form>
+      <p className="why-not" role="status">{items.length === all.length ? `${all.length} shown` : `${items.length} of ${all.length} shown`}{more ? '; read more below to filter further back' : ''}.</p>
+      <ol className="log">{items.map((l, i) => (
+        <li key={i}><time dateTime={l.at}>{ago(l.at)}</time><span><span className="actor">{l.actor}</span> {l.text.split(/(kj:[^\s·:]+)/).map((part, j) => part.startsWith('kj:') ? link(part, j) : part)}</span></li>
       ))}</ol>
       <More more={more} busy={busy} what="activity" />
     </section>

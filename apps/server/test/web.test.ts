@@ -11,7 +11,7 @@ import type { Kolab } from '@konjir/engine';
 import { agentsMay, closeAtEnd, els, people, registeredRepository, setup, TEST_KOLAB } from '@konjir/engine/testing';
 import { cursorFor, REVIEW_EVIDENCE_SHOWN, scoped } from '@konjir/engine';
 import type {
-  KolabAccessView, PolicySet, PolicyView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
+  KolabAccessView, PolicySet, PolicyView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebWorkView, WebOverview,
   WebQueriesView, WebQuery, WebReviewsView, WebRuling, WebVersionsView, WebWorkOutcome, WebWorkReview,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
@@ -953,6 +953,30 @@ test('a binding\'s page shows each work package\'s state on its latest version, 
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W2', text: 'Refund on cancel, in full.' }] });
   expect((await bob.call<WebNodeView>('nodes/orders-pg?version=2')).body.elements.every((e) => !('work_state' in e))).toBe(true);
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work_state' in e))).toBe(true);
+});
+
+test('the work board lists a kolab\'s work packages with their state, who holds each and why it is blocked, on one binding or in one state (PLN12, PLN19)', async () => {
+  const { kolab, engineer } = await specAndBinding();
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const v = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'] } },
+  ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }, { kind: 'dependency', sourceElement: 'W2', target: b, targetElement: 'b2' }] });
+  expect((await kolab.submit(engineer, v)).ok).toBe(true);
+  await kolab.pullWork(engineer);
+  const bob = await signIn(await serve(kolab), engineer);
+  const board = (await bob.call<WebWorkView>('work')).body;
+  // Decisions are never work (PLN1): only the packages, in natural ID order.
+  expect(board.work.map((w) => [w.work, w.state, w.assignee, w.blocked, w.ready])).toStrictEqual([
+    ['kj:orders-pg#W1', 'in_progress', 'bob', [], false],
+    ['kj:orders-pg#W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-pg#W1', state: 'in_progress' }], false],
+  ]);
+  expect(board.next).toBeNull();
+  expect((await bob.call<WebWorkView>('work?state=todo')).body.work.map((w) => w.id)).toStrictEqual(['W2']);
+  expect((await bob.call<WebWorkView>('work?binding=orders-pg')).body.work).toHaveLength(2);
+  expect((await bob.call<WebWorkView>('work?limit=1')).body.next).toEqual(expect.any(String));
+  const bad = await bob.call<{ error: string; message: string }>('work?state=blocked');
+  expect([bad.status, bad.body.message]).toStrictEqual([400, 'the state is one of todo, in_progress, in_review, done']);
+  expect((await bob.call('work?binding=no%20such')).status).toBe(400);
 });
 
 test('a binding\'s page shows a work package with work at risk while a mark is open on it (W5.2b, PLN10)', async () => {

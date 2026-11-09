@@ -14,7 +14,7 @@ import {
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
   type WebSubmit, type WebVerdict, type WebVersion, type WebVersionReview, type WebWorkOutcome, type WebWorkReview, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
-  type WebVersionsView, type WebWorkState, type WorkItemView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT, type PolicySet, type PolicyView,
+  type WebVersionsView, type WebWorkState, type WebWorkView, type WorkItemView, type WorkState, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT, type PolicySet, type PolicyView,
 } from '@konjir/types';
 import { KOLAB } from '../tokens.js';
 
@@ -387,6 +387,13 @@ export class WebService {
   async queries(s: string, only: { open?: boolean } = {}, page: PageOpts = {}): Promise<WebQueriesView> {
     const { items, next } = await queryDetailsPage(this.kolab, s, only, page);
     return { queries: items.map(query), next };
+  }
+
+  /** konjir_list_work: the board, on one binding if named, in one state if asked (PLN12). */
+  async work(s: string, filter: { binding?: string; state?: WorkState }, page: PageOpts = {}): Promise<WebWorkView> {
+    if (filter.binding !== undefined && !isNodeName(filter.binding)) throw bad('name a binding of this kolab');
+    const { items, next } = await this.kolab.listWork(s, filter, page);
+    return { work: items, next };
   }
 
   async marks(s: string, page: PageOpts = {}): Promise<WebMarksView> {

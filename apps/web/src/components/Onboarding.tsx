@@ -204,7 +204,7 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
         )}
       </section>
       <AccessList me={me} tick={tick} act={act} />
-      <PolicySettings me={me} tick={tick} act={act} />
+      <p className="why-not">How far agents act without a person is in <a href="#/settings">Settings</a>.</p>
       <section aria-labelledby="p-list"><h2 className="section-title" id="p-list">Invites</h2>
         {error && <p className="empty" role="alert">{error}</p>}
         {invites.length ? <ul className="qlist">{invites.map((i) => (
