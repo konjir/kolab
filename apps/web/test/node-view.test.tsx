@@ -311,11 +311,15 @@ test('a document opens on its elements: its rulings as a whole fold away, its se
     { ...data.elements[0], parent: 'RQ' },
     { ...data.elements[1], id: 'LM', text: 'LM: limits', address: 'kj:password-reset@3#LM', relied_on_by: [] },
     { ...data.elements[1], parent: 'LM' },
+    { ...data.elements[1], id: 'LM1', parent: 'LM', text: 'LM1: per address', address: 'kj:password-reset@3#LM1', relied_on_by: [] },
+    { ...data.elements[1], id: 'LM1a', parent: 'LM1', text: 'Three an hour.', address: 'kj:password-reset@3#LM1a', relied_on_by: [] },
   ];
   replies['/api/nodes/password-reset'] = data;
   render(<NodeView me={lee} name="password-reset" tick={0} act={runner} go={() => undefined} read={() => undefined} focus="password-reset#PR99" />);
   expect(await screen.findByRole('heading', { level: 1, name: 'Password reset' })).toBeTruthy();
   expect(screen.getByRole('heading', { level: 2, name: 'RQ: requesting a reset' })).toBeTruthy();
+  // A section inside a section is a level deeper.
+  expect(screen.getByRole('heading', { level: 3, name: 'LM1: per address' })).toBeTruthy();
   expect(screen.getByRole('navigation', { name: /Sections of/ })).toBeTruthy();
   const folded = screen.getByText(/1 ruling on kj:password-reset as a whole/).closest('details')!;
   expect(folded.open).toBe(false);

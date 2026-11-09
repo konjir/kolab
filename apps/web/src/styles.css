@@ -47,9 +47,7 @@ body { color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-h
 button, input, textarea, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .mono, code, .addr { font-family: var(--font-mono); font-size: 0.86em; }
-/* an address breaks anywhere rather than push the page sideways on a narrow screen (WCAG 1.4.10) */
-.addr { color: var(--secondary); font-weight: 500; overflow-wrap: anywhere; }
-code, .chip { overflow-wrap: anywhere; }
+.addr { color: var(--secondary); font-weight: 500; white-space: nowrap; }
 
 /* ---- bar ---- */
 .bar {
@@ -278,10 +276,13 @@ svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-eve
   .frame { grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 14px 16px 64px; }
   /* the bar scrolls away on a phone, so it never takes a fifth of the screen */
   .bar { position: static; }
+  /* an address breaks anywhere rather than push the page sideways (WCAG 1.4.10) */
+  .addr { white-space: normal; overflow-wrap: anywhere; }
+  code, .chip { overflow-wrap: anywhere; }
   .bar-in { padding: 8px 16px; gap: 8px 12px; }
   .who { display: none; }
   .side { position: static; gap: 10px; }
-  nav.rail { flex-direction: row; overflow-x: auto; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); scroll-padding-inline: 16px; }
+  nav.rail { position: relative; flex-direction: row; overflow-x: auto; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); scroll-padding-inline: 16px; }
   .goto { margin: 0; }
   /* touch targets: at least 24px, with room between them (WCAG 2.5.8) */
   .chip, .versions button, .outline a { min-height: 28px; display: inline-flex; align-items: center; }

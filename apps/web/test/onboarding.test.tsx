@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import type { InvitePreview, InviteView, WebMe, WebOverview } from '@konjir/types';
 import { ConnectView, GettingStarted, InviteCard, PeopleView, accessWords, inviteLink } from '../src/components/Onboarding.js';
 import type { Act } from '../src/components/Marks.js';
-import { inviteOf, parseRoute, shortTitle } from '../src/App.js';
+import { confirmMove, inviteOf, parseRoute, shortTitle } from '../src/App.js';
 
 const ann: WebMe = { actor: 'ann', name: 'Ann', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'anns', access: { level: 'admin', layers: ['functional', 'technical'] } };
 const eli: WebMe = { ...ann, actor: 'eli', name: 'Eli', role: 'engineer', layer: 'technical', access: { level: 'write', layers: ['technical'] } };
@@ -156,6 +156,18 @@ test('an address the page has no place for is said to be missing, never shown as
   expect(parseRoute('#/nosuchplace/x')).toStrictEqual({ view: 'missing', what: 'nosuchplace/x' });
   expect(parseRoute('#/')).toStrictEqual({ view: 'home' });
   expect(parseRoute('')).toStrictEqual({ view: 'home' });
+});
+
+test('switching kolab or role asks first, saying the session ends; no means no switch', () => {
+  const asked: string[] = [];
+  const was = window.confirm;
+  window.confirm = (q?: string) => { asked.push(q ?? ''); return asked.length === 1; };
+  try {
+    expect(confirmMove('Work as engineer')).toBe(true);
+    expect(confirmMove('Work in billing')).toBe(false);
+  } finally { window.confirm = was; }
+  expect(asked[0]).toMatch(/^Work as engineer\? This session ends/);
+  expect(asked[1]).toMatch(/^Work in billing\?/);
 });
 
 test('the rail names a document without the kolab title its own title repeats', () => {

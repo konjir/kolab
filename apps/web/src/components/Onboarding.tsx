@@ -159,7 +159,7 @@ export function PeopleView({ me, overview, tick, act }: { me: WebMe; overview: W
   if (me.access.level === 'admin') return <Invites me={me} overview={overview} tick={tick} act={act} />;
   return (
     <section className="newk" aria-labelledby="p-title">
-      <h2 className="section-title" id="p-title">People in {me.kolab}</h2>
+      <h1 className="section-title" id="p-title">People in {me.kolab}</h1>
       <p className="why-not">Those with Admin in {me.kolab} invite people to it; you hold {accessWords(me.access)}. Ask its owner, {overview.kolab.owner}.</p>
     </section>
   );
