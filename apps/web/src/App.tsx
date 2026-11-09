@@ -236,7 +236,8 @@ export function App() {
   useEffect(() => { document.title = !me ? 'Kolab' : place ? `${place} · ${kolabTitle} · Kolab` : `${kolabTitle} · Kolab`; }, [me, place, kolabTitle]);
   // On a narrow screen the rail scrolls sideways: the place shown stays in view. Only the rail
   // scrolls, never the page, so a jump to an element (#/node/x#ID) stays where it landed.
-  const railKey = `${nodeRoute.view}:${nodeRoute.view === 'node' ? `${nodeRoute.kolab ?? ''}/${nodeRoute.name}` : ''}`;
+  // Its documents arrive with the overview: the key changes then too, so the current one is brought into view.
+  const railKey = `${nodeRoute.view}:${nodeRoute.view === 'node' ? `${nodeRoute.kolab ?? ''}/${nodeRoute.name}` : ''}:${docs.length}`;
   useEffect(() => {
     const rail = document.querySelector<HTMLElement>('.rail');
     const current = rail?.querySelector<HTMLElement>('[aria-current="page"]');
@@ -363,7 +364,7 @@ function GoTo({ here, go }: { here: string; go(r: string): void }) {
       <input id="goto" value={text} spellCheck={false} autoComplete="off" aria-invalid={bad} aria-describedby="goto-hint"
         onChange={(e) => { setText(e.target.value); setBad(false); }} />
       {/* Always there, so a screen reader announces the error when its text arrives. */}
-      <span id="goto-hint" className={bad ? 'err' : 'hint'} aria-live="assertive">
+      <span id="goto-hint" className={bad ? 'err' : 'hint'} aria-live="polite">
         {bad ? 'That isn’t an address. One looks like kj:kolab#TEN1, or kj:other-kolab/node#R1.' : <>For example <span className="mono">kj:{here}#R1</span></>}
       </span>
     </form>

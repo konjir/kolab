@@ -197,7 +197,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const sections = view.elements.filter((e) => parents.has(e.id));
   const focusId = focus?.startsWith(`${name}#`) ? focus.slice(name.length + 1) : undefined;
   // Only once the version asked for is the one shown: the last one stays on screen while it loads.
-  const missing = focusId && reading && (version === undefined || reading.seq === version) && !rows.some((e) => e.id === focusId) ? focusId : undefined;
+  const missing = focusId && reading && reading.seq === (version ?? latest ?? reading.seq) && !rows.some((e) => e.id === focusId) ? focusId : undefined;
   const here = foreign ? `kj:${view.kolab}/${name}${reading ? `@${reading.seq}` : ''}` : addr(name, reading?.seq);
   // A section's depth: a top-level section is a level-2 heading, under the document's h1.
   const byId = new Map(view.elements.map((e) => [e.id, e.parent]));
