@@ -141,3 +141,17 @@ test('an element\'s text links each ruling it cites', () => {
   expect(screen.getByRole('link', { name: 'D47' }).getAttribute('href')).toBe('#/rulings/D47');
   expect(withRulingLinks('No citation here.')).toBe('No citation here.');
 });
+
+test('a ruling\'s address in lower case finds it; typing other words there searches every ruling, keeping what was typed', async () => {
+  replies['/api/rulings'] = { rulings: [ruling('D104', 'There is no plan: work lives in the binding.'), ruling('D12', 'Konjir is one hosted service.')], next: null };
+  replies['/api/rulings?ref=D104'] = { rulings: [ruling('D104', 'There is no plan: work lives in the binding.')], next: null };
+  const went: string[] = [];
+  const page = render(<RulingsView me={lee} tick={0} go={(r) => went.push(r)} focus="d104" />);
+  expect(await screen.findByText('There is no plan: work lives in the binding.')).toBeTruthy();
+  expect(calls[0]).toBe('/api/rulings?ref=D104');
+  fireEvent.change(screen.getByLabelText('Search the rulings'), { target: { value: 'hosted' } });
+  expect(went).toStrictEqual(['rulings']);
+  page.rerender(<RulingsView me={lee} tick={0} go={(r) => went.push(r)} />);
+  expect(await screen.findByText('Konjir is one hosted service.')).toBeTruthy();
+  expect((screen.getByLabelText('Search the rulings') as HTMLInputElement).value).toBe('hosted');
+});
