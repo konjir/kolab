@@ -57,7 +57,7 @@ export function shortTitle(title: string, kolabTitle?: string): string {
 }
 
 /** Asks before the session changes kolab or role: the change ends this session, and opens another. */
-const confirmMove = (what: string) => typeof window.confirm !== 'function' || window.confirm(`${what}? This session ends, and one opens there. Whatever you were drafting here is discarded.`);
+export const confirmMove = (what: string) => typeof window.confirm !== 'function' || window.confirm(`${what}? This session ends, and one opens there. Whatever you were drafting here is discarded.`);
 
 /** An invite's secret in the address (W3.4), `#/invite/kji_…`, or undefined. */
 export function inviteOf(hash: string): string | undefined {
@@ -234,10 +234,15 @@ export function App() {
       + (nodeRoute.focus ? ` #${nodeRoute.focus.split('#')[1]}` : '')
     : nodeRoute.view === 'read' ? `Reading ${nodeRoute.kolab}` : PLACE[nodeRoute.view] ?? '';
   useEffect(() => { document.title = !me ? 'Kolab' : place ? `${place} · ${kolabTitle} · Kolab` : `${kolabTitle} · Kolab`; }, [me, place, kolabTitle]);
-  // On a narrow screen the rail scrolls sideways: the place shown stays in view.
+  // On a narrow screen the rail scrolls sideways: the place shown stays in view. Only the rail
+  // scrolls, never the page, so a jump to an element (#/node/x#ID) stays where it landed.
+  const railKey = `${nodeRoute.view}:${nodeRoute.view === 'node' ? `${nodeRoute.kolab ?? ''}/${nodeRoute.name}` : ''}`;
   useEffect(() => {
-    document.querySelector('.rail [aria-current="page"]')?.scrollIntoView?.({ block: 'nearest', inline: 'center' });
-  }, [place]);
+    const rail = document.querySelector<HTMLElement>('.rail');
+    const current = rail?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!rail || !current || rail.scrollWidth <= rail.clientWidth) return;
+    rail.scrollLeft = current.offsetLeft - (rail.clientWidth - current.offsetWidth) / 2;
+  }, [railKey]);
   const mainRef = useRef<HTMLElement>(null);
 
   const inviteNote = invite?.error ? <p className="notice" role="alert">{invite.error}</p> : null;
@@ -357,7 +362,8 @@ function GoTo({ here, go }: { here: string; go(r: string): void }) {
       <label htmlFor="goto">Go to an address</label>
       <input id="goto" value={text} spellCheck={false} autoComplete="off" aria-invalid={bad} aria-describedby="goto-hint"
         onChange={(e) => { setText(e.target.value); setBad(false); }} />
-      <span id="goto-hint" className={bad ? 'err' : 'hint'} role={bad ? 'alert' : undefined}>
+      {/* Always there, so a screen reader announces the error when its text arrives. */}
+      <span id="goto-hint" className={bad ? 'err' : 'hint'} aria-live="assertive">
         {bad ? 'That isn’t an address. One looks like kj:kolab#TEN1, or kj:other-kolab/node#R1.' : <>For example <span className="mono">kj:{here}#R1</span></>}
       </span>
     </form>
@@ -374,7 +380,7 @@ function Summary({ overview: o }: { overview: WebOverview }) {
   const lead = !o.nodes.length ? 'Nothing written yet. Start with the spec.' : parts.length ? `${parts.join(', ')}.` : 'Everything holds.';
   return (
     <section className="summary" aria-label="Summary">
-      <p className="summary-lead" role="status">{lead.charAt(0).toUpperCase() + lead.slice(1)}</p>
+      <p className="summary-lead">{lead.charAt(0).toUpperCase() + lead.slice(1)}</p>
       {o.nodes.filter((n) => n.latest !== null).slice(0, 4).map((n) => <span key={n.name} className="fact">{n.title} <b className="mono">v{n.latest}</b></span>)}
       <span className="fact"><b>{open}</b> open question{open === 1 ? '' : 's'} in total</span>
     </section>

@@ -196,7 +196,12 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const parents = new Set(view.elements.map((e) => e.parent).filter((p): p is string => !!p));
   const sections = view.elements.filter((e) => parents.has(e.id));
   const focusId = focus?.startsWith(`${name}#`) ? focus.slice(name.length + 1) : undefined;
-  const missing = focusId && reading && !rows.some((e) => e.id === focusId) ? focusId : undefined;
+  // Only once the version asked for is the one shown: the last one stays on screen while it loads.
+  const missing = focusId && reading && (version === undefined || reading.seq === version) && !rows.some((e) => e.id === focusId) ? focusId : undefined;
+  const here = foreign ? `kj:${view.kolab}/${name}${reading ? `@${reading.seq}` : ''}` : addr(name, reading?.seq);
+  // A section's depth: a top-level section is a level-2 heading, under the document's h1.
+  const byId = new Map(view.elements.map((e) => [e.id, e.parent]));
+  const level = (id: string) => { let n = 2, p = byId.get(id); while (p && n < 6) { n++; p = byId.get(p); } return n; };
   return (
     <>
       {notice && <Notice outcome={notice} layer={view.node.layer} onDismiss={() => setNotice(undefined)} />}
@@ -231,7 +236,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
             <button type="button" className="btn quiet" onClick={() => go(`read/${view.kolab}`)}>All of {view.kolab}</button>
           </div>
         )}
-        {missing && <p className="notice" role="alert" style={{ marginTop: 12 }}>There’s no element {missing} in {reading ? addr(name, reading.seq) : addr(name)}. It may have been removed or renamed in another version.</p>}
+        {missing && <p className="notice" role="alert" style={{ marginTop: 12 }}>There’s no element {missing} in {here}. It may have been removed or renamed in another version.</p>}
         {sections.length > 1 && (
           <nav className="outline" aria-label={`Sections of ${view.node.title}`}>
             {sections.map((s) => <a key={s.id} href={`#/${kolab ? `read/${kolab}` : 'node'}/${name}${version ? `@${version}` : ''}#${s.id}`}>{s.id}</a>)}
@@ -262,7 +267,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
             foreign={foreign} belongs={belongs && committed} canRule={canRule}
             casing={casing === e.id} onCase={() => { setCasing(casing === e.id ? undefined : e.id); setRuling(undefined); setAsking(undefined); }}
             ruling={ruling === e.id} onRule={() => { setRuling(ruling === e.id ? undefined : e.id); setCasing(undefined); setAsking(undefined); }}
-            onFormDone={() => { setCasing(undefined); setRuling(undefined); }} section={parents.has(e.id)}
+            onFormDone={() => { setCasing(undefined); setRuling(undefined); }} section={parents.has(e.id) ? level(e.id) : undefined}
             onUnlink={(edge) => setDraft((d) => ({ ...d, unlinked: d.unlinked.includes(edge) ? d.unlinked.filter((x) => x !== edge) : [...d.unlinked, edge] }))} onAsk={() => { setAsking(e.id); setEditing(undefined); }} />
         )) : (
           <li className="empty">{view.node.layer === 'functional' ? 'No requirements yet.' : 'No elements yet.'} {writable ? 'Add the first one below.' : ''}</li>
@@ -378,8 +383,8 @@ interface RowProps {
   /** The person may open a case file here (D49), or rule directly (D51); and whether either form is open. */
   belongs: boolean; canRule: boolean; casing: boolean; ruling: boolean;
   onCase(): void; onRule(): void; onFormDone(): void;
-  /** The element heads a section: its first line reads as a heading. */
-  section?: boolean;
+  /** The element heads a section: its text reads as a heading of this level. */
+  section?: number;
 }
 
 function ElementRow(p: RowProps) {
@@ -419,7 +424,7 @@ function ElementRow(p: RowProps) {
             </div>
           </>
         ) : (
-          <p style={p.removed ? { textDecoration: 'line-through' } : undefined} {...(p.section ? { role: 'heading', 'aria-level': 2, className: 'section-head' } : {})}>
+          <p style={p.removed ? { textDecoration: 'line-through' } : undefined} {...(p.section ? { role: 'heading', 'aria-level': p.section, className: 'section-head' } : {})}>
             {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.text}</p>
         )}
         {(e.work || e.work_state) && <Work work={e.work ?? {}} state={e.work_state} name={p.name} />}
