@@ -215,15 +215,13 @@ export function DirectRuleForm({ name, seq, element, act, onDone }: { name: stri
 /** The kolab's case files and its rulings: what is disputed, and the precedent (konjir_list_cases, konjir_list_rulings). */
 export function CasesView({ me, tick, act, go }: { me: WebMe; tick: number; act: Act; go(r: string): void }) {
   const cases = usePaged<WebCasesView>('cases?state=all', tick);
-  const rulingsRead = usePaged<WebRulingsView>('rulings', tick);
-  const error = cases.error ?? rulingsRead.error;
+  const error = cases.error;
   if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!cases.pages || !rulingsRead.pages) return <p className="empty">Reading the case files…</p>;
+  if (!cases.pages) return <p className="empty">Reading the case files…</p>;
   if (!cases.pages[0].belongs) {
     return <p className="empty">Case files and rulings belong to this kolab’s work: only those with Write on a layer of it see them (D49). You hold {me.access.level ?? 'no access'} here.</p>;
   }
   const all = cases.pages.flatMap((p) => p.cases);
-  const rulings = { data: { rulings: rulingsRead.pages.flatMap((p) => p.rulings) } };
   const open = all.filter((c) => c.state === 'open');
   const settled = all.filter((c) => c.state !== 'open');
   const item = (c: WebCase) => <li key={c.case} className="qitem"><CaseBox c={c} me={me} act={act} go={go} /></li>;
@@ -233,12 +231,7 @@ export function CasesView({ me, tick, act, go }: { me: WebMe; tick: number; act:
         <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>A disagreement the two sides couldn’t settle: one position each, with its evidence, until a person with Write on its layer who isn’t a party rules. Open one from the element it is about.</p>
         {open.length ? <ul className="qlist">{open.map(item)}</ul> : <p className="empty">No open case files. Nothing is in dispute.</p>}
       </section>
-      <section aria-labelledby="c-rulings"><h2 className="section-title" id="c-rulings">Rulings</h2>
-        <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>Precedent in this kolab, newest first. Agents are served them, so a settled question isn’t argued again.</p>
-        {rulings.data.rulings.length ? <ul className="qlist">{rulings.data.rulings.map((r) => <li key={r.ruling} className="qitem"><RulingBox ruling={r} me={me} go={go} /></li>)}</ul>
-          : <p className="empty">No rulings yet.</p>}
-        <More more={rulingsRead.more} busy={rulingsRead.busy} what="rulings" />
-      </section>
+      <p className="why-not">The rulings given, on case files and directly, are precedent: <button type="button" className="btn quiet" onClick={() => go('rulings')}>search them in Rulings</button></p>
       {settled.length > 0 && (
         <section aria-labelledby="c-settled"><h2 className="section-title" id="c-settled">Settled case files</h2>
           <ul className="qlist">{settled.map(item)}</ul>

@@ -166,14 +166,16 @@ test('who may not: an engineer can dispute the spec but not rule on it, and a re
   expect(await screen.findByText(/only those with Write on a layer of it see them \(D49\)/)).toBeTruthy();
 });
 
-test('the cases page lists open case files, the rulings, and settled case files', async () => {
+test('the cases page lists open case files and settled case files, and sends to Rulings for precedent', async () => {
   replies['/api/cases'] = { belongs: true, cases: [caseFile(), caseFile({ case: 'c2', state: 'ruled', ruling: { ...ruling, case: 'c2' }, you: { party: false, can_argue: false, can_rule: false } })] };
   replies['/api/rulings'] = { rulings: [ruling] };
   render(<CasesView me={lee} tick={0} act={runner} go={() => undefined} />);
   expect(await screen.findByRole('heading', { name: 'Open case files' })).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Settled case files' })).toBeTruthy();
-  expect(screen.getAllByText('A reset signs the user in with a new session.')).toHaveLength(2);
-  expect(calls.map((c) => c.url)).toStrictEqual(['/api/cases?state=all', '/api/rulings']);
+  // The settled case file shows its ruling; the rulings themselves are in Rulings.
+  expect(screen.getAllByText('A reset signs the user in with a new session.')).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'search them in Rulings' })).toBeTruthy();
+  expect(calls.map((c) => c.url)).toStrictEqual(['/api/cases?state=all']);
 });
 
 test('another kolab\'s node reads in place, read only: no edits, questions, disputes or rulings from here', async () => {

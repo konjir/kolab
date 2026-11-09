@@ -57,11 +57,22 @@ test('the questions page reads more open questions with the cursor the last page
 test('the activity reads its next page on asking', async () => {
   replies['/api/activity'] = { items: [{ at, actor: 'lee', text: 'committed kj:orders@2' }], next: 'a1' } satisfies WebActivityView;
   replies['/api/activity?cursor=a1'] = { items: [{ at, actor: 'eli', text: 'asked about kj:orders@1#R1' }], next: null } satisfies WebActivityView;
-  render(<ActivityView tick={0} />);
-  expect(await screen.findByText('lee')).toBeTruthy();
+  render(<ActivityView tick={0} here="accounts" />);
+  expect(await screen.findByText('lee', { selector: '.actor' })).toBeTruthy();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'More activity' })); });
-  expect(screen.getByText('eli')).toBeTruthy();
+  expect(screen.getByText('eli', { selector: '.actor' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'More activity' })).toBeNull();
+  // Every address is a link to where it points; the filters narrow by who, by kind and by words.
+  expect(screen.getByRole('link', { name: 'kj:orders@1#R1' }).getAttribute('href')).toBe('#/node/orders@1#R1');
+  fireEvent.change(screen.getByLabelText('Who'), { target: { value: 'eli' } });
+  expect(screen.queryByText('lee', { selector: '.actor' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Who'), { target: { value: '' } });
+  fireEvent.change(screen.getByLabelText('What'), { target: { value: 'versions' } });
+  expect(screen.queryByText('eli', { selector: '.actor' })).toBeNull();
+  expect(screen.getByText('lee', { selector: '.actor' })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('What'), { target: { value: '' } });
+  fireEvent.change(screen.getByLabelText('Words or address'), { target: { value: 'R1' } });
+  expect(screen.getByRole('status').textContent).toBe('1 of 2 shown.');
 });
 
 /** A spec at version 3 whose element R1 has more questions than it shows, as does the node as a whole. */
