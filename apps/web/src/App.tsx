@@ -297,7 +297,7 @@ export function App() {
           {live.map(docButton)}
           <More more={nodesNext ? readMoreNodes : undefined} busy={readingNodes} what="documents" />
           <div className="rail-label">{kolabTitle}</div>
-          {(['work', 'questions', 'reviews', 'rulings', ...(belongs ? ['cases' as const] : []), 'lineage', 'activity', 'people', 'settings', 'connect', 'sessions'] as const).map((v) => (
+          {(['work', 'questions', 'reviews', ...(belongs ? ['rulings' as const, 'cases' as const] : []), 'lineage', 'activity', 'people', 'settings', 'connect', 'sessions'] as const).map((v) => (
             <button key={v} type="button" className="place" aria-current={r.view === v ? 'page' : undefined} onClick={() => go(v)}>
               {PLACE[v]}
               {v === 'questions' && counts?.waiting ? <span className="count question" title={`${counts.waiting} waiting on you`}>{counts.waiting}</span> : null}

@@ -426,7 +426,7 @@ function ElementRow(p: RowProps) {
           </>
         ) : (
           <p style={p.removed ? { textDecoration: 'line-through' } : undefined} {...(p.section ? { role: 'heading', 'aria-level': p.section, className: 'section-head' } : {})}>
-            {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.foreign ? p.text : withRulingLinks(p.text)}</p>
+            {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.foreign || !p.belongs ? p.text : withRulingLinks(p.text)}</p>
         )}
         {(e.work || e.work_state) && <Work work={e.work ?? {}} state={e.work_state} name={p.name} />}
         {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => (

@@ -607,6 +607,9 @@ test('case files and rulings in the page: open, take the other side, rule, prece
   expect((await bob.call<WebCasesView>('cases?mine=true')).body.cases.map((x) => x.case)).toStrictEqual([c.case]);
   expect((await bob.call('cases?state=whatever')).status).toBe(400);
   expect((await carol.call<{ rulings: WebRuling[] }>('rulings')).body.rulings).toStrictEqual([]);
+  // A ruling is read by its own name too; a name no ruling could have is refused.
+  expect((await carol.call<{ rulings: WebRuling[] }>('rulings?ref=D999')).body.rulings).toStrictEqual([]);
+  expect((await carol.call('rulings?ref=no%20such')).status).toBe(400);
   expect((await alice.call<WebActivityView>('activity')).body.items.map((i) => i.text)).toEqual(expect.arrayContaining([
     'opened a case file on kj:orders@1#R1', 'took the other side of the case file on kj:orders@1#R1', 'ruled on kj:orders@1#R1: the intent changes',
   ]));
@@ -966,9 +969,10 @@ test('the work board lists a kolab\'s work packages with their state, who holds 
   const bob = await signIn(await serve(kolab), engineer);
   const board = (await bob.call<WebWorkView>('work')).body;
   // Decisions are never work (PLN1): only the packages, in natural ID order.
-  expect(board.work.map((w) => [w.work, w.state, w.assignee, w.blocked, w.ready])).toStrictEqual([
-    ['kj:orders-pg#W1', 'in_progress', 'bob', [], false],
-    ['kj:orders-pg#W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-pg#W1', state: 'in_progress' }], false],
+  // `yours`: held by the session's person or an agent of theirs, as Kolab knows its actors.
+  expect(board.work.map((w) => [w.work, w.state, w.assignee, w.blocked, w.ready, w.yours])).toStrictEqual([
+    ['kj:orders-pg#W1', 'in_progress', 'bob', [], false, true],
+    ['kj:orders-pg#W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-pg#W1', state: 'in_progress' }], false, false],
   ]);
   expect(board.next).toBeNull();
   expect((await bob.call<WebWorkView>('work?state=todo')).body.work.map((w) => w.id)).toStrictEqual(['W2']);

@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
-import type { WebCasesView, WebMarksView, WebMe, WebOverview, WebQueriesView, WebReviewsView, WebRulingsView, WorkItemView, WebWorkView } from '@konjir/types';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import type { WebCase, WebCasesView, WebMarksView, WebMe, WebOverview, WebPaged, WebQueriesView, WebQuery, WebReviewsView, WebRulingsView, WebWorkView } from '@konjir/types';
+import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
 import { Pill } from './bits.js';
 import { RulingBox } from './Cases.js';
@@ -20,6 +21,34 @@ export function withRulingLinks(text: string): ReactNode {
   const parts = text.split(RULING_REF);
   if (parts.length === 1) return text;
   return parts.map((p, i) => (i % 2 ? <a key={i} className="ref" href={`#/rulings/${p}`}>{p}</a> : <Fragment key={i}>{p}</Fragment>));
+}
+
+/**
+ * The items of a list that `keep` keeps, read page after page until there are `want` of them or
+ * the list ends, at most `cap` pages: a section filtered in the page shows what its count counts,
+ * not just what the first page held. Re-read whenever `tick` moves.
+ */
+function useKept<T extends WebPaged, I>(path: string, tick: number, items: (p: T) => I[], keep: (i: I) => boolean, want: number, cap = 20) {
+  const [out, setOut] = useState<{ items: I[]; error?: string }>();
+  const last = useRef<{ key: string; tick: number }>(undefined);
+  useEffect(() => {
+    let live = true;
+    const push = pushed(last, path, tick);
+    (async () => {
+      const kept: I[] = [];
+      let cursor: string | null = null;
+      for (let n = 0; n < cap; n++) {
+        const p: T = await api<T>(cursor ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : path, undefined, undefined, { push });
+        kept.push(...items(p).filter(keep));
+        cursor = p.next;
+        if (!cursor || kept.length >= want) break;
+      }
+      return kept;
+    })().then((k) => { if (live) setOut({ items: k }); }, (e: Error) => { if (live) setOut({ items: [], error: e.message }); });
+    return () => { live = false; };
+    // `items` and `keep` are fixed per call site; the list is read again when its path, the tick or the count moves.
+  }, [path, tick, want]);
+  return out;
 }
 
 /** Where an address opens in the page, or undefined for text that isn't one. */
@@ -44,20 +73,22 @@ function Item({ pill, where, text, at, href }: { pill: ReactNode; where: string;
  */
 export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: WebOverview; tick: number; go(r: string): void }) {
   const reviews = usePaged<WebReviewsView>('reviews', tick);
-  const queries = usePaged<WebQueriesView>('queries?state=open', tick);
-  const marks = usePaged<WebMarksView>('marks', tick);
-  const belongs = me.access.layers.length > 0;
-  const cases = usePaged<WebCasesView>(belongs ? 'cases?state=open' : 'cases?state=open&mine=true', tick);
-  const forMe = reviews.pages?.flatMap((p) => p.for_me) ?? [];
-  const waiting = (queries.pages?.flatMap((p) => p.queries) ?? []).filter((q) => q.layer === me.layer);
-  const myMarks = marks.pages?.flatMap((p) => p.marks) ?? [];
-  const open = (cases.pages?.flatMap((p) => p.cases) ?? []).filter((c) => c.layer === me.layer);
   const c = overview.counts;
+  const belongs = me.access.layers.length > 0;
+  // Each list holds every layer's: kept to the person's own, read until it holds what the count counts.
+  const onMyLayer = (x: { layer: string }) => x.layer === me.layer;
+  const queries = useKept<WebQueriesView, WebQuery>('queries?state=open', tick, (p) => p.queries, onMyLayer, c.waiting);
+  const marks = useKept<WebMarksView, WebMarksView['marks'][number]>('marks', tick, (p) => p.marks, onMyLayer, c.stale);
+  const cases = useKept<WebCasesView, WebCase>('cases?state=open', tick, (p) => p.cases, onMyLayer, belongs ? c.cases : 0);
+  const forMe = reviews.pages?.flatMap((p) => p.for_me) ?? [];
+  const waiting = queries?.items ?? [];
+  const myMarks = marks?.items ?? [];
+  const open = cases?.items ?? [];
   const total = c.reviews + c.waiting + c.stale + c.cases;
-  const section = (id: string, title: string, count: number, empty: string, body: ReactNode, more?: () => void, busy?: boolean, error?: string) => (
+  const section = (id: string, title: string, count: number, empty: string, body: ReactNode[], more?: () => void, busy?: boolean, error?: string) => (
     <section aria-labelledby={id} className="inbox-section">
       <h2 className="section-title" id={id}>{title} <span className="count-word">{count}</span></h2>
-      {error ? <p className="empty" role="alert">{error}</p> : count === 0 ? <p className="empty">{empty}</p> : <ul className="inbox">{body}</ul>}
+      {error ? <p className="empty" role="alert">{error}</p> : body.length === 0 ? <p className="empty">{count === 0 ? empty : 'Reading…'}</p> : <ul className="inbox">{body}</ul>}
       <More more={more} busy={!!busy} what={title.toLowerCase()} />
     </section>
   );
@@ -74,32 +105,33 @@ export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: Web
         reviews.more, reviews.busy, reviews.error)}
       {section('in-questions', `Questions ${me.role} answers`, c.waiting, 'No question waits on your layer.',
         waiting.map((q) => <Item key={q.id} pill={<Pill tone="question">{q.kind}</Pill>} where={q.address} text={q.question} at={q.at} href={routeTo(q.address, me.kolab)} />),
-        queries.more, queries.busy, queries.error)}
+        undefined, false, queries?.error)}
       {section('in-marks', 'Marks on your layer', c.stale, 'Nothing on your layer is marked: everything it relies on still holds.',
         myMarks.map((m) => <Item key={m.id} pill={<Pill tone="stale">{m.reason.replace(/_/g, ' ')}</Pill>} where={addr(m.node, m.seq, m.element)} text={m.because} at={m.at} href={`node/${m.node}${m.element ? `#${m.element}` : ''}`} />),
-        marks.more, marks.busy, marks.error)}
+        undefined, false, marks?.error)}
       {belongs && section('in-cases', 'Case files on your layer', c.cases, 'No case file is open on your layer.',
         open.map((x) => <Item key={x.case} pill={<Pill tone="boundary">case file</Pill>} where={x.on} text={x.question ?? 'a case file'} at={x.opened_at ?? undefined} href="cases" />),
-        cases.more, cases.busy, cases.error)}
+        undefined, false, cases?.error)}
       <p className="why-not">The spec and each binding are in the rail. <button type="button" className="btn quiet" onClick={() => go('work')}>See the work board</button></p>
     </>
   );
 }
 
-const STATES: { state: WorkItemView['state']; label: string }[] = [
+const STATES: { state: WorkItem['state']; label: string }[] = [
   { state: 'todo', label: 'To do' }, { state: 'in_progress', label: 'In progress' }, { state: 'in_review', label: 'In review' }, { state: 'done', label: 'Done' },
 ];
 type WorkFilter = 'all' | 'ready' | 'blocked' | 'at_risk' | 'mine';
-const FILTERS: { key: WorkFilter; label: string; test(w: WorkItemView, me: WebMe): boolean }[] = [
+type WorkItem = WebWorkView['work'][number];
+const FILTERS: { key: WorkFilter; label: string; test(w: WorkItem): boolean }[] = [
   { key: 'all', label: 'All', test: () => true },
   { key: 'ready', label: 'Ready', test: (w) => w.ready },
   { key: 'blocked', label: 'Blocked', test: (w) => w.blocked.length > 0 && !w.milestone && w.state !== 'done' },
   { key: 'at_risk', label: 'At risk', test: (w) => !!w.at_risk },
-  { key: 'mine', label: 'Held by me or my agents', test: (w, me) => !!w.assignee && (w.assignee === me.actor || w.assignee.startsWith(`${me.actor}-`)) },
+  { key: 'mine', label: 'Held by me or my agents', test: (w) => w.yours },
 ];
 
 /** Why a package is blocked, in words (PLN19). */
-const blockWord = (w: WorkItemView) => w.blocked.map((b) => (b.reason === 'depends_on' ? `${b.work.split('#')[1]} isn’t done` : b.reason === 'question' ? `a question on ${b.on}` : `a case file on ${b.on}`)).join(', ');
+const blockWord = (w: WorkItem) => w.blocked.map((b) => (b.reason === 'depends_on' ? `${b.work.split('#')[1]} isn’t done` : b.reason === 'question' ? `a question on ${b.on}` : `a case file on ${b.on}`)).join(', ');
 
 /**
  * The work board (PLN12, PLN19): each binding's work packages by state, as on an agile board, with
@@ -113,7 +145,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
   if (!read.pages) return <p className="empty">Reading the work…</p>;
   const all = read.pages.flatMap((p) => p.work).filter((w) => !w.removed_in);
   const test = FILTERS.find((f) => f.key === filter)!.test;
-  const shown = all.filter((w) => test(w, me));
+  const shown = all.filter(test);
   const bindings = [...new Set(all.map((w) => w.binding))];
   const done = all.filter((w) => w.state === 'done' && !w.milestone).length;
   const real = all.filter((w) => !w.milestone).length;
@@ -123,7 +155,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
         <h1>Work</h1>
         <span className="fact"><b>{done}</b> of {real} work package{real === 1 ? '' : 's'} done</span>
         <span className="fact"><b>{all.filter((w) => w.ready).length}</b> ready</span>
-        <span className="fact"><b>{all.filter((w) => FILTERS[2].test(w, me)).length}</b> blocked</span>
+        <span className="fact"><b>{all.filter(FILTERS[2].test).length}</b> blocked</span>
         <span className="fact"><b>{all.filter((w) => w.at_risk).length}</b> at risk</span>
       </section>
       <div className="seg filters" role="radiogroup" aria-label="Show">
@@ -176,13 +208,17 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
  * words. `focus` is a ruling's name from the address (#/rulings/D104), shown and scrolled to.
  */
 export function RulingsView({ me, tick, go, focus }: { me: WebMe; tick: number; go(r: string): void; focus?: string }) {
-  const read = usePaged<WebRulingsView>('rulings?limit=200', tick);
+  // A ruling named in the address is read by its name, however old; otherwise the newest, to search.
+  const read = usePaged<WebRulingsView>(focus ? `rulings?ref=${encodeURIComponent(focus)}` : 'rulings?limit=200', tick);
   const [q, setQ] = useState(focus ?? '');
-  useEffect(() => { if (focus) setQ(focus); }, [focus]);
+  useEffect(() => { setQ(focus ?? ''); }, [focus]);
+  const belongs = me.access.layers.length > 0;
   useEffect(() => {
     if (focus && read.pages) // The route takes only a name of letters, digits, '.', '_' and '-', so it is safe in a selector.
       document.querySelector(`[data-ref="${focus}"]`)?.scrollIntoView?.({ block: 'start' });
   }, [focus, read.pages]);
+  // Rulings belong to the kolab's work (D49): a reader who holds only Read sees none, and is told why.
+  if (!belongs) return <p className="empty">Rulings belong to this kolab’s work: only those with Write on a layer of it see them (D49). You hold {me.access.level ?? 'no access'} here.</p>;
   if (read.error) return <p className="empty" role="alert">{read.error}</p>;
   if (!read.pages) return <p className="empty">Reading the rulings…</p>;
   const all = read.pages.flatMap((p) => p.rulings);
@@ -195,7 +231,7 @@ export function RulingsView({ me, tick, go, focus }: { me: WebMe; tick: number; 
         <h1>Rulings</h1>
         <span className="fact">Precedent in {me.kolab}, newest first: agents are served it, so a settled question isn’t argued again.</span>
       </section>
-      <form className="search" role="search" onSubmit={(e) => { e.preventDefault(); if (/^d\d+$/i.test(q.trim())) go(`rulings/${q.trim().toUpperCase()}`); }}>
+      <form className="search" role="search" onSubmit={(e) => { e.preventDefault(); if (/^d\d+$/i.test(q.trim())) go(`rulings/${q.trim().toUpperCase()}`); else if (focus) go('rulings'); }}>
         <label htmlFor="r-search">Search the rulings</label>
         <input id="r-search" type="search" value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off" aria-describedby="r-count" />
         <span id="r-count" className="hint" role="status">{words ? `${shown.length} of ${all.length}${read.more ? '+' : ''} match` : `${all.length}${read.more ? '+' : ''} rulings`}. A name such as D104 finds that ruling.</span>
