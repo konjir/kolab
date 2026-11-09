@@ -2,7 +2,7 @@
 // rulings as precedent to search, and links from element text to the rulings it cites.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import type { WebMe, WebOverview, WebRuling, WorkItemView } from '@konjir/types';
+import type { WebMe, WebOverview, WebRuling, WebWorkView } from '@konjir/types';
 import { InboxView, RulingsView, WorkView, withRulingLinks } from '../src/components/Places.js';
 
 const lee: WebMe = { actor: 'lee', name: 'Lee', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'accounts', access: { level: 'admin', layers: ['functional', 'technical'] } };
@@ -32,10 +32,14 @@ test('home is the inbox: what waits on the person\'s layer, each kind with its c
     { id: 'q1', kind: 'question', state: 'open', address: 'kj:password-reset@3#PR3', node: 'password-reset', seq: 3, element: 'PR3', quote: null, layer: 'functional', question: 'Timing too?', raised_by: 'eng-agent', at, answer: null, answered_by: null, from: null, mark: null, mark_reason: null },
     { id: 'q2', kind: 'question', state: 'open', address: 'kj:password-reset-pg@2#B9', node: 'password-reset-pg', seq: 2, element: 'B9', quote: null, layer: 'technical', question: 'Which queue?', raised_by: 'pm-agent', at, answer: null, answered_by: null, from: null, mark: null, mark_reason: null },
   ], next: null };
-  replies['/api/marks'] = { marks: [], next: null };
+  // A mark on the technical layer isn't Lee's to settle as product: only hers are listed.
+  replies['/api/marks'] = { marks: [
+    { id: 'm1', reason: 'changed', node: 'password-reset', seq: 3, element: 'PR2', layer: 'functional', because: 'kj:other#R1 changed', next: '', at, target: null, override: null, question: null },
+    { id: 'm2', reason: 'changed', node: 'password-reset-pg', seq: 2, element: 'B9', layer: 'technical', because: 'kj:password-reset#PR8 changed', next: '', at, target: null, override: null, question: null },
+  ], next: null };
   replies['/api/cases?state=open'] = { cases: [], belongs: true, next: null };
-  render(<InboxView me={lee} overview={overview({ reviews: 1, waiting: 1 })} tick={0} go={() => undefined} />);
-  expect(await screen.findByRole('heading', { level: 1, name: '2 things wait on you' })).toBeTruthy();
+  render(<InboxView me={lee} overview={overview({ reviews: 1, waiting: 1, stale: 1 })} tick={0} go={() => undefined} />);
+  expect(await screen.findByRole('heading', { level: 1, name: '3 things wait on you' })).toBeTruthy();
   const reviews = screen.getByRole('region', { name: /Reviews for you/ });
   expect((await within(reviews).findByRole('link', { name: 'kj:password-reset@4' })).getAttribute('href')).toBe('#/node/password-reset@4');
   // Only the questions the person's own layer answers.
@@ -43,17 +47,36 @@ test('home is the inbox: what waits on the person\'s layer, each kind with its c
   expect(await within(questions).findByText('Timing too?')).toBeTruthy();
   expect(within(questions).queryByText('Which queue?')).toBeNull();
   expect(within(questions).getByRole('link', { name: 'kj:password-reset@3#PR3' }).getAttribute('href')).toBe('#/node/password-reset@3#PR3');
-  expect(screen.getByText(/Nothing on your layer is marked/)).toBeTruthy();
+  const marks = screen.getByRole('region', { name: /Marks on your layer/ });
+  expect(await within(marks).findByText('kj:other#R1 changed')).toBeTruthy();
+  expect(within(marks).queryByText('kj:password-reset#PR8 changed')).toBeNull();
 });
 
-const work = (id: string, over: Partial<WorkItemView> = {}): WorkItemView => ({
+test('an inbox section reads on, page after page, until it holds what its count counts', async () => {
+  const q = (id: string, layer: 'functional' | 'technical') => ({ id, kind: 'question', state: 'open', address: `kj:n@1#${id}`, node: 'n', seq: 1, element: id, quote: null, layer,
+    question: `About ${id}?`, raised_by: 'x', at, answer: null, answered_by: null, from: null, mark: null, mark_reason: null });
+  replies['/api/reviews'] = { for_me: [], mine: [], next: null };
+  replies['/api/marks'] = { marks: [], next: null };
+  replies['/api/cases?state=open'] = { cases: [], belongs: true, next: null };
+  // The first page holds only the other layer's questions; Lee's is on the second.
+  replies['/api/queries?state=open'] = { queries: [q('T1', 'technical'), q('T2', 'technical')], next: 'p2' };
+  replies['/api/queries?state=open&cursor=p2'] = { queries: [q('F1', 'functional')], next: null };
+  render(<InboxView me={lee} overview={overview({ waiting: 1 })} tick={0} go={() => undefined} />);
+  expect(await screen.findByText('About F1?')).toBeTruthy();
+  expect(screen.queryByText('About T1?')).toBeNull();
+  expect(calls).toContain('/api/queries?state=open&cursor=p2');
+});
+
+const work = (id: string, over: Partial<WebWorkView['work'][number]> = {}): WebWorkView['work'][number] => ({
   work: `kj:orders-pg#${id}`, binding: 'orders-pg', id, text: `Build ${id}.\n\nMore.`, state: 'todo', assignee: null, lease_until: null,
-  milestone: false, size: 'S', blocked: [], ready: false, ...over,
+  milestone: false, size: 'S', blocked: [], ready: false, yours: false, ...over,
 });
 
 test('the work board shows each binding\'s packages by state, which are blocked and why, and filters to ready, blocked, at risk or mine', async () => {
   replies['/api/work'] = { work: [
-    work('W1', { state: 'in_progress', assignee: 'lee-engineer' }),
+    work('W1', { state: 'in_progress', assignee: 'lee-engineer', yours: true }),
+    // A person whose name only looks like an agent of Lee's: not Lee's (Kolab says so).
+    work('W5', { state: 'in_progress', assignee: 'lee-x' }),
     work('W2', { blocked: [{ reason: 'depends_on', work: 'kj:orders-pg#W1', state: 'in_progress' }] }),
     work('W3', { ready: true }),
     work('W4', { state: 'done', assignee: 'eng-agent', at_risk: true }),
@@ -61,7 +84,7 @@ test('the work board shows each binding\'s packages by state, which are blocked 
   render(<WorkView me={lee} tick={0} go={() => undefined} />);
   expect(await screen.findByRole('heading', { level: 1, name: 'Work' })).toBeTruthy();
   expect(calls[0]).toBe('/api/work?limit=200');
-  expect([...document.querySelectorAll('.summary .fact')].map((f) => f.textContent)).toStrictEqual(['1 of 4 work packages done', '1 ready', '1 blocked', '1 at risk']);
+  expect([...document.querySelectorAll('.summary .fact')].map((f) => f.textContent)).toStrictEqual(['1 of 5 work packages done', '1 ready', '1 blocked', '1 at risk']);
   const todo = screen.getByRole('region', { name: 'To do, 2' });
   expect(within(todo).getByText('Blocked: W1 isn’t done')).toBeTruthy();
   expect(within(screen.getByRole('region', { name: 'Done, 1' })).getByText('at risk')).toBeTruthy();
@@ -73,6 +96,7 @@ test('the work board shows each binding\'s packages by state, which are blocked 
   fireEvent.click(screen.getByRole('radio', { name: 'Held by me or my agents' }));
   expect(screen.getByText('Build W1.')).toBeTruthy();
   expect(screen.queryByText('Build W4.')).toBeNull();
+  expect(screen.queryByText('Build W5.')).toBeNull();
 });
 
 const ruling = (ref: string, text: string): WebRuling => ({
@@ -83,16 +107,32 @@ const ruling = (ref: string, text: string): WebRuling => ({
 test('the rulings can be searched by their name and their words; an address naming one shows it alone', async () => {
   replies['/api/rulings'] = { rulings: [ruling('D104', 'There is no plan: work lives in the binding.'), ruling('D12', 'Konjir is one hosted service.')], next: null };
   const page = render(<RulingsView me={lee} tick={0} go={() => undefined} />);
+  expect(calls[0]).toBe('/api/rulings?limit=200');
   expect(await screen.findByText('There is no plan: work lives in the binding.')).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Search the rulings'), { target: { value: 'hosted' } });
   expect(screen.queryByText('There is no plan: work lives in the binding.')).toBeNull();
   expect(screen.getByText('Konjir is one hosted service.')).toBeTruthy();
+  // A ruling named in the address is read by its name, however far back it is.
+  replies['/api/rulings?ref=D104'] = { rulings: [ruling('D104', 'There is no plan: work lives in the binding.')], next: null };
   page.rerender(<RulingsView me={lee} tick={0} go={() => undefined} focus="D104" />);
   expect(await screen.findByText('There is no plan: work lives in the binding.')).toBeTruthy();
+  expect(calls).toContain('/api/rulings?ref=D104');
   expect(screen.queryByText('Konjir is one hosted service.')).toBeNull();
+  expect((screen.getByLabelText('Search the rulings') as HTMLInputElement).value).toBe('D104');
+  // Leaving the ruling's address for Rulings clears the search.
+  page.rerender(<RulingsView me={lee} tick={0} go={() => undefined} />);
+  expect(await screen.findByText('Konjir is one hosted service.')).toBeTruthy();
+  expect((screen.getByLabelText('Search the rulings') as HTMLInputElement).value).toBe('');
+  page.rerender(<RulingsView me={lee} tick={0} go={() => undefined} focus="D104" />);
+  await screen.findByText('There is no plan: work lives in the binding.');
   // D1 isn't D104: a name is matched whole.
   fireEvent.change(screen.getByLabelText('Search the rulings'), { target: { value: 'D1' } });
   expect(screen.getByText(/No ruling is called “D1”/)).toBeTruthy();
+});
+
+test('a reader who holds only Read is told the rulings belong to the kolab\'s work, not that there are none (D49)', () => {
+  render(<RulingsView me={{ ...lee, access: { level: 'read', layers: [] } }} tick={0} go={() => undefined} />);
+  expect(screen.getByText(/Rulings belong to this kolab’s work/)).toBeTruthy();
 });
 
 test('an element\'s text links each ruling it cites', () => {

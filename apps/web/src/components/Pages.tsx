@@ -284,11 +284,13 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
 
 /** The kind of an activity line, from its verb: what the filter offers. */
 const ACTIVITY_KINDS: { key: string; label: string; test: RegExp }[] = [
-  { key: 'versions', label: 'Versions', test: /^(made|committed|submitted|.* was rejected)/ },
-  { key: 'reviews', label: 'Reviews', test: /^(approved|requested changes)/ },
-  { key: 'questions', label: 'Questions and notes', test: /^(asked|left a note|answered)/ },
-  { key: 'marks', label: 'Marks', test: /^(marked|cleared|settled)/ },
-  { key: 'cases', label: 'Case files', test: /(case file|ruled)/ },
+  // Each anchored on the verb the server's activity() begins its text with.
+  { key: 'nodes', label: 'Nodes made', test: /^made kj:/ },
+  { key: 'versions', label: 'Versions', test: /^(committed kj:|submitted kj:|kj:\S+ was rejected)/ },
+  { key: 'reviews', label: 'Reviews', test: /^(approved kj:|requested changes on kj:)/ },
+  { key: 'questions', label: 'Questions and notes', test: /^(asked about kj:|left a note on kj:)/ },
+  { key: 'marks', label: 'Marks', test: /^marked kj:/ },
+  { key: 'cases', label: 'Case files and rulings', test: /^(opened a case file on kj:|took the other side of the case file on kj:|ruled on kj:)/ },
 ];
 
 /**

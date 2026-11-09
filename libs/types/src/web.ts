@@ -243,7 +243,10 @@ export interface WebQueriesView extends WebPaged { queries: WebQuery[] }
 export interface WebMarksView extends WebPaged { marks: WebMark[] }
 
 /** The work board (PLN12, PLN19): the kolab's work packages, binding by binding in natural ID order, each with its state, who holds it and why it is blocked, as konjir_list_work gives them. */
-export interface WebWorkView extends WebPaged { work: WorkItemView[] }
+export interface WebWorkView extends WebPaged {
+  /** Each with `yours`: its assignee is the session's person or an agent of theirs, as Kolab knows its actors. */
+  work: (WorkItemView & { yours: boolean })[];
+}
 
 /** A version in review that waits for the session's verdict. */
 /** A version in review that waits for the session's verdict; with `product_review`, a binding's product review (VER13), from a product session. */

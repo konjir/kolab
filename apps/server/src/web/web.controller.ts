@@ -430,8 +430,8 @@ export class WebController {
   ruleCase(@WebSession() s: string, @Param('id') id: string, @Body() body: WebRuleCase) { return run(() => this.web.ruleCase(s, id, body)); }
 
   @Get('rulings')
-  rulings(@WebSession() s: string, @Query('node') node?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
-    return run(() => this.web.rulings(s, one('node', node), page(c, l)));
+  rulings(@WebSession() s: string, @Query('node') node?: unknown, @Query('ref') ref?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.rulings(s, one('node', node), page(c, l), one('ref', ref)));
   }
 
   @Post('rulings')

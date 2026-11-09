@@ -347,10 +347,11 @@ export class WebService {
   }
 
   /** konjir_list_rulings: the kolab's rulings, newest first, on one node if named: precedent (CASE4). */
-  async rulings(s: string, node?: string, page: PageOpts = {}): Promise<WebRulingsView> {
+  async rulings(s: string, node?: string, page: PageOpts = {}, ref?: string): Promise<WebRulingsView> {
     if (node !== undefined && !isNodeName(node)) throw bad('name a node of this kolab');
+    if (ref !== undefined && !/^[A-Za-z][\w.-]{0,39}$/.test(ref)) throw bad('a ruling\'s name is a letter, then up to 39 letters, digits, ".", "_" or "-"');
     const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
-    const { items, next } = await this.kolab.rulingsPage(s, { node: id }, page);
+    const { items, next } = await this.kolab.rulingsPage(s, { node: id, ref }, page);
     return { rulings: items.map(ruling), next };
   }
 
@@ -392,8 +393,11 @@ export class WebService {
   /** konjir_list_work: the board, on one binding if named, in one state if asked (PLN12). */
   async work(s: string, filter: { binding?: string; state?: WorkState }, page: PageOpts = {}): Promise<WebWorkView> {
     if (filter.binding !== undefined && !isNodeName(filter.binding)) throw bad('name a binding of this kolab');
+    const me = await this.me(s);
     const { items, next } = await this.kolab.listWork(s, filter, page);
-    return { work: items, next };
+    // Whose each one is, from the actors themselves: a person's own agents, never a name that only looks like one.
+    const yours = await ownSide(this.kolab, me.actor, [...new Set(items.map((w) => w.assignee).filter((a): a is string => !!a))]);
+    return { work: items.map((w) => ({ ...w, yours: !!w.assignee && yours.has(w.assignee) })), next };
   }
 
   async marks(s: string, page: PageOpts = {}): Promise<WebMarksView> {
