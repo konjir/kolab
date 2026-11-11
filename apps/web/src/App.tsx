@@ -23,7 +23,7 @@ export type Route =
   | { view: 'read'; kolab: string }
   /** `focus` an element, as `<node>#<element>`, to show what it relies on and what relies on it: #/lineage/orders#R1. */
   | { view: 'lineage'; focus?: string }
-  | { view: 'questions' | 'cases' | 'reviews' | 'activity' | 'kolabs' | 'people' | 'connect' | 'sessions' | 'home' | 'start' | 'inbox' | 'work' | 'settings' }
+  | { view: 'questions' | 'cases' | 'reviews' | 'activity' | 'kolabs' | 'people' | 'connect' | 'sessions' | 'home' | 'start' | 'inbox' | 'work' | 'settings' | 'new' }
   /** The rulings, as precedent to search; `ref` a ruling's name to show, #/rulings/D104. */
   | { view: 'rulings'; ref?: string }
   /** An address the page has no place for: said so, never another page shown in its place. */
@@ -42,7 +42,7 @@ export function parseRoute(hash: string): Route {
   if (kolab) return { view: 'read', kolab: kolab[1] };
   const lineage = /^lineage\/([^@#/]+)(?:#(.+))?$/.exec(h);
   if (lineage) return { view: 'lineage', focus: `${lineage[1]}#${lineage[2] ?? ''}` };
-  if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs', 'people', 'connect', 'sessions', 'inbox', 'work', 'settings'].includes(h)) return { view: h as 'questions' };
+  if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs', 'people', 'connect', 'sessions', 'inbox', 'work', 'settings', 'new'].includes(h)) return { view: h as 'questions' };
   const rulings = /^rulings(?:\/([A-Za-z][\w.-]{0,39}))?$/.exec(h);
   if (rulings) return rulings[1] ? { view: 'rulings', ref: rulings[1] } : { view: 'rulings' };
   // An invite's link is taken out of the address as the page reads it (takeInvite): the page under it is home.
@@ -51,7 +51,7 @@ export function parseRoute(hash: string): Route {
 
 /** Each place's name, as the rail, the page's heading and its title say it. */
 const PLACE: Record<string, string> = {
-  inbox: 'Inbox', work: 'Work', rulings: 'Rulings', settings: 'Settings',
+  inbox: 'Inbox', work: 'Work', rulings: 'Rulings', settings: 'Settings', new: 'New document',
   questions: 'Questions', cases: 'Case files', reviews: 'Reviews', lineage: 'Lineage', activity: 'Activity', kolabs: 'All kolabs',
   people: 'People', connect: 'Connect a harness', sessions: 'Your sessions', start: 'Getting started', missing: 'Not found',
 };
@@ -132,7 +132,7 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
-    whoAmI({ alive: () => alive, onWait: () => { if (alive) setAway(true); } }).then(
+    whoAmI({ first: true, alive: () => alive, onWait: () => { if (alive) setAway(true); } }).then(
       (now) => { if (!alive) return; setAway(false); setMe(now); },
       (e: unknown) => { if (!alive) return; setAway(false); signedOut((e as Error).message); },
     );
@@ -300,6 +300,7 @@ export function App() {
           <div className="rail-label">Documents</div>
           {live.map(docButton)}
           <More more={nodesNext ? readMoreNodes : undefined} busy={readingNodes} what="documents" />
+          {me.access.layers.includes(me.layer) && <button type="button" className="place add" aria-current={r.view === 'new' ? 'page' : undefined} onClick={() => go('new')}>New document</button>}
           <div className="rail-label">{kolabTitle}</div>
           {(['work', 'questions', 'reviews', ...(belongs ? ['rulings' as const, 'cases' as const] : []), 'lineage', 'activity', 'people', 'settings', 'connect', 'sessions'] as const).map((v) => (
             <button key={v} type="button" className="place" aria-current={r.view === v ? 'page' : undefined} onClick={() => go(v)}>
@@ -355,7 +356,7 @@ export function App() {
           {r.view === 'people' && overview && <PeopleView me={me} overview={overview} tick={tick} act={act} />}
           {r.view === 'connect' && <ConnectPage me={me} />}
           {r.view === 'sessions' && <SessionsView tick={tick} act={act} />}
-          {r.view === 'start' && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
+          {(r.view === 'start' || r.view === 'new') && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
           {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onRead={(k) => go(`read/${k}`)}
             onCreateKolab={(name, title) => act.run(async () => { moved(await createKolab(name, title), `Created ${name}. Its spec is empty: start it.`); }, '')} />}
         </main>

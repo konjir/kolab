@@ -48,6 +48,11 @@ export interface WebKolab {
   id: string; title: string; owner: string; visibility: Visibility; current: boolean;
   /** The signed-in person's access there, as kj_access computes it. */
   access: Access;
+  /**
+   * What waits for the person in a kolab other than the session's, on the layers they write there:
+   * absent for the session's own, whose counts are the overview's, and where they write no layer.
+   */
+  waiting?: { reviews: number; questions: number; marks: number; cases: number };
 }
 
 export interface WebNodeSummary {

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   KINDS, LAYER_OF_KIND, RETIRED_KINDS,
-  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
+  type Kind, type WebActivityView, type WebForeignKolab, type WebKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
@@ -504,9 +504,17 @@ export function kolabStatus(c: WebOverview['counts']): string {
   return parts.length ? parts.join(' · ') : 'Nothing waits here.';
 }
 
+/** What waits for the person in another kolab they belong to, as its card says it. */
+export function waitingStatus(w: NonNullable<WebKolab['waiting']>): string {
+  const n = (k: number, one: string, many: string) => (k ? `${k} ${k === 1 ? one : many}` : '');
+  const parts = [n(w.reviews, 'review for you', 'reviews for you'), n(w.questions, 'question for your layers', 'questions for your layers'),
+    n(w.marks, 'mark', 'marks'), n(w.cases, 'case file', 'case files')].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Nothing waits for you there.';
+}
+
 /** All kolabs the signed-in actor can reach. A session works in one; the others need a session of their own. */
 export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateKolab, start }: {
-  /** An empty kolab's first page: only the form for its first document. */
+  /** Only the form for a new document: an empty kolab's first page, and the rail's New document. */
   start?: boolean;
   overview: WebOverview; act: Act; onCreated(name: string): void; onOpen(kolab: string): void; onCreateKolab(name: string, title: string): Promise<boolean>;
   /** Reads another kolab's committed work in place, without leaving this session's kolab (D49). */
@@ -540,7 +548,7 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
           <article key={k.id} className={`kcard${k.current ? ' current' : ''}`} aria-labelledby={`k-${k.id}`}>
             <div className="khead"><h3 id={`k-${k.id}`}>{k.title || k.id}</h3><span className="slug">{k.id}</span>{k.current && <span className="kind">Open now</span>}</div>
             <p>{k.visibility} · owned by {k.owner}</p>
-            {k.current && <p className="kstatus">{kolabStatus(overview.counts)}</p>}
+            {k.current ? <p className="kstatus">{kolabStatus(overview.counts)}</p> : k.waiting && <p className="kstatus">{waitingStatus(k.waiting)}</p>}
             <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : `You hold ${k.access.level ?? 'no access'} here.`}</span>
               {k.current ? null : <span className="edit-row" style={{ marginTop: 0 }}>
                 {onRead && <button type="button" className="btn" onClick={() => onRead(k.id)} title="Its committed work, read only, without leaving this kolab">Read here</button>}
@@ -562,7 +570,7 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
         </form>
       </section>
       </>}
-      {overview.me.access.layers.includes(overview.me.layer) && (
+      {start && overview.me.access.layers.includes(overview.me.layer) && (
         <section className="newk" aria-labelledby="n-new">
           <h2 className="section-title" id="n-new">New document in {overview.kolab.id}</h2>
           <p className="why-not">Your role writes the {overview.me.layer} layer. Its name is its address: <span className="addr">kj:{name || 'name'}</span>.</p>

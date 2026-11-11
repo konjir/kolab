@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, HttpExcepti
 import {
   AccessError, ActorError, ChecksError, GateError, Kolab, LimitError, RoleError, TenancyError, activity, cursorFor, keyOf, kolabNodes,
   kolabNodesPage, liveLinks, markDetails, markDetailsPage, maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetailsPage,
-  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, agentVerdictsPage, waitingCounts, workReviewDetails,
+  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, agentVerdictsPage, waitingElsewhere, waitingCounts, workReviewDetails,
   type LinkRow, type MarkDetailRow, type PageOpts, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
 import { formatAddress, isElementId, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
@@ -50,7 +50,11 @@ export class WebService {
     const reach = [...new Set([...(await k.reachable(me.actor)), me.kolab])];
     const kolabs: WebKolab[] = [];
     for (const x of await k.listKolabs({ ids: reach })) {
-      kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current: x.id === me.kolab, access: await k.access(me.actor, x.id) });
+      const access = await k.access(me.actor, x.id);
+      const current = x.id === me.kolab;
+      // Another kolab's card says what waits there only for someone who belongs to its work (D49).
+      const waiting = !current && access.layers.length ? await waitingElsewhere(k, me.actor, x.id, access.layers) : undefined;
+      kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current, access, ...(waiting ? { waiting } : {}) });
     }
     // Counted in the database, never by reading every question and mark (W2.21).
     const [waiting, cases, nodes] = await Promise.all([waitingCounts(k, s, me.layer, me.actor), openCaseCount(k, s, me.layer), this.nodes(s, {})]);

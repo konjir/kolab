@@ -278,6 +278,30 @@ export async function openCaseCount(kolab: Kolab, session: string, layer: Layer)
 }
 
 /**
+ * What waits for `person` in another kolab, where they write `layers`: reviews asked of them that
+ * they can give now (D65), and the open questions, marks and case files on those layers. Read as
+ * Kolab, since a session reads nothing of another kolab's work (D49): only counts, and only what
+ * the person would see in a session there, so nothing is said to someone who doesn't belong.
+ */
+export async function waitingElsewhere(kolab: Kolab, person: string, inKolab: string, layers: Layer[]): Promise<{ reviews: number; questions: number; marks: number; cases: number }> {
+  if (!layers.length) return { reviews: 0, questions: 0, marks: 0, cases: 0 };
+  const c = (await kolab.db.query<{ questions: number; marks: number; cases: number }>(
+    `select (select count(*)::int from query q join version v on v.id = q.version_id
+              where q.kolab_id = $1 and q.state = 'open' and v.layer = any($2::text[])) as questions,
+            (select count(*)::int from invalidation i join version v on v.id = i.version_id
+              where i.kolab_id = $1 and i.state = 'open' and v.layer = any($2::text[])) as marks,
+            (select count(*)::int from case_file c join version v on v.id = c.version_id
+              where c.kolab_id = $1 and c.state = 'open' and v.layer = any($2::text[])) as cases`, [inKolab, layers])).rows[0];
+  const requests = (await kolab.db.query<{ reviewer: string; layer: Layer }>(
+    `select r.reviewer_id as reviewer, ${REQUEST_LAYER} as layer from review_request r join version v on v.id = r.version_id
+      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and ${REQUEST_LAYER} = any($3::text[])
+     union all
+     select r.reviewer_id, 'technical' from review_request r join work_package w on w.binding_node_id = r.binding_node_id and w.element_id = r.element_id
+      where r.state = 'open' and w.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and 'technical' = any($3::text[])`, [inKolab, person, layers])).rows;
+  return { ...c, reviews: (await kolab.shownRequests(inKolab, requests)).length };
+}
+
+/**
  * Which of `actors` answer for `person` (D51): the person, and their agents. Kolab's own lookup,
  * since kj_agent reads no actors; it says only which ids are the person's, of those it is given.
  */

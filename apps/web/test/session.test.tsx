@@ -45,6 +45,8 @@ const realWait = clock.wait;
 beforeEach(() => {
   replies = {};
   calls = [];
+  // A browser that carries a session cookie, unless a test says otherwise.
+  reply('/api/session/present', ok({ present: true }));
   FakeEventSource.all = [];
   clock.wait = async () => undefined;
   (globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
@@ -136,6 +138,15 @@ test('a fresh load with no session, while Kolab is still coming up, waits for th
   render(<App />);
   expect(await screen.findByRole('link', { name: 'Sign in with GitHub' })).toBeTruthy();
   expect(screen.queryByLabelText('Session token')).toBeNull();
+});
+
+test('a first load with no session cookie at all signs out without asking /api/me, so nothing answers 401 (UX-28)', async () => {
+  reply('/api/session/methods', ok(GITHUB));
+  reply('/api/session/present', ok({ present: false }));
+  reply('/api/me', UNAUTHORIZED);
+  render(<App />);
+  expect(await screen.findByRole('link', { name: 'Sign in with GitHub' })).toBeTruthy();
+  expect(meCalls()).toBe(0);
 });
 
 test('the token form shows only when Kolab takes hand-issued tokens and offers no identity provider', async () => {

@@ -122,6 +122,37 @@ test('behind the TLS proxy the cookie is __Host- prefixed: Secure, Path=/, no Do
   expect(res.cookie).toMatch(/^__Host-konjir_session=.+; Path=\/; Secure; HttpOnly; SameSite=Strict$/);
 });
 
+test("another kolab's card says what waits there for someone who writes a layer of it, and nothing to a reader (D49)", async () => {
+  const { kolab, product } = await setup();
+  await kolab.addActor('erin');
+  await kolab.addActor('fay');
+  await kolab.createKolab('other', { owner: 'erin', title: 'Other' });
+  await kolab.createKolab('third', { owner: 'fay', title: 'Third' });
+  for (const [k, who] of [['other', 'erin'], ['third', 'fay']]) {
+    const erin = await kolab.openSession(who, 'product', { kolab: k });
+    await kolab.createNode(erin, 'spec', 'Secret', `secret-${k}`);
+    await kolab.commit(erin, `secret-${k}`, { elements: els({ S1: 'Only those who write know.' }) });
+    await kolab.raiseQuery(erin, `kj:secret-${k}#S1`, 'Who reads it?');
+  }
+  // Granted once each spec is committed, so it isn't alice's to review.
+  await kolab.grant('other', 'alice', 'write', { layers: ['functional'] });
+  await kolab.grant('third', 'alice', 'read');
+  const alice = await signIn(await serve(kolab), product);
+  const kolabs = (await alice.call<WebOverview>('overview')).body.kolabs;
+  expect(kolabs.map((k) => [k.id, k.waiting ?? null])).toStrictEqual([
+    ['other', { reviews: 0, questions: 1, marks: 0, cases: 0 }], ['test', null], ['third', null]]);
+});
+
+test('whether a request carries a session is said without a 401, and without checking it', async () => {
+  const { kolab, product } = await setup();
+  const base = await serve(kolab);
+  const present = async (cookie?: string) => (await fetch(`${base}/api/session/present`, { headers: { origin: base, ...(cookie ? { cookie } : {}) } })).json();
+  expect(await present()).toStrictEqual({ present: false });
+  const alice = await signIn(base, product);
+  expect(await present(alice.jar)).toStrictEqual({ present: true });
+  expect(await present('konjir_session=nonsense')).toStrictEqual({ present: true });
+});
+
 test('switching kolab or role ends the session and opens another, and a person makes a kolab of their own', async () => {
   const { kolab, product } = await setup();
   await kolab.createKolab('second', { owner: 'test-org' });
