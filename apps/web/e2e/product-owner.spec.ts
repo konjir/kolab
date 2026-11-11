@@ -98,6 +98,7 @@ test('a product owner does what the prototype simulates, against the real server
 
   // Lineage and activity.
   await lee.getByRole('button', { name: 'Lineage' }).click();
+  await lee.getByText(/^The whole graph/).click();
   await expect(lee.locator('svg.wires path').first()).toBeAttached();
   await shot(lee, '4-lineage');
   await lee.getByRole('button', { name: 'Activity' }).click();

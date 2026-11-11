@@ -21,7 +21,9 @@ import type { Act } from './components/Marks.js';
 export type Route =
   | { view: 'node'; name: string; version?: number; focus?: string; kolab?: string }
   | { view: 'read'; kolab: string }
-  | { view: 'questions' | 'cases' | 'reviews' | 'lineage' | 'activity' | 'kolabs' | 'people' | 'connect' | 'sessions' | 'home' | 'start' | 'inbox' | 'work' | 'settings' }
+  /** `focus` an element, as `<node>#<element>`, to show what it relies on and what relies on it: #/lineage/orders#R1. */
+  | { view: 'lineage'; focus?: string }
+  | { view: 'questions' | 'cases' | 'reviews' | 'activity' | 'kolabs' | 'people' | 'connect' | 'sessions' | 'home' | 'start' | 'inbox' | 'work' | 'settings' }
   /** The rulings, as precedent to search; `ref` a ruling's name to show, #/rulings/D104. */
   | { view: 'rulings'; ref?: string }
   /** An address the page has no place for: said so, never another page shown in its place. */
@@ -38,6 +40,8 @@ export function parseRoute(hash: string): Route {
   }
   const kolab = /^read\/([a-z0-9][a-z0-9-]*)$/.exec(h);
   if (kolab) return { view: 'read', kolab: kolab[1] };
+  const lineage = /^lineage\/([^@#/]+)(?:#(.+))?$/.exec(h);
+  if (lineage) return { view: 'lineage', focus: `${lineage[1]}#${lineage[2] ?? ''}` };
   if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs', 'people', 'connect', 'sessions', 'inbox', 'work', 'settings'].includes(h)) return { view: h as 'questions' };
   const rulings = /^rulings(?:\/([A-Za-z][\w.-]{0,39}))?$/.exec(h);
   if (rulings) return rulings[1] ? { view: 'rulings', ref: rulings[1] } : { view: 'rulings' };
@@ -335,7 +339,7 @@ export function App() {
           {r.view === 'questions' && <QuestionsView me={me} tick={tick} act={act} go={go} />}
           {r.view === 'cases' && <CasesView me={me} tick={tick} act={act} go={go} />}
           {r.view === 'reviews' && <ReviewsView tick={tick} act={act} go={go} />}
-          {r.view === 'lineage' && <LineageView tick={tick} go={go} />}
+          {r.view === 'lineage' && <LineageView tick={tick} go={go} focus={r.focus} />}
           {r.view === 'activity' && <ActivityView tick={tick} here={me.kolab} />}
           {r.view === 'start' && <GettingStarted me={me} go={go} />}
           {r.view === 'inbox' && overview && <InboxView me={me} overview={overview} tick={tick} go={go} />}

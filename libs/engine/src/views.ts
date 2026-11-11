@@ -511,6 +511,34 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
   return { items: out, next };
 }
 
+export interface AgentVerdictRow {
+  node: string; seq: number; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product?: true;
+}
+
+/**
+ * The verdicts `person`'s agents gave on versions in the session's kolab, newest first: what was
+ * reviewed on the person's behalf, which their own review list never shows.
+ */
+export async function agentVerdictsPage(kolab: Kolab, session: string, person: string, page: PageOpts = {}): Promise<RowsPage<AgentVerdictRow>> {
+  const here = await kolab.sessionKolab(session);
+  const size = pageSize(page.limit);
+  const list = scoped('web:agent-verdicts', { here, person });
+  const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
+  const agents = (await kolab.db.query<{ id: string }>(`select id from actor where kind = 'agent' and owner_id = $1`, [person])).rows.map((r) => r.id);
+  if (!agents.length) return { items: [], next: null };
+  const read = await kolab.readAs(session, async (q) => (await q.query<{ id: string; node: string; seq: number; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: Date | string; at_key: string; product: boolean }>(
+    `select r.id, n.name as node, v.seq, r.reviewer_id as reviewer, r.state, r.note, r.decided_at as at, r.decided_at::text as at_key, r.product
+       from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
+      where r.kolab_id = $1 and r.reviewer_id = any($2::text[]) and r.decided_at is not null and r.state in ('approved', 'changes_requested')
+        and ($4::text is null or (r.decided_at, r.id) < ($4::timestamptz, $5::text))
+      order by r.decided_at desc, r.id desc limit $3`, [here, agents, size + 1, after?.[0] ?? null, after?.[1] ?? null])).rows);
+  const { rows, next } = pageOf(read, size, list, (r) => [r.at_key, r.id]);
+  return {
+    items: rows.map(({ id: _, at_key: __, product, at, ...r }) => ({ ...r, at: iso(at), ...(product ? { product: true as const } : {}) })),
+    next,
+  };
+}
+
 export interface QueryDetailRow {
   id: string; kind: QueryKind; state: QueryState; node: string; seq: number; layer: Layer;
   element: string | null; selector: QuoteSelector | null; question: string; raised_by: string | null; at: string;
