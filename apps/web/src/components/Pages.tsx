@@ -56,7 +56,8 @@ export function usePaged<T extends WebPaged>(path: string, tick: number) {
     try {
       const p = await api<T>(url(next));
       shown.current.count = current.length + 1;
-      setPages({ path, pages: [...current, p] });
+      // Only onto the pages it followed: a reload since (tick) has read them again, as many as were shown.
+      setPages((now) => (now?.path === path && now.pages.at(-1)?.next === next ? { path, pages: [...now.pages, p] } : now));
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
   return { pages: current, error, more: next ? more : undefined, busy };
@@ -281,7 +282,7 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
         {data.by_agents.length ? <ul className="qlist">{data.by_agents.map((v) => (
           <li key={`${v.subject}:${v.reviewer}:${v.at}`} className="qitem">
             <div className="row"><Pill tone={v.state === 'approved' ? 'clean' : 'boundary'}>{v.state === 'approved' ? 'approved' : 'changes requested'}</Pill>
-              <button type="button" className="chip" onClick={() => go(`node/${v.node}@${v.seq}`)}>{v.subject}</button>
+              <button type="button" className="chip" onClick={() => go(v.seq !== null ? `node/${v.node}@${v.seq}` : `node/${v.node}#${v.element}`)}>{v.subject}</button>
               <span>by {v.reviewer} · {ago(v.at)}</span>{v.product_review && <span className="why-not">product review</span>}</div>
             {v.note ? <div className="a">{v.note}</div> : null}
           </li>
@@ -349,7 +350,8 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
   const { error, more, busy } = read;
   // Every document, a page at a time, so that what relies on an element is all there to list.
   const loaded = read.pages?.length ?? 0;
-  useEffect(() => { if (more && !busy && loaded < LINEAGE_PAGES) void more(); }, [loaded, busy, !!more]);
+  const reading = !!more && loaded < LINEAGE_PAGES;
+  useEffect(() => { if (reading && !busy) void more!(); }, [loaded, busy, reading]);
   const [words, setWords] = useState('');
   const [graph, setGraph] = useState(false);
   if (error) return <p className="empty" role="alert">{error}</p>;
@@ -364,12 +366,16 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
   const found = q ? data.nodes.flatMap((n) => n.elements.map((e) => ({ node: n.name, id: e.id, text: e.text })))
     .filter((e) => `${addr(e.node, null, e.id)} ${e.text}`.toLowerCase().includes(q)) : [];
   const stale = data.links.filter((l) => l.mark);
-  const entry = (node: string, element: string | null, extra?: ReactNode) => (
-    <li key={`${node}#${element ?? ''}`} className="lin-item">
-      <button type="button" className="chip" onClick={() => go(lineageRoute(node, element))}>{addr(node, null, element)}</button>{extra}
-      {text.has(linKey(node, element)) && <span className="lin-text">{text.get(linKey(node, element))}</span>}
+  // An element in another kolab (D49) is read there, in place; it has no lineage here.
+  const entry = (key: string, node: string, element: string | null, extra?: ReactNode, kolab?: string) => (
+    <li key={key} className="lin-item">
+      {kolab
+        ? <button type="button" className="chip" onClick={() => go(`read/${kolab}/${node}${element ? `#${element}` : ''}`)}>{`kj:${kolab}/${node}${element ? `#${element}` : ''}`}</button>
+        : <button type="button" className="chip" onClick={() => go(lineageRoute(node, element))}>{addr(node, null, element)}</button>}{extra}
+      {!kolab && text.has(linKey(node, element)) && <span className="lin-text">{text.get(linKey(node, element))}</span>}
     </li>
   );
+  const stopped = !!more && !reading;
   const pinned = (l: WebLineageView['links'][number]) => <span className="why-not">pinned to @{l.target.seq}{l.target.latest && l.target.latest !== l.target.seq ? `, now @${l.target.latest}` : ''}</span>;
   return (
     <section aria-labelledby="lin-title">
@@ -378,9 +384,9 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
       <form className="search" role="search" onSubmit={(e) => { e.preventDefault(); if (found.length === 1) go(lineageRoute(found[0].node, found[0].id)); }}>
         <label htmlFor="lin-search">Find an element</label>
         <input id="lin-search" type="search" value={words} onChange={(e) => setWords(e.target.value)} autoComplete="off" aria-describedby="lin-count" />
-        <span id="lin-count" className="hint" role="status">{q ? `${found.length} element${found.length === 1 ? '' : 's'} match${found.length > 50 ? ', the first 50 shown' : ''}.` : `${data.links.length} links${more ? ', reading more…' : ''}.`} Its name, such as R12, or words in it.</span>
+        <span id="lin-count" className="hint" role="status">{q ? `${found.length} element${found.length === 1 ? '' : 's'} match${found.length > 50 ? ', the first 50 shown' : ''}.` : `${data.links.length} links${reading ? ', reading more…' : stopped ? ' in the documents read so far' : ''}.`} Its name, such as R12, or words in it.</span>
       </form>
-      {q && (found.length ? <ul className="lin-list">{found.slice(0, 50).map((e) => entry(e.node, e.id))}</ul> : <p className="empty">No element matches.</p>)}
+      {q && (found.length ? <ul className="lin-list">{found.slice(0, 50).map((e) => entry(linKey(e.node, e.id), e.node, e.id))}</ul> : <p className="empty">No element matches.</p>)}
       {focus && fNode && (
         <article className="lin-focus" aria-labelledby="lin-focus">
           <div className="row"><h3 id="lin-focus" className="addr">{addr(fNode, null, fEl)}</h3>
@@ -388,16 +394,17 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
           {text.has(focus) ? <p>{text.get(focus)}</p> : <p className="why-not">Not in this kolab’s committed documents{more ? ' read so far' : ''}.</p>}
           <div className="lin-ways">
             <section aria-labelledby="lin-on"><h4 id="lin-on">Relies on ({reliesOn.length})</h4>
-              {reliesOn.length ? <ul className="lin-list">{reliesOn.map((l) => entry(l.target.node, l.target.element, <>{l.mark && <Pill tone="stale">stale</Pill>}{pinned(l)}</>))}</ul> : <p className="why-not">Nothing.</p>}</section>
+              {reliesOn.length ? <ul className="lin-list">{reliesOn.map((l) => entry(l.edge, l.target.node, l.target.element, <>{l.mark && <Pill tone="stale">stale</Pill>}{pinned(l)}</>, l.target.kolab))}</ul> : <p className="why-not">Nothing.</p>}</section>
             <section aria-labelledby="lin-by"><h4 id="lin-by">Relied on by ({reliedOnBy.length})</h4>
-              {reliedOnBy.length ? <ul className="lin-list">{reliedOnBy.map((l) => entry(l.source.node, l.source.element, l.mark ? <Pill tone="stale">stale</Pill> : null))}</ul> : <p className="why-not">Nothing{more ? ' yet: more documents are being read' : ''}.</p>}</section>
+              {reliedOnBy.length ? <ul className="lin-list">{reliedOnBy.map((l) => entry(l.edge, l.source.node, l.source.element, l.mark ? <Pill tone="stale">stale</Pill> : null))}</ul> : <p className="why-not">Nothing{reading ? ' yet: more documents are being read' : stopped ? ' in the documents read so far' : ''}.</p>}</section>
           </div>
         </article>
       )}
       {!focus && !q && (stale.length ? (
         <section aria-labelledby="lin-stale"><h3 id="lin-stale" className="section-title">Stale links ({stale.length})</h3>
-          <ul className="lin-list">{stale.map((l) => entry(l.source.node, l.source.element, <span className="why-not">relies on {addr(l.target.node, l.target.seq, l.target.element)}, which changed since</span>))}</ul></section>
+          <ul className="lin-list">{stale.map((l) => entry(l.edge, l.source.node, l.source.element, <span className="why-not">relies on {l.target.kolab ? `kj:${l.target.kolab}/${l.target.node}@${l.target.seq}${l.target.element ? `#${l.target.element}` : ''}` : addr(l.target.node, l.target.seq, l.target.element)}, which changed since</span>))}</ul></section>
       ) : <p className="empty">No link is stale. Find an element above to see what it relies on and what relies on it.</p>)}
+      {stopped && <><p className="why-not">Lineage stopped reading after {loaded} pages of documents: read on for the rest.</p><More more={more} busy={busy} what="documents" /></>}
       <details className="lin-graph" open={graph} onToggle={(e) => setGraph((e.target as HTMLDetailsElement).open)}>
         <summary>The whole graph: {data.nodes.length} document{data.nodes.length === 1 ? '' : 's'}, {data.links.length} links</summary>
         {graph && <LineageGraph data={data} focus={focus} go={go} />}
@@ -530,7 +537,7 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
           <article key={k.id} className={`kcard${k.current ? ' current' : ''}`} aria-labelledby={`k-${k.id}`}>
             <div className="khead"><h3 id={`k-${k.id}`}>{k.title || k.id}</h3><span className="slug">{k.id}</span>{k.current && <span className="kind">Open now</span>}</div>
             <p>{k.visibility} · owned by {k.owner}</p>
-            {k.current && <p className="kstatus" aria-label="Its status">{kolabStatus(overview.counts)}</p>}
+            {k.current && <p className="kstatus">{kolabStatus(overview.counts)}</p>}
             <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : `You hold ${k.access.level ?? 'no access'} here.`}</span>
               {k.current ? null : <span className="edit-row" style={{ marginTop: 0 }}>
                 {onRead && <button type="button" className="btn" onClick={() => onRead(k.id)} title="Its committed work, read only, without leaving this kolab">Read here</button>}

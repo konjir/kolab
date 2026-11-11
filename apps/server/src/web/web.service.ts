@@ -439,7 +439,7 @@ export class WebService {
       mine: mine.items.map((x) => ({
         subject: formatAddress({ node: x.node, version: x.seq }), node: x.node, seq: x.seq, state: x.state, note: x.note, verdicts: x.verdicts,
       })),
-      by_agents: agents.items.map(({ product, ...v }) => ({ subject: formatAddress({ node: v.node, version: v.seq }), ...v, ...(product ? { product_review: true as const } : {}) })),
+      by_agents: agents.items.map(({ product, ...v }) => ({ subject: formatAddress(v.seq !== null ? { node: v.node, version: v.seq } : { node: v.node, element: v.element ?? undefined }), ...v, ...(product ? { product_review: true as const } : {}) })),
       next: forMe.next || mine.next || agents.next ? cursorFor('web:reviews4', [forMe.next ?? 'done', mine.next ?? 'done', agents.next ?? 'done']) : null,
     };
   }
@@ -925,7 +925,7 @@ const version = (v: VersionHistoryRow, me: string): WebVersion =>
 const link = (l: LinkRow): WebLink => ({
   edge: l.edge, kind: l.kind,
   source: { node: l.source_node, seq: l.source_seq, element: l.source_element, layer: l.source_layer as Layer },
-  target: { node: l.target_node, seq: l.target_seq, element: l.target_element, quote: l.target_selector?.exact ?? null, latest: l.target_latest },
+  target: { node: l.target_node, seq: l.target_seq, element: l.target_element, quote: l.target_selector?.exact ?? null, latest: l.target_latest, ...(l.target_kolab ? { kolab: l.target_kolab } : {}) },
   mark: l.mark_id ? { id: l.mark_id, reason: l.mark_reason! } : null,
 });
 
