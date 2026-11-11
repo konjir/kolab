@@ -98,7 +98,8 @@ export interface WebVersion {
 export interface WebLink {
   edge: string; kind: string;
   source: { node: string; seq: number; element: string | null; layer: Layer };
-  target: { node: string; seq: number; element: string | null; quote: string | null; latest: number | null };
+  /** `kolab`: the target's, where it is in another kolab (D49). */
+  target: { node: string; seq: number; element: string | null; quote: string | null; latest: number | null; kolab?: string };
   /** An open mark on the link: what it relied on changed since it was pinned. */
   mark: { id: string; reason: MarkReason } | null;
 }
@@ -282,7 +283,8 @@ export interface WebReviewsView extends WebPaged {
   mine: { subject: string; node: string; seq: number; state: VersionState; note: string | null;
     verdicts: { reviewer: string; state: string; note: string | null }[] }[];
   /** Verdicts the person's agents gave, newest first: what was reviewed on their behalf. */
-  by_agents: { subject: string; node: string; seq: number; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product_review?: true }[];
+  /** A version's verdict has its `seq`, a work package's its `element`. */
+  by_agents: { subject: string; node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product_review?: true }[];
 }
 
 /** A page of the nodes with a committed version, each with its elements, and the live links from them. */

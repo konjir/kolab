@@ -92,6 +92,8 @@ export interface LinkRow {
   edge: string; kind: string;
   source_node: string; source_seq: number; source_element: string | null; source_layer: Layer;
   target_node: string; target_seq: number; target_element: string | null; target_selector: QuoteSelector | null; target_latest: number | null;
+  /** The target's kolab, where it isn't the session's own; null when it is. */
+  target_kolab: string | null;
   mark_id: string | null; mark_reason: MarkReason | null;
 }
 
@@ -105,6 +107,7 @@ export async function liveLinks(kolab: Kolab, session: string, only: { node?: st
     `select e.id as edge, e.kind, sn.name as source_node, sv.seq as source_seq, e.source_element_id as source_element, sv.layer as source_layer,
             tn.name as target_node, tv.seq as target_seq, e.target_element_id as target_element, e.target_selector,
             (select max(l.seq) from version l where l.node_id = tn.id and l.state = 'committed') as target_latest,
+            case when tn.kolab_id = $1 then null else tn.kolab_id end as target_kolab,
             m.id as mark_id, m.reason as mark_reason
        from edge e
        join version sv on sv.id = e.source_version_id join node sn on sn.id = sv.node_id
@@ -512,12 +515,14 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
 }
 
 export interface AgentVerdictRow {
-  node: string; seq: number; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product?: true;
+  /** A version's verdict has its `seq`; a work package's, its `element`. */
+  node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product?: true;
 }
 
 /**
- * The verdicts `person`'s agents gave on versions in the session's kolab, newest first: what was
- * reviewed on the person's behalf, which their own review list never shows.
+ * The verdicts `person`'s agents gave in the session's kolab, on versions and on work packages,
+ * newest first: what was reviewed on the person's behalf, which their own review list never shows.
+ * An approval a fold copied onto its new version (foldRecord) isn't given twice.
  */
 export async function agentVerdictsPage(kolab: Kolab, session: string, person: string, page: PageOpts = {}): Promise<RowsPage<AgentVerdictRow>> {
   const here = await kolab.sessionKolab(session);
@@ -526,10 +531,16 @@ export async function agentVerdictsPage(kolab: Kolab, session: string, person: s
   const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
   const agents = (await kolab.db.query<{ id: string }>(`select id from actor where kind = 'agent' and owner_id = $1`, [person])).rows.map((r) => r.id);
   if (!agents.length) return { items: [], next: null };
-  const read = await kolab.readAs(session, async (q) => (await q.query<{ id: string; node: string; seq: number; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: Date | string; at_key: string; product: boolean }>(
-    `select r.id, n.name as node, v.seq, r.reviewer_id as reviewer, r.state, r.note, r.decided_at as at, r.decided_at::text as at_key, r.product
-       from review_request r join version v on v.id = r.version_id join node n on n.id = v.node_id
+  const read = await kolab.readAs(session, async (q) => (await q.query<{ id: string; node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: Date | string; at_key: string; product: boolean }>(
+    `select r.id, coalesce(n.name, b.name) as node, v.seq, case when r.version_id is null then r.element_id end as element,
+            r.reviewer_id as reviewer, r.state, r.note, r.decided_at as at, r.decided_at::text as at_key, r.product
+       from review_request r
+       left join version v on v.id = r.version_id left join node n on n.id = v.node_id
+       left join node b on r.version_id is null and b.id = r.binding_node_id
       where r.kolab_id = $1 and r.reviewer_id = any($2::text[]) and r.decided_at is not null and r.state in ('approved', 'changes_requested')
+        and coalesce(n.name, b.name) is not null
+        and not (v.folded_from is not null and exists (select 1 from review_request o
+                   where o.version_id = v.folded_from and o.reviewer_id = r.reviewer_id and o.state = 'approved'))
         and ($4::text is null or (r.decided_at, r.id) < ($4::timestamptz, $5::text))
       order by r.decided_at desc, r.id desc limit $3`, [here, agents, size + 1, after?.[0] ?? null, after?.[1] ?? null])).rows);
   const { rows, next } = pageOf(read, size, list, (r) => [r.at_key, r.id]);

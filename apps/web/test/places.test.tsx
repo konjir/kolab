@@ -223,3 +223,21 @@ test('the open kolab\'s card says what waits there, and only what there is', () 
   expect(kolabStatus({ stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 })).toBe('Nothing waits here.');
   expect(kolabStatus({ stale: 2, waiting: 1, reviews: 1, open: 3, cases: 0 })).toBe('1 review for you · 1 question for your layer · 2 marks · 3 open questions in all');
 });
+
+test('lineage reads an element in another kolab there, in place, and keeps each link a row of its own', async () => {
+  const theirs = { ...link(['orders-pg', 'b1'], ['specs', 'S1'], true), target: { node: 'specs', seq: 1, element: 'S1', quote: null, latest: 2, kolab: 'other' } };
+  const quoted = { ...link(['orders-pg', 'b1'], ['orders', 'R1'], true), edge: 'e2' };
+  replies['/api/lineage'] = lineagePage([
+    { name: 'orders-pg', title: 'Orders on Postgres', kind: 'binding', layer: 'technical', seq: 1, elements: [{ id: 'b1', text: 'orders.status allows cancel.' }] },
+  ], [theirs, link(['orders-pg', 'b1'], ['orders', 'R1'], true), quoted]);
+  const go = jest.fn();
+  render(<LineageView tick={0} go={go} />);
+  const stale = await screen.findByRole('region', { name: 'Stale links (3)' });
+  expect(within(stale).getAllByRole('listitem')).toHaveLength(3);
+  expect(within(stale).getByText('relies on kj:other/specs@1#S1, which changed since')).toBeTruthy();
+  cleanup();
+  render(<LineageView tick={0} go={go} focus="orders-pg#b1" />);
+  const on = await screen.findByRole('region', { name: 'Relies on (3)' });
+  fireEvent.click(within(on).getByRole('button', { name: 'kj:other/specs#S1' }));
+  expect(go).toHaveBeenLastCalledWith('read/other/specs#S1');
+});

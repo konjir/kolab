@@ -745,6 +745,25 @@ test("reviews: what the person's agents reviewed, newest first, a page at a time
   expect((await alice.call<WebReviewsView>('reviews')).body.by_agents).toStrictEqual([]);
 });
 
+test("reviews: an agent's verdict on a work package is listed too, opening the package", async () => {
+  const { kolab, engineer } = await specAndBinding();
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const v2 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }] });
+  expect((await kolab.submit(engineer, v2)).ok).toBe(true);
+  await registeredRepository(kolab, { binding: 'orders-pg' });
+  await people(kolab, 'eve', { layers: ['technical'] });
+  await people(kolab, 'eve-agent', { owner: 'eve', layers: ['technical'] });
+  await agentsMay(kolab);
+  const agent = await kolab.openSession('eve-agent', 'engineer');
+  const eve = await signIn(await serve(kolab), await kolab.openSession('eve', 'engineer'));
+  await kolab.pullWork(engineer);
+  await kolab.submitWork(engineer, 'kj:orders-pg#W1', { evidence: [{ kind: 'commit', sha: 'a'.repeat(40), title: 'Cancel an order' }] });
+  await kolab.reviewWork(agent, 'kj:orders-pg#W1', { verdict: 'approve', note: 'Checked.' });
+  expect((await eve.call<WebReviewsView>('reviews')).body.by_agents).toStrictEqual([
+    { subject: 'kj:orders-pg#W1', node: 'orders-pg', seq: null, element: 'W1', reviewer: 'eve-agent', state: 'approved', note: 'Checked.', at: expect.any(String) }]);
+});
+
 test('in the page: with nobody else able to review yet it says so; an engineer asks about the version in review; abandoned, the question is withdrawn (D65)', async () => {
   const { kolab, product, engineer } = await specAndBinding();
   // Alice's only other writer on the functional layer is her own agent, signed in as engineer, in a

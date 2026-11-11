@@ -209,7 +209,7 @@ main { min-width: 0; display: grid; gap: 28px; align-content: start; }
 .btn.quiet { color: var(--ink-muted); padding: 0 10px; background: none; border-color: transparent; border-radius: var(--r-md); }
 .btn.quiet:hover { color: var(--ink); }
 /* Dimmed by color, never by opacity, so its words stay readable (WCAG 1.4.3). */
-.btn[disabled], .btn[disabled]:hover, .btn.primary[disabled] { --kb-fill: var(--surface-sunken); --kb-line: var(--line); --kb-hover-line: var(--line); color: var(--ink-muted); font-weight: 400; cursor: not-allowed; filter: none; }
+.btn[disabled], .btn[disabled]:hover, .btn.primary[disabled] { --kb-fill: var(--surface-sunken); --kb-line: var(--line); --kb-hover-line: var(--line); color: var(--ink-muted); cursor: not-allowed; filter: none; }
 ::placeholder { color: var(--ink-muted); opacity: 1; }
 .el .flags { grid-column: 2 / -1; display: grid; gap: 10px; }
 .el textarea { width: 100%; min-height: 84px; resize: vertical; background: var(--surface-sunken); border: 1px solid var(--line-strong); border-radius: var(--r-hair); padding: 8px 10px; line-height: 1.5; }
