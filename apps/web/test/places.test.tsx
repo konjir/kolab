@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { WebMe, WebOverview, WebRuling, WebWorkView } from '@konjir/types';
 import { InboxView, RulingsView, WorkView, withRulingLinks } from '../src/components/Places.js';
-import { LineageView, ReviewsView, kolabStatus } from '../src/components/Pages.js';
+import { KolabsView, LineageView, ReviewsView, kolabStatus, waitingStatus } from '../src/components/Pages.js';
 import { parseRoute } from '../src/App.js';
 
 const lee: WebMe = { actor: 'lee', name: 'Lee', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'accounts', access: { level: 'admin', layers: ['functional', 'technical'] } };
@@ -240,4 +240,21 @@ test('lineage reads an element in another kolab there, in place, and keeps each 
   const on = await screen.findByRole('region', { name: 'Relies on (3)' });
   fireEvent.click(within(on).getByRole('button', { name: 'kj:other/specs#S1' }));
   expect(go).toHaveBeenLastCalledWith('read/other/specs#S1');
+});
+
+test('another kolab\'s card says what waits there for the person; All kolabs keeps to kolabs, and the new document form has its own place', () => {
+  expect(waitingStatus({ reviews: 0, questions: 0, marks: 0, cases: 0 })).toBe('Nothing waits for you there.');
+  expect(waitingStatus({ reviews: 2, questions: 1, marks: 0, cases: 1 })).toBe('2 reviews for you · 1 question for your layers · 1 case file');
+  const o = overview({ waiting: 1 });
+  o.kolabs = [o.kolab, { id: 'checkout', title: 'Checkout', owner: 'lee', visibility: 'private', current: false, access: lee.access, waiting: { reviews: 1, questions: 0, marks: 2, cases: 0 } },
+    { id: 'billing', title: 'Billing', owner: 'pat', visibility: 'private', current: false, access: { level: 'read', layers: [] } }];
+  const props = { overview: o, act: {} as never, onCreated: () => undefined, onOpen: () => undefined, onCreateKolab: async () => false };
+  const { rerender } = render(<KolabsView {...props} />);
+  expect(within(screen.getByRole('article', { name: 'Checkout' })).getByText('1 review for you · 2 marks')).toBeTruthy();
+  expect(within(screen.getByRole('article', { name: 'Billing' })).queryByText(/waits|for you/)).toBeNull();
+  expect(screen.queryByRole('heading', { name: /^New document/ })).toBeNull();
+  rerender(<KolabsView {...props} start />);
+  expect(screen.getByRole('heading', { name: 'New document in accounts' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Kolabs' })).toBeNull();
+  expect(parseRoute('#/new')).toStrictEqual({ view: 'new' });
 });

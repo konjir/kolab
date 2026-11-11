@@ -94,6 +94,17 @@ export class WebSessionController {
     @Inject(KOLAB) private readonly kolab: Kolab,
   ) {}
 
+  /**
+   * Whether the request carries a session at all: its cookie or a refresh token's (D55). It checks
+   * neither, so it says nothing of who; it lets the page skip asking /api/me, and its 401, when
+   * nobody has signed in in this browser.
+   */
+  @Get('present')
+  present(@Req() req: Request): { present: boolean } {
+    checkOrigin(req, this.options);
+    return { present: !!(tokenOf(req, this.options) || tokenOf(req, this.options, refreshCookieName(this.options))) };
+  }
+
   /** How a person may sign in here: with the identity provider (D55), with a pasted token (development), or both. */
   @Get('methods')
   methods(@Req() req: Request): WebSignInMethods {

@@ -145,6 +145,7 @@ nav.rail { display: flex; flex-direction: column; gap: 2px; }
 .place:hover { color: var(--ink); background: var(--surface-raised); }
 .place[aria-current="page"] { color: var(--ink); background: var(--surface-raised); font-weight: 600; }
 .place .count { margin-left: auto; }
+.place.add::before { content: "+"; font-family: var(--font-mono); }
 .count.stale { background: var(--accent-soft); color: var(--stale); }
 .count.question { color: var(--question); border: 1px solid var(--question); }
 .rail-foot { margin: 22px 10px 0; font-size: 12px; color: var(--ink-muted); display: grid; gap: 8px; }
