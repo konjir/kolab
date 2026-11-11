@@ -4,6 +4,8 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { WebMe, WebOverview, WebRuling, WebWorkView } from '@konjir/types';
 import { InboxView, RulingsView, WorkView, withRulingLinks } from '../src/components/Places.js';
+import { LineageView, ReviewsView, kolabStatus } from '../src/components/Pages.js';
+import { parseRoute } from '../src/App.js';
 
 const lee: WebMe = { actor: 'lee', name: 'Lee', kind: 'person', owner: null, role: 'product', layer: 'functional', kolab: 'accounts', access: { level: 'admin', layers: ['functional', 'technical'] } };
 const at = new Date().toISOString();
@@ -154,4 +156,70 @@ test('a ruling\'s address in lower case finds it; typing other words there searc
   page.rerender(<RulingsView me={lee} tick={0} go={(r) => went.push(r)} />);
   expect(await screen.findByText('Konjir is one hosted service.')).toBeTruthy();
   expect((screen.getByLabelText('Search the rulings') as HTMLInputElement).value).toBe('hosted');
+});
+
+const lineagePage = (nodes: unknown[], links: unknown[], next: string | null = null) => ({ nodes, links, next });
+const link = (source: [string, string], target: [string, string], mark: boolean) => ({
+  edge: `${source.join('#')}>${target.join('#')}`, kind: 'dependency',
+  source: { node: source[0], seq: 1, element: source[1], layer: 'technical' }, target: { node: target[0], seq: 1, element: target[1], quote: null, latest: mark ? 2 : 1 },
+  mark: mark ? { id: 'm1', reason: 'changed' } : null,
+});
+
+test('lineage lists both ways of an element named in the address, reading every page of documents; and lists the stale links when none is', async () => {
+  replies['/api/lineage'] = lineagePage([
+    { name: 'orders', title: 'Orders', kind: 'spec', layer: 'functional', seq: 2, elements: [{ id: 'R1', text: 'An order can be cancelled.' }, { id: 'R2', text: 'Refunds are prompt.' }] },
+  ], [], 'c1');
+  replies['/api/lineage?cursor=c1'] = lineagePage([
+    { name: 'orders-pg', title: 'Orders on Postgres', kind: 'binding', layer: 'technical', seq: 1, elements: [{ id: 'b1', text: 'orders.status allows cancel.' }, { id: 'b2', text: 'A refund queue.' }] },
+  ], [link(['orders-pg', 'b1'], ['orders', 'R1'], false), link(['orders-pg', 'b2'], ['orders', 'R1'], true)]);
+  const go = jest.fn();
+  const { rerender } = render(<LineageView tick={0} go={go} focus="orders#R1" />);
+  const focus = await screen.findByRole('article', { name: 'kj:orders#R1' });
+  expect(within(focus).getByText('An order can be cancelled.')).toBeTruthy();
+  const by = await within(focus).findByRole('region', { name: 'Relied on by (2)' });
+  expect(within(by).getAllByRole('button').map((b) => b.textContent)).toStrictEqual(['kj:orders-pg#b1', 'kj:orders-pg#b2']);
+  expect(within(focus).getByRole('region', { name: 'Relies on (0)' })).toBeTruthy();
+  fireEvent.click(within(by).getByRole('button', { name: 'kj:orders-pg#b2' }));
+  expect(go).toHaveBeenLastCalledWith('lineage/orders-pg#b2');
+  fireEvent.click(within(focus).getByRole('button', { name: 'Open in its document' }));
+  expect(go).toHaveBeenLastCalledWith('node/orders#R1');
+
+  // From b2: what it relies on, pinned and now stale.
+  rerender(<LineageView tick={0} go={go} focus="orders-pg#b2" />);
+  const on = screen.getByRole('region', { name: 'Relies on (1)' });
+  expect(within(on).getByText('stale')).toBeTruthy();
+  expect(within(on).getByText('pinned to @1, now @2')).toBeTruthy();
+
+  // With none named, the stale links; a search lists the elements it finds.
+  rerender(<LineageView tick={0} go={go} />);
+  const stale = screen.getByRole('region', { name: 'Stale links (1)' });
+  expect(within(stale).getByRole('button', { name: 'kj:orders-pg#b2' })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Find an element'), { target: { value: 'refund' } });
+  expect(screen.getByRole('status').textContent).toMatch(/^2 elements match\./);
+  expect(screen.getAllByRole('button', { name: /^kj:/ }).map((b) => b.textContent)).toStrictEqual(['kj:orders#R2', 'kj:orders-pg#b2']);
+});
+
+test('an element of lineage has an address of its own', () => {
+  expect(parseRoute('#/lineage/orders#R1')).toStrictEqual({ view: 'lineage', focus: 'orders#R1' });
+  expect(parseRoute('#/lineage/orders')).toStrictEqual({ view: 'lineage', focus: 'orders#' });
+  expect(parseRoute('#/lineage')).toStrictEqual({ view: 'lineage' });
+});
+
+test('reviews lists what the person\'s agents reviewed, with their verdicts and notes', async () => {
+  replies['/api/reviews'] = { for_me: [], mine: [], next: null, by_agents: [
+    { subject: 'kj:orders@3', node: 'orders', seq: 3, reviewer: 'lee-agent', state: 'changes_requested', note: 'Say which email.', at },
+    { subject: 'kj:orders@2', node: 'orders', seq: 2, reviewer: 'lee-agent', state: 'approved', note: null, at },
+  ] };
+  const go = jest.fn();
+  render(<ReviewsView tick={0} act={{} as never} go={go} />);
+  const agents = await screen.findByRole('region', { name: 'What your agents reviewed' });
+  expect(within(agents).getAllByRole('listitem').map((li) => li.textContent)).toStrictEqual([
+    expect.stringMatching(/^changes requestedkj:orders@3by lee-agent .*Say which email\.$/), expect.stringMatching(/^approvedkj:orders@2by lee-agent/)]);
+  fireEvent.click(within(agents).getByRole('button', { name: 'kj:orders@2' }));
+  expect(go).toHaveBeenCalledWith('node/orders@2');
+});
+
+test('the open kolab\'s card says what waits there, and only what there is', () => {
+  expect(kolabStatus({ stale: 0, waiting: 0, reviews: 0, open: 0, cases: 0 })).toBe('Nothing waits here.');
+  expect(kolabStatus({ stale: 2, waiting: 1, reviews: 1, open: 3, cases: 0 })).toBe('1 review for you · 1 question for your layer · 2 marks · 3 open questions in all');
 });

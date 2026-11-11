@@ -24,7 +24,7 @@ const work = (over: Partial<WebWorkReview> = {}): WebWorkReview => ({
   evidence_more: 0, earlier: [], earlier_count: 0, findings: [],
   ...over,
 });
-const page = (for_me: WebReviewsView['for_me']): WebReviewsView => ({ for_me, mine: [], next: null });
+const page = (for_me: WebReviewsView['for_me']): WebReviewsView => ({ for_me, mine: [], by_agents: [], next: null });
 
 let calls: { url: string; method: string; body: unknown }[];
 let reply: unknown;

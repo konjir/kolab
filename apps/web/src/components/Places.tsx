@@ -100,17 +100,17 @@ export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: Web
       </section>
       {section('in-reviews', 'Reviews for you', c.reviews, 'No version or work package waits for your verdict.',
         forMe.map((r) => r.kind === 'version'
-          ? <Item key={r.subject} pill={<Pill tone="question">review</Pill>} where={r.subject} text={`submitted by ${r.author}${r.product_review ? ', for a product review' : ''}`} at={r.at} href={`node/${r.node}@${r.seq}`} />
-          : <Item key={r.subject} pill={<Pill tone="question">work</Pill>} where={r.subject} text={`${r.title ?? ''} · by ${r.assignee}`} at={r.at} href="reviews" />),
+          ? <Item key={r.subject} pill={<span className="kind">review</span>} where={r.subject} text={`submitted by ${r.author}${r.product_review ? ', for a product review' : ''}`} at={r.at} href={`node/${r.node}@${r.seq}`} />
+          : <Item key={r.subject} pill={<span className="kind">work</span>} where={r.subject} text={`${r.title ?? ''} · by ${r.assignee}`} at={r.at} href="reviews" />),
         reviews.more, reviews.busy, reviews.error, !reviews.pages)}
       {section('in-questions', `Questions ${me.role} answers`, c.waiting, 'No question waits on your layer.',
-        waiting.map((q) => <Item key={q.id} pill={<Pill tone="question">{q.kind}</Pill>} where={q.address} text={q.question} at={q.at} href={routeTo(q.address, me.kolab)} />),
+        waiting.map((q) => <Item key={q.id} pill={<span className="kind">{q.kind}</span>} where={q.address} text={q.question} at={q.at} href={routeTo(q.address, me.kolab)} />),
         undefined, false, queries?.error, !queries)}
       {section('in-marks', 'Marks on your layer', c.stale, 'Nothing on your layer is marked: everything it relies on still holds.',
         myMarks.map((m) => <Item key={m.id} pill={<Pill tone="stale">{m.reason.replace(/_/g, ' ')}</Pill>} where={addr(m.node, m.seq, m.element)} text={m.because} at={m.at} href={`node/${m.node}${m.element ? `#${m.element}` : ''}`} />),
         undefined, false, marks?.error, !marks)}
       {belongs && section('in-cases', 'Case files on your layer', c.cases, 'No case file is open on your layer.',
-        open.map((x) => <Item key={x.case} pill={<Pill tone="boundary">case file</Pill>} where={x.on} text={x.question ?? 'a case file'} at={x.opened_at ?? undefined} href="cases" />),
+        open.map((x) => <Item key={x.case} pill={<span className="kind">case file</span>} where={x.on} text={x.question ?? 'a case file'} at={x.opened_at ?? undefined} href="cases" />),
         undefined, false, cases?.error, !cases)}
       <p className="why-not">The spec and each binding are in the rail. <button type="button" className="btn quiet" onClick={() => go('work')}>See the work board</button></p>
     </>
@@ -179,7 +179,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
                           <a href={`#/node/${w.binding}#${w.id}`} className="card-id">{w.id}</a>
                           <span className="card-text">{w.text.split('\n')[0]}</span>
                           <span className="card-facts">
-                            {w.milestone && <Pill tone="clean">milestone</Pill>}
+                            {w.milestone && <span className="kind">milestone</span>}
                             {w.ready && <Pill tone="clean">ready</Pill>}
                             {w.at_risk && <Pill tone="stale">at risk</Pill>}
                             {w.approved && <Pill tone="clean">approved, to release</Pill>}

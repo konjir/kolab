@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   KINDS, LAYER_OF_KIND, RETIRED_KINDS,
   type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
@@ -256,7 +256,7 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
   const { pages, error, more, busy } = usePaged<WebReviewsView>('reviews', tick);
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!pages) return <p className="empty">Reading the reviews…</p>;
-  const data = { for_me: pages.flatMap((p) => p.for_me), mine: pages.flatMap((p) => p.mine) };
+  const data = { for_me: pages.flatMap((p) => p.for_me), mine: pages.flatMap((p) => p.mine), by_agents: pages.flatMap((p) => p.by_agents ?? []) };
   return (
     <>
       <section aria-labelledby="r-mine"><h2 className="section-title" id="r-mine">Waiting for your review</h2>
@@ -276,6 +276,16 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
             ))}
           </li>
         ))}</ul> : <p className="empty">You haven’t submitted anything for review in this kolab.</p>}
+      </section>
+      <section aria-labelledby="r-agents"><h2 className="section-title" id="r-agents">What your agents reviewed</h2>
+        {data.by_agents.length ? <ul className="qlist">{data.by_agents.map((v) => (
+          <li key={`${v.subject}:${v.reviewer}:${v.at}`} className="qitem">
+            <div className="row"><Pill tone={v.state === 'approved' ? 'clean' : 'boundary'}>{v.state === 'approved' ? 'approved' : 'changes requested'}</Pill>
+              <button type="button" className="chip" onClick={() => go(`node/${v.node}@${v.seq}`)}>{v.subject}</button>
+              <span>by {v.reviewer} · {ago(v.at)}</span>{v.product_review && <span className="why-not">product review</span>}</div>
+            {v.note ? <div className="a">{v.note}</div> : null}
+          </li>
+        ))}</ul> : <p className="empty">None of your agents has reviewed anything in this kolab.</p>}
       </section>
       <More more={more} busy={busy} what="reviews" />
     </>
@@ -334,18 +344,82 @@ export function ActivityView({ tick, here }: { tick: number; here: string }) {
 }
 
 /** What depends on what: each wire a link from an element to what it relies on, pinned to the version it was checked against. */
-export function LineageView({ tick, go }: { tick: number; go(r: string): void }) {
+export function LineageView({ tick, go, focus }: { tick: number; go(r: string): void; focus?: string }) {
   const read = usePaged<WebLineageView>('lineage', tick);
-  const { error } = read;
+  const { error, more, busy } = read;
+  // Every document, a page at a time, so that what relies on an element is all there to list.
+  const loaded = read.pages?.length ?? 0;
+  useEffect(() => { if (more && !busy && loaded < LINEAGE_PAGES) void more(); }, [loaded, busy, !!more]);
+  const [words, setWords] = useState('');
+  const [graph, setGraph] = useState(false);
+  if (error) return <p className="empty" role="alert">{error}</p>;
   const data = read.pages && { nodes: read.pages.flatMap((p) => p.nodes), links: read.pages.flatMap((p) => p.links) };
-  const [focus, setFocus] = useState<string>();
+  if (!data) return <p className="empty">Reading the lineage…</p>;
+  const text = new Map<string, string>();
+  for (const n of data.nodes) { text.set(linKey(n.name, null), n.title); for (const e of n.elements) text.set(linKey(n.name, e.id), e.text); }
+  const reliesOn = focus ? data.links.filter((l) => linKey(l.source.node, l.source.element) === focus) : [];
+  const reliedOnBy = focus ? data.links.filter((l) => linKey(l.target.node, l.target.element) === focus) : [];
+  const [fNode, fEl] = focus ? [focus.slice(0, focus.indexOf('#')), focus.slice(focus.indexOf('#') + 1) || null] : [undefined, null];
+  const q = words.trim().toLowerCase();
+  const found = q ? data.nodes.flatMap((n) => n.elements.map((e) => ({ node: n.name, id: e.id, text: e.text })))
+    .filter((e) => `${addr(e.node, null, e.id)} ${e.text}`.toLowerCase().includes(q)) : [];
+  const stale = data.links.filter((l) => l.mark);
+  const entry = (node: string, element: string | null, extra?: ReactNode) => (
+    <li key={`${node}#${element ?? ''}`} className="lin-item">
+      <button type="button" className="chip" onClick={() => go(lineageRoute(node, element))}>{addr(node, null, element)}</button>{extra}
+      {text.has(linKey(node, element)) && <span className="lin-text">{text.get(linKey(node, element))}</span>}
+    </li>
+  );
+  const pinned = (l: WebLineageView['links'][number]) => <span className="why-not">pinned to @{l.target.seq}{l.target.latest && l.target.latest !== l.target.seq ? `, now @${l.target.latest}` : ''}</span>;
+  return (
+    <section aria-labelledby="lin-title">
+      <h2 className="section-title" id="lin-title">What depends on what</h2>
+      <p className="why-not" style={{ maxWidth: '68ch', margin: '0 0 12px' }}>An element relies on what it links to, pinned to the version it was checked against. Find an element to see both ways.</p>
+      <form className="search" role="search" onSubmit={(e) => { e.preventDefault(); if (found.length === 1) go(lineageRoute(found[0].node, found[0].id)); }}>
+        <label htmlFor="lin-search">Find an element</label>
+        <input id="lin-search" type="search" value={words} onChange={(e) => setWords(e.target.value)} autoComplete="off" aria-describedby="lin-count" />
+        <span id="lin-count" className="hint" role="status">{q ? `${found.length} element${found.length === 1 ? '' : 's'} match${found.length > 50 ? ', the first 50 shown' : ''}.` : `${data.links.length} links${more ? ', reading more…' : ''}.`} Its name, such as R12, or words in it.</span>
+      </form>
+      {q && (found.length ? <ul className="lin-list">{found.slice(0, 50).map((e) => entry(e.node, e.id))}</ul> : <p className="empty">No element matches.</p>)}
+      {focus && fNode && (
+        <article className="lin-focus" aria-labelledby="lin-focus">
+          <div className="row"><h3 id="lin-focus" className="addr">{addr(fNode, null, fEl)}</h3>
+            <button type="button" className="btn" onClick={() => go(`node/${fNode}${fEl ? `#${fEl}` : ''}`)}>Open in its document</button></div>
+          {text.has(focus) ? <p>{text.get(focus)}</p> : <p className="why-not">Not in this kolab’s committed documents{more ? ' read so far' : ''}.</p>}
+          <div className="lin-ways">
+            <section aria-labelledby="lin-on"><h4 id="lin-on">Relies on ({reliesOn.length})</h4>
+              {reliesOn.length ? <ul className="lin-list">{reliesOn.map((l) => entry(l.target.node, l.target.element, <>{l.mark && <Pill tone="stale">stale</Pill>}{pinned(l)}</>))}</ul> : <p className="why-not">Nothing.</p>}</section>
+            <section aria-labelledby="lin-by"><h4 id="lin-by">Relied on by ({reliedOnBy.length})</h4>
+              {reliedOnBy.length ? <ul className="lin-list">{reliedOnBy.map((l) => entry(l.source.node, l.source.element, l.mark ? <Pill tone="stale">stale</Pill> : null))}</ul> : <p className="why-not">Nothing{more ? ' yet: more documents are being read' : ''}.</p>}</section>
+          </div>
+        </article>
+      )}
+      {!focus && !q && (stale.length ? (
+        <section aria-labelledby="lin-stale"><h3 id="lin-stale" className="section-title">Stale links ({stale.length})</h3>
+          <ul className="lin-list">{stale.map((l) => entry(l.source.node, l.source.element, <span className="why-not">relies on {addr(l.target.node, l.target.seq, l.target.element)}, which changed since</span>))}</ul></section>
+      ) : <p className="empty">No link is stale. Find an element above to see what it relies on and what relies on it.</p>)}
+      <details className="lin-graph" open={graph} onToggle={(e) => setGraph((e.target as HTMLDetailsElement).open)}>
+        <summary>The whole graph: {data.nodes.length} document{data.nodes.length === 1 ? '' : 's'}, {data.links.length} links</summary>
+        {graph && <LineageGraph data={data} focus={focus} go={go} />}
+      </details>
+    </section>
+  );
+}
+
+/** How many pages of documents Lineage reads before it stops and says so. */
+const LINEAGE_PAGES = 20;
+const linKey = (node: string, el: string | null) => `${node}#${el ?? ''}`;
+const lineageRoute = (node: string, el: string | null) => `lineage/${node}${el ? `#${el}` : ''}`;
+
+/** Every element in two columns, spec and binding, with a wire for each link: wide screens only. */
+function LineageGraph({ data, focus, go }: { data: Pick<WebLineageView, 'nodes' | 'links'>; focus?: string; go(r: string): void }) {
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<{ d: string; cls: string }[]>([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const layers = data ? [data.nodes.filter((n) => n.layer === 'functional'), data.nodes.filter((n) => n.layer === 'technical')] : [[], []];
-  const key = (node: string, el: string | null) => `${node}#${el ?? ''}`;
+  const layers = [data.nodes.filter((n) => n.layer === 'functional'), data.nodes.filter((n) => n.layer === 'technical')];
+  const key = linKey;
   const related = new Set<string>();
-  if (focus && data) {
+  if (focus) {
     related.add(focus);
     for (const l of data.links) {
       const s = key(l.source.node, l.source.element), t = key(l.target.node, l.target.element);
@@ -356,7 +430,7 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
   useLayoutEffect(() => {
     const draw = () => {
       const el = box.current;
-      if (!el || !data) return;
+      if (!el) return;
       const b = el.getBoundingClientRect();
       setSize({ w: b.width, h: b.height });
       const out: { d: string; cls: string }[] = [];
@@ -379,9 +453,7 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
     const ro = new ResizeObserver(draw);
     ro.observe(box.current);
     return () => ro.disconnect();
-  }, [read.pages, focus]);
-  if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!data) return <p className="empty">Reading the lineage…</p>;
+  }, [data, focus]);
   const stale = new Set(data.links.filter((l) => l.mark).map((l) => key(l.source.node, l.source.element)));
   const column = (nodes: WebLineageView['nodes'], label: string) => (
     <div className="lin-col">
@@ -391,7 +463,7 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
           {n.elements.map((e) => {
             const k = key(n.name, e.id);
             return (
-              <button key={k} type="button" data-lin={k} aria-pressed={focus === k} onClick={() => setFocus(focus === k ? undefined : k)}
+              <button key={k} type="button" data-lin={k} aria-pressed={focus === k} onClick={() => go(focus === k ? 'lineage' : lineageRoute(n.name, e.id))}
                 className={`node${focus ? (related.has(k) ? ' on' : ' dim') : ''}${stale.has(k) ? ' is-stale' : ''}`}>
                 <span className="nid">{e.id}{stale.has(k) && <Pill tone="stale">stale</Pill>}</span><span className="ntext">{e.text}</span>
               </button>
@@ -402,20 +474,24 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
     </div>
   );
   return (
-    <section aria-labelledby="lin-title">
-      <h2 className="section-title" id="lin-title">What depends on what</h2>
-      <p className="why-not" style={{ maxWidth: '68ch', margin: '0 0 18px' }}>Each wire is a link from an element to what it relies on, pinned to the version it was checked against. Select an element to see its wires.</p>
+    <>
       <div className="lineage" ref={box}>
         {column(layers[0], 'Spec')}
         <div className="gutter" aria-hidden="true" />
-        {column(layers[1], 'Binding')}
+        {column(layers[1], 'Bindings')}
         <svg className="wires" aria-hidden="true" viewBox={`0 0 ${size.w || 1} ${size.h || 1}`}>{paths.map((p, i) => <path key={i} className={p.cls} d={p.d} />)}</svg>
       </div>
       <div className="lin-legend"><span><i className="swatch" />holds</span><span><i className="swatch stale" />stale: what it relies on changed since this link was checked</span></div>
-      {read.more && <p className="why-not">A few documents at a time: a wire to one not shown yet appears once it is.</p>}
-      <More more={read.more} busy={read.busy} what="documents" />
-    </section>
+    </>
   );
+}
+
+/** What waits in the session's kolab, as its card says it: only what there is. */
+export function kolabStatus(c: WebOverview['counts']): string {
+  const n = (k: number, one: string, many: string) => (k ? `${k} ${k === 1 ? one : many}` : '');
+  const parts = [n(c.reviews, 'review for you', 'reviews for you'), n(c.waiting, 'question for your layer', 'questions for your layer'),
+    n(c.stale, 'mark', 'marks'), n(c.cases, 'case file', 'case files'), n(c.open, 'open question in all', 'open questions in all')].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Nothing waits here.';
 }
 
 /** All kolabs the signed-in actor can reach. A session works in one; the others need a session of their own. */
@@ -454,6 +530,7 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
           <article key={k.id} className={`kcard${k.current ? ' current' : ''}`} aria-labelledby={`k-${k.id}`}>
             <div className="khead"><h3 id={`k-${k.id}`}>{k.title || k.id}</h3><span className="slug">{k.id}</span>{k.current && <span className="kind">Open now</span>}</div>
             <p>{k.visibility} · owned by {k.owner}</p>
+            {k.current && <p className="kstatus" aria-label="Its status">{kolabStatus(overview.counts)}</p>}
             <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : `You hold ${k.access.level ?? 'no access'} here.`}</span>
               {k.current ? null : <span className="edit-row" style={{ marginTop: 0 }}>
                 {onRead && <button type="button" className="btn" onClick={() => onRead(k.id)} title="Its committed work, read only, without leaving this kolab">Read here</button>}

@@ -719,6 +719,32 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   expect((await alice.call('nodes/other%2Fsecret/submit', { base: 2, changes: [{ kind: 'override', element: 'S1', text: 'mine' }] })).status).toBe(403);
 });
 
+test("reviews: what the person's agents reviewed, newest first, a page at a time; nobody else's", async () => {
+  const { kolab, product } = await specAndBinding();
+  await people(kolab, 'dave', { layers: ['functional'] });
+  await people(kolab, 'dave-agent', { owner: 'dave', layers: ['functional'] });
+  await agentsMay(kolab);
+  const agent = await kolab.openSession('dave-agent', 'product');
+  const daveSession = await kolab.openSession('dave', 'product');
+  const base = await serve(kolab);
+  const [alice, dave] = [await signIn(base, product), await signIn(base, daveSession)];
+
+  const v2 = (await alice.call<WebOutcome>('nodes/orders/submit', { base: 1, changes: [{ kind: 'add', element: 'R3', text: 'A cancellation is confirmed by email.' }] })).body;
+  expect(v2).toMatchObject({ in_review: true, seq: 2 });
+  const id2 = (await kolab.db.query<{ id: string }>(`select v.id from version v join node n on n.id = v.node_id where n.kolab_id = $1 and n.name = 'orders' and v.seq = 2`, [TEST_KOLAB])).rows[0].id;
+  await kolab.recordReview(agent, id2, { verdict: 'request_changes', note: 'Say which email.' });
+  await alice.call('nodes/orders/versions/2/resubmit', {});
+  await kolab.recordReview(agent, id2, { verdict: 'approve' });
+
+  const list = (await dave.call<WebReviewsView>('reviews')).body;
+  expect(list.by_agents.map((v) => [v.subject, v.reviewer, v.state, v.note])).toStrictEqual([
+    ['kj:orders@2', 'dave-agent', 'approved', null], ['kj:orders@2', 'dave-agent', 'changes_requested', 'Say which email.']]);
+  const first = (await dave.call<WebReviewsView>('reviews?limit=1')).body;
+  expect(first.by_agents.map((v) => v.state)).toStrictEqual(['approved']);
+  expect((await dave.call<WebReviewsView>(`reviews?limit=1&cursor=${encodeURIComponent(first.next!)}`)).body.by_agents.map((v) => v.state)).toStrictEqual(['changes_requested']);
+  expect((await alice.call<WebReviewsView>('reviews')).body.by_agents).toStrictEqual([]);
+});
+
 test('in the page: with nobody else able to review yet it says so; an engineer asks about the version in review; abandoned, the question is withdrawn (D65)', async () => {
   const { kolab, product, engineer } = await specAndBinding();
   // Alice's only other writer on the functional layer is her own agent, signed in as engineer, in a

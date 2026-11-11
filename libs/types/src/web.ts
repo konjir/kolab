@@ -281,6 +281,8 @@ export interface WebReviewsView extends WebPaged {
   for_me: (WebVersionReview | WebWorkReview)[];
   mine: { subject: string; node: string; seq: number; state: VersionState; note: string | null;
     verdicts: { reviewer: string; state: string; note: string | null }[] }[];
+  /** Verdicts the person's agents gave, newest first: what was reviewed on their behalf. */
+  by_agents: { subject: string; node: string; seq: number; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product_review?: true }[];
 }
 
 /** A page of the nodes with a committed version, each with its elements, and the live links from them. */

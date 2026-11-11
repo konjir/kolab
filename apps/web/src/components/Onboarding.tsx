@@ -358,7 +358,7 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
           <h3 id="p-teams">Teams granted access</h3>
           <ul className="qlist" aria-labelledby="p-teams">{data.teams.map((t) => (
             <li key={t.team} className="qitem"><div className="row">
-              <Pill tone="clean">{accessWords(t)}</Pill><span className="mono">{t.team}</span>
+              <span className="kind">{accessWords(t)}</span><span className="mono">{t.team}</span>
               <span>{t.members === 1 ? '1 person' : `${t.members} people`}, its sub-teams' members included</span>
               <span className="why-not">Change it in team {t.team}'s grant or members.</span>
             </div></li>
@@ -520,7 +520,7 @@ export function SessionsView({ tick, act }: { tick: number; act: Act }) {
         )}
         {sessions.length ? <ul className="qlist">{sessions.map((s) => (
           <li key={s.session} className="qitem" aria-label={`${s.where}, ${s.session.slice(0, 8)}`}><div className="row">
-            <Pill tone={s.current ? 'clean' : 'question'}>{s.current ? 'this browser' : VIA_WORDS[s.via]}</Pill>
+            <span className="kind">{s.current ? 'this browser' : VIA_WORDS[s.via]}</span>
             <span><b>{s.where}</b> · {s.kolab} as {s.role} · last used {ago(s.last_used)} · opened {ago(s.started_at)}
               {s.expires_at ? ` · expires ${new Date(s.expires_at).toLocaleDateString()}` : ''} · <span className="mono" title={s.session}>{s.session.slice(0, 8)}</span></span>
             {!s.current && <button type="button" className="btn quiet" onClick={() => setPending(s)}>Revoke</button>}

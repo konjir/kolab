@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, HttpExcepti
 import {
   AccessError, ActorError, ChecksError, GateError, Kolab, LimitError, RoleError, TenancyError, activity, cursorFor, keyOf, kolabNodes,
   kolabNodesPage, liveLinks, markDetails, markDetailsPage, maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetailsPage,
-  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, waitingCounts, workReviewDetails,
+  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, agentVerdictsPage, waitingCounts, workReviewDetails,
   type LinkRow, type MarkDetailRow, type PageOpts, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
 import { formatAddress, isElementId, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
@@ -412,9 +412,10 @@ export class WebService {
    */
   async reviews(s: string, page: PageOpts = {}): Promise<WebReviewsView> {
     const me = await this.me(s);
-    const [f, y] = (keyOf('web:reviews3', page.cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
+    const [f, y, a] = (keyOf('web:reviews4', page.cursor, ['text', 'text', 'text']) ?? [null, null, null]) as [string | null, string | null, string | null];
     const forMe = f === 'done' ? { items: [], next: null } : await reviewRequestsPage(this.kolab, s, { reviewer: me.actor, layer: me.layer }, { cursor: f, limit: page.limit });
     const mine = y === 'done' ? { items: [], next: null } : await submissionsOf(this.kolab, s, me.actor, { cursor: y, limit: page.limit });
+    const agents = a === 'done' ? { items: [], next: null } : await agentVerdictsPage(this.kolab, s, me.actor, { cursor: a, limit: page.limit });
     // What a reviewer of each work package checks, in one read for them all (views.ts), which renews no
     // lease. If it fails, the list still comes back, each package flagged as not read.
     const work = forMe.items.filter((r) => r.kind === 'work');
@@ -438,7 +439,8 @@ export class WebService {
       mine: mine.items.map((x) => ({
         subject: formatAddress({ node: x.node, version: x.seq }), node: x.node, seq: x.seq, state: x.state, note: x.note, verdicts: x.verdicts,
       })),
-      next: forMe.next || mine.next ? cursorFor('web:reviews3', [forMe.next ?? 'done', mine.next ?? 'done']) : null,
+      by_agents: agents.items.map(({ product, ...v }) => ({ subject: formatAddress({ node: v.node, version: v.seq }), ...v, ...(product ? { product_review: true as const } : {}) })),
+      next: forMe.next || mine.next || agents.next ? cursorFor('web:reviews4', [forMe.next ?? 'done', mine.next ?? 'done', agents.next ?? 'done']) : null,
     };
   }
 
