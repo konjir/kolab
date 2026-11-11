@@ -360,7 +360,8 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
   const text = new Map<string, string>();
   for (const n of data.nodes) { text.set(linKey(n.name, null), n.title); for (const e of n.elements) text.set(linKey(n.name, e.id), e.text); }
   const reliesOn = focus ? data.links.filter((l) => linKey(l.source.node, l.source.element) === focus) : [];
-  const reliedOnBy = focus ? data.links.filter((l) => linKey(l.target.node, l.target.element) === focus) : [];
+  // A link into another kolab never names an element here, whatever its name.
+  const reliedOnBy = focus ? data.links.filter((l) => !l.target.kolab && linKey(l.target.node, l.target.element) === focus) : [];
   const [fNode, fEl] = focus ? [focus.slice(0, focus.indexOf('#')), focus.slice(focus.indexOf('#') + 1) || null] : [undefined, null];
   const q = words.trim().toLowerCase();
   const found = q ? data.nodes.flatMap((n) => n.elements.map((e) => ({ node: n.name, id: e.id, text: e.text })))
@@ -429,6 +430,7 @@ function LineageGraph({ data, focus, go }: { data: Pick<WebLineageView, 'nodes' 
   if (focus) {
     related.add(focus);
     for (const l of data.links) {
+      if (l.target.kolab) continue;
       const s = key(l.source.node, l.source.element), t = key(l.target.node, l.target.element);
       if (s === focus) related.add(t);
       if (t === focus) related.add(s);
@@ -442,6 +444,7 @@ function LineageGraph({ data, focus, go }: { data: Pick<WebLineageView, 'nodes' 
       setSize({ w: b.width, h: b.height });
       const out: { d: string; cls: string }[] = [];
       for (const l of data.links) {
+        if (l.target.kolab) continue;
         const s = el.querySelector<HTMLElement>(`[data-lin="${CSS.escape(key(l.source.node, l.source.element))}"]`);
         const t = el.querySelector<HTMLElement>(`[data-lin="${CSS.escape(key(l.target.node, l.target.element))}"]`);
         if (!s || !t) continue;
