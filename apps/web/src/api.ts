@@ -90,7 +90,8 @@ export const RECHECK_401_MS = 1000;
  */
 export async function whoAmI(p: Patience & { push?: boolean; first?: boolean } = {}): Promise<WebMe | null> {
   // On a page's first load, a browser that carries no session at all is signed out, said without a 401.
-  if (p.first && !(await patiently(() => api<{ present: boolean }>('session/present'), p)).present) return null;
+  // Only a clear "no" counts: a probe that fails otherwise, as against an older Kolab without it, asks /api/me.
+  if (p.first && (await patiently(() => api<{ present?: boolean }>('session/present'), p).catch(() => undefined))?.present === false) return null;
   for (let i = 0; i < 2; i++) {
     try { return await patiently(() => api<WebMe>('me', undefined, undefined, { push: p.push }), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
     if (i === 0) await clock.wait(RECHECK_401_MS);

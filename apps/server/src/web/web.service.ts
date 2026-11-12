@@ -48,14 +48,14 @@ export class WebService {
     const k = this.kolab;
     const me = await this.me(s);
     const reach = [...new Set([...(await k.reachable(me.actor)), me.kolab])];
-    const kolabs: WebKolab[] = [];
-    for (const x of await k.listKolabs({ ids: reach })) {
+    // Every kolab's card read at once: its access and, for another kolab, what waits there.
+    const kolabs: WebKolab[] = await Promise.all((await k.listKolabs({ ids: reach })).map(async (x) => {
       const access = await k.access(me.actor, x.id);
       const current = x.id === me.kolab;
       // Another kolab's card says what waits there only for someone who belongs to its work (D49).
       const waiting = !current && access.layers.length ? await waitingElsewhere(k, me.actor, x.id, access.layers) : undefined;
-      kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current, access, ...(waiting ? { waiting } : {}) });
-    }
+      return { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current, access, ...(waiting ? { waiting } : {}) };
+    }));
     // Counted in the database, never by reading every question and mark (W2.21).
     const [waiting, cases, nodes] = await Promise.all([waitingCounts(k, s, me.layer, me.actor), openCaseCount(k, s, me.layer), this.nodes(s, {})]);
     return {
