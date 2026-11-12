@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
 import {
   ACCEPTANCE_RESULTS, EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_REPOSITORY_URL, MAX_TEXT, MAX_WORK_REPO,
-  RULING_REF, WORK_FIELDS, WORK_SIZES, textLength, type AcceptanceFinding, type EvidenceKind, type Progress, type ProgressValue, type WorkFields, type WorkState,
+  RULING_REF, WORK_FIELDS, WORK_SIZES, textLength, type AcceptanceFinding, type EvidenceKind, type ForecastBasis, type Progress, type ProgressValue, type WorkDate, type WorkDates, type WorkFields, type WorkSize, type WorkState,
 } from '@konjir/types';
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -303,6 +303,108 @@ export function sourceRefs(text: string): Set<string> {
       if (RULING_REF.test(ref)) out.add(ref);
     }
   }
+  return out;
+}
+
+/** The events that make a package Done (WRK9): an approval, a submission with no reviewer, a release recorded. */
+const FINISHED_BY = new Set(['approved', 'done_unreviewed', 'release_recorded']);
+
+/**
+ * A work package's actual dates (WRK9), from its events, oldest first: those of its current run, since
+ * it was last added, restored or reopened. Its start is the run's first pull; its finish, while it is
+ * Done, the event that made it Done (milestone_done for a milestone).
+ */
+export function actualDates(events: { kind: string; at: Date }[], o: { milestone: boolean; done: boolean }): { start?: Date; finish?: Date } {
+  let from = 0;
+  events.forEach((e, i) => { if (e.kind === 'added' || e.kind === 'restored' || e.kind === 'reopened') from = i + 1; });
+  const run = events.slice(from);
+  const finish = o.done ? run.filter((e) => (o.milestone ? e.kind === 'milestone_done' : FINISHED_BY.has(e.kind))).at(-1)?.at : undefined;
+  return { start: run.find((e) => e.kind === 'pulled')?.at, finish };
+}
+
+/** The median of `xs`, which isn't empty: the middle one, or the mean of the middle two. */
+export function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/** A work package as its dates are forecast (WRK9): its state, its fields, and its actual dates. */
+export interface DatedPackage {
+  id: string; address: string; state: WorkState; milestone: boolean; size: WorkSize | null; depends_on: string[]; start?: Date; finish?: Date;
+}
+
+/**
+ * Each package's start and finish (WRK9), actual or forecast, in dependency order. A package's
+ * expected duration is the median of the finished durations of its size in its binding (`durations.binding`),
+ * else in the kolab; with no size, or none of its size in the kolab, it has no forecast, and nor does
+ * any date that waits on it. A To do package starts at the latest of now and the finishes it depends
+ * on, and finishes its expected duration later; one In progress or In review keeps its actual start and
+ * finishes at the later of now and that start plus its expected duration; a milestone starts at its
+ * earliest member's start and finishes at their latest finish. No capacity model: packages that don't
+ * depend on each other run at once.
+ */
+export function workDates(packages: DatedPackage[], durations: { binding: Map<WorkSize, number[]>; kolab: Map<WorkSize, number[]> }, now: Date): Map<string, WorkDates> {
+  const byId = new Map(packages.map((p) => [p.id, p]));
+  const out = new Map<string, WorkDates>();
+  const actual = (d: Date): WorkDate => ({ at: d.toISOString(), kind: 'actual' });
+  const forecast = (d: Date, basis: ForecastBasis): WorkDate => ({ at: d.toISOString(), kind: 'forecast', basis });
+  const none = (reason: string): WorkDate => ({ at: null, kind: 'no_forecast', reason });
+  const both = (reason: string): WorkDates => ({ start: none(reason), finish: none(reason) });
+  const expected = (p: DatedPackage): { ms: number; basis: ForecastBasis } | { reason: string } => {
+    if (!p.size) return { reason: `${p.address} has no size` };
+    for (const from of ['binding', 'kolab'] as const) {
+      const xs = durations[from].get(p.size);
+      if (xs?.length) return { ms: median(xs), basis: { size: p.size, durations: xs.length, from } };
+    }
+    return { reason: `no ${p.size} package in the kolab has a finished duration` };
+  };
+  const waits = (p: DatedPackage) => `it waits on ${p.address}, which has no forecast`;
+  const visiting = new Set<string>();
+  const of = (id: string): WorkDates | undefined => {
+    if (out.has(id)) return out.get(id);
+    const p = byId.get(id);
+    if (!p) return undefined;
+    if (visiting.has(id)) return both(`${p.address} depends on itself`);
+    visiting.add(id);
+    const deps = p.depends_on.flatMap((d) => { const x = of(d); return x ? [{ p: byId.get(d)!, ...x }] : []; });
+    let r: WorkDates;
+    if (p.milestone) {
+      // Its members' dates: the earliest start and, until it is Done, the latest finish.
+      const pick = (side: 'start' | 'finish', later: boolean): WorkDate => {
+        const blank = deps.find((d) => d[side].kind === 'no_forecast');
+        const dated = deps.filter((d) => d[side].at !== null);
+        if (!deps.length) return none(`${p.address} has no members`);
+        // An actual start is before any forecast one, which is never before now.
+        const actuals = side === 'start' ? dated.filter((d) => d.start.kind === 'actual') : [];
+        if (blank && !actuals.length) return none(waits(blank.p));
+        const from = actuals.length ? actuals : dated;
+        const m = from.reduce((a, b) => ((Date.parse(b[side].at!) > Date.parse(a[side].at!)) === later ? b : a));
+        const d = m[side];
+        return d.kind === 'forecast' ? forecast(new Date(d.at), { ...d.basis, via: m.p.address }) : d.kind === 'actual' && side === 'start' ? d : forecast(new Date(d.at!), { via: m.p.address });
+      };
+      r = { start: pick('start', false), finish: p.state === 'done' ? (p.finish ? actual(p.finish) : none(`${p.address} is Done with no milestone_done event in its run`)) : pick('finish', true) };
+    } else if (p.state === 'done') {
+      r = { start: p.start ? actual(p.start) : none(`${p.address} was Done with no pull in its run`), finish: p.finish ? actual(p.finish) : none(`${p.address} is Done with no event that made it Done in its run`) };
+    } else if (p.state === 'todo') {
+      const e = expected(p);
+      const blank = deps.find((d) => d.finish.kind === 'no_forecast');
+      if ('reason' in e) r = both(e.reason);
+      else if (blank) r = both(waits(blank.p));
+      else {
+        const last = deps.reduce<{ at: number; via?: string }>((a, d) => (Date.parse(d.finish.at!) > a.at ? { at: Date.parse(d.finish.at!), via: d.p.address } : a), { at: now.getTime() });
+        r = { start: forecast(new Date(last.at), { ...e.basis, ...(last.via ? { via: last.via } : {}) }), finish: forecast(new Date(last.at + e.ms), e.basis) };
+      }
+    } else {
+      const e = expected(p);
+      r = !p.start ? both(`${p.address} is ${p.state === 'in_review' ? 'In review' : 'In progress'} with no pull in its run`)
+        : { start: actual(p.start), finish: 'reason' in e ? none(e.reason) : forecast(new Date(Math.max(now.getTime(), p.start.getTime() + e.ms)), e.basis) };
+    }
+    visiting.delete(id);
+    out.set(id, r);
+    return r;
+  };
+  for (const p of packages) of(p.id);
   return out;
 }
 

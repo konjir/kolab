@@ -310,6 +310,23 @@ export interface Progress { progress: ProgressValue; at_risk?: boolean }
 /** Progress in one binding of the kolab's spec (DAT18): a spec element's, or a ruling's, per binding. */
 export interface BindingProgress extends Progress { binding: string }
 /**
+ * What a forecast date rests on (WRK9): the median of `durations` finished durations of Done
+ * packages of `size`, from the package's own binding or, with none there, the kolab. `via` names the
+ * package whose finish it waits on: a dependency's, or a milestone's member's.
+ */
+export type ForecastBasis = { size: WorkSize; durations: number; from: 'binding' | 'kolab'; via?: string } | { via: string };
+/**
+ * A work package's start or finish (WRK9): a read, never a row. Actual, from its events; a forecast,
+ * with its basis; or no forecast, with the reason (no size, no finished duration of its size, or a
+ * date it waits on that has none).
+ */
+export type WorkDate =
+  | { at: string; kind: 'actual' }
+  | { at: string; kind: 'forecast'; basis: ForecastBasis }
+  | { at: null; kind: 'no_forecast'; reason: string };
+/** A work package's start and finish (WRK9). */
+export interface WorkDates { start: WorkDate; finish: WorkDate }
+/**
  * What a work package's event records (PLN4, PLN5): its binding adding, removing or restoring it; a
  * pull, a release, a reassignment and a lease that lapsed (PLN14, PLN15); evidence, submission,
  * review and reopening (PLN16, PLN10, W5.1c and W5.2); a milestone Kolab finds Done, or no
@@ -551,6 +568,8 @@ export interface WorkItemView {
   at_risk?: true;
   /** While at risk: the work to look at again, from its evidence since it was last To do (PLN10, WRK6). */
   revisit?: WorkRevisit;
+  /** When it started and finishes (WRK9), on the board and a package read: each actual, a forecast, or no forecast and why. */
+  start?: WorkDate; finish?: WorkDate;
 }
 /**
  * What to revisit on an at-risk work package (PLN10, WRK6): the work its evidence names since it was

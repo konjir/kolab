@@ -10,8 +10,8 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, packageProgress, progressOver, sourceRefs, workProblems,
-  repositoryUrl, type CheckedEvidence, type Independence, type StoredCheck, type Party, type WorkLink,
+  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, actualDates, milestoneStates, naturalCompare, packageProgress, progressOver, sourceRefs, workDates, workProblems,
+  repositoryUrl, type CheckedEvidence, type DatedPackage, type Independence, type StoredCheck, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
@@ -27,7 +27,7 @@ import {
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
   MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type AcceptanceFinding, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
-  REVISIT_FILES, type WorkRevisit, type BindingProgress, type Progress,
+  REVISIT_FILES, type WorkRevisit, type BindingProgress, type Progress, type WorkDates, type WorkSize,
   DEFAULT_POLICY, FUNCTIONAL_ANSWERERS, POLICY_SETTINGS, VERSION_APPROVERS, WORK_APPROVERS,
   type KolabPolicy, type PolicySet, type PolicyView, type VersionApprover, type WorkApprover,
 } from '@konjir/types';
@@ -8215,9 +8215,12 @@ export class Kolab {
     const belongs = s.access.layers.length > 0;
     const items: WorkItemView[] = [];
     const packages = new Map<WorkItemView, BoardPackage>();
+    const boards: { binding: NodeRow; board: BoardPackage[] }[] = [];
     for (const binding of await this.bindingsWithWork(sessionId, filter.binding)) {
       if (after && binding.name < after[0]) continue;
-      for (const p of await this.bindingBoard(this.db, binding)) {
+      const board = await this.bindingBoard(this.db, binding);
+      boards.push({ binding, board });
+      for (const p of board) {
         if (after && binding.name === after[0] && naturalCompare(p.id, after[1]) <= 0) continue;
         const item = this.workItem(p, canPull, belongs);
         if (filter.state && item.state !== filter.state) continue;
@@ -8234,7 +8237,12 @@ export class Kolab {
     const risky = rows.filter((i) => i.at_risk).map((i) => packages.get(i)!)
       .map((p) => ({ key: `${p.binding.id}#${p.id}`, binding: p.binding.id, kolab_id: p.binding.kolab_id, element: p.id }));
     const revisits = risky.length ? await this.revisitsOf(this.db, risky) : new Map<string, WorkRevisit>();
-    return { items: rows.map((i) => (i.at_risk ? { ...i, revisit: revisits.get(`${packages.get(i)!.binding.id}#${i.id}`)! } : i)), next };
+    // Each one's start and finish (WRK9), computed now over the whole of each binding read.
+    const dates = await this.datesIn(this.db, s.kolab, boards);
+    return { items: rows.map((i) => {
+      const key = `${packages.get(i)!.binding.id}#${i.id}`;
+      return { ...i, ...(i.at_risk ? { revisit: revisits.get(key)! } : {}), ...dates.get(key) };
+    }), next };
   }
 
   /**
@@ -8248,6 +8256,51 @@ export class Kolab {
     const out = new Map<string, WorkItemView>();
     // No revisit: the page shows only that a package is at risk.
     for (const p of await this.bindingBoard(this.db, binding)) out.set(p.id, this.workItem(p, canPull, s.access.layers.length > 0));
+    return out;
+  }
+
+  /**
+   * The start and finish of `boards`' packages (WRK9), by `<binding id>#<id>`: a read, never a row,
+   * computed now on `q` from work_event and the depends_on fields of each binding's latest committed
+   * version, with nothing written. Expected durations come from the finished durations of the kolab's
+   * Done packages, each of the size its binding's latest committed version gives it.
+   */
+  private async datesIn(q: Q, kolab: string, boards: { binding: NodeRow; board: BoardPackage[] }[]): Promise<Map<string, WorkDates>> {
+    const out = new Map<string, WorkDates>();
+    if (!boards.some((b) => b.board.length)) return out;
+    const now = new Date((await q.query<{ now: Date | string }>(`select clock_timestamp() as now`)).rows[0].now);
+    const events = new Map<string, { kind: string; at: Date }[]>();
+    for (const e of (await q.query<{ binding: string; element: string; kind: string; at: Date | string }>(
+      `select binding_node_id as binding, element_id as element, kind, at from work_event where kolab_id = $1 and kind = any($2::text[]) order by at, id`,
+      [kolab, ['added', 'restored', 'reopened', 'pulled', 'approved', 'done_unreviewed', 'release_recorded', 'milestone_done']])).rows) {
+      const key = `${e.binding}#${e.element}`;
+      (events.get(key) ?? events.set(key, []).get(key)!).push({ kind: e.kind, at: new Date(e.at) });
+    }
+    // A finished duration (WRK9): a Done package's actual finish less its actual start, in wall-clock time.
+    const finished: { binding: string; size: WorkSize; ms: number }[] = [];
+    for (const d of (await q.query<{ binding: string; element: string; size: WorkSize }>(
+      `select w.binding_node_id as binding, w.element_id as element, e.work->>'size' as size
+         from work_package w
+         join lateral (select v.id from version v where v.node_id = w.binding_node_id and v.state = 'committed' order by v.seq desc limit 1) lv on true
+         join element e on e.version_id = lv.id and e.element_id = w.element_id
+        where w.kolab_id = $1 and w.state = 'done' and not w.milestone and w.removed_in_version_id is null and e.work->>'size' is not null`, [kolab])).rows) {
+      const a = actualDates(events.get(`${d.binding}#${d.element}`) ?? [], { milestone: false, done: true });
+      if (a.start && a.finish) finished.push({ binding: d.binding, size: d.size, ms: a.finish.getTime() - a.start.getTime() });
+    }
+    const bySize = (xs: typeof finished) => {
+      const m = new Map<WorkSize, number[]>();
+      for (const x of xs) (m.get(x.size) ?? m.set(x.size, []).get(x.size)!).push(x.ms);
+      return m;
+    };
+    const kolabWide = bySize(finished);
+    for (const { binding, board } of boards) {
+      const packages: DatedPackage[] = board.map((p) => ({
+        id: p.id, address: formatAddress({ node: binding.name, element: p.id }), state: p.state, milestone: p.row.milestone,
+        size: p.work?.size ?? null, depends_on: p.work?.depends_on ?? [],
+        ...actualDates(events.get(`${binding.id}#${p.id}`) ?? [], { milestone: p.row.milestone, done: p.state === 'done' }),
+      }));
+      for (const [id, d] of workDates(packages, { binding: bySize(finished.filter((f) => f.binding === binding.id)), kolab: kolabWide }, now)) out.set(`${binding.id}#${id}`, d);
+    }
     return out;
   }
 
@@ -8451,10 +8504,12 @@ export class Kolab {
   }
 
   private async readWorkOf(sessionId: string, { s, binding, id }: { s: Session; binding: NodeRow; id: string }, page: PageOpts) {
-    const p =(await this.bindingBoard(this.db, binding, { removed: true })).find((x) => x.id === id);
+    const board = await this.bindingBoard(this.db, binding, { removed: true });
+    const p = board.find((x) => x.id === id);
     if (!p) throw new Error(`no work package ${formatAddress({ node: binding.name, element: id })} in kolab ${s.kolab}`);
     const canPull = LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical');
-    const item = await this.workItemFull(p, canPull, s.access.layers.length > 0);
+    // Its start and finish (WRK9), computed now.
+    const item = { ...await this.workItemFull(p, canPull, s.access.layers.length > 0), ...(await this.datesIn(this.db, s.kolab, [{ binding, board }])).get(`${binding.id}#${id}`) };
     const size = pageSize(page.limit);
     const list = `work_events:${binding.id}#${id}`;
     const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;

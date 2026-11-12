@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { WebCase, WebCasesView, WebMarksView, WebMe, WebOverview, WebPaged, WebQueriesView, WebQuery, WebReviewsView, WebRulingsView, WebWorkView } from '@konjir/types';
+import type { WebCase, WebCasesView, WebMarksView, WebMe, WebOverview, WebPaged, WebQueriesView, WebQuery, WebReviewsView, WebRulingsView, WebWorkView, WorkDate } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
 import { Pill } from './bits.js';
@@ -49,6 +49,19 @@ function useKept<T extends WebPaged, I>(path: string, tick: number, items: (p: T
     // `items` and `keep` are fixed per call site; the list is read again when its path, the tick or the count moves.
   }, [path, tick, want]);
   return out;
+}
+
+/**
+ * A work package's start or finish (WRK9): an actual date plainly; a forecast muted, with the word
+ * "forecast" and, on hover, what it rests on; no forecast, with the reason.
+ */
+function DateOf({ label, d }: { label: string; d: WorkDate }) {
+  if (d.kind === 'no_forecast') return <span className="date none">{label}: no forecast ({d.reason})</span>;
+  const day = d.at.slice(0, 10);
+  if (d.kind === 'actual') return <span className="date actual">{label} {day}</span>;
+  const b = d.basis;
+  const why = 'size' in b ? `the median of ${b.durations} finished ${b.size} package${b.durations === 1 ? '' : 's'} in the ${b.from}${b.via ? `, after ${b.via}` : ''}` : `after ${b.via}`;
+  return <span className="date forecast" title={`Forecast: ${why}`}>{label} {day} <em>forecast</em></span>;
 }
 
 /** Where an address opens in the page, or undefined for text that isn't one. */
@@ -187,6 +200,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
                             {w.assignee && <span>{w.assignee}</span>}
                           </span>
                           {w.blocked.length > 0 && !w.milestone && w.state !== 'done' && <span className="blocked">Blocked: {blockWord(w)}</span>}
+                          {w.start && w.finish && <span className="card-dates"><DateOf label="start" d={w.start} /> <DateOf label="finish" d={w.finish} /></span>}
                         </li>
                       ))}
                     </ul>
