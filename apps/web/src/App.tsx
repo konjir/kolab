@@ -356,6 +356,7 @@ export function App() {
           {r.view === 'people' && overview && <PeopleView me={me} overview={overview} tick={tick} act={act} />}
           {r.view === 'connect' && <ConnectPage me={me} />}
           {r.view === 'sessions' && <SessionsView tick={tick} act={act} />}
+          {r.view === 'new' && !me.access.layers.includes(me.layer) && <p className="empty">Working as {me.role}, you don’t write the {me.layer} layer here, so you make no document in it.</p>}
           {(r.view === 'start' || r.view === 'new') && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
           {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onRead={(k) => go(`read/${k}`)}
             onCreateKolab={(name, title) => act.run(async () => { moved(await createKolab(name, title), `Created ${name}. Its spec is empty: start it.`); }, '')} />}
