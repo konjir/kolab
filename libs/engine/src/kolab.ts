@@ -10,7 +10,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, workProblems,
+  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, packageProgress, progressOver, sourceRefs, workProblems,
   repositoryUrl, type CheckedEvidence, type Independence, type StoredCheck, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
@@ -27,7 +27,7 @@ import {
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
   MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type AcceptanceFinding, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
-  REVISIT_FILES, type WorkRevisit,
+  REVISIT_FILES, type WorkRevisit, type BindingProgress, type Progress,
   DEFAULT_POLICY, FUNCTIONAL_ANSWERERS, POLICY_SETTINGS, VERSION_APPROVERS, WORK_APPROVERS,
   type KolabPolicy, type PolicySet, type PolicyView, type VersionApprover, type WorkApprover,
 } from '@konjir/types';
@@ -7887,7 +7887,9 @@ export class Kolab {
     const keys: { at: string; id: string }[] = [];
     const rows = await this.read({ session: sessionId }, (q) => this.listRulings({ ...filter, kolab, limit: size + 1, after }, q, keys));
     const { rows: items, next } = pageOf(rows, size, list, (r) => { const k = keys.find((x) => x.id === r.ruling)!; return [k.at, k.id]; });
-    return { items, next };
+    // Each one's progress (WRK8), from the elements whose Source line names its ref.
+    const progress = await this.rulingsProgress(await QUIET.run(true, () => this.session(sessionId)), [...new Set(items.flatMap((r) => (r.ref ? [r.ref] : [])))]);
+    return { items: items.map((r): RulingView => (r.ref && progress.has(r.ref) ? { ...r, progress: progress.get(r.ref) } : r)), next };
   }
 
   /**
@@ -8246,6 +8248,102 @@ export class Kolab {
     const out = new Map<string, WorkItemView>();
     // No revisit: the page shows only that a package is at risk.
     for (const p of await this.bindingBoard(this.db, binding)) out.set(p.id, this.workItem(p, canPull, s.access.layers.length > 0));
+    return out;
+  }
+
+  /**
+   * Progress in kolab `kolab` (WRK8): a read, never a row, computed now on `q` from work state (WRK2)
+   * and the live dependency links of the latest committed versions, so a change of state or a commit
+   * changes it with nothing written. For each binding of the kolab's spec (DAT18), its elements' (a
+   * work package's its own state; a decision's from the packages that link to it, PLN1) and each spec
+   * element's there: from the binding's elements that serve it or an element nested under it, or not
+   * served when none does (PLN7). With the latest committed elements, whose Source lines rulings read.
+   */
+  private async progressIn(q: Q, kolab: string): Promise<KolabProgress> {
+    const latest = async (node: string) => (await q.query<VersionRow>(`select * from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [node])).rows[0];
+    const specs = new Map<string, ElementRow[]>();
+    for (const n of (await q.query<NodeRow>(`select ${NODE_COLUMNS} from node n where kolab_id = $1 and kind = 'spec' order by name`, [kolab])).rows) {
+      const v = await latest(n.id);
+      specs.set(n.id, v ? await this.elements(v.id, q) : []);
+    }
+    const bindings: KolabProgress['bindings'] = [];
+    for (const b of (await q.query<NodeRow>(`select ${NODE_COLUMNS} from node n where kolab_id = $1 and kind = 'binding' and parent_node_id = any($2::text[]) order by name`,
+      [kolab, [...specs.keys()]])).rows) {
+      const spec = specs.get(b.parent_node_id!)!;
+      const v = await latest(b.id);
+      const els = v ? await this.ownWork(q, v) : [];
+      const board = new Map((v ? await this.bindingBoard(q, b) : []).map((p) => [p.id, p]));
+      const links = v ? await this.deliveries(q, b, v, new Set(els.map((e) => e.element_id))) : new Map<string, Delivery[]>();
+      const own = new Map<string, Progress>();
+      for (const e of els.filter((x) => x.work)) {
+        const p = board.get(e.element_id);
+        own.set(e.element_id, { progress: packageProgress(p?.state ?? 'todo'), at_risk: !!p && atRisk(p) });
+      }
+      // A decision: the work packages that link to it by dependency (PLN1).
+      for (const e of els.filter((x) => !x.work)) {
+        own.set(e.element_id, progressOver(els.filter((x) => x.work && (links.get(x.element_id) ?? []).some((d) => d.node_id === b.id && d.element === e.element_id))
+          .map((x) => own.get(x.element_id)!)));
+      }
+      // A spec element: the binding's elements that serve it, or any element nested under it.
+      const servers = new Map<string, string[]>();
+      for (const [from, ds] of links) for (const d of ds) if (d.node_id === b.parent_node_id) (servers.get(d.element) ?? servers.set(d.element, []).get(d.element)!).push(from);
+      const children = new Map<string, string[]>();
+      for (const e of spec) if (e.parent_element_id) (children.get(e.parent_element_id) ?? children.set(e.parent_element_id, []).get(e.parent_element_id)!).push(e.element_id);
+      const under = (id: string, seen = new Set<string>()): string[] => {
+        if (seen.has(id)) return [];
+        seen.add(id);
+        return [id, ...(children.get(id) ?? []).flatMap((c) => under(c, seen))];
+      };
+      const served = new Map<string, Progress>();
+      for (const e of spec) {
+        const by = new Set(under(e.element_id).flatMap((x) => servers.get(x) ?? []));
+        served.set(e.element_id, by.size ? progressOver([...by].map((x) => own.get(x)!)) : { progress: 'not_served', at_risk: false });
+      }
+      bindings.push({ node: b, spec: b.parent_node_id!, elements: els, own, served });
+    }
+    return { specs, bindings };
+  }
+
+  /**
+   * Each element's progress (WRK8) in node `nodeId` of the session's kolab, by element id: a binding
+   * element's own, and a spec element's as a list, one entry per binding, naming it. None for another
+   * kolab's node (work is never read across kolabs, D49), nor a prototype's. Read-only.
+   */
+  async progressOf(sessionId: string, nodeId: string): Promise<Map<string, Progress | BindingProgress[]>> {
+    const s = await QUIET.run(true, () => this.session(sessionId));
+    const node = await this.node(nodeId);
+    const out = new Map<string, Progress | BindingProgress[]>();
+    if (node.kolab_id !== s.kolab || (node.kind !== 'spec' && node.kind !== 'binding')) return out;
+    const all = await this.progressIn(this.db, s.kolab);
+    const shown = progressShown(s.access.layers.length > 0);
+    if (node.kind === 'binding') for (const [id, p] of all.bindings.find((b) => b.node.id === node.id)?.own ?? []) out.set(id, shown(p));
+    else {
+      const mine = all.bindings.filter((b) => b.spec === node.id);
+      for (const e of all.specs.get(node.id) ?? []) out.set(e.element_id, mine.map((b) => ({ binding: b.node.name, ...shown(b.served.get(e.element_id)!) })));
+    }
+    return out;
+  }
+
+  /**
+   * The progress of the rulings named `refs` in the session's kolab (WRK8), by ref: once per binding
+   * of its spec, over the binding's elements, and the spec elements as that binding meets them, whose
+   * latest committed text has a Source line naming the ref. A binding none of whose elements, nor its
+   * spec's, names it has no entry; a ruling no element names has none at all.
+   */
+  private async rulingsProgress(s: Session, refs: string[]): Promise<Map<string, BindingProgress[]>> {
+    const out = new Map<string, BindingProgress[]>();
+    if (!refs.length) return out;
+    const all = await this.progressIn(this.db, s.kolab);
+    const shown = progressShown(s.access.layers.length > 0);
+    const named = (els: ElementRow[]) => els.map((e) => ({ id: e.element_id, refs: sourceRefs(e.text) }));
+    const specs = new Map([...all.specs].map(([id, els]) => [id, named(els)]));
+    for (const b of all.bindings) {
+      const own = named(b.elements);
+      for (const ref of refs) {
+        const counted = [...own.filter((e) => e.refs.has(ref)).map((e) => b.own.get(e.id)!), ...(specs.get(b.spec) ?? []).filter((e) => e.refs.has(ref)).map((e) => b.served.get(e.id)!)];
+        if (counted.length) (out.get(ref) ?? out.set(ref, []).get(ref)!).push({ binding: b.node.name, ...shown(progressOver(counted)) });
+      }
+    }
     return out;
   }
 
@@ -12564,6 +12662,15 @@ interface BoardPackage {
 /** Whether a board package is at risk (PLN10, W5.2b): it has work (In progress, In review or Done), an open mark, and is still its binding's. */
 const atRisk = (p: Pick<BoardPackage, 'marked' | 'state' | 'row'>) =>
   p.marked && !p.row.milestone && !p.row.removed_in_version_id && p.state !== 'todo';
+
+/** A kolab's progress as Kolab.progressIn computes it (WRK8): its specs' latest elements, and each binding's progress. */
+interface KolabProgress {
+  specs: Map<string, ElementRow[]>;
+  bindings: { node: NodeRow; spec: string; elements: ElementRow[]; own: Map<string, Progress>; served: Map<string, Progress> }[];
+}
+
+/** Progress as a reader sees it: at risk is told only to those who belong to the kolab's work, who read marks (D58). */
+const progressShown = (belongs: boolean) => (p: Progress): Progress => (belongs ? { progress: p.progress, at_risk: !!p.at_risk } : { progress: p.progress });
 
 interface WorkEventRow {
   id: string; binding_node_id: string; element_id: string; kind: WorkEventKind; from_state: WorkState | null; to_state: WorkState | null;

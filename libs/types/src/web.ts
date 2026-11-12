@@ -4,7 +4,7 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  AcceptanceFinding, Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, QueryKind,
+  AcceptanceFinding, Access, AccessLevel, ActorKind, BindingProgress, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, Progress, QueryKind,
   QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkItemView, WorkState,
 } from './index.js';
 
@@ -144,6 +144,8 @@ export interface WebElement {
   work?: WorkFields;
   /** On the binding's latest committed version: the work package's state (W5.1b), read only. */
   work_state?: WebWorkState;
+  /** Its progress (WRK8), computed as it is read: a binding element's own, a spec element's one per binding. Absent outside the session's kolab, and on a prototype. */
+  progress?: Progress | BindingProgress[];
   /** Questions and notes on this element, open and answered, from any version (Q5): the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
   /** The cursor to the older ones (GET /api/nodes/:name/queries?element=), or null when that is all (W2.21). */

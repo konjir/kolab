@@ -773,7 +773,7 @@ Review requests waiting for you, oldest first, each with its subject and how to 
 konjir list_rulings [node=<string>] [ref=<string>] [cursor=<string>] [limit=<int>]
 ```
 
-List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when, and, for one with a ref that elements name in a Source line, its progress in each binding (done, in_progress, todo, no_work, with at_risk) over those elements. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -872,7 +872,7 @@ Read one case file of your kolab: the element in dispute, the question, each pos
 konjir read_node node=<string> [version=<int>] [cursor=<string>]
 ```
 
-Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest 20, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. Defaults to the latest committed version. The node is one of your kolab's, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most 1000 elements; a read returns 250 of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.
+Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest 20, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. In your kolab, each element has its progress, computed as it is read (done, in_progress, todo, no_work, with at_risk): a work package's is its state, a decision's is over the packages that rely on it, and a spec element's is a list, one entry per binding, over the binding elements that serve it or an element under it (not_served where none does). Defaults to the latest committed version. The node is one of your kolab's, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most 1000 elements; a read returns 250 of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

@@ -296,7 +296,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_read_node',
-    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
+    description: `Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest ${THREADS_PER_ELEMENT}, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. In your kolab, each element has its progress, computed as it is read (done, in_progress, todo, no_work, with at_risk): a work package's is its state, a decision's is over the packages that rely on it, and a spec element's is a list, one entry per binding, over the binding elements that serve it or an element under it (not_served where none does). Defaults to the latest committed version. The node is one of your kolab\'s, or <kolab>/<node> in any kolab you can read. For a variant of your kolab whose parent committed a newer version, rebase says its rebase is queued: Kolab rebases it in the background, and a new version of it appears once that is done. A version holds at most ${MAX_ELEMENTS} elements; a read returns ${READ_NODE_PAGE} of them at a time, in order, and next is null once it has returned the last. While next isn't null, read again with cursor=next for the rest.`,
     schema: readNode,
     annotations: { readOnlyHint: true },
   })
@@ -317,6 +317,8 @@ export class AgentTools {
       // Only the page's questions, the newest THREADS_PER_ELEMENT on each of its elements, read in SQL.
       const read = await kolab.readNode(s, node, version, { threads: { per: THREADS_PER_ELEMENT, from: start, count: READ_NODE_PAGE } });
       const { node: n, version: row, from: here, elements: all, queries, query_counts: counts, removes, rulings, cases, rebase } = read;
+      // Each element's progress (WRK8), computed now: a read, never a row.
+      const progress = await kolab.progressOf(s, n.id);
       keyOf(`read_node:${row.id}`, cursor, ['int']);
       const els = all.slice(start, start + READ_NODE_PAGE);
       const next = start + READ_NODE_PAGE < all.length ? cursorFor(`read_node:${row.id}`, [start + READ_NODE_PAGE]) : null;
@@ -358,6 +360,7 @@ export class AgentTools {
           address: at(e.element_id), id: e.element_id, parent: e.parent_element_id, text: e.text,
           // A work package's fields (PLN1, D98), where it has any.
           ...(e.work ? { work: e.work } : {}),
+          ...(progress.has(e.element_id) ? { progress: progress.get(e.element_id) } : {}),
           ...shown(e.element_id),
           ...(ruled.get(e.element_id) ? { rulings: ruled.get(e.element_id) } : {}),
           ...(open.get(e.element_id) ? { open_cases: open.get(e.element_id) } : {}),
@@ -729,7 +732,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_rulings',
-    description: `List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when.${PAGED}`,
+    description: `List the rulings in your kolab, newest first: precedent, so a settled question is not argued again. Each names what it rules on, its text, whether it changed the intent, what it replaces, who ruled and when, and, for one with a ref that elements name in a Source line, its progress in each binding (done, in_progress, todo, no_work, with at_risk) over those elements.${PAGED}`,
     schema: listRulings,
     annotations: { readOnlyHint: true },
   })
