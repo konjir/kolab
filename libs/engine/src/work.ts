@@ -360,9 +360,13 @@ export function workDates(packages: DatedPackage[], durations: { binding: Map<Wo
     if (p.milestone) {
       // Its members' dates: the earliest start and, until it is Done, the latest finish.
       const pick = (side: 'start' | 'finish', later: boolean): WorkDate => {
-        const blank = deps.find((d) => d[side].kind === 'no_forecast');
-        const dated = deps.filter((d) => d[side].at !== null);
         if (!deps.length) return none(`${p.address} has no members`);
+        // A Done member whose run records no date (restored, done to done) has finished by now: it
+        // holds back neither side, since a member not yet Done finishes no earlier than now.
+        const counted = deps.filter((d) => !(d.p.state === 'done' && d[side].kind === 'no_forecast'));
+        if (!counted.length) return none(`${p.address}'s members are Done with no ${side} in their runs`);
+        const blank = counted.find((d) => d[side].kind === 'no_forecast');
+        const dated = counted.filter((d) => d[side].at !== null);
         // An actual start is before any forecast one, which is never before now.
         const actuals = side === 'start' ? dated.filter((d) => d.start.kind === 'actual') : [];
         if (blank && !actuals.length) return none(waits(blank.p));
