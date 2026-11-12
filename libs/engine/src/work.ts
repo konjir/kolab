@@ -292,34 +292,22 @@ export function progressOver(counted: Progress[]): Progress {
 }
 
 /**
- * The ruling refs an element's Source line names (WRK8, migration 0042): "Source: D12, D47." gives
- * D12 and D47. Every line's, from "Source:" to its end, split at commas, semicolons and spaces.
+ * The ruling refs an element's Source lines name (WRK8, migration 0042): a line that starts with
+ * "Source:", after any whitespace or list marker, gives the tokens after it, split at commas,
+ * semicolons and spaces, with brackets and a closing full stop trimmed. "Source: D12, D47." gives D12
+ * and D47; "Data Source: X" gives nothing. They are candidates: a ruling counts only when one of them
+ * is its ref exactly, so a word such as "and" names nothing unless a ruling is called that. A range,
+ * D1-D5, is one token, and names no ruling between.
  */
 export function sourceRefs(text: string): Set<string> {
   const out = new Set<string>();
-  for (const m of text.matchAll(/\bSource:([^\n]*)/g)) {
+  for (const m of text.matchAll(/^[ \t]*(?:(?:[-*+>]|\d+[.)])[ \t]*)*Source:([^\n]*)/gm)) {
     for (const t of m[1].split(/[\s,;]+/)) {
       const ref = t.replace(/[.)\]]+$/, '').replace(/^[([]+/, '');
       if (RULING_REF.test(ref)) out.add(ref);
     }
   }
   return out;
-}
-
-/** The events that make a package Done (WRK9): an approval, a submission with no reviewer, a release recorded. */
-const FINISHED_BY = new Set(['approved', 'done_unreviewed', 'release_recorded']);
-
-/**
- * A work package's actual dates (WRK9), from its events, oldest first: those of its current run, since
- * it was last added, restored or reopened. Its start is the run's first pull; its finish, while it is
- * Done, the event that made it Done (milestone_done for a milestone).
- */
-export function actualDates(events: { kind: string; at: Date }[], o: { milestone: boolean; done: boolean }): { start?: Date; finish?: Date } {
-  let from = 0;
-  events.forEach((e, i) => { if (e.kind === 'added' || e.kind === 'restored' || e.kind === 'reopened') from = i + 1; });
-  const run = events.slice(from);
-  const finish = o.done ? run.filter((e) => (o.milestone ? e.kind === 'milestone_done' : FINISHED_BY.has(e.kind))).at(-1)?.at : undefined;
-  return { start: run.find((e) => e.kind === 'pulled')?.at, finish };
 }
 
 /** The median of `xs`, which isn't empty: the middle one, or the mean of the middle two. */
@@ -329,7 +317,7 @@ export function median(xs: number[]): number {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-/** A work package as its dates are forecast (WRK9): its state, its fields, and its actual dates. */
+/** A work package as its dates are forecast (WRK9): its state, its fields, and its actual dates, from its current run. */
 export interface DatedPackage {
   id: string; address: string; state: WorkState; milestone: boolean; size: WorkSize | null; depends_on: string[]; start?: Date; finish?: Date;
 }
@@ -388,11 +376,13 @@ export function workDates(packages: DatedPackage[], durations: { binding: Map<Wo
       r = { start: p.start ? actual(p.start) : none(`${p.address} was Done with no pull in its run`), finish: p.finish ? actual(p.finish) : none(`${p.address} is Done with no event that made it Done in its run`) };
     } else if (p.state === 'todo') {
       const e = expected(p);
-      const blank = deps.find((d) => d.finish.kind === 'no_forecast');
+      // A Done dependency has finished by now at the latest, whatever its run records.
+      const waiting = deps.filter((d) => d.p.state !== 'done');
+      const blank = waiting.find((d) => d.finish.kind === 'no_forecast');
       if ('reason' in e) r = both(e.reason);
       else if (blank) r = both(waits(blank.p));
       else {
-        const last = deps.reduce<{ at: number; via?: string }>((a, d) => (Date.parse(d.finish.at!) > a.at ? { at: Date.parse(d.finish.at!), via: d.p.address } : a), { at: now.getTime() });
+        const last = waiting.reduce<{ at: number; via?: string }>((a, d) => (Date.parse(d.finish.at!) > a.at ? { at: Date.parse(d.finish.at!), via: d.p.address } : a), { at: now.getTime() });
         r = { start: forecast(new Date(last.at), { ...e.basis, ...(last.via ? { via: last.via } : {}) }), finish: forecast(new Date(last.at + e.ms), e.basis) };
       }
     } else {

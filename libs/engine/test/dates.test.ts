@@ -4,8 +4,8 @@
 // finished, it has no forecast, and nor has what waits on it. Every forecast is labelled, with its basis.
 import { expect, test } from '@jest/globals';
 import pg from 'pg';
-import { actualDates, median, workDates, type Kolab } from '@konjir/engine';
-import { els, openKolab, people, registeredRepository } from '@konjir/engine/testing';
+import { median, workDates, type Kolab } from '@konjir/engine';
+import { commitReviewed, els, openKolab, people, registeredRepository } from '@konjir/engine/testing';
 import type { ElementInput } from '@konjir/types';
 
 const DAY = 86_400_000;
@@ -19,13 +19,7 @@ async function tables(kolab: Kolab) {
   return out;
 }
 
-test('the current run is the events since the package was last added, restored or reopened; its start the first pull, its finish what made it Done (WRK9)', () => {
-  const t = (n: number) => new Date(Date.UTC(2026, 10, n));
-  const events = [{ kind: 'added', at: t(1) }, { kind: 'pulled', at: t(2) }, { kind: 'approved', at: t(3) }, { kind: 'reopened', at: t(4) },
-    { kind: 'pulled', at: t(5) }, { kind: 'released', at: t(6) }, { kind: 'pulled', at: t(7) }, { kind: 'done_unreviewed', at: t(8) }];
-  expect(actualDates(events, { milestone: false, done: true })).toStrictEqual({ start: t(5), finish: t(8) });
-  expect(actualDates(events.slice(0, 5), { milestone: false, done: false })).toStrictEqual({ start: t(5), finish: undefined });
-  expect(actualDates([{ kind: 'added', at: t(1) }, { kind: 'milestone_done', at: t(9) }], { milestone: true, done: true })).toStrictEqual({ start: undefined, finish: t(9) });
+test('a median is the middle duration, or the mean of the middle two (WRK9)', () => {
   expect([median([3]), median([4, 1, 3]), median([2, 4]), median([5, 1, 2, 9])]).toStrictEqual([3, 3, 3, 3.5]);
 });
 
@@ -39,7 +33,29 @@ test('with no finished duration in its binding, a package\'s forecast is the kol
     finish: { at: new Date(now.getTime() + 2 * DAY).toISOString(), kind: 'forecast', basis: { size: 'M', durations: 2, from: 'kolab' } },
   });
   expect(d.get('B')!.start).toStrictEqual({ at: null, kind: 'no_forecast', reason: 'no L package in the kolab has a finished duration' });
-  expect(d.get('C')!.finish.kind).toBe('no_forecast');
+  // A cycle stops: each date of each says what it waits on.
+  const c = { at: null, kind: 'no_forecast', reason: 'it waits on kj:b#D, which has no forecast' };
+  const dd = { at: null, kind: 'no_forecast', reason: 'it waits on kj:b#C, which has no forecast' };
+  expect(d.get('C')).toStrictEqual({ start: c, finish: c });
+  expect(d.get('D')).toStrictEqual({ start: dd, finish: dd });
+});
+
+test('a Done dependency has finished by now, whatever its run records; a milestone with a member that has no forecast has none either (WRK9)', () => {
+  const now = new Date(Date.UTC(2026, 10, 12));
+  const pkg = (id: string, o: Partial<Parameters<typeof workDates>[0][number]> = {}) => ({ id, address: `kj:b#${id}`, state: 'todo' as const, milestone: false, size: 'S' as const, depends_on: [], ...o });
+  const S = { size: 'S', durations: 1, from: 'binding' };
+  const d = workDates([
+    // Restored Done: no pull, no approval in its run.
+    pkg('A', { state: 'done' }), pkg('B', { depends_on: ['A'] }),
+    pkg('U', { size: null }), pkg('M', { milestone: true, size: null, depends_on: ['B', 'U'] }),
+  ], { binding: new Map([['S', [DAY]]]), kolab: new Map([['S', [DAY]]]) }, now);
+  expect(d.get('A')).toStrictEqual({
+    start: { at: null, kind: 'no_forecast', reason: 'kj:b#A was Done with no pull in its run' },
+    finish: { at: null, kind: 'no_forecast', reason: 'kj:b#A is Done with no event that made it Done in its run' },
+  });
+  expect(d.get('B')).toStrictEqual({ start: { at: now.toISOString(), kind: 'forecast', basis: S }, finish: { at: new Date(now.getTime() + DAY).toISOString(), kind: 'forecast', basis: S } });
+  const waits = { at: null, kind: 'no_forecast', reason: 'it waits on kj:b#U, which has no forecast' };
+  expect(d.get('M')).toStrictEqual({ start: waits, finish: waits });
 });
 
 /**
@@ -108,9 +124,12 @@ test('a To do S package after an In progress one: the Done packages\' actual dat
   ];
   // Events are never edited (PLN5), but a test can set when they happened: the packages were added first.
   await kolab.db.query(`alter table work_event disable trigger work_event_fixed`);
-  await kolab.db.query(`update work_event set at = $1 where kind = 'added'`, [ago(30)]);
-  for (const [element, kind, when] of times) await kolab.db.query(`update work_event set at = $3 where element_id = $1 and kind = $2`, [element, kind, when]);
-  await kolab.db.query(`alter table work_event enable trigger work_event_fixed`);
+  try {
+    await kolab.db.query(`update work_event set at = $1 where kind = 'added'`, [ago(30)]);
+    for (const [element, kind, when] of times) await kolab.db.query(`update work_event set at = $3 where element_id = $1 and kind = $2`, [element, kind, when]);
+  } finally {
+    await kolab.db.query(`alter table work_event enable trigger work_event_fixed`);
+  }
 
   const before = await tables(kolab);
   const board = new Map((await kolab.listWork(product, { binding: 'orders-pg' })).items.map((i) => [i.id, i]));
@@ -137,10 +156,54 @@ test('a To do S package after an In progress one: the Done packages\' actual dat
   // An L package: none finished in its binding, so the kolab's, from orders-my.
   const w7 = dates('W7');
   expect(w7.start).toMatchObject({ kind: 'forecast', basis: { size: 'L', durations: 1, from: 'kolab' } });
-  expect(Date.parse(w7.finish.at!) - Date.parse(w7.start.at!)).toBe(5 * DAY);
+  expect(Date.parse(w7.finish!.at!) - Date.parse(w7.start!.at!)).toBe(5 * DAY);
   // An M package: none finished in the kolab.
   expect(dates('W8').finish).toStrictEqual({ at: null, kind: 'no_forecast', reason: 'no M package in the kolab has a finished duration' });
   // A milestone: its earliest member's start, and its own finish once Done, or its members' latest.
   expect(dates('M1')).toStrictEqual({ start: at(ago(10)), finish: at(ago(3)) });
   expect(dates('M2')).toStrictEqual({ start: at(ago(1 / 24)), finish: { ...dates('W4').finish, basis: { ...S, via: 'kj:orders-pg#W4' } } });
+});
+
+test('a run starts again when a package is reopened or restored: a reopened one is To do, then starts at its new pull; a restored Done one has no actual dates, and what depends on it starts now (WRK9)', async () => {
+  const { kolab, product, bob, eve } = await planned();
+  const finish = async (id: string, c: string) => {
+    expect(await kolab.pullWork(bob, { binding: 'orders-pg' })).toMatchObject({ pulled: true, item: { id } });
+    await kolab.submitWork(bob, `kj:orders-pg#${id}`, { evidence: [{ kind: 'commit', sha: c.repeat(40), title: id, files: ['src/x.ts'] }] });
+    await kolab.reviewWork(eve, `kj:orders-pg#${id}`, { verdict: 'approve', note: 'Checked.' });
+  };
+  await finish('W1', 'b');
+  await finish('W2', 'c');
+  await finish('W3', 'd');
+  const item = async (id: string) => (await kolab.listWork(product, { binding: 'orders-pg' })).items.find((i) => i.id === id)!;
+  expect((await item('W1')).start!.kind).toBe('actual');
+
+  // Reopened: To do again, so forecast, from W2's and W3's durations; pulled again, it starts at the new pull, not the first.
+  await kolab.reopenWork(bob, 'kj:orders-pg#W1', { note: 'Again.' });
+  expect((await item('W1')).start).toMatchObject({ kind: 'forecast', basis: { size: 'S', durations: 2, from: 'binding' } });
+  expect(await kolab.pullWork(bob, { binding: 'orders-pg' })).toMatchObject({ pulled: true, item: { id: 'W1' } });
+  const pulls = (await kolab.db.query<{ at: Date }>(`select at from work_event where element_id = 'W1' and kind = 'pulled' order by at`)).rows.map((r) => new Date(r.at));
+  expect(pulls).toHaveLength(2);
+  expect((await item('W1')).start).toStrictEqual(at(pulls[1]));
+
+  // Restored: the binding drops W2 (Done), then adds it back, with W9 depending on it.
+  const all = (await kolab.elements((await kolab.latestCommitted('orders-pg'))!.id))
+    .map((e) => ({ id: e.element_id, text: e.text, ...(e.parent_element_id ? { parent: e.parent_element_id } : {}), ...(e.work ? { work: e.work } : {}) }));
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { elements: all.filter((e) => e.id !== 'W2').map((e) => (e.id === 'M1' ? { ...e, work: { milestone: true, depends_on: ['W1'] } } : e)) });
+  const v = (await kolab.latestCommitted('orders-pg'))!.id;
+  await commitReviewed(kolab, bob, eve, 'orders-pg', { elements: [...all, { id: 'W9', text: 'After the refund.', work: { size: 'S', depends_on: ['W2'] } }],
+    links: ['W2', 'W9'].map((w) => ({ kind: 'dependency' as const, sourceElement: w, target: v, targetElement: 'd1' })) });
+  expect((await kolab.db.query(`select from_state, to_state from work_event where element_id = 'W2' and kind = 'restored'`)).rows).toStrictEqual([{ from_state: 'done', to_state: 'done' }]);
+  const w2 = await item('W2');
+  expect(w2.state).toBe('done');
+  expect({ start: w2.start, finish: w2.finish }).toStrictEqual({
+    start: { at: null, kind: 'no_forecast', reason: 'kj:orders-pg#W2 was Done with no pull in its run' },
+    finish: { at: null, kind: 'no_forecast', reason: 'kj:orders-pg#W2 is Done with no event that made it Done in its run' },
+  });
+  // W2 is Done, so it has finished by now: W9 starts now, not at a date W2 can't give. W2's run, restored, counts no duration: W3's alone.
+  const w9 = await item('W9');
+  const basis = { size: 'S', durations: 1, from: 'binding' };
+  expect(w9.start).toMatchObject({ kind: 'forecast', basis });
+  expect(w9.start).not.toHaveProperty('basis.via');
+  expect(Math.abs(Date.parse(w9.start!.at!) - Date.now())).toBeLessThan(60_000);
+  expect(w9.finish).toMatchObject({ kind: 'forecast', basis });
 });

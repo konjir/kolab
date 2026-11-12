@@ -52,16 +52,18 @@ function useKept<T extends WebPaged, I>(path: string, tick: number, items: (p: T
 }
 
 /**
- * A work package's start or finish (WRK9): an actual date plainly; a forecast muted, with the word
- * "forecast" and, on hover, what it rests on; no forecast, with the reason.
+ * A work package's start or finish (WRK9), on the reader's own calendar: an actual date plainly; a
+ * forecast muted, with the word "forecast" and what it rests on written after it, for a phone and a
+ * screen reader too; no forecast, with the reason.
  */
 function DateOf({ label, d }: { label: string; d: WorkDate }) {
   if (d.kind === 'no_forecast') return <span className="date none">{label}: no forecast ({d.reason})</span>;
-  const day = d.at.slice(0, 10);
+  const t = new Date(d.at);
+  const day = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
   if (d.kind === 'actual') return <span className="date actual">{label} {day}</span>;
   const b = d.basis;
-  const why = 'size' in b ? `the median of ${b.durations} finished ${b.size} package${b.durations === 1 ? '' : 's'} in the ${b.from}${b.via ? `, after ${b.via}` : ''}` : `after ${b.via}`;
-  return <span className="date forecast" title={`Forecast: ${why}`}>{label} {day} <em>forecast</em></span>;
+  const why = 'size' in b ? `median of ${b.durations} finished ${b.size} in the ${b.from}${b.via ? `, after ${b.via}` : ''}` : `after ${b.via}`;
+  return <span className="date forecast">{label} {day} <em>forecast</em> <span className="basis">({why})</span></span>;
 }
 
 /** Where an address opens in the page, or undefined for text that isn't one. */

@@ -111,7 +111,7 @@ export class WebService {
       // A binding's work state, on its latest committed version only: state isn't versioned (PLN4).
       const board = n.kind === 'binding' && live ? await k.workBoard(s, n.name) : undefined;
       // Each element's progress (WRK8), as konjir_read_node gives it, on the latest committed version: computed now.
-      const progress = live ? await k.progressOf(s, n.id) : new Map<string, never>();
+      const progress = live ? await k.progressOf(s, n.id, read.version.id) : new Map<string, never>();
       // Precedent and open case files beside the element they concern, from any version (CASE4):
       // read as kj_agent, so a session that holds only Read gets none (D49).
       const rulings = read.rulings.map(ruling);
