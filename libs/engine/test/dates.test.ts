@@ -58,6 +58,22 @@ test('a Done dependency has finished by now, whatever its run records; a milesto
   expect(d.get('M')).toStrictEqual({ start: waits, finish: waits });
 });
 
+test('a milestone passes over a Done member whose run records no dates, and takes its other members\' (WRK9)', () => {
+  const now = new Date(Date.UTC(2026, 10, 12));
+  const pkg = (id: string, o: Partial<Parameters<typeof workDates>[0][number]> = {}) => ({ id, address: `kj:b#${id}`, state: 'todo' as const, milestone: false, size: 'S' as const, depends_on: [], ...o });
+  const S = { size: 'S', durations: 1, from: 'binding' };
+  const d = workDates([
+    pkg('A', { state: 'done' }), pkg('B'), pkg('M', { milestone: true, size: null, depends_on: ['A', 'B'] }),
+    pkg('C', { state: 'done' }), pkg('N', { milestone: true, size: null, depends_on: ['C'] }),
+  ], { binding: new Map([['S', [DAY]]]), kolab: new Map([['S', [DAY]]]) }, now);
+  expect(d.get('M')).toStrictEqual({
+    start: { at: now.toISOString(), kind: 'forecast', basis: { ...S, via: 'kj:b#B' } },
+    finish: { at: new Date(now.getTime() + DAY).toISOString(), kind: 'forecast', basis: { ...S, via: 'kj:b#B' } },
+  });
+  // Every member Done with nothing recorded: nothing to go on, and it says so.
+  expect(d.get('N')!.start).toStrictEqual({ at: null, kind: 'no_forecast', reason: "kj:b#N's members are Done with no start in their runs" });
+});
+
 /**
  * A spec of one requirement; binding orders-pg with a decision and its packages; binding orders-my
  * with one L package. Bob builds, eve reviews, alice (product) reads.
