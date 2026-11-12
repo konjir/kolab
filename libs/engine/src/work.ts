@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { fingerprint, normalize } from '@konjir/address';
 import {
   ACCEPTANCE_RESULTS, EVIDENCE_KINDS, MAX_DEPENDS_ON, MAX_DONE_WHEN, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PATH, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_REPOSITORY_URL, MAX_TEXT, MAX_WORK_REPO,
-  WORK_FIELDS, WORK_SIZES, textLength, type AcceptanceFinding, type EvidenceKind, type WorkFields,
+  RULING_REF, WORK_FIELDS, WORK_SIZES, textLength, type AcceptanceFinding, type EvidenceKind, type Progress, type ProgressValue, type WorkFields, type WorkState,
 } from '@konjir/types';
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -271,6 +271,39 @@ export function milestoneStates(milestones: { id: string; members: string[] }[],
     if (states.get(m.id) !== want) changed.set(m.id, want);
   }
   return changed;
+}
+
+/** A work package's progress (WRK8): its own state. In review, approved or not, is in progress. */
+export function packageProgress(state: WorkState): ProgressValue {
+  return state === 'done' ? 'done' : state === 'todo' ? 'todo' : 'in_progress';
+}
+
+/**
+ * Progress over what is counted (WRK8): done when every one is done, to do when every one is to do,
+ * otherwise in progress. What has no work (no work, not served) is left out, unless all is: then no
+ * work, as with nothing counted. At risk when any one counted is (WRK6).
+ */
+export function progressOver(counted: Progress[]): Progress {
+  const work = counted.filter((p) => p.progress !== 'no_work' && p.progress !== 'not_served');
+  const at_risk = work.some((p) => p.at_risk);
+  if (!work.length) return { progress: 'no_work', at_risk };
+  const all = (v: ProgressValue) => work.every((p) => p.progress === v);
+  return { progress: all('done') ? 'done' : all('todo') ? 'todo' : 'in_progress', at_risk };
+}
+
+/**
+ * The ruling refs an element's Source line names (WRK8, migration 0042): "Source: D12, D47." gives
+ * D12 and D47. Every line's, from "Source:" to its end, split at commas, semicolons and spaces.
+ */
+export function sourceRefs(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/\bSource:([^\n]*)/g)) {
+    for (const t of m[1].split(/[\s,;]+/)) {
+      const ref = t.replace(/[.)\]]+$/, '').replace(/^[([]+/, '');
+      if (RULING_REF.test(ref)) out.add(ref);
+    }
+  }
+  return out;
 }
 
 /** One item of evidence as Kolab stores it (migrations 0031 and 0032's evidence): checked, normalized, ready to write. */

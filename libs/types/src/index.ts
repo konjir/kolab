@@ -296,6 +296,20 @@ export interface WorkFields {
 export const WORK_STATES = ['todo', 'in_progress', 'in_review', 'done'] as const;
 export type WorkState = typeof WORK_STATES[number];
 /**
+ * Progress (WRK8): a read, never a row. A work package's is its state, In review counting as in
+ * progress; a decision's, a spec element's and a ruling's are computed from the work under them. No
+ * work: nothing counted has work. Not served: a spec element no element of that binding serves (PLN7).
+ */
+export const PROGRESS_VALUES = ['done', 'in_progress', 'todo', 'no_work', 'not_served'] as const;
+export type ProgressValue = typeof PROGRESS_VALUES[number];
+/**
+ * An element's or a ruling's progress (WRK8), with whether a work package counted is at risk (WRK6).
+ * `at_risk` is told only to those who belong to the kolab's work, who read marks (D58).
+ */
+export interface Progress { progress: ProgressValue; at_risk?: boolean }
+/** Progress in one binding of the kolab's spec (DAT18): a spec element's, or a ruling's, per binding. */
+export interface BindingProgress extends Progress { binding: string }
+/**
  * What a work package's event records (PLN4, PLN5): its binding adding, removing or restoring it; a
  * pull, a release, a reassignment and a lease that lapsed (PLN14, PLN15); evidence, submission,
  * review and reopening (PLN16, PLN10, W5.1c and W5.2); a milestone Kolab finds Done, or no
@@ -774,6 +788,11 @@ export interface RulingView {
   ruled_at: string | null;
   /** When Kolab recorded it; null for a ruling from before migration 0042. */
   recorded_at: string | null;
+  /**
+   * Its progress in each binding of the kolab's spec (WRK8), from the elements whose Source line
+   * names its ref. Absent for a ruling with no ref, or that no element names.
+   */
+  progress?: BindingProgress[];
 }
 /** A ruling's ref (W6.3): a letter, then up to 39 letters, digits, '.', '_' or '-', such as D109. Migration 0042's ruling_ref_form. */
 export const RULING_REF = /^[A-Za-z][A-Za-z0-9._-]{0,39}$/;

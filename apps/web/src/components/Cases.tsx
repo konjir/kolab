@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import type { PositionVerdict, RulingEffect, WebCase, WebCasesView, WebMe, WebRuling, WebRulingsView } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, parseKj, routeOf, sideWord } from '../util.js';
-import { Pill } from './bits.js';
+import { Pill, ProgressPills } from './bits.js';
 import type { Act } from './Marks.js';
 import { More, usePaged } from './Pages.js';
 
@@ -32,6 +32,7 @@ export function RulingBox({ ruling: r, me, go, showOn }: { ruling: WebRuling; me
         <span className="kind">{r.ref ? `ruling ${r.ref}` : 'ruling'}</span>
         <span>{r.effect === 'change_intent' ? 'Changes the intent' : r.effect === 'keep_intent' ? 'Keeps the intent: find another way to meet it as written' : 'Precedent'}
           {showOn !== false && <> · on <AddrChip address={r.on} here={me.kolab} go={go} /></>}</span>
+        {r.progress && <ProgressPills progress={r.progress} />}
       </div>
       <blockquote>{r.text}</blockquote>
       {r.replaces && <div className="why-not">Replaces: {r.replaces}</div>}

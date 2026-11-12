@@ -165,6 +165,7 @@ main { min-width: 0; display: grid; gap: 28px; align-content: start; }
 .pill.clean { color: var(--clean); } .pill.stale { color: var(--stale); } .pill.question { color: var(--question); } .pill.boundary { color: var(--boundary); }
 .pill .g { letter-spacing: 0; font-size: 12px; display: inline-flex; }
 .pill svg { width: 10px; height: 10px; display: block; }
+.progress { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; }
 
 /* ---- review result ---- */
 .notice { border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 14px 16px; background: var(--surface-raised); display: grid; gap: 6px; }

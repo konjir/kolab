@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { WebMe, WebOverview, WebRuling, WebWorkView } from '@konjir/types';
 import { InboxView, RulingsView, WorkView, withRulingLinks } from '../src/components/Places.js';
+import { ProgressPills } from '../src/components/bits.js';
 import { KolabsView, LineageView, ReviewsView, kolabStatus, waitingStatus } from '../src/components/Pages.js';
 import { parseRoute } from '../src/App.js';
 
@@ -257,4 +258,18 @@ test('another kolab\'s card says what waits there for the person; All kolabs kee
   expect(screen.getByRole('heading', { name: 'New document in accounts' })).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'Kolabs' })).toBeNull();
   expect(parseRoute('#/new')).toStrictEqual({ view: 'new' });
+});
+
+test('a ruling shows its progress in each binding, and an element its own, each a state in words, saying when work it counts is at risk (WRK8)', async () => {
+  replies['/api/rulings'] = { rulings: [
+    { ...ruling('D7', 'Orders can be cancelled.'), progress: [{ binding: 'orders-my', progress: 'todo', at_risk: false }, { binding: 'orders-pg', progress: 'in_progress', at_risk: true }] },
+    ruling('D8', 'Nothing names this one.'),
+  ], next: null };
+  render(<RulingsView me={lee} tick={0} go={() => undefined} />);
+  await screen.findByText('Orders can be cancelled.');
+  expect([...document.querySelectorAll('[data-ruling="r-D7"] .progress .pill')].map((p) => p.textContent)).toStrictEqual(['orders-my: To do', 'orders-pg: In progress, at risk']);
+  expect(document.querySelector('[data-ruling="r-D8"] .progress')).toBeNull();
+  cleanup();
+  render(<ProgressPills progress={{ progress: 'not_served' }} />);
+  expect(document.querySelector('.progress')!.textContent).toBe('Not served');
 });

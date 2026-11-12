@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WebWorkState, type WorkFields } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
-import { Addr, Diff, Pill } from './bits.js';
+import { Addr, Diff, Pill, ProgressPills } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
 import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 import { More, useMore } from './Pages.js';
@@ -429,6 +429,7 @@ function ElementRow(p: RowProps) {
             {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.foreign || !p.belongs ? p.text : withRulingLinks(p.text)}</p>
         )}
         {(e.work || e.work_state) && <Work work={e.work ?? {}} state={e.work_state} name={p.name} />}
+        {e.progress && <div className="links">progress <ProgressPills progress={e.progress} /></div>}
         {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => (
           <span key={l.edge} style={p.unlinked.includes(l.edge) ? { textDecoration: 'line-through' } : undefined}>
             {chip(l, 'target')}
