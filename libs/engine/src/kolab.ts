@@ -10,7 +10,7 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, actualDates, milestoneStates, naturalCompare, packageProgress, progressOver, sourceRefs, workDates, workProblems,
+  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, packageProgress, progressOver, sourceRefs, workDates, workProblems,
   repositoryUrl, type CheckedEvidence, type DatedPackage, type Independence, type StoredCheck, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
@@ -8260,46 +8260,76 @@ export class Kolab {
   }
 
   /**
+   * The current runs of a kolab's work packages (WRK9), by `<binding id>#<id>`, read in one query on
+   * `q`: for each, the first pull and the last event that made it Done (milestone_done for a
+   * milestone) since it was last added, restored or reopened, and, for a Done package still in its
+   * binding, its size there. Those of the bindings `bindings`, or, with `others`, the Done packages of
+   * the kolab's other bindings, whose finished durations a forecast falls back on.
+   */
+  private async runsIn(q: Q, kolab: string, bindings: string[], others = false) {
+    const out = new Map<string, { binding: string; state: WorkState; size: WorkSize | null; start?: Date; finish?: Date }>();
+    for (const r of (await q.query<{ binding: string; element: string; state: WorkState; size: WorkSize | null; start: Date | string | null; finish: Date | string | null }>(
+      `select w.binding_node_id as binding, w.element_id as element, w.state,
+              case when w.state = 'done' and not w.milestone and w.removed_in_version_id is null then
+                (select e.work->>'size' from element e where e.element_id = w.element_id and e.version_id =
+                   (select v.id from version v where v.node_id = w.binding_node_id and v.state = 'committed' order by v.seq desc limit 1)) end as size,
+              min(ev.at) filter (where ev.kind = 'pulled') as start,
+              max(ev.at) filter (where ev.kind <> 'pulled' and (ev.kind = 'milestone_done') = w.milestone) as finish
+         from work_package w
+         left join lateral (select x.at, x.id from work_event x where x.binding_node_id = w.binding_node_id and x.element_id = w.element_id
+                              and x.kind in ('added', 'restored', 'reopened') order by x.at desc, x.id desc limit 1) r on true
+         left join work_event ev on ev.binding_node_id = w.binding_node_id and ev.element_id = w.element_id
+              and ev.kind in ('pulled', 'approved', 'done_unreviewed', 'release_recorded', 'milestone_done') and (r.id is null or (ev.at, ev.id) > (r.at, r.id))
+        where w.kolab_id = $1 and (case when $3 then w.state = 'done' and not w.milestone and w.removed_in_version_id is null and not (w.binding_node_id = any($2::text[]))
+                                        else w.binding_node_id = any($2::text[]) end)
+        group by w.binding_node_id, w.element_id`, [kolab, bindings, others])).rows) {
+      out.set(`${r.binding}#${r.element}`, { binding: r.binding, state: r.state, size: r.size,
+        ...(r.start ? { start: new Date(r.start) } : {}), ...(r.finish && r.state === 'done' ? { finish: new Date(r.finish) } : {}) });
+    }
+    return out;
+  }
+
+  /**
    * The start and finish of `boards`' packages (WRK9), by `<binding id>#<id>`: a read, never a row,
-   * computed now on `q` from work_event and the depends_on fields of each binding's latest committed
-   * version, with nothing written. Expected durations come from the finished durations of the kolab's
-   * Done packages, each of the size its binding's latest committed version gives it.
+   * computed now on `q` from the packages' current runs and the depends_on fields of each binding's
+   * latest committed version, with nothing written. Expected durations come from the finished
+   * durations of Done packages of the same binding, and only for a size none of those has, of the
+   * kolab's others. A removed package (PLN4) is dated after its binding's, so it changes none of theirs.
    */
   private async datesIn(q: Q, kolab: string, boards: { binding: NodeRow; board: BoardPackage[] }[]): Promise<Map<string, WorkDates>> {
     const out = new Map<string, WorkDates>();
     if (!boards.some((b) => b.board.length)) return out;
     const now = new Date((await q.query<{ now: Date | string }>(`select clock_timestamp() as now`)).rows[0].now);
-    const events = new Map<string, { kind: string; at: Date }[]>();
-    for (const e of (await q.query<{ binding: string; element: string; kind: string; at: Date | string }>(
-      `select binding_node_id as binding, element_id as element, kind, at from work_event where kolab_id = $1 and kind = any($2::text[]) order by at, id`,
-      [kolab, ['added', 'restored', 'reopened', 'pulled', 'approved', 'done_unreviewed', 'release_recorded', 'milestone_done']])).rows) {
-      const key = `${e.binding}#${e.element}`;
-      (events.get(key) ?? events.set(key, []).get(key)!).push({ kind: e.kind, at: new Date(e.at) });
-    }
+    const ids = boards.map((b) => b.binding.id);
+    const runs = await this.runsIn(q, kolab, ids);
     // A finished duration (WRK9): a Done package's actual finish less its actual start, in wall-clock time.
-    const finished: { binding: string; size: WorkSize; ms: number }[] = [];
-    for (const d of (await q.query<{ binding: string; element: string; size: WorkSize }>(
-      `select w.binding_node_id as binding, w.element_id as element, e.work->>'size' as size
-         from work_package w
-         join lateral (select v.id from version v where v.node_id = w.binding_node_id and v.state = 'committed' order by v.seq desc limit 1) lv on true
-         join element e on e.version_id = lv.id and e.element_id = w.element_id
-        where w.kolab_id = $1 and w.state = 'done' and not w.milestone and w.removed_in_version_id is null and e.work->>'size' is not null`, [kolab])).rows) {
-      const a = actualDates(events.get(`${d.binding}#${d.element}`) ?? [], { milestone: false, done: true });
-      if (a.start && a.finish) finished.push({ binding: d.binding, size: d.size, ms: a.finish.getTime() - a.start.getTime() });
-    }
-    const bySize = (xs: typeof finished) => {
-      const m = new Map<WorkSize, number[]>();
-      for (const x of xs) (m.get(x.size) ?? m.set(x.size, []).get(x.size)!).push(x.ms);
+    const durations = (rs: typeof runs) => {
+      const m = new Map<string, Map<WorkSize, number[]>>();
+      for (const r of rs.values()) {
+        if (!r.size || !r.start || !r.finish) continue;
+        const by = m.get(r.binding) ?? m.set(r.binding, new Map()).get(r.binding)!;
+        (by.get(r.size) ?? by.set(r.size, []).get(r.size)!).push(r.finish.getTime() - r.start.getTime());
+      }
       return m;
     };
-    const kolabWide = bySize(finished);
+    const own = durations(runs);
+    const sizes = (by?: Map<WorkSize, number[]>) => new Set(by?.keys() ?? []);
+    // The kolab's other bindings are read only for a size one of these bindings has no finished duration of.
+    const lacking = boards.some(({ binding, board }) => board.some((p) => p.work?.size && p.state !== 'done' && !sizes(own.get(binding.id)).has(p.work.size)));
+    const kolabWide = new Map<WorkSize, number[]>();
+    for (const by of [...own.values(), ...(lacking ? durations(await this.runsIn(q, kolab, ids, true)).values() : [])]) {
+      for (const [size, xs] of by) kolabWide.set(size, [...(kolabWide.get(size) ?? []), ...xs]);
+    }
     for (const { binding, board } of boards) {
-      const packages: DatedPackage[] = board.map((p) => ({
-        id: p.id, address: formatAddress({ node: binding.name, element: p.id }), state: p.state, milestone: p.row.milestone,
-        size: p.work?.size ?? null, depends_on: p.work?.depends_on ?? [],
-        ...actualDates(events.get(`${binding.id}#${p.id}`) ?? [], { milestone: p.row.milestone, done: p.state === 'done' }),
-      }));
-      for (const [id, d] of workDates(packages, { binding: bySize(finished.filter((f) => f.binding === binding.id)), kolab: kolabWide }, now)) out.set(`${binding.id}#${id}`, d);
+      const dated = (p: BoardPackage): DatedPackage => {
+        const r = runs.get(`${binding.id}#${p.id}`);
+        return { id: p.id, address: formatAddress({ node: binding.name, element: p.id }), state: p.state, milestone: p.row.milestone,
+          size: p.work?.size ?? null, depends_on: p.work?.depends_on ?? [], ...(r?.start ? { start: r.start } : {}), ...(r?.finish ? { finish: r.finish } : {}) };
+      };
+      const live = board.filter((p) => !p.row.removed_in_version_id).map(dated);
+      const by = { binding: own.get(binding.id) ?? new Map<WorkSize, number[]>(), kolab: kolabWide };
+      for (const [id, d] of workDates(live, by, now)) out.set(`${binding.id}#${id}`, d);
+      for (const p of board.filter((x) => x.row.removed_in_version_id)) out.set(`${binding.id}#${p.id}`, workDates([...live, dated(p)], by, now).get(p.id)!);
     }
     return out;
   }
@@ -8311,26 +8341,42 @@ export class Kolab {
    * work package's its own state; a decision's from the packages that link to it, PLN1) and each spec
    * element's there: from the binding's elements that serve it or an element nested under it, or not
    * served when none does (PLN7). With the latest committed elements, whose Source lines rulings read.
+   * `only` narrows it to one binding (its own elements, no spec's), or to one spec's bindings. Two
+   * queries for the kolab (its nodes at their latest committed versions; its packages' states), one per
+   * spec (its elements), and two per binding (its elements, three for a variant; its links).
    */
-  private async progressIn(q: Q, kolab: string): Promise<KolabProgress> {
-    const latest = async (node: string) => (await q.query<VersionRow>(`select * from version where node_id = $1 and state = 'committed' order by seq desc limit 1`, [node])).rows[0];
+  private async progressIn(q: Q, kolab: string, only: { binding?: string; spec?: string } = {}): Promise<KolabProgress> {
+    const nodes = (await q.query<NodeRow & { v_id: string | null; v_parent: string | null; v_base: string | null }>(
+      `select n.id, n.name, n.kind, n.layer, n.title, n.kolab_id, n.parent_node_id, n.created_at, lv.id as v_id, lv.parent_version_id as v_parent, lv.base_version_id as v_base
+         from node n left join lateral (select v.id, v.parent_version_id, v.base_version_id from version v where v.node_id = n.id and v.state = 'committed' order by v.seq desc limit 1) lv on true
+        where n.kolab_id = $1 and n.kind in ('spec', 'binding') order by n.name`, [kolab])).rows;
+    const specRows = nodes.filter((n) => n.kind === 'spec');
+    const specIds = new Set(specRows.map((n) => n.id));
+    const picked = nodes.filter((n) => n.kind === 'binding' && n.parent_node_id && specIds.has(n.parent_node_id)
+      && (only.binding === undefined || n.id === only.binding) && (only.spec === undefined || n.parent_node_id === only.spec));
     const specs = new Map<string, ElementRow[]>();
-    for (const n of (await q.query<NodeRow>(`select ${NODE_COLUMNS} from node n where kolab_id = $1 and kind = 'spec' order by name`, [kolab])).rows) {
-      const v = await latest(n.id);
-      specs.set(n.id, v ? await this.elements(v.id, q) : []);
+    if (only.binding === undefined) {
+      for (const n of specRows.filter((x) => only.spec === undefined || x.id === only.spec)) specs.set(n.id, n.v_id ? await this.elements(n.v_id, q) : []);
     }
+    // Each package's state as read now, a lapsed lease To do, and whether it is at risk (atRisk, PLN10).
+    const states = new Map((await q.query<{ binding: string; element: string; state: WorkState; at_risk: boolean }>(
+      `select w.binding_node_id as binding, w.element_id as element,
+              case when w.state = 'in_progress' and w.lease_until < clock_timestamp() then 'todo' else w.state end as state,
+              (not w.milestone and w.removed_in_version_id is null
+               and not (w.state = 'todo' or (w.state = 'in_progress' and w.lease_until < clock_timestamp()))
+               and exists (select 1 from invalidation i join version x on x.id = i.version_id
+                            where x.node_id = w.binding_node_id and x.state = 'committed' and i.element_id = w.element_id
+                              and i.state = 'open' and i.delta_id is null and i.reason in (${AT_RISK_REASONS_SQL}))) as at_risk
+         from work_package w where w.binding_node_id = any($1::text[])`, [picked.map((b) => b.id)])).rows.map((r) => [`${r.binding}#${r.element}`, r]));
     const bindings: KolabProgress['bindings'] = [];
-    for (const b of (await q.query<NodeRow>(`select ${NODE_COLUMNS} from node n where kolab_id = $1 and kind = 'binding' and parent_node_id = any($2::text[]) order by name`,
-      [kolab, [...specs.keys()]])).rows) {
-      const spec = specs.get(b.parent_node_id!)!;
-      const v = await latest(b.id);
+    for (const b of picked) {
+      const v = b.v_id ? { id: b.v_id, node_id: b.id, parent_version_id: b.v_parent, base_version_id: b.v_base } : undefined;
       const els = v ? await this.ownWork(q, v) : [];
-      const board = new Map((v ? await this.bindingBoard(q, b) : []).map((p) => [p.id, p]));
       const links = v ? await this.deliveries(q, b, v, new Set(els.map((e) => e.element_id))) : new Map<string, Delivery[]>();
       const own = new Map<string, Progress>();
       for (const e of els.filter((x) => x.work)) {
-        const p = board.get(e.element_id);
-        own.set(e.element_id, { progress: packageProgress(p?.state ?? 'todo'), at_risk: !!p && atRisk(p) });
+        const p = states.get(`${b.id}#${e.element_id}`);
+        own.set(e.element_id, { progress: packageProgress(p?.state ?? 'todo'), at_risk: !!p?.at_risk });
       }
       // A decision: the work packages that link to it by dependency (PLN1).
       for (const e of els.filter((x) => !x.work)) {
@@ -8338,6 +8384,7 @@ export class Kolab {
           .map((x) => own.get(x.element_id)!)));
       }
       // A spec element: the binding's elements that serve it, or any element nested under it.
+      const spec = specs.get(b.parent_node_id!) ?? [];
       const servers = new Map<string, string[]>();
       for (const [from, ds] of links) for (const d of ds) if (d.node_id === b.parent_node_id) (servers.get(d.element) ?? servers.set(d.element, []).get(d.element)!).push(from);
       const children = new Map<string, string[]>();
@@ -8359,20 +8406,23 @@ export class Kolab {
 
   /**
    * Each element's progress (WRK8) in node `nodeId` of the session's kolab, by element id: a binding
-   * element's own, and a spec element's as a list, one entry per binding, naming it. None for another
-   * kolab's node (work is never read across kolabs, D49), nor a prototype's. Read-only.
+   * element's own, and a spec element's as a list, one entry per binding, naming it. Only on the
+   * node's latest committed version, `versionId`: none on another version, for another kolab's node
+   * (work is never read across kolabs, D49), nor a prototype's. A binding's is computed alone; a
+   * spec's over its bindings. Read-only.
    */
-  async progressOf(sessionId: string, nodeId: string): Promise<Map<string, Progress | BindingProgress[]>> {
+  async progressOf(sessionId: string, nodeId: string, versionId: string): Promise<Map<string, Progress | BindingProgress[]>> {
     const s = await QUIET.run(true, () => this.session(sessionId));
     const node = await this.node(nodeId);
     const out = new Map<string, Progress | BindingProgress[]>();
     if (node.kolab_id !== s.kolab || (node.kind !== 'spec' && node.kind !== 'binding')) return out;
-    const all = await this.progressIn(this.db, s.kolab);
+    if ((await this.latestCommitted(node.id))?.id !== versionId) return out;
     const shown = progressShown(s.access.layers.length > 0);
-    if (node.kind === 'binding') for (const [id, p] of all.bindings.find((b) => b.node.id === node.id)?.own ?? []) out.set(id, shown(p));
-    else {
-      const mine = all.bindings.filter((b) => b.spec === node.id);
-      for (const e of all.specs.get(node.id) ?? []) out.set(e.element_id, mine.map((b) => ({ binding: b.node.name, ...shown(b.served.get(e.element_id)!) })));
+    if (node.kind === 'binding') {
+      for (const [id, p] of (await this.progressIn(this.db, s.kolab, { binding: node.id })).bindings[0]?.own ?? []) out.set(id, shown(p));
+    } else {
+      const all = await this.progressIn(this.db, s.kolab, { spec: node.id });
+      for (const e of all.specs.get(node.id) ?? []) out.set(e.element_id, all.bindings.map((b) => ({ binding: b.node.name, ...shown(b.served.get(e.element_id)!) })));
     }
     return out;
   }
@@ -8380,15 +8430,16 @@ export class Kolab {
   /**
    * The progress of the rulings named `refs` in the session's kolab (WRK8), by ref: once per binding
    * of its spec, over the binding's elements, and the spec elements as that binding meets them, whose
-   * latest committed text has a Source line naming the ref. A binding none of whose elements, nor its
-   * spec's, names it has no entry; a ruling no element names has none at all.
+   * latest committed text has a Source line naming the ref (sourceRefs gives the candidates; only a
+   * ruling's own ref, exactly, counts). A binding none of whose elements, nor its spec's, names it has
+   * no entry; a ruling no element names has none at all. Computed once for the page of rulings read.
    */
   private async rulingsProgress(s: Session, refs: string[]): Promise<Map<string, BindingProgress[]>> {
     const out = new Map<string, BindingProgress[]>();
     if (!refs.length) return out;
     const all = await this.progressIn(this.db, s.kolab);
     const shown = progressShown(s.access.layers.length > 0);
-    const named = (els: ElementRow[]) => els.map((e) => ({ id: e.element_id, refs: sourceRefs(e.text) }));
+    const named = (els: ElementRow[]) => els.map((e) => ({ id: e.element_id, refs: sourceRefs(e.text) })).filter((e) => e.refs.size);
     const specs = new Map([...all.specs].map(([id, els]) => [id, named(els)]));
     for (const b of all.bindings) {
       const own = named(b.elements);

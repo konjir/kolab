@@ -274,18 +274,20 @@ test('a ruling shows its progress in each binding, and an element its own, each 
   expect(document.querySelector('.progress')!.textContent).toBe('Not served');
 });
 
-test('a work card shows its start and finish: an actual date plainly, a forecast marked "forecast" and muted, and no forecast with its reason (WRK9)', async () => {
+test('a work card shows its start and finish on the reader\'s calendar: an actual date plainly, a forecast marked "forecast", muted, with its basis written out, and no forecast with its reason (WRK9)', async () => {
+  // Near midnight UTC, so the reader's own day can differ from UTC's.
+  const late = '2026-11-13T02:00:00.000Z';
+  const local = (iso: string) => { const t = new Date(iso); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
   const basis = { size: 'S' as const, durations: 2, from: 'binding' as const };
   replies['/api/work'] = { work: [
     work('W1', { state: 'done', start: { at: '2026-11-01T10:00:00.000Z', kind: 'actual' }, finish: { at: '2026-11-03T10:00:00.000Z', kind: 'actual' } }),
-    work('W3', { state: 'in_progress', assignee: 'eng', start: { at: '2026-11-10T10:00:00.000Z', kind: 'actual' }, finish: { at: '2026-11-13T10:00:00.000Z', kind: 'forecast', basis } }),
+    work('W3', { state: 'in_progress', assignee: 'eng', start: { at: '2026-11-10T10:00:00.000Z', kind: 'actual' }, finish: { at: late, kind: 'forecast', basis } }),
     work('W5', { size: null, start: { at: null, kind: 'no_forecast', reason: 'kj:orders-pg#W5 has no size' }, finish: { at: null, kind: 'no_forecast', reason: 'kj:orders-pg#W5 has no size' } }),
   ], next: null };
   render(<WorkView me={lee} tick={0} go={() => undefined} />);
   await screen.findByText('Build W3.');
   const dates = (id: string) => [...(document.querySelector(`a.card-id[href$="#${id}"]`)!.closest('li')!.querySelectorAll('.date'))].map((d) => [d.className, d.textContent]);
   expect(dates('W1')).toStrictEqual([['date actual', 'start 2026-11-01'], ['date actual', 'finish 2026-11-03']]);
-  expect(dates('W3')).toStrictEqual([['date actual', 'start 2026-11-10'], ['date forecast', 'finish 2026-11-13 forecast']]);
-  expect(document.querySelector('.date.forecast')!.getAttribute('title')).toBe('Forecast: the median of 2 finished S packages in the binding');
+  expect(dates('W3')).toStrictEqual([['date actual', 'start 2026-11-10'], ['date forecast', `finish ${local(late)} forecast (median of 2 finished S in the binding)`]]);
   expect(dates('W5')).toStrictEqual([['date none', 'start: no forecast (kj:orders-pg#W5 has no size)'], ['date none', 'finish: no forecast (kj:orders-pg#W5 has no size)']]);
 });
