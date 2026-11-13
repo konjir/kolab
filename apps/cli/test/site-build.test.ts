@@ -85,6 +85,26 @@ test('the build refuses to write outside its own files: a path with .. is refuse
   expect(existsSync(join(r, 'site/src/evil-OFL.txt'))).toBe(false);
 });
 
+test("the messages guide is built into messages/index.html as the tutorial is, under its own kicker, and the home page's footer links to it", () => {
+  const r = copy('messages');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  expect(b.stdout).toContain('hands-on/index.html, messages/index.html');
+  const home = readFileSync(join(r, 'site/index.html'), 'utf8');
+  const page = readFileSync(join(r, 'site/messages/index.html'), 'utf8');
+  expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Let agents on different machines talk to each other</h1></header>');
+  expect(page).toMatch(/<title>Guide: Let agents on different machines talk to each other: Konjir<\/title>/);
+  expect(page).toMatch(/<nav class="toc" aria-label="Sections">[\s\S]*href="#3-send-the-first-message"/);
+  // The same stylesheet and script as the home page, and nothing the CSP would block.
+  expect(assetsOf(r)).toStrictEqual([...page.matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort());
+  expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
+  // The four verbs it teaches are the ones Kolab serves, and the channel's words are the bridge's own.
+  for (const verb of ['konjir_list_members', 'konjir_send_message', 'konjir_read_messages', 'konjir_list_messages']) expect(page).toContain(`<code>${verb}</code>`);
+  expect(page).toContain('A message has come for you; you have 1 unread message:');
+  expect(home).toContain('<a href="https://konjir.com/messages/">Messages between agents</a>');
+  expect(readFileSync(join(r, 'site/hands-on/index.html'), 'utf8')).toContain('<p class="kicker">Hands-on</p>');
+});
+
 test("the hands-on tutorial is built into hands-on/index.html, inside the home page's header and footer, with its stylesheet and script and nothing the CSP would block", () => {
   const r = copy('hands-on');
   const b = build(r);
@@ -167,7 +187,7 @@ test('the build checks each finished page whole: a description holding markup is
   // for a future source of text the renderer doesn't escape.
   const buildPath = join(r, 'deploy/site/build.mjs');
   const script = readFileSync(buildPath, 'utf8');
-  writeFileSync(buildPath, script.replace("handsOn, tutorial.lead)", "handsOn, tutorial.lead + '\"><meta http-equiv=\"refresh\" content=\"0\">')"));
+  writeFileSync(buildPath, script.replace("a.html, a.lead)", "a.html, a.lead + '\"><meta http-equiv=\"refresh\" content=\"0\">')"));
   writeFileSync(md, original);
   const b = build(r);
   expect(b.status).toBe(1);

@@ -760,6 +760,28 @@ export type KolabEvent = InboxEvent | SessionEndedEvent;
 export const isInboxEvent = (e: KolabEvent): e is InboxEvent => 'inbox' in e;
 export const isSessionEnded = (e: KolabEvent): e is SessionEndedEvent => 'session' in e && e.session === 'ended';
 
+/**
+ * A message between two members of a kolab, as its sender and its recipient read it: it names no
+ * element, blocks nothing, and no one else reads it.
+ */
+export interface Message {
+  id: string; from: string; to: string; message: string;
+  /** The message it answers, between the same two members, if any. */
+  reply_to: string | null;
+  sent_at: string;
+  /** When its recipient read it (konjir_read_messages); null while it is unread. */
+  read_at: string | null;
+}
+/** A member of a kolab, as another member sees them: who they can send a message to. */
+export interface Member {
+  actor: string; kind: ActorKind;
+  /** An agent's owner; null for a person. */
+  owner: string | null;
+  /** Whether a session of theirs is open in the kolab now: a message reaches one that is listening at once, and waits for one that isn't. */
+  here: boolean;
+  you?: true;
+}
+
 export interface Query {
   id: string; kind: QueryKind; address: string; question: string; state: string;
   answer: string | null; answered_by: string | null; raised_by: string | null;

@@ -140,3 +140,14 @@ export const ORG_RATE_MULTIPLE = 5;
 export const MAX_ORG_ASKS_PER_HOUR = ORG_RATE_MULTIPLE * MAX_ASKS_PER_HOUR;
 /** Drafts an organization's agents make together in RATE_WINDOW_MS, across every kolab, counted as MAX_DRAFTS_PER_HOUR's are: 600. */
 export const MAX_ORG_DRAFTS_PER_HOUR = ORG_RATE_MULTIPLE * MAX_DRAFTS_PER_HOUR;
+/**
+ * Messages a person and their agents send in RATE_WINDOW_MS, across every kolab (konjir_send_message),
+ * counted as MAX_ASKS_PER_HOUR's are, in a budget of their own: four a minute, sustained, is a
+ * conversation between agents at working pace, and two agents answering each other in a loop are
+ * stopped within the hour.
+ */
+export const MAX_MESSAGES_PER_HOUR = 240;
+/** Messages an organization's agents send together in RATE_WINDOW_MS, across every kolab: 1,200. */
+export const MAX_ORG_MESSAGES_PER_HOUR = ORG_RATE_MULTIPLE * MAX_MESSAGES_PER_HOUR;
+/** Unread messages the answers resource and konjir_read_messages give at once, oldest first. */
+export const MESSAGES_AT_ONCE = 20;

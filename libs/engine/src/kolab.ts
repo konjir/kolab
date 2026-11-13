@@ -17,12 +17,12 @@ import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid 
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, SPLIT_STEP, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
@@ -3652,16 +3652,17 @@ export class Kolab {
    * as ownKolabs' rate is, so every process sees the same count. The values are MAX_ASKS_PER_HOUR
    * and MAX_DRAFTS_PER_HOUR. An agent's count against its owner's budget, so making more agents
    * doesn't raise it. An organization's agents share the organization's budget, whose limits are
-   * `orgAsks` and `orgDrafts` (MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR).
+   * `orgAsks` and `orgDrafts` (MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR). Messages have a
+   * budget of their own, counted the same way (`messages`, `orgMessages`).
    */
   readonly rates = {
-    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR,
-    orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR,
+    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, messages: MAX_MESSAGES_PER_HOUR,
+    orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR, orgMessages: MAX_ORG_MESSAGES_PER_HOUR,
     windowMs: RATE_WINDOW_MS,
   };
 
   /**
-   * Takes one question or note (`ask`), or one draft, from the budget of `actor`'s owner (itself,
+   * Takes one question or note (`ask`), one draft, or one message, from the budget of `actor`'s owner (itself,
    * for a person; the organization, for an organization's agent), before the call writes it:
    * kj_rate_take, in a short transaction of its own, locks the owner's budget, counts the budget's
    * events in the window (each ask or draft from its take, whatever became of what it wrote),
@@ -3671,9 +3672,9 @@ export class Kolab {
    * write marks used in its own transaction (useRate), so it counts from then to the end of the window;
    * if the write fails, the hold is released after (rated). Null when nothing is limited.
    */
-  private async takeRate(actor: string, what: 'ask' | 'draft'): Promise<string | null> {
-    const max = what === 'ask' ? this.rates.asks : this.rates.drafts;
-    const orgMax = what === 'ask' ? this.rates.orgAsks : this.rates.orgDrafts;
+  private async takeRate(actor: string, what: RateKind): Promise<string | null> {
+    const max = what === 'ask' ? this.rates.asks : what === 'draft' ? this.rates.drafts : this.rates.messages;
+    const orgMax = what === 'ask' ? this.rates.orgAsks : what === 'draft' ? this.rates.orgDrafts : this.rates.orgMessages;
     if (max === Infinity && orgMax === Infinity) return null;
     // Postgres's int: a limit lifted to Infinity on one budget only is as good as none.
     const asInt = (n: number) => Math.min(n, 2_147_483_647);
@@ -3685,7 +3686,7 @@ export class Kolab {
     } catch (e) {
       // Waited past lock_timeout behind others in the same budget: refused, nothing held.
       if ((e as { code?: string }).code === '55P03') {
-        throw new LimitError(`${actor}'s ${what === 'ask' ? 'questions and notes' : 'drafts'} are arriving faster than Kolab can count them, so this one wasn't written. Try again in a few seconds, one at a time`);
+        throw new LimitError(`${actor}'s ${what === 'ask' ? 'questions and notes' : what === 'draft' ? 'drafts' : 'messages'} are arriving faster than Kolab can count them, so this one wasn't written. Try again in a few seconds, one at a time`);
       }
       throw e;
     }
@@ -3696,7 +3697,9 @@ export class Kolab {
     const who = c.r_org ? `${actor}, with the rest of organization ${c.r_owner}'s agents,`
       : c.r_owner === actor ? `${actor} and ${actor}'s agents` : `${actor}, with the rest of ${c.r_owner}'s agents and ${c.r_owner},`;
     const shared = c.r_org ? 'shared by an organization\'s agents' : 'shared by a person and their agents';
-    throw new LimitError(what === 'ask'
+    throw new LimitError(what === 'message'
+      ? `${who} sent ${c.r_count} messages in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before sending again, or put several points in one message`
+      : what === 'ask'
       ? `${who} raised ${c.r_count} questions and notes in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before asking again, or put several points in one question`
       : `${who} drafted ${c.r_count} versions in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}, and a draft counts when it is made, whatever becomes of it. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before drafting again, or put several changes in one draft`);
   }
@@ -3711,7 +3714,7 @@ export class Kolab {
    * it commits; if `write` fails, the hold is given back after, so a refused or failed call costs
    * nothing.
    */
-  private async rated<T>(actor: string, what: 'ask' | 'draft', write: (hold: string | null) => Promise<T>): Promise<T> {
+  private async rated<T>(actor: string, what: RateKind, write: (hold: string | null) => Promise<T>): Promise<T> {
     const hold = await this.takeRate(actor, what);
     try {
       return await write(hold);
@@ -9421,6 +9424,148 @@ export class Kolab {
     };
   }
 
+  // ---- messages between a kolab's members (migration 0050) --------------------
+
+  /**
+   * In `q`, the members of `kolab` a message may go between: everyone who holds access there now
+   * (holderRows), people and agents alike. Someone who only reads a public kolab holds nothing in
+   * it, and is no member.
+   */
+  private async membersIn(q: Q, kolab: string) {
+    return (await holderRows(q, kolab)).filter((h) => h.rank > 0);
+  }
+
+  /**
+   * The members of the session's kolab, for a member (konjir_list_members): who a message can go
+   * to, by name, each with its kind, an agent's owner when the owner is a member too, and whether a
+   * session of theirs is open in the kolab now. Not what each holds: that is for the kolab's Admins
+   * (listAccess). A page at a time, by name (W2.21).
+   */
+  async membersPage(sessionId: string, page: PageOpts = {}): Promise<{ kolab: string; items: Member[]; next: string | null }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('members', { kolab: s.kolab });
+    const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
+    const members = await this.membersIn(this.db, s.kolab);
+    if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
+    const here = new Set((await this.db.query<{ actor_id: string }>(
+      `select distinct s.actor_id from session s left join oauth_grant g on g.id = s.grant_id
+        where s.kolab_id = $1 and ${OPEN_SESSION}`, [s.kolab])).rows.map((r) => r.actor_id));
+    const names = new Set(members.map((h) => h.id));
+    const sorted = members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).filter((h) => after === undefined || h.id > after);
+    const { rows, next } = pageOf(sorted.slice(0, size + 1), size, list, (h) => [h.id]);
+    return {
+      kolab: s.kolab, next,
+      items: rows.map((h) => ({
+        actor: h.id, kind: h.kind, owner: h.owner_id !== null && names.has(h.owner_id) ? h.owner_id : null, here: here.has(h.id),
+        ...(h.id === s.actor_id ? { you: true as const } : {}),
+      })),
+    };
+  }
+
+  /**
+   * Sends a message from the session's actor to another member of its kolab, a person or an agent
+   * (konjir_send_message). It names no element and no layer, blocks no work, and no job takes it:
+   * only the two of them read it. It reaches its recipient through their answers, which a listening
+   * session hears at once, and waits there unread for one that isn't. `replyTo` names the message it
+   * answers, one between the same two members in this kolab. Both must be members when it is sent,
+   * checked under the access lock; one from the sender's owner's budget of messages is held for it
+   * and marked used as it commits (W2.21). An archived kolab takes none.
+   */
+  async sendMessage(sessionId: string, to: string, body: string, opts: { replyTo?: string } = {}): Promise<Message> {
+    if (typeof body !== 'string' || !body.trim()) throw new LimitError('a message needs some words: give message');
+    checkText('the message', body);
+    const s = await this.session(sessionId);
+    if (to === s.actor_id) throw new LimitError(`${to} is you: a message goes to another member of kolab ${s.kolab}`);
+    const id = ulid();
+    return this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so it takes no new messages`);
+      const members = await this.membersIn(tx, s.kolab);
+      if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
+      // One refusal for anyone who isn't a member, whether or not Konjir knows the name.
+      if (!members.some((h) => h.id === to)) throw new AccessError(`${to} is not a member of kolab ${s.kolab}, so no message can go to them: konjir_list_members lists who is`);
+      if (opts.replyTo !== undefined) {
+        const r = (await tx.query<{ sent_by: string; sent_to: string }>(
+          `select sent_by, sent_to from message where id = $1 and kolab_id = $2`, [opts.replyTo, s.kolab])).rows[0];
+        const between = r && ((r.sent_by === s.actor_id && r.sent_to === to) || (r.sent_by === to && r.sent_to === s.actor_id));
+        if (!between) throw new LimitError(`reply_to names no message between you and ${to} in kolab ${s.kolab}: give the id of one, or leave it out`);
+      }
+      await tx.exec('set local role kj_system');
+      await this.useRate(tx, hold);
+      const sent = (await tx.query<{ sent_at: Date | string }>(
+        `insert into message(id, kolab_id, sent_by, sent_to, body, reply_to) values ($1,$2,$3,$4,$5,$6) returning sent_at`,
+        [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null])).rows[0];
+      await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
+      return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
+    }, undefined, { access: true }));
+  }
+
+  /**
+   * The unread messages to the session's actor in its kolab, oldest first, at most MESSAGES_AT_ONCE,
+   * with how many are unread in all: what its answers carry. Reading them here marks nothing.
+   */
+  async unreadMessages(sessionId: string): Promise<{ unread: number; items: Message[] }> {
+    const s = await this.session(sessionId);
+    const rows = (await this.db.query<MessageRow>(
+      `select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+        where m.kolab_id = $1 and m.sent_to = $2 and r.message_id is null order by m.id limit $3`, [s.kolab, s.actor_id, MESSAGES_AT_ONCE])).rows;
+    const unread = rows.length < MESSAGES_AT_ONCE ? rows.length : (await this.db.query<{ n: number }>(
+      `select count(*)::int as n from message m where m.kolab_id = $1 and m.sent_to = $2
+          and not exists (select 1 from message_receipt r where r.message_id = m.id)`, [s.kolab, s.actor_id])).rows[0].n;
+    return { unread, items: rows.map(messageOf) };
+  }
+
+  /**
+   * Reads the session's actor's unread messages in its kolab, oldest first, at most `limit`
+   * (MESSAGES_AT_ONCE by default and at most), and marks each read, as its recipient
+   * (konjir_read_messages). `more` is how many stay unread. In an archived kolab, which changes no
+   * more, they are returned and stay unread.
+   */
+  async readMessages(sessionId: string, opts: { limit?: number | null } = {}): Promise<{ messages: Message[]; more: number }> {
+    const s = await this.session(sessionId);
+    const size = Math.min(pageSize(opts.limit ?? MESSAGES_AT_ONCE), MESSAGES_AT_ONCE);
+    return this.inTransaction(async (tx, signal) => {
+      const archived = (await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length > 0;
+      await tx.exec('set local role kj_system');
+      const unread = `m.kolab_id = $1 and m.sent_to = $2 and not exists (select 1 from message_receipt r where r.message_id = m.id)`;
+      const ids = archived
+        ? (await tx.query<{ id: string }>(`select m.id from message m where ${unread} order by m.id limit $3`, [s.kolab, s.actor_id, size])).rows.map((r) => r.id)
+        : (await tx.query<{ message_id: string }>(
+          `insert into message_receipt(message_id, kolab_id, actor_id)
+           select m.id, m.kolab_id, m.sent_to from message m where ${unread} order by m.id limit $3
+           on conflict (message_id) do nothing returning message_id`, [s.kolab, s.actor_id, size])).rows.map((r) => r.message_id);
+      const rows = (await tx.query<MessageRow>(
+        `select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+          where m.id = any($1::text[]) order by m.id`, [ids])).rows;
+      const left = (await tx.query<{ n: number }>(`select count(*)::int as n from message m where ${unread}`, [s.kolab, s.actor_id])).rows[0].n;
+      // The actor's other sessions hear that their answers hold fewer unread.
+      if (ids.length && !archived) await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
+      return { messages: rows.map(messageOf), more: archived ? Math.max(0, left - ids.length) : left };
+    });
+  }
+
+  /**
+   * One page of the session's actor's messages in its kolab, newest first (konjir_list_messages):
+   * the ones sent to it, or with `sent` the ones it sent; with `with`, only those exchanged with
+   * that member, both ways. Read or not, and it marks nothing.
+   */
+  async messagesPage(sessionId: string, filter: { sent?: boolean; with?: string } = {}, page: PageOpts = {}): Promise<{ items: Message[]; next: string | null }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('messages', { kolab: s.kolab, actor: s.actor_id, sent: filter.sent || undefined, with: filter.with });
+    const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
+    const whose = filter.with !== undefined
+      ? `((m.sent_by = $2 and m.sent_to = $3) or (m.sent_by = $3 and m.sent_to = $2)) and ($4::boolean is null or (m.sent_by = $2) = $4::boolean)`
+      : `(case when $4::boolean then m.sent_by else m.sent_to end) = $2 and $3::text is null`;
+    const rows = (await this.db.query<MessageRow>(
+      `select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+        where m.kolab_id = $1 and ${whose} and ($5::text is null or m.id < $5)
+        order by m.id desc limit $6`,
+      [s.kolab, s.actor_id, filter.with ?? null, filter.with !== undefined ? filter.sent ?? null : !!filter.sent, after ?? null, size + 1])).rows;
+    const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
+    return { items: shown.map(messageOf), next };
+  }
+
   // ---- work: evidence, submitting, reviewing and reopening (W5.1c; PLN10, PLN16, PLN18, VER17, D98) ----
 
   /**
@@ -12708,6 +12853,9 @@ async function insertSession(tx: Q, token: string, s: { actor: string; role: Rol
   return id;
 }
 
+/** What a rate budget counts (rate_event's kinds, migrations 0025 and 0050). */
+type RateKind = 'ask' | 'draft' | 'message';
+
 interface Session {
   /** The session's id: its key, which whoami and events name it by. */
   id: string;
@@ -13484,6 +13632,15 @@ function requireText(text: unknown, what: string, max = MAX_TEXT): string {
 
 /** A timestamp as ISO 8601, or null for a row written before it was recorded. */
 const iso = (t: Date | string | null) => (t === null ? null : new Date(t).toISOString());
+
+/** A message as it is read, with its receipt if it has one: `m` the message, `r` its receipt, left joined. */
+const MESSAGE_COLUMNS = 'm.id, m.sent_by, m.sent_to, m.body, m.reply_to, m.sent_at, r.read_at';
+interface MessageRow { id: string; sent_by: string; sent_to: string; body: string; reply_to: string | null; sent_at: Date | string; read_at: Date | string | null }
+const messageOf = (m: MessageRow): Message => ({
+  id: m.id, from: m.sent_by, to: m.sent_to, message: m.body, reply_to: m.reply_to, sent_at: iso(m.sent_at)!, read_at: iso(m.read_at),
+});
+/** Why a session that only reads a public kolab sends and reads no messages there. */
+const notAMember = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: messages go between those who hold access there, and reading a public kolab gives none`;
 
 /** A position's evidence, as stored: a list of strings (rows written by hand before 0013 may hold anything). */
 const evidenceOf = (e: unknown): string[] => (Array.isArray(e) ? e.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))) : [JSON.stringify(e)]);

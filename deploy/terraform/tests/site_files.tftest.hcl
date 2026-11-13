@@ -39,12 +39,12 @@ run "site_publishes_only_the_build" {
     error_message = "site/README.md and dotfiles aren't uploaded"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "hands-on/index.html", "robots.txt", "favicon.svg"] : contains(output.files, f)])
-    error_message = "the built pages are uploaded, the hands-on tutorial's included"
+    condition     = alltrue([for f in ["index.html", "404.html", "hands-on/index.html", "messages/index.html", "robots.txt", "favicon.svg"] : contains(output.files, f)])
+    error_message = "the built pages are uploaded, the hands-on tutorial's and the messages guide's included"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "hands-on/index.html"] : output.objects[f].content_type == "text/html; charset=utf-8" && output.objects[f].cache_control == "public, max-age=60"])
-    error_message = "every page, the hands-on tutorial's included, is uploaded as HTML and cached a minute"
+    condition     = alltrue([for f in ["index.html", "404.html", "hands-on/index.html", "messages/index.html"] : output.objects[f].content_type == "text/html; charset=utf-8" && output.objects[f].cache_control == "public, max-age=60"])
+    error_message = "every page, the hands-on tutorial's and the messages guide's included, is uploaded as HTML and cached a minute"
   }
   assert {
     condition     = alltrue([for f, o in output.objects : o.cache_control == "public, max-age=31536000, immutable" if can(regex("^assets/site\\.[0-9a-f]{10}\\.css$", f))]) && length([for f, o in output.objects : f if can(regex("^assets/site\\.[0-9a-f]{10}\\.css$", f)) && o.content_type == "text/css; charset=utf-8"]) > 0
