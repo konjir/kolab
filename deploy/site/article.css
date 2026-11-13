@@ -24,6 +24,7 @@
 .ho .table{margin:0 0 22px;overflow-x:auto}
 .ho table{border-collapse:collapse;width:100%;font-size:15px;line-height:22px}
 .ho th,.ho td{text-align:left;vertical-align:top;padding:10px 14px 10px 0;border-bottom:1px solid var(--line)}
+.ho td:first-child code{white-space:nowrap}
 .ho th{font-size:12px;line-height:16px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
 .ho .toc{margin:36px 0 0;padding:18px 22px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
 .ho .toc p{margin:0 0 8px;font-size:12px;line-height:16px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
