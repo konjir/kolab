@@ -550,6 +550,11 @@ export interface WorkItemView {
   removed_in?: string;
   /** Done on submission with no reviewer (PLN16). */
   unreviewed?: boolean;
+  /**
+   * In review or Done as found already built: its assignee built nothing, since the product met its
+   * done-when before the package was pulled, and gave where as evidence. A forecast leaves its run out.
+   */
+  found_built?: true;
   /** It must be released (its `release` field; PLN16, W7.7): Done only once evidence of its release is recorded. */
   release?: true;
   /**

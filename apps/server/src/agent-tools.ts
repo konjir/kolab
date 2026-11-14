@@ -199,6 +199,7 @@ const submitWork = args({
   work,
   evidence: evidenceList.optional().describe('Evidence to record with the submission, as konjir_add_evidence takes it'),
   note: z.string().optional().describe(`What you did, for the reviewer. At most ${MAX_TEXT} characters`),
+  found_built: z.boolean().optional().describe('true when you built nothing because the product already met its done-when: evidence names the commit you checked it at, and note, which it then needs, says where each part is met. A forecast leaves such a run out'),
 });
 const reopenWork = args({ work, note: z.string().describe(`Why the work is opened again. At most ${MAX_TEXT} characters`) });
 const registerRepository = args({
@@ -875,12 +876,12 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_submit_work',
-    description: 'Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done; or, for a package whose work field says release: true, approved and waiting In review until its release is recorded with konjir_record_release after the deploy, by someone other than you, outside any job), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
+    description: 'Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. Where the product already met its done-when before you pulled it, build nothing and submit it with found_built=true, the commit you checked it at as evidence, and a note saying where it is met: it is reviewed like any other. It goes In review, with a review request to each other actor with Write on the technical layer, and you hold it no longer, so you can pull another. If no one else holds Write on the technical layer, it is Done on submission, recorded as unreviewed. The verdict comes back in your answers: approved (Done; or, for a package whose work field says release: true, approved and waiting In review until its release is recorded with konjir_record_release after the deploy, by someone other than you, outside any job), or changes requested (In progress for you again, with a fresh lease, even if you have pulled another meanwhile). Submitting a package that waits in review asks whoever can review it now. Counts as a draft against your hourly budget. Refused once your lease has lapsed.',
     schema: submitWork,
   })
-  submitWork({ work, evidence, note }: z.infer<typeof submitWork>, context?: McpToolContext) {
+  submitWork({ work, evidence, note, found_built }: z.infer<typeof submitWork>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
-      const r = await this.kolab.submitWork(s, work, { evidence, note });
+      const r = await this.kolab.submitWork(s, work, { evidence, note, foundBuilt: found_built });
       return {
         ...r,
         next: r.in_review

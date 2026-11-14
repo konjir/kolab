@@ -198,6 +198,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
                             {w.ready && <Pill tone="clean">ready</Pill>}
                             {w.at_risk && <Pill tone="stale">at risk</Pill>}
                             {w.approved && <Pill tone="clean">approved, to release</Pill>}
+                            {w.found_built && <Pill tone="clean">found built</Pill>}
                             {w.size && <span>{w.size}</span>}
                             {w.assignee && <span>{w.assignee}</span>}
                           </span>
