@@ -94,10 +94,12 @@ konjir connect claude: kolab linkly-ada at https://kolab.konjir.com/mcp, 3 agent
   konjir-architect  as <you>-architect, engineer
 
 Will write /Users/ada/linkly/.mcp.json: 3 entries, konjir-spec-writer, konjir-spec-reviewer, konjir-architect.
+Will write /Users/ada/linkly/.konjir.json: kolab linkly-ada at https://kolab.konjir.com/mcp, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.
 
 Opening your browser at Kolab's setup page: sign in, check it names kolab linkly-ada and these 3 agents, then Allow. If it doesn't open, go to:
   https://kolab.konjir.com/oauth/authorize?…
 Set up for ada: kolab linkly-ada (made now, private, yours); ada-spec-writer (made now), ada-spec-reviewer (made now), ada-architect (made now).
+Wrote /Users/ada/linkly/.konjir.json: kolab linkly-ada at https://kolab.konjir.com/mcp. It holds no token.
 Wrote /Users/ada/linkly/.mcp.json. It holds no token.
 Each agent is signed in, in its own file under /Users/ada/.config/konjir/agents.
 ...
@@ -109,7 +111,7 @@ konjir claude architect
 
 Those last lines start an agent's session too; this tutorial starts each with the `agent` command from step 1, which does the same.
 
-`Set up for ada` names you: if it isn't the name you put in `konjir.sh`, put this one there and load it again. `.mcp.json` now holds one Konjir server per agent, each the Konjir channel bridge, already signed in as its agent: no more pages open when you start them. It names paths on this machine, which is why `.gitignore` keeps it out of git. Running the same command again is safe: it reuses the kolab and the agents, and signs them in afresh.
+`Set up for ada` names you: if it isn't the name you put in `konjir.sh`, put this one there and load it again. `.mcp.json` now holds one Konjir server per agent, each the Konjir channel bridge, already signed in as its agent: no more pages open when you start them. It names paths on this machine, which is why `.gitignore` keeps it out of git. `.konjir.json` names only your kolab and Kolab's URL, so later `konjir` commands in this folder know both; it holds no path and no token, and you may commit it. Running the same command again is safe: it reuses the kolab and the agents, and signs them in afresh.
 
 To see the kolab in the web page, open [kolab.konjir.com](https://kolab.konjir.com) and choose **Sign in with GitHub**: you own it, with Admin.
 
@@ -361,7 +363,7 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 - **A job ended `failed`, or `released`.** Its item went back to Kolab for another job, or, when it needs a person, to you, with the job's note saying what you must decide. Each job's log is `~/.konjir/jobs/<job>.log`, and `konjir status` shows the queue and the jobs running.
 - **`every pool agent of yours that could take it is busy, and you have … live agents`.** Your pool agents count among your 10 live agents. Archive agents you no longer use (`konjir archive_agent label=<label>`, signed in as yourself), or wait for a job to end.
 - **`a person with Maintain or Admin registers it` when an agent tries.** Registering a repository is always a person's act. Run `konjir repo register` yourself, signed in as yourself (step 6).
-- **`konjir repo register`, `konjir work` or `konjir set_work_lease` acts on the wrong kolab.** A sign-in works in one kolab, and these act in that one. To act in another, sign in there first, as yourself: `konjir login --kolab <its name>`, then run the step. The terminal keeps one sign-in to Kolab, so that one replaces its sign-in to `$KOLAB` (your browser's is its own): sign back in to `$KOLAB` afterwards.
+- **`konjir repo register`, `konjir work` or `konjir set_work_lease` acts on the wrong kolab.** A sign-in works in one kolab, and these act in that one. In `~/linkly`, `.konjir.json` names `$KOLAB`, and konjir refuses a sign-in that works in another, saying so. To act in another kolab, sign in there first, as yourself, and name it: `konjir login --kolab <its name>`, then the step with `--kolab <its name>`. The terminal keeps one sign-in to Kolab, so that one replaces its sign-in to `$KOLAB` (your browser's is its own): sign back in to `$KOLAB` afterwards.
 - **A deltas draft says `cannot override …: not in parent`.** Deltas apply to the node's latest committed version. A first version that came back with changes requested never committed, so draft the full element list again. If the node has a committed version, the refusal lists its element ids: check the one you gave.
 - **`konjir login` says the sign-in took too long.** It waits 20 minutes for your browser, as long as Kolab's sign-in page lasts. Run it again.
 - **A build job asks a question about the spec instead of building.** Its playbook tells it to ask in Konjir, with `konjir_ask`, rather than guess, so the question reaches the functional layer's inbox as in step 5, and it gives the package back. Answer it on Kolab's page: an open question blocks the work that serves its requirement until it is answered, and then `konjir work` builds it.
@@ -384,11 +386,11 @@ Each prints `the sign-in is revoked and forgotten`. Then archive the agents, whi
 for a in spec-writer spec-reviewer architect; do konjir archive_agent label=$a; done
 konjir list_agents
 konjir logout
-rm -rf .mcp.json .claude
+rm -rf .mcp.json .konjir.json .claude
 ```
 
 To remove the CLI itself, `rm -rf ~/.konjir`.
 
-`konjir list_agents` lists the agents you have left: your pool, `<you>-engineer-1` and on. They do the jobs of any kolab you set a machine to work in, so you can keep them; to free their places too, archive each the same way (`konjir archive_agent label=engineer-1`, before the `konjir logout`). The last line removes the Konjir entries and, if you took the subagent route, `.claude/agents/`. The jobs' worktrees under `~/.konjir/jobs` are removed as each job ends, unless one left work that isn't pushed, and the GitHub repository stays yours.
+`konjir list_agents` lists the agents you have left: your pool, `<you>-engineer-1` and on. They do the jobs of any kolab you set a machine to work in, so you can keep them; to free their places too, archive each the same way (`konjir archive_agent label=engineer-1`, before the `konjir logout`). The last line removes the Konjir entries, the project's note of its kolab and, if you took the subagent route, `.claude/agents/`. The jobs' worktrees under `~/.konjir/jobs` are removed as each job ends, unless one left work that isn't pushed, and the GitHub repository stays yours.
 
 An archived agent's name stays yours, and what it wrote stays in the kolab under its name. You can't archive the kolab yourself yet; only a Konjir admin can. It stays private to you, and you can reuse it. A person owns at most 10 kolabs.
