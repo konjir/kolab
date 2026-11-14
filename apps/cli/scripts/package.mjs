@@ -16,7 +16,9 @@
 // the runtime to find in whatever folder konjir is run in (bundle.mjs says why).
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
-// with it, for `konjir --version`.
+// with it, for `konjir --version`. It also defines KONJIR_DEFAULT_URL as the hosted Kolab (API25;
+// bundle.mjs's HOSTED_URL): the Kolab a published konjir talks to with no --url, KONJIR_URL or
+// project file, where a checkout, which can serve, talks to the local one.
 //
 // Bun is pinned in apps/cli/bun-runtimes.json: its version, the sha256 of each release zip this
 // script uses, and the integrity of the same build's npm tarball (@oven/<the zip's name>). Every

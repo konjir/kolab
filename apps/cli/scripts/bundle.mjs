@@ -30,6 +30,12 @@ import { fileURLToPath } from 'node:url';
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [out, version] = process.argv.slice(2);
 if (!out || !version) throw new Error('usage: bun scripts/bundle.mjs <out dir> <version>');
+/**
+ * The hosted Kolab, a published konjir's default (API25): src/cli.ts's HOSTED_URL. The build defines
+ * KONJIR_DEFAULT_URL as it, so the npm package and the binaries talk to it with no --url, KONJIR_URL
+ * or project file, where a checkout, which can serve, talks to the local Kolab.
+ */
+const HOSTED_URL = 'https://kolab.konjir.com/mcp';
 
 const ABSENT = /^(@konjir\/server|@nestjs\/microservices|@nestjs\/websockets|class-transformer|class-validator)(\/.*)?$/;
 const absent = {
@@ -73,7 +79,7 @@ const built = await Bun.build({
   target: 'node',
   format: 'esm',
   conditions: ['@konjir/source'],
-  define: { KONJIR_VERSION: JSON.stringify(version) },
+  define: { KONJIR_VERSION: JSON.stringify(version), KONJIR_DEFAULT_URL: JSON.stringify(HOSTED_URL) },
   minify: { syntax: true, whitespace: true },
   metafile: true,
   plugins: [absent, noImport],

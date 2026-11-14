@@ -340,7 +340,30 @@ test('a scope naming the agent, kolab and role locks the consent page to them: n
     const denied = await o.browser.consent({ csrf: o.csrf, decision: 'deny' });
     expect(denied.left?.searchParams.get('error')).toBe('access_denied');
   }
+
+  // A label names the person's agent <person>-<label>, as konjir login --agent takes it (API26):
+  // the page is locked to zed-writer, and Kolab holds the sign-in to it.
+  const labelled = await shown('konjir kolab:test role:engineer agent:writer');
+  expect(title(labelled.html)).toBe('Sign in as zed-writer · Kolab');
+  const sneaked = await labelled.browser.consent({ csrf: labelled.csrf, decision: 'allow', as: 'agent:zed-reviewer', kolab: 'kolab:test', role: 'engineer' });
+  expect([sneaked.res.status, sneaked.left]).toStrictEqual([400, undefined]);
+  expect(await sneaked.res.text()).toContain('this sign-in is for zed-writer only, in kolab test as engineer');
+  const byLabel = await labelled.browser.consent({ csrf: labelled.csrf, decision: 'allow', as: 'agent:zed-writer', kolab: 'kolab:test', role: 'engineer' });
+  expect(byLabel.res.status).toBe(303);
+  expect(byLabel.left?.searchParams.get('code')).toMatch(/^kjc_/);
+  // Without the role, it only preselects. A label of someone else's agent names nothing of theirs.
+  expect((await shown('konjir agent:reviewer')).html).toContain('value="agent:zed-reviewer" checked');
+  expect((await shown('konjir agent:eng')).html).not.toContain('value="agent:bob-eng"');
   expect((await kolab.listActors({ owner: zed })).map((a) => a.id).sort()).toStrictEqual(['zed-reviewer', 'zed-writer']);
+});
+
+test('namedAgent: the person\'s agent of that name, else their <person>-<name>, else the name as it was (API26)', async () => {
+  const { namedAgent } = await import('@konjir/engine');
+  expect(namedAgent('zed-writer', 'zed', ['zed-writer'])).toBe('zed-writer');
+  expect(namedAgent('writer', 'zed', ['zed-writer'])).toBe('zed-writer');
+  // An agent whose own name is the label wins over <person>-<label>.
+  expect(namedAgent('writer', 'zed', ['writer', 'zed-writer'])).toBe('writer');
+  expect(namedAgent('nobody', 'zed', ['zed-writer'])).toBe('nobody');
 });
 
 test('the consent page tells a Konjir admin, on the Yourself option, that the app can run every admin verb as them; it tells no one else, and adds no step (D111)', async () => {

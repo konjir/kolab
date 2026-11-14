@@ -24,6 +24,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsoncError, commentsOf, member, parseTree, tokens, valueOf, type JsonNode } from './jsonc.js';
 import { agentCredentials, agentCredentialsPath, credentialsPath, keepSignIn, revokeIssued, type SetupDone } from './login.js';
+import { PROJECT_FILE, projectText } from './project.js';
 
 export const HARNESSES = ['opencode', 'claude'] as const;
 export type Harness = typeof HARNESSES[number];
@@ -598,6 +599,15 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   const local = !!bridge && /[\\/]/.test(typeof bridge === 'string' ? bridge : bridge.command);
   const kolab = opts.kolab;
 
+  // The project's .konjir.json (API26): the kolab and Kolab's URL, never a token, so later commands
+  // here need neither. Not with --global, which sets up no project. Checked before any browser
+  // opens, and before it is read: it is the project's own file, never read or written through a
+  // link, which a cloned repository could aim anywhere (--force-path is for the harness's config).
+  const project = opts.global ? undefined : join(opts.cwd, PROJECT_FILE);
+  if (project && linkTarget(project)) throw new Error(`${project} is a link; konjir connect won't write the project's file through it. Remove the link, then run konjir connect again`);
+  const projectBefore = project ? readText(project) : '';
+  const projectAfter = project ? projectText(project, projectBefore, kolab, opts.url) : '';
+
   // The plan for `person`: each file's text after, or for Claude Code's own user settings, its
   // commands. Made first with `<you>` in the person's place, so a config konjir won't touch, or an
   // entry already there, stops it before any browser opens; again once the person is known.
@@ -672,6 +682,10 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     // A new file in one line; the diff for one that is there already (--force replaces it), or with --dry-run.
     io.log(a.before === a.after ? `${a.path} already says exactly this.` : a.exists || opts.dryRun ? unifiedDiff(a.path, a.before, a.after, a.exists) : `Will write ${a.path}: the subagent ${basename(a.path, '.md')}, with only its entry's tools.`);
   }
+  if (project) {
+    io.log(projectBefore === projectAfter ? `${project} already names kolab ${kolab} at ${opts.url}.`
+      : `${projectBefore ? 'Will update' : 'Will write'} ${project}: kolab ${kolab} at ${opts.url}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
+  }
   io.log('');
   if (opts.dryRun) {
     io.log('Dry run: nothing made, written or signed in.');
@@ -712,6 +726,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     }
     if (plan.change && readText(plan.change.path) !== draft.change!.before) throw new Error(`${plan.change.path} changed while konjir connect was waiting; nothing written`);
     for (const [k, a] of plan.agents.entries()) if (readText(a.path) !== draft.agents[k].before) throw new Error(`${a.path} changed while konjir connect was waiting; nothing written`);
+    if (project && (linkTarget(project) || readText(project) !== projectBefore)) throw new Error(`${project} changed while konjir connect was waiting; nothing written`);
   } catch (e) { return failed(e); }
   const { entries } = plan;
   io.log(`Set up for ${done.person}: kolab ${kolab}${done.kolab.made ? ' (made now, private, yours)' : ''}; ${done.agents.map((a) => `${a.agent}${a.made ? ' (made now)' : ''}`).join(', ')}.`);
@@ -742,6 +757,12 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
         if (await io.run(c[0], c.slice(1), { cwd: opts.cwd }) !== 0) throw new Error(`${c.slice(0, 3).join(' ')} didn't succeed${c[0] === 'claude' ? ' (is Claude Code installed, and claude on your PATH?)' : ''}`);
       }
       io.log('Claude Code has them in your user settings. They hold no token.');
+    }
+    // The project's file last: the entries need nothing of it, and only later commands read it.
+    // writeAtomically, given `within`, refuses a link put there since the check above.
+    if (project && projectAfter !== projectBefore) {
+      writeAtomically(project, projectAfter, { within: opts.cwd });
+      io.log(`Wrote ${project}: kolab ${kolab} at ${opts.url}. It holds no token.`);
     }
   } catch (e) { return failed(e); }
 
