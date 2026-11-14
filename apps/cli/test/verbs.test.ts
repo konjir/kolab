@@ -159,7 +159,7 @@ test('every `konjir_<verb> key=…` and `konjir <verb> key=…` Kolab serves or 
     const p = join(d, f);
     return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
   });
-  const files = ['apps/server/src', 'libs/engine/src', 'apps/cli/src', 'apps/channel-bridge/src', 'libs/types/src', 'libs/login/src']
+  const files = ['apps/server/src', 'libs/engine/src', 'apps/cli/src', 'apps/channel-bridge/src', 'libs/types/src', 'libs/login/src', 'libs/brand/src']
     .flatMap((d) => walk(join(root, d))).concat([join(root, 'site/src/hands-on.md'), join(root, 'README.md')]);
   const example = /konjir[_ ]([a-z][a-z_]*)((?:[ \t]+[a-z_]+=(?:"[^"]*"|'[^']*'|\[[^\]]*\]|\{[^}]*\}|[^\s`'"]+))+)/g;
   const wrong: string[] = [];

@@ -61,6 +61,10 @@ test('as CSS: Predawn by default, Daybreak where the system prefers light or the
 
 test('the web page\'s brand.css is what the tokens say: run npm run brand after changing them', () => {
   expect(read('apps', 'web', 'src', 'brand.css')).toBe(webCss());
+  // The page loads it, before its own styles, which state no token:
+  const main = read('apps', 'web', 'src', 'main.tsx');
+  expect(main).toContain("import './brand.css';");
+  expect(main.indexOf("import './brand.css';")).toBeLessThan(main.indexOf("import './styles.css';"));
   // And it is the only place the web page states a token: styles.css defines none of them.
   const styles = read('apps', 'web', 'src', 'styles.css');
   for (const k of Object.keys(PALETTES.dark)) expect(styles).not.toMatch(new RegExp(`(^|[\\s;{])--${k}\\s*:`));
@@ -96,5 +100,8 @@ test('a standalone page is whole, loads nothing, and carries no style attribute:
   expect(mark).toContain('class="kj-wordmark"');
   expect(mark).not.toMatch(/fill="#|stroke="#/);
   expect(mark).toContain('role="img" aria-label="Konjir"');
+  // A label or a language given to it is text, never markup.
+  expect(wordmarkSvg({ label: '"><script>' })).toContain('aria-label="&quot;&gt;&lt;script&gt;"');
+  expect(standalonePage({ title: 't', body: '', css: '', lang: '"><x' })).toContain('<html lang="&quot;&gt;&lt;x">');
   expect(escapeHtml(`<a href="x">'&'</a>`)).toBe('&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;');
 });

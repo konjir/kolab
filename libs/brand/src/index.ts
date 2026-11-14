@@ -137,7 +137,7 @@ export function wordmarkSvg(opts: { height?: number; theme?: Theme; label?: stri
   const sun = p ? ` fill="${p.sun}"` : '';
   const moon = p ? ` fill="${p.moon}" stroke="${p.moon}"` : '';
   const label = opts.label ?? 'Konjir';
-  return `<svg class="kj-wordmark" xmlns="http://www.w3.org/2000/svg" viewBox="${WORDMARK.viewBox}" width="${width}" height="${height}" role="img" aria-label="${label}">`
+  return `<svg class="kj-wordmark" xmlns="http://www.w3.org/2000/svg" viewBox="${WORDMARK.viewBox}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(label)}">`
     + `<g class="kj-ink"${ink} stroke-width="${WORDMARK.strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${WORDMARK.letters.map((d) => `<path d="${d}"></path>`).join('')}</g>`
     + `<circle class="kj-sun"${sun} cx="${WORDMARK.sun.cx}" cy="${WORDMARK.sun.cy}" r="${WORDMARK.sun.r}"></circle>`
     + `<path class="kj-moon"${moon} d="${WORDMARK.moon}" stroke-width="0.6" stroke-linejoin="round"></path></svg>`;
@@ -167,12 +167,13 @@ export function standalonePageCss(): string {
     '*{box-sizing:border-box}',
     'html,body{margin:0;min-height:100%;background:var(--surface)}',
     'body{color:var(--ink);font:15px/1.6 var(--font-sans);display:flex;flex-direction:column;min-height:100vh}',
-    '.kj-page{flex:1;width:100%;max-width:560px;margin:0 auto;padding:40px 16px 48px}',
+    // The wordmark's clear space is the height of its k's ascender on every side: 24px at 40px tall.
+    '.kj-page{flex:1;width:100%;max-width:576px;margin:0 auto;padding:40px 24px 48px}',
     '.kj-brand{display:block;margin:0 0 28px}',
     'h1{font:400 30px/1.15 var(--font-display);letter-spacing:-0.01em;margin:0 0 6px;text-wrap:balance}',
     'p{margin:8px 0}.muted{color:var(--ink-muted)}',
     '.card{background:var(--surface-raised);border:1px solid var(--line);border-radius:var(--r-md);padding:20px;margin:16px 0}',
-    'code{font-family:var(--font-mono);font-size:0.86em;color:var(--secondary)}',
+    'code{font-family:var(--font-mono);font-size:0.86em;color:var(--secondary);overflow-wrap:anywhere}',
     'a{color:var(--accent)}:focus-visible{outline:2px solid var(--focus);outline-offset:2px}',
     WORDMARK_CSS,
     HORIZON_CSS,
@@ -185,7 +186,7 @@ export function standalonePageCss(): string {
  * its hash.
  */
 export function standalonePage(opts: { title: string; body: string; css: string; lang?: string }): string {
-  return `<!doctype html><html lang="${opts.lang ?? 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
+  return `<!doctype html><html lang="${escapeHtml(opts.lang ?? 'en')}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
     + `<meta name="color-scheme" content="dark light"><title>${escapeHtml(opts.title)}</title><style>${opts.css}</style></head>`
     + `<body><main class="kj-page"><div class="kj-brand">${wordmarkSvg({ height: 40 })}</div>${opts.body}</main>${HORIZON_HTML}</body></html>`;
 }
