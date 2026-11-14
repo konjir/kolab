@@ -19,7 +19,7 @@ import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main,
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
 import { claudeSession, startClaude, systemPrompt } from '../src/claude.js';
-import { MAX_CONFIG_BYTES, bridgeCommand, claudeBridgeEntry, connectHarness, publishedKonjir, subagentFile, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
+import { MAX_CONFIG_BYTES, bridgeCommand, claudeBridgeEntry, connectHarness, keepKonjir, publishedKonjir, subagentFile, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
 const entry = (label: string, role: 'product' | 'engineer', over: Partial<Entry> = {}): Entry =>
@@ -717,14 +717,14 @@ test('W3.8: the bridge is found only in the checkout this konjir runs from; a ko
   expect(bridgeCommand('file:///$bunfs/root/konjir')).toBeUndefined();
 });
 
-test('W9.5: the published konjir names the bridge it carries, konjir bridge: a binary by its own path, an installed package by node and its konjir.mjs, and one run by npx by its exact version', () => {
+test('W9.5: the published konjir names the bridge it carries, konjir bridge: a binary by its own path, an installed package by its konjir.mjs, and one run by npx or a dlx by a copy konjir keeps', () => {
   // A checkout's build defines no version: it isn't the published konjir, and runs its own bridge.
   expect(publishedKonjir()).toBeUndefined();
-  expect(publishedKonjir({ execPath: '/usr/bin/node', script: '/x/konjir.mjs', platform: 'linux' })).toBeUndefined();
+  expect(publishedKonjir({ execPath: '/usr/bin/node', script: '/x/konjir.mjs' })).toBeUndefined();
   // A binary: its script is inside the executable.
-  expect(publishedKonjir({ version: '0.7.0', bun: '1.3.8', execPath: '/usr/local/bin/konjir', script: '/$bunfs/root/konjir', platform: 'linux' }))
+  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/local/bin/konjir', script: '/$bunfs/root/konjir' }))
     .toStrictEqual({ bridge: { command: '/usr/local/bin/konjir', args: ['bridge'] }, self: 'konjir' });
-  expect(publishedKonjir({ version: '0.7.0', bun: '1.3.8', execPath: 'C:\\tools\\konjir.exe', script: 'B:\\~BUN\\root\\konjir.exe', platform: 'win32' }))
+  expect(publishedKonjir({ version: '0.7.0', execPath: 'C:\\tools\\konjir.exe', script: 'B:\\~BUN\\root\\konjir.exe' }))
     .toStrictEqual({ bridge: { command: 'C:\\tools\\konjir.exe', args: ['bridge'] }, self: 'konjir' });
   // Installed from npm: this node, and konjir.mjs where it really is, whatever link started it.
   const prefix = realpathSync(scratch());
@@ -733,21 +733,51 @@ test('W9.5: the published konjir names the bridge it carries, konjir bridge: a b
   const installed = join(prefix, 'lib', 'node_modules', 'konjir', 'konjir.mjs');
   writeFileSync(installed, '');
   symlinkSync(installed, join(prefix, 'bin', 'konjir'));
-  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, 'bin', 'konjir'), platform: 'linux' }))
+  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, 'bin', 'konjir') }))
     .toStrictEqual({ bridge: { command: '/usr/bin/node', args: [installed, 'bridge'] }, self: 'konjir' });
-  // Run by npx: no path into its cache, which npm clears; the exact version instead, and cmd /c on Windows.
-  const cached = join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir');
-  mkdirSync(cached, { recursive: true });
-  writeFileSync(join(cached, 'konjir.mjs'), '');
-  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(cached, 'konjir.mjs'), platform: 'darwin' }))
-    .toStrictEqual({ bridge: { command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'] }, self: 'npx konjir@0.7.0' });
-  expect(publishedKonjir({ version: '0.7.0', execPath: 'C:\\node\\node.exe', script: 'C:\\Users\\ann\\AppData\\Local\\npm-cache\\_npx\\0a1b2c\\node_modules\\konjir\\konjir.mjs', platform: 'win32' }))
-    .toStrictEqual({ bridge: { command: 'cmd', args: ['/c', 'npx', '-y', 'konjir@0.7.0', 'bridge'] }, self: 'npx konjir@0.7.0' });
+
+  // Run by npx, pnpm dlx, yarn dlx or bunx: the runner clears its cache, so the entry names a copy
+  // konjir keeps beside its credentials, never the cache, and never `npx konjir`, which would run a
+  // konjir the project's own node_modules held.
+  const config = realpathSync(scratch());
+  const env = { KONJIR_CREDENTIALS: join(config, 'credentials.json') };
+  const kept = join(config, 'bridge', 'konjir-0.7.0.mjs');
+  for (const cache of [['.npm', '_npx', '0a1b2c'], ['Library', 'Caches', 'pnpm', 'dlx', 'abc', '19d'], ['xfs-1f', 'dlx-4242'], ['bunx-501-konjir@0.7.0']]) {
+    const dir = join(prefix, ...cache, 'node_modules', 'konjir');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'konjir.mjs'), '// konjir 0.7.0\n');
+    const p = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(dir, 'konjir.mjs') }, env);
+    expect(p).toStrictEqual({ bridge: { command: '/usr/bin/node', args: [kept, 'bridge'] }, self: 'npx konjir@0.7.0', keep: { from: join(dir, 'konjir.mjs'), to: kept } });
+    expect(JSON.stringify(p!.bridge)).not.toMatch(/npx|dlx/);
+  }
+  // The copy: made in a folder of konjir's own, 0700; the same bytes again are left; others replace it.
+  const from = join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir', 'konjir.mjs');
+  expect(existsSync(kept)).toBe(false);
+  keepKonjir({ from, to: kept });
+  expect(readFileSync(kept, 'utf8')).toBe('// konjir 0.7.0\n');
+  expect(statSync(dirname(kept)).mode & 0o777).toBe(0o700);
+  expect(statSync(kept).mode & 0o777).toBe(0o755);
+  const first = statSync(kept).ino;
+  keepKonjir({ from, to: kept });
+  expect(statSync(kept).ino).toBe(first);
+  writeFileSync(kept, 'tampered');
+  keepKonjir({ from, to: kept });
+  expect(readFileSync(kept, 'utf8')).toBe('// konjir 0.7.0\n');
+  // Never through a link: not one in the file's place, nor a linked folder.
+  rmSync(kept);
+  const elsewhere = join(scratch(), 'elsewhere.mjs');
+  writeFileSync(elsewhere, '// konjir 0.7.0\n');
+  symlinkSync(elsewhere, kept);
+  keepKonjir({ from, to: kept });
+  expect(lstatSync(kept).isSymbolicLink()).toBe(false);
+  const linked = realpathSync(scratch());
+  symlinkSync(scratch(), join(linked, 'bridge'));
+  expect(() => keepKonjir({ from, to: join(linked, 'bridge', 'konjir-0.7.0.mjs') })).toThrow(/isn't a folder of konjir's/);
 
   // The entry Claude Code is given names that command and its arguments.
   const e: Entry = { name: 'konjir-pm', agent: 'ann-pm', label: 'pm', role: 'product', kolab: 'anns', url: 'https://kolab.example.com/mcp' };
-  expect(claudeBridgeEntry(e, { command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'] })).toStrictEqual({
-    type: 'stdio', command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'],
+  expect(claudeBridgeEntry(e, { command: '/usr/bin/node', args: [kept, 'bridge'] })).toStrictEqual({
+    type: 'stdio', command: '/usr/bin/node', args: [kept, 'bridge'],
     env: { KONJIR_URL: 'https://kolab.example.com/mcp', KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' },
   });
 });
@@ -756,7 +786,7 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   const { idp, server } = await local();
   const project = realpathSync(scratch());
   const env = { KONJIR_CREDENTIALS: join(scratch(), 'credentials.json'), HOME: scratch() };
-  const bridge = { command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'] };
+  const bridge = { command: '/usr/bin/node', args: ['/opt/konjir/konjir.mjs', 'bridge'] };
   const opts = (over: Partial<ConnectOptions> = {}) => options(server, project, { harness: 'claude', bridge, self: 'npx konjir@0.7.0', subagents: true, agents: parseAgents(['writer:product', 'builder:engineer']), env, ...over });
 
   // The plan names the subagents before any browser opens; a dry run writes none.
@@ -768,11 +798,11 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   const io = world(server, idp, async () => 0);
   await connectHarness(opts(), io);
   const servers = JSON.parse(readFileSync(join(project, '.mcp.json'), 'utf8')).mcpServers;
-  expect(servers['konjir-writer']).toStrictEqual({ type: 'stdio', command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'],
+  expect(servers['konjir-writer']).toStrictEqual({ type: 'stdio', command: '/usr/bin/node', args: ['/opt/konjir/konjir.mjs', 'bridge'],
     env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-writer' } });
-  expect(servers['konjir-builder'].args).toStrictEqual(['-y', 'konjir@0.7.0', 'bridge']);
-  // Run by npx, the entries name no path of this machine's, and the last lines say how to run konjir again.
-  expect(io.lines.join('\n')).not.toContain('name this machine\'s paths');
+  expect(servers['konjir-builder'].args).toStrictEqual(['/opt/konjir/konjir.mjs', 'bridge']);
+  // The entries name this machine's paths, and the last lines say how to run this konjir again.
+  expect(io.lines.join('\n')).toContain('name this machine\'s paths');
   expect(io.lines.slice(-2)).toStrictEqual(['npx konjir@0.7.0 claude writer', 'npx konjir@0.7.0 claude builder']);
 
   // One subagent per agent: its name the label, its tools its own entry's alone, its prompt konjir claude's.
@@ -797,12 +827,41 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   expect(await rejection(connectHarness(opts(), world(server, idp, async () => 0, { opened }))))
     .toBe(`Error: ${join(project, '.claude', 'agents', 'builder.md')} is already there and says something else. konjir connect won't overwrite it: pass --force to replace it, or choose other labels with --agent`);
   expect(opened).toHaveLength(0);
-  await connectHarness(opts({ force: true }), world(server, idp, async () => 0));
+  // --force replaces it, and the plan shows what goes: the person's own subagent may bear that name.
+  const forced = world(server, idp, async () => 0);
+  await connectHarness(opts({ force: true }), forced);
+  expect(forced.lines.join('\n')).toContain('-mine\n+---\n+name: builder');
   expect(readFileSync(join(project, '.claude', 'agents', 'builder.md'), 'utf8')).toContain('name: builder\n');
   // A link in a subagent's place is never written through.
   rmSync(join(project, '.claude', 'agents', 'writer.md'));
   symlinkSync(join(scratch(), 'elsewhere.md'), join(project, '.claude', 'agents', 'writer.md'));
   expect(await rejection(connectHarness(opts({ force: true }), world(server, idp, async () => 0)))).toMatch(/writer\.md is a link; konjir connect won't write a subagent through it/);
+  // Nor into a folder that leads out of the project: refused with the plan, before the browser, with
+  // nothing read, made or written out there, and .mcp.json untouched. A dry run reads nothing either.
+  for (const which of ['.claude', join('.claude', 'agents')]) {
+    const away = realpathSync(scratch());
+    const outside = realpathSync(scratch());
+    mkdirSync(dirname(join(away, which)), { recursive: true });
+    symlinkSync(outside, join(away, which));
+    writeFileSync(join(outside, 'writer.md'), 'a secret\n');
+    for (const dryRun of [false, true]) {
+      const seen: URL[] = [];
+      const w = world(server, idp, async () => 0, { opened: seen });
+      expect(await rejection(connectHarness(opts({ cwd: away, dryRun }), w))).toMatch(/leads to .*, outside .*; konjir connect won't write a subagent there/);
+      expect(seen).toHaveLength(0);
+      expect(w.lines.join('\n')).not.toContain('a secret');
+    }
+    expect(existsSync(join(away, '.mcp.json'))).toBe(false);
+    expect(readFileSync(join(outside, 'writer.md'), 'utf8')).toBe('a secret\n');
+  }
+  // A Kolab that names the person in a way no name is written reaches no file (--no-auth, where no credentials file would catch it).
+  const hostile = realpathSync(scratch());
+  const lying = world(server, idp, async () => 0);
+  const honest = lying.setup;
+  lying.setup = async (r) => ({ ...(await honest(r)), person: 'ann\ntools: Bash\nx' });
+  expect(await rejection(connectHarness(opts({ cwd: hostile, auth: false }), lying))).toMatch(/Kolab named a person or an agent in a way no name is written, so nothing is written/);
+  expect(existsSync(join(hostile, '.mcp.json'))).toBe(false);
+  expect(existsSync(join(hostile, '.claude'))).toBe(false);
 
   // With --global they are the person's own; and they are Claude Code's alone.
   const home = realpathSync(scratch());
