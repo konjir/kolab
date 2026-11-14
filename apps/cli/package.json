@@ -2,7 +2,7 @@
   "name": "konjir",
   "version": "0.5.0",
   "private": true,
-  "description": "konjir: the Kolab verbs from a shell, as an MCP client of Kolab",
+  "description": "konjir: the Kolab verbs from a shell, as an MCP client of Kolab, and the Konjir channel for Claude Code",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22"
@@ -26,6 +26,7 @@
     "compile": "node scripts/package.mjs binaries"
   },
   "dependencies": {
+    "@konjir/channel-bridge": "*",
     "@konjir/login": "*",
     "@konjir/server": "*",
     "@konjir/types": "*",
@@ -55,12 +56,20 @@
           "production",
           "^production",
           "{projectRoot}/scripts/package.mjs",
+          "{projectRoot}/scripts/bundle.mjs",
           "{projectRoot}/scripts/download.mjs",
           "{projectRoot}/scripts/bun-runtime.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
             "externalDependencies": [
-              "@modelcontextprotocol/client"
+              "@modelcontextprotocol/client",
+              "@modelcontextprotocol/server",
+              "@nestjs/common",
+              "@nestjs/core",
+              "@onivoro/server-mcp",
+              "reflect-metadata",
+              "rxjs",
+              "zod"
             ]
           },
           "{projectRoot}/README.npm.md"
@@ -75,12 +84,20 @@
           "production",
           "^production",
           "{projectRoot}/scripts/package.mjs",
+          "{projectRoot}/scripts/bundle.mjs",
           "{projectRoot}/scripts/download.mjs",
           "{projectRoot}/scripts/bun-runtime.mjs",
           "{projectRoot}/bun-runtimes.json",
           {
             "externalDependencies": [
-              "@modelcontextprotocol/client"
+              "@modelcontextprotocol/client",
+              "@modelcontextprotocol/server",
+              "@nestjs/common",
+              "@nestjs/core",
+              "@onivoro/server-mcp",
+              "reflect-metadata",
+              "rxjs",
+              "zod"
             ]
           }
         ],

@@ -1,15 +1,19 @@
 #!/usr/bin/env node
-// Builds the published konjir (W2.6, binding element API6): the client alone, as one file.
+// Builds the published konjir (W2.6, binding element API6): the client and the channel bridge
+// (`konjir bridge`, W9.5, API29), as one file.
 //
 //   node scripts/package.mjs npm                 -> dist-npm/: the npm package
 //   node scripts/package.mjs binaries [target…]  -> dist-bin/: single-file executables, bun build --compile
 //   node scripts/package.mjs bun <dir>           -> installs the pinned Bun for this machine in <dir>, verified
 //
-// Both builds bundle the CLI and everything it imports (the MCP client SDK) with Bun, so the npm
-// package has no dependencies and npx konjir works without this workspace. @konjir/server is left
-// out: it brings NestJS and the database, and only `konjir serve` loads it, so the
-// published konjir has no serve (the CLI says so). Of the @konjir/* libraries only @konjir/login, the
-// OAuth client and credentials store `konjir login` uses, is bundled; the others reach the CLI as types only.
+// Both builds are one bundle, konjir.mjs, of the CLI and everything it imports (scripts/bundle.mjs,
+// with Bun): the npm package ships it, with no dependencies, so npx konjir works without this
+// workspace, and each binary is compiled from it. @konjir/server isn't in it: it brings the
+// database, and only `konjir serve` loads it, so the published konjir has no serve (the CLI says
+// so). Of the @konjir/* packages only @konjir/login, the OAuth client and credentials store `konjir
+// login` uses, and @konjir/channel-bridge, which `konjir bridge` runs, are bundled; the others
+// reach the CLI as types only. What the bundle doesn't carry is bundled as absent, never left for
+// the runtime to find in whatever folder konjir is run in (bundle.mjs says why).
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
 // with it, for `konjir --version`.
@@ -37,7 +41,6 @@ const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(app, '../..');
 const manifest = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
 const pinned = JSON.parse(readFileSync(join(app, 'bun-runtimes.json'), 'utf8'));
-const entry = join(app, 'src/main.ts');
 if (manifest.license !== 'Apache-2.0') throw new Error(`apps/cli/package.json declares the licence ${manifest.license}, but konjir is Apache-2.0`);
 // The targets we ship, and the Bun release zip each compiles on. x64 uses Bun's baseline
 // runtime, which runs on CPUs without AVX2. `binaries` with no arguments builds them all.
@@ -63,20 +66,21 @@ function checkBun() {
   if (have !== pinned.version) throw new Error(`bun on PATH is ${have}, but apps/cli/bun-runtimes.json pins ${pinned.version}`);
 }
 
-// The @konjir/source condition bundles @konjir/login from its source, as tsx runs it, so the bundle
-// needs no tsc build of the library first.
-const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server', '--conditions=@konjir/source',
-  '--define', `KONJIR_VERSION=${JSON.stringify(manifest.version)}`, ...args], { stdio: 'inherit', cwd: app });
+/** Bundles konjir into `out`/konjir.mjs, with Bun's metafile beside it (scripts/bundle.mjs); returns both paths. */
+function bundle(out) {
+  execFileSync('bun', [join(app, 'scripts/bundle.mjs'), out, manifest.version], { stdio: 'inherit', cwd: app });
+  return { file: join(out, 'konjir.mjs'), metafile: join(out, '.metafile.json') };
+}
 
 /**
- * The first-party code the bundle may inline: the CLI's own source and @konjir/login's, nothing
- * else of the workspace's (no server, engine, db or address code). Those two are the workspace's
- * only Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2 (D64), which the Apache-2.0
- * konjir (D63) must never carry. The build fails on anything else, since the @konjir/source
- * condition would otherwise inline it from TypeScript unseen, and on either of the two if its
- * package.json stops declaring Apache-2.0.
+ * The first-party code the bundle may inline: the CLI's own source, @konjir/login's and the channel
+ * bridge's (W9.5), nothing else of the workspace's (no server, engine, db or address code). Those
+ * three are the workspace's only Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2
+ * (D64), which the Apache-2.0 konjir (D63) must never carry. The build fails on anything else,
+ * since the @konjir/source condition would otherwise inline it from TypeScript unseen, and on any of
+ * the three if its package.json stops declaring Apache-2.0.
  */
-const FIRST_PARTY = ['apps/cli', 'libs/login'].map((dir) => join(root, dir));
+const FIRST_PARTY = ['apps/cli', 'libs/login', 'apps/channel-bridge'].map((dir) => join(root, dir));
 /** The workspace package a first-party input belongs to: the nearest directory above it with a package.json. */
 function owningPackage(path) {
   for (let dir = dirname(path); dir.startsWith(root + '/'); dir = dirname(dir)) {
@@ -86,7 +90,10 @@ function owningPackage(path) {
 }
 function checkFirstParty(metafile, out) {
   const stray = [];
-  for (const path of Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs).map((input) => resolve(app, input))) {
+  for (const input of Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs)) {
+    // What the bundle carries as absent (bundle.mjs) is no source of anyone's.
+    if (input.startsWith('absent:') || input.startsWith('no-import:')) continue;
+    const path = resolve(app, input);
     if (/\/node_modules\//.test(path) && !/\/node_modules\/@konjir\//.test(path)) continue;
     const pkg = owningPackage(path);
     const { license } = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
@@ -96,7 +103,7 @@ function checkFirstParty(metafile, out) {
   }
   // Nothing is left behind from a build that fails it.
   if (stray.length) rmSync(out, { recursive: true, force: true });
-  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src and libs/login/src: ${stray.join(', ')}`);
+  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src, libs/login/src and apps/channel-bridge/src: ${stray.join(', ')}`);
 }
 
 /** No package the bundle inlines may be FSL-licensed, as the rest of this workspace is (D64). */
@@ -160,10 +167,9 @@ if (mode === 'bun') {
   const out = join(app, 'dist-npm');
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
-  const metafile = join(out, '.metafile.json');
-  bun(['--target=node', '--format=esm', '--minify-syntax', '--minify-whitespace', `--metafile=${metafile}`, '--outfile', join(out, 'konjir.mjs')]);
+  const { file, metafile } = bundle(out);
   checkFirstParty(metafile, out);
-  chmodSync(join(out, 'konjir.mjs'), 0o755);
+  chmodSync(file, 0o755);
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(checkBundledLicences(bundledPackages(metafile), out)));
   rmSync(metafile);
   // The published manifest: no dependencies (they're bundled) and nothing private.
@@ -192,16 +198,17 @@ if (mode === 'bun') {
   const out = join(app, 'dist-bin');
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
-  const metafile = join(out, '.metafile.json');
+  // The one bundle, the npm package's own, in a folder of its own; each binary embeds it.
+  const { file: bundled, metafile } = bundle(join(out, '.bundle'));
+  checkFirstParty(metafile, out);
   for (const t of targets) {
     const file = join(out, `konjir-${t}${t.startsWith('windows') ? '.exe' : ''}`);
     // No .env or bunfig.toml autoloading: the binary reads its environment as the npm package does.
-    bun(['--compile', `--target=${TARGETS[t].replace(/-aarch64$/, '-arm64')}`, `--compile-executable-path=${await runtime(TARGETS[t])}`,
-      '--minify', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', `--metafile=${metafile}`, '--outfile', file]);
-    checkFirstParty(metafile, out);
+    execFileSync('bun', ['build', bundled, '--compile', `--target=${TARGETS[t].replace(/-aarch64$/, '-arm64')}`, `--compile-executable-path=${await runtime(TARGETS[t])}`,
+      '--minify', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', '--outfile', file], { stdio: 'inherit', cwd: app });
   }
   writeFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), notices(checkBundledLicences(bundledPackages(metafile), out)));
-  rmSync(metafile);
+  rmSync(join(out, '.bundle'), { recursive: true });
   copyFileSync(join(app, 'LICENSE'), join(out, 'LICENSE'));
 } else {
   throw new Error('usage: node scripts/package.mjs npm | binaries [target…] | bun <dir>');

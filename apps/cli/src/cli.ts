@@ -14,13 +14,15 @@
  *   konjir watch [--once]                -> print your inbox now and each time Kolab pushes a change
  *   konjir login [--kolab K] [--role R] [--agent A] -> sign in with the browser (OAuth, D55); later commands use it
  *   konjir logout [--forget]
- *   konjir connect opencode|claude --kolab K [--agent label[:role]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http]
+ *   konjir connect opencode|claude --kolab K [--agent label[:role]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--subagents]
  *                                        -> one browser page sets up the kolab and your agents; one MCP entry per agent
  *                                           in the harness's config (W3.7, D59); for Claude Code, the Konjir channel
  *                                           bridge (W3.8, D61), each agent signed in, or with --http its HTTP entry
  *   konjir claude <label> [claude's arguments…]
  *                                        -> one agent's Claude Code session: its konjir-<label> entry and channel alone,
  *                                           and a system prompt naming it (W9.1, API24)
+ *   konjir bridge                        -> the Konjir channel bridge, a stdio MCP server Claude Code starts from the
+ *                                           entry konjir connect claude wrote (W9.5, API29); not run by hand
  *   konjir repo register [--binding B] [--url U] [--root SHA] [-C dir]
  *                                        -> registers this checkout's repository, as a person with Maintain (W5.2a, D98)
  *   konjir work deliver [<work>] [--submit] [--pr URL] [--test URL|summary]… [--check ADDRESS=passed|failed]… [--note T] [--since REV] [--repo URL] [--dry-run] [-C dir]
@@ -44,6 +46,8 @@ import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { constants as osConstants } from 'node:os';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setup } from './login.js';
@@ -68,13 +72,30 @@ export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, 
 // Only @konjir/server itself being absent means that; any other failure to load it (a stale
 // dist/, a missing dependency of the server's, a syntax error) is rethrown as it is.
 class ClientOnly extends Error {}
-const server = () => import('@konjir/server').catch((e: unknown) => {
+/**
+ * Imports one of the checkout's heavy packages with the working folder set to this module's own,
+ * then puts it back. @onivoro/server-mcp, which the server and the bridge both load, looks up
+ * @nestjs/core/package.json from the working folder as it loads, and would run one a project
+ * shipped as a folder of code (the review of #144). The published konjir resolves nothing as it
+ * runs (scripts/bundle.mjs), and has no folder of its own to go to, so it imports as it is.
+ */
+async function fromHere<T>(load: () => Promise<T>): Promise<T> {
+  if (typeof KONJIR_VERSION === 'string') return load();
+  const cwd = process.cwd();
+  process.chdir(dirname(fileURLToPath(import.meta.url)));
+  try { return await load(); } finally { process.chdir(cwd); }
+}
+const server = () => fromHere(() => import('@konjir/server')).catch((e: unknown) => {
   const err = e as { code?: unknown; message?: unknown };
   if (err?.code === 'ERR_MODULE_NOT_FOUND' && /^Cannot find (package|module) '@konjir\/server'/.test(String(err.message))) {
     throw new ClientOnly('this konjir is the client only, so it has no serve. Run `bin/konjir serve` from a Kolab checkout (github.com/konjir/kolab), or point KONJIR_URL at a running Kolab.');
   }
   throw e;
 });
+
+// The channel bridge (W9.5, API29), with NestJS, is likewise imported only by `konjir bridge`. The
+// published konjir carries it; a checkout's entries run the checkout's own (its start.sh).
+const bridge = () => fromHere(() => import('@konjir/channel-bridge'));
 
 // The published builds (scripts/package.mjs) define this as the package's version.
 declare const KONJIR_VERSION: string | undefined;
@@ -235,15 +256,16 @@ Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--agent <age
            Every later command uses that sign-in, renewing it by itself. konjir logout revokes it; --forget drops
            it here without contacting Kolab.
 Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path]
-           [--dry-run] [--no-auth] [--http] connects a harness to a kolab, one agent per entry (by default product and engineer).
+           [--dry-run] [--no-auth] [--http] [--subagents] connects a harness to a kolab, one agent per entry (by default product and engineer).
            It prints the plan (the entries, your agents <you>-<label>, the change to opencode.json or .mcp.json, or with
            --global your own settings) and opens your browser once, at Kolab's setup page: sign in, check the kolab and
            agents it names, and Allow. Kolab makes the kolab if no kolab has that name (private, yours) and each agent
            that is new, and grants each in the kolab in its role, never more than you hold. --dry-run prints the plan
            and stops. --force replaces konjir-<label> entries already there; --force-path writes a config file that
-           links outside the project. For Claude Code each entry is the Konjir channel (from this checkout): Kolab's
-           tools and the inbox pushed into the session, each agent already signed in; it ends with one konjir claude
-           command per agent. --http writes Claude Code's plain HTTP entry instead, with no channel; OpenCode's and
+           links outside the project. For Claude Code each entry is the Konjir channel (konjir bridge, which this konjir
+           carries; a checkout runs its own): Kolab's tools and the inbox pushed into the session, each agent already
+           signed in; it ends with one konjir claude command per agent. --subagents also writes one Claude Code subagent
+           per agent, .claude/agents/<label>.md, with only that agent's Konjir tools. --http writes Claude Code's plain HTTP entry instead, with no channel; OpenCode's and
            --http's entries each sign in by themselves, on a page locked to their agent. Run it again: the same kolab
            and agents, signed in afresh.
            konjir claude <label> [claude's arguments…] starts one agent's Claude Code session: only its konjir-<label>
@@ -453,6 +475,16 @@ export async function main(argv: string[]) {
     return;
   }
 
+  // The Konjir channel bridge (W9.5, API29): Claude Code starts it, from the entry konjir connect
+  // claude wrote, and speaks MCP with it over stdio, so nothing else is printed to stdout. It reads
+  // its Kolab, agent and scope from its environment (KONJIR_URL, KONJIR_AGENT, KONJIR_SCOPE), takes
+  // no arguments, and runs until Claude Code closes it.
+  if (argv[0] === 'bridge') {
+    if (argv.length > 1) throw new Error(`konjir bridge takes no arguments (unknown ${argv.slice(1).join(' ')}): Claude Code starts it, from the entry konjir connect claude wrote, with its Kolab and agent in its environment`);
+    await (await bridge()).main();
+    return;
+  }
+
   // A job's guard hook (W6.4): Claude Code runs it before each shell command, inside the job, with
   // its PreToolUse input on stdin. It talks to no Kolab and needs no session.
   if (argv[0] === 'work' && argv[1] === 'guard') {
@@ -541,14 +573,14 @@ export async function main(argv: string[]) {
 
   if (cmd === 'connect') {
     const harness = rest.shift();
-    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--url <kolab>, by default https://kolab.konjir.com/mcp]`);
+    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--subagents] [--url <kolab>, by default https://kolab.konjir.com/mcp]`);
     const kolab = flag(rest, 'kolab');
     const agents: string[] = [];
     for (let a = flag(rest, 'agent'); a !== undefined; a = flag(rest, 'agent')) agents.push(a);
     const on = (name: string) => { const i = rest.indexOf(`--${name}`); if (i >= 0) rest.splice(i, 1); return i >= 0; };
     // --yes is kept, and does nothing: konjir connect asks nothing in the terminal now (one page, in the browser).
     on('yes');
-    const opts = { global: on('global'), force: on('force'), forcePath: on('force-path'), dryRun: on('dry-run'), auth: !on('no-auth'), http: on('http') };
+    const opts = { global: on('global'), force: on('force'), forcePath: on('force-path'), dryRun: on('dry-run'), auth: !on('no-auth'), http: on('http'), subagents: on('subagents') };
     if (rest.length) throw new Error(`konjir connect: unknown ${rest.join(' ')}`);
     // It sets up as the person, in the browser: a token given (KONJIR_TOKEN or --token) isn't used for it.
     if (token) console.error('konjir connect signs you in in your browser, at Kolab\'s setup page: KONJIR_TOKEN and --token aren\'t used for it.');

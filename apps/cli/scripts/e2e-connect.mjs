@@ -3,6 +3,11 @@
 // change to setup or consent is tested in minutes, by an agent as well as by hand.
 //
 //   npm run e2e:connect        (or: node apps/cli/scripts/e2e-connect.mjs)
+//   node apps/cli/scripts/e2e-connect.mjs --konjir <a published konjir: a binary, or an installed package's bin/konjir>
+//
+// With --konjir, that konjir connects, and its entries must run the bridge it carries, `konjir
+// bridge` (W9.5, API29); without, the checkout's bin/konjir, whose entries run the checkout's own.
+// Kolab itself always runs from this checkout.
 //
 // It starts a local Kolab from this checkout (`bin/konjir serve`, on PGlite in a temp folder, on a
 // free 127.0.0.1 port) with the stub identity (KONJIR_STUB_IDENTITY), so whoever opens Kolab's
@@ -18,7 +23,9 @@
 //
 // Checks: connect exits 0; .mcp.json has a channel entry per agent; each agent's credentials file
 // is there, mode 600, and `konjir whoami` with it names that agent, its role and the kolab; the
-// same command again passes and leaves .mcp.json as it was; and an agent cap refusal (2 live
+// same command again passes and leaves .mcp.json as it was; a session started on an entry, as
+// Claude Code starts it (the entry's command, arguments and environment, MCP over stdio), lists
+// Kolab's tools and is pushed a channel message when another agent messages its agent; and an agent cap refusal (2 live
 // agents + 9 new > 10) shows on the page, with Deny alone, and in the CLI, writing nothing.
 // Exits nonzero, saying which check failed. The server and temp folders are removed either way
 // (KEEP=1 keeps the folders, and prints where).
@@ -30,7 +37,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const KONJIR = join(ROOT, 'bin', 'konjir');
+const CHECKOUT = join(ROOT, 'bin', 'konjir');
+const given = process.argv.indexOf('--konjir');
+if (given >= 0 && !process.argv[given + 1]) { console.error('--konjir <path to a published konjir>'); process.exit(2); }
+/** The konjir that connects: a published one when --konjir names it, else the checkout's. */
+const KONJIR = given >= 0 ? resolve(process.argv[given + 1]) : CHECKOUT;
+const PUBLISHED = given >= 0;
 const LOGIN = 'e2e';
 const started = Date.now();
 const rand = Math.random().toString(36).slice(2, 8);
@@ -106,7 +118,7 @@ async function startKolab() {
 async function startKolabOnce() {
   const port = await freePort();
   // Its own process group, so cleanup stops tsx and the node it starts.
-  server = spawn(KONJIR, ['serve', '--port', String(port), '--data', join(tmp, 'data'), '--admin-token', 'off'], {
+  server = spawn(CHECKOUT, ['serve', '--port', String(port), '--data', join(tmp, 'data'), '--admin-token', 'off'], {
     cwd: tmp, env: env({ KONJIR_STUB_IDENTITY: LOGIN }), stdio: ['ignore', 'pipe', 'pipe'], detached: true,
   });
   let log = '';
@@ -184,6 +196,75 @@ async function connect(cwd, mcp, agents) {
   return { ...(await ran), page };
 }
 
+/**
+ * A session on one entry, as Claude Code starts it: the entry's command with its arguments and
+ * environment, speaking MCP over stdio as a client that takes channel messages. It must list
+ * Kolab's tools, and be pushed a channel message once `nudge` has made its agent's inbox change.
+ */
+async function session(name, entry, cwd, nudge) {
+  const p = spawn(entry.command, entry.args, { cwd, env: env(entry.env), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  live.add(p);
+  // One that can't start, or dies while it is written to, fails the check rather than this script.
+  let broke;
+  p.on('error', (e) => { broke ??= e; });
+  p.stdin.on('error', (e) => { broke ??= e; });
+  let err = '', buffer = '', nextId = 1, garbled;
+  const waiting = new Map();
+  const channel = [];
+  p.stderr.on('data', (d) => { err += d; });
+  p.stdout.on('data', (d) => {
+    buffer += d;
+    for (let i = buffer.indexOf('\n'); i >= 0; i = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, i).trim();
+      buffer = buffer.slice(i + 1);
+      if (!line) continue;
+      let m;
+      try { m = JSON.parse(line); } catch { garbled ??= line; continue; }
+      if (m.method === 'notifications/claude/channel') channel.push(m.params);
+      else if (m.id !== undefined && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+    }
+  });
+  const ended = new Promise((ok) => { p.once('exit', (code) => { live.delete(p); ok(code); }); p.once('error', () => { live.delete(p); ok(null); }); });
+  const send = (m) => p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`);
+  const request = (method, params = {}) => new Promise((ok, no) => {
+    const id = nextId++;
+    const t = setTimeout(() => no(new Failed(`${name} didn't answer ${method} in 30s:\n${err.slice(-2000)}`)), 30_000);
+    waiting.set(id, (m) => { clearTimeout(t); ok(m); });
+    send({ id, method, params });
+  });
+  const until = async (what, done, timeoutMs = 45_000) => {
+    for (const end = Date.now() + timeoutMs; Date.now() < end; await new Promise((r) => setTimeout(r, 250))) {
+      if (broke || p.exitCode !== null) fail(`${name} ${broke ? `broke (${broke.message})` : `exited (${p.exitCode})`} before ${what}:\n${err.slice(-2000)}`);
+      const v = await done();
+      if (v) return v;
+    }
+    fail(`${name}: ${what} didn't happen in ${timeoutMs / 1000}s:\n${err.slice(-2000)}`);
+  };
+  try {
+    const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'e2e-connect', version: '0' } });
+    check(init.result?.capabilities?.experimental?.['claude/channel'], `${name} doesn't offer the claude/channel capability: ${JSON.stringify(init).slice(0, 400)}`);
+    send({ method: 'notifications/initialized' });
+    // Kolab's tools arrive once the bridge has signed in with its agent's kept sign-in.
+    const tools = await until('listing Kolab\'s tools', async () => {
+      const names = ((await request('tools/list')).result?.tools ?? []).map((t) => t.name);
+      return names.includes('konjir_instructions') && names.includes('konjir_send_message') ? names : undefined;
+    });
+    const who = await request('tools/call', { name: 'konjir_whoami', arguments: {} });
+    check(JSON.stringify(who.result ?? {}).includes(entry.env.KONJIR_AGENT), `${name}'s konjir_whoami doesn't name ${entry.env.KONJIR_AGENT}: ${JSON.stringify(who).slice(0, 400)}`);
+    const before = channel.length;
+    await nudge();
+    const pushed = await until('a channel message', async () => channel.slice(before).find((c) => typeof c?.content === 'string'));
+    // Stdout is the protocol's alone.
+    check(garbled === undefined, `${name} wrote something other than MCP to stdout: ${String(garbled).slice(0, 300)}`);
+    return { tools: tools.length, pushed: pushed.content };
+  } finally {
+    p.stdin.end();
+    const t = setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch { /* gone */ } }, 5_000);
+    await ended;
+    clearTimeout(t);
+  }
+}
+
 async function project(name) {
   const dir = join(tmp, name);
   mkdirSync(dir);
@@ -211,7 +292,9 @@ async function main() {
   check(first.code === 0, `konjir connect exited ${first.code}:\n${first.out}${first.err}`);
   check(first.page.includes(`Set up 2 agents in <code>${KOLAB}</code>`) && first.page.includes('New: made now, private, yours'), `the setup page didn't offer a new kolab ${KOLAB} with 2 agents:\n${first.page}`);
   const last = first.out.trim().split('\n').slice(-2);
-  check(last.join('\n') === 'konjir claude writer\nkonjir claude builder', `connect's last lines aren't one konjir claude command per agent: ${last.join(' / ')}`);
+  // `konjir claude <label>`, or for a konjir run from a package runner's cache, the copy it keeps, never npx.
+  const runsAgain = (label) => new RegExp(`^(konjir|\\S+ \\S+konjir-[0-9.]+\\.mjs) claude ${label}$`);
+  check(runsAgain('writer').test(last[0]) && runsAgain('builder').test(last[1]) && !/npx/.test(last.join(' ')), `connect's last lines aren't one konjir claude command per agent: ${last.join(' / ')}`);
 
   const mcpJson = join(dir, '.mcp.json');
   check(existsSync(mcpJson), '.mcp.json was not written');
@@ -220,7 +303,10 @@ async function main() {
   for (const [label, role] of agents) {
     const e = servers[`konjir-${label}`];
     const agent = `${LOGIN}-${label}`;
-    check(e?.type === 'stdio' && e.command.endsWith('apps/channel-bridge/scripts/start.sh'), `.mcp.json has no channel entry konjir-${label}: ${JSON.stringify(e)}`);
+    check(e?.type === 'stdio' && Array.isArray(e.args), `.mcp.json has no channel entry konjir-${label}: ${JSON.stringify(e)}`);
+    // A published konjir's entry runs the bridge it carries; a checkout's, the checkout's own.
+    if (PUBLISHED) check(e.args.at(-1) === 'bridge' && !JSON.stringify(e).includes('start.sh'), `konjir-${label} doesn't run konjir bridge: ${JSON.stringify(e)}`);
+    else check(e.command === join(ROOT, 'apps/channel-bridge/scripts/start.sh') && e.args.length === 0, `konjir-${label} doesn't run this checkout's bridge: ${JSON.stringify(e)}`);
     check(e.env?.KONJIR_URL === mcp && e.env.KONJIR_AGENT === agent && e.env.KONJIR_TOKEN === '', `konjir-${label}'s env is wrong: ${JSON.stringify(e.env)}`);
     check(e.env.KONJIR_SCOPE === `konjir kolab:${KOLAB} role:${role} agent:${agent}`, `konjir-${label}'s scope is ${e.env.KONJIR_SCOPE}`);
   }
@@ -252,6 +338,29 @@ async function main() {
   check(!again.page.includes('New: made now'), `the second setup page made something new:\n${again.page}`);
   check(readFileSync(mcpJson, 'utf8') === written, '.mcp.json changed on the second run');
   for (const [label, role] of agents) await whoami(label, role);
+
+  step(`a session on konjir-builder, as Claude Code starts it (${[servers['konjir-builder'].command, ...servers['konjir-builder'].args].join(' ')})`);
+  // A project that ships packages the bridge looks for as it starts: none of them is ever run. These
+  // are the ones the reviews of #144 found a binary or the npm package loading from the folder
+  // Claude Code starts it in; a published konjir resolves nothing as it runs (scripts/bundle.mjs).
+  const ran = join(tmp, 'planted-ran.txt');
+  for (const [pkg, file] of [['@nestjs/websockets', 'socket-module.js'], ['@nestjs/microservices', 'microservices-module.js'], ['@nestjs/microservices', 'index.js'],
+    ['class-transformer', 'index.js'], ['class-validator', 'index.js'], ['@konjir/server', 'index.js'], ['file-type', 'index.js'],
+    // @nestjs/core/package.json as a folder of code: @onivoro/server-mcp looks it up from the working folder.
+    ['@nestjs/core/package.json', 'index.js']]) {
+    mkdirSync(join(dir, 'node_modules', pkg), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', pkg, file), `require('node:fs').appendFileSync(${JSON.stringify(ran)}, ${JSON.stringify(`${pkg}/${file}\n`)});\n`);
+  }
+  const said = `ping ${rand}`;
+  const heard = await session('konjir-builder', servers['konjir-builder'], dir, async () => {
+    // The other agent messages it, from the CLI on its own sign-in.
+    const sent = await run(KONJIR, ['send_message', `to=${LOGIN}-builder`, `message=${said}`, '--url', mcp], { cwd: dir, env: env({ KONJIR_CREDENTIALS: join(xdg, 'konjir', 'agents', `${LOGIN}-writer.json`) }) });
+    check(sent.code === 0, `${LOGIN}-writer couldn't message ${LOGIN}-builder (${sent.code}):\n${sent.out}${sent.err}`);
+  });
+  check(heard.pushed.includes(`${LOGIN}-writer`) || heard.pushed.includes(said), `the channel message doesn't tell of ${LOGIN}-writer's message: ${heard.pushed.slice(0, 400)}`);
+  for (const cmd of ['help', '--version']) await run(KONJIR, [cmd], { cwd: dir, env: env() });
+  check(!existsSync(ran), `konjir ran code the project planted in its node_modules: ${existsSync(ran) ? readFileSync(ran, 'utf8').trim().split('\n').join(', ') : ''}`);
+  step(`it listed ${heard.tools} of Kolab's tools and was pushed: ${heard.pushed.split('\n')[0].slice(0, 120)}`);
 
   step('the agent cap: 2 live agents and 9 more is refused, on the page and in the CLI');
   const capped = await project('capped');
