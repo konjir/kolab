@@ -5,8 +5,11 @@ import { backoff, clock } from './api.js';
 export interface LiveHandlers {
   /** Something changed: re-read what the page shows. */
   onChange(e: WebEvent): void;
-  /** Kolab said the session ended (`ended`). */
-  onEnded(): void;
+  /**
+   * Kolab said the session ended (`ended`). Resolves whether the browser holds another by now, as
+   * when another tab moved to another kolab, and then the stream is opened again, for that one.
+   */
+  onEnded(): Promise<boolean>;
   /**
    * The stream closed for good: refused, or Kolab away behind its proxy (a 502 while it restarts).
    * Resolves whether the session lives on, when the stream is opened again.
@@ -19,7 +22,7 @@ export interface LiveHandlers {
 /**
  * Keeps the page live (API8): one server-sent event stream, GET /api/events. Each signal is
  * only that something changed, so `onChange` re-reads what the page shows. Only Kolab's `ended`
- * ends the session here. The browser reconnects a dropped stream by itself; one it gives up on (a
+ * ends the session here, and `onEnded` says whether the browser holds another. The browser reconnects a dropped stream by itself; one it gives up on (a
  * reply that isn't a stream, such as a proxy's 502 while Kolab restarts) is not taken for the
  * session's end: `onDropped` asks Kolab, and the stream opens again if the session lives, after a backoff.
  */
@@ -38,7 +41,7 @@ export function useLive(enabled: boolean, handlers: LiveHandlers) {
       s.onmessage = (m) => {
         let e: WebEvent;
         try { e = JSON.parse(m.data); } catch { return; }
-        if (e.type === 'ended') { gone = true; s.close(); current.current.onEnded(); return; }
+        if (e.type === 'ended') { s.close(); void current.current.onEnded().then((live) => { if (live) open(); }, () => undefined); return; }
         if (e.type === 'ready') { drops = 0; if (opened++ > 0) current.current.onResumed(); return; }
         current.current.onChange(e);
       };
