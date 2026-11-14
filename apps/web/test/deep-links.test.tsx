@@ -51,6 +51,12 @@ let hold: Promise<void> | undefined;
 let writes: string[];
 /** While set, Kolab's answer to who the session is waits for it. */
 let holdMe: Promise<void> | undefined;
+/** While set, Kolab's answer to a token sign-in waits for it. */
+let holdSignIn: Promise<void> | undefined;
+/** While set, Kolab's answer to a sign-out waits for it. */
+let holdSignOut: Promise<void> | undefined;
+/** What Kolab says of who the session is, when it isn't the session itself. */
+let meReply: Reply | undefined;
 /** The most switches Kolab had before it at once. */
 let together: number;
 let inFlight: number;
@@ -80,6 +86,9 @@ beforeEach(() => {
   hold = undefined;
   writes = [];
   holdMe = undefined;
+  holdSignIn = undefined;
+  holdSignOut = undefined;
+  meReply = undefined;
   together = inFlight = 0;
   FakeEventSource.all = [];
   switchReply = (kolab) => (kolab === 'billing' ? ok(inBilling) : NO_KOLAB);
@@ -91,12 +100,17 @@ beforeEach(() => {
     if (init?.method && init.method !== 'GET') writes.push(`${init.method} ${path}`);
     let r: Reply = ok({});
     if (path === '/api/session/methods') r = ok(methods);
-    else if (path === '/api/session' && init?.method === 'DELETE') session = null;
-    else if (path === '/api/session') r = ok(session = ann);
+    else if (path === '/api/session' && init?.method === 'DELETE') { await holdSignOut; session = null; }
+    else if (path === '/api/session') { await holdSignIn; r = ok(session = ann); }
     else if (path === '/api/session/invite') r = ok(invite);
     else if (path.startsWith('/api/nodes/password-reset')) r = ok(session?.kolab === 'billing' ? billingDoc : doc);
     else if (path === '/api/session/present') r = ok({ present: !!session });
-    else if (path === '/api/me') { await holdMe; r = session ? ok(session) : UNAUTHORIZED; }
+    else if (path === '/api/me') {
+      // Kolab answers as the session was when it was asked, however long the answer takes to arrive.
+      const then = session;
+      await holdMe;
+      r = meReply ?? (then ? ok(then) : UNAUTHORIZED);
+    }
     else if (path === '/api/overview') r = ok(overviewOf(session!));
     else if (path === '/api/session/switch') {
       const to = JSON.parse(String(init!.body)) as { kolab: string; role: string };
@@ -230,8 +244,13 @@ test('moving to another kolab\'s address from a page already open asks first, an
   await open('#/k/anns/connect');
   confirms = false;
   location.hash = '#/k/billing/sessions';
+  const entries = history.length;
   await waitFor(() => expect(asked).toHaveLength(1));
   await waitFor(() => expect(location.hash).toBe('#/k/anns/connect'));
+  // The address was written back in the entry the move made: none added, none traversed.
+  await idle();
+  expect(history.length).toBe(entries);
+  expect(location.hash).toBe('#/k/anns/connect');
   expect(switches).toStrictEqual([]);
   expect(kolabShown()).toBe('Ann’s');
   expect(current()).toBe('Connect a harness');
@@ -650,13 +669,30 @@ test('a 401 on an address\'s switch when another tab had already moved the sessi
   expect(switches).toHaveLength(1);
 });
 
-test.each(['#/k/billing/invite/kji_short', '#/k/billing/invite/', '#/k/billing/invite'])('an invite\'s address with no well-formed secret, %s, moves no session', async (hash) => {
+test.each([
+  '#/k/billing/invite/kji_short', '#/k/billing/invite/', '#/k/billing/invite', '#/k/billing/%69nvite/kji_short', '#/invite/kji_short',
+  // A well-formed secret with more written after it is no invite's link, and doesn't stay in the address.
+  `#/invite/${TOKEN}/x`, `#/k/billing/invite/${TOKEN}/x`,
+])('an invite\'s address that holds no well-formed invite, %s, is taken out: no session moves, nothing of it stays, and the page is home', async (hash) => {
   await open(hash);
   await idle();
   expect(switches).toStrictEqual([]);
   expect(asked).toStrictEqual([]);
   expect(kolabShown()).toBe('Ann’s');
-  expect(parsePlace(location.hash).kolab).toBe('anns');
+  expect(location.hash).toBe('#/k/anns');
+  expect(screen.queryByText(/There’s no page at/)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Join billing' })).toBeNull();
+  expect(writes).toStrictEqual([]);
+
+  // The same on a page already open: nothing is asked, and nothing moves.
+  fireEvent.click(screen.getByRole('button', { name: 'Your sessions' }));
+  await waitFor(() => expect(location.hash).toBe('#/k/anns/sessions'));
+  location.hash = hash;
+  await waitFor(() => expect(location.hash).toBe('#/k/anns'));
+  await idle();
+  expect(switches).toStrictEqual([]);
+  expect(asked).toStrictEqual([]);
+  expect(location.hash).toBe('#/k/anns');
 });
 
 test('a page that has shown no place yet asks nothing: another kolab\'s address set while its first switch is under way is taken up next', async () => {
@@ -740,4 +776,255 @@ test('a refused switch undoes only itself: another kolab asked for meanwhile is 
   expect(location.hash).toBe('#/k/third/connect');
   expect(kolabShown()).toBe('Third');
   expect(switches).toHaveLength(3);
+});
+
+test('an answer about the session that was asked for before the page\'s own move is put aside, and asked for again', async () => {
+  await open('#/k/anns/connect');
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  act(() => FakeEventSource.last.send({ type: 'ready' }));
+  // The stream comes back, and Kolab is slow to say who the session is: it is in anns as it is asked.
+  let known = () => undefined as void;
+  holdMe = new Promise<void>((r) => { known = r; });
+  act(() => FakeEventSource.last.send({ type: 'ready' }));
+  await idle();
+  const held = holdMe;
+  holdMe = undefined;
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(kolabShown()).toBe('Billing'));
+  await waitFor(() => expect(location.hash).toBe('#/k/billing'));
+  // The old answer lands.
+  void held;
+  known();
+  await idle();
+  expect(kolabShown()).toBe('Billing');
+  expect(location.hash).toBe('#/k/billing');
+  expect(document.querySelector('.rail-foot')?.textContent).toContain('billing');
+  expect(screen.queryByText(/another tab/)).toBeNull();
+});
+
+test('a switch that answers while the person signs in again by token ends nothing and signs nobody in: the sign-in is whose session it is', async () => {
+  methods = { provider: null, token: true };
+  await open('#/k/anns/connect');
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  let signedIn = () => undefined as void;
+  holdSignIn = new Promise<void>((r) => { signedIn = r; });
+  fireEvent.change(screen.getByLabelText('Session token'), { target: { value: 'kjs_anns' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in with a token' }));
+  await idle();
+  // The dead move's answer, with the sign-in on its way.
+  release();
+  await idle();
+  expect(writes.filter((w) => w === 'DELETE /api/session')).toHaveLength(1);
+  expect(screen.queryByText('Working as')).toBeNull();
+  holdSignIn = undefined;
+  signedIn();
+  await screen.findByText('Working as');
+  await idle();
+  expect(writes.filter((w) => w === 'DELETE /api/session')).toHaveLength(1);
+  expect(session).toBe(ann);
+  expect(kolabShown()).toBe('Ann’s');
+  // Nothing of the dead move holds the page.
+  expect(screen.queryByText(/^Opening/)).toBeNull();
+  expect((screen.getByRole('radio', { name: 'engineer' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(switches).toHaveLength(1);
+});
+
+test('a switch that answers after the person signed in again ends nothing: the new page waits for no dead move, and asks Kolab who the session is', async () => {
+  methods = { provider: null, token: true };
+  await open('#/k/anns/connect');
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  fireEvent.change(screen.getByLabelText('Session token'), { target: { value: 'kjs_anns' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in with a token' }));
+  await screen.findByText('Working as');
+  await idle();
+  // Signed in, with the dead move still unanswered: nothing waits for it.
+  expect(screen.queryByText(/^Opening/)).toBeNull();
+  expect((screen.getByRole('radio', { name: 'engineer' }) as HTMLButtonElement).disabled).toBe(false);
+  // A move of the new session's own is under way as the dead one answers: it keeps the gate.
+  switchReply = (kolab) => ok({ ...ann, kolab });
+  const releaseNew = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Third/ }));
+  await waitFor(() => expect(switches).toHaveLength(2));
+  release();
+  await idle();
+  expect(writes.filter((w) => w === 'DELETE /api/session')).toHaveLength(1);
+  expect(session).not.toBeNull();
+  expect((screen.getByRole('radio', { name: 'engineer' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole('heading', { name: 'Sign in to Kolab' })).toBeNull();
+  releaseNew();
+  await waitFor(() => expect(kolabShown()).toBe('Third'));
+  await waitFor(() => expect(location.hash).toBe('#/k/third'));
+  expect((screen.getByRole('radio', { name: 'engineer' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('signing out while an address\'s switch is under way keeps the address, though Kolab then refuses the switch', async () => {
+  await open('#/k/anns/sessions');
+  const release = held();
+  location.hash = '#/k/nowhere/connect';
+  await waitFor(() => expect(switches).toHaveLength(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  release();
+  await idle();
+  expect(location.hash).toBe('#/k/nowhere/connect');
+  expect(screen.getByRole('alert').textContent).toBe('Signed out. Your session has ended.');
+});
+
+test('a 401 on the picker\'s switch when another tab had already made it is an arrival, and no error', async () => {
+  await open('#/k/anns/connect');
+  switchReply = () => { session = inBilling; return UNAUTHORIZED; };
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(kolabShown()).toBe('Billing'));
+  await waitFor(() => expect(location.hash).toBe('#/k/billing'));
+  await idle();
+  expect(screen.getByRole('status').textContent).toBe('Working in billing as product');
+  expect(switches).toHaveLength(1);
+});
+
+test('a 401 on the picker\'s switch from a session that lives where it was says to try again, once', async () => {
+  await open('#/k/anns/connect');
+  switchReply = () => UNAUTHORIZED;
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('That didn’t go through while Kolab reconnected: try it again.'));
+  await idle();
+  expect(kolabShown()).toBe('Ann’s');
+  expect(location.hash).toBe('#/k/anns/connect');
+  expect(switches).toHaveLength(1);
+});
+
+test('while a move is under way, Open on a kolab\'s card, New kolab and Join say to wait, ask nothing and send nothing, and the picker\'s other kolabs are disabled', async () => {
+  await open(`#/invite/${TOKEN}`);
+  await screen.findByRole('button', { name: 'Join billing' });
+  fireEvent.click(screen.getAllByRole('button', { name: 'All kolabs' })[0]);
+  await waitFor(() => expect(location.hash).toBe('#/k/anns/kolabs'));
+  const open1 = (await screen.findAllByRole('button', { name: 'Open' }))[0];
+  fireEvent.change(document.getElementById('kTitle')!, { target: { value: 'Fourth' } });
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Third/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  const sent = () => writes.filter((w) => /^POST \/api\/session\/(switch|kolab|invite\/accept)$/.test(w));
+
+  for (const press of [() => fireEvent.click(open1), () => fireEvent.click(screen.getByRole('button', { name: 'Create kolab' })), () => fireEvent.click(screen.getByRole('button', { name: 'Join billing' }))]) {
+    press();
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('The session is on its way to another kolab or role: wait for it.'));
+    await idle();
+    expect(sent()).toStrictEqual(['POST /api/session/switch']);
+    expect(asked).toHaveLength(1);
+  }
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  expect((screen.getByRole('button', { name: /^Billing/ }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await idle();
+  expect(sent()).toStrictEqual(['POST /api/session/switch']);
+  switchReply = (kolab) => ok({ ...ann, kolab });
+  release();
+  await waitFor(() => expect(kolabShown()).toBe('Third'));
+  expect(together).toBe(1);
+});
+
+test('the page\'s own sign-out ends on Signed out though Kolab, asked who the session is meanwhile, answers with an error', async () => {
+  await open('#/k/anns/connect');
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  const stream = FakeEventSource.last;
+  let out = () => undefined as void;
+  holdSignOut = new Promise<void>((r) => { out = r; });
+  meReply = { status: 403, body: { error: 'forbidden', message: 'this session may not ask that' } };
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  act(() => stream.send({ type: 'ended' }));
+  await idle();
+  // Kolab's error isn't the page's news while it signs out.
+  expect(screen.queryByRole('heading', { name: 'Sign in to Kolab' })).toBeNull();
+  holdSignOut = undefined;
+  out();
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  expect(screen.getByRole('alert').textContent).toBe('Signed out. Your session has ended.');
+});
+
+test('a switch that answers while the page\'s sign-out is on its way signs nobody in, and the session it opened is ended', async () => {
+  await open('#/k/anns/connect');
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  let out = () => undefined as void;
+  holdSignOut = new Promise<void>((r) => { out = r; });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  release();
+  await idle();
+  expect(document.querySelector('.rail-foot')?.textContent).toContain('anns');
+  holdSignOut = undefined;
+  out();
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  await idle();
+  expect(writes.filter((w) => w === 'DELETE /api/session')).toHaveLength(2);
+  expect(session).toBeNull();
+  expect(screen.getByRole('alert').textContent).toBe('Signed out. Your session has ended.');
+});
+
+test('an answer about the session asked for while the page\'s own move was under way, and landing after it, is put aside too', async () => {
+  await open('#/k/anns/connect');
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  act(() => FakeEventSource.last.send({ type: 'ready' }));
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  // Asked with the switch on its way: Kolab answers as the session was then, in anns, and slowly.
+  let known = () => undefined as void;
+  holdMe = new Promise<void>((r) => { known = r; });
+  act(() => FakeEventSource.last.send({ type: 'ready' }));
+  await idle();
+  holdMe = undefined;
+  release();
+  await waitFor(() => expect(kolabShown()).toBe('Billing'));
+  known();
+  await idle();
+  expect(kolabShown()).toBe('Billing');
+  expect(location.hash).toBe('#/k/billing');
+  expect(screen.queryByText(/another tab/)).toBeNull();
+});
+
+test('an answer about the session asked for before a token sign-in ended is put aside: the page is in the session it signed in to', async () => {
+  methods = { provider: null, token: true };
+  await open('#/k/anns/connect');
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  // The session ends under the page, not by its own sign-out.
+  session = null;
+  act(() => FakeEventSource.last.send({ type: 'ended' }));
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  // The dead move answers, and the page asks Kolab who the session is: in billing as it is asked, and slowly answered.
+  let known = () => undefined as void;
+  holdMe = new Promise<void>((r) => { known = r; });
+  release();
+  await idle();
+  holdMe = undefined;
+  fireEvent.change(screen.getByLabelText('Session token'), { target: { value: 'kjs_anns' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in with a token' }));
+  await screen.findByText('Working as');
+  await waitFor(() => expect(document.querySelector('.rail-foot')?.textContent).toContain('anns'));
+  known();
+  await idle();
+  expect(screen.queryByRole('heading', { name: 'Sign in to Kolab' })).toBeNull();
+  expect(document.querySelector('.rail-foot')?.textContent).toContain('anns');
+  expect(parsePlace(location.hash).kolab).toBe('anns');
+  expect(screen.queryByText(/another tab/)).toBeNull();
 });

@@ -51,8 +51,8 @@ export function parseRoute(hash: string): Route {
   if (['questions', 'cases', 'reviews', 'lineage', 'activity', 'kolabs', 'people', 'connect', 'sessions', 'inbox', 'work', 'settings', 'new'].includes(h)) return { view: h as 'questions' };
   const rulings = /^rulings(?:\/([A-Za-z][\w.-]{0,39}))?$/.exec(h);
   if (rulings) return rulings[1] ? { view: 'rulings', ref: rulings[1] } : { view: 'rulings' };
-  // An invite's link is taken out of the address as the page reads it (takeInvite): the page under it is home.
-  return h === '' || h.startsWith('invite/') ? { view: 'home' } : { view: 'missing', what: h };
+  // An invite's address is taken out as the page reads it (takeInvite), well formed or not: the page under it is home.
+  return h === '' || h === 'invite' || h.startsWith('invite/') ? { view: 'home' } : { view: 'missing', what: h };
 }
 
 /** Each place's name, as the rail, the page's heading and its title say it. */
@@ -80,18 +80,24 @@ export function inviteOf(hash: string): string | undefined {
   return /^#\/?(?:k\/[a-z0-9][a-z0-9-]*\/)?invite\/(kji_[A-Za-z0-9_-]{43})$/.exec(hash)?.[1];
 }
 
-/** Reads an invite's secret from the address, and takes it out, so it stays in no history or bookmark. */
-function takeInvite(): string | undefined {
-  const token = inviteOf(location.hash);
-  if (token) at('#/');
-  return token;
+/** Whether an address's place is an invite's, `invite` or `invite/…`, bare or after a kolab, however it is encoded. */
+function invitePlace(hash: string): boolean {
+  let place = parsePlace(hash).place;
+  try { place = decodeURIComponent(place); } catch { /* read as it is written */ }
+  return /^invite(\/|$)/.test(place);
 }
 
 /**
- * The kolab an address asks the session to be in. An invite's address asks for none, whatever is
- * written before it and whether its secret is well formed: an invite never moves a session.
+ * Reads an invite's secret from the address, and takes it out, so it stays in no history or
+ * bookmark. An invite's address that holds no well-formed invite is taken out too, whatever is
+ * written before or after it: it opens nothing, nothing that may be a secret stays in the address,
+ * and, with no kolab left in it, it moves no session.
  */
-const askedBy = (hash: string) => { const { kolab, place } = parsePlace(hash); return /^invite(\/|$)/.test(place) ? undefined : kolab; };
+function takeInvite(): string | undefined {
+  const token = inviteOf(location.hash);
+  if (token || invitePlace(location.hash)) at('#/');
+  return token;
+}
 
 /** Rewrites the address in place: no history entry, and no hashchange. */
 const at = (hash: string) => history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
@@ -142,7 +148,7 @@ export function App() {
    * The kolab the address asked for, until the session is there or Kolab refuses: as the page
    * loaded, or as it moved to another kolab's address and the person agreed to go.
    */
-  const [asked, setAsked] = useState<string | undefined>(() => askedBy(location.hash));
+  const [asked, setAsked] = useState<string | undefined>(() => parsePlace(location.hash).kolab);
   // The session and what was asked, for what hears of an address or of the session between renders.
   const meNow = useRef(me);
   meNow.current = me;
@@ -154,9 +160,19 @@ export function App() {
    * A move of the session to another kolab or role is under way, by any route: the picker, the
    * role, a new kolab, an invite joined or an address. There is one at a time: Kolab answers the
    * next as the session this one opens. `turn` moves as each ends, so an address that waited is
-   * taken up, and `busy` is the same for what the page shows.
+   * taken up, and `busy` is the same for what the page shows. The gate holds the number of the
+   * move that has it, 0 when free: signing out frees it, and a move still unanswered then no longer has it.
    */
-  const gate = useRef(false);
+  const gate = useRef(0);
+  const moves = useRef(0);
+  /**
+   * Moves on with each change of session the page makes: its own move starting and, when Kolab
+   * makes it, ending; its own sign-out starting; the page signing out; a token sign-in ending. An answer about the session that was asked for before the
+   * last of them is about a session that is no more, and is put aside.
+   */
+  const era = useRef(0);
+  /** A token sign-in is under way. */
+  const signingIn = useRef(false);
   const [turn, setTurn] = useState(0);
   const [busy, setBusy] = useState(false);
   /** The page's own sign-out is under way or done, until a session is here again: a session found gone is no news. */
@@ -182,26 +198,20 @@ export function App() {
   const [away, setAway] = useState(false);
   /** Kolab now serves a newer page than this one: it was deployed while this tab was open. */
   const [updated, setUpdated] = useState(false);
-  // The next sign-in opens the address as a fresh load does.
+  // The next sign-in opens the address as a fresh load does, and waits for no move the session before left unanswered.
   const signedOut = useCallback((why?: string) => {
-    setMe(null); setOverview(undefined); setSignInError(why); setAsked(askedBy(location.hash));
+    era.current++;
+    gate.current = 0;
+    setBusy(false); setMe(null); setOverview(undefined); setSignInError(why); setAsked(parsePlace(location.hash).kolab);
   }, []);
   /** Runs one move of the session, with the gate held from its start to the last of what follows it. */
   const gated = useCallback(async <T,>(what: () => Promise<T>): Promise<T> => {
-    gate.current = true;
+    const mine = gate.current = ++moves.current;
     setBusy(true);
-    try { return await what(); } finally { gate.current = false; setBusy(false); setTurn((t) => t + 1); }
-  }, []);
-  /**
-   * Moves the session to another kolab or role, as `how` asks Kolab to: a fresh page there. An
-   * answer that comes after the page signed out signs nobody in: the session it opened is ended too.
-   */
-  const moveBy = useCallback(async (how: () => Promise<WebMe>): Promise<WebMe | undefined> => {
-    const next = await how();
-    if (leaving.current) { void signOut().catch(() => undefined); return undefined; }
-    meNow.current = next;
-    setMe(next); setOverview(undefined); setTick((t) => t + 1);
-    return next;
+    try { return await what(); } finally {
+      if (gate.current === mine) { gate.current = 0; setBusy(false); }
+      setTurn((t) => t + 1);
+    }
   }, []);
   // How a person signs in here, asked as the page loads, so a session that ends while Kolab is away
   // still gets this Kolab's own sign-in. Kolab away is waited out; the token form shows only when
@@ -232,9 +242,19 @@ export function App() {
    */
   const checking = useRef<Promise<boolean>>(undefined);
   const recheck = useCallback(() => {
-    // Kolab's own check, after its stream dropped or a call came back 401: no person's request (D100).
-    checking.current ??= whoAmI({ onWait: () => setAway(true), push: true }).then(
-      (now) => {
+    const ask = async (): Promise<boolean> => {
+      for (;;) {
+        const asked = era.current;
+        let now: WebMe | null;
+        try {
+          // Kolab's own check, after its stream dropped or a call came back 401: no person's request (D100).
+          now = await whoAmI({ onWait: () => setAway(true), push: true });
+        } catch (e) {
+          if (!leaving.current) signedOut((e as Error).message);
+          return false;
+        }
+        // Asked before the page's own move, sign-out or sign-in ended: the answer is of the session before, so it is asked again.
+        if (era.current !== asked) continue;
         if (leaving.current) return !!now;
         if (!now) { signedOut('Your session ended. Sign in again.'); return false; }
         const was = meNow.current;
@@ -242,14 +262,50 @@ export function App() {
           say(`${was.kolab !== now.kolab ? `Your session moved to ${now.kolab}` : `Your session now works as ${now.role}`} in another tab. This page follows it: what was drafted here is discarded.`);
         }
         meNow.current = now;
-        setMe((was) => (was && JSON.stringify(was) === JSON.stringify(now) ? was : now));
+        const next = now;
+        setMe((old) => (old && JSON.stringify(old) === JSON.stringify(next) ? old : next));
         pushTick();
         return true;
-      },
-      (e: unknown) => { if (!leaving.current) signedOut((e as Error).message); return false; },
-    ).finally(() => { setAway(false); checking.current = undefined; });
+      }
+    };
+    checking.current ??= ask().finally(() => { setAway(false); checking.current = undefined; });
     return checking.current;
   }, [signedOut, pushTick, say]);
+  /**
+   * Moves the session to another kolab or role, as `how` asks Kolab to: a fresh page there.
+   * Kolab's answer, a refusal too, counts for nothing once the page has signed out since it asked.
+   * While the page is still signed out, with no sign-in under way, the session the answer opened
+   * is ended too; once a sign-in is under way or done, the cookie is that sign-in's to settle, so
+   * nothing is ended, and Kolab is asked who the session is.
+   */
+  const moveBy = useCallback(async (how: () => Promise<WebMe>): Promise<WebMe | undefined> => {
+    const mine = ++era.current;
+    let next: WebMe;
+    try { next = await how(); } catch (e) {
+      if (era.current !== mine) return undefined;
+      throw e;
+    }
+    if (era.current !== mine) {
+      if (leaving.current && !signingIn.current) void signOut().catch(() => undefined); else void recheck();
+      return undefined;
+    }
+    era.current++;
+    meNow.current = next;
+    setMe(next); setOverview(undefined); setTick((t) => t + 1);
+    return next;
+  }, [recheck]);
+  /**
+   * A move Kolab refused with a 401. `there`: the session is already where the move was to take
+   * it, as when another tab made the same move first, so the page has arrived. `gone`: the session
+   * ended. Otherwise `retry`, said: the person may try again.
+   */
+  const refused = useCallback(async (kolab: string, role?: string): Promise<'there' | 'gone' | 'retry'> => {
+    if (!(await recheck())) return 'gone';
+    const now = meNow.current;
+    if (now && now.kolab === kolab && (!role || now.role === role)) return 'there';
+    say('That didn’t go through while Kolab reconnected: try it again.');
+    return 'retry';
+  }, [recheck, say]);
   const lastOverview = useRef<{ key: string; tick: number }>(undefined);
   useEffect(() => {
     if (!me) return;
@@ -276,7 +332,7 @@ export function App() {
     const on = () => {
       const token = takeInvite();
       if (token) setInvite({ token });
-      const kolab = askedBy(location.hash);
+      const { kolab } = parsePlace(location.hash);
       // Another kolab's address, on a page showing a place: asked before anything shown is put away.
       // Declined, the address is written back as it was, in place, and nothing else changes: the
       // page stays with what was drafted there, and the entry moved to now holds this place.
@@ -334,7 +390,12 @@ export function App() {
   const move = (kolab: string, role: string) => {
     if (!free() || (me && !confirmMove(kolab === me.kolab ? `Work as ${role}` : `Work in ${kolab}`))) return Promise.resolve(false);
     return act.run(() => gated(async () => {
-      const next = await moveBy(() => switchTo(kolab, role));
+      let next: WebMe | null | undefined;
+      try { next = await moveBy(() => switchTo(kolab, role)); } catch (e) {
+        if (!(e instanceof ApiError && e.status === 401)) throw e;
+        if (await refused(kolab, role) !== 'there') return;
+        next = meNow.current;
+      }
       if (next) moved(next, `Working in ${next.kolab} as ${next.role}`);
     }), '');
   };
@@ -382,17 +443,13 @@ export function App() {
         const next = await moveBy(() => switchTo(to, me.role));
         if (next) say(`Working in ${next.kolab} as ${next.role}`);
       } catch (e) {
-        if (e instanceof ApiError && e.status === 401) {
-          // A session that ended keeps the address: signing in again opens it.
-          if (!(await recheck())) return;
-          // Another tab had moved the session there already: the page has arrived, at the place asked for.
-          if (meNow.current?.kolab === to) return;
-          say('That didn’t go through while Kolab reconnected: try it again.');
-        } else say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${to} you can reach. You’re still in ${meNow.current?.kolab}.` : (e as Error).message);
+        // A session that ended keeps the address: signing in again opens it. One already there has arrived, at the place asked for.
+        if (e instanceof ApiError && e.status === 401) { if (await refused(to) !== 'retry') return; }
+        else say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${to} you can reach. You’re still in ${meNow.current?.kolab}.` : (e as Error).message);
         stay();
       }
     });
-  }, [me, asked, seen, turn, recheck, say, moveBy, gated]);
+  }, [me, asked, seen, turn, refused, say, moveBy, gated]);
 
   const docs = [...(overview?.nodes ?? []), ...(moreNodes?.nodes ?? [])];
   const specs = [...docs].sort((a, b) => (KIND_ORDER[a.kind] ?? 5) - (KIND_ORDER[b.kind] ?? 5));
@@ -433,7 +490,13 @@ export function App() {
         <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} />
         {(invite?.preview || inviteNote) && <div className="signin-invite">{invite?.preview ? <InviteCard invite={invite.preview} signedIn={false} /> : inviteNote}</div>}
         <SignIn error={signInError} methods={methods} onLeave={keepPlace} onSignedIn={async (token) => {
-          try { setMe(await signIn(token)); setSignInError(undefined); return undefined; } catch (e) { return (e as Error).message; }
+          signingIn.current = true;
+          try {
+            const now = await signIn(token);
+            era.current++;
+            setMe(now); setSignInError(undefined);
+            return undefined;
+          } catch (e) { return (e as Error).message; } finally { signingIn.current = false; }
         }} />
       </>
     );
@@ -453,7 +516,7 @@ export function App() {
       <a className="skip" href="#/" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Skip to the page’s content</a>
       <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
         onMove={move} busy={busy} onAllKolabs={() => go('kolabs')}
-        onSignOut={async () => { leaving.current = true; await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended.'); }} />
+        onSignOut={async () => { leaving.current = true; era.current++; await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended.'); }} />
       <div className="frame">
         <div className="side">
         <nav className="rail" aria-label="Places">
