@@ -172,13 +172,22 @@ const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
  * grants that agent, in that kolab and role, or nothing. A scope that names fewer only preselects
  * (D59). Never the web interface's own sign-in, which is for people.
  */
-export function scopeLock(scope: string | null | undefined): { agent: string; kolab: string; role: Role } | undefined {
+export function scopeLock(scope: string | null | undefined, agentOf: (named: string) => string = (a) => a): { agent: string; kolab: string; role: Role } | undefined {
   const words = (scope ?? '').split(/\s+/);
   const word = (prefix: string) => words.find((w) => w.startsWith(prefix))?.slice(prefix.length);
   const agent = word('agent:');
   const kolab = word('kolab:');
   const role = word('role:') as Role | undefined;
-  return agent && kolab && role && ROLES.includes(role) ? { agent, kolab, role } : undefined;
+  return agent && kolab && role && ROLES.includes(role) ? { agent: agentOf(agent), kolab, role } : undefined;
+}
+
+/**
+ * The agent a sign-in's scope means by `agent:<named>` (API26): the person's agent of that name, or
+ * else their agent `<person>-<named>`, so `konjir login --agent <label>` takes a label as konjir
+ * connect does. A name that is neither stays as it is, and so names no agent of theirs.
+ */
+export function namedAgent(named: string, person: string, agents: readonly string[]): string {
+  return agents.includes(named) || !agents.includes(`${person}-${named}`) ? named : `${person}-${named}`;
 }
 
 /** A sign-in's "N of M", as GET /oauth/authorize's `step` and `steps` give it: whole numbers 1 to 99, N no more than M; anything else, none. */
@@ -2278,7 +2287,8 @@ export class Kolab {
     if (opts.selfOnly && choice.as.kind !== 'self') throw new AccessError('the web interface is for people: sign in as yourself');
     // A sign-in whose scope names its agent, kolab and role is locked to them (D97):
     // nothing posted for it grants anyone else, anywhere else, whatever the form says.
-    const lock = opts.selfOnly ? undefined : scopeLock(req.scope);
+    const named = opts.selfOnly ? undefined : scopeLock(req.scope);
+    const lock = named && { ...named, agent: namedAgent(named.agent, person, (await this.listActors({ owner: person })).map((a) => a.id)) };
     if (lock && (choice.as.kind !== 'agent' || choice.as.agent !== lock.agent || choice.kolab !== lock.kolab || choice.role !== lock.role)) {
       throw new AccessError(`this sign-in is for ${lock.agent} only, in kolab ${lock.kolab} as ${lock.role}: allow that, or deny it`);
     }

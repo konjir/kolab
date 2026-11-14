@@ -23,7 +23,9 @@
 //
 // Checks: connect exits 0; .mcp.json has a channel entry per agent; each agent's credentials file
 // is there, mode 600, and `konjir whoami` with it names that agent, its role and the kolab; the
-// same command again passes and leaves .mcp.json as it was; a session started on an entry, as
+// project's .konjir.json names the kolab and Kolab's URL, and a command there with no --url takes
+// them, never with a token (W9.2, API26); the
+// same command again passes and leaves .mcp.json and .konjir.json as they were; a session started on an entry, as
 // Claude Code starts it (the entry's command, arguments and environment, MCP over stdio), lists
 // Kolab's tools and is pushed a channel message when another agent messages its agent; and an agent cap refusal (2 live
 // agents + 9 new > 10) shows on the page, with Deny alone, and in the CLI, writing nothing.
@@ -319,6 +321,12 @@ async function main() {
     check(kept.every((t) => !written.includes(t)), `.mcp.json holds a token of ${LOGIN}-${label}'s`);
   }
 
+  // The project's .konjir.json (API26): the kolab and Kolab's URL alone, so no token.
+  const projectJson = join(dir, '.konjir.json');
+  check(existsSync(projectJson), '.konjir.json was not written');
+  const projectWritten = readFileSync(projectJson, 'utf8');
+  check(JSON.stringify(JSON.parse(projectWritten)) === JSON.stringify({ kolab: KOLAB, url: mcp }), `.konjir.json says ${projectWritten.trim()}`);
+
   const whoami = async (label, role) => {
     const file = join(xdg, 'konjir', 'agents', `${LOGIN}-${label}.json`);
     check(existsSync(file), `no credentials file for ${LOGIN}-${label} at ${file}`);
@@ -332,11 +340,21 @@ async function main() {
   step('whoami through each agent\'s credentials file');
   for (const [label, role] of agents) await whoami(label, role);
 
-  step('the same command again: passes, reuses the kolab and agents, .mcp.json unchanged');
+  step('with no --url, a command in the project talks to the Kolab its .konjir.json names');
+  {
+    const w = await run(KONJIR, ['whoami'], { cwd: dir, env: env({ KONJIR_CREDENTIALS: join(xdg, 'konjir', 'agents', `${LOGIN}-writer.json`) }) });
+    check(w.code === 0 && JSON.parse(w.out).actor === `${LOGIN}-writer`, `whoami with no --url, in the project, exited ${w.code}:\n${w.out}${w.err}`);
+    // A token is never sent to a URL the file names: refused before any request.
+    const t = await run(KONJIR, ['whoami'], { cwd: dir, env: env({ KONJIR_TOKEN: 'kjs_not-a-token' }) });
+    check(t.code !== 0 && t.err.includes('konjir sends a token only to a URL you give it'), `whoami with a token and no --url, in the project, exited ${t.code}:\n${t.out}${t.err}`);
+  }
+
+  step('the same command again: passes, reuses the kolab and agents, .mcp.json and .konjir.json unchanged');
   const again = await connect(dir, mcp, agents.map(([l, r]) => `${l}:${r}`));
   check(again.code === 0, `konjir connect, run again, exited ${again.code}:\n${again.out}${again.err}`);
   check(!again.page.includes('New: made now'), `the second setup page made something new:\n${again.page}`);
   check(readFileSync(mcpJson, 'utf8') === written, '.mcp.json changed on the second run');
+  check(readFileSync(projectJson, 'utf8') === projectWritten, '.konjir.json changed on the second run');
   for (const [label, role] of agents) await whoami(label, role);
 
   step(`a session on konjir-builder, as Claude Code starts it (${[servers['konjir-builder'].command, ...servers['konjir-builder'].args].join(' ')})`);
@@ -371,7 +389,7 @@ async function main() {
   check(refused.page.includes(cap) && !refused.page.includes('value="allow"'), `the setup page doesn't show the cap with Deny alone:\n${refused.page}`);
   check(refused.code !== 0, 'konjir connect passed past the agent cap');
   check(`${refused.out}${refused.err}`.includes(cap), `konjir connect doesn't say why:\n${refused.out}${refused.err}`);
-  check(!existsSync(join(capped, '.mcp.json')), 'a refused setup wrote .mcp.json');
+  check(!existsSync(join(capped, '.mcp.json')) && !existsSync(join(capped, '.konjir.json')), 'a refused setup wrote .mcp.json or .konjir.json');
   for (let i = 1; i <= 9; i++) check(!existsSync(join(xdg, 'konjir', 'agents', `${LOGIN}-extra${i}.json`)), 'a refused setup kept a sign-in');
 
   step('passed');

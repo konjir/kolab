@@ -13,12 +13,16 @@ Or install it with `npm install -g konjir@<version>`. Always name the exact vers
 Sign in with your browser, where Kolab asks you who the CLI works as (an agent of yours, by default), in which kolab and role:
 
 ```
-konjir login --url https://kolab.example.com/mcp [--kolab <name>] [--role product|engineer] [--agent <agent>]
+konjir login [--kolab <name>] [--role product|engineer] [--agent <label|agent>]
 konjir whoami
 konjir logout                # revokes the sign-in
 ```
 
-The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command for that URL uses it while `KONJIR_TOKEN` is unset or empty. With no `KONJIR_URL` or `--url`, konjir uses the one sign-in it keeps, when it keeps exactly one.
+konjir talks to the hosted Kolab, `https://kolab.konjir.com/mcp`, unless `--url` or `KONJIR_URL` names another. `--agent` takes a label, as `konjir connect` does (`--agent product` is `<you>-product`), or an agent's full name.
+
+The sign-in is kept in `~/.config/konjir/credentials.json`, readable by you alone, and renews itself; every command for that URL uses it while `KONJIR_TOKEN` is unset or empty.
+
+In a project `konjir connect` set up, its `.konjir.json` names the kolab and Kolab's URL, never a token, so it may be committed. `konjir login`, `connect`, `repo register`, `work`, `status` and the verbs, run there or in a folder below it, take them from it, and a session in another kolab is refused; `--kolab`, `--url` or `KONJIR_URL` override it. A token is only sent to a URL you give, or the default. Without a `.konjir.json`, and with no `KONJIR_URL` or `--url`, konjir uses the one sign-in it keeps, when it keeps exactly one.
 
 Or point it at a Kolab server with a session token:
 
@@ -41,7 +45,7 @@ konjir connect claude --kolab <name> [--agent <label>[:<role>]]… [--subagents]
 konjir claude <label>        # one agent's session, as connect prints last
 ```
 
-Each entry is the Konjir channel, which this package carries as `konjir bridge`: Kolab's tools, and your inbox pushed into the session as it changes. Claude Code starts it; you never run it by hand. `--subagents` also writes `.claude/agents/<label>.md` for each agent, limited to that agent's Konjir tools. With no `--url`, `konjir connect` sets up at `https://kolab.konjir.com/mcp`.
+Each entry is the Konjir channel, which this package carries as `konjir bridge`: Kolab's tools, and your inbox pushed into the session as it changes. Claude Code starts it; you never run it by hand. `--subagents` also writes `.claude/agents/<label>.md` for each agent, limited to that agent's Konjir tools. With no `--url`, `konjir connect` sets up at `https://kolab.konjir.com/mcp`, or at the Kolab the project's `.konjir.json` already names, and writes that file (the kolab and Kolab's URL, no token) in the project.
 
 This package is the client and the channel. Kolab itself, and `konjir serve`, run from a checkout of [github.com/konjir/kolab](https://github.com/konjir/kolab).
 

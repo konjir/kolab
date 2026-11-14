@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
@@ -453,6 +453,8 @@ export class OAuthController {
     const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
+    // `agent:` names an agent of theirs, or a label, as konjir login --agent takes it (<person>-<label>, API26).
+    const named = pre.agent && namedAgent(pre.agent, pending.person, agents);
     // A kolab the scope names that the person can't reach (`konjir login --kolab`) is said so, with
     // the setup page's hint, and no other kolab is chosen in its place (D106).
     // Only a name a kolab can have is repeated on the page; anything else is said to be one they can't reach.
@@ -471,14 +473,14 @@ export class OAuthController {
       // the agent this client was last granted, signing in again, unless the person revoked that
       // grant or the agent is signed in through another client now; otherwise a new agent, never
       // one of theirs signed in elsewhere, whose session choosing it would end (ENF4).
-      as: web ? undefined : pre.agent && agents.includes(pre.agent) ? `agent:${pre.agent}` : lastAgent ? `agent:${lastAgent}` : 'new-agent',
+      as: web ? undefined : named && agents.includes(named) ? `agent:${named}` : lastAgent ? `agent:${lastAgent}` : 'new-agent',
       newName: !invite && !kolabs.length && isKolabName(pending.person) && pending.person.length <= 40 && !isReservedKolabName(pending.person) ? pending.person : undefined,
     };
     // The form leads on to the client's redirect URI, Allow and Deny alike, so the page's
     // form-action names it: a browser holds the 303 there to it too.
     const target = formActionSource(pending.redirectUri);
     // A scope naming the agent, kolab and role together locks the page to them (D97).
-    const locked = web ? undefined : scopeLock(pending.scope);
+    const locked = web ? undefined : scopeLock(pending.scope, (a) => namedAgent(a, pending.person!, agents));
     const view: ConsentView = {
       signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, konjirAdmin: !web && await this.kolab.isAdmin(pending.person), person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
       kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
