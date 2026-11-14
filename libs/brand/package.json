@@ -28,7 +28,11 @@
           "^production",
           "jest",
           "{workspaceRoot}/apps/web/src/brand.css",
-          "{workspaceRoot}/brand/*.svg"
+          "{workspaceRoot}/apps/web/src/styles.css",
+          "{workspaceRoot}/apps/web/src/main.tsx",
+          "{workspaceRoot}/deploy/site/site.js",
+          "{workspaceRoot}/brand/*.svg",
+          "{workspaceRoot}/brand/README.md"
         ]
       }
     }

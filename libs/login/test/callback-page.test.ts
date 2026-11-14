@@ -2,7 +2,8 @@
 // standalone page (@konjir/brand), as Kolab's own sign-in pages are, saying how the sign-in ended.
 import { expect, test } from '@jest/globals';
 import { PALETTES, standalonePageCss } from '@konjir/brand';
-import { callbackPage } from '../src/index.js';
+import { createHash } from 'node:crypto';
+import { CALLBACK_HEADERS, callbackPage } from '../src/index.js';
 
 test('the sign-in page is Konjir\'s: its tokens, wordmark and horizon, how the sign-in ended, and nothing loaded', () => {
   const ok = callbackPage(true, 'You can close this tab and return to your terminal.');
@@ -23,4 +24,13 @@ test('the sign-in page is Konjir\'s: its tokens, wordmark and horizon, how the s
   expect(stopped).toContain('<p class="kj-state stopped">konjir was not signed in.</p>');
   // What it is told to say is text, never markup.
   expect(callbackPage(false, '<img src=x onerror=alert(1)>')).toContain('&lt;img src=x onerror=alert(1)&gt;');
+});
+
+test('the page is sent with a policy that allows its own style sheet, by the hash of exactly what it carries, and nothing else', () => {
+  for (const page of [callbackPage(true, 'x'), callbackPage(false, 'y')]) {
+    const style = /<style>([\s\S]*?)<\/style>/.exec(page)![1];
+    const hash = createHash('sha256').update(style).digest('base64');
+    expect(CALLBACK_HEADERS['content-security-policy']).toBe(`default-src 'none'; style-src 'sha256-${hash}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`);
+  }
+  expect(CALLBACK_HEADERS).toMatchObject({ 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY' });
 });

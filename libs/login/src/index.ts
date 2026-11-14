@@ -552,7 +552,8 @@ const CALLBACK_CSS = [
 ].join('\n');
 /** The page's whole policy: its one style sheet, by hash, and nothing else. It loads nothing, runs no script and is never framed. */
 const CALLBACK_CSP = `default-src 'none'; style-src 'sha256-${createHash('sha256').update(CALLBACK_CSS).digest('base64')}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
-const CALLBACK_HEADERS = {
+/** What the sign-in page is sent with. */
+export const CALLBACK_HEADERS = {
   'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
   'content-security-policy': CALLBACK_CSP, 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY',
 };
