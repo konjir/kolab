@@ -526,3 +526,59 @@ test('konjir login waits for the browser as long as Kolab\'s sign-in page lasts,
   expect(SIGN_IN_WAIT_MS).toBe(kolab.oauth.requestTtlS * 1000);
   expect(SIGN_IN_WAIT_MS).toBe(20 * 60_000);
 });
+
+test('in a project that names a kolab: the break-glass admin token still runs the admin verbs, a URL given for another Kolab leaves the file\'s kolab out, and -C names the project', async () => {
+  const { server } = await signedIn();
+  const project = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-project-')));
+  mkdirSync(join(project, '.git'));
+  const file = join(project, '.konjir.json');
+  const says = (o: object) => writeFileSync(file, JSON.stringify(o));
+  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-elsewhere-')));
+  const mismatch = `Error: ${file} names kolab other, but this session works in kolab anns: run konjir login to sign in to other, or pass --kolab anns`;
+  const cwd = process.cwd();
+  try {
+    // The admin token works in no kolab, and Kolab refuses it whoami: the admin verbs run all the
+    // same, whatever kolab the project's file or --kolab names (deploy/konjir-ops.sh, from a checkout).
+    process.chdir(project);
+    process.env.KONJIR_TOKEN = 'login-admin';
+    for (const names of [{ kolab: 'other', url: server.url }, { kolab: 'anns', url: server.url }, { kolab: 'other' }, { kolab: 'other', url: 'https://kolab.example.com/mcp' }]) {
+      says(names);
+      for (const argv of [['admin_list_actors'], ['--kolab', 'other', 'admin_list_actors'], ['konjir_admin_list_kolabs'], ['tools'], ['help', 'whoami']]) {
+        out = [];
+        await main([...argv]);
+        if (argv.at(-1) === 'admin_list_actors') expect(out.join('\n')).toContain('ann-cli');
+      }
+      // Every other verb is refused it by Kolab itself, as anywhere.
+      expect(await rejection(main(['whoami']))).toMatch(/needs an agent session token, not the admin token/);
+    }
+    delete process.env.KONJIR_TOKEN;
+
+    // A URL given that names another Kolab than the file's: the file's kolab is a kolab of its own
+    // Kolab, so it isn't asked of this one. Given the file's own URL, or a file that names no URL, it is.
+    says({ kolab: 'other', url: 'https://kolab.example.com/mcp' });
+    out = [];
+    await main(['whoami']);   // KONJIR_URL is this Kolab's
+    expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
+    out = [];
+    await main(['--url', server.url, 'list_nodes']);
+    expect(JSON.parse(out.join('\n'))).toHaveProperty('nodes');
+    for (const names of [{ kolab: 'other', url: server.url }, { kolab: 'other' }]) {
+      says(names);
+      expect(await rejection(main(['whoami']))).toBe(mismatch);
+      expect(await rejection(main(['--url', server.url, 'whoami']))).toBe(mismatch);
+    }
+
+    // -C: konjir work, work deliver and repo register read the file of the folder they act on, not
+    // of the one konjir is run in. repo register's own --url is the repository's, never Kolab's.
+    delete process.env.KONJIR_URL;
+    says({ kolab: 'other', url: server.url });
+    process.chdir(elsewhere);
+    for (const argv of [['work', '--once', '-C', project], ['work', 'deliver', '-C', project], ['repo', 'register', '-C', project], ['repo', 'register', '--url', 'https://github.com/ann/project.git', '-C', project]]) {
+      expect(await rejection(main([...argv]))).toBe(mismatch);
+    }
+    // Any other command there reads no file of that folder.
+    out = [];
+    await main(['whoami']);
+    expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
+  } finally { process.chdir(cwd); }
+});

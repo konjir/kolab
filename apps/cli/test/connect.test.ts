@@ -612,11 +612,41 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
   expect(readFileSync(join(linked, 'elsewhere.json'), 'utf8')).toBe('{"kolab": "theirs"}');
   expect(existsSync(join(linked, 'opencode.json'))).toBe(false);
   expect(opened).toStrictEqual([]);
-  // A .konjir.json konjir couldn't have written stops it before any browser opens, untouched.
+  // A .konjir.json konjir couldn't have written is replaced, and the plan shows what it replaces.
   const broken = scratch();
   writeFileSync(join(broken, '.konjir.json'), '{"kolab": 1}');
-  expect(await rejection(connectHarness(options(server, broken), io()))).toMatch(/\.konjir\.json names a kolab badly/);
+  const replacing = io();
+  await connectHarness(options(server, broken, { dryRun: true }), replacing);
+  expect(replacing.lines).toContain(`Will replace ${join(broken, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
+  expect(replacing.lines.join('\n')).toContain(`--- ${join(broken, '.konjir.json')}\n+++ ${join(broken, '.konjir.json')}\n`);
+  expect(replacing.lines.join('\n')).toContain(`-{"kolab": 1}\n+{\n+  "kolab": "anns",\n+  "url": "${server.url}"\n+}`);
   expect(readFileSync(join(broken, '.konjir.json'), 'utf8')).toBe('{"kolab": 1}');
+  // One that names another kolab, or another Kolab, is the project's word for where it works:
+  // repointed only with --force, as an entry that says something else is, and shown first.
+  const pointed = scratch();
+  for (const [names, was] of [[{ kolab: 'theirs', url: server.url }, `kolab theirs, Kolab at ${server.url}`], [{ kolab: 'anns', url: 'http://127.0.0.1:9/mcp' }, 'kolab anns, Kolab at http://127.0.0.1:9/mcp'],
+    [{ kolab: 'theirs' }, 'kolab theirs'], [{ url: 'http://127.0.0.1:9' }, 'Kolab at http://127.0.0.1:9/mcp']] as const) {
+    const text = JSON.stringify(names);
+    writeFileSync(join(pointed, '.konjir.json'), text);
+    for (const dryRun of [false, true]) {
+      expect(await rejection(connectHarness(options(server, pointed, { dryRun }), io()))).toBe(`Error: ${join(pointed, '.konjir.json')} already names ${was}, and this would make it kolab anns at ${server.url}. konjir connect won't repoint the project: pass --force to, or --kolab and --url as the file has them, or --global to leave the project as it is`);
+    }
+    const forced = io();
+    await connectHarness(options(server, pointed, { force: true, dryRun: true }), forced);
+    expect(forced.lines).toContain(`Will update ${join(pointed, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
+    expect(forced.lines.join('\n')).toContain(`-${text}\n+{\n`);
+    expect(forced.lines.join('\n')).toContain(`+  "url": "${server.url}"`);
+    expect(readFileSync(join(pointed, '.konjir.json'), 'utf8')).toBe(text);
+    expect(existsSync(join(pointed, 'opencode.json'))).toBe(false);
+  }
+  // One that names part of it, and nothing else, is completed without --force; one that says the
+  // same, however it is written, is left as it is.
+  for (const [names, line] of [[{ kolab: 'anns' }, 'Will update'], [{ url: server.url, note: 'ours' }, 'Will update'], [{ url: server.url, kolab: 'anns', note: 'ours' }, 'already names']] as const) {
+    writeFileSync(join(pointed, '.konjir.json'), JSON.stringify(names));
+    const plan = io();
+    await connectHarness(options(server, pointed, { dryRun: true }), plan);
+    expect(plan.lines.filter((l) => l.includes('.konjir.json')).join('\n')).toMatch(line === 'already names' ? new RegExp(`^${join(pointed, '.konjir.json').replace(/[.]/g, '\\.')} already names kolab anns at \\S+\\.$`) : /^Will update \S+: kolab anns at \S+, and no token/);
+  }
   expect(opened).toStrictEqual([]);
 
   // And from the shell: --dry-run, --yes kept as a no-op, a harness it doesn't know, a URL with credentials in it.
@@ -628,7 +658,7 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
   writeFileSync(join(set, '.konjir.json'), JSON.stringify({ kolab: 'anns', url: server.url }));
   process.chdir(set);
   await main(['connect', 'claude', '--http', '--dry-run', '--agent', 'pm:product']);
-  expect(out.join('\n')).toContain(`Will update ${join(set, '.konjir.json')}: kolab anns at ${server.url}, and no token`);
+  expect(out.join('\n')).toContain(`${join(set, '.konjir.json')} already names kolab anns at ${server.url}.`);
   expect(out.join('\n')).not.toContain('kolab.konjir.com');
   process.chdir(plain);
   expect(await rejection(main(['connect', 'codex']))).toMatch(/konjir connect opencode\|claude --kolab <k>/);
