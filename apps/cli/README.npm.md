@@ -32,7 +32,18 @@ konjir watch --once          # wait for the next change to your inbox
 
 `--url` and `--token` work too. The token decides who you are and which layer you may write.
 
-This package is the client only. Kolab itself, and `konjir serve`, run from a checkout of [github.com/konjir/kolab](https://github.com/konjir/kolab).
+## Claude Code
+
+One command connects Claude Code to a kolab, with one agent per entry, each signed in on one page in your browser:
+
+```
+konjir connect claude --kolab <name> [--agent <label>[:<role>]]… [--subagents]
+konjir claude <label>        # one agent's session, as connect prints last
+```
+
+Each entry is the Konjir channel, which this package carries as `konjir bridge`: Kolab's tools, and your inbox pushed into the session as it changes. Claude Code starts it; you never run it by hand. `--subagents` also writes `.claude/agents/<label>.md` for each agent, limited to that agent's Konjir tools. With no `--url`, `konjir connect` sets up at `https://kolab.konjir.com/mcp`.
+
+This package is the client and the channel. Kolab itself, and `konjir serve`, run from a checkout of [github.com/konjir/kolab](https://github.com/konjir/kolab).
 
 ## Licence
 

@@ -8,9 +8,10 @@
 # THIRD-PARTY-NOTICES.md, and its package.json must declare "license": "Apache-2.0". The binaries
 # directory, if given, must hold the same LICENSE and a THIRD-PARTY-NOTICES.md beside them.
 #
-# The only first-party sources konjir may bundle are apps/cli's and libs/login's, the two
-# Apache-2.0 packages; package.mjs fails the build on any other. Here, both must still declare
-# Apache-2.0, libs/login must carry the same LICENSE, and the notices (every package the bundle
+# The only first-party sources konjir may bundle are apps/cli's, libs/login's and
+# apps/channel-bridge's (W9.5), the three Apache-2.0 packages; package.mjs fails the build on any
+# other. Here, each must still declare Apache-2.0, libs/login and apps/channel-bridge must carry the
+# same LICENSE, and the notices (every package the bundle
 # inlines) must name no @konjir/* package and no FSL licence.
 set -euo pipefail
 tarball="$1"
@@ -26,8 +27,10 @@ check_notices() {
 }
 
 head -4 "$licence" | grep -q 'Version 2.0, January 2004' || fail "apps/cli/LICENSE isn't the Apache License"
-cmp -s "$repo/libs/login/LICENSE" "$licence" || fail "libs/login has no LICENSE, or not apps/cli/LICENSE"
-for pkg in apps/cli libs/login; do
+for pkg in libs/login apps/channel-bridge; do
+  cmp -s "$repo/$pkg/LICENSE" "$licence" || fail "$pkg has no LICENSE, or not apps/cli/LICENSE"
+done
+for pkg in apps/cli libs/login apps/channel-bridge; do
   [ "$(declared <"$repo/$pkg/package.json")" = Apache-2.0 ] || fail "$pkg/package.json doesn't declare Apache-2.0"
 done
 files=$(tar -tzf "$tarball")

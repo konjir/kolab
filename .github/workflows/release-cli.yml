@@ -166,6 +166,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/npx" && cd "$RUNNER_TEMP/npx"
           "$smoke" smoke-npx npm exec --yes --package="$tarball" -- konjir
 
+      # W9.5 (API29): the published konjir carries the channel bridge. konjir connect claude, from the
+      # binary and from the package installed outside the workspace, writes entries that run konjir
+      # bridge, and a session started on one lists Kolab's tools and is pushed a channel message
+      # (apps/cli/scripts/e2e-connect.mjs, against a Kolab of its own from the checkout).
+      - name: konjir connect claude from the binary and the installed package; a session on its entry hears its channel
+        timeout-minutes: 5
+        run: |
+          node apps/cli/scripts/e2e-connect.mjs --konjir apps/cli/dist-bin/konjir-linux-arm64
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/release/konjir-*.tgz
+          node apps/cli/scripts/e2e-connect.mjs --konjir "$RUNNER_TEMP/installed/node_modules/.bin/konjir"
+
       - name: npm publish --dry-run
         run: npm publish --dry-run "$RUNNER_TEMP"/release/konjir-*.tgz
 
