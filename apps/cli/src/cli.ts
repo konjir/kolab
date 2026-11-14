@@ -839,7 +839,12 @@ export async function loginAs(url: string, scope: string, agent: string | undefi
 function unreachable(e: unknown, url: string): Error | undefined {
   const msg = String((e as Error).message ?? e);
   if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(msg + String((e as { cause?: unknown }).cause ?? ''))) {
-    return new Error(`cannot reach Kolab at ${url}. Nothing is listening there: Kolab isn't running, or KONJIR_URL is wrong. Start it with \`konjir serve\`, or ask whoever runs it. Your work is safe; Kolab stores everything.`);
+    // A Kolab on this machine is the person's to start; any other is someone else's, and may only be out of reach from here.
+    let local = false;
+    try { local = /^(localhost|127(\.\d+){3}|\[::1\])$/.test(new URL(url).hostname); } catch { /* not a URL: said as it is */ }
+    return new Error(local
+      ? `cannot reach Kolab at ${url}. Nothing is listening there: Kolab isn't running, or KONJIR_URL is wrong. Start it with \`konjir serve\`, or ask whoever runs it. Your work is safe; Kolab stores everything.`
+      : `cannot reach Kolab at ${url}: this machine may be offline or behind a proxy, Kolab may be down, or the URL (--url, KONJIR_URL) is wrong. Check your connection and try again. Your work is safe; Kolab stores everything.`);
   }
   return undefined;
 }
