@@ -45,8 +45,8 @@ export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https:
 /**
  * How to run the konjir CLI here (W3.7): `npx <spec>` only when this Kolab's operator named the
  * published package, pinned to an exact version (KONJIR_CLI_NPM_SPEC). Until then, never `npx
- * konjir`: that name isn't published, and whoever registered it would run code on every machine
- * that pasted the command. A checkout's bin/konjir instead, at ~/kolab.
+ * konjir`: with no version pinned, whatever is published under the name at the time would run on
+ * every machine that pasted the command. A checkout's bin/konjir instead, at ~/kolab.
  */
 export const CHECKOUT = '~/kolab';
 export const konjirCommand = (cli: WebCli | undefined) => (cli?.npm ? `npx ${cli.npm}` : `${CHECKOUT}/bin/konjir`);
@@ -72,7 +72,7 @@ function GetTheCli({ cli }: { cli: WebCli | undefined }) {
   if (cli?.npm) return <p className="why-not">The konjir CLI is the npm package <span className="mono">{cli.npm}</span>, run with <span className="mono">npx</span> (Node 22 or later).</p>;
   return (
     <>
-      <p className="why-not">The konjir CLI isn’t published on npm yet, so these commands run it from a checkout of <span className="mono">github.com/konjir/kolab</span> at <span className="mono">{CHECKOUT}</span> (Node 22 or later). Make the checkout once:</p>
+      <p className="why-not">This Kolab names no published konjir CLI, so these commands run it from a checkout of <span className="mono">github.com/konjir/kolab</span> at <span className="mono">{CHECKOUT}</span> (Node 22 or later). Make the checkout once:</p>
       <Command label="Get the konjir CLI from its repository" text={`git clone https://github.com/konjir/kolab ${CHECKOUT} && (cd ${CHECKOUT} && npm ci)`} />
     </>
   );
