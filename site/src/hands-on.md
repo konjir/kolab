@@ -16,10 +16,10 @@ You need:
 The `konjir` CLI is on npm. Install the version this tutorial was written for into a folder of its own, with nothing global and nothing to clone:
 
 ```sh
-npm install --prefix ~/.konjir konjir@0.7.0
+npm install --prefix ~/.konjir konjir@0.8.0
 ```
 
-Step 1 puts it on your `PATH`. A quick `npx konjir@0.7.0 …` runs the same package, but this tutorial keeps `konjir work` running for a long time and stops it with Ctrl-C, which reaches a konjir started by `npx` twice and so stops its jobs without giving back what they held. An installed konjir gets it once.
+Step 1 puts it on your `PATH`. A quick `npx konjir@0.8.0 …` runs the same package, but this tutorial keeps `konjir work` running for a long time and stops it with Ctrl-C, which reaches a konjir started by `npx` twice and so stops its jobs without giving back what they held. An installed konjir gets it once.
 
 ## 1. Make the repository
 

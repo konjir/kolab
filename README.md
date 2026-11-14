@@ -332,8 +332,8 @@ Outside a checkout, `konjir` is the client and the channel bridge: every verb, `
 
 ```
 # From npm (Node 22 or later; the package has no dependencies). Pin the version:
-npx konjir@0.7.0 --help                 # run it without installing
-npm i -g konjir@0.7.0                   # or install it, then run `konjir`
+npx konjir@0.8.0 --help                 # run it without installing
+npm i -g konjir@0.8.0                   # or install it, then run `konjir`
 # A Kolab sets KONJIR_CLI_NPM_SPEC=konjir@<version> so its web page shows the same npx commands.
 
 # Or from a checkout:  git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)
