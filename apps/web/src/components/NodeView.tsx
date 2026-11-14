@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WebWorkState, type WorkFields } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
-import { Addr, Diff, Pill, ProgressPills } from './bits.js';
+import { Addr, Diff, Pill, ProgressPills, useHref } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
 import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 import { More, useMore } from './Pages.js';
@@ -38,6 +38,7 @@ export interface NodeViewProps {
  * review; and the review of a version in review, for whoever is asked to give it.
  */
 export function NodeView({ me, name, version, tick, act, go, read, focus, kolab }: NodeViewProps) {
+  const href = useHref();
   const [view, setView] = useState<WebNodeView>();
   const [error, setError] = useState<string>();
   const [draft, setDraft] = useState<Draft>(EMPTY);
@@ -240,7 +241,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
         {missing && <p className="notice" role="alert" style={{ marginTop: 12 }}>There’s no element {missing} in {here}. It may have been removed or renamed in another version.</p>}
         {sections.length > 1 && (
           <nav className="outline" aria-label={`Sections of ${view.node.title}`}>
-            {sections.map((s) => <a key={s.id} href={`#/${kolab ? `read/${kolab}` : 'node'}/${name}${version ? `@${version}` : ''}#${s.id}`}>{s.id}</a>)}
+            {sections.map((s) => <a key={s.id} href={href(`${kolab ? `read/${kolab}` : 'node'}/${name}${version ? `@${version}` : ''}#${s.id}`)}>{s.id}</a>)}
           </nav>
         )}
         {nodeQueries.length > 0 && <div className="flags" style={{ marginTop: 12 }}>
@@ -492,6 +493,7 @@ function ReviewBar({ name, layer, review, mine, reading, committed, read, onVerd
   committed: number | null;
   read(v?: number): void; onVerdict(seq: number, v: 'approve' | 'request_changes', note?: string): void; onAbandon(): void;
 }) {
+  const href = useHref();
   const [note, setNote] = useState('');
   const [asking, setAsking] = useState(false);
   // Who can review it now (D65); when nobody else can yet, how to get a reviewer.
@@ -500,7 +502,7 @@ function ReviewBar({ name, layer, review, mine, reading, committed, read, onVerd
   return (
     <div className="draftbar" role="region" aria-label="In review">
       <span className="what"><span className="drafted">In review</span> · {committed !== null && reading === committed && reading !== review.seq ? (
-        <>The changes are in <a href={`#/node/${name}@${review.seq}`} onClick={(e) => { e.preventDefault(); read(review.seq); }}>v{review.seq}</a>, submitted by {review.author} {ago(review.at)}. This page shows v{committed}, the committed version. v{review.seq} {who ? <>waits for {who}; nothing changes for anyone until one approves.</> : <>waits. {nobody}</>}</>
+        <>The changes are in <a href={href(`node/${name}@${review.seq}`)} onClick={(e) => { e.preventDefault(); read(review.seq); }}>v{review.seq}</a>, submitted by {review.author} {ago(review.at)}. This page shows v{committed}, the committed version. v{review.seq} {who ? <>waits for {who}; nothing changes for anyone until one approves.</> : <>waits. {nobody}</>}</>
       ) : (
         <>Version {review.seq} of {addr(name)}, submitted by {review.author} {ago(review.at)}, {who ? <>waits for {who}. Nothing changes for anyone until one approves.</> : <>waits. {nobody}</>}</>
       )}</span>

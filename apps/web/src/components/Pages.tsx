@@ -5,7 +5,7 @@ import {
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
-import { Addr, Pill } from './bits.js';
+import { Addr, Pill, useHref } from './bits.js';
 import { QueryBox, type Act } from './Marks.js';
 
 /** Re-reads `path` whenever `tick` moves. */
@@ -309,6 +309,7 @@ const ACTIVITY_KINDS: { key: string; label: string; test: RegExp }[] = [
  * every address a link to where it points.
  */
 export function ActivityView({ tick, here }: { tick: number; here: string }) {
+  const href = useHref();
   const { pages, error, more, busy } = usePaged<WebActivityView>('activity', tick);
   const [actor, setActor] = useState('');
   const [kind, setKind] = useState('');
@@ -322,7 +323,7 @@ export function ActivityView({ tick, here }: { tick: number; here: string }) {
   const items = all.filter((l) => (!actor || l.actor === actor) && (!k || k.test.test(l.text)) && (!w || `${l.actor} ${l.text}`.toLowerCase().includes(w)));
   const link = (address: string, key: number) => {
     const a = parseKj(address);
-    return a ? <a key={key} className="addr" href={`#/${routeOf(a, here)}`}>{address}</a> : <Addr key={key}>{address}</Addr>;
+    return a ? <a key={key} className="addr" href={href(routeOf(a, here))}>{address}</a> : <Addr key={key}>{address}</Addr>;
   };
   return (
     <section aria-labelledby="act-title"><h2 className="section-title" id="act-title">Activity</h2>
@@ -626,7 +627,11 @@ export function ForeignKolabView({ kolab, tick, go, onOpen }: { kolab: string; t
  * Signing in (D55): with the identity provider (GitHub), through Kolab's own OAuth server, or, where
  * token sign-in is on (development), by pasting a session token of one's own.
  */
-export function SignIn({ onSignedIn, error: initial, methods }: { onSignedIn(token: string): Promise<string | undefined>; error?: string; methods?: WebSignInMethods }) {
+export function SignIn({ onSignedIn, onLeave, error: initial, methods }: {
+  onSignedIn(token: string): Promise<string | undefined>;
+  /** The browser is about to leave for the identity provider. */
+  onLeave?(): void; error?: string; methods?: WebSignInMethods;
+}) {
   const [token, setToken] = useState('');
   const [error, setError] = useState(initial);
   const [busy, setBusy] = useState(false);
@@ -640,7 +645,7 @@ export function SignIn({ onSignedIn, error: initial, methods }: { onSignedIn(tok
         {provider && (
           <>
             <p className="why-not">Sign in, or sign up, with {provider}. You choose the kolab and role to work in. Kolab keeps your session in this browser’s cookies, out of the page’s reach; it renews itself until you sign out.</p>
-            <div className="edit-row"><a className="btn primary" href="/api/session/oauth/start">Sign in with {provider}</a></div>
+            <div className="edit-row"><a className="btn primary" href="/api/session/oauth/start" onClick={onLeave}>Sign in with {provider}</a></div>
           </>
         )}
         {!methods && <p className="why-not">Connecting to Kolab…</p>}

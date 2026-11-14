@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { InvitePreview, WebMe, WebNodesView, WebOverview, WebSignInMethods } from '@konjir/types';
 import { ApiError, acceptInvite, api, createKolab, dropInvite, markPushTick, openInvite, pageUpdated, patiently, pushed, signIn, signOut, switchTo, whoAmI } from './api.js';
 import { useLive } from './live.js';
-import { Wordmark } from './components/bits.js';
+import { Here, Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
 import { ActivityView, ForeignKolabView, KolabsView, LineageView, More, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
 import { CasesView } from './components/Cases.js';
 import { InboxView, RulingsView, SettingsView, WorkView } from './components/Places.js';
 import { ConnectPage, GettingStarted, InviteCard, PeopleView, SessionsView } from './components/Onboarding.js';
-import { parseKj, routeOf } from './util.js';
+import { parseKj, parsePlace, placeLink, routeOf } from './util.js';
 import type { Act } from './components/Marks.js';
 
 /**
@@ -17,6 +17,10 @@ import type { Act } from './components/Marks.js';
  * in place (D49) is `#/read/<kolab>` and `#/read/<kolab>/<name>[@<version>][#<element>]`. The hash
  * keeps every place linkable without the server knowing any route but `/`. An invite's link,
  * `#/invite/<secret>` (W3.4), is taken out of the address as soon as the page reads it.
+ *
+ * The address names the kolab too, `#/k/<kolab>/<place>` (parsePlace), so a copied one opens the
+ * same place for whoever can reach that kolab, whichever kolab their session is in. One without a
+ * kolab means the session's, and the page writes the kolab into it.
  */
 export type Route =
   | { view: 'node'; name: string; version?: number; focus?: string; kolab?: string }
@@ -24,6 +28,8 @@ export type Route =
   /** `focus` an element, as `<node>#<element>`, to show what it relies on and what relies on it: #/lineage/orders#R1. */
   | { view: 'lineage'; focus?: string }
   | { view: 'questions' | 'cases' | 'reviews' | 'activity' | 'kolabs' | 'people' | 'connect' | 'sessions' | 'home' | 'start' | 'inbox' | 'work' | 'settings' | 'new' }
+  /** The address names another kolab, and the session is on its way there: nothing of this one is shown as that one's. */
+  | { view: 'opening' }
   /** The rulings, as precedent to search; `ref` a ruling's name to show, #/rulings/D104. */
   | { view: 'rulings'; ref?: string }
   /** An address the page has no place for: said so, never another page shown in its place. */
@@ -31,7 +37,7 @@ export type Route =
 
 export function parseRoute(hash: string): Route {
   let h: string;
-  try { h = decodeURIComponent(hash.replace(/^#\/?/, '')); } catch { return { view: 'home' }; }
+  try { h = decodeURIComponent(parsePlace(hash).place); } catch { return { view: 'home' }; }
   const node = /^node\/([^@#]+)(?:@(\d+))?(?:#(.+))?$/.exec(h);
   if (node) return { view: 'node', name: node[1], version: node[2] ? Number(node[2]) : undefined, focus: node[3] ? `${node[1]}#${node[3]}` : undefined };
   const foreign = /^read\/([a-z0-9][a-z0-9-]*)\/([^@#/]+)(?:@(\d+))?(?:#(.+))?$/.exec(h);
@@ -53,7 +59,7 @@ export function parseRoute(hash: string): Route {
 const PLACE: Record<string, string> = {
   inbox: 'Inbox', work: 'Work', rulings: 'Rulings', settings: 'Settings', new: 'New document',
   questions: 'Questions', cases: 'Case files', reviews: 'Reviews', lineage: 'Lineage', activity: 'Activity', kolabs: 'All kolabs',
-  people: 'People', connect: 'Connect a harness', sessions: 'Your sessions', start: 'Getting started', missing: 'Not found',
+  opening: 'Opening', people: 'People', connect: 'Connect a harness', sessions: 'Your sessions', start: 'Getting started', missing: 'Not found',
 };
 
 /** The rail's order of documents: the spec first, then what serves it, and a retired plan (D104) last. */
@@ -77,8 +83,27 @@ export function inviteOf(hash: string): string | undefined {
 /** Reads an invite's secret from the address, and takes it out, so it stays in no history or bookmark. */
 function takeInvite(): string | undefined {
   const token = inviteOf(location.hash);
-  if (token) history.replaceState(null, '', `${location.pathname}${location.search}#/`);
+  if (token) at('#/');
   return token;
+}
+
+/** Rewrites the address in place: no history entry, and no hashchange. */
+const at = (hash: string) => history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+
+/**
+ * The address a signed-out page was opened at, kept in this tab while the browser signs in with the
+ * identity provider, whose way back is `/` with no fragment, and put back when it returns.
+ */
+const KEPT = 'konjir.place';
+function keepPlace() {
+  try { if (location.hash.replace(/^#\/?/, '')) sessionStorage.setItem(KEPT, location.hash); } catch { /* storage unavailable */ }
+}
+function takePlace() {
+  try {
+    const kept = sessionStorage.getItem(KEPT);
+    sessionStorage.removeItem(KEPT);
+    if (kept?.startsWith('#/') && !location.hash.replace(/^#\/?/, '')) at(kept);
+  } catch { /* storage unavailable */ }
 }
 
 type Theme = 'light' | 'dark' | undefined;
@@ -90,6 +115,7 @@ const store = {
 export function App() {
   const [me, setMe] = useState<WebMe | null>();
   const [signInError, setSignInError] = useState<string | undefined>(() => {
+    takePlace();
     // A sign-in with the identity provider that didn't finish comes back with why (D55).
     const why = new URLSearchParams(location.search).get('signin_error') ?? undefined;
     if (why) history.replaceState(null, '', location.pathname + location.hash);
@@ -102,6 +128,10 @@ export function App() {
     return token ? { token } : undefined;
   });
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
+  /** The kolab the address asked for, as the page loaded or moved to it, until the session is there or Kolab refuses. */
+  const [asked, setAsked] = useState<string | undefined>(() => parsePlace(location.hash).kolab);
+  /** The address `route` and `asked` were read from: one set since is read when its hashchange arrives. */
+  const [seen, setSeen] = useState(() => location.hash);
   const [tick, setTick] = useState(0);
   // A re-read Kolab's push prompts, not a person's action: its reads renew no lease on work (D100).
   const pushTick = useCallback(() => setTick((t) => { markPushTick(t + 1); return t + 1; }), []);
@@ -184,7 +214,9 @@ export function App() {
     const on = () => {
       const token = takeInvite();
       if (token) setInvite({ token });
+      setSeen(location.hash);
       setRoute(parseRoute(location.hash));
+      setAsked(parsePlace(location.hash).kolab);
     };
     addEventListener('hashchange', on);
     return () => removeEventListener('hashchange', on);
@@ -219,9 +251,9 @@ export function App() {
       }
     },
   };
-  const go = (r: string) => { location.hash = `#/${r}`; };
-  /** After the session moved to another kolab or role: a fresh page, at its spec. */
-  const moved = (next: WebMe, what: string) => { setMe(next); setOverview(undefined); setTick((t) => t + 1); go(''); say(what); };
+  const go = (r: string) => { location.hash = placeLink(me?.kolab, r); };
+  /** After the session moved to another kolab or role: a fresh page, at its home, and the address names the kolab. */
+  const moved = (next: WebMe, what: string) => { setMe(next); setOverview(undefined); setTick((t) => t + 1); location.hash = placeLink(next.kolab, ''); say(what); };
   const move = (kolab: string, role: string) => {
     if (me && !confirmMove(kolab === me.kolab ? `Work as ${role}` : `Work in ${kolab}`)) return Promise.resolve(false);
     return act.run(async () => {
@@ -230,11 +262,47 @@ export function App() {
     }, '');
   };
 
+  /**
+   * The address and the session agree on the kolab. An address that names none, or the session's,
+   * is written with the session's kolab, in place, so the one in the address bar is a link to here.
+   * One that names another kolab moves the session there, as the picker does, asking first unless
+   * the page has only just loaded; a kolab Kolab won't open is said so, one way whether it exists
+   * or not, and the page stays where it was. Only an address moves the session: when the session's
+   * kolab changes under the page, as from another tab, the address follows it.
+   */
+  const settled = useRef<string>(undefined);
+  const opening = useRef<string>(undefined);
+  useEffect(() => {
+    if (!me || location.hash !== seen) return;
+    const rewrite = (hash: string) => { at(hash); setSeen(location.hash); };
+    if (!asked || asked === me.kolab) {
+      const here = placeLink(me.kolab, parsePlace(location.hash).place);
+      if (location.hash !== here) rewrite(here);
+      settled.current = here;
+      if (asked) setAsked(undefined);
+      return;
+    }
+    if (opening.current === asked) return;
+    // An address set meanwhile is read when it arrives, and isn't written over.
+    const stay = () => { if (location.hash !== seen) return; rewrite(settled.current ?? placeLink(me.kolab, '')); setRoute(parseRoute(location.hash)); setAsked(undefined); };
+    if (settled.current && !confirmMove(`Work in ${asked}`)) { stay(); return; }
+    opening.current = asked;
+    switchTo(asked, me.role).then(
+      (next) => { setMe(next); setOverview(undefined); setTick((t) => t + 1); say(`Working in ${next.kolab} as ${next.role}`); },
+      async (e: unknown) => {
+        // A session that ended keeps the address: signing in again opens it.
+        if (e instanceof ApiError && e.status === 401) { if (!(await recheck())) return; say('That didn’t go through while Kolab reconnected: try it again.'); }
+        else say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${asked} you can reach. You’re still in ${me.kolab}.` : (e as Error).message);
+        stay();
+      },
+    ).finally(() => { opening.current = undefined; });
+  }, [me, asked, seen, recheck, say]);
+
   const docs = [...(overview?.nodes ?? []), ...(moreNodes?.nodes ?? [])];
   const specs = [...docs].sort((a, b) => (KIND_ORDER[a.kind] ?? 5) - (KIND_ORDER[b.kind] ?? 5));
   const home = specs.find((n) => n.kind === 'spec') ?? specs[0];
   // Home is the person's inbox (WEB1); a kolab with nothing written yet starts at its first step.
-  const r: Route = route.view === 'home' ? (home ? { view: 'inbox' } : { view: 'start' }) : route;
+  const r: Route = me && asked && asked !== me.kolab ? { view: 'opening' } : route.view === 'home' ? (home ? { view: 'inbox' } : { view: 'start' }) : route;
   // A full address in the session's own kolab is its own node's page; another kolab's is read in place.
   const nodeRoute = r.view === 'node' && r.kolab === me?.kolab ? { ...r, kolab: undefined } : r;
   const reading = (nodeRoute.view === 'node' && nodeRoute.kolab !== undefined) || nodeRoute.view === 'read';
@@ -268,7 +336,7 @@ export function App() {
       <>
         <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} />
         {(invite?.preview || inviteNote) && <div className="signin-invite">{invite?.preview ? <InviteCard invite={invite.preview} signedIn={false} /> : inviteNote}</div>}
-        <SignIn error={signInError} methods={methods} onSignedIn={async (token) => {
+        <SignIn error={signInError} methods={methods} onLeave={keepPlace} onSignedIn={async (token) => {
           try { setMe(await signIn(token)); setSignInError(undefined); return undefined; } catch (e) { return (e as Error).message; }
         }} />
       </>
@@ -285,7 +353,7 @@ export function App() {
     </button>
   );
   return (
-    <>
+    <Here value={me.kolab}>
       <a className="skip" href="#/" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Skip to the page’s content</a>
       <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
         onMove={move} onAllKolabs={() => go('kolabs')}
@@ -337,6 +405,7 @@ export function App() {
             read={(v) => go(`${nodeRoute.kolab ? `read/${nodeRoute.kolab}` : 'node'}/${nodeRoute.name}${v ? `@${v}` : ''}`)} />}
           {nodeRoute.view === 'read' && (nodeRoute.kolab === me.kolab ? <p className="empty">This is the kolab you work in: its documents are in the rail.</p>
             : <ForeignKolabView kolab={nodeRoute.kolab} tick={tick} go={go} onOpen={(k) => move(k, me.role)} />)}
+          {r.view === 'opening' && <p className="empty">Opening {asked}…</p>}
           {r.view === 'questions' && <QuestionsView me={me} tick={tick} act={act} go={go} />}
           {r.view === 'cases' && <CasesView me={me} tick={tick} act={act} go={go} />}
           {r.view === 'reviews' && <ReviewsView tick={tick} act={act} go={go} />}
@@ -363,7 +432,7 @@ export function App() {
         </main>
       </div>
       {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
-    </>
+    </Here>
   );
 }
 
@@ -433,7 +502,7 @@ function Bar({ theme, setTheme, me, overview, onSignOut, onMove, onAllKolabs }: 
   return (
     <header className="bar">
       <div className="bar-in">
-        <a className="brand" href="#/" aria-label="Konjir, home"><Wordmark /></a>
+        <a className="brand" href={placeLink(me?.kolab, '')} aria-label="Konjir, home"><Wordmark /></a>
         {me && (
           <div className="kolab-pick" ref={pick}>
             <button type="button" className="kolab-btn" aria-expanded={open} aria-controls="kolabMenu" aria-label={`Kolab: ${current?.title || me.kolab}. Switch kolab`} onClick={() => setOpen(!open)}>
