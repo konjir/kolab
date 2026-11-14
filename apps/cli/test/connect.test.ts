@@ -747,9 +747,13 @@ test('W9.5: the published konjir names the bridge it carries, konjir bridge: a b
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'konjir.mjs'), '// konjir 0.7.0\n');
     const p = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(dir, 'konjir.mjs') }, env);
-    expect(p).toStrictEqual({ bridge: { command: '/usr/bin/node', args: [kept, 'bridge'] }, self: 'npx konjir@0.7.0', keep: { from: join(dir, 'konjir.mjs'), to: kept } });
-    expect(JSON.stringify(p!.bridge)).not.toMatch(/npx|dlx/);
+    // It is run again from that copy too.
+    expect(p).toStrictEqual({ bridge: { command: '/usr/bin/node', args: [kept, 'bridge'] }, self: `/usr/bin/node ${kept}`, keep: { from: join(dir, 'konjir.mjs'), to: kept } });
+    expect(JSON.stringify([p!.bridge, p!.self])).not.toMatch(/npx|dlx/);
   }
+  // A KONJIR_CREDENTIALS that isn't absolute still gives an absolute copy: Claude Code starts the entry in the project.
+  const rel = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir', 'konjir.mjs') }, { KONJIR_CREDENTIALS: 'creds.json' })!;
+  expect(rel.bridge.args[0]).toBe(join(process.cwd(), 'bridge', 'konjir-0.7.0.mjs'));
   // The copy: made in a folder of konjir's own, 0700; the same bytes again are left; others replace it.
   const from = join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir', 'konjir.mjs');
   expect(existsSync(kept)).toBe(false);
@@ -853,7 +857,20 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
     }
     expect(existsSync(join(away, '.mcp.json'))).toBe(false);
     expect(readFileSync(join(outside, 'writer.md'), 'utf8')).toBe('a secret\n');
+    // A link to nothing is refused the same way, before the browser: nothing is made where it points.
+    const dangling = realpathSync(scratch());
+    const nowhere = join(realpathSync(scratch()), 'nowhere');
+    mkdirSync(dirname(join(dangling, which)), { recursive: true });
+    symlinkSync(nowhere, join(dangling, which));
+    const seen: URL[] = [];
+    expect(await rejection(connectHarness(opts({ cwd: dangling }), world(server, idp, async () => 0, { opened: seen })))).toMatch(/can't be read \(a link to nothing, perhaps\), so konjir connect won't write a subagent there/);
+    expect(seen).toHaveLength(0);
+    expect(existsSync(nowhere)).toBe(false);
+    expect(existsSync(join(dangling, '.mcp.json'))).toBe(false);
   }
+  // A label YAML would read as something other than a string is quoted, so the subagent's name is the label.
+  const named = (label: string) => subagentFile({ name: `konjir-${label}`, agent: `ann-${label}`, label, role: 'engineer', kolab: 'anns', url: server.url }).split('\n')[1];
+  expect(['writer', 'a1', '123', '1e3', 'true', 'null', 'no', '0x10'].map(named)).toStrictEqual(['name: writer', 'name: a1', 'name: "123"', 'name: "1e3"', 'name: "true"', 'name: "null"', 'name: "no"', 'name: "0x10"']);
   // A Kolab that names the person in a way no name is written reaches no file (--no-auth, where no credentials file would catch it).
   const hostile = realpathSync(scratch());
   const lying = world(server, idp, async () => 0);
