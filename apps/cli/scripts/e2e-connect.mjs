@@ -204,6 +204,10 @@ async function connect(cwd, mcp, agents) {
 async function session(name, entry, cwd, nudge) {
   const p = spawn(entry.command, entry.args, { cwd, env: env(entry.env), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   live.add(p);
+  // One that can't start, or dies while it is written to, fails the check rather than this script.
+  let broke;
+  p.on('error', (e) => { broke ??= e; });
+  p.stdin.on('error', (e) => { broke ??= e; });
   let err = '', buffer = '', nextId = 1, garbled;
   const waiting = new Map();
   const channel = [];
@@ -220,7 +224,7 @@ async function session(name, entry, cwd, nudge) {
       else if (m.id !== undefined && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
     }
   });
-  const ended = new Promise((ok) => p.once('exit', (code) => { live.delete(p); ok(code); }));
+  const ended = new Promise((ok) => { p.once('exit', (code) => { live.delete(p); ok(code); }); p.once('error', () => { live.delete(p); ok(null); }); });
   const send = (m) => p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`);
   const request = (method, params = {}) => new Promise((ok, no) => {
     const id = nextId++;
@@ -230,7 +234,7 @@ async function session(name, entry, cwd, nudge) {
   });
   const until = async (what, done, timeoutMs = 45_000) => {
     for (const end = Date.now() + timeoutMs; Date.now() < end; await new Promise((r) => setTimeout(r, 250))) {
-      if (p.exitCode !== null) fail(`${name} exited (${p.exitCode}) before ${what}:\n${err.slice(-2000)}`);
+      if (broke || p.exitCode !== null) fail(`${name} ${broke ? `broke (${broke.message})` : `exited (${p.exitCode})`} before ${what}:\n${err.slice(-2000)}`);
       const v = await done();
       if (v) return v;
     }
@@ -334,6 +338,14 @@ async function main() {
   for (const [label, role] of agents) await whoami(label, role);
 
   step(`a session on konjir-builder, as Claude Code starts it (${[servers['konjir-builder'].command, ...servers['konjir-builder'].args].join(' ')})`);
+  // A project that ships packages the bridge might look for: none of them is ever run. A published
+  // konjir carries each as absent, so nothing is looked for in the folder Claude Code starts it in.
+  const ran = join(tmp, 'planted-ran.txt');
+  for (const [pkg, file] of [['@nestjs/websockets', 'socket-module.js'], ['@nestjs/microservices', 'microservices-module.js'], ['@nestjs/microservices', 'index.js'],
+    ['class-transformer', 'index.js'], ['class-validator', 'index.js'], ['@konjir/server', 'index.js'], ['konjir', 'konjir.mjs']]) {
+    mkdirSync(join(dir, 'node_modules', pkg), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', pkg, file), `require('node:fs').appendFileSync(${JSON.stringify(ran)}, ${JSON.stringify(`${pkg}/${file}\n`)});\n`);
+  }
   const said = `ping ${rand}`;
   const heard = await session('konjir-builder', servers['konjir-builder'], dir, async () => {
     // The other agent messages it, from the CLI on its own sign-in.
@@ -341,6 +353,8 @@ async function main() {
     check(sent.code === 0, `${LOGIN}-writer couldn't message ${LOGIN}-builder (${sent.code}):\n${sent.out}${sent.err}`);
   });
   check(heard.pushed.includes(`${LOGIN}-writer`) || heard.pushed.includes(said), `the channel message doesn't tell of ${LOGIN}-writer's message: ${heard.pushed.slice(0, 400)}`);
+  for (const cmd of ['help', '--version']) await run(KONJIR, [cmd], { cwd: dir, env: env() });
+  check(!existsSync(ran), `konjir ran code the project planted in its node_modules: ${existsSync(ran) ? readFileSync(ran, 'utf8').trim().split('\n').join(', ') : ''}`);
   step(`it listed ${heard.tools} of Kolab's tools and was pushed: ${heard.pushed.split('\n')[0].slice(0, 120)}`);
 
   step('the agent cap: 2 live agents and 9 more is refused, on the page and in the CLI');
