@@ -8130,6 +8130,7 @@ export class Kolab {
       ...(p.row.milestone && p.state !== 'done' && !p.row.removed_in_version_id ? { waiting: p.waiting } : {}),
       ...(p.row.removed_in_version_id ? { removed_in: formatAddress({ node: p.row.removed_node ?? p.binding.name, version: p.row.removed_seq ?? undefined }) } : {}),
       ...(p.row.unreviewed ? { unreviewed: true } : {}),
+      ...(p.row.found_built ? { found_built: true as const } : {}),
       ...(p.work?.release ? { release: true as const } : {}),
       ...(p.row.approved && p.state === 'in_review' ? { approved: true as const } : {}),
       ...(p.row.returned && p.state === 'in_progress' ? { returned: true } : {}),
@@ -8266,14 +8267,15 @@ export class Kolab {
    * The current runs of a kolab's work packages (WRK9), by `<binding id>#<id>`, read in one query on
    * `q`: for each, the first pull and the last event that made it Done (milestone_done for a
    * milestone) since it was last added, restored or reopened, and, for a Done package still in its
-   * binding, its size there. Those of the bindings `bindings`, or, with `others`, the Done packages of
+   * binding, its size there: none for one found already built (0051), whose run is no measure of
+   * work of its size. Those of the bindings `bindings`, or, with `others`, the Done packages of
    * the kolab's other bindings, whose finished durations a forecast falls back on.
    */
   private async runsIn(q: Q, kolab: string, bindings: string[], others = false) {
     const out = new Map<string, { binding: string; state: WorkState; size: WorkSize | null; start?: Date; finish?: Date }>();
     for (const r of (await q.query<{ binding: string; element: string; state: WorkState; size: WorkSize | null; start: Date | string | null; finish: Date | string | null }>(
       `select w.binding_node_id as binding, w.element_id as element, w.state,
-              case when w.state = 'done' and not w.milestone and w.removed_in_version_id is null then
+              case when w.state = 'done' and not w.milestone and not w.found_built and w.removed_in_version_id is null then
                 (select e.work->>'size' from element e where e.element_id = w.element_id and e.version_id =
                    (select v.id from version v where v.node_id = w.binding_node_id and v.state = 'committed' order by v.seq desc limit 1)) end as size,
               min(ev.at) filter (where ev.kind = 'pulled') as start,
@@ -9823,8 +9825,8 @@ export class Kolab {
    * again, and with none left it is Done, unreviewed, on the same terms. Refused once the lease has lapsed. Under the
    * binding's lock, as its commits and every change of Done take it. Counts as a draft (W2.21).
    */
-  submitWork(sessionId: string, ref: string, opts: { evidence?: unknown; note?: string } = {}): Promise<{
-    work: string; state: WorkState; in_review: boolean; reviewers: string[]; nobody?: string; unreviewed: boolean; recorded: number; already: number;
+  submitWork(sessionId: string, ref: string, opts: { evidence?: unknown; note?: string; foundBuilt?: boolean } = {}): Promise<{
+    work: string; state: WorkState; in_review: boolean; reviewers: string[]; nobody?: string; unreviewed: boolean; recorded: number; already: number; found_built?: true;
     findings?: AcceptanceFinding[];
   }> {
     return this.packageScoped(sessionId, ref, async ({ s, binding, id }) => {
@@ -9832,6 +9834,9 @@ export class Kolab {
       const items = this.evidenceInput(opts.evidence, false);
       const checks = await this.resolveChecks(sessionId, items);
       const note = opts.note === undefined ? null : requireText(opts.note, 'a note');
+      const found = opts.foundBuilt === true;
+      // Found built is its assignee's claim that nothing was built: the note says where the product already meets it.
+      if (found && !note) throw new GateError('found_built needs a note: say where the product already meets its done-when (file and line, a test), so its reviewer can check it');
       const at = formatAddress({ node: binding.name, element: id });
       const out = await this.rated(s.actor_id, 'draft', (hold) => this.inTransaction(async (tx, signal) => {
         // The policy lock before any row's, as konjir_set_policy takes it before the requests it writes (POL3).
@@ -9881,10 +9886,10 @@ export class Kolab {
         let ev: string;
         if (review) {
           state = 'in_review';
-          await tx.query(`update work_package set state = 'in_review', lease_until = null, returned = false, unreviewed = false, updated_at = clock_timestamp()
-                           where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
+          await tx.query(`update work_package set state = 'in_review', lease_until = null, returned = false, unreviewed = false, found_built = $3, updated_at = clock_timestamp()
+                           where binding_node_id = $1 and element_id = $2`, [binding.id, id, found]);
           ev = await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'submitted', from: 'in_progress', to: 'in_review', actor: s.actor_id,
-            assigneeFrom: s.actor_id, assigneeTo: s.actor_id, version: c.version.id, concerned: c.delivers, note });
+            assigneeFrom: s.actor_id, assigneeTo: s.actor_id, version: c.version.id, concerned: c.delivers, note: found ? `found built: ${note}` : note });
           await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where binding_node_id = $1 and element_id = $2 and state = 'open'`, [binding.id, id]);
           for (const w of writers) {
             await tx.query(`insert into review_request(id, binding_node_id, element_id, reviewer_id) values ($1, $2, $3, $4)`, [ulid(), binding.id, id, w]);
@@ -9892,11 +9897,11 @@ export class Kolab {
         } else {
           // No one else holds Write on the technical layer: Done on submission, unreviewed (PLN16, D66).
           state = 'done';
-          await tx.query(`update work_package set state = 'done', lease_until = null, returned = false, unreviewed = true, updated_at = clock_timestamp()
-                           where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
+          await tx.query(`update work_package set state = 'done', lease_until = null, returned = false, unreviewed = true, found_built = $3, updated_at = clock_timestamp()
+                           where binding_node_id = $1 and element_id = $2`, [binding.id, id, found]);
           ev = await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'done_unreviewed', from: 'in_progress', to: 'done', actor: s.actor_id,
             assigneeFrom: s.actor_id, assigneeTo: s.actor_id, version: c.version.id, concerned: c.delivers,
-            note: note ?? `${noOther}, so it is Done on submission, unreviewed (PLN16)` });
+            note: found ? `found built: ${note}; ${noOther}, so it is Done on submission, unreviewed (PLN16)` : note ?? `${noOther}, so it is Done on submission, unreviewed (PLN16)` });
         }
         const { recorded, already } = await this.evidenceIn(tx, binding.id, id, items, ev, s.actor_id, repositories, checks);
         if (state === 'done') await this.settleMilestonesIn(tx, binding, c.version);
@@ -9911,7 +9916,7 @@ export class Kolab {
       // What its reviewers see with the request (REV9): every failed acceptance check it has recorded, in any round.
       const findings = acceptanceFindings(await this.checkedEvidence(this.db, binding.id, id));
       return { work: at, state: out.state, in_review: out.state === 'in_review', reviewers, ...(nobody ? { nobody } : {}), unreviewed: out.state === 'done', recorded: out.recorded, already: out.already,
-        ...(findings.length ? { findings } : {}) };
+        ...(found ? { found_built: true as const } : {}), ...(findings.length ? { findings } : {}) };
     });
   }
 
@@ -12893,9 +12898,11 @@ interface WorkRow {
   returned: boolean; touched_at: Date | string | null; lapsed: boolean; removed_seq: number | null; removed_node: string | null;
   /** In review, approved, waiting for its release (PLN16, W7.7; migration 0047). */
   approved: boolean;
+  /** Submitted as found already built, while In review or Done (migration 0051). */
+  found_built: boolean;
 }
 const WORK_ROWS = `select w.binding_node_id, w.element_id, w.kolab_id, w.state, w.assignee_id, w.lease_until, w.unreviewed, w.milestone,
-        w.removed_in_version_id, w.returned, w.approved, w.touched_at, (w.state = 'in_progress' and w.lease_until < clock_timestamp()) as lapsed, rv.seq as removed_seq, rn.name as removed_node
+        w.removed_in_version_id, w.returned, w.approved, w.found_built, w.touched_at, (w.state = 'in_progress' and w.lease_until < clock_timestamp()) as lapsed, rv.seq as removed_seq, rn.name as removed_node
    from work_package w left join version rv on rv.id = w.removed_in_version_id left join node rn on rn.id = rv.node_id`;
 
 /** Why a package is blocked, with whether a question was raised by a mark (told only to those who belong, D58). */
