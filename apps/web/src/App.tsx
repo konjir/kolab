@@ -87,6 +87,12 @@ function takeInvite(): string | undefined {
   return token;
 }
 
+/**
+ * The kolab an address asks the session to be in. An invite's address asks for none, whatever is
+ * written before it and whether its secret is well formed: an invite never moves a session.
+ */
+const askedBy = (hash: string) => { const { kolab, place } = parsePlace(hash); return /^invite(\/|$)/.test(place) ? undefined : kolab; };
+
 /** Rewrites the address in place: no history entry, and no hashchange. */
 const at = (hash: string) => history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
 
@@ -136,7 +142,7 @@ export function App() {
    * The kolab the address asked for, until the session is there or Kolab refuses: as the page
    * loaded, or as it moved to another kolab's address and the person agreed to go.
    */
-  const [asked, setAsked] = useState<string | undefined>(() => parsePlace(location.hash).kolab);
+  const [asked, setAsked] = useState<string | undefined>(() => askedBy(location.hash));
   // The session and what was asked, for what hears of an address or of the session between renders.
   const meNow = useRef(me);
   meNow.current = me;
@@ -144,13 +150,18 @@ export function App() {
   askedNow.current = asked;
   /** The address last shown as a place of the session's kolab; none until a sign-in has shown one. */
   const settled = useRef<string>(undefined);
-  /** The kolab a switch is under way to; `turn` moves as each one ends, so the next is taken up. */
-  const opening = useRef<string>(undefined);
+  /**
+   * A move of the session to another kolab or role is under way, by any route: the picker, the
+   * role, a new kolab, an invite joined or an address. There is one at a time: Kolab answers the
+   * next as the session this one opens. `turn` moves as each ends, so an address that waited is
+   * taken up, and `busy` is the same for what the page shows.
+   */
+  const gate = useRef(false);
   const [turn, setTurn] = useState(0);
-  /** The moves to another kolab or role this page has under way, by any route: a session found elsewhere meanwhile is its own doing. */
-  const moving = useRef(0);
-  /** The page's own sign-out is under way or done: a session found gone is no news. */
+  const [busy, setBusy] = useState(false);
+  /** The page's own sign-out is under way or done, until a session is here again: a session found gone is no news. */
   const leaving = useRef(false);
+  useEffect(() => { if (me) leaving.current = false; }, [me]);
   /** The address `route` and `asked` were read from: one set since is read when its hashchange arrives. */
   const [seen, setSeen] = useState(() => location.hash);
   const seenNow = useRef(seen);
@@ -171,20 +182,26 @@ export function App() {
   const [away, setAway] = useState(false);
   /** Kolab now serves a newer page than this one: it was deployed while this tab was open. */
   const [updated, setUpdated] = useState(false);
-  // The next sign-in opens the address as a fresh load does: nothing is held to go back to, or to ask about.
+  // The next sign-in opens the address as a fresh load does.
   const signedOut = useCallback((why?: string) => {
-    settled.current = undefined;
-    setMe(null); setOverview(undefined); setSignInError(why); setAsked(parsePlace(location.hash).kolab);
+    setMe(null); setOverview(undefined); setSignInError(why); setAsked(askedBy(location.hash));
   }, []);
-  /** Moves the session to another kolab or role, as `how` asks Kolab to: a fresh page there. */
-  const moveBy = useCallback(async (how: () => Promise<WebMe>) => {
-    moving.current++;
-    try {
-      const next = await how();
-      meNow.current = next;
-      setMe(next); setOverview(undefined); setTick((t) => t + 1);
-      return next;
-    } finally { moving.current--; }
+  /** Runs one move of the session, with the gate held from its start to the last of what follows it. */
+  const gated = useCallback(async <T,>(what: () => Promise<T>): Promise<T> => {
+    gate.current = true;
+    setBusy(true);
+    try { return await what(); } finally { gate.current = false; setBusy(false); setTurn((t) => t + 1); }
+  }, []);
+  /**
+   * Moves the session to another kolab or role, as `how` asks Kolab to: a fresh page there. An
+   * answer that comes after the page signed out signs nobody in: the session it opened is ended too.
+   */
+  const moveBy = useCallback(async (how: () => Promise<WebMe>): Promise<WebMe | undefined> => {
+    const next = await how();
+    if (leaving.current) { void signOut().catch(() => undefined); return undefined; }
+    meNow.current = next;
+    setMe(next); setOverview(undefined); setTick((t) => t + 1);
+    return next;
   }, []);
   // How a person signs in here, asked as the page loads, so a session that ends while Kolab is away
   // still gets this Kolab's own sign-in. Kolab away is waited out; the token form shows only when
@@ -210,16 +227,20 @@ export function App() {
    * Something said the session may have ended (a 401, or the event stream closing): Kolab is asked,
    * once however many say so, and a restart waited out. The page signs out only when Kolab says the
    * session is gone; otherwise it re-reads what it shows. Resolves whether the session lives.
-   * The browser holds one session for all its tabs: when another tab moved it to another kolab,
-   * this page follows it there, and says so. A session gone after the page's own sign-out is no news.
+   * The browser holds one session for all its tabs: when another tab moved it to another kolab or
+   * role, this page follows it there, and says so. Once the page itself signs out, nothing found matters.
    */
   const checking = useRef<Promise<boolean>>(undefined);
   const recheck = useCallback(() => {
     // Kolab's own check, after its stream dropped or a call came back 401: no person's request (D100).
     checking.current ??= whoAmI({ onWait: () => setAway(true), push: true }).then(
       (now) => {
-        if (!now) { if (!leaving.current) signedOut('Your session ended. Sign in again.'); return false; }
-        if (meNow.current && meNow.current.kolab !== now.kolab && !moving.current) say(`Your session moved to ${now.kolab} in another tab. This page follows it: what was drafted here is discarded.`);
+        if (leaving.current) return !!now;
+        if (!now) { signedOut('Your session ended. Sign in again.'); return false; }
+        const was = meNow.current;
+        if (was && !gate.current && (was.kolab !== now.kolab || was.role !== now.role)) {
+          say(`${was.kolab !== now.kolab ? `Your session moved to ${now.kolab}` : `Your session now works as ${now.role}`} in another tab. This page follows it: what was drafted here is discarded.`);
+        }
         meNow.current = now;
         setMe((was) => (was && JSON.stringify(was) === JSON.stringify(now) ? was : now));
         pushTick();
@@ -255,7 +276,7 @@ export function App() {
     const on = () => {
       const token = takeInvite();
       if (token) setInvite({ token });
-      const { kolab } = parsePlace(location.hash);
+      const kolab = askedBy(location.hash);
       // Another kolab's address, on a page showing a place: asked before anything shown is put away.
       // Declined, the address is written back as it was, in place, and nothing else changes: the
       // page stays with what was drafted there, and the entry moved to now holds this place.
@@ -281,8 +302,9 @@ export function App() {
     onChange: pushTick,
     onEnded: recheck,
     onDropped: recheck,
+    // What a break may have missed includes the session's own move, in another tab: asked, and followed.
     onResumed: () => {
-      pushTick();
+      void recheck();
       void pageUpdated().then((u) => { if (u) setUpdated(true); });
     },
   });
@@ -302,21 +324,26 @@ export function App() {
     },
   };
   const go = (r: string) => { location.hash = placeLink(me?.kolab, r); };
-  /** After the session moved to another kolab or role: a fresh page, at its home, and the address names the kolab. */
-  const moved = (next: WebMe, what: string) => { location.hash = placeLink(next.kolab, ''); say(what); };
+  /**
+   * After the session moved to another kolab or role: a fresh page, at its home, and the address
+   * names the kolab; an address that asked for another kolab meanwhile is left, to be taken up next.
+   */
+  const moved = (next: WebMe, what: string) => { if (!askedNow.current || askedNow.current === next.kolab) location.hash = placeLink(next.kolab, ''); say(what); };
+  /** Whether a move may start: not while another is under way, and then nothing is asked or sent. */
+  const free = () => { if (gate.current) say('The session is on its way to another kolab or role: wait for it.'); return !gate.current; };
   const move = (kolab: string, role: string) => {
-    if (me && !confirmMove(kolab === me.kolab ? `Work as ${role}` : `Work in ${kolab}`)) return Promise.resolve(false);
-    return act.run(async () => {
+    if (!free() || (me && !confirmMove(kolab === me.kolab ? `Work as ${role}` : `Work in ${kolab}`))) return Promise.resolve(false);
+    return act.run(() => gated(async () => {
       const next = await moveBy(() => switchTo(kolab, role));
-      moved(next, `Working in ${next.kolab} as ${next.role}`);
-    }, '');
+      if (next) moved(next, `Working in ${next.kolab} as ${next.role}`);
+    }), '');
   };
 
   /**
    * The address and the session agree on the kolab. An address that names none, or the session's,
    * is written with the session's kolab, in place, so the one in the address bar is a link to here.
-   * One that names another kolab moves the session there, as the picker does, one switch at a time.
-   * A switch under way finishes: when it returns the page is in that kolab, and the address is
+   * One that names another kolab moves the session there, as the picker does, once no other move
+   * is under way. A move under way finishes: when it returns the page is in that kolab, and the address is
    * written to say so, whatever was pressed meanwhile; an address set to a third kolab meanwhile is
    * taken up next. A kolab Kolab won't open is said so, one way whether it exists or not, the
    * address is written back to where the page was, and nothing is asked of Kolab again until the
@@ -324,7 +351,9 @@ export function App() {
    * the page, as from another tab, the address follows it.
    */
   useEffect(() => {
-    if (!me || location.hash !== seen) return;
+    // Signed out, nothing is held to go back to, or to ask about: the next sign-in starts as a fresh load does.
+    if (!me) { settled.current = undefined; return; }
+    if (location.hash !== seen) return;
     if (!asked || asked === me.kolab) {
       const here = placeLink(me.kolab, parsePlace(location.hash).place);
       if (location.hash !== here) { at(here); setSeen(location.hash); }
@@ -333,12 +362,11 @@ export function App() {
       if (asked) setAsked(undefined);
       return;
     }
-    if (opening.current) return;
-    const to = opening.current = asked;
-    // The next switch waits for this one: Kolab answers it as the session this one opens.
-    const done = () => { opening.current = undefined; setTurn((t) => t + 1); };
+    if (gate.current) return;
+    const to = asked;
     /** The switch isn't to be: it is asked for no more, and its address gives way to where the page was. */
     const stay = () => {
+      // Another kolab asked for meanwhile is taken up next, not undone.
       if (askedNow.current !== to) return;
       askedNow.current = undefined;
       setAsked(undefined);
@@ -348,23 +376,23 @@ export function App() {
       setSeen(location.hash);
       setRoute(parseRoute(location.hash));
     };
-    moveBy(() => switchTo(to, me.role)).then(
-      (next) => { done(); say(`Working in ${next.kolab} as ${next.role}`); },
-      async (e: unknown) => {
+    // The gate is held until the refusal is dealt with, so nothing sends the switch again meanwhile.
+    void gated(async () => {
+      try {
+        const next = await moveBy(() => switchTo(to, me.role));
+        if (next) say(`Working in ${next.kolab} as ${next.role}`);
+      } catch (e) {
         if (e instanceof ApiError && e.status === 401) {
-          const alive = await recheck();
-          done();
           // A session that ended keeps the address: signing in again opens it.
-          if (!alive) return;
+          if (!(await recheck())) return;
+          // Another tab had moved the session there already: the page has arrived, at the place asked for.
+          if (meNow.current?.kolab === to) return;
           say('That didn’t go through while Kolab reconnected: try it again.');
-        } else {
-          done();
-          say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${to} you can reach. You’re still in ${meNow.current?.kolab}.` : (e as Error).message);
-        }
+        } else say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${to} you can reach. You’re still in ${meNow.current?.kolab}.` : (e as Error).message);
         stay();
-      },
-    );
-  }, [me, asked, seen, turn, recheck, say, moveBy]);
+      }
+    });
+  }, [me, asked, seen, turn, recheck, say, moveBy, gated]);
 
   const docs = [...(overview?.nodes ?? []), ...(moreNodes?.nodes ?? [])];
   const specs = [...docs].sort((a, b) => (KIND_ORDER[a.kind] ?? 5) - (KIND_ORDER[b.kind] ?? 5));
@@ -405,7 +433,7 @@ export function App() {
         <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} />
         {(invite?.preview || inviteNote) && <div className="signin-invite">{invite?.preview ? <InviteCard invite={invite.preview} signedIn={false} /> : inviteNote}</div>}
         <SignIn error={signInError} methods={methods} onLeave={keepPlace} onSignedIn={async (token) => {
-          try { setMe(await signIn(token)); leaving.current = false; setSignInError(undefined); return undefined; } catch (e) { return (e as Error).message; }
+          try { setMe(await signIn(token)); setSignInError(undefined); return undefined; } catch (e) { return (e as Error).message; }
         }} />
       </>
     );
@@ -424,7 +452,7 @@ export function App() {
     <Here value={me.kolab}>
       <a className="skip" href="#/" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Skip to the page’s content</a>
       <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
-        onMove={move} onAllKolabs={() => go('kolabs')}
+        onMove={move} busy={busy} onAllKolabs={() => go('kolabs')}
         onSignOut={async () => { leaving.current = true; await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended.'); }} />
       <div className="frame">
         <div className="side">
@@ -461,11 +489,12 @@ export function App() {
           {awayNote}
           {updatedNote}
           {invite?.preview && <InviteCard invite={invite.preview} signedIn onDismiss={() => { setInvite(undefined); void dropInvite().catch(() => undefined); }}
-            onJoin={() => act.run(async () => {
+            onJoin={() => free() && act.run(() => gated(async () => {
               const next = await moveBy(() => acceptInvite(invite.token));
+              if (!next) return;
               setInvite(undefined);
               moved(next, `Joined ${next.kolab}: you work here as ${next.role}`);
-            }, '')} />}
+            }), '')} />}
           {inviteNote}
           {/* What waits is the inbox's now (and the rail's count); only a kolab with nothing written yet keeps the summary, to say where to start. */}
           {overview && r.view === 'start' && <Summary overview={overview} />}
@@ -497,7 +526,10 @@ export function App() {
           {r.view === 'new' && !me.access.layers.includes(me.layer) && <p className="empty">Working as {me.role}, you don’t write the {me.layer} layer here, so you make no document in it.</p>}
           {(r.view === 'start' || r.view === 'new') && overview && <KolabsView start overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onCreateKolab={async () => false} />}
           {r.view === 'kolabs' && overview && <KolabsView overview={overview} act={act} onCreated={(n) => go(`node/${n}`)} onOpen={(k) => move(k, me.role)} onRead={(k) => go(`read/${k}`)}
-            onCreateKolab={(name, title) => act.run(async () => { moved(await moveBy(() => createKolab(name, title)), `Created ${name}. Its spec is empty: start it.`); }, '')} />}
+            onCreateKolab={async (name, title) => free() && act.run(() => gated(async () => {
+              const next = await moveBy(() => createKolab(name, title));
+              if (next) moved(next, `Created ${name}. Its spec is empty: start it.`);
+            }), '')} />}
         </main>
       </div>
       {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
@@ -551,9 +583,11 @@ function Summary({ overview: o }: { overview: WebOverview }) {
   );
 }
 
-function Bar({ theme, setTheme, me, overview, onSignOut, onMove, onAllKolabs }: {
+function Bar({ theme, setTheme, me, overview, onSignOut, onMove, busy, onAllKolabs }: {
   theme: Theme; setTheme(t: 'light' | 'dark'): void; me?: WebMe; overview?: WebOverview;
   onSignOut?(): void; onMove?(kolab: string, role: string): void; onAllKolabs?(): void;
+  /** A move to another kolab or role is under way: the picker and the role wait for it. */
+  busy?: boolean;
 }) {
   const dark = theme ? theme === 'dark' : !(typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches);
   const [open, setOpen] = useState(false);
@@ -581,7 +615,7 @@ function Bar({ theme, setTheme, me, overview, onSignOut, onMove, onAllKolabs }: 
             {open && (
               <div className="menu" id="kolabMenu">
                 {(overview?.kolabs ?? []).map((k) => (
-                  <button key={k.id} type="button" className="mi" aria-current={k.current} onClick={() => { setOpen(false); if (!k.current) onMove?.(k.id, me.role); }}>
+                  <button key={k.id} type="button" className="mi" aria-current={k.current} disabled={busy && !k.current} onClick={() => { setOpen(false); if (!k.current) onMove?.(k.id, me.role); }}>
                     <span className="nm">{k.title || k.id}</span><span className="slug">{k.id} · {k.access.level ?? 'no access'}</span>
                   </button>
                 ))}
@@ -599,7 +633,7 @@ function Bar({ theme, setTheme, me, overview, onSignOut, onMove, onAllKolabs }: 
             <span className="who" id="whoLabel">Working as <b>{me.name}</b></span>
             <div className="seg" role="radiogroup" aria-labelledby="whoLabel">
               {(['product', 'engineer'] as const).map((r) => (
-                <button key={r} type="button" role="radio" aria-checked={me.role === r} title={me.role === r ? `You work as ${r}` : `Switch to ${r}: this session ends, and one opens in that role`}
+                <button key={r} type="button" role="radio" aria-checked={me.role === r} disabled={busy && me.role !== r} title={me.role === r ? `You work as ${r}` : `Switch to ${r}: this session ends, and one opens in that role`}
                   onClick={() => { if (me.role !== r) onMove?.(me.kolab, r); }}>{r}</button>
               ))}
             </div>
