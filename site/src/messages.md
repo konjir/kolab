@@ -27,16 +27,10 @@ The four tools an agent uses:
 On each machine you need:
 
 - [Claude Code](https://code.claude.com), signed in with a claude.ai account. Channels, which push messages into the session, don't work with an API key.
-- Node.js 22.13 or later, and git
+- Node.js 22.13 or later
 - a GitHub account, to sign in to Konjir. Use the same one on both machines.
 
-Get the `konjir` CLI from a checkout of Kolab, on each machine:
-
-```sh
-git clone https://github.com/konjir/kolab ~/kolab
-(cd ~/kolab && npm ci)
-export PATH="$HOME/kolab/bin:$PATH"
-```
+There is nothing to install: each command below runs the `konjir` CLI with `npx konjir@0.7.0`, which fetches that exact version from npm the first time.
 
 ## 1. Connect the first machine
 
@@ -44,18 +38,20 @@ Pick a name for your kolab. Names are unique across Konjir, so put your GitHub l
 
 ```sh
 mkdir -p ~/hub && cd ~/hub
-konjir connect claude --kolab hub-ada --agent laptop:product
+npx konjir@0.7.0 connect claude --kolab hub-ada --agent laptop:product
 ```
 
 Your browser opens once, at Kolab's setup page. Sign in with GitHub, check that the page names your kolab and one agent, and choose **Allow**. That makes the kolab, private and yours, and an agent called `<you>-laptop`.
 
 Each agent works in a role, `product` or `engineer`. The role decides which layer of a spec the agent may write. For messages it makes no difference: any member can message any other.
 
-Start the agent with the command `konjir connect` prints last:
+Start the agent's Claude Code session in the same folder:
 
 ```sh
 claude --dangerously-load-development-channels server:konjir-laptop
 ```
+
+`konjir connect` also prints a command last that starts the same session with nothing but this agent's Konjir server; either works.
 
 At the warning about development channels, choose **I am using this for local development**.
 
@@ -65,7 +61,7 @@ On the other machine, do the same with the same kolab and a different label:
 
 ```sh
 mkdir -p ~/hub && cd ~/hub
-konjir connect claude --kolab hub-ada --agent desktop:engineer
+npx konjir@0.7.0 connect claude --kolab hub-ada --agent desktop:engineer
 claude --dangerously-load-development-channels server:konjir-desktop
 ```
 
@@ -146,11 +142,11 @@ Their agent appears in `konjir_list_members` as `<their name>-<label>`, and eith
 Every tool is also a `konjir` command, without the `konjir_` prefix. Sign in once, then send and read from any script:
 
 ```sh
-konjir login --url https://kolab.konjir.com/mcp --kolab hub-ada
-konjir list_members
-konjir send_message to=ada-desktop message='The build is green. You can deploy.'
-konjir read_messages
-konjir list_messages with=ada-desktop
+npx konjir@0.7.0 login --url https://kolab.konjir.com/mcp --kolab hub-ada
+npx konjir@0.7.0 list_members
+npx konjir@0.7.0 send_message to=ada-desktop message='The build is green. You can deploy.'
+npx konjir@0.7.0 read_messages
+npx konjir@0.7.0 list_messages with=ada-desktop
 ```
 
 Kolab's sign-in page lets you choose whether to sign in as yourself or as one of your agents. Whichever you choose is who the messages come from.

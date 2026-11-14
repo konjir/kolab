@@ -13,14 +13,15 @@ You need:
 - macOS or Linux: `konjir work` doesn't run on Windows yet
 - Node.js 22.13 or later (the code uses `node:sqlite`, which earlier releases of Node 22 keep behind a flag), git, and `jq`
 
-Get the `konjir` CLI from a checkout of Kolab. `konjir connect claude` sets Claude Code up with the Konjir channel, which runs from a checkout:
+The `konjir` CLI is on npm, and this tutorial runs it with `npx`, pinned to the version it was written for. Make a `konjir` command of it, which you, the agents' shells and the jobs all use:
 
 ```sh
-git clone https://github.com/konjir/kolab ~/kolab
-(cd ~/kolab && npm ci)
+mkdir -p ~/.konjir/bin
+printf '#!/bin/sh\nexec npx -y konjir@0.7.0 "$@"\n' > ~/.konjir/bin/konjir
+chmod +x ~/.konjir/bin/konjir
 ```
 
-The CLI is also on npm (`npx konjir@0.5.0`), but that build is older than this tutorial: it has no channel, no `konjir work` and no setup page, so use the checkout.
+The first run fetches konjir@0.7.0 from npm. It carries the Konjir channel, which `konjir connect claude` sets Claude Code up with, so there is nothing to clone.
 
 ## 1. Make the repository
 
@@ -35,7 +36,7 @@ cat > konjir.sh <<'EOF'
 export ME=ada              # your Konjir name
 export KOLAB=linkly-ada    # your kolab
 export KONJIR_URL=https://kolab.konjir.com/mcp
-export PATH="$HOME/kolab/bin:$PATH"   # konjir, here and in the agents' shells
+export PATH="$HOME/.konjir/bin:$PATH"   # konjir, here and in the agents' shells
 # Where konjir connect keeps each agent's sign-in, one file per agent
 export KJ_AGENTS="${XDG_CONFIG_HOME:-$HOME/.config}/konjir/agents"
 # agent <label>: Claude Code with only that agent's Konjir server, and its channel
@@ -105,7 +106,7 @@ Each agent is signed in, in its own file under /Users/ada/.config/konjir/agents.
 claude --dangerously-load-development-channels server:konjir-spec-writer server:konjir-spec-reviewer server:konjir-architect
 ```
 
-`Set up for ada` names you: if it isn't the name you put in `konjir.sh`, put this one there and load it again. `.mcp.json` now holds one Konjir server per agent, each the Konjir channel bridge, already signed in as its agent: no more pages open when you start them. It names your checkout's absolute path, which is why `.gitignore` keeps it out of git. Running the same command again is safe: it reuses the kolab and the agents, and signs them in afresh.
+`Set up for ada` names you: if it isn't the name you put in `konjir.sh`, put this one there and load it again. `.mcp.json` now holds one Konjir server per agent, each the Konjir channel bridge, already signed in as its agent: no more pages open when you start them. It names paths on this machine, which is why `.gitignore` keeps it out of git. Running the same command again is safe: it reuses the kolab and the agents, and signs them in afresh.
 
 To see the kolab in the web page, open [kolab.konjir.com](https://kolab.konjir.com) and choose **Sign in with GitHub**: you own it, with Admin.
 
@@ -361,7 +362,7 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 - **A deltas draft says `cannot override …: not in parent`.** Deltas apply to the node's latest committed version. A first version that came back with changes requested never committed, so draft the full element list again. If the node has a committed version, the refusal lists its element ids: check the one you gave.
 - **`konjir login` says the sign-in took too long.** It waits 20 minutes for your browser, as long as Kolab's sign-in page lasts. Run it again.
 - **A build job asks a question about the spec instead of building.** Its playbook tells it to ask in Konjir, with `konjir_ask`, rather than guess, so the question reaches the functional layer's inbox as in step 5, and it gives the package back. Answer it on Kolab's page: an open question blocks the work that serves its requirement until it is answered, and then `konjir work` builds it.
-- **`konjir connect` says it has no bridge.** It runs the channel from a checkout. Use `~/kolab/bin/konjir`, or add `--http` for plain HTTP entries that each sign in through `/mcp` in Claude Code, without a channel.
+- **`konjir connect` says it has no bridge, or that the channel runs from a checkout.** That is a konjir older than 0.7.0, which didn't carry the channel. Check `konjir --version`, and that `~/.konjir/bin/konjir` names `konjir@0.7.0`.
 
 ## Clean up
 
