@@ -36,9 +36,10 @@
  *   konjir <verb> [key=value ...]        -> calls konjir_<verb>; values are JSON if they parse
  *   konjir <verb> --json '{"key": ...}'
  *
- * Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token;
- * or, with no token, the sign-in `konjir login` keeps for that URL (W3.4); with neither URL nor
- * token, the one sign-in it keeps, when it keeps exactly one (D106).
+ * Connection: KONJIR_URL and KONJIR_TOKEN, or --url / --token; or, with no token, the sign-in
+ * `konjir login` keeps for that URL (W3.4). With no URL, the project's .konjir.json (API26), else,
+ * with no token either, the one sign-in it keeps, when it keeps exactly one (D106), else this build's
+ * default: the hosted Kolab for the published konjir, the local one for a checkout (API25).
  */
 import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from '@modelcontextprotocol/client';
 import { spawn } from 'node:child_process';
@@ -54,11 +55,13 @@ import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harnes
 import { gitIgnored, startClaude } from './claude.js';
 import { toolsListing, verbHelp } from './verbs.js';
 import { importKolab } from './import.js';
+import { findProject } from './project.js';
 
 export { StoredLogin, agentCredentials, agentCredentialsPath, credentialsPath, keptSignIns, login, logout, setup } from './login.js';
 export { canonicalRemote, checkoutRepository, deliverWork, gitIn, readCheckout, registerRepository, releaseDelivered, taggedCommits, type Git } from './deliver.js';
 export { ALLOWED_TOOLS, Redactor, TOKEN_KINDS, ToolRefusal, deniedTools, feedOnce, formatStatus, guardSettings, harnessCommand, harnessEnv, heartbeatEvery, jobNote, konjirCommand, leaseLeft, markerText, runWork, workStatus, removeKonjirShim, sweepJobs, thisMachine, writeKonjirShim, type JobReport, type Machine, type TakenJob } from './work.js';
 export { guardHook, lineDenial, simpleCommands } from './guard.js';
+export { PROJECT_FILE, findProject, projectText, readProject, type Project } from './project.js';
 export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, unifiedDiff, writeAtomically, type ConnectIO } from './connect.js';
 
 // The server, with NestJS and the database, is imported only by the
@@ -229,9 +232,10 @@ Push:      konjir watch prints your inbox, then a JSON line each time it changes
            answers, marks, review requests and verdicts). konjir watch --once waits for the next change,
            prints it and exits.
 Addresses: kj:[<kolab>/]<node>[@<version>][#<element>][~q({"exact":"words"})]; kj:<node> is a node in your kolab
-Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--agent <agent>] signs in with your browser
+Sign in:   konjir login [--kolab <name>] [--role product|engineer] [--agent <label|agent>] signs in with your browser
            (GitHub, through Kolab): you choose who this CLI works as (an agent of yours, by default; --agent
-           preselects one, and refuses a sign-in as anyone else), the kolab and the role.
+           preselects one, by its label as konjir connect takes it, <you>-<label>, or its full name, and
+           refuses a sign-in as anyone else), the kolab and the role.
            Every later command uses that sign-in, renewing it by itself. konjir logout revokes it; --forget drops
            it here without contacting Kolab.
 Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path]
@@ -249,9 +253,12 @@ Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]
            konjir claude <label> [claude's arguments…] starts one agent's Claude Code session: only its konjir-<label>
            entry and channel (written alone to .claude/konjir-<label>.json), and a system prompt naming the agent, its
            role and kolab. Everything after the label goes to claude.
-Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
-           token, the sign-in konjir login keeps for that URL. With neither URL nor token, the one sign-in konjir
-           keeps, when it keeps exactly one (konjir login and connect still default to the local URL).
+Connection: KONJIR_URL (default ${defaultUrl()}) and KONJIR_TOKEN, or --url / --token; with no
+           token, the sign-in konjir login keeps for that URL. In a project konjir connect set up, or a folder
+           below it, its .konjir.json names the kolab and Kolab's URL (no token): login, repo register, work,
+           status and the verbs take them, and refuse a session in another kolab; --kolab, --url or KONJIR_URL
+           override it. A token goes only to a URL given, or the default. Else, with neither URL nor token, the
+           one sign-in konjir keeps, when it keeps exactly one (konjir login and connect still take the default).
 Version:   konjir --version
 ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T|off] [--public-host kolab.example.com]
         [--no-migrate] [--no-worker] [--quiet]
@@ -402,25 +409,39 @@ export function sessionToken(given: string | undefined, env: Record<string, stri
   return given !== undefined ? given.trim() || undefined : env.KONJIR_TOKEN?.trim() || undefined;
 }
 
-/** Where a command talks to when no URL is given (`--url`, KONJIR_URL): the local Kolab. */
-export const DEFAULT_URL = 'http://127.0.0.1:7420/mcp';
+/** The local Kolab, `konjir serve`'s: the default of a checkout, which can serve (API25). */
+export const LOCAL_URL = 'http://127.0.0.1:7420/mcp';
+/** The hosted Kolab: the default of the published package and the binaries (API25). */
+export const HOSTED_URL = 'https://kolab.konjir.com/mcp';
+
+// The published builds (scripts/package.mjs) define this as HOSTED_URL; a checkout leaves it undefined.
+declare const KONJIR_DEFAULT_URL: string | undefined;
 
 /**
- * The Kolab a command talks to (D106): the URL given (`--url`, else KONJIR_URL), else, with no
- * token and outside a job (KONJIR_JOB), the one sign-in konjir keeps, when it keeps exactly one, for
- * a verb, konjir work or konjir logout (`implicit`: konjir says so on stderr); else the local
- * default. konjir login and connect sign in afresh, and serve serves, so they never take it, nor
- * --version or bare help, which talk to no Kolab.
+ * Where a command talks to when no URL is given (`--url`, KONJIR_URL, a project's .konjir.json): the
+ * Kolab this build names (API25). Read when it is called, so a test can stand in for a published build.
  */
-export function connectionUrl(o: { given?: string; token?: string; cmd?: string; rest?: string[]; job?: string; kept: () => string[] }): { url: string; implicit: boolean } {
+export const defaultUrl = (): string => (typeof KONJIR_DEFAULT_URL === 'string' && KONJIR_DEFAULT_URL ? KONJIR_DEFAULT_URL : LOCAL_URL);
+
+/**
+ * The Kolab a command talks to (D106, API26): the URL given (`--url`, else KONJIR_URL), else the
+ * project's (its .konjir.json, which serve, --version and bare help never take), else, with no
+ * token and outside a job (KONJIR_JOB), the one sign-in konjir keeps, when it keeps exactly one, for
+ * a verb, konjir work or konjir logout (`implicit`: konjir says so on stderr); else this build's
+ * default. konjir login and connect sign in afresh, and serve serves, so they never take a kept
+ * sign-in, nor --version or bare help, which talk to no Kolab.
+ */
+export function connectionUrl(o: { given?: string; project?: string; token?: string; cmd?: string; rest?: string[]; job?: string; kept: () => string[] }): { url: string; implicit: boolean } {
   if (o.given !== undefined) return { url: o.given, implicit: false };
   const local = !o.cmd || o.cmd === '--version' || ((o.cmd === 'help' || o.cmd === '--help') && !o.rest?.[0]);
-  if (o.token || o.job?.trim() || local || ['serve', 'login', 'connect'].includes(o.cmd!)) return { url: DEFAULT_URL, implicit: false };
+  if (o.project !== undefined && !local && o.cmd !== 'serve') return { url: o.project, implicit: false };
+  if (o.token || o.job?.trim() || local || ['serve', 'login', 'connect'].includes(o.cmd!)) return { url: defaultUrl(), implicit: false };
   const kept = o.kept();
-  return kept.length === 1 ? { url: kept[0], implicit: true } : { url: DEFAULT_URL, implicit: false };
+  return kept.length === 1 ? { url: kept[0], implicit: true } : { url: defaultUrl(), implicit: false };
 }
 
-export async function main(argv: string[]) {
+/** `konjir <argv…>`. `io.open` sends konjir login's browser to Kolab: for tests. */
+export async function main(argv: string[], io: { open?: (u: URL) => void | Promise<void> } = {}) {
   // One agent's Claude Code session (W9.1, API24). It talks to no Kolab, and everything after the
   // label is claude's, --url and --token included, so it is taken before konjir reads its own flags.
   if (argv[0] === 'claude') {
@@ -463,12 +484,25 @@ export async function main(argv: string[]) {
   }
   const given = flag(argv, 'url') ?? process.env.KONJIR_URL;
   const token = sessionToken(flag(argv, 'token'));
+  // --kolab names the kolab for any command, as login and connect take it, over the project's.
+  const kolabFlag = flag(argv, 'kolab');
   const [cmd, ...rest] = argv;
-  const { url, implicit } = connectionUrl({ given, token, cmd, rest, job: process.env.KONJIR_JOB, kept: keptSignIns });
+  const job = process.env.KONJIR_JOB?.trim();
+  // The project's .konjir.json (API26), for what isn't given. A job takes everything from its
+  // environment, so it reads none; nor does a command that talks to no Kolab, or serve.
+  const local = !cmd || cmd === '--version' || ((cmd === 'help' || cmd === '--help') && !rest[0]) || cmd === 'serve';
+  const project = job || local || (given !== undefined && kolabFlag !== undefined) ? undefined : findProject(process.cwd());
+  const { url, implicit } = connectionUrl({ given, project: project?.url, token, cmd, rest, job, kept: keptSignIns });
+  // A token goes only where it was told to go, or to this build's own default: never to a URL a
+  // project's file names, which a cloned repository could aim anywhere.
+  if (token && !['login', 'logout', 'connect'].includes(cmd) && given === undefined && project?.url !== undefined && project.url !== defaultUrl()) {
+    throw new Error(`a token is given (KONJIR_TOKEN or --token), but not Kolab's URL, and ${project.path} names ${safeUrl(project.url)}: konjir sends a token only to a URL you give it, so set KONJIR_URL or pass --url`);
+  }
+  const kolab = kolabFlag ?? project?.kolab;
   if (implicit) console.error(`konjir: using ${safeUrl(url)} (the one sign-in kept)`);
   // Inside a Konjir job (W5.4b) konjir works as the job's agent, with KONJIR_TOKEN, and never with a
   // sign-in kept on this machine: the person's is theirs, not the job's.
-  if (process.env.KONJIR_JOB?.trim() && cmd && cmd !== '--version' && !((cmd === 'help' || cmd === '--help') && !rest[0])) {
+  if (job && cmd && cmd !== '--version' && !((cmd === 'help' || cmd === '--help') && !rest[0])) {
     if (['login', 'logout', 'connect', 'serve', 'import'].includes(cmd) || (cmd === 'work' && rest[0] !== 'deliver')) {
       throw new Error(`konjir ${cmd} doesn't run inside a Konjir job (KONJIR_JOB is set): a job works as its agent, with the token it was given`);
     }
@@ -537,7 +571,6 @@ export async function main(argv: string[]) {
   if (cmd === 'connect') {
     const harness = rest.shift();
     if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--url <kolab>]`);
-    const kolab = flag(rest, 'kolab');
     const agents: string[] = [];
     for (let a = flag(rest, 'agent'); a !== undefined; a = flag(rest, 'agent')) agents.push(a);
     const on = (name: string) => { const i = rest.indexOf(`--${name}`); if (i >= 0) rest.splice(i, 1); return i >= 0; };
@@ -554,14 +587,13 @@ export async function main(argv: string[]) {
   }
 
   if (cmd === 'login') {
-    const kolab = flag(rest, 'kolab');
     const role = flag(rest, 'role');
     const agent = flag(rest, 'agent');
     if (role !== undefined && !ROLES.includes(role)) throw new Error(`--role is one of ${ROLES.join(', ')}`);
     if (kolab !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(kolab)) throw new Error('--kolab names a kolab: lowercase letters, digits and -');
-    if (agent !== undefined && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) throw new Error('--agent names an agent of yours, such as ann-product: lowercase letters, digits and -');
+    if (agent !== undefined && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) throw new Error('--agent names an agent of yours, by its label as konjir connect takes it (product, for <you>-product) or its full name: lowercase letters, digits and -');
     const scope = ['konjir', kolab && `kolab:${kolab}`, role && `role:${role}`, agent && `agent:${agent}`].filter(Boolean).join(' ');
-    const me = await loginAs(url, scope, agent);
+    const me = await loginAs(url, scope, agent, { open: io.open });
     console.log(`Signed in to ${url} as ${me.actor}${me.kind === 'agent' ? ` (an agent of ${me.owner}'s)` : ''}, in kolab ${me.kolab} as ${me.role}.`);
     console.log(`Kept in ${credentialsPath()}. konjir uses it with KONJIR_URL or --url set to ${safeUrl(url)}, or with neither while it is the only sign-in kept there. Start with: konjir instructions`);
     return;
@@ -579,8 +611,10 @@ export async function main(argv: string[]) {
   if (!token && !stored!.signedIn) {
     // Several sign-ins kept, none for this URL: named, so the person can choose one.
     const others = keptSignIns().filter((u) => u !== url);
-    throw new Error(`set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser${others.length
-      ? `. konjir keeps no sign-in for ${safeUrl(url)}${given === undefined ? ', the default' : ''}, but keeps ${others.length === 1 ? 'one' : 'sign-ins'} for ${others.map(safeUrl).join(', ')}: set KONJIR_URL, or pass --url, to ${others.length === 1 ? 'it' : 'one of them'}` : ''}`);
+    // It names the URL, and where it came from, before anything is sent anywhere.
+    const whence = given !== undefined ? '' : project?.url !== undefined ? `, which ${project.path} names` : ', the default';
+    throw new Error(`set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser. konjir keeps no sign-in for ${safeUrl(url)}${whence}${others.length
+      ? `, but keeps ${others.length === 1 ? 'one' : 'sign-ins'} for ${others.map(safeUrl).join(', ')}: set KONJIR_URL, or pass --url, to ${others.length === 1 ? 'it' : 'one of them'}` : ''}`);
   }
   let client: Client;
   try {
@@ -598,6 +632,18 @@ export async function main(argv: string[]) {
       throw new Error(`the Kolab server at ${url} refused your token. It may have been revoked or mistyped; ask for a new session token.`);
     }
     throw e;
+  }
+  // The kolab named (--kolab, or the project's): a session works in one kolab, so one signed in to
+  // another is refused before anything runs, rather than act there (API26).
+  if (kolab !== undefined) {
+    let me: { kolab?: unknown };
+    try { me = await call(client, 'whoami') as { kolab?: unknown }; } catch (e) { stored?.releaseLock(); await client.close(); throw e; }
+    if (typeof me.kolab === 'string' && me.kolab !== kolab) {
+      stored?.releaseLock();
+      await client.close();
+      const named = kolabFlag !== undefined ? '--kolab' : project!.path;
+      throw new Error(`${named} names kolab ${kolab}, but this session works in kolab ${me.kolab}${token ? '' : `: run konjir login${kolabFlag !== undefined ? ` --kolab ${kolab}` : ''} to sign in to ${kolab}`}${kolabFlag === undefined ? `, or pass --kolab ${me.kolab}` : ''}`);
+    }
   }
   if (cmd === 'watch') {
     const once = rest.includes('--once');
@@ -815,7 +861,8 @@ export async function loginAs(url: string, scope: string, agent: string | undefi
     } catch (e) {
       throw unreachable(e, url) ?? e;
     }
-    if (agent === undefined || me.actor === agent) return me;
+    // --agent takes a label, as konjir connect does (<you>-<label>), or an agent's full name (API26).
+    if (agent === undefined || me.actor === agent || (me.kind === 'agent' && me.owner && me.actor === `${me.owner}-${agent}`)) return me;
     // --agent: a sign-in as anyone else (chosen otherwise on Kolab's page) is never kept.
     const r = await logout(url, { path: opts.path, forget: true });
     outcomes.push(`try ${tries}: ${me.actor}, ${r.revoked ? 'revoked' : 'forgotten, not revoked'}`);
