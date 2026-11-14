@@ -35,6 +35,8 @@ const doc: WebNodeView = {
   elements: [{ id: 'PR8', parent: null, text: 'At most 3 reset requests per hour.', address: 'kj:password-reset@3#PR8', queries: [], relies_on: [], relied_on_by: [], marks: [], rulings: [], cases: [] }],
   queries: [], queries_next: null, compared_with: null, in_review: [], drafts: [], can_write: true, rulings: [], kolab: 'anns', foreign: false,
 };
+/** Billing's document of the same name. */
+const billingDoc: WebNodeView = { ...doc, kolab: 'billing', elements: [{ ...doc.elements[0], text: 'Billing resets nothing.' }] };
 
 /** Whose session the browser's cookie holds, which a switch Kolab allows changes; null is signed out. */
 let session: WebMe | null;
@@ -45,6 +47,8 @@ let confirms: boolean;
 let methods: WebSignInMethods;
 /** While set, a switch waits for it before Kolab answers. */
 let hold: Promise<void> | undefined;
+/** Every call that isn't a read, as `METHOD path`. */
+let writes: string[];
 
 class FakeEventSource {
   static readonly CONNECTING = 0;
@@ -69,6 +73,7 @@ beforeEach(() => {
   confirms = true;
   methods = GITHUB;
   hold = undefined;
+  writes = [];
   FakeEventSource.all = [];
   switchReply = (kolab) => (kolab === 'billing' ? ok(inBilling) : NO_KOLAB);
   clock.wait = async () => undefined;
@@ -76,11 +81,13 @@ beforeEach(() => {
   (globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
   globalThis.fetch = jest.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url);
+    if (init?.method && init.method !== 'GET') writes.push(`${init.method} ${path}`);
     let r: Reply = ok({});
     if (path === '/api/session/methods') r = ok(methods);
-    else if (path === '/api/session' && init?.method !== 'DELETE') r = ok(session = ann);
+    else if (path === '/api/session' && init?.method === 'DELETE') session = null;
+    else if (path === '/api/session') r = ok(session = ann);
     else if (path === '/api/session/invite') r = ok(invite);
-    else if (path.startsWith('/api/nodes/password-reset')) r = ok(doc);
+    else if (path.startsWith('/api/nodes/password-reset')) r = ok(session?.kolab === 'billing' ? billingDoc : doc);
     else if (path === '/api/session/present') r = ok({ present: !!session });
     else if (path === '/api/me') r = session ? ok(session) : UNAUTHORIZED;
     else if (path === '/api/overview') r = ok(overviewOf(session!));
@@ -110,6 +117,14 @@ async function open(hash: string) {
   await screen.findByText(session ? 'Working as' : 'Sign in to Kolab');
 }
 const kolabShown = () => document.querySelector('.kolab-btn .nm')?.textContent;
+/** Long enough for anything the page would still do by itself to have been done. */
+const idle = () => act(async () => { await new Promise((r) => { setTimeout(r, 60); }); });
+/** A switch Kolab holds until released. */
+function held() {
+  let release = () => undefined as void;
+  hold = new Promise<void>((r) => { release = r; });
+  return () => { hold = undefined; release(); };
+}
 /** The place the rail marks as shown. */
 const current = () => document.querySelector('.rail [aria-current="page"]')?.textContent;
 
@@ -175,8 +190,11 @@ test.each([
   switchReply = () => refusal;
   await open('#/k/nowhere/connect');
   expect((await screen.findByRole('status')).textContent).toBe('There’s no kolab nowhere you can reach. You’re still in anns.');
-  expect(switches).toStrictEqual([{ kolab: 'nowhere', role: 'product' }]);
   await waitFor(() => expect(location.hash).toBe('#/k/anns'));
+  // Asked of Kolab once: a refusal isn't tried again.
+  await idle();
+  expect(switches).toStrictEqual([{ kolab: 'nowhere', role: 'product' }]);
+  expect(location.hash).toBe('#/k/anns');
   expect(kolabShown()).toBe('Ann’s');
   expect(current()).toBeUndefined();
 });
@@ -249,7 +267,7 @@ test('declining a move to another kolab leaves the page as it was, its draft inc
   expect(switches).toStrictEqual([]);
 });
 
-test('going back to another kolab\'s entry and declining, or being refused, returns by the history: every entry stays as it was', async () => {
+test('a move to another kolab that is declined, refused, or met with a 401 writes the address back in place, and asks Kolab nothing more', async () => {
   await open('#/k/anns/connect');
   fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
   fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
@@ -259,31 +277,125 @@ test('going back to another kolab\'s entry and declining, or being refused, retu
   await waitFor(() => expect(current()).toBe('Your sessions'));
   const entries = history.length;
 
-  // Back twice, to Ann's entry: declined.
+  // Back twice, to Ann's entry: declined. That entry now holds this place; nothing is traversed.
   confirms = false;
   history.go(-2);
   await waitFor(() => expect(asked).toHaveLength(2));
   await waitFor(() => expect(location.hash).toBe('#/k/billing/sessions'));
+  await idle();
+  expect(asked).toHaveLength(2);
   expect(current()).toBe('Your sessions');
-  // Again, agreed, and Kolab refuses.
+  expect(switches).toHaveLength(1);
+
+  // A link to a kolab Kolab won't open: asked of Kolab once.
   confirms = true;
   switchReply = () => NO_KOLAB;
-  history.go(-2);
-  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('There’s no kolab anns you can reach. You’re still in billing.'));
+  location.hash = '#/k/nowhere/connect';
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('There’s no kolab nowhere you can reach. You’re still in billing.'));
   await waitFor(() => expect(location.hash).toBe('#/k/billing/sessions'));
-  await waitFor(() => expect(current()).toBe('Your sessions'));
+  await idle();
+  expect(switches.map((x) => x.kolab)).toStrictEqual(['billing', 'nowhere']);
+  expect(current()).toBe('Your sessions');
   expect(kolabShown()).toBe('Billing');
 
-  // The entries are the three they were: back once is Billing's home, and once more Ann's page.
-  expect(history.length).toBe(entries);
-  history.back();
-  await waitFor(() => expect(location.hash).toBe('#/k/billing'));
-  switchReply = () => ok(ann);
-  history.back();
-  await waitFor(() => expect(kolabShown()).toBe('Ann’s'));
-  expect(location.hash).toBe('#/k/anns/connect');
-  expect(current()).toBe('Connect a harness');
+  // A 401 from a session that lives: said, and not tried again by the page.
+  switchReply = () => UNAUTHORIZED;
+  location.hash = '#/k/third/connect';
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('That didn’t go through while Kolab reconnected: try it again.'));
+  await waitFor(() => expect(location.hash).toBe('#/k/billing/sessions'));
+  await idle();
+  expect(switches.map((x) => x.kolab)).toStrictEqual(['billing', 'nowhere', 'third']);
   expect(asked).toHaveLength(4);
+  expect(history.length).toBeGreaterThanOrEqual(entries);
+});
+
+test('going back to an entry made on the way through another kolab, and declining, asks once and no more', async () => {
+  switchReply = (kolab) => ok({ ...ann, kolab });
+  await open('#/k/anns/connect');
+  const release = held();
+  location.hash = '#/k/billing/sessions';
+  await waitFor(() => expect(switches).toHaveLength(1));
+  location.hash = '#/k/third/connect';
+  await waitFor(() => expect(asked).toHaveLength(2));
+  release();
+  await waitFor(() => expect(kolabShown()).toBe('Third'));
+  await waitFor(() => expect(location.hash).toBe('#/k/third/connect'));
+
+  confirms = false;
+  history.back();
+  await waitFor(() => expect(asked).toHaveLength(3));
+  await waitFor(() => expect(location.hash).toBe('#/k/third/connect'));
+  await idle();
+  expect(asked).toHaveLength(3);
+  expect(switches.map((x) => x.kolab)).toStrictEqual(['billing', 'third']);
+  expect(kolabShown()).toBe('Third');
+  expect(current()).toBe('Connect a harness');
+});
+
+test('a switch under way finishes: going back to your own kolab meanwhile still ends in the other, and the address says so', async () => {
+  await open('#/k/anns/connect');
+  fireEvent.click(screen.getByRole('button', { name: 'Your sessions' }));
+  await waitFor(() => expect(location.hash).toBe('#/k/anns/sessions'));
+  const release = held();
+  location.hash = '#/k/billing/connect';
+  await waitFor(() => expect(switches).toHaveLength(1));
+  history.back();
+  await waitFor(() => expect(location.hash).toBe('#/k/anns/sessions'));
+  release();
+  await waitFor(() => expect(kolabShown()).toBe('Billing'));
+  await waitFor(() => expect(location.hash).toBe('#/k/billing/sessions'));
+  await idle();
+  expect(current()).toBe('Your sessions');
+  expect(switches).toStrictEqual([{ kolab: 'billing', role: 'product' }]);
+  expect(asked).toHaveLength(1);
+});
+
+test('a page that follows its session to another kolab starts afresh there: the draft is gone, and nothing of it can be submitted', async () => {
+  await open('#/k/anns/node/password-reset');
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit PR8' }));
+  fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
+  expect(screen.getByText(/1 change to kj:password-reset/)).toBeTruthy();
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  session = inBilling;
+  act(() => FakeEventSource.last.send({ type: 'ended' }));
+  await waitFor(() => expect(kolabShown()).toBe('Billing'));
+  // Billing's document of that name, as it is committed there.
+  expect(await screen.findByText('Billing resets nothing.')).toBeTruthy();
+  expect(location.hash).toBe('#/k/billing/node/password-reset');
+  expect(screen.queryByText(/1 change to kj:password-reset/)).toBeNull();
+  expect(screen.queryByText('At most 2 reset requests per hour.')).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Submit/ })).toBeNull();
+  expect(writes).toStrictEqual([]);
+});
+
+test('the page\'s own sign-out ends on Signed out, whatever the stream says of the session after', async () => {
+  await open('#/k/anns/connect');
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  const stream = FakeEventSource.last;
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  act(() => stream.send({ type: 'ended' }));
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  await idle();
+  expect(screen.getByRole('alert').textContent).toBe('Signed out. Your session has ended.');
+});
+
+test('a switch this page asked for is never told as another tab\'s, though the stream says the session ended before Kolab answers', async () => {
+  await open('#/k/anns/connect');
+  await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+  const release = held();
+  fireEvent.click(screen.getByRole('button', { name: /Switch kolab/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Billing/ }));
+  await waitFor(() => expect(switches).toHaveLength(1));
+  // Kolab has made the switch, and its answer is still on its way.
+  session = inBilling;
+  act(() => FakeEventSource.last.send({ type: 'ended' }));
+  await idle();
+  expect(screen.queryByText(/another tab/)).toBeNull();
+  release();
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Working in billing as product'));
+  expect(location.hash).toBe('#/k/billing');
+  expect(switches).toHaveLength(1);
 });
 
 test('two addresses in other kolabs, one set before the first switch returns: each is asked once, switched to once, and the later is where the page ends', async () => {
@@ -345,6 +457,8 @@ test('a 401 in the middle of a switch is checked: a session that lives says to t
   expect((await screen.findByRole('status')).textContent).toBe('That didn’t go through while Kolab reconnected: try it again.');
   await waitFor(() => expect(location.hash).toBe('#/k/anns'));
   expect(kolabShown()).toBe('Ann’s');
+  // It is the person who tries again, never the page.
+  await idle();
   expect(switches).toHaveLength(1);
 });
 
