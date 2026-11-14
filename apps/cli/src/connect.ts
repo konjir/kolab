@@ -18,12 +18,12 @@
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsoncError, commentsOf, member, parseTree, tokens, valueOf, type JsonNode } from './jsonc.js';
-import { agentCredentials, agentCredentialsPath, keepSignIn, revokeIssued, type SetupDone } from './login.js';
+import { agentCredentials, agentCredentialsPath, credentialsPath, keepSignIn, revokeIssued, type SetupDone } from './login.js';
 
 export const HARNESSES = ['opencode', 'claude'] as const;
 export type Harness = typeof HARNESSES[number];
@@ -103,35 +103,57 @@ export const CONNECT_CLIENT_NAME = 'konjir connect';
 declare const KONJIR_VERSION: string | undefined;
 
 /** How this konjir runs, for publishedKonjir: `process`, and the version its build defined. Tests give others. */
-export interface Running { version?: string; bun?: string; execPath: string; script?: string; platform: NodeJS.Platform }
-const running = (): Running => ({
-  version: typeof KONJIR_VERSION === 'string' ? KONJIR_VERSION : undefined,
-  bun: process.versions.bun, execPath: process.execPath, script: process.argv[1], platform: process.platform,
-});
+export interface Running { version?: string; execPath: string; script?: string }
+const running = (): Running => ({ version: typeof KONJIR_VERSION === 'string' ? KONJIR_VERSION : undefined, execPath: process.execPath, script: process.argv[1] });
+
+/** A folder a package runner installs into for one run and clears by itself: npx's, pnpm's and yarn's dlx, bunx's. */
+const RUN_ONCE = /^(_npx|dlx|dlx-.+|bunx-.+)$/;
 
 /**
  * The published konjir this is (W9.5, API29), or undefined when it isn't one (a checkout, whose
  * build defines no version): how Claude Code starts the bridge it carries, `konjir bridge`, and how
  * a person runs it again (`self`).
  *
- *   a binary            itself: its own path, `bridge`
- *   run by npx          `npx -y konjir@<its exact version> bridge`: npx's cache is npm's to clear, so
- *                       no path into it is written; on Windows through `cmd /c`, as Claude Code
- *                       needs for npx there
- *   installed from npm  this node, and konjir.mjs where it is installed, `bridge`
+ *   a binary                   itself: its own path, `bridge`
+ *   installed from npm         the node (or bun) running it, and konjir.mjs where it is installed, `bridge`
+ *   run by npx, or a dlx       the same, on a copy of konjir.mjs that konjir keeps in its own config
+ *                              folder (`keep`: made once the setup is allowed), since the runner's
+ *                              cache is cleared under it. Never `npx konjir bridge`: Claude Code
+ *                              starts the bridge in the project, where npx would run a konjir the
+ *                              project's own node_modules held
  */
-export function publishedKonjir(r: Running = running()): { bridge: Bridge; self: string } | undefined {
+export function publishedKonjir(r: Running = running(), env: Record<string, string | undefined> = process.env): { bridge: Bridge; self: string; keep?: { from: string; to: string } } | undefined {
   if (!r.version) return undefined;
-  // A binary's script is inside the executable (Bun's own file system); under node it is konjir.mjs.
+  // A binary's script is inside the executable (Bun's own file system); otherwise it is konjir.mjs, on disk.
   const script = r.script && !r.script.startsWith('/$bunfs') && !/^[A-Z]:\\~BUN\\/.test(r.script) ? r.script : undefined;
-  if (r.bun || !script) return { bridge: { command: r.execPath, args: ['bridge'] }, self: 'konjir' };
+  if (!script) return { bridge: { command: r.execPath, args: ['bridge'] }, self: 'konjir' };
   let real = script;
   try { real = realpathSync(script); } catch { /* as given */ }
-  if (real.split(/[\\/]/).includes('_npx')) {
-    const npx = ['npx', '-y', `konjir@${r.version}`, 'bridge'];
-    return { bridge: r.platform === 'win32' ? { command: 'cmd', args: ['/c', ...npx] } : { command: npx[0], args: npx.slice(1) }, self: `npx konjir@${r.version}` };
+  if (real.split(/[\\/]/).some((part) => RUN_ONCE.test(part))) {
+    const to = join(dirname(credentialsPath(env)), 'bridge', `konjir-${r.version}.mjs`);
+    return { bridge: { command: r.execPath, args: [to, 'bridge'] }, self: `npx konjir@${r.version}`, keep: { from: real, to } };
   }
   return { bridge: { command: r.execPath, args: [real, 'bridge'] }, self: 'konjir' };
+}
+
+/**
+ * Keeps a copy of this konjir.mjs where its entries run it from (publishedKonjir's `keep`):
+ * `bridge/` beside konjir's credentials, a folder of konjir's own as `agents/` is, so 0700, and
+ * refused if it is a symbolic link or someone else's. One already there with the same bytes is left.
+ */
+export function keepKonjir(keep: { from: string; to: string }) {
+  const dir = dirname(keep.to);
+  mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as { code?: string }).code !== 'EEXIST') throw e; }
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} isn't a folder of konjir's (it is a symbolic link, or not a folder), so konjir won't keep its bridge there: remove it`);
+  if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} belongs to someone else, so konjir won't keep its bridge there: remove it`);
+  if ((st.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  const bytes = readFileSync(keep.from);
+  try { if (!lstatSync(keep.to).isSymbolicLink() && readFileSync(keep.to).equals(bytes)) return; } catch { /* not there yet */ }
+  const tmp = join(dir, `.${basename(keep.to)}.${randomBytes(6).toString('hex')}.tmp`);
+  writeFileSync(tmp, bytes, { mode: 0o755, flag: 'wx' });
+  try { renameSync(tmp, keep.to); } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
 }
 
 /**
@@ -608,6 +630,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     // Each agent's subagent (--subagents): one already there that says anything else is refused, as an entry is.
     const agents: FileChange[] = !opts.subagents ? [] : entries.map((e) => {
       const path = join(claudeAgentsDir(opts), `${e.label}.md`);
+      refuseLinkedSubagent(path, opts.global ? dirname(dirname(path)) : opts.cwd);
       const before = readText(path);
       return { path, before, after: subagentFile(e), exists: existsSync(path) };
     });
@@ -643,8 +666,8 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     for (const c of draft.commands) io.log(`  ${c.map(shellWord).join(' ')}`);
   }
   for (const a of draft.agents) {
-    if (linkTarget(a.path)) throw new Error(`${a.path} is a link; konjir connect won't write a subagent through it. Remove the link, then run konjir connect again`);
-    io.log(a.before === a.after ? `${a.path} already says exactly this.` : opts.dryRun ? unifiedDiff(a.path, a.before, a.after, a.exists) : `Will write ${a.path}: the subagent ${basename(a.path, '.md')}, with only its entry's tools.`);
+    // A new file in one line; the diff for one that is there already (--force replaces it), or with --dry-run.
+    io.log(a.before === a.after ? `${a.path} already says exactly this.` : a.exists || opts.dryRun ? unifiedDiff(a.path, a.before, a.after, a.exists) : `Will write ${a.path}: the subagent ${basename(a.path, '.md')}, with only its entry's tools.`);
   }
   io.log('');
   if (opts.dryRun) {
@@ -676,6 +699,10 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   // that Kolab set up exactly what was asked, and that the config file hasn't changed meanwhile.
   let plan: ReturnType<typeof planFor>;
   try {
+    // Kolab's names go into the config and each subagent's file: only a name Kolab's grammar allows does.
+    for (const name of [done.person, ...done.agents.map((a) => a.agent)]) {
+      if (typeof name !== 'string' || !KOLAB.test(name) || name.length > 100) throw new Error('Kolab named a person or an agent in a way no name is written, so nothing is written');
+    }
     plan = planFor(done.person);
     if (done.kolab.id !== kolab || done.agents.length !== plan.entries.length || done.agents.some((a, k) => a.agent !== plan.entries[k].agent || a.role !== plan.entries[k].role || (mint && !a.tokens))) {
       throw new Error('Kolab set up something other than konjir connect asked for, so nothing is written');
@@ -694,6 +721,13 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
         kept++;
       }
     }
+    // What the entries name is there before they are: the bridge konjir keeps, and each subagent.
+    if (channel && !opts.bridge && !bridgeCommand() && published?.keep) keepKonjir(published.keep);
+    for (const a of plan.agents) {
+      if (a.after === a.before) { io.log(`${a.path} already says this; left as it is.`); continue; }
+      writeAtomically(a.path, a.after, { within: opts.global ? dirname(dirname(a.path)) : opts.cwd });
+      io.log(`Wrote ${a.path}.`);
+    }
     if (plan.change) {
       if (plan.change.after === plan.change.before) io.log(`${plan.change.path} already says this; left as it is.`);
       else {
@@ -705,11 +739,6 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
         if (await io.run(c[0], c.slice(1), { cwd: opts.cwd }) !== 0) throw new Error(`${c.slice(0, 3).join(' ')} didn't succeed${c[0] === 'claude' ? ' (is Claude Code installed, and claude on your PATH?)' : ''}`);
       }
       io.log('Claude Code has them in your user settings. They hold no token.');
-    }
-    for (const a of plan.agents) {
-      if (a.after === a.before) { io.log(`${a.path} already says this; left as it is.`); continue; }
-      writeAtomically(a.path, a.after, { within: opts.global ? dirname(dirname(a.path)) : opts.cwd });
-      io.log(`Wrote ${a.path}.`);
     }
   } catch (e) { return failed(e); }
 
@@ -754,6 +783,26 @@ function personIn(path: string, agents: AgentSpec[], url: string): string | unde
     if (typeof agent === 'string' && agent.endsWith(`-${a.label}`) && /^[a-z0-9][a-z0-9-]*$/.test(agent)) return agent.slice(0, -`-${a.label}`.length);
   }
   return undefined;
+}
+
+/**
+ * Refuses a subagent's file konjir connect would write outside `root` (the project, or with
+ * --global Claude Code's own folder): one that is a link, or whose folder, as far as it exists yet,
+ * really is somewhere else (`.claude` or `.claude/agents` linked away). Checked with the plan,
+ * before the file is read or any browser opens, so nothing is made, read or left behind out there.
+ */
+function refuseLinkedSubagent(path: string, root: string) {
+  if (linkTarget(path)) throw new Error(`${path} is a link; konjir connect won't write a subagent through it. Remove the link, then run konjir connect again`);
+  // Each as it really is, as far as it exists yet: what is still to be made is made where it says.
+  const really = (p: string): string => {
+    const rest: string[] = [];
+    let dir = p;
+    while (!existsSync(dir) && dirname(dir) !== dir) { rest.unshift(basename(dir)); dir = dirname(dir); }
+    return join(realpathSync(dir), ...rest);
+  };
+  let real: string, within: string;
+  try { real = really(dirname(path)); within = really(root); } catch { throw new Error(`${dirname(path)} can't be read, so konjir connect won't write a subagent there`); }
+  if (real !== within && !real.startsWith(within.endsWith(sep) ? within : within + sep)) throw new Error(`${dirname(path)} leads to ${real}, outside ${root}; konjir connect won't write a subagent there. Remove the link, then run konjir connect again`);
 }
 
 /** Where a link at `path` leads, if `path` is one: `real` is the file it reaches, if that is there. */
