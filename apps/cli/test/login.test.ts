@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
-import { DEFAULT_URL, StoredLogin, call, connect, connectionUrl, credentialsPath, login, logout, main } from '../src/cli.js';
+import { DEFAULT_URL, KONJIR_KOLAB_URL, StoredLogin, call, connect, connectionUrl, credentialsPath, login, logout, main } from '../src/cli.js';
 import { closeAtEnd, els, openKolab, rejection } from '@konjir/engine/testing';
 import { FileLock, SIGN_IN_WAIT_MS } from '../src/login.js';
 
@@ -169,7 +169,11 @@ test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; wit
   // default; with a token, or inside a job, never; a URL given always wins.
   const one = () => [server.url];
   for (const cmd of ['whoami', 'list_agents', 'work', 'logout']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: server.url, implicit: true });
-  for (const cmd of ['login', 'connect', 'serve', '--version', 'help']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
+  for (const cmd of ['login', 'serve', '--version', 'help']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
+  // konjir connect sets up at Konjir's own Kolab unless a URL is given, whatever sign-in or token there is.
+  expect(KONJIR_KOLAB_URL).toBe('https://kolab.konjir.com/mcp');
+  for (const o of [{}, { token: 'kjs_x' }, { kept: () => [] }]) expect(connectionUrl({ cmd: 'connect', kept: one, ...o })).toStrictEqual({ url: KONJIR_KOLAB_URL, implicit: false });
+  expect(connectionUrl({ cmd: 'connect', given: server.url, kept: one })).toStrictEqual({ url: server.url, implicit: false });
   expect(connectionUrl({ cmd: 'help', rest: ['whoami'], kept: one })).toStrictEqual({ url: server.url, implicit: true });
   expect(connectionUrl({ cmd: 'whoami', token: 'kjs_x', kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });
   expect(connectionUrl({ cmd: 'whoami', job: '01JOB', kept: one })).toStrictEqual({ url: DEFAULT_URL, implicit: false });

@@ -251,7 +251,8 @@ Harnesses: konjir connect opencode|claude --kolab <k> [--agent <label>[:<role>]]
            role and kolab. Everything after the label goes to claude.
 Connection: KONJIR_URL (default http://127.0.0.1:7420/mcp) and KONJIR_TOKEN, or --url / --token; with no
            token, the sign-in konjir login keeps for that URL. With neither URL nor token, the one sign-in konjir
-           keeps, when it keeps exactly one (konjir login and connect still default to the local URL).
+           keeps, when it keeps exactly one (konjir login still defaults to the local URL; konjir connect
+           sets up at https://kolab.konjir.com/mcp unless a URL is given).
 Version:   konjir --version
 ${canServe ? `Server: konjir serve [--port 7420] [--data .konjir | --database-url postgres://…] [--admin-token T|off] [--public-host kolab.example.com]
         [--no-migrate] [--no-worker] [--quiet]
@@ -404,18 +405,22 @@ export function sessionToken(given: string | undefined, env: Record<string, stri
 
 /** Where a command talks to when no URL is given (`--url`, KONJIR_URL): the local Kolab. */
 export const DEFAULT_URL = 'http://127.0.0.1:7420/mcp';
+/** Where `konjir connect` sets up when no URL is given (Lee's instruction of 2026-11-14): Konjir's own Kolab. */
+export const KONJIR_KOLAB_URL = 'https://kolab.konjir.com/mcp';
 
 /**
  * The Kolab a command talks to (D106): the URL given (`--url`, else KONJIR_URL), else, with no
  * token and outside a job (KONJIR_JOB), the one sign-in konjir keeps, when it keeps exactly one, for
  * a verb, konjir work or konjir logout (`implicit`: konjir says so on stderr); else the local
  * default. konjir login and connect sign in afresh, and serve serves, so they never take it, nor
- * --version or bare help, which talk to no Kolab.
+ * --version or bare help, which talk to no Kolab. konjir connect, with no URL given, sets up at
+ * Konjir's own Kolab, whatever the token or job (it uses neither, and refuses to run in a job).
  */
 export function connectionUrl(o: { given?: string; token?: string; cmd?: string; rest?: string[]; job?: string; kept: () => string[] }): { url: string; implicit: boolean } {
   if (o.given !== undefined) return { url: o.given, implicit: false };
+  if (o.cmd === 'connect') return { url: KONJIR_KOLAB_URL, implicit: false };
   const local = !o.cmd || o.cmd === '--version' || ((o.cmd === 'help' || o.cmd === '--help') && !o.rest?.[0]);
-  if (o.token || o.job?.trim() || local || ['serve', 'login', 'connect'].includes(o.cmd!)) return { url: DEFAULT_URL, implicit: false };
+  if (o.token || o.job?.trim() || local || ['serve', 'login'].includes(o.cmd!)) return { url: DEFAULT_URL, implicit: false };
   const kept = o.kept();
   return kept.length === 1 ? { url: kept[0], implicit: true } : { url: DEFAULT_URL, implicit: false };
 }
@@ -536,7 +541,7 @@ export async function main(argv: string[]) {
 
   if (cmd === 'connect') {
     const harness = rest.shift();
-    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--url <kolab>]`);
+    if (!HARNESSES.includes(harness as Harness)) throw new Error(`konjir connect ${HARNESSES.join('|')} --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path] [--dry-run] [--no-auth] [--http] [--url <kolab>, by default https://kolab.konjir.com/mcp]`);
     const kolab = flag(rest, 'kolab');
     const agents: string[] = [];
     for (let a = flag(rest, 'agent'); a !== undefined; a = flag(rest, 'agent')) agents.push(a);

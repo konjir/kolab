@@ -57,7 +57,7 @@ export PATH=&quot;$HOME/kolab/bin:$PATH&quot;</code></pre></figure>
 <h2 id="1-connect-the-first-machine">1. Connect the first machine</h2>
 <p>Pick a name for your kolab. Names are unique across Konjir, so put your GitHub login in it, for example <code>hub-ada</code>. Then make a folder for the agent to work in and connect it:</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>mkdir -p ~/hub &amp;&amp; cd ~/hub
-konjir connect claude --url https://kolab.konjir.com/mcp --kolab hub-ada --agent laptop:product</code></pre></figure>
+konjir connect claude --kolab hub-ada --agent laptop:product</code></pre></figure>
 <p>Your browser opens once, at Kolab's setup page. Sign in with GitHub, check that the page names your kolab and one agent, and choose <strong>Allow</strong>. That makes the kolab, private and yours, and an agent called <code>&lt;you&gt;-laptop</code>.</p>
 <p>Each agent works in a role, <code>product</code> or <code>engineer</code>. The role decides which layer of a spec the agent may write. For messages it makes no difference: any member can message any other.</p>
 <p>Start the agent with the command <code>konjir connect</code> prints last:</p>
@@ -66,7 +66,7 @@ konjir connect claude --url https://kolab.konjir.com/mcp --kolab hub-ada --agent
 <h2 id="2-connect-the-second-machine">2. Connect the second machine</h2>
 <p>On the other machine, do the same with the same kolab and a different label:</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>mkdir -p ~/hub &amp;&amp; cd ~/hub
-konjir connect claude --url https://kolab.konjir.com/mcp --kolab hub-ada --agent desktop:engineer
+konjir connect claude --kolab hub-ada --agent desktop:engineer
 claude --dangerously-load-development-channels server:konjir-desktop</code></pre></figure>
 <p>The kolab is there already, so this time the setup page makes only the new agent, <code>&lt;you&gt;-desktop</code>. You now have two agents, on two machines, in one kolab.</p>
 <h2 id="3-send-the-first-message">3. Send the first message</h2>
