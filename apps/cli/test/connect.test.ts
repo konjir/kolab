@@ -6,7 +6,7 @@
 // OpenCode's McpOAuthProvider drives it, with the entry's oauth.scope as its client metadata's
 // scope; the person's "browser" follows Kolab's redirects with its cookies and clicks Allow on the
 // page as it arrives, preselected.
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -19,7 +19,7 @@ import { StoredLogin, agentCredentialsPath, call, connect, login, loginAs, main,
 import { parse as ocParse, type ParseError } from 'jsonc-parser';
 import { commentsOf, parseTree, valueOf } from '../src/jsonc.js';
 import { claudeSession, startClaude, systemPrompt } from '../src/claude.js';
-import { MAX_CONFIG_BYTES, bridgeCommand, claudeBridgeEntry, connectHarness, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
+import { MAX_CONFIG_BYTES, bridgeCommand, claudeBridgeEntry, connectHarness, publishedKonjir, subagentFile, mcpUrl, mergeClaude, mergeOpencode, opencodeEntry, parseAgents, unifiedDiff, writeAtomically, type ConnectIO, type ConnectOptions, type Entry } from '../src/connect.js';
 
 const URL_ = 'https://kolab.example/mcp';
 const entry = (label: string, role: 'product' | 'engineer', over: Partial<Entry> = {}): Entry =>
@@ -514,9 +514,9 @@ test('W3.8: konjir connect claude, five agents in one go: one page, each agent s
   expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-writer', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:m5-check role:product agent:ann-writer' } })]]);
   expect(g.lines.join('\n')).toContain('Each entry signs in by itself in your browser when Claude Code first starts it');
 
-  // From a konjir with no checkout beside it (the published package), the channel can't be set up: --http can.
+  // A konjir that is neither a checkout's nor the published one has no bridge to name: --http still works.
   expect(await rejection(connectHarness(options(server, scratch(), { harness: 'claude', bridge: '' }), world(server, idp, async () => 0))))
-    .toMatch(/runs from a checkout of github.com\/konjir\/kolab, and this konjir isn't running from one.*or pass --http/);
+    .toMatch(/which the published konjir carries and a checkout of github.com\/konjir\/kolab runs from its own source, and this konjir is neither.*or pass --http/);
   expect(await rejection(connectHarness(options(server, scratch(), { http: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
 });
 
@@ -715,6 +715,100 @@ test('W3.8: the bridge is found only in the checkout this konjir runs from; a ko
   writeFileSync(join(hostile, 'lib', 'node_modules', 'konjir', 'dist', 'konjir.mjs'), '');
   expect(bridgeCommand(pathToFileURL(join(hostile, 'lib', 'node_modules', 'konjir', 'dist', 'konjir.mjs')).href)).toBeUndefined();
   expect(bridgeCommand('file:///$bunfs/root/konjir')).toBeUndefined();
+});
+
+test('W9.5: the published konjir names the bridge it carries, konjir bridge: a binary by its own path, an installed package by node and its konjir.mjs, and one run by npx by its exact version', () => {
+  // A checkout's build defines no version: it isn't the published konjir, and runs its own bridge.
+  expect(publishedKonjir()).toBeUndefined();
+  expect(publishedKonjir({ execPath: '/usr/bin/node', script: '/x/konjir.mjs', platform: 'linux' })).toBeUndefined();
+  // A binary: its script is inside the executable.
+  expect(publishedKonjir({ version: '0.7.0', bun: '1.3.8', execPath: '/usr/local/bin/konjir', script: '/$bunfs/root/konjir', platform: 'linux' }))
+    .toStrictEqual({ bridge: { command: '/usr/local/bin/konjir', args: ['bridge'] }, self: 'konjir' });
+  expect(publishedKonjir({ version: '0.7.0', bun: '1.3.8', execPath: 'C:\\tools\\konjir.exe', script: 'B:\\~BUN\\root\\konjir.exe', platform: 'win32' }))
+    .toStrictEqual({ bridge: { command: 'C:\\tools\\konjir.exe', args: ['bridge'] }, self: 'konjir' });
+  // Installed from npm: this node, and konjir.mjs where it really is, whatever link started it.
+  const prefix = realpathSync(scratch());
+  mkdirSync(join(prefix, 'lib', 'node_modules', 'konjir'), { recursive: true });
+  mkdirSync(join(prefix, 'bin'));
+  const installed = join(prefix, 'lib', 'node_modules', 'konjir', 'konjir.mjs');
+  writeFileSync(installed, '');
+  symlinkSync(installed, join(prefix, 'bin', 'konjir'));
+  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, 'bin', 'konjir'), platform: 'linux' }))
+    .toStrictEqual({ bridge: { command: '/usr/bin/node', args: [installed, 'bridge'] }, self: 'konjir' });
+  // Run by npx: no path into its cache, which npm clears; the exact version instead, and cmd /c on Windows.
+  const cached = join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir');
+  mkdirSync(cached, { recursive: true });
+  writeFileSync(join(cached, 'konjir.mjs'), '');
+  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(cached, 'konjir.mjs'), platform: 'darwin' }))
+    .toStrictEqual({ bridge: { command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'] }, self: 'npx konjir@0.7.0' });
+  expect(publishedKonjir({ version: '0.7.0', execPath: 'C:\\node\\node.exe', script: 'C:\\Users\\ann\\AppData\\Local\\npm-cache\\_npx\\0a1b2c\\node_modules\\konjir\\konjir.mjs', platform: 'win32' }))
+    .toStrictEqual({ bridge: { command: 'cmd', args: ['/c', 'npx', '-y', 'konjir@0.7.0', 'bridge'] }, self: 'npx konjir@0.7.0' });
+
+  // The entry Claude Code is given names that command and its arguments.
+  const e: Entry = { name: 'konjir-pm', agent: 'ann-pm', label: 'pm', role: 'product', kolab: 'anns', url: 'https://kolab.example.com/mcp' };
+  expect(claudeBridgeEntry(e, { command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'] })).toStrictEqual({
+    type: 'stdio', command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'],
+    env: { KONJIR_URL: 'https://kolab.example.com/mcp', KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-pm', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm' },
+  });
+});
+
+test('W9.5: from the published konjir, konjir connect claude writes entries that run konjir bridge, and ends with how to run it again; --subagents writes one subagent per agent with only its entry\'s tools', async () => {
+  const { idp, server } = await local();
+  const project = realpathSync(scratch());
+  const env = { KONJIR_CREDENTIALS: join(scratch(), 'credentials.json'), HOME: scratch() };
+  const bridge = { command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'] };
+  const opts = (over: Partial<ConnectOptions> = {}) => options(server, project, { harness: 'claude', bridge, self: 'npx konjir@0.7.0', subagents: true, agents: parseAgents(['writer:product', 'builder:engineer']), env, ...over });
+
+  // The plan names the subagents before any browser opens; a dry run writes none.
+  const dry = world(server, idp, async () => 0);
+  await connectHarness(opts({ dryRun: true }), dry);
+  expect(dry.lines.join('\n')).toContain(`+++ ${join(project, '.claude', 'agents', 'writer.md')}`);
+  expect(existsSync(join(project, '.claude'))).toBe(false);
+
+  const io = world(server, idp, async () => 0);
+  await connectHarness(opts(), io);
+  const servers = JSON.parse(readFileSync(join(project, '.mcp.json'), 'utf8')).mcpServers;
+  expect(servers['konjir-writer']).toStrictEqual({ type: 'stdio', command: 'npx', args: ['-y', 'konjir@0.7.0', 'bridge'],
+    env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-writer' } });
+  expect(servers['konjir-builder'].args).toStrictEqual(['-y', 'konjir@0.7.0', 'bridge']);
+  // Run by npx, the entries name no path of this machine's, and the last lines say how to run konjir again.
+  expect(io.lines.join('\n')).not.toContain('name this machine\'s paths');
+  expect(io.lines.slice(-2)).toStrictEqual(['npx konjir@0.7.0 claude writer', 'npx konjir@0.7.0 claude builder']);
+
+  // One subagent per agent: its name the label, its tools its own entry's alone, its prompt konjir claude's.
+  const writer = readFileSync(join(project, '.claude', 'agents', 'writer.md'), 'utf8');
+  expect(writer).toBe([
+    '---', 'name: writer',
+    'description: Works in Konjir as ann-writer, in the product role in kolab anns. Give it that agent\'s Konjir work.',
+    'tools: mcp__konjir-writer__*', '---', '',
+    'You are ann-writer, an agent working in Konjir kolab anns in the product role, through the konjir-writer tools. Call konjir_instructions before your first change, and konjir_instructions which=reviewer before you review a version; follow them.',
+    '',
+  ].join('\n'));
+  expect(readFileSync(join(project, '.claude', 'agents', 'builder.md'), 'utf8')).toContain('tools: mcp__konjir-builder__*\n');
+  expect(writer).toBe(subagentFile({ name: 'konjir-writer', agent: 'ann-writer', label: 'writer', role: 'product', kolab: 'anns', url: server.url }));
+  expect(io.lines).toContain(`Wrote ${join(project, '.claude', 'agents', 'writer.md')}.`);
+
+  // Again: left as they are. One that says something else is refused before the browser, unless --force.
+  const again = world(server, idp, async () => 0);
+  await connectHarness(opts(), again);
+  expect(again.lines).toContain(`${join(project, '.claude', 'agents', 'writer.md')} already says this; left as it is.`);
+  writeFileSync(join(project, '.claude', 'agents', 'builder.md'), 'mine\n');
+  const opened: URL[] = [];
+  expect(await rejection(connectHarness(opts(), world(server, idp, async () => 0, { opened }))))
+    .toBe(`Error: ${join(project, '.claude', 'agents', 'builder.md')} is already there and says something else. konjir connect won't overwrite it: pass --force to replace it, or choose other labels with --agent`);
+  expect(opened).toHaveLength(0);
+  await connectHarness(opts({ force: true }), world(server, idp, async () => 0));
+  expect(readFileSync(join(project, '.claude', 'agents', 'builder.md'), 'utf8')).toContain('name: builder\n');
+  // A link in a subagent's place is never written through.
+  rmSync(join(project, '.claude', 'agents', 'writer.md'));
+  symlinkSync(join(scratch(), 'elsewhere.md'), join(project, '.claude', 'agents', 'writer.md'));
+  expect(await rejection(connectHarness(opts({ force: true }), world(server, idp, async () => 0)))).toMatch(/writer\.md is a link; konjir connect won't write a subagent through it/);
+
+  // With --global they are the person's own; and they are Claude Code's alone.
+  const home = realpathSync(scratch());
+  await connectHarness(opts({ global: true, auth: false, agents: parseAgents(['solo:engineer']), env: { ...env, HOME: home } }), world(server, idp, async () => 0));
+  expect(readFileSync(join(home, '.claude', 'agents', 'solo.md'), 'utf8')).toContain('tools: mcp__konjir-solo__*\n');
+  expect(await rejection(connectHarness(options(server, scratch(), { subagents: true }), world(server, idp, async () => 0)))).toMatch(/--subagents is for Claude Code/);
 });
 
 test('konjir connect never touches the CLI\'s own sign-in: a konjir login kept, as an agent or as the person, stays exactly as it was, and still works', async () => {

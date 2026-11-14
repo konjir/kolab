@@ -10,7 +10,9 @@
  * For Claude Code, each entry is the Konjir channel bridge (W3.8, D61), Claude Code's one Konjir
  * server: Kolab's tools passed through and the channel, on its agent's own sign-in, which Kolab
  * issues at the setup and konjir keeps in that agent's credentials file (KONJIR_AGENT), so no
- * further page opens. `--http` writes Claude Code's plain HTTP entry instead, as `claude mcp add
+ * further page opens. The entry runs the bridge this konjir carries, `konjir bridge` (W9.5, API29),
+ * or, from a checkout, the checkout's own. `--subagents` also writes one Claude Code subagent per
+ * agent, `.claude/agents/<label>.md`, with only that agent's Konjir tools. `--http` writes Claude Code's plain HTTP entry instead, as `claude mcp add
  * --scope project --transport http` writes it, with no channel; it and OpenCode's entries each sign
  * in by themselves, on a page locked to their agent (D97).
  */
@@ -73,13 +75,17 @@ export interface Entry { name: string; agent: string; label: string; role: Role;
 export const opencodeEntry = (e: Entry) => ({ type: 'remote', url: e.url, oauth: { scope: entryScope(e.kolab, e.role, e.agent) } });
 /** What Claude Code is given with --http: as `claude mcp add --transport http` writes it, with the scope in its OAuth settings. */
 export const claudeEntry = (e: Entry) => ({ type: 'http', url: e.url, oauth: { scopes: entryScope(e.kolab, e.role, e.agent) } });
+/** How Claude Code starts the channel bridge: a command and its arguments, as a stdio server's entry names them. */
+export interface Bridge { command: string; args: string[] }
+
 /**
- * What Claude Code is given by default (W3.8): the Konjir channel bridge, started from `command`
- * (a checkout's start.sh), as `claude mcp add --scope project` writes a stdio server. KONJIR_AGENT
- * keeps the agent's sign-in apart; KONJIR_SCOPE preselects it at consent. Neither is a secret.
+ * What Claude Code is given by default (W3.8): the Konjir channel bridge, started as `bridge` says
+ * (a checkout's start.sh, or the published konjir's `konjir bridge`), as `claude mcp add --scope
+ * project` writes a stdio server. KONJIR_AGENT keeps the agent's sign-in apart; KONJIR_SCOPE
+ * preselects it at consent. Neither is a secret.
  */
-export const claudeBridgeEntry = (e: Entry, command: string) => ({
-  type: 'stdio', command, args: [],
+export const claudeBridgeEntry = (e: Entry, bridge: Bridge | string) => ({
+  type: 'stdio', ...(typeof bridge === 'string' ? { command: bridge, args: [] } : { command: bridge.command, args: [...bridge.args] }),
   // KONJIR_TOKEN empty: a token in Claude Code's own environment, which would override the agent's sign-in, isn't passed on.
   env: { KONJIR_URL: e.url, KONJIR_TOKEN: '', KONJIR_AGENT: e.agent, KONJIR_SCOPE: entryScope(e.kolab, e.role, e.agent) },
 });
@@ -93,9 +99,45 @@ export const CHANNEL_CLIENT_NAME = 'konjir channel (Claude Code)';
 /** The name konjir connect registers under for the other harnesses, whose entries sign in by themselves. */
 export const CONNECT_CLIENT_NAME = 'konjir connect';
 
+// The published builds (scripts/package.mjs) define this as the package's version.
+declare const KONJIR_VERSION: string | undefined;
+
+/** How this konjir runs, for publishedKonjir: `process`, and the version its build defined. Tests give others. */
+export interface Running { version?: string; bun?: string; execPath: string; script?: string; platform: NodeJS.Platform }
+const running = (): Running => ({
+  version: typeof KONJIR_VERSION === 'string' ? KONJIR_VERSION : undefined,
+  bun: process.versions.bun, execPath: process.execPath, script: process.argv[1], platform: process.platform,
+});
+
+/**
+ * The published konjir this is (W9.5, API29), or undefined when it isn't one (a checkout, whose
+ * build defines no version): how Claude Code starts the bridge it carries, `konjir bridge`, and how
+ * a person runs it again (`self`).
+ *
+ *   a binary            itself: its own path, `bridge`
+ *   run by npx          `npx -y konjir@<its exact version> bridge`: npx's cache is npm's to clear, so
+ *                       no path into it is written; on Windows through `cmd /c`, as Claude Code
+ *                       needs for npx there
+ *   installed from npm  this node, and konjir.mjs where it is installed, `bridge`
+ */
+export function publishedKonjir(r: Running = running()): { bridge: Bridge; self: string } | undefined {
+  if (!r.version) return undefined;
+  // A binary's script is inside the executable (Bun's own file system); under node it is konjir.mjs.
+  const script = r.script && !r.script.startsWith('/$bunfs') && !/^[A-Z]:\\~BUN\\/.test(r.script) ? r.script : undefined;
+  if (r.bun || !script) return { bridge: { command: r.execPath, args: ['bridge'] }, self: 'konjir' };
+  let real = script;
+  try { real = realpathSync(script); } catch { /* as given */ }
+  if (real.split(/[\\/]/).includes('_npx')) {
+    const npx = ['npx', '-y', `konjir@${r.version}`, 'bridge'];
+    return { bridge: r.platform === 'win32' ? { command: 'cmd', args: ['/c', ...npx] } : { command: npx[0], args: npx.slice(1) }, self: `npx konjir@${r.version}` };
+  }
+  return { bridge: { command: r.execPath, args: [real, 'bridge'] }, self: 'konjir' };
+}
+
 /**
  * The channel bridge's start.sh in the Kolab checkout this konjir runs from, or undefined when it
- * doesn't run from one: the published package or a binary, which have no bridge. Proven from this
+ * doesn't run from one: the published package or a binary, which run the bridge they carry
+ * (publishedKonjir). Proven from this
  * module's own place, never from a path relative to wherever it was installed: this file must be
  * `<root>/apps/cli/src/connect.ts` (or `dist/connect.js`) inside `<root>`, whose package.json is the
  * kolab workspace, which is a git checkout, and whose `apps/channel-bridge` is the bridge's package.
@@ -121,6 +163,34 @@ export function bridgeCommand(moduleUrl: string = import.meta.url): string | und
     return undefined;
   }
 }
+
+/** The agent, role and kolab an entry konjir connect wrote signs in as, from its scope: `konjir kolab:<k> role:<r> agent:<a>`. */
+export interface Who { agent: string; role: string; kolab: string }
+
+/** The system prompt API24 describes: who the agent is, where, and where its rules come from. */
+export const systemPrompt = (w: Who, name: string) =>
+  `You are ${w.agent}, an agent working in Konjir kolab ${w.kolab} in the ${w.role} role, through the ${name} tools. ` +
+  'Call konjir_instructions before your first change, and konjir_instructions which=reviewer before you review a version; follow them.';
+
+/** Claude Code's folder of subagents: the project's, or with --global the person's own. */
+export const claudeAgentsDir = (opts: { global: boolean; cwd: string; env: Record<string, string | undefined> }) =>
+  opts.global ? join(opts.env.CLAUDE_CONFIG_DIR || join(opts.env.HOME || homedir(), '.claude'), 'agents') : join(opts.cwd, '.claude', 'agents');
+
+/**
+ * One agent's Claude Code subagent (`--subagents`, API29), `<label>.md`: its tools are its own
+ * entry's alone, `mcp__konjir-<label>__*`, so in a session that loads several entries each subagent
+ * works as one agent, and has no other tool; its prompt is the one konjir claude gives a session.
+ */
+export const subagentFile = (e: Entry) => [
+  '---',
+  `name: ${e.label}`,
+  `description: Works in Konjir as ${e.agent}, in the ${e.role} role in kolab ${e.kolab}. Give it that agent's Konjir work.`,
+  `tools: mcp__${e.name}__*`,
+  '---',
+  '',
+  systemPrompt(e, e.name),
+  '',
+].join('\n');
 
 /** A planned change to one configuration file: its text before (empty when it is new) and after. */
 export interface FileChange { path: string; before: string; after: string; exists: boolean }
@@ -391,8 +461,12 @@ export interface ConnectOptions {
   auth: boolean;
   /** Claude Code: write the plain HTTP entry (no channel) instead of the channel bridge. */
   http?: boolean;
-  /** Claude Code: the channel bridge's start.sh; by default the checkout's this konjir runs from. */
-  bridge?: string;
+  /** Claude Code: how the channel bridge starts (a start.sh alone, or a command and its arguments); by default the checkout's this konjir runs from, else the published konjir's own. */
+  bridge?: string | Bridge;
+  /** Claude Code: also write one subagent per agent, `.claude/agents/<label>.md`, with only its entry's tools. */
+  subagents?: boolean;
+  /** How a person runs this konjir again, in the steps printed last: `konjir` by default, or the published one's own (npx). */
+  self?: string;
   cwd: string;
   env: Record<string, string | undefined>;
 }
@@ -438,12 +512,12 @@ export const setupScopeOf = (kolab: string, agents: AgentSpec[]) => ['konjir', `
 const YOU = '<you>';
 
 /** How to start Claude Code with the Konjir channel entries (a development channel, during the research preview). */
-function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: boolean): string[] {
+function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: boolean, self: string, local: boolean): string[] {
   return [
-    ...(global ? [] : ['The entries in this project\'s .mcp.json name this checkout\'s absolute path, as konjir claude\'s files in .claude/ do, so don\'t commit them.']),
+    ...(global || !local ? [] : ['The entries in this project\'s .mcp.json name this machine\'s paths, as konjir claude\'s files in .claude/ do, so don\'t commit them.']),
     'At its development-channels warning, choose "I am using this for local development". Channels need Claude Code signed in with a claude.ai account.',
     ...(signedIn ? [] : ['Each entry signs in by itself in your browser when Claude Code first starts it, on a page locked to its agent.']),
-    ...sessionSteps(entries, cwd),
+    ...sessionSteps(entries, cwd, self),
   ];
 }
 
@@ -451,20 +525,20 @@ function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: 
  * One `konjir claude <label>` per agent (API24): each starts Claude Code with that agent's entry and
  * channel alone, and its system prompt, rather than one session that loads every agent's channel.
  */
-function sessionSteps(entries: Entry[], cwd: string): string[] {
+function sessionSteps(entries: Entry[], cwd: string, self = 'konjir'): string[] {
   return [`Start each agent's own Claude Code session, one terminal each, from ${cwd}:`,
-    ...entries.map((e) => `konjir claude ${e.label}`)];
+    ...entries.map((e) => `${self} claude ${e.label}`)];
 }
 
 /** The steps that sign an entry in by hand, per harness. */
-function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: boolean): string[] {
+function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: boolean, self = 'konjir'): string[] {
   if (harness === 'opencode') {
     return [`Sign each entry in, one at a time${global ? '' : `, from ${cwd}`}:`,
       ...entries.map((e) => `  opencode mcp auth ${e.name}     # Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow`)];
   }
   return ['Each entry signs in the first time its session starts: in it, type /mcp, choose the entry, then Authenticate.',
     ...entries.map((e) => `  ${e.name}: Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow.`),
-    ...sessionSteps(entries, cwd)];
+    ...sessionSteps(entries, cwd, self)];
 }
 
 /** A kolab name `--kolab` may give: Kolab's grammar (lowercase letters, digits and '-', starting with a letter or digit, at most 100). */
@@ -484,13 +558,19 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   if (opts.kolab === undefined) throw new Error('konjir connect needs --kolab <name>: a kolab of yours or one you reach, or a new one, made private and yours on Kolab\'s page');
   if (!KOLAB.test(opts.kolab) || opts.kolab.length > 100) throw new Error(`--kolab ${opts.kolab.slice(0, 120)}: a kolab's name is lowercase letters, digits and '-', starting with a letter or digit (a new one, at most 40)`);
   if (opts.http && opts.harness !== 'claude') throw new Error('--http is for Claude Code: OpenCode\'s entries are always its remote MCP server');
-  // Claude Code's entry: the channel bridge (W3.8), from a checkout; or, with --http, the plain HTTP server.
+  if (opts.subagents && opts.harness !== 'claude') throw new Error('--subagents is for Claude Code: it writes Claude Code\'s subagents, one per agent');
+  // Claude Code's entry: the channel bridge (W3.8), the checkout's own or the one the published konjir
+  // carries (W9.5); or, with --http, the plain HTTP server.
   const channel = opts.harness === 'claude' && !opts.http;
-  const bridge = channel ? opts.bridge ?? bridgeCommand() : undefined;
+  const published = publishedKonjir();
+  const bridge = channel ? opts.bridge ?? bridgeCommand() ?? published?.bridge : undefined;
   if (channel && !bridge) {
-    throw new Error('konjir connect claude sets up the Konjir channel, Claude Code\'s one Konjir server, which runs from a checkout of github.com/konjir/kolab, and this konjir isn\'t running from one. Run it as <checkout>/bin/konjir connect claude, or pass --http for Claude Code\'s plain HTTP entry (no channel)');
+    throw new Error('konjir connect claude sets up the Konjir channel, Claude Code\'s one Konjir server, which the published konjir carries and a checkout of github.com/konjir/kolab runs from its own source, and this konjir is neither. Run it as <checkout>/bin/konjir connect claude or from the npm package, or pass --http for Claude Code\'s plain HTTP entry (no channel)');
   }
   const claudeMake = bridge ? (e: Entry) => claudeBridgeEntry(e, bridge) : claudeEntry;
+  const self = opts.self ?? published?.self ?? 'konjir';
+  // Whether the entries name this machine's paths: all but the published konjir run by npx.
+  const local = !!bridge && /[\\/]/.test(typeof bridge === 'string' ? bridge : bridge.command);
   const kolab = opts.kolab;
 
   // The plan for `person`: each file's text after, or for Claude Code's own user settings, its
@@ -525,7 +605,15 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
         ['claude', 'mcp', 'add-json', '--scope', 'user', e.name, JSON.stringify(claudeMake(e))],
       ]);
     }
-    return { entries, change, commands };
+    // Each agent's subagent (--subagents): one already there that says anything else is refused, as an entry is.
+    const agents: FileChange[] = !opts.subagents ? [] : entries.map((e) => {
+      const path = join(claudeAgentsDir(opts), `${e.label}.md`);
+      const before = readText(path);
+      return { path, before, after: subagentFile(e), exists: existsSync(path) };
+    });
+    const taken = agents.filter((a) => a.exists && a.before !== a.after).map((a) => a.path);
+    if (taken.length && !opts.force) throw new Error(`${taken.join(', ')} ${taken.length === 1 ? 'is' : 'are'} already there and ${taken.length === 1 ? 'says' : 'say'} something else. konjir connect won't overwrite ${taken.length === 1 ? 'it' : 'them'}: pass --force to replace ${taken.length === 1 ? 'it' : 'them'}, or choose other labels with --agent`);
+    return { entries, change, commands, agents };
   };
 
   // Run again, the entries already there name the person; else `<you>` stands for them until they sign in.
@@ -553,6 +641,10 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   } else {
     io.log('Claude Code\'s own command will write them to your user settings:');
     for (const c of draft.commands) io.log(`  ${c.map(shellWord).join(' ')}`);
+  }
+  for (const a of draft.agents) {
+    if (linkTarget(a.path)) throw new Error(`${a.path} is a link; konjir connect won't write a subagent through it. Remove the link, then run konjir connect again`);
+    io.log(a.before === a.after ? `${a.path} already says exactly this.` : opts.dryRun ? unifiedDiff(a.path, a.before, a.after, a.exists) : `Will write ${a.path}: the subagent ${basename(a.path, '.md')}, with only its entry's tools.`);
   }
   io.log('');
   if (opts.dryRun) {
@@ -589,6 +681,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       throw new Error('Kolab set up something other than konjir connect asked for, so nothing is written');
     }
     if (plan.change && readText(plan.change.path) !== draft.change!.before) throw new Error(`${plan.change.path} changed while konjir connect was waiting; nothing written`);
+    for (const [k, a] of plan.agents.entries()) if (readText(a.path) !== draft.agents[k].before) throw new Error(`${a.path} changed while konjir connect was waiting; nothing written`);
   } catch (e) { return failed(e); }
   const { entries } = plan;
   io.log(`Set up for ${done.person}: kolab ${kolab}${done.kolab.made ? ' (made now, private, yours)' : ''}; ${done.agents.map((a) => `${a.agent}${a.made ? ' (made now)' : ''}`).join(', ')}.`);
@@ -613,11 +706,16 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       }
       io.log('Claude Code has them in your user settings. They hold no token.');
     }
+    for (const a of plan.agents) {
+      if (a.after === a.before) { io.log(`${a.path} already says this; left as it is.`); continue; }
+      writeAtomically(a.path, a.after, { within: opts.global ? dirname(dirname(a.path)) : opts.cwd });
+      io.log(`Wrote ${a.path}.`);
+    }
   } catch (e) { return failed(e); }
 
   if (channel) {
     if (mint) io.log(`Each agent is signed in, in its own file under ${dirname(agentCredentialsPath(entries[0].agent, opts.env))}.`);
-    for (const line of channelSteps(entries, opts.cwd, opts.global, mint)) io.log(line);
+    for (const line of channelSteps(entries, opts.cwd, opts.global, mint, self, local)) io.log(line);
     return entries;
   }
   // OpenCode and Claude Code's plain HTTP entries sign in by themselves, each on a page locked to its agent.
@@ -633,7 +731,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     }
     io.log(`Connected: each entry works as its own agent in ${kolab}.`);
   } else {
-    for (const line of signInSteps(opts.harness, entries, opts.cwd, opts.global)) io.log(line);
+    for (const line of signInSteps(opts.harness, entries, opts.cwd, opts.global, self)) io.log(line);
   }
   return entries;
 }
