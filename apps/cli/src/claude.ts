@@ -9,21 +9,15 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { claudeUserConfig, readConfigText, writeAtomically } from './connect.js';
+import { claudeUserConfig, readConfigText, systemPrompt, writeAtomically, type Who } from './connect.js';
+
+export { systemPrompt, type Who };
 
 /** A label, as konjir connect's --agent takes it. */
 const LABEL = /^[a-z0-9][a-z0-9-]{0,23}$/;
 
-/** The agent, role and kolab an entry konjir connect wrote signs in as, from its scope: `konjir kolab:<k> role:<r> agent:<a>`. */
-export interface Who { agent: string; role: string; kolab: string }
-
 /** One agent's session: the file to write, what it holds, and claude's arguments. */
 export interface ClaudeSession { name: string; who: Who; path: string; dir: string; text: string; args: string[]; from: string }
-
-/** The system prompt API24 describes: who the agent is, where, and where its rules come from. */
-export const systemPrompt = (w: Who, name: string) =>
-  `You are ${w.agent}, an agent working in Konjir kolab ${w.kolab} in the ${w.role} role, through the ${name} tools. ` +
-  'Call konjir_instructions before your first change, and konjir_instructions which=reviewer before you review a version; follow them.';
 
 /**
  * The entries of one config file's `mcpServers`, or {} when there is no file or it has none. One that

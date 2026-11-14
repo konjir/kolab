@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Builds the published konjir (W2.6, binding element API6): the client alone, as one file.
+// Builds the published konjir (W2.6, binding element API6): the client and the channel bridge
+// (`konjir bridge`, W9.5, API29), as one file.
 //
 //   node scripts/package.mjs npm                 -> dist-npm/: the npm package
 //   node scripts/package.mjs binaries [target…]  -> dist-bin/: single-file executables, bun build --compile
@@ -7,9 +8,12 @@
 //
 // Both builds bundle the CLI and everything it imports (the MCP client SDK) with Bun, so the npm
 // package has no dependencies and npx konjir works without this workspace. @konjir/server is left
-// out: it brings NestJS and the database, and only `konjir serve` loads it, so the
-// published konjir has no serve (the CLI says so). Of the @konjir/* libraries only @konjir/login, the
-// OAuth client and credentials store `konjir login` uses, is bundled; the others reach the CLI as types only.
+// out: it brings the database, and only `konjir serve` loads it, so the published konjir has no
+// serve (the CLI says so). Of the @konjir/* packages only @konjir/login, the OAuth client and
+// credentials store `konjir login` uses, and @konjir/channel-bridge, which `konjir bridge` runs,
+// are bundled; the others reach the CLI as types only. The bridge brings NestJS, which asks for
+// packages it uses only when an application wants them (OPTIONAL): none is installed here, the
+// bridge wants none, and NestJS passes over each when it isn't there, so they are left out too.
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
 // with it, for `konjir --version`.
@@ -63,20 +67,23 @@ function checkBun() {
   if (have !== pinned.version) throw new Error(`bun on PATH is ${have}, but apps/cli/bun-runtimes.json pins ${pinned.version}`);
 }
 
-// The @konjir/source condition bundles @konjir/login from its source, as tsx runs it, so the bundle
-// needs no tsc build of the library first.
-const bun = (args) => execFileSync('bun', ['build', entry, '--external', '@konjir/server', '--conditions=@konjir/source',
+/** What NestJS loads only if it is installed: microservices, websockets, and the validation and serializer pipes' packages. */
+const OPTIONAL = ['@nestjs/microservices', '@nestjs/microservices/*', '@nestjs/websockets/*', 'class-transformer', 'class-validator'];
+
+// The @konjir/source condition bundles @konjir/login and the bridge from their source, as tsx runs
+// them, so the bundle needs no tsc build of either first.
+const bun = (args) => execFileSync('bun', ['build', entry, ...['@konjir/server', ...OPTIONAL].flatMap((name) => ['--external', name]), '--conditions=@konjir/source',
   '--define', `KONJIR_VERSION=${JSON.stringify(manifest.version)}`, ...args], { stdio: 'inherit', cwd: app });
 
 /**
- * The first-party code the bundle may inline: the CLI's own source and @konjir/login's, nothing
- * else of the workspace's (no server, engine, db or address code). Those two are the workspace's
- * only Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2 (D64), which the Apache-2.0
- * konjir (D63) must never carry. The build fails on anything else, since the @konjir/source
- * condition would otherwise inline it from TypeScript unseen, and on either of the two if its
- * package.json stops declaring Apache-2.0.
+ * The first-party code the bundle may inline: the CLI's own source, @konjir/login's and the channel
+ * bridge's (W9.5), nothing else of the workspace's (no server, engine, db or address code). Those
+ * three are the workspace's only Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2
+ * (D64), which the Apache-2.0 konjir (D63) must never carry. The build fails on anything else,
+ * since the @konjir/source condition would otherwise inline it from TypeScript unseen, and on any of
+ * the three if its package.json stops declaring Apache-2.0.
  */
-const FIRST_PARTY = ['apps/cli', 'libs/login'].map((dir) => join(root, dir));
+const FIRST_PARTY = ['apps/cli', 'libs/login', 'apps/channel-bridge'].map((dir) => join(root, dir));
 /** The workspace package a first-party input belongs to: the nearest directory above it with a package.json. */
 function owningPackage(path) {
   for (let dir = dirname(path); dir.startsWith(root + '/'); dir = dirname(dir)) {
@@ -96,7 +103,7 @@ function checkFirstParty(metafile, out) {
   }
   // Nothing is left behind from a build that fails it.
   if (stray.length) rmSync(out, { recursive: true, force: true });
-  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src and libs/login/src: ${stray.join(', ')}`);
+  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src, libs/login/src and apps/channel-bridge/src: ${stray.join(', ')}`);
 }
 
 /** No package the bundle inlines may be FSL-licensed, as the rest of this workspace is (D64). */
