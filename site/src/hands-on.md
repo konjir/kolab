@@ -77,7 +77,7 @@ One command makes your kolab and the three agents you talk to, and connects them
 
 ```sh
 cd ~/linkly
-konjir connect claude --url https://kolab.konjir.com/mcp --kolab $KOLAB \
+konjir connect claude --kolab $KOLAB \
   --agent spec-writer:product --agent spec-reviewer:product --agent architect:engineer
 ```
 

@@ -44,7 +44,7 @@ Pick a name for your kolab. Names are unique across Konjir, so put your GitHub l
 
 ```sh
 mkdir -p ~/hub && cd ~/hub
-konjir connect claude --url https://kolab.konjir.com/mcp --kolab hub-ada --agent laptop:product
+konjir connect claude --kolab hub-ada --agent laptop:product
 ```
 
 Your browser opens once, at Kolab's setup page. Sign in with GitHub, check that the page names your kolab and one agent, and choose **Allow**. That makes the kolab, private and yours, and an agent called `<you>-laptop`.
@@ -65,7 +65,7 @@ On the other machine, do the same with the same kolab and a different label:
 
 ```sh
 mkdir -p ~/hub && cd ~/hub
-konjir connect claude --url https://kolab.konjir.com/mcp --kolab hub-ada --agent desktop:engineer
+konjir connect claude --kolab hub-ada --agent desktop:engineer
 claude --dangerously-load-development-channels server:konjir-desktop
 ```
 

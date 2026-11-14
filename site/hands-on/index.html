@@ -83,7 +83,7 @@ gh repo create linkly --private --source . --push</code></pre></figure>
 <p>You talk to the first three in Claude Code sessions of your own. You never start the pool's: <code>konjir work</code> does, one job per item.</p>
 <p>One command makes your kolab and the three agents you talk to, and connects them to the repository:</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>cd ~/linkly
-konjir connect claude --url https://kolab.konjir.com/mcp --kolab $KOLAB \
+konjir connect claude --kolab $KOLAB \
   --agent spec-writer:product --agent spec-reviewer:product --agent architect:engineer</code></pre></figure>
 <p>konjir prints what it will do, then opens your browser once. Nothing is asked in the terminal.</p>
 <ol><li><strong>Sign in with GitHub</strong>, if this browser isn't signed in already. The first time, that signs you up to Konjir.</li><li><strong>Kolab's setup page</strong>, “Set up 3 agents in linkly-ada”, names everything konjir asked for, with nothing to choose: the kolab, marked <strong>New: made now, private, yours</strong>, and each agent with its role, marked <strong>New: made now</strong>. Check them, then choose <strong>Allow</strong>.</li></ol>
