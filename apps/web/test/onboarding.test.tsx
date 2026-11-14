@@ -67,11 +67,11 @@ test('the page shows konjir connect first: one command per harness, naming this 
   expect(one.textContent).toMatch(/opens your browser once, at Kolab’s setup page.*Nothing to choose there, and nothing asked in the terminal\. It writes no token/);
 });
 
-test('until this Kolab names a published, pinned CLI, the page never shows npx: a checkout\'s bin/konjir, and says npm publishing is pending (W3.7)', () => {
+test('until this Kolab names a published, pinned CLI, the page never shows npx: a checkout\'s bin/konjir, and says this Kolab names none (W3.7)', () => {
   for (const cli of [undefined, { npm: null }]) {
     const { container, unmount } = render(<ConnectView me={eli} cli={cli} origin="https://kolab.example.com" />);
     expect(container.textContent).not.toMatch(/npx/);
-    expect(screen.getByText(/The konjir CLI isn’t published on npm yet/)).toBeTruthy();
+    expect(screen.getByText(/This Kolab names no published konjir CLI/)).toBeTruthy();
     expect(screen.getByLabelText('Get the konjir CLI from its repository').textContent).toBe('git clone https://github.com/konjir/kolab ~/kolab && (cd ~/kolab && npm ci)');
     expect(screen.getByLabelText('Connect OpenCode with konjir connect').textContent).toBe('~/kolab/bin/konjir connect opencode --url https://kolab.example.com --kolab anns');
     expect(screen.getByLabelText('Sign the konjir CLI in').textContent).toBe('~/kolab/bin/konjir login --url https://kolab.example.com/mcp --kolab anns --role engineer');
