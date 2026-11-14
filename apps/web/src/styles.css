@@ -1,45 +1,5 @@
-/* The web interface's styles: the Konjir design system's tokens (Predawn, the dark theme, by default; Daybreak, the light),
-   and the layout of the Konjir Kolab prototype, which shows the intended UI (D15, D18). */
-:root {
-  --surface: #16140f; --surface-raised: #211e18; --surface-sunken: #0e0d09;
-  --line: #3a352c; --line-strong: #776f5f;
-  --ink: #f2ebd3; --ink-muted: #aeadb3; --secondary: #9ea4ba;
-  --accent: #e9ba7b; --on-accent: #16140f; --accent-soft: #2e2618; --focus: #fef6bf;
-  --clean: #8fb7c9; --stale: #e9ba7b; --question: #b9b3d6; --boundary: #f08a5d;
-  --sun: #e9ba7b; --moon: #fef6bf;
-  --sky-zenith: #656c82; --sky-veil: #aeadb3; --sky-glow: #fef6bf; --sky-horizon: #e9ba7b; --sky-field: #77695d;
-  --ins: #24321f; --del: #3a2219;
-  --font-display: "Fraunces Variable", "Fraunces", Georgia, "Times New Roman", serif;
-  --font-sans: "Instrument Sans Variable", "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --r-hair: 2px; --r-md: 6px; --r-full: 999px;
-  color-scheme: dark;
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --surface: #f8f2d6; --surface-raised: #fdf9e8; --surface-sunken: #efe8cc;
-    --line: #d9d1b4; --line-strong: #8c8470;
-    --ink: #1e1b15; --ink-muted: #57586a; --secondary: #4a5166;
-    --accent: #8a5410; --on-accent: #fff8e6; --accent-soft: #f3e3bf; --focus: #8a5410;
-    --clean: #2c6378; --stale: #8a5410; --question: #5a4f8c; --boundary: #a8401c;
-    --sun: #b5741f; --moon: #3a3f52;
-    --sky-glow: #f0d79b; --sky-horizon: #d9a15c; --sky-field: #16140f;
-    --ins: #dfe9cf; --del: #f3d6c8;
-    color-scheme: light;
-  }
-}
-:root[data-theme="light"] {
-  --surface: #f8f2d6; --surface-raised: #fdf9e8; --surface-sunken: #efe8cc;
-  --line: #d9d1b4; --line-strong: #8c8470;
-  --ink: #1e1b15; --ink-muted: #57586a; --secondary: #4a5166;
-  --accent: #8a5410; --on-accent: #fff8e6; --accent-soft: #f3e3bf; --focus: #8a5410;
-  --clean: #2c6378; --stale: #8a5410; --question: #5a4f8c; --boundary: #a8401c;
-  --sun: #b5741f; --moon: #3a3f52;
-  --sky-glow: #f0d79b; --sky-horizon: #d9a15c; --sky-field: #16140f;
-  --ins: #dfe9cf; --del: #f3d6c8;
-  color-scheme: light;
-}
-
+/* The web interface's styles: the layout of the Konjir Kolab prototype, which shows the intended UI (D15, D18). The Konjir
+   design system's tokens (Predawn, the dark theme, by default; Daybreak, the light) are in brand.css, generated from @konjir/brand. */
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { background: var(--surface); }

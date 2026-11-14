@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@konjir/address": "*",
+    "@konjir/brand": "*",
     "@konjir/engine": "*",
     "@konjir/log": "*",
     "@konjir/types": "*",

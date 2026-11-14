@@ -18,6 +18,7 @@
     "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
   },
   "dependencies": {
+    "@konjir/brand": "*",
     "@modelcontextprotocol/client": "^2.3.1"
   },
   "nx": {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { THEME_STORAGE_KEY } from '@konjir/brand';
 import type { InvitePreview, WebMe, WebNodesView, WebOverview, WebSignInMethods } from '@konjir/types';
 import { ApiError, acceptInvite, api, createKolab, dropInvite, markPushTick, openInvite, pageUpdated, patiently, pushed, signIn, signOut, switchTo, whoAmI } from './api.js';
 import { useLive } from './live.js';
@@ -186,7 +187,7 @@ export function App() {
   // A re-read Kolab's push prompts, not a person's action: its reads renew no lease on work (D100).
   const pushTick = useCallback(() => setTick((t) => { markPushTick(t + 1); return t + 1; }), []);
   const [toast, setToast] = useState<string>();
-  const [theme, setTheme] = useState<Theme>(() => (store.get('konjir.theme') as Theme) ?? undefined);
+  const [theme, setTheme] = useState<Theme>(() => (store.get(THEME_STORAGE_KEY) as Theme) ?? undefined);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const say = useCallback((text: string) => {
@@ -487,7 +488,7 @@ export function App() {
   if (me === null) {
     return (
       <>
-        <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} />
+        <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set(THEME_STORAGE_KEY, t); }} />
         {(invite?.preview || inviteNote) && <div className="signin-invite">{invite?.preview ? <InviteCard invite={invite.preview} signedIn={false} /> : inviteNote}</div>}
         <SignIn error={signInError} methods={methods} onLeave={keepPlace} onSignedIn={async (token) => {
           signingIn.current = true;
@@ -514,7 +515,7 @@ export function App() {
   return (
     <Here value={me.kolab}>
       <a className="skip" href="#/" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Skip to the page’s content</a>
-      <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set('konjir.theme', t); }} me={me} overview={overview}
+      <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set(THEME_STORAGE_KEY, t); }} me={me} overview={overview}
         onMove={move} busy={busy} onAllKolabs={() => go('kolabs')}
         onSignOut={async () => { leaving.current = true; era.current++; await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended.'); }} />
       <div className="frame">

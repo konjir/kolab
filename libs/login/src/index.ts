@@ -20,11 +20,12 @@
  * grant and one session with the CLI for the same MCP URL.
  */
 import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
 import {
   Client, StreamableHTTPClientTransport, UnauthorizedError,
   type FetchLike, type OAuthClientMetadata, type OAuthClientProvider, type OAuthDiscoveryState, type StoredOAuthClientInformation, type StoredOAuthTokens,
@@ -537,8 +538,33 @@ export function openBrowser(u: URL, kolabUrl: string, run: (cmd: string, args: s
   run(cmd, args);
 }
 
-/** The page the browser lands on once the code is back: it says to return to the terminal, and loads nothing. */
-const done = (ok: boolean, text: string) => `<!doctype html><meta charset="utf-8"><title>konjir</title><p>${ok ? 'Signed in.' : 'Sign-in stopped.'} ${text.replace(/[&<>"']/g, '')}</p>`;
+/**
+ * The style of the page the browser lands on once the code is back: Konjir's standalone page
+ * (@konjir/brand), as Kolab's own sign-in pages are, so the last page of a sign-in looks like the
+ * ones before it, and a line that says how it ended.
+ */
+const CALLBACK_CSS = [
+  standalonePageCss(),
+  '.kj-state{display:flex;align-items:center;gap:10px;margin:0;font-weight:600}',
+  '.kj-state::before{content:"";flex:none;width:10px;height:10px;border-radius:var(--r-full);background:var(--clean)}',
+  '.kj-state.stopped::before{background:var(--boundary)}',
+  '.kj-next{margin:10px 0 0}',
+].join('\n');
+/** The page's whole policy: its one style sheet, by hash, and nothing else. It loads nothing, runs no script and is never framed. */
+const CALLBACK_CSP = `default-src 'none'; style-src 'sha256-${createHash('sha256').update(CALLBACK_CSS).digest('base64')}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+const CALLBACK_HEADERS = {
+  'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
+  'content-security-policy': CALLBACK_CSP, 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY',
+};
+
+/** The page the browser lands on once the code is back: it says how the sign-in ended and to return to the terminal, and loads nothing. */
+export const callbackPage = (ok: boolean, text: string) => standalonePage({
+  title: `${ok ? 'Signed in' : 'Sign-in stopped'} · Konjir`,
+  css: CALLBACK_CSS,
+  body: `<h1>${ok ? 'Signed in.' : 'Sign-in stopped.'}</h1>`
+    + `<div class="card"><p class="kj-state${ok ? '' : ' stopped'}">${ok ? 'konjir has your sign-in.' : 'konjir was not signed in.'}</p>`
+    + `<p class="kj-next muted">${escapeHtml(text)}</p></div>`,
+});
 
 /**
  * Revokes a kept sign-in at Kolab's own /oauth/revoke (RFC 7009): its refresh token, which revokes
@@ -599,11 +625,11 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
         const u = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
         if (u.pathname !== '/callback') { res.writeHead(404).end(); return; }
         // Only the answer to this sign-in: its state, which only this process knows.
-        if (u.searchParams.get('state') !== provider.expectedState) { res.writeHead(400, { 'content-type': 'text/html' }).end(done(false, 'That answer was for another sign-in.')); return; }
+        if (u.searchParams.get('state') !== provider.expectedState) { res.writeHead(400, CALLBACK_HEADERS).end(callbackPage(false, 'That answer was for another sign-in. Return to your terminal.')); return; }
         clearTimeout(timer);
         const error = u.searchParams.get('error');
-        res.writeHead(error ? 400 : 200, { 'content-type': 'text/html', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-          .end(done(!error, error ? 'Return to your terminal.' : 'You can close this tab and return to your terminal.'));
+        res.writeHead(error ? 400 : 200, CALLBACK_HEADERS)
+          .end(callbackPage(!error, error ? 'Return to your terminal: it says why.' : 'You can close this tab and return to your terminal.'));
         if (error) reject(new Error(`Kolab didn't sign you in: ${u.searchParams.get('error_description') ?? error}`));
         else resolve(u.searchParams);
       });
