@@ -92,7 +92,7 @@ function checkFirstParty(metafile, out) {
   const stray = [];
   for (const input of Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs)) {
     // What the bundle carries as absent (bundle.mjs) is no source of anyone's.
-    if (input.startsWith('absent:')) continue;
+    if (input.startsWith('absent:') || input.startsWith('no-import:')) continue;
     const path = resolve(app, input);
     if (/\/node_modules\//.test(path) && !/\/node_modules\/@konjir\//.test(path)) continue;
     const pkg = owningPackage(path);
