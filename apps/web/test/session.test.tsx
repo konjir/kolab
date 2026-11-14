@@ -164,8 +164,9 @@ test('the token form shows only when Kolab takes hand-issued tokens and offers n
   expect(screen.queryByLabelText('Session token')).toBeNull();
 });
 
-test('Kolab saying `ended` on the stream signs the page out at once', async () => {
+test('Kolab saying `ended` on the stream signs the page out, once Kolab says the browser holds no other session', async () => {
   await signedIn();
+  reply('/api/me', UNAUTHORIZED);
   act(() => FakeEventSource.last.send({ type: 'ended' }));
   await screen.findByRole('link', { name: 'Sign in with GitHub' });
 });

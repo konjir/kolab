@@ -75,9 +75,9 @@ export function shortTitle(title: string, kolabTitle?: string): string {
 /** Asks before the session changes kolab or role: the change ends this session, and opens another. */
 export const confirmMove = (what: string) => typeof window.confirm !== 'function' || window.confirm(`${what}? This session ends, and one opens there. Whatever you were drafting here is discarded.`);
 
-/** An invite's secret in the address (W3.4), `#/invite/kji_…`, or undefined. */
+/** An invite's secret in the address (W3.4), `#/invite/kji_…`, or undefined. One written after a kolab, `#/k/<kolab>/invite/kji_…`, is an invite all the same. */
 export function inviteOf(hash: string): string | undefined {
-  return /^#\/?invite\/(kji_[A-Za-z0-9_-]{43})$/.exec(hash)?.[1];
+  return /^#\/?(?:k\/[a-z0-9][a-z0-9-]*\/)?invite\/(kji_[A-Za-z0-9_-]{43})$/.exec(hash)?.[1];
 }
 
 /** Reads an invite's secret from the address, and takes it out, so it stays in no history or bookmark. */
@@ -87,8 +87,29 @@ function takeInvite(): string | undefined {
   return token;
 }
 
-/** Rewrites the address in place: no history entry, and no hashchange. */
-const at = (hash: string) => history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+/** Rewrites the address in place: no history entry, no hashchange, and the entry keeps its number. */
+const at = (hash: string) => history.replaceState(history.state, '', `${location.pathname}${location.search}${hash}`);
+
+/**
+ * Each entry the page settles in keeps its place in the tab's history in its state, so the page
+ * can tell how far a move back or forward went, and go back that far when the move is declined.
+ */
+const ENTRY = 'konjir';
+const entryOf = (state: unknown): number | undefined => {
+  const i = (state as Record<string, unknown> | null)?.[ENTRY];
+  return typeof i === 'number' ? i : undefined;
+};
+/** Where the page was: its address, and its entry's place in the tab's history. */
+type Settled = { hash: string; index: number };
+/**
+ * Goes back to where the page was by the tab's history, so the entry just moved to stays as it
+ * was; a new entry counts as the one after. False when the history can't say how far that is.
+ */
+function back(was: Settled): boolean {
+  const steps = was.index - (entryOf(history.state) ?? was.index + 1);
+  if (steps) history.go(steps);
+  return steps !== 0;
+}
 
 /**
  * The address a signed-out page was opened at, kept in this tab while the browser signs in with the
@@ -96,7 +117,11 @@ const at = (hash: string) => history.replaceState(null, '', `${location.pathname
  */
 const KEPT = 'konjir.place';
 function keepPlace() {
-  try { if (location.hash.replace(/^#\/?/, '')) sessionStorage.setItem(KEPT, location.hash); } catch { /* storage unavailable */ }
+  try { if (location.hash.replace(/^#\/?/, '')) sessionStorage.setItem(KEPT, location.hash); else sessionStorage.removeItem(KEPT); } catch { /* storage unavailable */ }
+}
+/** A signed-in page keeps none: one left by a sign-in that never came back opens nothing later. */
+function forgetPlace() {
+  try { sessionStorage.removeItem(KEPT); } catch { /* storage unavailable */ }
 }
 function takePlace() {
   try {
@@ -118,7 +143,7 @@ export function App() {
     takePlace();
     // A sign-in with the identity provider that didn't finish comes back with why (D55).
     const why = new URLSearchParams(location.search).get('signin_error') ?? undefined;
-    if (why) history.replaceState(null, '', location.pathname + location.hash);
+    if (why) history.replaceState(history.state, '', location.pathname + location.hash);
     return why;
   });
   const [methods, setMethods] = useState<WebSignInMethods>();
@@ -128,8 +153,21 @@ export function App() {
     return token ? { token } : undefined;
   });
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
-  /** The kolab the address asked for, as the page loaded or moved to it, until the session is there or Kolab refuses. */
+  /**
+   * The kolab the address asked for, until the session is there or Kolab refuses: as the page
+   * loaded, or as it moved to another kolab's address and the person agreed to go.
+   */
   const [asked, setAsked] = useState<string | undefined>(() => parsePlace(location.hash).kolab);
+  // The session and what was asked, for what hears of an address or of the session between renders.
+  const meNow = useRef(me);
+  meNow.current = me;
+  const askedNow = useRef(asked);
+  askedNow.current = asked;
+  /** Where the page last showed a place of the session's kolab; none until a sign-in has shown one. */
+  const settled = useRef<Settled>(undefined);
+  /** The kolab a switch is under way to; `turn` moves as each one ends, so the next is taken up. */
+  const opening = useRef<string>(undefined);
+  const [turn, setTurn] = useState(0);
   /** The address `route` and `asked` were read from: one set since is read when its hashchange arrives. */
   const [seen, setSeen] = useState(() => location.hash);
   const [tick, setTick] = useState(0);
@@ -148,7 +186,13 @@ export function App() {
   const [away, setAway] = useState(false);
   /** Kolab now serves a newer page than this one: it was deployed while this tab was open. */
   const [updated, setUpdated] = useState(false);
-  const signedOut = useCallback((why?: string) => { setMe(null); setOverview(undefined); setSignInError(why); }, []);
+  // The next sign-in opens the address as a fresh load does: nothing is held to go back to, or to ask about.
+  const signedOut = useCallback((why?: string) => {
+    settled.current = undefined;
+    setMe(null); setOverview(undefined); setSignInError(why); setAsked(parsePlace(location.hash).kolab);
+  }, []);
+  /** The session is now in another kolab or role: a fresh page there. */
+  const arrive = useCallback((next: WebMe) => { meNow.current = next; setMe(next); setOverview(undefined); setTick((t) => t + 1); }, []);
   // How a person signs in here, asked as the page loads, so a session that ends while Kolab is away
   // still gets this Kolab's own sign-in. Kolab away is waited out; the token form shows only when
   // Kolab says it takes tokens, never as a guess.
@@ -173,6 +217,8 @@ export function App() {
    * Something said the session may have ended (a 401, or the event stream closing): Kolab is asked,
    * once however many say so, and a restart waited out. The page signs out only when Kolab says the
    * session is gone; otherwise it re-reads what it shows. Resolves whether the session lives.
+   * The browser holds one session for all its tabs: when another tab moved it to another kolab,
+   * this page follows it there, and says so.
    */
   const checking = useRef<Promise<boolean>>(undefined);
   const recheck = useCallback(() => {
@@ -180,6 +226,8 @@ export function App() {
     checking.current ??= whoAmI({ onWait: () => setAway(true), push: true }).then(
       (now) => {
         if (!now) { signedOut('Your session ended. Sign in again.'); return false; }
+        if (meNow.current && meNow.current.kolab !== now.kolab && !opening.current) say(`Your session moved to ${now.kolab} in another tab. This page follows it: what was drafted here is discarded.`);
+        meNow.current = now;
         setMe((was) => (was && JSON.stringify(was) === JSON.stringify(now) ? was : now));
         pushTick();
         return true;
@@ -214,9 +262,18 @@ export function App() {
     const on = () => {
       const token = takeInvite();
       if (token) setInvite({ token });
+      const { kolab } = parsePlace(location.hash);
+      // Another kolab's address, on a page showing a place: asked before anything shown is put away,
+      // and declined, the page goes back to where it was with what was drafted there.
+      const elsewhere = kolab !== undefined && kolab !== meNow.current?.kolab && kolab !== askedNow.current;
+      if (elsewhere && meNow.current && settled.current && !confirmMove(`Work in ${kolab}`)) {
+        if (!back(settled.current)) at(settled.current.hash);
+        return;
+      }
+      askedNow.current = kolab;
       setSeen(location.hash);
       setRoute(parseRoute(location.hash));
-      setAsked(parsePlace(location.hash).kolab);
+      setAsked(kolab);
     };
     addEventListener('hashchange', on);
     return () => removeEventListener('hashchange', on);
@@ -226,10 +283,11 @@ export function App() {
   }, [theme]);
 
   // Live: every signal re-reads what the page shows (API8).
-  // A stream that closes, as when Kolab restarts, is not the session's end: Kolab's `ended` is.
+  // A stream that closes, as when Kolab restarts, is not the session's end: Kolab's `ended` is,
+  // unless the browser holds another by then, as when another tab moved to another kolab.
   useLive(!!me, {
     onChange: pushTick,
-    onEnded: () => signedOut('Your session ended. Sign in again.'),
+    onEnded: recheck,
     onDropped: recheck,
     onResumed: () => {
       pushTick();
@@ -253,7 +311,7 @@ export function App() {
   };
   const go = (r: string) => { location.hash = placeLink(me?.kolab, r); };
   /** After the session moved to another kolab or role: a fresh page, at its home, and the address names the kolab. */
-  const moved = (next: WebMe, what: string) => { setMe(next); setOverview(undefined); setTick((t) => t + 1); location.hash = placeLink(next.kolab, ''); say(what); };
+  const moved = (next: WebMe, what: string) => { arrive(next); location.hash = placeLink(next.kolab, ''); say(what); };
   const move = (kolab: string, role: string) => {
     if (me && !confirmMove(kolab === me.kolab ? `Work as ${role}` : `Work in ${kolab}`)) return Promise.resolve(false);
     return act.run(async () => {
@@ -264,39 +322,57 @@ export function App() {
 
   /**
    * The address and the session agree on the kolab. An address that names none, or the session's,
-   * is written with the session's kolab, in place, so the one in the address bar is a link to here.
-   * One that names another kolab moves the session there, as the picker does, asking first unless
-   * the page has only just loaded; a kolab Kolab won't open is said so, one way whether it exists
-   * or not, and the page stays where it was. Only an address moves the session: when the session's
-   * kolab changes under the page, as from another tab, the address follows it.
+   * is written with the session's kolab, in place, so the one in the address bar is a link to here,
+   * and its entry in the tab's history is numbered. One that names another kolab moves the session
+   * there, as the picker does, one switch at a time, so the address set last is where it ends. A
+   * kolab Kolab won't open is said so, one way whether it exists or not, and the page goes back to
+   * where it was. Only an address moves the session: when the session's kolab changes under the
+   * page, as from another tab, the address follows it.
    */
-  const settled = useRef<string>(undefined);
-  const opening = useRef<string>(undefined);
   useEffect(() => {
     if (!me || location.hash !== seen) return;
-    const rewrite = (hash: string) => { at(hash); setSeen(location.hash); };
     if (!asked || asked === me.kolab) {
       const here = placeLink(me.kolab, parsePlace(location.hash).place);
-      if (location.hash !== here) rewrite(here);
-      settled.current = here;
+      const index = entryOf(history.state) ?? (settled.current ? settled.current.index + 1 : history.length - 1);
+      if (location.hash !== here || entryOf(history.state) === undefined) {
+        history.replaceState({ ...(history.state as object | null), [ENTRY]: index }, '', `${location.pathname}${location.search}${here}`);
+        setSeen(location.hash);
+      }
+      settled.current = { hash: here, index };
+      forgetPlace();
       if (asked) setAsked(undefined);
       return;
     }
-    if (opening.current === asked) return;
-    // An address set meanwhile is read when it arrives, and isn't written over.
-    const stay = () => { if (location.hash !== seen) return; rewrite(settled.current ?? placeLink(me.kolab, '')); setRoute(parseRoute(location.hash)); setAsked(undefined); };
-    if (settled.current && !confirmMove(`Work in ${asked}`)) { stay(); return; }
-    opening.current = asked;
-    switchTo(asked, me.role).then(
-      (next) => { setMe(next); setOverview(undefined); setTick((t) => t + 1); say(`Working in ${next.kolab} as ${next.role}`); },
+    if (opening.current) return;
+    const to = opening.current = asked;
+    // The next switch waits for this one: Kolab answers it as the session this one opens.
+    const done = () => { opening.current = undefined; setTurn((t) => t + 1); };
+    /** Back where the page was. An address set meanwhile is read when it arrives, and isn't undone. */
+    const stay = () => {
+      if (location.hash !== seen || askedNow.current !== to) return;
+      if (settled.current && back(settled.current)) return;
+      at(placeLink(meNow.current?.kolab, ''));
+      setSeen(location.hash);
+      setRoute(parseRoute(location.hash));
+      setAsked(undefined);
+    };
+    switchTo(to, me.role).then(
+      (next) => { done(); arrive(next); say(`Working in ${next.kolab} as ${next.role}`); },
       async (e: unknown) => {
-        // A session that ended keeps the address: signing in again opens it.
-        if (e instanceof ApiError && e.status === 401) { if (!(await recheck())) return; say('That didn’t go through while Kolab reconnected: try it again.'); }
-        else say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${asked} you can reach. You’re still in ${me.kolab}.` : (e as Error).message);
+        if (e instanceof ApiError && e.status === 401) {
+          const alive = await recheck();
+          done();
+          // A session that ended keeps the address: signing in again opens it.
+          if (!alive) return;
+          say('That didn’t go through while Kolab reconnected: try it again.');
+        } else {
+          done();
+          say(e instanceof ApiError && [400, 403, 404].includes(e.status) ? `There’s no kolab ${to} you can reach. You’re still in ${meNow.current?.kolab}.` : (e as Error).message);
+        }
         stay();
       },
-    ).finally(() => { opening.current = undefined; });
-  }, [me, asked, seen, recheck, say]);
+    );
+  }, [me, asked, seen, turn, recheck, say, arrive]);
 
   const docs = [...(overview?.nodes ?? []), ...(moreNodes?.nodes ?? [])];
   const specs = [...docs].sort((a, b) => (KIND_ORDER[a.kind] ?? 5) - (KIND_ORDER[b.kind] ?? 5));
