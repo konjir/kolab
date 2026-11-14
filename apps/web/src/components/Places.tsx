@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { WebCase, WebCasesView, WebMarksView, WebMe, WebOverview, WebPaged, WebQueriesView, WebQuery, WebReviewsView, WebRulingsView, WebWorkView, WorkDate } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
-import { Pill } from './bits.js';
+import { Pill, useHref } from './bits.js';
 import { RulingBox } from './Cases.js';
 import { PolicySettings } from './Onboarding.js';
 import { More, usePaged } from './Pages.js';
@@ -20,7 +20,10 @@ const RULING_REF = /\b(D\d{1,4})\b/g;
 export function withRulingLinks(text: string): ReactNode {
   const parts = text.split(RULING_REF);
   if (parts.length === 1) return text;
-  return parts.map((p, i) => (i % 2 ? <a key={i} className="ref" href={`#/rulings/${p}`}>{p}</a> : <Fragment key={i}>{p}</Fragment>));
+  return parts.map((p, i) => (i % 2 ? <RulingLink key={i} name={p} /> : <Fragment key={i}>{p}</Fragment>));
+}
+function RulingLink({ name }: { name: string }) {
+  return <a className="ref" href={useHref()(`rulings/${name}`)}>{name}</a>;
 }
 
 /**
@@ -71,10 +74,11 @@ const routeTo = (address: string, here: string) => { const a = parseKj(address);
 
 /** One item of the inbox: what it is, where, and a line of why; the whole row opens it. */
 function Item({ pill, where, text, at, href }: { pill: ReactNode; where: string; text: string; at?: string; href?: string }) {
+  const link = useHref();
   return (
     <li className="inbox-item">
       {pill}
-      {href ? <a href={`#/${href}`} className="addr">{where}</a> : <span className="addr">{where}</span>}
+      {href ? <a href={link(href)} className="addr">{where}</a> : <span className="addr">{where}</span>}
       <span className="inbox-text">{text}</span>
       {at && <time dateTime={at}>{ago(at)}</time>}
     </li>
@@ -154,6 +158,7 @@ const blockWord = (w: WorkItem) => w.blocked.map((b) => (b.reason === 'depends_o
  * konjir work; the board only shows it.
  */
 export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: string): void }) {
+  const href = useHref();
   const read = usePaged<WebWorkView>('work?limit=200', tick);
   const [filter, setFilter] = useState<WorkFilter>('all');
   if (read.error) return <p className="empty" role="alert">{read.error}</p>;
@@ -181,7 +186,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
         const mine = shown.filter((w) => w.binding === b);
         return (
           <section key={b} aria-labelledby={`wb-${b}`}>
-            <h2 className="section-title" id={`wb-${b}`}><a href={`#/node/${b}`}>{addr(b)}</a></h2>
+            <h2 className="section-title" id={`wb-${b}`}><a href={href(`node/${b}`)}>{addr(b)}</a></h2>
             <div className="board">
               {STATES.map((s) => {
                 const col = mine.filter((w) => w.state === s.state);
@@ -191,7 +196,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
                     <ul>
                       {col.map((w) => (
                         <li key={w.work} className={`card${w.at_risk ? ' risk' : ''}`}>
-                          <a href={`#/node/${w.binding}#${w.id}`} className="card-id">{w.id}</a>
+                          <a href={href(`node/${w.binding}#${w.id}`)} className="card-id">{w.id}</a>
                           <span className="card-text">{w.text.split('\n')[0]}</span>
                           <span className="card-facts">
                             {w.milestone && <span className="kind">milestone</span>}

@@ -1,6 +1,11 @@
-import type { ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 import type { BindingProgress, Progress, ProgressValue } from '@konjir/types';
-import { wordDiff } from '../util.js';
+import { placeLink, wordDiff } from '../util.js';
+
+/** The session's kolab, which each link the page renders names, so a copied one opens there. */
+export const Here = createContext<string | undefined>(undefined);
+/** Makes a place's link: `href('node/orders')`. */
+export const useHref = () => { const here = useContext(Here); return (place: string) => placeLink(here, place); };
 
 const glyph = {
   clean: <circle cx="5" cy="5" r="4" />,

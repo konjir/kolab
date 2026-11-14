@@ -64,5 +64,18 @@ export function routeOf(a: { kolab?: string; node: string; version?: number; ele
   return !a.kolab || a.kolab === here ? `node/${tail}` : `read/${a.kolab}/${tail}`;
 }
 
+/**
+ * An address's kolab and the place in it: `#/k/<kolab>[/<place>]`. An address that names no kolab,
+ * as every one did before, means the session's.
+ */
+export function parsePlace(hash: string): { kolab?: string; place: string } {
+  const h = hash.replace(/^#\/?/, '');
+  const m = /^k\/([a-z0-9][a-z0-9-]*)(?:\/(.*))?$/.exec(h);
+  return m ? { kolab: m[1], place: m[2] ?? '' } : { place: h };
+}
+
+/** The address of a place in a kolab: a copied one opens in that kolab, whichever the reader's session is in. */
+export const placeLink = (kolab: string | undefined, place: string) => `#/${kolab ? `k/${kolab}${place ? '/' : ''}` : ''}${place}`;
+
 /** A side of a case file, in words. */
 export const sideWord = (seeks: string | null) => (seeks === 'change_intent' ? 'change the intent' : seeks === 'keep_intent' ? 'keep the intent' : 'no side recorded');
