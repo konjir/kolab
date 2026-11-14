@@ -75,14 +75,15 @@ function bundle(out) {
 }
 
 /**
- * The first-party code the bundle may inline: the CLI's own source, @konjir/login's and the channel
- * bridge's (W9.5), nothing else of the workspace's (no server, engine, db or address code). Those
- * three are the workspace's only Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2
+ * The first-party code the bundle may inline: the CLI's own source, @konjir/login's, @konjir/brand's
+ * (the tokens its sign-in page is drawn with) and the channel bridge's (W9.5), nothing else of the
+ * workspace's (no server, engine, db or address code). Those four are the workspace's only
+ * Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2
  * (D64), which the Apache-2.0 konjir (D63) must never carry. The build fails on anything else,
  * since the @konjir/source condition would otherwise inline it from TypeScript unseen, and on any of
- * the three if its package.json stops declaring Apache-2.0.
+ * the four if its package.json stops declaring Apache-2.0.
  */
-const FIRST_PARTY = ['apps/cli', 'libs/login', 'apps/channel-bridge'].map((dir) => join(root, dir));
+const FIRST_PARTY = ['apps/cli', 'libs/login', 'libs/brand', 'apps/channel-bridge'].map((dir) => join(root, dir));
 /** The workspace package a first-party input belongs to: the nearest directory above it with a package.json. */
 function owningPackage(path) {
   for (let dir = dirname(path); dir.startsWith(root + '/'); dir = dirname(dir)) {
@@ -105,7 +106,7 @@ function checkFirstParty(metafile, out) {
   }
   // Nothing is left behind from a build that fails it.
   if (stray.length) rmSync(out, { recursive: true, force: true });
-  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src, libs/login/src and apps/channel-bridge/src: ${stray.join(', ')}`);
+  if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src, libs/login/src, libs/brand/src and apps/channel-bridge/src: ${stray.join(', ')}`);
 }
 
 /** No package the bundle inlines may be FSL-licensed, as the rest of this workspace is (D64). */

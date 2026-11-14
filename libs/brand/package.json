@@ -1,0 +1,36 @@
+{
+  "name": "@konjir/brand",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Konjir's design tokens and marks, as data and as CSS: the two themes' colors, the type, the wordmark. Pure TypeScript with no dependencies, so the web page, Kolab's own pages and the CLI's sign-in page all read the same ones",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@konjir/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest"
+  },
+  "nx": {
+    "tags": [
+      "scope:shared"
+    ],
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "jest",
+          "{workspaceRoot}/apps/web/src/brand.css",
+          "{workspaceRoot}/brand/*.svg"
+        ]
+      }
+    }
+  }
+}

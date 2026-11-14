@@ -1,25 +1,29 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
 import { setupDigest, type SetupPlan } from '@konjir/engine';
+import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
 import type { Access, InvitePreview, Role } from '@konjir/types';
 
 /** Text made safe for HTML, in content and in attribute values. */
-export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+export const esc = escapeHtml;
 
-/** The pages' one style sheet, inline, allowed by its hash: the pages load nothing, and run no script. */
-const STYLE = `
-:root{color-scheme:dark light;--bg:#0f1115;--fg:#e8e6e3;--muted:#9aa0a6;--line:#2a2e36;--accent:#e0a458;--card:#161a20;--err:#ff8a80}
-@media (prefers-color-scheme: light){:root{--bg:#f7f5f0;--fg:#1d1f23;--muted:#5d636b;--line:#dcd8cf;--accent:#9a5b13;--card:#fff;--err:#b3261e}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:560px;margin:40px auto;padding:0 16px}h1{font-size:22px;margin:0 0 4px}p{margin:8px 0}.muted{color:var(--muted)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0}
-fieldset{border:0;padding:0;margin:16px 0}legend{font-weight:600;margin-bottom:6px}
-label.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 0}label.opt small{display:block;color:var(--muted)}
-input[type=text]{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;margin-top:4px}
-.row{display:flex;gap:8px;margin-top:20px}button{font:inherit;padding:9px 16px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
-button.primary{background:var(--accent);border-color:var(--accent);color:#111;font-weight:600}.err{color:var(--err);font-weight:600}
-code{font-family:ui-monospace,Menlo,monospace;font-size:13px}
-dl.locked{margin:16px 0}dl.locked dt{font-weight:600;margin-top:10px}dl.locked dd{margin:2px 0 0}dl.locked small{display:block;color:var(--muted)}`;
+/**
+ * The pages' one style sheet, inline, allowed by its hash: the pages load nothing, and run no script.
+ * It is Konjir's standalone page (@konjir/brand: the tokens of both themes, the wordmark, the
+ * horizon), which the CLI's sign-in page is built on too, and the forms these pages add to it.
+ */
+const STYLE = [
+  standalonePageCss(),
+  'fieldset{border:0;padding:0;margin:16px 0}legend{font-weight:600;margin-bottom:6px}',
+  'label.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 0}label.opt small{display:block;color:var(--ink-muted)}',
+  'input[type=radio],input[type=checkbox]{accent-color:var(--accent);margin-top:5px}',
+  'input[type=text]{width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:var(--r-md);background:var(--surface-sunken);color:var(--ink);font:inherit;margin-top:4px}',
+  '.row{display:flex;gap:8px;margin-top:20px}',
+  'button{font:inherit;min-height:40px;padding:8px 18px;border-radius:var(--r-md);border:1px solid var(--line-strong);background:transparent;color:var(--ink);cursor:pointer}',
+  'button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}',
+  '.err{color:var(--boundary);font-weight:600}',
+  'dl.locked{margin:16px 0}dl.locked dt{font-weight:600;margin-top:10px}dl.locked dd{margin:2px 0 0}dl.locked small{display:block;color:var(--ink-muted)}',
+].join('\n');
 const STYLE_HASH = createHash('sha256').update(STYLE).digest('base64');
 const csp = (formTargets: string[]) =>
   [`default-src 'none'`, `style-src 'sha256-${STYLE_HASH}'`, `form-action ${["'self'", ...formTargets].join(' ')}`, `frame-ancestors 'none'`, `base-uri 'none'`].join('; ');
@@ -60,8 +64,7 @@ export function sendPage(res: Response, status: number, title: string, body: str
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('referrer-policy', 'same-origin');
   res.setHeader('cache-control', 'no-store');
-  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} · Kolab</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`);
+  res.type('html').send(standalonePage({ title: `${title} · Kolab`, body, css: STYLE }));
 }
 
 /** A page that says what went wrong and what to do; it never redirects anywhere. */

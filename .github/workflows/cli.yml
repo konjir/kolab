@@ -26,6 +26,7 @@ on:
       - apps/channel-bridge/**
       - libs/types/**
       - libs/login/**
+      - libs/brand/**
       - package.json
       - package-lock.json
       - nx.json
