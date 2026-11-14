@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsoncError, commentsOf, member, parseTree, tokens, valueOf, type JsonNode } from './jsonc.js';
 import { agentCredentials, agentCredentialsPath, credentialsPath, keepSignIn, revokeIssued, type SetupDone } from './login.js';
@@ -118,9 +118,9 @@ const RUN_ONCE = /^(_npx|dlx|dlx-.+|bunx-.+)$/;
  *   installed from npm         the node (or bun) running it, and konjir.mjs where it is installed, `bridge`
  *   run by npx, or a dlx       the same, on a copy of konjir.mjs that konjir keeps in its own config
  *                              folder (`keep`: made once the setup is allowed), since the runner's
- *                              cache is cleared under it. Never `npx konjir bridge`: Claude Code
- *                              starts the bridge in the project, where npx would run a konjir the
- *                              project's own node_modules held
+ *                              cache is cleared under it; `self` runs that copy too. Never `npx
+ *                              konjir`: Claude Code starts the bridge in the project, where npx
+ *                              would run a konjir the project's own node_modules held
  */
 export function publishedKonjir(r: Running = running(), env: Record<string, string | undefined> = process.env): { bridge: Bridge; self: string; keep?: { from: string; to: string } } | undefined {
   if (!r.version) return undefined;
@@ -130,8 +130,10 @@ export function publishedKonjir(r: Running = running(), env: Record<string, stri
   let real = script;
   try { real = realpathSync(script); } catch { /* as given */ }
   if (real.split(/[\\/]/).some((part) => RUN_ONCE.test(part))) {
-    const to = join(dirname(credentialsPath(env)), 'bridge', `konjir-${r.version}.mjs`);
-    return { bridge: { command: r.execPath, args: [to, 'bridge'] }, self: `npx konjir@${r.version}`, keep: { from: real, to } };
+    // Absolute, whatever KONJIR_CREDENTIALS says: Claude Code starts the entry in the project.
+    const to = resolve(dirname(credentialsPath(env)), 'bridge', `konjir-${r.version}.mjs`);
+    // Run again from that copy too, never as `npx konjir` in the project.
+    return { bridge: { command: r.execPath, args: [to, 'bridge'] }, self: [r.execPath, to].map(shellWord).join(' '), keep: { from: real, to } };
   }
   return { bridge: { command: r.execPath, args: [real, 'bridge'] }, self: 'konjir' };
 }
@@ -205,7 +207,8 @@ export const claudeAgentsDir = (opts: { global: boolean; cwd: string; env: Recor
  */
 export const subagentFile = (e: Entry) => [
   '---',
-  `name: ${e.label}`,
+  // A label YAML would read as a number, a boolean or null is quoted, so the name stays the label.
+  `name: ${/^[a-z][a-z0-9-]*$/.test(e.label) && !['true', 'false', 'null', 'yes', 'no', 'on', 'off', 'y', 'n'].includes(e.label) ? e.label : JSON.stringify(e.label)}`,
   `description: Works in Konjir as ${e.agent}, in the ${e.role} role in kolab ${e.kolab}. Give it that agent's Konjir work.`,
   `tools: mcp__${e.name}__*`,
   '---',
@@ -797,11 +800,13 @@ function refuseLinkedSubagent(path: string, root: string) {
   const really = (p: string): string => {
     const rest: string[] = [];
     let dir = p;
-    while (!existsSync(dir) && dirname(dir) !== dir) { rest.unshift(basename(dir)); dir = dirname(dir); }
+    // lstat, not existsSync: a link to nothing is there, and realpath then refuses it.
+    const there = (d: string) => { try { lstatSync(d); return true; } catch { return false; } };
+    while (!there(dir) && dirname(dir) !== dir) { rest.unshift(basename(dir)); dir = dirname(dir); }
     return join(realpathSync(dir), ...rest);
   };
   let real: string, within: string;
-  try { real = really(dirname(path)); within = really(root); } catch { throw new Error(`${dirname(path)} can't be read, so konjir connect won't write a subagent there`); }
+  try { real = really(dirname(path)); within = really(root); } catch { throw new Error(`${dirname(path)} can't be read (a link to nothing, perhaps), so konjir connect won't write a subagent there. Remove the link, then run konjir connect again`); }
   if (real !== within && !real.startsWith(within.endsWith(sep) ? within : within + sep)) throw new Error(`${dirname(path)} leads to ${real}, outside ${root}; konjir connect won't write a subagent there. Remove the link, then run konjir connect again`);
 }
 

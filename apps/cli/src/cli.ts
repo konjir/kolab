@@ -46,6 +46,8 @@ import { Client, StreamableHTTPClientTransport, type OAuthClientProvider } from 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { constants as osConstants } from 'node:os';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // The roles a session works in (@konjir/types' ROLES), written out: the published client bundles nothing of Kolab's.
 const ROLES = ['product', 'engineer'];
 import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setup } from './login.js';
@@ -70,7 +72,20 @@ export { connectHarness, mergeClaude, mergeOpencode, parseAgents, setupScopeOf, 
 // Only @konjir/server itself being absent means that; any other failure to load it (a stale
 // dist/, a missing dependency of the server's, a syntax error) is rethrown as it is.
 class ClientOnly extends Error {}
-const server = () => import('@konjir/server').catch((e: unknown) => {
+/**
+ * Imports one of the checkout's heavy packages with the working folder set to this module's own,
+ * then puts it back. @onivoro/server-mcp, which the server and the bridge both load, looks up
+ * @nestjs/core/package.json from the working folder as it loads, and would run one a project
+ * shipped as a folder of code (the review of #144). The published konjir resolves nothing as it
+ * runs (scripts/bundle.mjs), and has no folder of its own to go to, so it imports as it is.
+ */
+async function fromHere<T>(load: () => Promise<T>): Promise<T> {
+  if (typeof KONJIR_VERSION === 'string') return load();
+  const cwd = process.cwd();
+  process.chdir(dirname(fileURLToPath(import.meta.url)));
+  try { return await load(); } finally { process.chdir(cwd); }
+}
+const server = () => fromHere(() => import('@konjir/server')).catch((e: unknown) => {
   const err = e as { code?: unknown; message?: unknown };
   if (err?.code === 'ERR_MODULE_NOT_FOUND' && /^Cannot find (package|module) '@konjir\/server'/.test(String(err.message))) {
     throw new ClientOnly('this konjir is the client only, so it has no serve. Run `bin/konjir serve` from a Kolab checkout (github.com/konjir/kolab), or point KONJIR_URL at a running Kolab.');
@@ -80,7 +95,7 @@ const server = () => import('@konjir/server').catch((e: unknown) => {
 
 // The channel bridge (W9.5, API29), with NestJS, is likewise imported only by `konjir bridge`. The
 // published konjir carries it; a checkout's entries run the checkout's own (its start.sh).
-const bridge = () => import('@konjir/channel-bridge');
+const bridge = () => fromHere(() => import('@konjir/channel-bridge'));
 
 // The published builds (scripts/package.mjs) define this as the package's version.
 declare const KONJIR_VERSION: string | undefined;

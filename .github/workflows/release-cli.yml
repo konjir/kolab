@@ -176,6 +176,9 @@ jobs:
           node apps/cli/scripts/e2e-connect.mjs --konjir apps/cli/dist-bin/konjir-linux-arm64
           npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/release/konjir-*.tgz
           node apps/cli/scripts/e2e-connect.mjs --konjir "$RUNNER_TEMP/installed/node_modules/.bin/konjir"
+          # As a package runner's cache holds it (npx's _npx): its entries run the copy konjir keeps.
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/_npx/e2e" "$RUNNER_TEMP"/release/konjir-*.tgz
+          node apps/cli/scripts/e2e-connect.mjs --konjir "$RUNNER_TEMP/_npx/e2e/node_modules/.bin/konjir"
 
       - name: npm publish --dry-run
         run: npm publish --dry-run "$RUNNER_TEMP"/release/konjir-*.tgz

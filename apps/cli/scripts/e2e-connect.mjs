@@ -292,7 +292,9 @@ async function main() {
   check(first.code === 0, `konjir connect exited ${first.code}:\n${first.out}${first.err}`);
   check(first.page.includes(`Set up 2 agents in <code>${KOLAB}</code>`) && first.page.includes('New: made now, private, yours'), `the setup page didn't offer a new kolab ${KOLAB} with 2 agents:\n${first.page}`);
   const last = first.out.trim().split('\n').slice(-2);
-  check(last.join('\n') === 'konjir claude writer\nkonjir claude builder', `connect's last lines aren't one konjir claude command per agent: ${last.join(' / ')}`);
+  // `konjir claude <label>`, or for a konjir run from a package runner's cache, the copy it keeps, never npx.
+  const runsAgain = (label) => new RegExp(`^(konjir|\\S+ \\S+konjir-[0-9.]+\\.mjs) claude ${label}$`);
+  check(runsAgain('writer').test(last[0]) && runsAgain('builder').test(last[1]) && !/npx/.test(last.join(' ')), `connect's last lines aren't one konjir claude command per agent: ${last.join(' / ')}`);
 
   const mcpJson = join(dir, '.mcp.json');
   check(existsSync(mcpJson), '.mcp.json was not written');
@@ -338,11 +340,14 @@ async function main() {
   for (const [label, role] of agents) await whoami(label, role);
 
   step(`a session on konjir-builder, as Claude Code starts it (${[servers['konjir-builder'].command, ...servers['konjir-builder'].args].join(' ')})`);
-  // A project that ships packages the bridge might look for: none of them is ever run. A published
-  // konjir carries each as absent, so nothing is looked for in the folder Claude Code starts it in.
+  // A project that ships packages the bridge looks for as it starts: none of them is ever run. These
+  // are the ones the reviews of #144 found a binary or the npm package loading from the folder
+  // Claude Code starts it in; a published konjir resolves nothing as it runs (scripts/bundle.mjs).
   const ran = join(tmp, 'planted-ran.txt');
   for (const [pkg, file] of [['@nestjs/websockets', 'socket-module.js'], ['@nestjs/microservices', 'microservices-module.js'], ['@nestjs/microservices', 'index.js'],
-    ['class-transformer', 'index.js'], ['class-validator', 'index.js'], ['@konjir/server', 'index.js'], ['konjir', 'konjir.mjs']]) {
+    ['class-transformer', 'index.js'], ['class-validator', 'index.js'], ['@konjir/server', 'index.js'], ['file-type', 'index.js'],
+    // @nestjs/core/package.json as a folder of code: @onivoro/server-mcp looks it up from the working folder.
+    ['@nestjs/core/package.json', 'index.js']]) {
     mkdirSync(join(dir, 'node_modules', pkg), { recursive: true });
     writeFileSync(join(dir, 'node_modules', pkg, file), `require('node:fs').appendFileSync(${JSON.stringify(ran)}, ${JSON.stringify(`${pkg}/${file}\n`)});\n`);
   }
