@@ -96,7 +96,7 @@ test('the layer that owns a stale element says it still holds', async () => {
 
 test('edits are kept as a draft in the page until submitted for review', async () => {
   view(lee, spec());
-  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+  fireEvent.click((await screen.findAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ }))[1]);
   fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 3 reset requests per email address per hour.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
   fireEvent.click(screen.getByRole('button', { name: 'Add a requirement' }));
@@ -134,7 +134,7 @@ test('a new spec submitted for review shows its version in review, not an empty 
   expect(screen.getByText(/Not committed yet: nothing is, so this is the version waiting/)).toBeTruthy();
   expect(screen.getByRole('region', { name: 'In review' }).textContent).toMatch(/Version 1 of kj:password-reset, submitted by lee/);
   // Not editable while it waits: an edit would be made on top of nothing committed.
-  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Add a requirement' })).toBeNull();
 });
 
@@ -157,7 +157,7 @@ test('when nobody else can review a version yet, the page says so and how to get
   expect(await screen.findByText(new RegExp(nobodyCanReview('functional').replace(/[.]/g, '\\.')))).toBeTruthy();
   cleanup();
   view(lee, spec());
-  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+  fireEvent.click((await screen.findAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ }))[1]);
   fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
   replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: [], note: null, cascade_queued: false, abandoned: false };
@@ -168,10 +168,10 @@ test('when nobody else can review a version yet, the page says so and how to get
 test('an engineer reading the spec may ask, not edit', async () => {
   view(eng, spec({ can_write: false }));
   await screen.findByText(/Engineers can’t change intent/);
-  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ })).toBeNull();
   expect(screen.getByText('Waiting on the functional layer.')).toBeTruthy();
-  fireEvent.click(screen.getAllByRole('button', { name: 'Ask' })[0]);
-  fireEvent.change(screen.getByLabelText(/Ask about/), { target: { value: 'Which timing?' } });
+  fireEvent.click(screen.getAllByRole('button', { name: /^Ask about [A-Z][A-Z0-9.]*$/ })[0]);
+  fireEvent.change(screen.getByRole('textbox', { name: /Ask about/ }), { target: { value: 'Which timing?' } });
   await act(async () => { fireEvent.click(document.querySelector('form.ask-form button[type=submit]')!); });
   expect(calls.at(-1)).toStrictEqual({ url: '/api/queries', method: 'POST', body: { node: 'password-reset', seq: 3, element: 'PR3', kind: 'question', text: 'Which timing?' } });
 });
@@ -201,7 +201,7 @@ test('a draft that came back is edited in place: its changes are the page\'s edi
   expect(screen.getByText('A reset is logged.')).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Draft' }).textContent).toMatch(/2 changes to kj:password-reset, in place of your kj:password-reset@4/);
   expect(screen.getByRole('region', { name: 'Your draft 4' }).textContent).toMatch(/Editing your draft/);
-  fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1]);
+  fireEvent.click(screen.getAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ })[1]);
   fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 3 reset requests per email address an hour.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
   replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 5, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
@@ -219,10 +219,10 @@ test('a first version that came back, with nothing committed, is edited in place
   replies['/api/nodes/password-reset?version=1'] = draftView;
   view(lee, spec({ node, reading: null, versions: [back], elements: [], drafts: [back] }));
   expect(await screen.findByText(/^At most 3 reset requests per hour/)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ })).toBeNull();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Edit it' })); });
-  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(2));
-  fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+  await waitFor(() => expect(screen.getAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ })).toHaveLength(2));
+  fireEvent.click(screen.getAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ })[0]);
   fireEvent.click(screen.getByRole('button', { name: 'Remove PR3' }));
   fireEvent.click(screen.getByRole('button', { name: 'Add a requirement' }));
   fireEvent.change(screen.getByLabelText('Edit PR9'), { target: { value: 'The page never says whether the email has an account.' } });
@@ -256,7 +256,7 @@ test('the notice of a submission in review follows it: committed, back with chan
     const page = (tick: number) => <NodeView me={lee} name="password-reset" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
     replies['/api/nodes/password-reset'] = base;
     const r = render(page(0));
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ }))[1]);
     fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
     replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
@@ -279,7 +279,7 @@ test('a submission folded onto the node\'s newer version is followed to the fold
   const page = (tick: number) => <NodeView me={lee} name="password-reset" tick={tick} act={runner} go={() => undefined} read={() => undefined} />;
   replies['/api/nodes/password-reset'] = base;
   const r = render(page(0));
-  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[1]);
+  fireEvent.click((await screen.findAllByRole('button', { name: /^Edit [A-Z][A-Z0-9.]*$/ }))[1]);
   fireEvent.change(screen.getByLabelText('Edit PR8'), { target: { value: 'At most 2 reset requests per hour.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Keep in draft' }));
   replies['/api/nodes/password-reset/submit'] = { ok: false, seq: 4, committed: false, in_review: true, stale: false, unreviewed: false, reviewers: ['pat'], note: null, cascade_queued: false, abandoned: false };
@@ -298,4 +298,31 @@ test('a submission folded onto the node\'s newer version is followed to the fold
   r.rerender(page(3));
   await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Committed kj:password-reset@6.*folded onto the node’s newer version, as v6\. Approved\./));
   expect(screen.getByRole('status').textContent).not.toMatch(/Nothing changed for anyone/);
+});
+
+test('a document opens on its elements: its rulings as a whole fold away, its sections are headings in an outline, and a missing element is said so', async () => {
+  const ruling = {
+    ruling: 'r1', ref: 'D7', effect: 'keep_intent', on: 'kj:password-reset@3', text: 'Reset links last an hour.', replaces: null,
+    ruled_by: 'Lee', ruled_at: at, recorded_at: at, case: null, node: 'password-reset', seq: 3, element: null,
+  } as unknown as WebNodeView['rulings'][number];
+  const data = spec({ rulings: [ruling] });
+  data.elements = [
+    { ...data.elements[0], id: 'RQ', text: 'RQ: requesting a reset', address: 'kj:password-reset@3#RQ', queries: [] },
+    { ...data.elements[0], parent: 'RQ' },
+    { ...data.elements[1], id: 'LM', text: 'LM: limits', address: 'kj:password-reset@3#LM', relied_on_by: [] },
+    { ...data.elements[1], parent: 'LM' },
+    { ...data.elements[1], id: 'LM1', parent: 'LM', text: 'LM1: per address', address: 'kj:password-reset@3#LM1', relied_on_by: [] },
+    { ...data.elements[1], id: 'LM1a', parent: 'LM1', text: 'Three an hour.', address: 'kj:password-reset@3#LM1a', relied_on_by: [] },
+  ];
+  replies['/api/nodes/password-reset'] = data;
+  render(<NodeView me={lee} name="password-reset" tick={0} act={runner} go={() => undefined} read={() => undefined} focus="password-reset#PR99" />);
+  expect(await screen.findByRole('heading', { level: 1, name: 'Password reset' })).toBeTruthy();
+  expect(screen.getByRole('heading', { level: 2, name: 'RQ: requesting a reset' })).toBeTruthy();
+  // A section inside a section is a level deeper.
+  expect(screen.getByRole('heading', { level: 3, name: 'LM1: per address' })).toBeTruthy();
+  expect(screen.getByRole('navigation', { name: /Sections of/ })).toBeTruthy();
+  const folded = screen.getByText(/1 ruling on kj:password-reset as a whole/).closest('details')!;
+  expect(folded.open).toBe(false);
+  expect(screen.getByRole('alert').textContent).toMatch(/There’s no element PR99 in kj:password-reset@3/);
+  expect(screen.getByRole('button', { name: 'Ask about PR3' })).toBeTruthy();
 });

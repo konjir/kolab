@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WebWorkState, type WorkFields } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
-import { Addr, Diff, Pill } from './bits.js';
+import { Addr, Diff, Pill, ProgressPills } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
 import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 import { More, useMore } from './Pages.js';
+import { withRulingLinks } from './Places.js';
 
 const KIND_WORD: Record<string, string> = {
   spec: 'Functional spec', prototype: 'Prototype', binding: 'Technical binding', plan: 'Plan (retired)',
@@ -192,6 +193,16 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
   const versions = [...view.versions, ...older.pages.flatMap((p) => p.versions)].sort((a, b) => a.seq - b.seq);
   const nodeQueries = [...view.queries, ...olderQueries.pages.flatMap((p) => p.queries)];
   const rows = reading ? [...view.elements, ...(isLatest || latest === null ? draft.added.map(asElement(name)) : [])] : draft.added.map(asElement(name));
+  // An element with elements under it heads a section: the outline lists them, and each reads as a heading.
+  const parents = new Set(view.elements.map((e) => e.parent).filter((p): p is string => !!p));
+  const sections = view.elements.filter((e) => parents.has(e.id));
+  const focusId = focus?.startsWith(`${name}#`) ? focus.slice(name.length + 1) : undefined;
+  // Only once the version asked for is the one shown: the last one stays on screen while it loads.
+  const missing = focusId && reading && reading.seq === (version ?? latest ?? reading.seq) && !rows.some((e) => e.id === focusId) ? focusId : undefined;
+  const here = foreign ? `kj:${view.kolab}/${name}${reading ? `@${reading.seq}` : ''}` : addr(name, reading?.seq);
+  // A section's depth: a top-level section is a level-2 heading, under the document's h1.
+  const byId = new Map(view.elements.map((e) => [e.id, e.parent]));
+  const level = (id: string) => { let n = 2, p = byId.get(id); while (p && n < 6) { n++; p = byId.get(p); } return n; };
   return (
     <>
       {notice && <Notice outcome={notice} layer={view.node.layer} onDismiss={() => setNotice(undefined)} />}
@@ -199,7 +210,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
         <div className="doc-head">
           <span className="kind">{KIND_WORD[view.node.kind] ?? view.node.kind}</span>
           {view.node.parent && <span className="kind">{PARENT_WORD[view.node.kind] ?? 'of'} <Addr>{foreign ? `kj:${view.kolab}/${view.node.parent}` : addr(view.node.parent)}</Addr></span>}
-          <h2 id="doc-title">{view.node.title}</h2>
+          <h1 id="doc-title">{view.node.title}</h1>
           <Addr>{foreign ? `kj:${view.kolab}/${name}${reading ? `@${reading.seq}` : ''}` : addr(name, reading?.seq)}</Addr>
           <div className="doc-meta">
             {reading
@@ -226,10 +237,22 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
             <button type="button" className="btn quiet" onClick={() => go(`read/${view.kolab}`)}>All of {view.kolab}</button>
           </div>
         )}
-        {(nodeQueries.length > 0 || view.rulings.length > 0) && <div className="flags" style={{ marginTop: 12 }}>
-          {view.rulings.map((r) => <RulingBox key={r.ruling} ruling={r} me={me} go={go} />)}
+        {missing && <p className="notice" role="alert" style={{ marginTop: 12 }}>There’s no element {missing} in {here}. It may have been removed or renamed in another version.</p>}
+        {sections.length > 1 && (
+          <nav className="outline" aria-label={`Sections of ${view.node.title}`}>
+            {sections.map((s) => <a key={s.id} href={`#/${kolab ? `read/${kolab}` : 'node'}/${name}${version ? `@${version}` : ''}#${s.id}`}>{s.id}</a>)}
+          </nav>
+        )}
+        {nodeQueries.length > 0 && <div className="flags" style={{ marginTop: 12 }}>
           {nodeQueries.map((q) => <QueryBox key={q.id} query={q} me={me} act={act} readOnly={foreign} />)}
           <More more={olderQueries.more} busy={olderQueries.busy} what={`questions on ${addr(name)}`} /></div>}
+        {view.rulings.length > 0 && (
+          // Rulings on the document as a whole: precedent to look up, folded so the document comes first.
+          <details className="node-rulings">
+            <summary>{view.rulings.length === 1 ? '1 ruling' : `${view.rulings.length} rulings`} on {addr(name)} as a whole</summary>
+            <div className="flags">{view.rulings.map((r) => <RulingBox key={r.ruling} ruling={r} me={me} go={go} />)}</div>
+          </details>
+        )}
       </section>
 
       <ol className="els" aria-label="Elements">
@@ -245,7 +268,7 @@ export function NodeView({ me, name, version, tick, act, go, read, focus, kolab 
             foreign={foreign} belongs={belongs && committed} canRule={canRule}
             casing={casing === e.id} onCase={() => { setCasing(casing === e.id ? undefined : e.id); setRuling(undefined); setAsking(undefined); }}
             ruling={ruling === e.id} onRule={() => { setRuling(ruling === e.id ? undefined : e.id); setCasing(undefined); setAsking(undefined); }}
-            onFormDone={() => { setCasing(undefined); setRuling(undefined); }}
+            onFormDone={() => { setCasing(undefined); setRuling(undefined); }} section={parents.has(e.id) ? level(e.id) : undefined}
             onUnlink={(edge) => setDraft((d) => ({ ...d, unlinked: d.unlinked.includes(edge) ? d.unlinked.filter((x) => x !== edge) : [...d.unlinked, edge] }))} onAsk={() => { setAsking(e.id); setEditing(undefined); }} />
         )) : (
           <li className="empty">{view.node.layer === 'functional' ? 'No requirements yet.' : 'No elements yet.'} {writable ? 'Add the first one below.' : ''}</li>
@@ -361,6 +384,8 @@ interface RowProps {
   /** The person may open a case file here (D49), or rule directly (D51); and whether either form is open. */
   belongs: boolean; canRule: boolean; casing: boolean; ruling: boolean;
   onCase(): void; onRule(): void; onFormDone(): void;
+  /** The element heads a section: its text reads as a heading of this level. */
+  section?: number;
 }
 
 function ElementRow(p: RowProps) {
@@ -400,9 +425,11 @@ function ElementRow(p: RowProps) {
             </div>
           </>
         ) : (
-          <p style={p.removed ? { textDecoration: 'line-through' } : undefined}>{p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.text}</p>
+          <p style={p.removed ? { textDecoration: 'line-through' } : undefined} {...(p.section ? { role: 'heading', 'aria-level': p.section, className: 'section-head' } : {})}>
+            {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.foreign || !p.belongs ? p.text : withRulingLinks(p.text)}</p>
         )}
         {(e.work || e.work_state) && <Work work={e.work ?? {}} state={e.work_state} name={p.name} />}
+        {e.progress && <div className="links">progress <ProgressPills progress={e.progress} /></div>}
         {e.relies_on.length > 0 && <div className="links">relies on {e.relies_on.map((l) => (
           <span key={l.edge} style={p.unlinked.includes(l.edge) ? { textDecoration: 'line-through' } : undefined}>
             {chip(l, 'target')}
@@ -416,10 +443,10 @@ function ElementRow(p: RowProps) {
       {!p.editing && (
         <div className="acts">
           {status}{open.length > 0 && <Pill tone="question">asks</Pill>}{e.cases.length > 0 && <Pill tone="boundary">disputed</Pill>}
-          {p.writable && !p.removed && <button type="button" className="btn quiet" onClick={p.onEdit}>Edit</button>}
-          {p.seq !== null && !p.foreign && <button type="button" className="btn quiet" onClick={p.onAsk}>Ask</button>}
-          {p.seq !== null && p.belongs && !p.drafted && <button type="button" className="btn quiet" onClick={p.onCase} title="Open a case file: a disagreement about this element that you couldn’t settle">Dispute</button>}
-          {p.seq !== null && p.canRule && !p.drafted && <button type="button" className="btn quiet" onClick={p.onRule} title="Rule on this element directly, with no case file behind it">Rule</button>}
+          {p.writable && !p.removed && <button type="button" className="btn quiet" aria-label={`Edit ${e.id}`} onClick={p.onEdit}>Edit</button>}
+          {p.seq !== null && !p.foreign && <button type="button" className="btn quiet" aria-label={`Ask about ${e.id}`} onClick={p.onAsk}>Ask</button>}
+          {p.seq !== null && p.belongs && !p.drafted && <button type="button" className="btn quiet" aria-label={`Dispute ${e.id}`} onClick={p.onCase} title="Open a case file: a disagreement about this element that you couldn’t settle">Dispute</button>}
+          {p.seq !== null && p.canRule && !p.drafted && <button type="button" className="btn quiet" aria-label={`Rule on ${e.id}`} onClick={p.onRule} title="Rule on this element directly, with no case file behind it">Rule</button>}
         </div>
       )}
       {(e.marks.length > 0 || queries.length > 0 || e.cases.length > 0 || e.rulings.length > 0 || p.asking || p.casing || p.ruling) && (

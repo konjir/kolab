@@ -25,9 +25,10 @@ async function signIn(page: Page, who: string) {
 test('a product owner does what the prototype simulates, against the real server', async ({ browser }) => {
   const lee = await (await browser.newContext()).newPage();
   await signIn(lee, 'lee');
-  // The spec, with the open question beside PR3, and the summary of what waits.
-  await expect(lee.getByRole('heading', { name: 'Password reset', level: 2 })).toBeVisible();
-  await expect(lee.getByRole('heading', { level: 1 })).toHaveText('1 question waits on you.');
+  // Home is her inbox: what waits on her. The spec has the open question beside PR3.
+  await expect(lee.getByRole('heading', { level: 1 })).toHaveText('1 thing waits on you');
+  await lee.getByRole('button', { name: 'Password reset', exact: true }).click();
+  await expect(lee.getByRole('heading', { name: 'Password reset', level: 1 })).toBeVisible();
   const pr3 = lee.locator('li.el', { has: lee.getByRole('button', { name: 'PR3', exact: true }) });
   await expect(pr3.getByText(/Should the response time be indistinguishable too/)).toBeVisible();
   await shot(lee, '1-spec');
@@ -63,6 +64,8 @@ test('a product owner does what the prototype simulates, against the real server
   // Pat approves it in the page.
   const pm = await (await browser.newContext()).newPage();
   await signIn(pm, 'pat');
+  // Pat's inbox holds the review: it opens the version in review.
+  await pm.getByRole('link', { name: 'kj:password-reset@4' }).click();
   await expect(pm.getByRole('region', { name: 'In review' })).toBeVisible();
   await shot(pm, '3-review');
   await pm.getByRole('button', { name: 'Approve' }).click();
@@ -82,18 +85,20 @@ test('a product owner does what the prototype simulates, against the real server
     await eng.getByRole('button', { name: 'Still holds' }).first().click();
     await expect(eng.getByRole('button', { name: 'Still holds' })).toHaveCount(n - 1);
   }
-  await expect(eng.getByRole('heading', { level: 1 })).toHaveText('Everything holds.');
+  await eng.getByRole('button', { name: /^Inbox/ }).click();
+  await expect(eng.getByRole('heading', { level: 1 })).toHaveText('Nothing waits on you');
 
   // Lee asks the binding a question; it waits on the engineer.
   await lee.getByRole('button', { name: 'Password reset on Postgres' }).click();
   await lee.locator('li.el', { has: lee.getByRole('button', { name: 'B10', exact: true }) }).getByRole('button', { name: 'Ask' }).click();
-  await lee.getByLabel(/Ask about/).fill('Is the background job retried if the email provider is down?');
+  await lee.getByRole('textbox', { name: /Ask about/ }).fill('Is the background job retried if the email provider is down?');
   await lee.locator('form.ask-form').getByRole('button', { name: 'Ask', exact: true }).click();
   await eng.getByRole('button', { name: 'Questions' }).click();
   await expect(eng.getByText('Is the background job retried if the email provider is down?')).toBeVisible({ timeout: 15_000 });
 
   // Lineage and activity.
   await lee.getByRole('button', { name: 'Lineage' }).click();
+  await lee.getByText(/^The whole graph/).click();
   await expect(lee.locator('svg.wires path').first()).toBeAttached();
   await shot(lee, '4-lineage');
   await lee.getByRole('button', { name: 'Activity' }).click();
@@ -118,8 +123,8 @@ test('a product owner does what the prototype simulates, against the real server
   await pmPr3.locator('.casebox form button[type=submit]').click();
   await expect(pmPr3.locator('.position')).toHaveCount(2);
 
-  // Lee, who holds no side, rules from the Cases page: she sustains Eli's position, so the intent changes.
-  await lee.getByRole('button', { name: /^Cases/ }).click();
+  // Lee, who holds no side, rules from the Case files page: she sustains Eli's position, so the intent changes.
+  await lee.getByRole('button', { name: /^Case files/ }).click();
   const theCase = lee.locator('.casebox').first();
   await theCase.getByLabel(/Sustain eli’s: change the intent/).check({ timeout: 15_000 });
   await theCase.getByLabel('The ruling, as agents will be served it').fill('The response time must be indistinguishable too: pad both to the same duration.');
@@ -149,7 +154,7 @@ test('a product owner does what the prototype simulates, against the real server
   await expect(lee.getByRole('heading', { name: /Not approved/ })).toBeVisible();
   await back.getByRole('button', { name: 'Edit it' }).click();
   await expect(leePr3.getByText('in the same time')).toBeVisible();
-  await leePr3.getByRole('button', { name: 'Edit', exact: true }).click();
+  await leePr3.getByRole('button', { name: 'Edit PR3', exact: true }).click();
   await lee.getByLabel('Edit PR3').fill('The request page shows the same response, and takes the same time, whether or not the email belongs to an account.');
   await lee.getByRole('button', { name: 'Keep in draft' }).click();
   await lee.getByRole('button', { name: 'Resubmit for review' }).click();
@@ -163,7 +168,7 @@ test('a product owner does what the prototype simulates, against the real server
   await lee.getByRole('button', { name: 'All kolabs' }).click();
   await lee.locator('article.kcard', { hasText: 'Checkout' }).getByRole('button', { name: 'Read here' }).click();
   await lee.getByRole('button', { name: 'kj:checkout/checkout@2' }).click();
-  await expect(lee.getByRole('heading', { name: 'Checkout', level: 2 })).toBeVisible();
+  await expect(lee.getByRole('heading', { name: 'Checkout', level: 1 })).toBeVisible();
   await expect(lee.getByText(/Read in place from kolab/)).toBeVisible();
   await expect(lee.getByText('Pressing Pay more than once, or retrying after a timeout, charges the card once.')).toBeVisible();
   await expect(lee.getByText(/If the email provider is down/)).toBeVisible();
@@ -183,16 +188,19 @@ test('a product owner does what the prototype simulates, against the real server
   await lee.locator('#kTitle').fill('Billing');
   await expect(lee.getByLabel('Short name')).toHaveValue('billing');
   await lee.getByRole('button', { name: 'Create kolab' }).click();
-  await expect(lee.getByRole('heading', { level: 1 })).toHaveText('Nothing written yet. Start with the spec.');
+  await expect(lee.locator('.summary-lead')).toHaveText('Nothing written yet. Start with the spec.');
   await expect(lee.locator('.kolab-btn .nm')).toHaveText('Billing');
   // She switches to the engineer role there, and back to Accounts through the picker, as product.
+  // Each switch ends the session, so the page asks first: she confirms.
+  lee.on('dialog', (d) => void d.accept());
   await lee.getByRole('radio', { name: 'engineer' }).click();
   await expect(lee.getByRole('radio', { name: 'engineer' })).toHaveAttribute('aria-checked', 'true');
   await lee.locator('.kolab-btn').click();
   await lee.getByRole('button', { name: /Accounts/ }).click();
   await expect(lee.locator('.kolab-btn .nm')).toHaveText('Accounts');
   await lee.getByRole('radio', { name: 'product' }).click();
-  await expect(lee.getByRole('heading', { name: 'Password reset', level: 2 })).toBeVisible();
+  // Back home in Accounts, as product: her inbox.
+  await expect(lee.getByRole('heading', { level: 1 })).toHaveText(/waits? on you$/);
 
   // Signing out ends the session and returns to the sign-in page.
   await lee.getByRole('button', { name: 'Sign out' }).click();

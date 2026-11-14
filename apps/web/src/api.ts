@@ -85,9 +85,13 @@ export const RECHECK_401_MS = 1000;
  * Who the session is, asked so that a restart can't sign the page out: Kolab away is waited out,
  * and a 401 is asked once more after a moment, since another of the page's calls may have just
  * refreshed the session (D55) and its new cookie be on its way. Null only when Kolab says twice,
- * each time after its own try at a refresh, that there is no session.
+ * each time after its own try at a refresh, that there is no session. With `first`, a browser
+ * with no session cookie at all is null at once: nothing asked, so no 401 (UX-28).
  */
-export async function whoAmI(p: Patience & { push?: boolean } = {}): Promise<WebMe | null> {
+export async function whoAmI(p: Patience & { push?: boolean; first?: boolean } = {}): Promise<WebMe | null> {
+  // On a page's first load, a browser that carries no session at all is signed out, said without a 401.
+  // Only a clear "no" counts: a probe that fails otherwise, as against an older Kolab without it, asks /api/me.
+  if (p.first && (await patiently(() => api<{ present?: boolean }>('session/present'), p).catch(() => undefined))?.present === false) return null;
   for (let i = 0; i < 2; i++) {
     try { return await patiently(() => api<WebMe>('me', undefined, undefined, { push: p.push }), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
     if (i === 0) await clock.wait(RECHECK_401_MS);

@@ -6,8 +6,9 @@ import type { Request, Response } from 'express';
 import { BROWSER_SECRET, Kolab, maskTokens, webMachine } from '@konjir/engine';
 import type {
   InvitePreview, WebAnswer, WebChangeGrant, WebAsk, WebCreateInvite, WebCreateKolab, WebCreateNode, WebInviteToken, WebMe, WebOpenCase, WebPosition, WebResolve, WebRuleCase, WebRuleDirect,
-  WebCli, WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict,
+  WebCli, WebSignIn, WebSignInMethods, WebSubmit, WebSwitch, WebVerdict, WorkState,
 } from '@konjir/types';
+import { WORK_STATES } from '@konjir/types';
 import { KOLAB, WEB_OPTIONS, type WebOptions } from '../tokens.js';
 import {
   Limit, WEB_CALLBACK, WEB_CLIENT, bindingCookieAttrs, clearInviteCookie, clientAddress, cookieOf, originOf, sameSecret, setInviteCookie,
@@ -92,6 +93,17 @@ export class WebSessionController {
     @Inject(WebPeople) private readonly people: WebPeople,
     @Inject(KOLAB) private readonly kolab: Kolab,
   ) {}
+
+  /**
+   * Whether the request carries a session at all: its cookie or a refresh token's (D55). It checks
+   * neither, so it says nothing of who; it lets the page skip asking /api/me, and its 401, when
+   * nobody has signed in in this browser.
+   */
+  @Get('present')
+  present(@Req() req: Request): { present: boolean } {
+    checkOrigin(req, this.options);
+    return { present: !!(tokenOf(req, this.options) || tokenOf(req, this.options, refreshCookieName(this.options))) };
+  }
 
   /** How a person may sign in here: with the identity provider (D55), with a pasted token (development), or both. */
   @Get('methods')
@@ -281,6 +293,14 @@ export class WebController {
     return run(() => this.web.queries(s, { open: st === undefined ? undefined : st === 'open' }, page(c, l)));
   }
 
+  /** ?binding= for one binding's packages, ?state= for one state (todo, in_progress, in_review or done). */
+  @Get('work')
+  work(@WebSession() s: string, @Query('binding') binding?: unknown, @Query('state') state?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    const st = one('state', state);
+    if (st !== undefined && !(WORK_STATES as readonly string[]).includes(st)) throw new BadRequestException({ error: 'bad_request', message: `the state is one of ${WORK_STATES.join(', ')}` });
+    return run(() => this.web.work(s, { binding: one('binding', binding), state: st as WorkState | undefined }, page(c, l)));
+  }
+
   @Get('marks') marks(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.marks(s, page(c, l))); }
   @Get('reviews') reviews(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.reviews(s, page(c, l))); }
   @Get('lineage') lineage(@WebSession() s: string, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) { return run(() => this.web.lineage(s, page(c, l))); }
@@ -421,8 +441,8 @@ export class WebController {
   ruleCase(@WebSession() s: string, @Param('id') id: string, @Body() body: WebRuleCase) { return run(() => this.web.ruleCase(s, id, body)); }
 
   @Get('rulings')
-  rulings(@WebSession() s: string, @Query('node') node?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
-    return run(() => this.web.rulings(s, one('node', node), page(c, l)));
+  rulings(@WebSession() s: string, @Query('node') node?: unknown, @Query('ref') ref?: unknown, @Query('cursor') c?: unknown, @Query('limit') l?: unknown) {
+    return run(() => this.web.rulings(s, one('node', node), page(c, l), one('ref', ref)));
   }
 
   @Post('rulings')

@@ -11,7 +11,7 @@ import type { Kolab } from '@konjir/engine';
 import { agentsMay, closeAtEnd, els, people, registeredRepository, setup, TEST_KOLAB } from '@konjir/engine/testing';
 import { cursorFor, REVIEW_EVIDENCE_SHOWN, scoped } from '@konjir/engine';
 import type {
-  KolabAccessView, PolicySet, PolicyView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebOverview,
+  KolabAccessView, PolicySet, PolicyView, WebActivityView, WebCase, WebCasesView, WebEvent, WebForeignKolab, WebInvitesView, WebMark, WebNodeView, WebOutcome, WebWorkView, WebOverview,
   WebQueriesView, WebQuery, WebReviewsView, WebRuling, WebVersionsView, WebWorkOutcome, WebWorkReview,
 } from '@konjir/types';
 import { startServer } from '../src/server.js';
@@ -120,6 +120,37 @@ test('behind the TLS proxy the cookie is __Host- prefixed: Secure, Path=/, no Do
   });
   expect(res.status).toBe(200);
   expect(res.cookie).toMatch(/^__Host-konjir_session=.+; Path=\/; Secure; HttpOnly; SameSite=Strict$/);
+});
+
+test("another kolab's card says what waits there for someone who writes a layer of it, and nothing to a reader (D49)", async () => {
+  const { kolab, product } = await setup();
+  await kolab.addActor('erin');
+  await kolab.addActor('fay');
+  await kolab.createKolab('other', { owner: 'erin', title: 'Other' });
+  await kolab.createKolab('third', { owner: 'fay', title: 'Third' });
+  for (const [k, who] of [['other', 'erin'], ['third', 'fay']]) {
+    const erin = await kolab.openSession(who, 'product', { kolab: k });
+    await kolab.createNode(erin, 'spec', 'Secret', `secret-${k}`);
+    await kolab.commit(erin, `secret-${k}`, { elements: els({ S1: 'Only those who write know.' }) });
+    await kolab.raiseQuery(erin, `kj:secret-${k}#S1`, 'Who reads it?');
+  }
+  // Granted once each spec is committed, so it isn't alice's to review.
+  await kolab.grant('other', 'alice', 'write', { layers: ['functional'] });
+  await kolab.grant('third', 'alice', 'read');
+  const alice = await signIn(await serve(kolab), product);
+  const kolabs = (await alice.call<WebOverview>('overview')).body.kolabs;
+  expect(kolabs.map((k) => [k.id, k.waiting ?? null])).toStrictEqual([
+    ['other', { reviews: 0, questions: 1, marks: 0, cases: 0 }], ['test', null], ['third', null]]);
+});
+
+test('whether a request carries a session is said without a 401, and without checking it', async () => {
+  const { kolab, product } = await setup();
+  const base = await serve(kolab);
+  const present = async (cookie?: string) => (await fetch(`${base}/api/session/present`, { headers: { origin: base, ...(cookie ? { cookie } : {}) } })).json();
+  expect(await present()).toStrictEqual({ present: false });
+  const alice = await signIn(base, product);
+  expect(await present(alice.jar)).toStrictEqual({ present: true });
+  expect(await present('konjir_session=nonsense')).toStrictEqual({ present: true });
 });
 
 test('switching kolab or role ends the session and opens another, and a person makes a kolab of their own', async () => {
@@ -607,6 +638,9 @@ test('case files and rulings in the page: open, take the other side, rule, prece
   expect((await bob.call<WebCasesView>('cases?mine=true')).body.cases.map((x) => x.case)).toStrictEqual([c.case]);
   expect((await bob.call('cases?state=whatever')).status).toBe(400);
   expect((await carol.call<{ rulings: WebRuling[] }>('rulings')).body.rulings).toStrictEqual([]);
+  // A ruling is read by its own name too; a name no ruling could have is refused.
+  expect((await carol.call<{ rulings: WebRuling[] }>('rulings?ref=D999')).body.rulings).toStrictEqual([]);
+  expect((await carol.call('rulings?ref=no%20such')).status).toBe(400);
   expect((await alice.call<WebActivityView>('activity')).body.items.map((i) => i.text)).toEqual(expect.arrayContaining([
     'opened a case file on kj:orders@1#R1', 'took the other side of the case file on kj:orders@1#R1', 'ruled on kj:orders@1#R1: the intent changes',
   ]));
@@ -714,6 +748,51 @@ test('another kolab\'s committed work reads in place, read only, and nothing els
   expect((await alice.call('queries', { node: 'other/secret', element: 'S1', kind: 'question', text: 'Why?' })).status).toBe(400);
   expect((await alice.call('cases', { node: 'other/secret', element: 'S1', question: 'q', claim: 'c', evidence: ['kj:orders#R1'], seeks: 'keep_intent' })).status).toBe(400);
   expect((await alice.call('nodes/other%2Fsecret/submit', { base: 2, changes: [{ kind: 'override', element: 'S1', text: 'mine' }] })).status).toBe(403);
+});
+
+test("reviews: what the person's agents reviewed, newest first, a page at a time; nobody else's", async () => {
+  const { kolab, product } = await specAndBinding();
+  await people(kolab, 'dave', { layers: ['functional'] });
+  await people(kolab, 'dave-agent', { owner: 'dave', layers: ['functional'] });
+  await agentsMay(kolab);
+  const agent = await kolab.openSession('dave-agent', 'product');
+  const daveSession = await kolab.openSession('dave', 'product');
+  const base = await serve(kolab);
+  const [alice, dave] = [await signIn(base, product), await signIn(base, daveSession)];
+
+  const v2 = (await alice.call<WebOutcome>('nodes/orders/submit', { base: 1, changes: [{ kind: 'add', element: 'R3', text: 'A cancellation is confirmed by email.' }] })).body;
+  expect(v2).toMatchObject({ in_review: true, seq: 2 });
+  const id2 = (await kolab.db.query<{ id: string }>(`select v.id from version v join node n on n.id = v.node_id where n.kolab_id = $1 and n.name = 'orders' and v.seq = 2`, [TEST_KOLAB])).rows[0].id;
+  await kolab.recordReview(agent, id2, { verdict: 'request_changes', note: 'Say which email.' });
+  await alice.call('nodes/orders/versions/2/resubmit', {});
+  await kolab.recordReview(agent, id2, { verdict: 'approve' });
+
+  const list = (await dave.call<WebReviewsView>('reviews')).body;
+  expect(list.by_agents.map((v) => [v.subject, v.reviewer, v.state, v.note])).toStrictEqual([
+    ['kj:orders@2', 'dave-agent', 'approved', null], ['kj:orders@2', 'dave-agent', 'changes_requested', 'Say which email.']]);
+  const first = (await dave.call<WebReviewsView>('reviews?limit=1')).body;
+  expect(first.by_agents.map((v) => v.state)).toStrictEqual(['approved']);
+  expect((await dave.call<WebReviewsView>(`reviews?limit=1&cursor=${encodeURIComponent(first.next!)}`)).body.by_agents.map((v) => v.state)).toStrictEqual(['changes_requested']);
+  expect((await alice.call<WebReviewsView>('reviews')).body.by_agents).toStrictEqual([]);
+});
+
+test("reviews: an agent's verdict on a work package is listed too, opening the package", async () => {
+  const { kolab, engineer } = await specAndBinding();
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const v2 = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }] });
+  expect((await kolab.submit(engineer, v2)).ok).toBe(true);
+  await registeredRepository(kolab, { binding: 'orders-pg' });
+  await people(kolab, 'eve', { layers: ['technical'] });
+  await people(kolab, 'eve-agent', { owner: 'eve', layers: ['technical'] });
+  await agentsMay(kolab);
+  const agent = await kolab.openSession('eve-agent', 'engineer');
+  const eve = await signIn(await serve(kolab), await kolab.openSession('eve', 'engineer'));
+  await kolab.pullWork(engineer);
+  await kolab.submitWork(engineer, 'kj:orders-pg#W1', { evidence: [{ kind: 'commit', sha: 'a'.repeat(40), title: 'Cancel an order' }] });
+  await kolab.reviewWork(agent, 'kj:orders-pg#W1', { verdict: 'approve', note: 'Checked.' });
+  expect((await eve.call<WebReviewsView>('reviews')).body.by_agents).toStrictEqual([
+    { subject: 'kj:orders-pg#W1', node: 'orders-pg', seq: null, element: 'W1', reviewer: 'eve-agent', state: 'approved', note: 'Checked.', at: expect.any(String) }]);
 });
 
 test('in the page: with nobody else able to review yet it says so; an engineer asks about the version in review; abandoned, the question is withdrawn (D65)', async () => {
@@ -953,6 +1032,31 @@ test('a binding\'s page shows each work package\'s state on its latest version, 
   await kolab.commit(engineer, 'orders-pg', { deltas: [{ kind: 'override', element: 'W2', text: 'Refund on cancel, in full.' }] });
   expect((await bob.call<WebNodeView>('nodes/orders-pg?version=2')).body.elements.every((e) => !('work_state' in e))).toBe(true);
   expect((await bob.call<WebNodeView>('nodes/orders')).body.elements.every((e) => !('work_state' in e))).toBe(true);
+});
+
+test('the work board lists a kolab\'s work packages with their state, who holds each and why it is blocked, on one binding or in one state (PLN12, PLN19)', async () => {
+  const { kolab, engineer } = await specAndBinding();
+  const b = (await kolab.latestCommitted('orders-pg'))!.id;
+  const v = await kolab.draft(engineer, 'orders-pg', { elements: [{ id: 'b1', text: 'orders.status allows cancel from Open.' }, { id: 'b2', text: 'Refunds go through the payments queue.' },
+    { id: 'W1', text: 'Build the cancel endpoint.', work: {} }, { id: 'W2', text: 'Refund on cancel.', work: { depends_on: ['W1'] } },
+  ], links: [{ kind: 'dependency', sourceElement: 'W1', target: b, targetElement: 'b1' }, { kind: 'dependency', sourceElement: 'W2', target: b, targetElement: 'b2' }] });
+  expect((await kolab.submit(engineer, v)).ok).toBe(true);
+  await kolab.pullWork(engineer);
+  const bob = await signIn(await serve(kolab), engineer);
+  const board = (await bob.call<WebWorkView>('work')).body;
+  // Decisions are never work (PLN1): only the packages, in natural ID order.
+  // `yours`: held by the session's person or an agent of theirs, as Kolab knows its actors.
+  expect(board.work.map((w) => [w.work, w.state, w.assignee, w.blocked, w.ready, w.yours])).toStrictEqual([
+    ['kj:orders-pg#W1', 'in_progress', 'bob', [], false, true],
+    ['kj:orders-pg#W2', 'todo', null, [{ reason: 'depends_on', work: 'kj:orders-pg#W1', state: 'in_progress' }], false, false],
+  ]);
+  expect(board.next).toBeNull();
+  expect((await bob.call<WebWorkView>('work?state=todo')).body.work.map((w) => w.id)).toStrictEqual(['W2']);
+  expect((await bob.call<WebWorkView>('work?binding=orders-pg')).body.work).toHaveLength(2);
+  expect((await bob.call<WebWorkView>('work?limit=1')).body.next).toEqual(expect.any(String));
+  const bad = await bob.call<{ error: string; message: string }>('work?state=blocked');
+  expect([bad.status, bad.body.message]).toStrictEqual([400, 'the state is one of todo, in_progress, in_review, done']);
+  expect((await bob.call('work?binding=no%20such')).status).toBe(400);
 });
 
 test('a binding\'s page shows a work package with work at risk while a mark is open on it (W5.2b, PLN10)', async () => {

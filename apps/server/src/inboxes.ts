@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { McpResource, McpToolRegistry, type McpHandlerContext } from '@onivoro/server-mcp';
 import { Kolab, RoleError, type ListenerState } from '@konjir/engine';
-import { LAYERS, PAGE_DEFAULT, isInboxEvent, type Layer } from '@konjir/types';
+import { LAYERS, MESSAGES_AT_ONCE, PAGE_DEFAULT, isInboxEvent, type Layer } from '@konjir/types';
 import { ListenStreams } from './listen-streams.js';
 import { sessionOf } from './results.js';
 import { KOLAB } from './tokens.js';
@@ -118,7 +118,7 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
     uri: 'konjir://answers/{kolab}/{actor}',
     isTemplate: true,
     title: 'Answers to what you raised in your kolab',
-    description: `Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, the case files you opened or hold a position on there, with their rulings, and your work there: the package you hold In progress, with its lease, and the newest changes others made to your work (a verdict on a package you submitted, a lease that lapsed, a reassignment, a removal, a reopening): the newest ${PAGE_DEFAULT} questions and notes, and the 20 most recent submissions and case files. Updated whenever one of them is answered, reviewed, argued or ruled on. konjir_list_queries mine=true, konjir_list_reviews and konjir_list_cases mine=true page through the rest. Only your own answers, in your own kolab, can be read or subscribed to.`,
+    description: `Your questions and notes in your session\'s kolab with their replies, the versions you submitted there for review with their verdicts, the case files you opened or hold a position on there, with their rulings, and your work there: the package you hold In progress, with its lease, and the newest changes others made to your work (a verdict on a package you submitted, a lease that lapsed, a reassignment, a removal, a reopening), and the unread messages other members sent you there (messages: unread, how many, and items, the oldest ${MESSAGES_AT_ONCE}; konjir_read_messages reads them and marks them read): the newest ${PAGE_DEFAULT} questions and notes, and the 20 most recent submissions and case files. Updated whenever one of them is answered, reviewed, argued or ruled on, and whenever a message arrives. konjir_list_queries mine=true, konjir_list_reviews and konjir_list_cases mine=true page through the rest. Only your own answers, in your own kolab, can be read or subscribed to.`,
     mimeType: 'application/json',
   })
   answers(uri: URL, vars: Record<string, string | string[]>, context?: McpHandlerContext) {
@@ -140,6 +140,9 @@ export class Inboxes implements OnModuleInit, OnModuleDestroy {
       // The work package you hold here, with its lease, and the newest changes others made to your
       // work: a verdict, a lease that lapsed, a reassignment, a removal from its binding (PLN15, PLN16, D98).
       work: await this.kolab.workNotices(session),
+      // The unread messages other members sent you here, oldest first, with how many are unread in
+      // all: konjir_read_messages reads them and marks them read (migration 0050).
+      messages: await this.kolab.unreadMessages(session),
     };
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   }

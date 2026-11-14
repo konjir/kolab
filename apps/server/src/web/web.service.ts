@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, HttpExcepti
 import {
   AccessError, ActorError, ChecksError, GateError, Kolab, LimitError, RoleError, TenancyError, activity, cursorFor, keyOf, kolabNodes,
   kolabNodesPage, liveLinks, markDetails, markDetailsPage, maskTokens, openCaseCount, openReviewRequests, ownSide, queryDetailsPage,
-  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, waitingCounts, workReviewDetails,
+  nodeQueriesPage, nodeThreads, nodeVersions, nodeVersionsPage, readableNodes, reviewRequestsPage, submissionsOf, agentVerdictsPage, waitingElsewhere, waitingCounts, workReviewDetails,
   type LinkRow, type MarkDetailRow, type PageOpts, type QueryDetailRow, type VersionHistoryRow,
 } from '@konjir/engine';
 import { formatAddress, isElementId, isKolabName, isNodeName, parseAddress, type QuoteSelector } from '@konjir/address';
@@ -14,7 +14,7 @@ import {
   type WebActivityView, type WebAsk, type WebCreateNode, type WebElement, type WebKolab, type WebLineageView, type WebLink, type WebMark,
   type WebMe, type WebNodeSummary, type WebNodeView, type WebOutcome, type WebOverview, type WebQuery, type WebResolve, type WebReviewsView,
   type WebSubmit, type WebVerdict, type WebVersion, type WebVersionReview, type WebWorkOutcome, type WebWorkReview, type WebNodesView, type WebQueriesView, type WebMarksView, type WebRulingsView,
-  type WebVersionsView, type WebWorkState, type WorkItemView, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT, type PolicySet, type PolicyView,
+  type WebVersionsView, type WebWorkState, type WebWorkView, type WorkItemView, type WorkState, PAGE_DEFAULT, PAGE_MAX, MAX_ELEMENTS, THREADS_PER_ELEMENT, type PolicySet, type PolicyView,
 } from '@konjir/types';
 import { KOLAB } from '../tokens.js';
 
@@ -48,10 +48,14 @@ export class WebService {
     const k = this.kolab;
     const me = await this.me(s);
     const reach = [...new Set([...(await k.reachable(me.actor)), me.kolab])];
-    const kolabs: WebKolab[] = [];
-    for (const x of await k.listKolabs({ ids: reach })) {
-      kolabs.push({ id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current: x.id === me.kolab, access: await k.access(me.actor, x.id) });
-    }
+    // Every kolab's card read at once: its access and, for another kolab, what waits there.
+    const kolabs: WebKolab[] = await Promise.all((await k.listKolabs({ ids: reach })).map(async (x) => {
+      const access = await k.access(me.actor, x.id);
+      const current = x.id === me.kolab;
+      // Another kolab's card says what waits there only for someone who belongs to its work (D49).
+      const waiting = !current && access.layers.length ? await waitingElsewhere(k, me.actor, x.id, access.layers) : undefined;
+      return { id: x.id, title: x.title, owner: x.owner, visibility: x.visibility, current, access, ...(waiting ? { waiting } : {}) };
+    }));
     // Counted in the database, never by reading every question and mark (W2.21).
     const [waiting, cases, nodes] = await Promise.all([waitingCounts(k, s, me.layer, me.actor), openCaseCount(k, s, me.layer), this.nodes(s, {})]);
     return {
@@ -106,6 +110,8 @@ export class WebService {
       const read = await k.readNode(s, n.name, row.seq, { threads: false });
       // A binding's work state, on its latest committed version only: state isn't versioned (PLN4).
       const board = n.kind === 'binding' && live ? await k.workBoard(s, n.name) : undefined;
+      // Each element's progress (WRK8), as konjir_read_node gives it, on the latest committed version: computed now.
+      const progress = live ? await k.progressOf(s, n.id, read.version.id) : new Map<string, never>();
       // Precedent and open case files beside the element they concern, from any version (CASE4):
       // read as kj_agent, so a session that holds only Read gets none (D49).
       const rulings = read.rulings.map(ruling);
@@ -117,6 +123,7 @@ export class WebService {
         id: e.element_id, parent: e.parent_element_id, text: e.text,
         ...(e.work ? { work: e.work } : {}),
         ...(board?.get(e.element_id) ? { work_state: workState(board.get(e.element_id)!) } : {}),
+        ...(progress.has(e.element_id) ? { progress: progress.get(e.element_id) } : {}),
         address: formatAddress({ node: n.name, version: row.seq, element: e.element_id }),
         queries: (threads.get(e.element_id)?.items ?? []).map(query),
         queries_next: threads.get(e.element_id)?.next ?? null,
@@ -347,10 +354,11 @@ export class WebService {
   }
 
   /** konjir_list_rulings: the kolab's rulings, newest first, on one node if named: precedent (CASE4). */
-  async rulings(s: string, node?: string, page: PageOpts = {}): Promise<WebRulingsView> {
+  async rulings(s: string, node?: string, page: PageOpts = {}, ref?: string): Promise<WebRulingsView> {
     if (node !== undefined && !isNodeName(node)) throw bad('name a node of this kolab');
+    if (ref !== undefined && !/^[A-Za-z][\w.-]{0,39}$/.test(ref)) throw bad('a ruling\'s name is a letter, then up to 39 letters, digits, ".", "_" or "-"');
     const id = node === undefined ? undefined : (await this.kolab.nodeIn(s, node, 'listing rulings')).id;
-    const { items, next } = await this.kolab.rulingsPage(s, { node: id }, page);
+    const { items, next } = await this.kolab.rulingsPage(s, { node: id, ref }, page);
     return { rulings: items.map(ruling), next };
   }
 
@@ -389,6 +397,16 @@ export class WebService {
     return { queries: items.map(query), next };
   }
 
+  /** konjir_list_work: the board, on one binding if named, in one state if asked (PLN12). */
+  async work(s: string, filter: { binding?: string; state?: WorkState }, page: PageOpts = {}): Promise<WebWorkView> {
+    if (filter.binding !== undefined && !isNodeName(filter.binding)) throw bad('name a binding of this kolab');
+    const me = await this.me(s);
+    const { items, next } = await this.kolab.listWork(s, filter, page);
+    // Whose each one is, from the actors themselves: a person's own agents, never a name that only looks like one.
+    const yours = await ownSide(this.kolab, me.actor, [...new Set(items.map((w) => w.assignee).filter((a): a is string => !!a))]);
+    return { work: items.map((w) => ({ ...w, yours: !!w.assignee && yours.has(w.assignee) })), next };
+  }
+
   async marks(s: string, page: PageOpts = {}): Promise<WebMarksView> {
     const { items, next } = await markDetailsPage(this.kolab, s, page);
     return { marks: items.map(mark), next };
@@ -401,9 +419,10 @@ export class WebService {
    */
   async reviews(s: string, page: PageOpts = {}): Promise<WebReviewsView> {
     const me = await this.me(s);
-    const [f, y] = (keyOf('web:reviews3', page.cursor, ['text', 'text']) ?? [null, null]) as [string | null, string | null];
+    const [f, y, a] = (keyOf('web:reviews4', page.cursor, ['text', 'text', 'text']) ?? [null, null, null]) as [string | null, string | null, string | null];
     const forMe = f === 'done' ? { items: [], next: null } : await reviewRequestsPage(this.kolab, s, { reviewer: me.actor, layer: me.layer }, { cursor: f, limit: page.limit });
     const mine = y === 'done' ? { items: [], next: null } : await submissionsOf(this.kolab, s, me.actor, { cursor: y, limit: page.limit });
+    const agents = a === 'done' ? { items: [], next: null } : await agentVerdictsPage(this.kolab, s, me.actor, { cursor: a, limit: page.limit });
     // What a reviewer of each work package checks, in one read for them all (views.ts), which renews no
     // lease. If it fails, the list still comes back, each package flagged as not read.
     const work = forMe.items.filter((r) => r.kind === 'work');
@@ -427,7 +446,8 @@ export class WebService {
       mine: mine.items.map((x) => ({
         subject: formatAddress({ node: x.node, version: x.seq }), node: x.node, seq: x.seq, state: x.state, note: x.note, verdicts: x.verdicts,
       })),
-      next: forMe.next || mine.next ? cursorFor('web:reviews3', [forMe.next ?? 'done', mine.next ?? 'done']) : null,
+      by_agents: agents.items.map(({ product, ...v }) => ({ subject: formatAddress(v.seq !== null ? { node: v.node, version: v.seq } : { node: v.node, element: v.element ?? undefined }), ...v, ...(product ? { product_review: true as const } : {}) })),
+      next: forMe.next || mine.next || agents.next ? cursorFor('web:reviews4', [forMe.next ?? 'done', mine.next ?? 'done', agents.next ?? 'done']) : null,
     };
   }
 
@@ -912,7 +932,7 @@ const version = (v: VersionHistoryRow, me: string): WebVersion =>
 const link = (l: LinkRow): WebLink => ({
   edge: l.edge, kind: l.kind,
   source: { node: l.source_node, seq: l.source_seq, element: l.source_element, layer: l.source_layer as Layer },
-  target: { node: l.target_node, seq: l.target_seq, element: l.target_element, quote: l.target_selector?.exact ?? null, latest: l.target_latest },
+  target: { node: l.target_node, seq: l.target_seq, element: l.target_element, quote: l.target_selector?.exact ?? null, latest: l.target_latest, ...(l.target_kolab ? { kolab: l.target_kolab } : {}) },
   mark: l.mark_id ? { id: l.mark_id, reason: l.mark_reason! } : null,
 });
 

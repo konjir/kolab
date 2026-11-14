@@ -3,7 +3,7 @@
 // and their agents ask and draft at most so many times an hour, together.
 import { expect, test } from '@jest/globals';
 import {
-  MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_TEXT, MAX_TITLE,
+  MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_TEXT, MAX_TITLE,
   MAX_KOLAB_TITLE, MAX_NAME, MAX_VERSION_BYTES, RATE_WINDOW_MS,
 } from '@konjir/types';
 import { els, people, rejection, setup, TEST_KOLAB } from '@konjir/engine/testing';
@@ -81,7 +81,8 @@ test('a case file\'s question, a claim, its evidence and a ruling over their lim
 test('a person and their agents ask and draft at most so many times an hour, together; the refusal names the limit and the wait, writes nothing, and holds no one else back', async () => {
   const { kolab, product, engineer } = await orders();
   expect(kolab.rates).toStrictEqual({
-    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR, windowMs: RATE_WINDOW_MS,
+    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, messages: MAX_MESSAGES_PER_HOUR,
+    orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR, orgMessages: MAX_ORG_MESSAGES_PER_HOUR, windowMs: RATE_WINDOW_MS,
   });
   // An organization's budget is five times a person's.
   expect([MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR]).toStrictEqual([5 * MAX_ASKS_PER_HOUR, 5 * MAX_DRAFTS_PER_HOUR]);

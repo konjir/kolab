@@ -4,8 +4,8 @@
  * address is in the short form of the session's kolab, `kj:<node>@<seq>#<element>`.
  */
 import type {
-  AcceptanceFinding, Access, AccessLevel, ActorKind, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, QueryKind,
-  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkState,
+  AcceptanceFinding, Access, AccessLevel, ActorKind, BindingProgress, CaseFileView, EvidenceView, FindingKind, InviteLevel, InviteView, Kind, Layer, MarkReason, OverrideResolution, OwnSession, PositionVerdict, Progress, QueryKind,
+  QueryState, ReviewVerdictKind, Role, RulingEffect, RulingView, Visibility, VersionState, WorkBlock, WorkFields, WorkItemView, WorkState,
 } from './index.js';
 
 /**
@@ -48,6 +48,11 @@ export interface WebKolab {
   id: string; title: string; owner: string; visibility: Visibility; current: boolean;
   /** The signed-in person's access there, as kj_access computes it. */
   access: Access;
+  /**
+   * What waits for the person in a kolab other than the session's, on the layers they write there:
+   * absent for the session's own, whose counts are the overview's, and where they write no layer.
+   */
+  waiting?: { reviews: number; questions: number; marks: number; cases: number };
 }
 
 export interface WebNodeSummary {
@@ -98,7 +103,8 @@ export interface WebVersion {
 export interface WebLink {
   edge: string; kind: string;
   source: { node: string; seq: number; element: string | null; layer: Layer };
-  target: { node: string; seq: number; element: string | null; quote: string | null; latest: number | null };
+  /** `kolab`: the target's, where it is in another kolab (D49). */
+  target: { node: string; seq: number; element: string | null; quote: string | null; latest: number | null; kolab?: string };
   /** An open mark on the link: what it relied on changed since it was pinned. */
   mark: { id: string; reason: MarkReason } | null;
 }
@@ -138,6 +144,8 @@ export interface WebElement {
   work?: WorkFields;
   /** On the binding's latest committed version: the work package's state (W5.1b), read only. */
   work_state?: WebWorkState;
+  /** Its progress (WRK8), computed as it is read: a binding element's own, a spec element's one per binding. Absent outside the session's kolab, and on a prototype. */
+  progress?: Progress | BindingProgress[];
   /** Questions and notes on this element, open and answered, from any version (Q5): the newest THREADS_PER_ELEMENT, newest first. */
   queries: WebQuery[];
   /** The cursor to the older ones (GET /api/nodes/:name/queries?element=), or null when that is all (W2.21). */
@@ -242,6 +250,12 @@ export interface WebRulingsView extends WebPaged { rulings: WebRuling[] }
 export interface WebQueriesView extends WebPaged { queries: WebQuery[] }
 export interface WebMarksView extends WebPaged { marks: WebMark[] }
 
+/** The work board (PLN12, PLN19): the kolab's work packages, binding by binding in natural ID order, each with its state, who holds it and why it is blocked, as konjir_list_work gives them. */
+export interface WebWorkView extends WebPaged {
+  /** Each with `yours`: its assignee is the session's person or an agent of theirs, as Kolab knows its actors. */
+  work: (WorkItemView & { yours: boolean })[];
+}
+
 /** A version in review that waits for the session's verdict. */
 /** A version in review that waits for the session's verdict; with `product_review`, a binding's product review (VER13), from a product session. */
 export interface WebVersionReview { kind: 'version'; subject: string; node: string; seq: number; author: string; at: string; product_review?: true }
@@ -275,6 +289,9 @@ export interface WebReviewsView extends WebPaged {
   for_me: (WebVersionReview | WebWorkReview)[];
   mine: { subject: string; node: string; seq: number; state: VersionState; note: string | null;
     verdicts: { reviewer: string; state: string; note: string | null }[] }[];
+  /** Verdicts the person's agents gave, newest first: what was reviewed on their behalf. */
+  /** A version's verdict has its `seq`, a work package's its `element`. */
+  by_agents: { subject: string; node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product_review?: true }[];
 }
 
 /** A page of the nodes with a committed version, each with its elements, and the live links from them. */

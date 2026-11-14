@@ -10,24 +10,24 @@ import { checkMigrations, migrate, openDb, type Db, type Listening } from '@konj
 import { log, maskTokens } from '@konjir/log';
 import { checkDraftInput, checkEvidence, checkText, checkVersion, cursorFor, keyOf, LimitError, pageOf, pageSize, scoped, type PageOpts } from './page.js';
 import {
-  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, workProblems,
-  repositoryUrl, type CheckedEvidence, type Independence, type StoredCheck, type Party, type WorkLink,
+  acceptanceFinding, behindScope, canonicalWork, checkEvidenceInput, checkReleaseInput, checkWork, elementFingerprint, evidenceKey, evidenceSummary, independentOf, insideRepository, isActionsRun, milestoneStates, naturalCompare, packageProgress, progressOver, sourceRefs, workDates, workProblems,
+  repositoryUrl, type CheckedEvidence, type DatedPackage, type Independence, type StoredCheck, type Party, type WorkLink,
 } from './work.js';
 import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid } from './jobs.js';
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, SPLIT_STEP, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type AuditAction, type AuditEvent, type Doer, type MarkRow, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
   MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_PER_PACKAGE, MAX_REPOSITORIES_PER_KOLAB, THREADS_PER_ELEMENT, type RepositoryView, WORK_LEASE_MINUTES, WORK_STATES, type AcceptanceFinding, type EvidenceKind, type EvidenceView, type WorkBlock, type WorkEventKind, type WorkEventView, type WorkItemView, type WorkState,
-  REVISIT_FILES, type WorkRevisit,
+  REVISIT_FILES, type WorkRevisit, type BindingProgress, type Progress, type WorkDates, type WorkSize,
   DEFAULT_POLICY, FUNCTIONAL_ANSWERERS, POLICY_SETTINGS, VERSION_APPROVERS, WORK_APPROVERS,
   type KolabPolicy, type PolicySet, type PolicyView, type VersionApprover, type WorkApprover,
 } from '@konjir/types';
@@ -3662,16 +3662,17 @@ export class Kolab {
    * as ownKolabs' rate is, so every process sees the same count. The values are MAX_ASKS_PER_HOUR
    * and MAX_DRAFTS_PER_HOUR. An agent's count against its owner's budget, so making more agents
    * doesn't raise it. An organization's agents share the organization's budget, whose limits are
-   * `orgAsks` and `orgDrafts` (MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR).
+   * `orgAsks` and `orgDrafts` (MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR). Messages have a
+   * budget of their own, counted the same way (`messages`, `orgMessages`).
    */
   readonly rates = {
-    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR,
-    orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR,
+    asks: MAX_ASKS_PER_HOUR, drafts: MAX_DRAFTS_PER_HOUR, messages: MAX_MESSAGES_PER_HOUR,
+    orgAsks: MAX_ORG_ASKS_PER_HOUR, orgDrafts: MAX_ORG_DRAFTS_PER_HOUR, orgMessages: MAX_ORG_MESSAGES_PER_HOUR,
     windowMs: RATE_WINDOW_MS,
   };
 
   /**
-   * Takes one question or note (`ask`), or one draft, from the budget of `actor`'s owner (itself,
+   * Takes one question or note (`ask`), one draft, or one message, from the budget of `actor`'s owner (itself,
    * for a person; the organization, for an organization's agent), before the call writes it:
    * kj_rate_take, in a short transaction of its own, locks the owner's budget, counts the budget's
    * events in the window (each ask or draft from its take, whatever became of what it wrote),
@@ -3681,9 +3682,9 @@ export class Kolab {
    * write marks used in its own transaction (useRate), so it counts from then to the end of the window;
    * if the write fails, the hold is released after (rated). Null when nothing is limited.
    */
-  private async takeRate(actor: string, what: 'ask' | 'draft'): Promise<string | null> {
-    const max = what === 'ask' ? this.rates.asks : this.rates.drafts;
-    const orgMax = what === 'ask' ? this.rates.orgAsks : this.rates.orgDrafts;
+  private async takeRate(actor: string, what: RateKind): Promise<string | null> {
+    const max = what === 'ask' ? this.rates.asks : what === 'draft' ? this.rates.drafts : this.rates.messages;
+    const orgMax = what === 'ask' ? this.rates.orgAsks : what === 'draft' ? this.rates.orgDrafts : this.rates.orgMessages;
     if (max === Infinity && orgMax === Infinity) return null;
     // Postgres's int: a limit lifted to Infinity on one budget only is as good as none.
     const asInt = (n: number) => Math.min(n, 2_147_483_647);
@@ -3695,7 +3696,7 @@ export class Kolab {
     } catch (e) {
       // Waited past lock_timeout behind others in the same budget: refused, nothing held.
       if ((e as { code?: string }).code === '55P03') {
-        throw new LimitError(`${actor}'s ${what === 'ask' ? 'questions and notes' : 'drafts'} are arriving faster than Kolab can count them, so this one wasn't written. Try again in a few seconds, one at a time`);
+        throw new LimitError(`${actor}'s ${what === 'ask' ? 'questions and notes' : what === 'draft' ? 'drafts' : 'messages'} are arriving faster than Kolab can count them, so this one wasn't written. Try again in a few seconds, one at a time`);
       }
       throw e;
     }
@@ -3706,7 +3707,9 @@ export class Kolab {
     const who = c.r_org ? `${actor}, with the rest of organization ${c.r_owner}'s agents,`
       : c.r_owner === actor ? `${actor} and ${actor}'s agents` : `${actor}, with the rest of ${c.r_owner}'s agents and ${c.r_owner},`;
     const shared = c.r_org ? 'shared by an organization\'s agents' : 'shared by a person and their agents';
-    throw new LimitError(what === 'ask'
+    throw new LimitError(what === 'message'
+      ? `${who} sent ${c.r_count} messages in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before sending again, or put several points in one message`
+      : what === 'ask'
       ? `${who} raised ${c.r_count} questions and notes in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before asking again, or put several points in one question`
       : `${who} drafted ${c.r_count} versions in the last ${last}; the limit is ${c.r_max} in ${window}, ${shared}, and a draft counts when it is made, whatever becomes of it. Wait ${minutes} minute${minutes === 1 ? '' : 's'} before drafting again, or put several changes in one draft`);
   }
@@ -3721,7 +3724,7 @@ export class Kolab {
    * it commits; if `write` fails, the hold is given back after, so a refused or failed call costs
    * nothing.
    */
-  private async rated<T>(actor: string, what: 'ask' | 'draft', write: (hold: string | null) => Promise<T>): Promise<T> {
+  private async rated<T>(actor: string, what: RateKind, write: (hold: string | null) => Promise<T>): Promise<T> {
     const hold = await this.takeRate(actor, what);
     try {
       return await write(hold);
@@ -7897,7 +7900,9 @@ export class Kolab {
     const keys: { at: string; id: string }[] = [];
     const rows = await this.read({ session: sessionId }, (q) => this.listRulings({ ...filter, kolab, limit: size + 1, after }, q, keys));
     const { rows: items, next } = pageOf(rows, size, list, (r) => { const k = keys.find((x) => x.id === r.ruling)!; return [k.at, k.id]; });
-    return { items, next };
+    // Each one's progress (WRK8), from the elements whose Source line names its ref.
+    const progress = await this.rulingsProgress(await QUIET.run(true, () => this.session(sessionId)), [...new Set(items.flatMap((r) => (r.ref ? [r.ref] : [])))]);
+    return { items: items.map((r): RulingView => (r.ref && progress.has(r.ref) ? { ...r, progress: progress.get(r.ref) } : r)), next };
   }
 
   /**
@@ -8135,6 +8140,7 @@ export class Kolab {
       ...(p.row.milestone && p.state !== 'done' && !p.row.removed_in_version_id ? { waiting: p.waiting } : {}),
       ...(p.row.removed_in_version_id ? { removed_in: formatAddress({ node: p.row.removed_node ?? p.binding.name, version: p.row.removed_seq ?? undefined }) } : {}),
       ...(p.row.unreviewed ? { unreviewed: true } : {}),
+      ...(p.row.found_built ? { found_built: true as const } : {}),
       ...(p.work?.release ? { release: true as const } : {}),
       ...(p.row.approved && p.state === 'in_review' ? { approved: true as const } : {}),
       ...(p.row.returned && p.state === 'in_progress' ? { returned: true } : {}),
@@ -8223,9 +8229,12 @@ export class Kolab {
     const belongs = s.access.layers.length > 0;
     const items: WorkItemView[] = [];
     const packages = new Map<WorkItemView, BoardPackage>();
+    const boards: { binding: NodeRow; board: BoardPackage[] }[] = [];
     for (const binding of await this.bindingsWithWork(sessionId, filter.binding)) {
       if (after && binding.name < after[0]) continue;
-      for (const p of await this.bindingBoard(this.db, binding)) {
+      const board = await this.bindingBoard(this.db, binding);
+      boards.push({ binding, board });
+      for (const p of board) {
         if (after && binding.name === after[0] && naturalCompare(p.id, after[1]) <= 0) continue;
         const item = this.workItem(p, canPull, belongs);
         if (filter.state && item.state !== filter.state) continue;
@@ -8242,7 +8251,12 @@ export class Kolab {
     const risky = rows.filter((i) => i.at_risk).map((i) => packages.get(i)!)
       .map((p) => ({ key: `${p.binding.id}#${p.id}`, binding: p.binding.id, kolab_id: p.binding.kolab_id, element: p.id }));
     const revisits = risky.length ? await this.revisitsOf(this.db, risky) : new Map<string, WorkRevisit>();
-    return { items: rows.map((i) => (i.at_risk ? { ...i, revisit: revisits.get(`${packages.get(i)!.binding.id}#${i.id}`)! } : i)), next };
+    // Each one's start and finish (WRK9), computed now over the whole of each binding read.
+    const dates = await this.datesIn(this.db, s.kolab, boards);
+    return { items: rows.map((i) => {
+      const key = `${packages.get(i)!.binding.id}#${i.id}`;
+      return { ...i, ...(i.at_risk ? { revisit: revisits.get(key)! } : {}), ...dates.get(key) };
+    }), next };
   }
 
   /**
@@ -8256,6 +8270,199 @@ export class Kolab {
     const out = new Map<string, WorkItemView>();
     // No revisit: the page shows only that a package is at risk.
     for (const p of await this.bindingBoard(this.db, binding)) out.set(p.id, this.workItem(p, canPull, s.access.layers.length > 0));
+    return out;
+  }
+
+  /**
+   * The current runs of a kolab's work packages (WRK9), by `<binding id>#<id>`, read in one query on
+   * `q`: for each, the first pull and the last event that made it Done (milestone_done for a
+   * milestone) since it was last added, restored or reopened, and, for a Done package still in its
+   * binding, its size there: none for one found already built (0051), whose run is no measure of
+   * work of its size. Those of the bindings `bindings`, or, with `others`, the Done packages of
+   * the kolab's other bindings, whose finished durations a forecast falls back on.
+   */
+  private async runsIn(q: Q, kolab: string, bindings: string[], others = false) {
+    const out = new Map<string, { binding: string; state: WorkState; size: WorkSize | null; start?: Date; finish?: Date }>();
+    for (const r of (await q.query<{ binding: string; element: string; state: WorkState; size: WorkSize | null; start: Date | string | null; finish: Date | string | null }>(
+      `select w.binding_node_id as binding, w.element_id as element, w.state,
+              case when w.state = 'done' and not w.milestone and not w.found_built and w.removed_in_version_id is null then
+                (select e.work->>'size' from element e where e.element_id = w.element_id and e.version_id =
+                   (select v.id from version v where v.node_id = w.binding_node_id and v.state = 'committed' order by v.seq desc limit 1)) end as size,
+              min(ev.at) filter (where ev.kind = 'pulled') as start,
+              max(ev.at) filter (where ev.kind <> 'pulled' and (ev.kind = 'milestone_done') = w.milestone) as finish
+         from work_package w
+         left join lateral (select x.at, x.id from work_event x where x.binding_node_id = w.binding_node_id and x.element_id = w.element_id
+                              and x.kind in ('added', 'restored', 'reopened') order by x.at desc, x.id desc limit 1) r on true
+         left join work_event ev on ev.binding_node_id = w.binding_node_id and ev.element_id = w.element_id
+              and ev.kind in ('pulled', 'approved', 'done_unreviewed', 'release_recorded', 'milestone_done') and (r.id is null or (ev.at, ev.id) > (r.at, r.id))
+        where w.kolab_id = $1 and (case when $3 then w.state = 'done' and not w.milestone and w.removed_in_version_id is null and not (w.binding_node_id = any($2::text[]))
+                                        else w.binding_node_id = any($2::text[]) end)
+        group by w.binding_node_id, w.element_id`, [kolab, bindings, others])).rows) {
+      out.set(`${r.binding}#${r.element}`, { binding: r.binding, state: r.state, size: r.size,
+        ...(r.start ? { start: new Date(r.start) } : {}), ...(r.finish && r.state === 'done' ? { finish: new Date(r.finish) } : {}) });
+    }
+    return out;
+  }
+
+  /**
+   * The start and finish of `boards`' packages (WRK9), by `<binding id>#<id>`: a read, never a row,
+   * computed now on `q` from the packages' current runs and the depends_on fields of each binding's
+   * latest committed version, with nothing written. Expected durations come from the finished
+   * durations of Done packages of the same binding, and only for a size none of those has, of the
+   * kolab's others. A removed package (PLN4) is dated after its binding's, so it changes none of theirs.
+   */
+  private async datesIn(q: Q, kolab: string, boards: { binding: NodeRow; board: BoardPackage[] }[]): Promise<Map<string, WorkDates>> {
+    const out = new Map<string, WorkDates>();
+    if (!boards.some((b) => b.board.length)) return out;
+    const now = new Date((await q.query<{ now: Date | string }>(`select clock_timestamp() as now`)).rows[0].now);
+    const ids = boards.map((b) => b.binding.id);
+    const runs = await this.runsIn(q, kolab, ids);
+    // A finished duration (WRK9): a Done package's actual finish less its actual start, in wall-clock time.
+    const durations = (rs: typeof runs) => {
+      const m = new Map<string, Map<WorkSize, number[]>>();
+      for (const r of rs.values()) {
+        if (!r.size || !r.start || !r.finish) continue;
+        const by = m.get(r.binding) ?? m.set(r.binding, new Map()).get(r.binding)!;
+        (by.get(r.size) ?? by.set(r.size, []).get(r.size)!).push(r.finish.getTime() - r.start.getTime());
+      }
+      return m;
+    };
+    const own = durations(runs);
+    const sizes = (by?: Map<WorkSize, number[]>) => new Set(by?.keys() ?? []);
+    // The kolab's other bindings are read only for a size one of these bindings has no finished duration of.
+    const lacking = boards.some(({ binding, board }) => board.some((p) => p.work?.size && p.state !== 'done' && !sizes(own.get(binding.id)).has(p.work.size)));
+    const kolabWide = new Map<WorkSize, number[]>();
+    for (const by of [...own.values(), ...(lacking ? durations(await this.runsIn(q, kolab, ids, true)).values() : [])]) {
+      for (const [size, xs] of by) kolabWide.set(size, [...(kolabWide.get(size) ?? []), ...xs]);
+    }
+    for (const { binding, board } of boards) {
+      const dated = (p: BoardPackage): DatedPackage => {
+        const r = runs.get(`${binding.id}#${p.id}`);
+        return { id: p.id, address: formatAddress({ node: binding.name, element: p.id }), state: p.state, milestone: p.row.milestone,
+          size: p.work?.size ?? null, depends_on: p.work?.depends_on ?? [], ...(r?.start ? { start: r.start } : {}), ...(r?.finish ? { finish: r.finish } : {}) };
+      };
+      const live = board.filter((p) => !p.row.removed_in_version_id).map(dated);
+      const by = { binding: own.get(binding.id) ?? new Map<WorkSize, number[]>(), kolab: kolabWide };
+      for (const [id, d] of workDates(live, by, now)) out.set(`${binding.id}#${id}`, d);
+      for (const p of board.filter((x) => x.row.removed_in_version_id)) out.set(`${binding.id}#${p.id}`, workDates([...live, dated(p)], by, now).get(p.id)!);
+    }
+    return out;
+  }
+
+  /**
+   * Progress in kolab `kolab` (WRK8): a read, never a row, computed now on `q` from work state (WRK2)
+   * and the live dependency links of the latest committed versions, so a change of state or a commit
+   * changes it with nothing written. For each binding of the kolab's spec (DAT18), its elements' (a
+   * work package's its own state; a decision's from the packages that link to it, PLN1) and each spec
+   * element's there: from the binding's elements that serve it or an element nested under it, or not
+   * served when none does (PLN7). With the latest committed elements, whose Source lines rulings read.
+   * `only` narrows it to one binding (its own elements, no spec's), or to one spec's bindings. Two
+   * queries for the kolab (its nodes at their latest committed versions; its packages' states), one per
+   * spec (its elements), and two per binding (its elements, three for a variant; its links).
+   */
+  private async progressIn(q: Q, kolab: string, only: { binding?: string; spec?: string } = {}): Promise<KolabProgress> {
+    const nodes = (await q.query<NodeRow & { v_id: string | null; v_parent: string | null; v_base: string | null }>(
+      `select n.id, n.name, n.kind, n.layer, n.title, n.kolab_id, n.parent_node_id, n.created_at, lv.id as v_id, lv.parent_version_id as v_parent, lv.base_version_id as v_base
+         from node n left join lateral (select v.id, v.parent_version_id, v.base_version_id from version v where v.node_id = n.id and v.state = 'committed' order by v.seq desc limit 1) lv on true
+        where n.kolab_id = $1 and n.kind in ('spec', 'binding') order by n.name`, [kolab])).rows;
+    const specRows = nodes.filter((n) => n.kind === 'spec');
+    const specIds = new Set(specRows.map((n) => n.id));
+    const picked = nodes.filter((n) => n.kind === 'binding' && n.parent_node_id && specIds.has(n.parent_node_id)
+      && (only.binding === undefined || n.id === only.binding) && (only.spec === undefined || n.parent_node_id === only.spec));
+    const specs = new Map<string, ElementRow[]>();
+    if (only.binding === undefined) {
+      for (const n of specRows.filter((x) => only.spec === undefined || x.id === only.spec)) specs.set(n.id, n.v_id ? await this.elements(n.v_id, q) : []);
+    }
+    // Each package's state as read now, a lapsed lease To do, and whether it is at risk (atRisk, PLN10).
+    const states = new Map((await q.query<{ binding: string; element: string; state: WorkState; at_risk: boolean }>(
+      `select w.binding_node_id as binding, w.element_id as element,
+              case when w.state = 'in_progress' and w.lease_until < clock_timestamp() then 'todo' else w.state end as state,
+              (not w.milestone and w.removed_in_version_id is null
+               and not (w.state = 'todo' or (w.state = 'in_progress' and w.lease_until < clock_timestamp()))
+               and exists (select 1 from invalidation i join version x on x.id = i.version_id
+                            where x.node_id = w.binding_node_id and x.state = 'committed' and i.element_id = w.element_id
+                              and i.state = 'open' and i.delta_id is null and i.reason in (${AT_RISK_REASONS_SQL}))) as at_risk
+         from work_package w where w.binding_node_id = any($1::text[])`, [picked.map((b) => b.id)])).rows.map((r) => [`${r.binding}#${r.element}`, r]));
+    const bindings: KolabProgress['bindings'] = [];
+    for (const b of picked) {
+      const v = b.v_id ? { id: b.v_id, node_id: b.id, parent_version_id: b.v_parent, base_version_id: b.v_base } : undefined;
+      const els = v ? await this.ownWork(q, v) : [];
+      const links = v ? await this.deliveries(q, b, v, new Set(els.map((e) => e.element_id))) : new Map<string, Delivery[]>();
+      const own = new Map<string, Progress>();
+      for (const e of els.filter((x) => x.work)) {
+        const p = states.get(`${b.id}#${e.element_id}`);
+        own.set(e.element_id, { progress: packageProgress(p?.state ?? 'todo'), at_risk: !!p?.at_risk });
+      }
+      // A decision: the work packages that link to it by dependency (PLN1).
+      for (const e of els.filter((x) => !x.work)) {
+        own.set(e.element_id, progressOver(els.filter((x) => x.work && (links.get(x.element_id) ?? []).some((d) => d.node_id === b.id && d.element === e.element_id))
+          .map((x) => own.get(x.element_id)!)));
+      }
+      // A spec element: the binding's elements that serve it, or any element nested under it.
+      const spec = specs.get(b.parent_node_id!) ?? [];
+      const servers = new Map<string, string[]>();
+      for (const [from, ds] of links) for (const d of ds) if (d.node_id === b.parent_node_id) (servers.get(d.element) ?? servers.set(d.element, []).get(d.element)!).push(from);
+      const children = new Map<string, string[]>();
+      for (const e of spec) if (e.parent_element_id) (children.get(e.parent_element_id) ?? children.set(e.parent_element_id, []).get(e.parent_element_id)!).push(e.element_id);
+      const under = (id: string, seen = new Set<string>()): string[] => {
+        if (seen.has(id)) return [];
+        seen.add(id);
+        return [id, ...(children.get(id) ?? []).flatMap((c) => under(c, seen))];
+      };
+      const served = new Map<string, Progress>();
+      for (const e of spec) {
+        const by = new Set(under(e.element_id).flatMap((x) => servers.get(x) ?? []));
+        served.set(e.element_id, by.size ? progressOver([...by].map((x) => own.get(x)!)) : { progress: 'not_served', at_risk: false });
+      }
+      bindings.push({ node: b, spec: b.parent_node_id!, elements: els, own, served });
+    }
+    return { specs, bindings };
+  }
+
+  /**
+   * Each element's progress (WRK8) in node `nodeId` of the session's kolab, by element id: a binding
+   * element's own, and a spec element's as a list, one entry per binding, naming it. Only on the
+   * node's latest committed version, `versionId`: none on another version, for another kolab's node
+   * (work is never read across kolabs, D49), nor a prototype's. A binding's is computed alone; a
+   * spec's over its bindings. Read-only.
+   */
+  async progressOf(sessionId: string, nodeId: string, versionId: string): Promise<Map<string, Progress | BindingProgress[]>> {
+    const s = await QUIET.run(true, () => this.session(sessionId));
+    const node = await this.node(nodeId);
+    const out = new Map<string, Progress | BindingProgress[]>();
+    if (node.kolab_id !== s.kolab || (node.kind !== 'spec' && node.kind !== 'binding')) return out;
+    if ((await this.latestCommitted(node.id))?.id !== versionId) return out;
+    const shown = progressShown(s.access.layers.length > 0);
+    if (node.kind === 'binding') {
+      for (const [id, p] of (await this.progressIn(this.db, s.kolab, { binding: node.id })).bindings[0]?.own ?? []) out.set(id, shown(p));
+    } else {
+      const all = await this.progressIn(this.db, s.kolab, { spec: node.id });
+      for (const e of all.specs.get(node.id) ?? []) out.set(e.element_id, all.bindings.map((b) => ({ binding: b.node.name, ...shown(b.served.get(e.element_id)!) })));
+    }
+    return out;
+  }
+
+  /**
+   * The progress of the rulings named `refs` in the session's kolab (WRK8), by ref: once per binding
+   * of its spec, over the binding's elements, and the spec elements as that binding meets them, whose
+   * latest committed text has a Source line naming the ref (sourceRefs gives the candidates; only a
+   * ruling's own ref, exactly, counts). A binding none of whose elements, nor its spec's, names it has
+   * no entry; a ruling no element names has none at all. Computed once for the page of rulings read.
+   */
+  private async rulingsProgress(s: Session, refs: string[]): Promise<Map<string, BindingProgress[]>> {
+    const out = new Map<string, BindingProgress[]>();
+    if (!refs.length) return out;
+    const all = await this.progressIn(this.db, s.kolab);
+    const shown = progressShown(s.access.layers.length > 0);
+    const named = (els: ElementRow[]) => els.map((e) => ({ id: e.element_id, refs: sourceRefs(e.text) })).filter((e) => e.refs.size);
+    const specs = new Map([...all.specs].map(([id, els]) => [id, named(els)]));
+    for (const b of all.bindings) {
+      const own = named(b.elements);
+      for (const ref of refs) {
+        const counted = [...own.filter((e) => e.refs.has(ref)).map((e) => b.own.get(e.id)!), ...(specs.get(b.spec) ?? []).filter((e) => e.refs.has(ref)).map((e) => b.served.get(e.id)!)];
+        if (counted.length) (out.get(ref) ?? out.set(ref, []).get(ref)!).push({ binding: b.node.name, ...shown(progressOver(counted)) });
+      }
+    }
     return out;
   }
 
@@ -8363,10 +8570,12 @@ export class Kolab {
   }
 
   private async readWorkOf(sessionId: string, { s, binding, id }: { s: Session; binding: NodeRow; id: string }, page: PageOpts) {
-    const p =(await this.bindingBoard(this.db, binding, { removed: true })).find((x) => x.id === id);
+    const board = await this.bindingBoard(this.db, binding, { removed: true });
+    const p = board.find((x) => x.id === id);
     if (!p) throw new Error(`no work package ${formatAddress({ node: binding.name, element: id })} in kolab ${s.kolab}`);
     const canPull = LAYER_OF_ROLE[s.active_role] === 'technical' && s.access.layers.includes('technical');
-    const item = await this.workItemFull(p, canPull, s.access.layers.length > 0);
+    // Its start and finish (WRK9), computed now.
+    const item = { ...await this.workItemFull(p, canPull, s.access.layers.length > 0), ...(await this.datesIn(this.db, s.kolab, [{ binding, board }])).get(`${binding.id}#${id}`) };
     const size = pageSize(page.limit);
     const list = `work_events:${binding.id}#${id}`;
     const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
@@ -9227,6 +9436,148 @@ export class Kolab {
     };
   }
 
+  // ---- messages between a kolab's members (migration 0050) --------------------
+
+  /**
+   * In `q`, the members of `kolab` a message may go between: everyone who holds access there now
+   * (holderRows), people and agents alike. Someone who only reads a public kolab holds nothing in
+   * it, and is no member.
+   */
+  private async membersIn(q: Q, kolab: string) {
+    return (await holderRows(q, kolab)).filter((h) => h.rank > 0);
+  }
+
+  /**
+   * The members of the session's kolab, for a member (konjir_list_members): who a message can go
+   * to, by name, each with its kind, an agent's owner when the owner is a member too, and whether a
+   * session of theirs is open in the kolab now. Not what each holds: that is for the kolab's Admins
+   * (listAccess). A page at a time, by name (W2.21).
+   */
+  async membersPage(sessionId: string, page: PageOpts = {}): Promise<{ kolab: string; items: Member[]; next: string | null }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('members', { kolab: s.kolab });
+    const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
+    const members = await this.membersIn(this.db, s.kolab);
+    if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
+    const here = new Set((await this.db.query<{ actor_id: string }>(
+      `select distinct s.actor_id from session s left join oauth_grant g on g.id = s.grant_id
+        where s.kolab_id = $1 and ${OPEN_SESSION}`, [s.kolab])).rows.map((r) => r.actor_id));
+    const names = new Set(members.map((h) => h.id));
+    const sorted = members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).filter((h) => after === undefined || h.id > after);
+    const { rows, next } = pageOf(sorted.slice(0, size + 1), size, list, (h) => [h.id]);
+    return {
+      kolab: s.kolab, next,
+      items: rows.map((h) => ({
+        actor: h.id, kind: h.kind, owner: h.owner_id !== null && names.has(h.owner_id) ? h.owner_id : null, here: here.has(h.id),
+        ...(h.id === s.actor_id ? { you: true as const } : {}),
+      })),
+    };
+  }
+
+  /**
+   * Sends a message from the session's actor to another member of its kolab, a person or an agent
+   * (konjir_send_message). It names no element and no layer, blocks no work, and no job takes it:
+   * only the two of them read it. It reaches its recipient through their answers, which a listening
+   * session hears at once, and waits there unread for one that isn't. `replyTo` names the message it
+   * answers, one between the same two members in this kolab. Both must be members when it is sent,
+   * checked under the access lock; one from the sender's owner's budget of messages is held for it
+   * and marked used as it commits (W2.21). An archived kolab takes none.
+   */
+  async sendMessage(sessionId: string, to: string, body: string, opts: { replyTo?: string } = {}): Promise<Message> {
+    if (typeof body !== 'string' || !body.trim()) throw new LimitError('a message needs some words: give message');
+    checkText('the message', body);
+    const s = await this.session(sessionId);
+    if (to === s.actor_id) throw new LimitError(`${to} is you: a message goes to another member of kolab ${s.kolab}`);
+    const id = ulid();
+    return this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so it takes no new messages`);
+      const members = await this.membersIn(tx, s.kolab);
+      if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
+      // One refusal for anyone who isn't a member, whether or not Konjir knows the name.
+      if (!members.some((h) => h.id === to)) throw new AccessError(`${to} is not a member of kolab ${s.kolab}, so no message can go to them: konjir_list_members lists who is`);
+      if (opts.replyTo !== undefined) {
+        const r = (await tx.query<{ sent_by: string; sent_to: string }>(
+          `select sent_by, sent_to from message where id = $1 and kolab_id = $2`, [opts.replyTo, s.kolab])).rows[0];
+        const between = r && ((r.sent_by === s.actor_id && r.sent_to === to) || (r.sent_by === to && r.sent_to === s.actor_id));
+        if (!between) throw new LimitError(`reply_to names no message between you and ${to} in kolab ${s.kolab}: give the id of one, or leave it out`);
+      }
+      await tx.exec('set local role kj_system');
+      await this.useRate(tx, hold);
+      const sent = (await tx.query<{ sent_at: Date | string }>(
+        `insert into message(id, kolab_id, sent_by, sent_to, body, reply_to) values ($1,$2,$3,$4,$5,$6) returning sent_at`,
+        [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null])).rows[0];
+      await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
+      return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
+    }, undefined, { access: true }));
+  }
+
+  /**
+   * The unread messages to the session's actor in its kolab, oldest first, at most MESSAGES_AT_ONCE,
+   * with how many are unread in all: what its answers carry. Reading them here marks nothing.
+   */
+  async unreadMessages(sessionId: string): Promise<{ unread: number; items: Message[] }> {
+    const s = await this.session(sessionId);
+    const rows = (await this.db.query<MessageRow>(
+      `select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+        where m.kolab_id = $1 and m.sent_to = $2 and r.message_id is null order by m.id limit $3`, [s.kolab, s.actor_id, MESSAGES_AT_ONCE])).rows;
+    const unread = rows.length < MESSAGES_AT_ONCE ? rows.length : (await this.db.query<{ n: number }>(
+      `select count(*)::int as n from message m where m.kolab_id = $1 and m.sent_to = $2
+          and not exists (select 1 from message_receipt r where r.message_id = m.id)`, [s.kolab, s.actor_id])).rows[0].n;
+    return { unread, items: rows.map(messageOf) };
+  }
+
+  /**
+   * Reads the session's actor's unread messages in its kolab, oldest first, at most `limit`
+   * (MESSAGES_AT_ONCE by default and at most), and marks each read, as its recipient
+   * (konjir_read_messages). `more` is how many stay unread. In an archived kolab, which changes no
+   * more, they are returned and stay unread.
+   */
+  async readMessages(sessionId: string, opts: { limit?: number | null } = {}): Promise<{ messages: Message[]; more: number }> {
+    const s = await this.session(sessionId);
+    const size = Math.min(pageSize(opts.limit ?? MESSAGES_AT_ONCE), MESSAGES_AT_ONCE);
+    return this.inTransaction(async (tx, signal) => {
+      const archived = (await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length > 0;
+      await tx.exec('set local role kj_system');
+      const unread = `m.kolab_id = $1 and m.sent_to = $2 and not exists (select 1 from message_receipt r where r.message_id = m.id)`;
+      const ids = archived
+        ? (await tx.query<{ id: string }>(`select m.id from message m where ${unread} order by m.id limit $3`, [s.kolab, s.actor_id, size])).rows.map((r) => r.id)
+        : (await tx.query<{ message_id: string }>(
+          `insert into message_receipt(message_id, kolab_id, actor_id)
+           select m.id, m.kolab_id, m.sent_to from message m where ${unread} order by m.id limit $3
+           on conflict (message_id) do nothing returning message_id`, [s.kolab, s.actor_id, size])).rows.map((r) => r.message_id);
+      const rows = (await tx.query<MessageRow>(
+        `select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+          where m.id = any($1::text[]) order by m.id`, [ids])).rows;
+      const left = (await tx.query<{ n: number }>(`select count(*)::int as n from message m where ${unread}`, [s.kolab, s.actor_id])).rows[0].n;
+      // The actor's other sessions hear that their answers hold fewer unread.
+      if (ids.length && !archived) await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
+      return { messages: rows.map(messageOf), more: archived ? Math.max(0, left - ids.length) : left };
+    });
+  }
+
+  /**
+   * One page of the session's actor's messages in its kolab, newest first (konjir_list_messages):
+   * the ones sent to it, or with `sent` the ones it sent; with `with`, only those exchanged with
+   * that member, both ways. Read or not, and it marks nothing.
+   */
+  async messagesPage(sessionId: string, filter: { sent?: boolean; with?: string } = {}, page: PageOpts = {}): Promise<{ items: Message[]; next: string | null }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('messages', { kolab: s.kolab, actor: s.actor_id, sent: filter.sent || undefined, with: filter.with });
+    const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
+    const whose = filter.with !== undefined
+      ? `((m.sent_by = $2 and m.sent_to = $3) or (m.sent_by = $3 and m.sent_to = $2)) and ($4::boolean is null or (m.sent_by = $2) = $4::boolean)`
+      : `(case when $4::boolean then m.sent_by else m.sent_to end) = $2 and $3::text is null`;
+    const rows = (await this.db.query<MessageRow>(
+      `select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+        where m.kolab_id = $1 and ${whose} and ($5::text is null or m.id < $5)
+        order by m.id desc limit $6`,
+      [s.kolab, s.actor_id, filter.with ?? null, filter.with !== undefined ? filter.sent ?? null : !!filter.sent, after ?? null, size + 1])).rows;
+    const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
+    return { items: shown.map(messageOf), next };
+  }
+
   // ---- work: evidence, submitting, reviewing and reopening (W5.1c; PLN10, PLN16, PLN18, VER17, D98) ----
 
   /**
@@ -9484,8 +9835,8 @@ export class Kolab {
    * again, and with none left it is Done, unreviewed, on the same terms. Refused once the lease has lapsed. Under the
    * binding's lock, as its commits and every change of Done take it. Counts as a draft (W2.21).
    */
-  submitWork(sessionId: string, ref: string, opts: { evidence?: unknown; note?: string } = {}): Promise<{
-    work: string; state: WorkState; in_review: boolean; reviewers: string[]; nobody?: string; unreviewed: boolean; recorded: number; already: number;
+  submitWork(sessionId: string, ref: string, opts: { evidence?: unknown; note?: string; foundBuilt?: boolean } = {}): Promise<{
+    work: string; state: WorkState; in_review: boolean; reviewers: string[]; nobody?: string; unreviewed: boolean; recorded: number; already: number; found_built?: true;
     findings?: AcceptanceFinding[];
   }> {
     return this.packageScoped(sessionId, ref, async ({ s, binding, id }) => {
@@ -9493,6 +9844,9 @@ export class Kolab {
       const items = this.evidenceInput(opts.evidence, false);
       const checks = await this.resolveChecks(sessionId, items);
       const note = opts.note === undefined ? null : requireText(opts.note, 'a note');
+      const found = opts.foundBuilt === true;
+      // Found built is its assignee's claim that nothing was built: the note says where the product already meets it.
+      if (found && !note) throw new GateError('found_built needs a note: say where the product already meets its done-when (file and line, a test), so its reviewer can check it');
       const at = formatAddress({ node: binding.name, element: id });
       const out = await this.rated(s.actor_id, 'draft', (hold) => this.inTransaction(async (tx, signal) => {
         // The policy lock before any row's, as konjir_set_policy takes it before the requests it writes (POL3).
@@ -9542,10 +9896,10 @@ export class Kolab {
         let ev: string;
         if (review) {
           state = 'in_review';
-          await tx.query(`update work_package set state = 'in_review', lease_until = null, returned = false, unreviewed = false, updated_at = clock_timestamp()
-                           where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
+          await tx.query(`update work_package set state = 'in_review', lease_until = null, returned = false, unreviewed = false, found_built = $3, updated_at = clock_timestamp()
+                           where binding_node_id = $1 and element_id = $2`, [binding.id, id, found]);
           ev = await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'submitted', from: 'in_progress', to: 'in_review', actor: s.actor_id,
-            assigneeFrom: s.actor_id, assigneeTo: s.actor_id, version: c.version.id, concerned: c.delivers, note });
+            assigneeFrom: s.actor_id, assigneeTo: s.actor_id, version: c.version.id, concerned: c.delivers, note: found ? `found built: ${note}` : note });
           await tx.query(`update review_request set state = 'withdrawn', decided_at = now() where binding_node_id = $1 and element_id = $2 and state = 'open'`, [binding.id, id]);
           for (const w of writers) {
             await tx.query(`insert into review_request(id, binding_node_id, element_id, reviewer_id) values ($1, $2, $3, $4)`, [ulid(), binding.id, id, w]);
@@ -9553,11 +9907,11 @@ export class Kolab {
         } else {
           // No one else holds Write on the technical layer: Done on submission, unreviewed (PLN16, D66).
           state = 'done';
-          await tx.query(`update work_package set state = 'done', lease_until = null, returned = false, unreviewed = true, updated_at = clock_timestamp()
-                           where binding_node_id = $1 and element_id = $2`, [binding.id, id]);
+          await tx.query(`update work_package set state = 'done', lease_until = null, returned = false, unreviewed = true, found_built = $3, updated_at = clock_timestamp()
+                           where binding_node_id = $1 and element_id = $2`, [binding.id, id, found]);
           ev = await this.workEventIn(tx, { binding: binding.id, element: id, kind: 'done_unreviewed', from: 'in_progress', to: 'done', actor: s.actor_id,
             assigneeFrom: s.actor_id, assigneeTo: s.actor_id, version: c.version.id, concerned: c.delivers,
-            note: note ?? `${noOther}, so it is Done on submission, unreviewed (PLN16)` });
+            note: found ? `found built: ${note}; ${noOther}, so it is Done on submission, unreviewed (PLN16)` : note ?? `${noOther}, so it is Done on submission, unreviewed (PLN16)` });
         }
         const { recorded, already } = await this.evidenceIn(tx, binding.id, id, items, ev, s.actor_id, repositories, checks);
         if (state === 'done') await this.settleMilestonesIn(tx, binding, c.version);
@@ -9572,7 +9926,7 @@ export class Kolab {
       // What its reviewers see with the request (REV9): every failed acceptance check it has recorded, in any round.
       const findings = acceptanceFindings(await this.checkedEvidence(this.db, binding.id, id));
       return { work: at, state: out.state, in_review: out.state === 'in_review', reviewers, ...(nobody ? { nobody } : {}), unreviewed: out.state === 'done', recorded: out.recorded, already: out.already,
-        ...(findings.length ? { findings } : {}) };
+        ...(found ? { found_built: true as const } : {}), ...(findings.length ? { findings } : {}) };
     });
   }
 
@@ -12514,6 +12868,9 @@ async function insertSession(tx: Q, token: string, s: { actor: string; role: Rol
   return id;
 }
 
+/** What a rate budget counts (rate_event's kinds, migrations 0025 and 0050). */
+type RateKind = 'ask' | 'draft' | 'message';
+
 interface Session {
   /** The session's id: its key, which whoami and events name it by. */
   id: string;
@@ -12551,9 +12908,11 @@ interface WorkRow {
   returned: boolean; touched_at: Date | string | null; lapsed: boolean; removed_seq: number | null; removed_node: string | null;
   /** In review, approved, waiting for its release (PLN16, W7.7; migration 0047). */
   approved: boolean;
+  /** Submitted as found already built, while In review or Done (migration 0051). */
+  found_built: boolean;
 }
 const WORK_ROWS = `select w.binding_node_id, w.element_id, w.kolab_id, w.state, w.assignee_id, w.lease_until, w.unreviewed, w.milestone,
-        w.removed_in_version_id, w.returned, w.approved, w.touched_at, (w.state = 'in_progress' and w.lease_until < clock_timestamp()) as lapsed, rv.seq as removed_seq, rn.name as removed_node
+        w.removed_in_version_id, w.returned, w.approved, w.found_built, w.touched_at, (w.state = 'in_progress' and w.lease_until < clock_timestamp()) as lapsed, rv.seq as removed_seq, rn.name as removed_node
    from work_package w left join version rv on rv.id = w.removed_in_version_id left join node rn on rn.id = rv.node_id`;
 
 /** Why a package is blocked, with whether a question was raised by a mark (told only to those who belong, D58). */
@@ -12574,6 +12933,15 @@ interface BoardPackage {
 /** Whether a board package is at risk (PLN10, W5.2b): it has work (In progress, In review or Done), an open mark, and is still its binding's. */
 const atRisk = (p: Pick<BoardPackage, 'marked' | 'state' | 'row'>) =>
   p.marked && !p.row.milestone && !p.row.removed_in_version_id && p.state !== 'todo';
+
+/** A kolab's progress as Kolab.progressIn computes it (WRK8): its specs' latest elements, and each binding's progress. */
+interface KolabProgress {
+  specs: Map<string, ElementRow[]>;
+  bindings: { node: NodeRow; spec: string; elements: ElementRow[]; own: Map<string, Progress>; served: Map<string, Progress> }[];
+}
+
+/** Progress as a reader sees it: at risk is told only to those who belong to the kolab's work, who read marks (D58). */
+const progressShown = (belongs: boolean) => (p: Progress): Progress => (belongs ? { progress: p.progress, at_risk: !!p.at_risk } : { progress: p.progress });
 
 interface WorkEventRow {
   id: string; binding_node_id: string; element_id: string; kind: WorkEventKind; from_state: WorkState | null; to_state: WorkState | null;
@@ -13281,6 +13649,15 @@ function requireText(text: unknown, what: string, max = MAX_TEXT): string {
 
 /** A timestamp as ISO 8601, or null for a row written before it was recorded. */
 const iso = (t: Date | string | null) => (t === null ? null : new Date(t).toISOString());
+
+/** A message as it is read, with its receipt if it has one: `m` the message, `r` its receipt, left joined. */
+const MESSAGE_COLUMNS = 'm.id, m.sent_by, m.sent_to, m.body, m.reply_to, m.sent_at, r.read_at';
+interface MessageRow { id: string; sent_by: string; sent_to: string; body: string; reply_to: string | null; sent_at: Date | string; read_at: Date | string | null }
+const messageOf = (m: MessageRow): Message => ({
+  id: m.id, from: m.sent_by, to: m.sent_to, message: m.body, reply_to: m.reply_to, sent_at: iso(m.sent_at)!, read_at: iso(m.read_at),
+});
+/** Why a session that only reads a public kolab sends and reads no messages there. */
+const notAMember = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: messages go between those who hold access there, and reading a public kolab gives none`;
 
 /** A position's evidence, as stored: a list of strings (rows written by hand before 0013 may hold anything). */
 const evidenceOf = (e: unknown): string[] => (Array.isArray(e) ? e.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))) : [JSON.stringify(e)]);

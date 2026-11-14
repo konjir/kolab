@@ -132,6 +132,12 @@ export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; 
         <Command label="Sign the konjir CLI in" text={`${konjir} login --url ${mcp} --kolab ${me.kolab} --role ${me.role}`} />
         <Command label="Read the instructions with the konjir CLI" text={`${konjir} instructions`} />
       </section>
+      <section className="newk" aria-labelledby="c-work">
+        <h2 className="section-title" id="c-work">Put a machine to work: konjir work</h2>
+        <p className="why-not">Rather than drive agents yourself, set a machine to work on {me.kolab}: in a checkout of its repository, <span className="mono">konjir work</span> takes what is ready (reviews, work packages, questions and marks on the technical layer) and gives each to an agent of yours in its own worktree, one job at a time per slot. It never merges or deploys. Sign in first, as yourself.</p>
+        <Command label="Sign in to put this machine to work" text={`${konjir} login --url ${mcp} --kolab ${me.kolab}`} />
+        <Command label="Put this machine to work, in a checkout of the kolab's repository" text={`${konjir} work`} />
+      </section>
     </>
   );
 }
@@ -153,7 +159,7 @@ export function PeopleView({ me, overview, tick, act }: { me: WebMe; overview: W
   if (me.access.level === 'admin') return <Invites me={me} overview={overview} tick={tick} act={act} />;
   return (
     <section className="newk" aria-labelledby="p-title">
-      <h2 className="section-title" id="p-title">People in {me.kolab}</h2>
+      <h1 className="section-title" id="p-title">People in {me.kolab}</h1>
       <p className="why-not">Those with Admin in {me.kolab} invite people to it; you hold {accessWords(me.access)}. Ask its owner, {overview.kolab.owner}.</p>
     </section>
   );
@@ -198,7 +204,7 @@ function Invites({ me, overview, tick, act }: { me: WebMe; overview: WebOverview
         )}
       </section>
       <AccessList me={me} tick={tick} act={act} />
-      <PolicySettings me={me} tick={tick} act={act} />
+      <p className="why-not">How far agents act without a person is in <a href="#/settings">Settings</a>.</p>
       <section aria-labelledby="p-list"><h2 className="section-title" id="p-list">Invites</h2>
         {error && <p className="empty" role="alert">{error}</p>}
         {invites.length ? <ul className="qlist">{invites.map((i) => (
@@ -352,7 +358,7 @@ export function AccessList({ me, tick, act }: { me: WebMe; tick: number; act: Ac
           <h3 id="p-teams">Teams granted access</h3>
           <ul className="qlist" aria-labelledby="p-teams">{data.teams.map((t) => (
             <li key={t.team} className="qitem"><div className="row">
-              <Pill tone="clean">{accessWords(t)}</Pill><span className="mono">{t.team}</span>
+              <span className="kind">{accessWords(t)}</span><span className="mono">{t.team}</span>
               <span>{t.members === 1 ? '1 person' : `${t.members} people`}, its sub-teams' members included</span>
               <span className="why-not">Change it in team {t.team}'s grant or members.</span>
             </div></li>
@@ -514,7 +520,7 @@ export function SessionsView({ tick, act }: { tick: number; act: Act }) {
         )}
         {sessions.length ? <ul className="qlist">{sessions.map((s) => (
           <li key={s.session} className="qitem" aria-label={`${s.where}, ${s.session.slice(0, 8)}`}><div className="row">
-            <Pill tone={s.current ? 'clean' : 'question'}>{s.current ? 'this browser' : VIA_WORDS[s.via]}</Pill>
+            <span className="kind">{s.current ? 'this browser' : VIA_WORDS[s.via]}</span>
             <span><b>{s.where}</b> · {s.kolab} as {s.role} · last used {ago(s.last_used)} · opened {ago(s.started_at)}
               {s.expires_at ? ` · expires ${new Date(s.expires_at).toLocaleDateString()}` : ''} · <span className="mono" title={s.session}>{s.session.slice(0, 8)}</span></span>
             {!s.current && <button type="button" className="btn quiet" onClick={() => setPending(s)}>Revoke</button>}

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { BindingProgress, Progress, ProgressValue } from '@konjir/types';
 import { wordDiff } from '../util.js';
 
 const glyph = {
@@ -16,6 +17,22 @@ export function Pill({ tone, children }: { tone: keyof typeof glyph; children: R
       {children}
     </span>
   );
+}
+
+const PROGRESS_WORD: Record<ProgressValue, string> = { done: 'Done', in_progress: 'In progress', todo: 'To do', no_work: 'No work', not_served: 'Not served' };
+const PROGRESS_TONE: Record<ProgressValue, keyof typeof glyph> = { done: 'clean', in_progress: 'stale', todo: 'question', no_work: 'boundary', not_served: 'boundary' };
+
+/**
+ * Progress (WRK8), as Kolab computed it when it was read: one pill, or one per binding, naming it
+ * (a spec element's, a ruling's), each saying so when work it counts is at risk (WRK6).
+ */
+export function ProgressPills({ progress }: { progress: Progress | BindingProgress[] }) {
+  const one = (p: Progress, binding?: string) => (
+    <Pill key={binding ?? ''} tone={p.at_risk ? 'stale' : PROGRESS_TONE[p.progress]}>
+      {binding ? `${binding}: ` : ''}{PROGRESS_WORD[p.progress]}{p.at_risk ? ', at risk' : ''}
+    </Pill>
+  );
+  return <span className="progress" title="Progress, computed as it was read">{Array.isArray(progress) ? progress.map((p) => one(p, p.binding)) : one(progress)}</span>;
 }
 
 /** Words removed and added between two texts. */

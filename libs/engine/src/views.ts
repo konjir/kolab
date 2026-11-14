@@ -92,6 +92,8 @@ export interface LinkRow {
   edge: string; kind: string;
   source_node: string; source_seq: number; source_element: string | null; source_layer: Layer;
   target_node: string; target_seq: number; target_element: string | null; target_selector: QuoteSelector | null; target_latest: number | null;
+  /** The target's kolab, where it isn't the session's own; null when it is. */
+  target_kolab: string | null;
   mark_id: string | null; mark_reason: MarkReason | null;
 }
 
@@ -105,6 +107,7 @@ export async function liveLinks(kolab: Kolab, session: string, only: { node?: st
     `select e.id as edge, e.kind, sn.name as source_node, sv.seq as source_seq, e.source_element_id as source_element, sv.layer as source_layer,
             tn.name as target_node, tv.seq as target_seq, e.target_element_id as target_element, e.target_selector,
             (select max(l.seq) from version l where l.node_id = tn.id and l.state = 'committed') as target_latest,
+            case when tn.kolab_id = $1 then null else tn.kolab_id end as target_kolab,
             m.id as mark_id, m.reason as mark_reason
        from edge e
        join version sv on sv.id = e.source_version_id join node sn on sn.id = sv.node_id
@@ -272,6 +275,30 @@ export async function openCaseCount(kolab: Kolab, session: string, layer: Layer)
   return kolab.readAs(session, async (q) => (await q.query<{ n: number }>(
     `select count(*)::int as n from case_file c join version v on v.id = c.version_id
       where c.kolab_id = $1 and c.state = 'open' and v.layer = $2`, [here, layer])).rows[0].n);
+}
+
+/**
+ * What waits for `person` in another kolab, where they write `layers`: reviews asked of them that
+ * they can give now (D65), and the open questions, marks and case files on those layers. Read as
+ * Kolab, since a session reads nothing of another kolab's work (D49): only counts, and only what
+ * the person would see in a session there, so nothing is said to someone who doesn't belong.
+ */
+export async function waitingElsewhere(kolab: Kolab, person: string, inKolab: string, layers: Layer[]): Promise<{ reviews: number; questions: number; marks: number; cases: number }> {
+  if (!layers.length) return { reviews: 0, questions: 0, marks: 0, cases: 0 };
+  const c = (await kolab.db.query<{ questions: number; marks: number; cases: number }>(
+    `select (select count(*)::int from query q join version v on v.id = q.version_id
+              where q.kolab_id = $1 and q.state = 'open' and v.layer = any($2::text[])) as questions,
+            (select count(*)::int from invalidation i join version v on v.id = i.version_id
+              where i.kolab_id = $1 and i.state = 'open' and v.layer = any($2::text[])) as marks,
+            (select count(*)::int from case_file c join version v on v.id = c.version_id
+              where c.kolab_id = $1 and c.state = 'open' and v.layer = any($2::text[])) as cases`, [inKolab, layers])).rows[0];
+  const requests = (await kolab.db.query<{ reviewer: string; layer: Layer }>(
+    `select r.reviewer_id as reviewer, ${REQUEST_LAYER} as layer from review_request r join version v on v.id = r.version_id
+      where r.state = 'open' and v.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and ${REQUEST_LAYER} = any($3::text[])
+     union all
+     select r.reviewer_id, 'technical' from review_request r join work_package w on w.binding_node_id = r.binding_node_id and w.element_id = r.element_id
+      where r.state = 'open' and w.state = 'in_review' and r.kolab_id = $1 and r.reviewer_id = $2 and 'technical' = any($3::text[])`, [inKolab, person, layers])).rows;
+  return { ...c, reviews: (await kolab.shownRequests(inKolab, requests)).length };
 }
 
 /**
@@ -509,6 +536,42 @@ export async function submissionsOf(kolab: Kolab, session: string, actor: string
     out.push({ ...v, verdicts: v.verdicts.filter((x) => (x.state === 'open' ? shown.has(`${x.reviewer}:${!!x.product}`) : x.state === 'withdrawn' ? persons.has(x.reviewer) : true)) });
   }
   return { items: out, next };
+}
+
+export interface AgentVerdictRow {
+  /** A version's verdict has its `seq`; a work package's, its `element`. */
+  node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product?: true;
+}
+
+/**
+ * The verdicts `person`'s agents gave in the session's kolab, on versions and on work packages,
+ * newest first: what was reviewed on the person's behalf, which their own review list never shows.
+ * An approval a fold copied onto its new version (foldRecord) isn't given twice.
+ */
+export async function agentVerdictsPage(kolab: Kolab, session: string, person: string, page: PageOpts = {}): Promise<RowsPage<AgentVerdictRow>> {
+  const here = await kolab.sessionKolab(session);
+  const size = pageSize(page.limit);
+  const list = scoped('web:agent-verdicts', { here, person });
+  const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
+  const agents = (await kolab.db.query<{ id: string }>(`select id from actor where kind = 'agent' and owner_id = $1`, [person])).rows.map((r) => r.id);
+  if (!agents.length) return { items: [], next: null };
+  const read = await kolab.readAs(session, async (q) => (await q.query<{ id: string; node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: Date | string; at_key: string; product: boolean }>(
+    `select r.id, coalesce(n.name, b.name) as node, v.seq, case when r.version_id is null then r.element_id end as element,
+            r.reviewer_id as reviewer, r.state, r.note, r.decided_at as at, r.decided_at::text as at_key, r.product
+       from review_request r
+       left join version v on v.id = r.version_id left join node n on n.id = v.node_id
+       left join node b on r.version_id is null and b.id = r.binding_node_id
+      where r.kolab_id = $1 and r.reviewer_id = any($2::text[]) and r.decided_at is not null and r.state in ('approved', 'changes_requested')
+        and coalesce(n.name, b.name) is not null
+        and not (v.folded_from is not null and exists (select 1 from review_request o
+                   where o.version_id = v.folded_from and o.reviewer_id = r.reviewer_id and o.state = 'approved'))
+        and ($4::text is null or (r.decided_at, r.id) < ($4::timestamptz, $5::text))
+      order by r.decided_at desc, r.id desc limit $3`, [here, agents, size + 1, after?.[0] ?? null, after?.[1] ?? null])).rows);
+  const { rows, next } = pageOf(read, size, list, (r) => [r.at_key, r.id]);
+  return {
+    items: rows.map(({ id: _, at_key: __, product, at, ...r }) => ({ ...r, at: iso(at), ...(product ? { product: true as const } : {}) })),
+    next,
+  };
 }
 
 export interface QueryDetailRow {

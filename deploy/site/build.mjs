@@ -17,8 +17,9 @@
 //  - hashes asset names (site/assets/), so they can be cached for a year, and keeps the previous
 //    build's hashed assets one more build, so a page still cached for a minute finds its CSS;
 //  - writes 404.html from the same header and footer, plus robots.txt and the favicon;
-//  - renders the hands-on tutorial, site/src/hands-on.md, with markdown.mjs into the same header
-//    and footer, as hands-on/index.html (https://konjir.com/hands-on/), styled by article.css.
+//  - renders each article page (ARTICLES: the hands-on tutorial, site/src/hands-on.md, and the
+//    messages guide, site/src/messages.md) with markdown.mjs into the same header and footer, as
+//    <dir>/index.html (https://konjir.com/hands-on/, https://konjir.com/messages/), styled by article.css.
 // It refuses an artboard that uses anything else from the runtime, or anything the CSP would
 // block (scripts, handlers, frames, javascript: URLs, other origins' resources), rather than guess.
 import { spawnSync } from 'node:child_process';
@@ -47,11 +48,18 @@ const fail = (msg) => {
 if (!existsSync(srcPath)) fail(`no artboard at ${srcPath}`);
 
 // The build writes only these in site/; site/src/ (the source) and site/README.md are never its.
-const outputs = new Set(['index.html', '404.html', 'robots.txt', 'favicon.svg', 'assets', 'hands-on']);
+// The article pages: each a Markdown file in site/src/, rendered into <dir>/index.html under its
+// kicker, with a contents list of its "## " headings.
+const ARTICLES = [
+  { source: 'hands-on.md', dir: 'hands-on', kicker: 'Hands-on', contents: 'Steps', what: 'tutorial' },
+  { source: 'messages.md', dir: 'messages', kicker: 'Guide', contents: 'Sections', what: 'guide' },
+];
+const outputs = new Set(['index.html', '404.html', 'robots.txt', 'favicon.svg', 'assets', ...ARTICLES.map((a) => a.dir)]);
 // The pages, by their path in site/: each names the assets it uses.
-const PAGES = ['index.html', '404.html', 'hands-on/index.html'];
-const handsOnPath = join(sourceDir, 'hands-on.md');
-if (!existsSync(handsOnPath)) fail(`no tutorial at ${handsOnPath}`);
+const PAGES = ['index.html', '404.html', ...ARTICLES.map((a) => `${a.dir}/index.html`)];
+for (const a of ARTICLES) {
+  if (!existsSync(join(sourceDir, a.source))) fail(`no ${a.what} at ${join(sourceDir, a.source)}`);
+}
 const outPath = (rel) => {
   const parts = rel.split(/[\\/]/);
   if (isAbsolute(rel) || parts.includes('..') || !outputs.has(parts[0])) fail(`refusing to write site/${rel}, which the build doesn't own`);
@@ -185,23 +193,27 @@ let notFound = body.replace(/<main>[\s\S]*<\/main>/, readFileSync(join(here, '40
 if (notFound === body) fail('no <main> to swap for the 404 page');
 notFound = notFound.replace(/href="#top"/g, 'href="/"').replace(/href="#/g, 'href="/#');
 
-// The hands-on tutorial: the same header and footer, with in-page links pointing home, around the
-// article markdown.mjs renders. A function replaces <main>, since the article's code holds `$`s.
-const tutorial = render(readFileSync(handsOnPath, 'utf8'), (m) => fail(`site/src/hands-on.md: ${m}`));
-const toc = `<nav class="toc" aria-label="Steps"><p>On this page</p><ol>${tutorial.toc.map((t) => `<li><a href="#${t.id}">${t.html}</a></li>`).join('')}</ol></nav>`;
-const firstH2 = tutorial.html.indexOf('<h2 ');
-const article = `<main>
+// The article pages: the same header and footer, with in-page links pointing home, around the
+// article markdown.mjs renders. A function replaces <main>, since an article's code holds `$`s.
+for (const a of ARTICLES) {
+  const rendered = render(readFileSync(join(sourceDir, a.source), 'utf8'), (m) => fail(`site/src/${a.source}: ${m}`));
+  const toc = `<nav class="toc" aria-label="${a.contents}"><p>On this page</p><ol>${rendered.toc.map((t) => `<li><a href="#${t.id}">${t.html}</a></li>`).join('')}</ol></nav>`;
+  const firstH2 = rendered.html.indexOf('<h2 ');
+  const article = `<main>
 <article class="ho" aria-labelledby="ho-title">
-<header><p class="kicker">Hands-on</p><h1 id="ho-title">${tutorial.title.html}</h1></header>
-${firstH2 < 0 ? tutorial.html : `${tutorial.html.slice(0, firstH2)}${toc}\n${tutorial.html.slice(firstH2)}`}
+<header><p class="kicker">${a.kicker}</p><h1 id="ho-title">${rendered.title.html}</h1></header>
+${firstH2 < 0 ? rendered.html : `${rendered.html.slice(0, firstH2)}${toc}\n${rendered.html.slice(firstH2)}`}
 </article>
 </main>`;
-for (const [re, what] of refuse) {
-  const m = re.exec(article);
-  if (m) fail(`site/src/hands-on.md renders ${what}: ${article.slice(m.index, m.index + 80)}`);
+  for (const [re, what] of refuse) {
+    const m = re.exec(article);
+    if (m) fail(`site/src/${a.source} renders ${what}: ${article.slice(m.index, m.index + 80)}`);
+  }
+  a.html = body.replace(/href="#top"/g, 'href="/"').replace(/href="#/g, 'href="/#').replace(/<main>[\s\S]*<\/main>/, () => article);
+  if (!a.html.includes('class="ho"')) fail(`no <main> to swap for the ${a.what}`);
+  a.title = rendered.title.text;
+  a.lead = rendered.lead;
 }
-let handsOn = body.replace(/href="#top"/g, 'href="/"').replace(/href="#/g, 'href="/#').replace(/<main>[\s\S]*<\/main>/, () => article);
-if (!handsOn.includes('class="ho"')) fail('no <main> to swap for the tutorial');
 
 // Inline styles become classes. ".kj .sN" outranks the helmet's element rules (a:hover) as the
 // inline style did, and ".kj.sN" covers the root itself.
@@ -220,8 +232,8 @@ const unstyle = (html) =>
   });
 body = unstyle(body);
 notFound = unstyle(notFound);
-handsOn = unstyle(handsOn);
-if (/\sstyle\s*=/i.test(body + notFound + handsOn)) fail('an inline style survived');
+for (const a of ARTICLES) a.html = unstyle(a.html);
+if (/\sstyle\s*=/i.test(body + notFound + ARTICLES.map((a) => a.html).join(''))) fail('an inline style survived');
 
 const css = [
   '/* Generated by deploy/site/build.mjs from site/src/. Do not edit. */',
@@ -283,8 +295,10 @@ const finished = (rel, html) => {
 
 finished('index.html', page(title, body));
 finished('404.html', page('Not found: Konjir', notFound));
-mkdirSync(outPath('hands-on'), { recursive: true });
-finished('hands-on/index.html', page(`Hands-on: ${tutorial.title.text}: Konjir`, handsOn, tutorial.lead));
+for (const a of ARTICLES) {
+  mkdirSync(outPath(a.dir), { recursive: true });
+  finished(`${a.dir}/index.html`, page(`${a.kicker}: ${a.title}: Konjir`, a.html, a.lead));
+}
 writeFileSync(outPath('robots.txt'), 'User-agent: *\nAllow: /\n');
 copyFileSync(join(repo, 'brand', 'konjir-mark-tile.svg'), outPath('favicon.svg'));
 
@@ -301,6 +315,6 @@ for (const file of walk(outPath('assets'))) {
 const kept = [...previous].filter((p) => !current.has(p) && existsSync(join(out, 'assets', p)));
 
 console.log(
-  `site/: index.html, 404.html, hands-on/index.html, robots.txt, favicon.svg, ${classes.size} style classes, ${blobs.size} image(s); ` +
+  `site/: ${PAGES.join(', ')}, robots.txt, favicon.svg, ${classes.size} style classes, ${blobs.size} image(s); ` +
     `kept ${kept.length} previous asset(s), pruned ${pruned.length}`,
 );

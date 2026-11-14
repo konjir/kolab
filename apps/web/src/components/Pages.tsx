@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   KINDS, LAYER_OF_KIND, RETIRED_KINDS,
-  type Kind, type WebActivityView, type WebForeignKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
+  type Kind, type WebActivityView, type WebForeignKolab, type WebKolab, type WebLineageView, type WebMe, type WebOverview, type WebPaged, type WebQueriesView, type WebQuery, type WebReviewsView, type WebSignInMethods, type WebReviewEvidence, type WebWorkOutcome, type WebWorkReview,
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
-import { addr, ago } from '../util.js';
+import { addr, ago, parseKj, routeOf } from '../util.js';
 import { Addr, Pill } from './bits.js';
 import { QueryBox, type Act } from './Marks.js';
 
@@ -56,7 +56,8 @@ export function usePaged<T extends WebPaged>(path: string, tick: number) {
     try {
       const p = await api<T>(url(next));
       shown.current.count = current.length + 1;
-      setPages({ path, pages: [...current, p] });
+      // Only onto the pages it followed: a reload since (tick) has read them again, as many as were shown.
+      setPages((now) => (now?.path === path && now.pages.at(-1)?.next === next ? { path, pages: [...now.pages, p] } : now));
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
   return { pages: current, error, more: next ? more : undefined, busy };
@@ -256,7 +257,7 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
   const { pages, error, more, busy } = usePaged<WebReviewsView>('reviews', tick);
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!pages) return <p className="empty">Reading the reviews…</p>;
-  const data = { for_me: pages.flatMap((p) => p.for_me), mine: pages.flatMap((p) => p.mine) };
+  const data = { for_me: pages.flatMap((p) => p.for_me), mine: pages.flatMap((p) => p.mine), by_agents: pages.flatMap((p) => p.by_agents ?? []) };
   return (
     <>
       <section aria-labelledby="r-mine"><h2 className="section-title" id="r-mine">Waiting for your review</h2>
@@ -277,21 +278,66 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
           </li>
         ))}</ul> : <p className="empty">You haven’t submitted anything for review in this kolab.</p>}
       </section>
+      <section aria-labelledby="r-agents"><h2 className="section-title" id="r-agents">What your agents reviewed</h2>
+        {data.by_agents.length ? <ul className="qlist">{data.by_agents.map((v) => (
+          <li key={`${v.subject}:${v.reviewer}:${v.at}`} className="qitem">
+            <div className="row"><Pill tone={v.state === 'approved' ? 'clean' : 'boundary'}>{v.state === 'approved' ? 'approved' : 'changes requested'}</Pill>
+              <button type="button" className="chip" onClick={() => go(v.seq !== null ? `node/${v.node}@${v.seq}` : `node/${v.node}#${v.element}`)}>{v.subject}</button>
+              <span>by {v.reviewer} · {ago(v.at)}</span>{v.product_review && <span className="why-not">product review</span>}</div>
+            {v.note ? <div className="a">{v.note}</div> : null}
+          </li>
+        ))}</ul> : <p className="empty">None of your agents has reviewed anything in this kolab.</p>}
+      </section>
       <More more={more} busy={busy} what="reviews" />
     </>
   );
 }
 
-export function ActivityView({ tick }: { tick: number }) {
+/** The kind of an activity line, from its verb: what the filter offers. */
+const ACTIVITY_KINDS: { key: string; label: string; test: RegExp }[] = [
+  // Each anchored on the verb the server's activity() begins its text with.
+  { key: 'nodes', label: 'Nodes made', test: /^made kj:/ },
+  { key: 'versions', label: 'Versions', test: /^(committed kj:|submitted kj:|kj:\S+ was rejected)/ },
+  { key: 'reviews', label: 'Reviews', test: /^(approved kj:|requested changes on kj:)/ },
+  { key: 'questions', label: 'Questions and notes', test: /^(asked about kj:|left a note on kj:)/ },
+  { key: 'marks', label: 'Marks', test: /^marked kj:/ },
+  { key: 'cases', label: 'Case files and rulings', test: /^(opened a case file on kj:|took the other side of the case file on kj:|ruled on kj:)/ },
+];
+
+/**
+ * What Kolab records, newest first, with who did it: filtered by actor, by kind and by words, and
+ * every address a link to where it points.
+ */
+export function ActivityView({ tick, here }: { tick: number; here: string }) {
   const { pages, error, more, busy } = usePaged<WebActivityView>('activity', tick);
+  const [actor, setActor] = useState('');
+  const [kind, setKind] = useState('');
+  const [words, setWords] = useState('');
   if (error) return <p className="empty" role="alert">{error}</p>;
   if (!pages) return <p className="empty">Reading the activity…</p>;
-  const data = { items: pages.flatMap((p) => p.items) };
+  const all = pages.flatMap((p) => p.items);
+  const actors = [...new Set(all.map((l) => l.actor))].sort();
+  const k = ACTIVITY_KINDS.find((x) => x.key === kind);
+  const w = words.trim().toLowerCase();
+  const items = all.filter((l) => (!actor || l.actor === actor) && (!k || k.test.test(l.text)) && (!w || `${l.actor} ${l.text}`.toLowerCase().includes(w)));
+  const link = (address: string, key: number) => {
+    const a = parseKj(address);
+    return a ? <a key={key} className="addr" href={`#/${routeOf(a, here)}`}>{address}</a> : <Addr key={key}>{address}</Addr>;
+  };
   return (
     <section aria-labelledby="act-title"><h2 className="section-title" id="act-title">Activity</h2>
-      <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: nodes as they were made, versions as they were written, verdicts, questions and marks, each with who made it.</p>
-      <ol className="log">{data.items.map((l, i) => (
-        <li key={i}><time dateTime={l.at}>{ago(l.at)}</time><span><span className="actor">{l.actor}</span> {l.text.split(/(kj:[^\s·:]+)/).map((part, j) => part.startsWith('kj:') ? <Addr key={j}>{part}</Addr> : part)}</span></li>
+      <p className="why-not" style={{ margin: '-6px 0 12px', maxWidth: '68ch' }}>From what Kolab records: nodes as they were made, versions as they were written, verdicts, questions and marks, each with who made it. “kolab” is Kolab itself, acting on its own.</p>
+      <form className="filters-row" role="search" aria-label="Filter the activity" onSubmit={(e) => e.preventDefault()}>
+        <div className="field"><label htmlFor="act-actor">Who</label>
+          <select id="act-actor" value={actor} onChange={(e) => setActor(e.target.value)}><option value="">Anyone</option>{actors.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+        <div className="field"><label htmlFor="act-kind">What</label>
+          <select id="act-kind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">Everything</option>{ACTIVITY_KINDS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}</select></div>
+        <div className="field"><label htmlFor="act-words">Words or address</label>
+          <input id="act-words" type="search" value={words} autoComplete="off" onChange={(e) => setWords(e.target.value)} /></div>
+      </form>
+      <p className="why-not" role="status">{items.length === all.length ? `${all.length} shown` : `${items.length} of ${all.length} shown`}{more ? '; read more below to filter further back' : ''}.</p>
+      <ol className="log">{items.map((l, i) => (
+        <li key={i}><time dateTime={l.at}>{ago(l.at)}</time><span><span className="actor">{l.actor}</span> {l.text.split(/(kj:[^\s·:]+)/).map((part, j) => part.startsWith('kj:') ? link(part, j) : part)}</span></li>
       ))}</ol>
       <More more={more} busy={busy} what="activity" />
     </section>
@@ -299,20 +345,92 @@ export function ActivityView({ tick }: { tick: number }) {
 }
 
 /** What depends on what: each wire a link from an element to what it relies on, pinned to the version it was checked against. */
-export function LineageView({ tick, go }: { tick: number; go(r: string): void }) {
+export function LineageView({ tick, go, focus }: { tick: number; go(r: string): void; focus?: string }) {
   const read = usePaged<WebLineageView>('lineage', tick);
-  const { error } = read;
+  const { error, more, busy } = read;
+  // Every document, a page at a time, so that what relies on an element is all there to list.
+  const loaded = read.pages?.length ?? 0;
+  const reading = !!more && loaded < LINEAGE_PAGES;
+  useEffect(() => { if (reading && !busy) void more!(); }, [loaded, busy, reading]);
+  const [words, setWords] = useState('');
+  const [graph, setGraph] = useState(false);
+  if (error) return <p className="empty" role="alert">{error}</p>;
   const data = read.pages && { nodes: read.pages.flatMap((p) => p.nodes), links: read.pages.flatMap((p) => p.links) };
-  const [focus, setFocus] = useState<string>();
+  if (!data) return <p className="empty">Reading the lineage…</p>;
+  const text = new Map<string, string>();
+  for (const n of data.nodes) { text.set(linKey(n.name, null), n.title); for (const e of n.elements) text.set(linKey(n.name, e.id), e.text); }
+  const reliesOn = focus ? data.links.filter((l) => linKey(l.source.node, l.source.element) === focus) : [];
+  // A link into another kolab never names an element here, whatever its name.
+  const reliedOnBy = focus ? data.links.filter((l) => !l.target.kolab && linKey(l.target.node, l.target.element) === focus) : [];
+  const [fNode, fEl] = focus ? [focus.slice(0, focus.indexOf('#')), focus.slice(focus.indexOf('#') + 1) || null] : [undefined, null];
+  const q = words.trim().toLowerCase();
+  const found = q ? data.nodes.flatMap((n) => n.elements.map((e) => ({ node: n.name, id: e.id, text: e.text })))
+    .filter((e) => `${addr(e.node, null, e.id)} ${e.text}`.toLowerCase().includes(q)) : [];
+  const stale = data.links.filter((l) => l.mark);
+  // An element in another kolab (D49) is read there, in place; it has no lineage here.
+  const entry = (key: string, node: string, element: string | null, extra?: ReactNode, kolab?: string) => (
+    <li key={key} className="lin-item">
+      {kolab
+        ? <button type="button" className="chip" onClick={() => go(`read/${kolab}/${node}${element ? `#${element}` : ''}`)}>{`kj:${kolab}/${node}${element ? `#${element}` : ''}`}</button>
+        : <button type="button" className="chip" onClick={() => go(lineageRoute(node, element))}>{addr(node, null, element)}</button>}{extra}
+      {!kolab && text.has(linKey(node, element)) && <span className="lin-text">{text.get(linKey(node, element))}</span>}
+    </li>
+  );
+  const stopped = !!more && !reading;
+  const pinned = (l: WebLineageView['links'][number]) => <span className="why-not">pinned to @{l.target.seq}{l.target.latest && l.target.latest !== l.target.seq ? `, now @${l.target.latest}` : ''}</span>;
+  return (
+    <section aria-labelledby="lin-title">
+      <h2 className="section-title" id="lin-title">What depends on what</h2>
+      <p className="why-not" style={{ maxWidth: '68ch', margin: '0 0 12px' }}>An element relies on what it links to, pinned to the version it was checked against. Find an element to see both ways.</p>
+      <form className="search" role="search" onSubmit={(e) => { e.preventDefault(); if (found.length === 1) go(lineageRoute(found[0].node, found[0].id)); }}>
+        <label htmlFor="lin-search">Find an element</label>
+        <input id="lin-search" type="search" value={words} onChange={(e) => setWords(e.target.value)} autoComplete="off" aria-describedby="lin-count" />
+        <span id="lin-count" className="hint" role="status">{q ? `${found.length} element${found.length === 1 ? '' : 's'} match${found.length > 50 ? ', the first 50 shown' : ''}.` : `${data.links.length} links${reading ? ', reading more…' : stopped ? ' in the documents read so far' : ''}.`} Its name, such as R12, or words in it.</span>
+      </form>
+      {q && (found.length ? <ul className="lin-list">{found.slice(0, 50).map((e) => entry(linKey(e.node, e.id), e.node, e.id))}</ul> : <p className="empty">No element matches.</p>)}
+      {focus && fNode && (
+        <article className="lin-focus" aria-labelledby="lin-focus">
+          <div className="row"><h3 id="lin-focus" className="addr">{addr(fNode, null, fEl)}</h3>
+            <button type="button" className="btn" onClick={() => go(`node/${fNode}${fEl ? `#${fEl}` : ''}`)}>Open in its document</button></div>
+          {text.has(focus) ? <p>{text.get(focus)}</p> : <p className="why-not">Not in this kolab’s committed documents{more ? ' read so far' : ''}.</p>}
+          <div className="lin-ways">
+            <section aria-labelledby="lin-on"><h4 id="lin-on">Relies on ({reliesOn.length})</h4>
+              {reliesOn.length ? <ul className="lin-list">{reliesOn.map((l) => entry(l.edge, l.target.node, l.target.element, <>{l.mark && <Pill tone="stale">stale</Pill>}{pinned(l)}</>, l.target.kolab))}</ul> : <p className="why-not">Nothing.</p>}</section>
+            <section aria-labelledby="lin-by"><h4 id="lin-by">Relied on by ({reliedOnBy.length})</h4>
+              {reliedOnBy.length ? <ul className="lin-list">{reliedOnBy.map((l) => entry(l.edge, l.source.node, l.source.element, l.mark ? <Pill tone="stale">stale</Pill> : null))}</ul> : <p className="why-not">Nothing{reading ? ' yet: more documents are being read' : stopped ? ' in the documents read so far' : ''}.</p>}</section>
+          </div>
+        </article>
+      )}
+      {!focus && !q && (stale.length ? (
+        <section aria-labelledby="lin-stale"><h3 id="lin-stale" className="section-title">Stale links ({stale.length})</h3>
+          <ul className="lin-list">{stale.map((l) => entry(l.edge, l.source.node, l.source.element, <span className="why-not">relies on {l.target.kolab ? `kj:${l.target.kolab}/${l.target.node}@${l.target.seq}${l.target.element ? `#${l.target.element}` : ''}` : addr(l.target.node, l.target.seq, l.target.element)}, which changed since</span>))}</ul></section>
+      ) : <p className="empty">No link is stale. Find an element above to see what it relies on and what relies on it.</p>)}
+      {stopped && <><p className="why-not">Lineage stopped reading after {loaded} pages of documents: read on for the rest.</p><More more={more} busy={busy} what="documents" /></>}
+      <details className="lin-graph" open={graph} onToggle={(e) => setGraph((e.target as HTMLDetailsElement).open)}>
+        <summary>The whole graph: {data.nodes.length} document{data.nodes.length === 1 ? '' : 's'}, {data.links.length} links</summary>
+        {graph && <LineageGraph data={data} focus={focus} go={go} />}
+      </details>
+    </section>
+  );
+}
+
+/** How many pages of documents Lineage reads before it stops and says so. */
+const LINEAGE_PAGES = 20;
+const linKey = (node: string, el: string | null) => `${node}#${el ?? ''}`;
+const lineageRoute = (node: string, el: string | null) => `lineage/${node}${el ? `#${el}` : ''}`;
+
+/** Every element in two columns, spec and binding, with a wire for each link: wide screens only. */
+function LineageGraph({ data, focus, go }: { data: Pick<WebLineageView, 'nodes' | 'links'>; focus?: string; go(r: string): void }) {
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<{ d: string; cls: string }[]>([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const layers = data ? [data.nodes.filter((n) => n.layer === 'functional'), data.nodes.filter((n) => n.layer === 'technical')] : [[], []];
-  const key = (node: string, el: string | null) => `${node}#${el ?? ''}`;
+  const layers = [data.nodes.filter((n) => n.layer === 'functional'), data.nodes.filter((n) => n.layer === 'technical')];
+  const key = linKey;
   const related = new Set<string>();
-  if (focus && data) {
+  if (focus) {
     related.add(focus);
     for (const l of data.links) {
+      if (l.target.kolab) continue;
       const s = key(l.source.node, l.source.element), t = key(l.target.node, l.target.element);
       if (s === focus) related.add(t);
       if (t === focus) related.add(s);
@@ -321,11 +439,12 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
   useLayoutEffect(() => {
     const draw = () => {
       const el = box.current;
-      if (!el || !data) return;
+      if (!el) return;
       const b = el.getBoundingClientRect();
       setSize({ w: b.width, h: b.height });
       const out: { d: string; cls: string }[] = [];
       for (const l of data.links) {
+        if (l.target.kolab) continue;
         const s = el.querySelector<HTMLElement>(`[data-lin="${CSS.escape(key(l.source.node, l.source.element))}"]`);
         const t = el.querySelector<HTMLElement>(`[data-lin="${CSS.escape(key(l.target.node, l.target.element))}"]`);
         if (!s || !t) continue;
@@ -344,9 +463,7 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
     const ro = new ResizeObserver(draw);
     ro.observe(box.current);
     return () => ro.disconnect();
-  }, [read.pages, focus]);
-  if (error) return <p className="empty" role="alert">{error}</p>;
-  if (!data) return <p className="empty">Reading the lineage…</p>;
+  }, [data, focus]);
   const stale = new Set(data.links.filter((l) => l.mark).map((l) => key(l.source.node, l.source.element)));
   const column = (nodes: WebLineageView['nodes'], label: string) => (
     <div className="lin-col">
@@ -356,7 +473,7 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
           {n.elements.map((e) => {
             const k = key(n.name, e.id);
             return (
-              <button key={k} type="button" data-lin={k} aria-pressed={focus === k} onClick={() => setFocus(focus === k ? undefined : k)}
+              <button key={k} type="button" data-lin={k} aria-pressed={focus === k} onClick={() => go(focus === k ? 'lineage' : lineageRoute(n.name, e.id))}
                 className={`node${focus ? (related.has(k) ? ' on' : ' dim') : ''}${stale.has(k) ? ' is-stale' : ''}`}>
                 <span className="nid">{e.id}{stale.has(k) && <Pill tone="stale">stale</Pill>}</span><span className="ntext">{e.text}</span>
               </button>
@@ -367,25 +484,37 @@ export function LineageView({ tick, go }: { tick: number; go(r: string): void })
     </div>
   );
   return (
-    <section aria-labelledby="lin-title">
-      <h2 className="section-title" id="lin-title">What depends on what</h2>
-      <p className="why-not" style={{ maxWidth: '68ch', margin: '0 0 18px' }}>Each wire is a link from an element to what it relies on, pinned to the version it was checked against. Select an element to see its wires.</p>
+    <>
       <div className="lineage" ref={box}>
         {column(layers[0], 'Spec')}
         <div className="gutter" aria-hidden="true" />
-        {column(layers[1], 'Binding')}
+        {column(layers[1], 'Bindings')}
         <svg className="wires" aria-hidden="true" viewBox={`0 0 ${size.w || 1} ${size.h || 1}`}>{paths.map((p, i) => <path key={i} className={p.cls} d={p.d} />)}</svg>
       </div>
       <div className="lin-legend"><span><i className="swatch" />holds</span><span><i className="swatch stale" />stale: what it relies on changed since this link was checked</span></div>
-      {read.more && <p className="why-not">A few documents at a time: a wire to one not shown yet appears once it is.</p>}
-      <More more={read.more} busy={read.busy} what="documents" />
-    </section>
+    </>
   );
+}
+
+/** What waits in the session's kolab, as its card says it: only what there is. */
+export function kolabStatus(c: WebOverview['counts']): string {
+  const n = (k: number, one: string, many: string) => (k ? `${k} ${k === 1 ? one : many}` : '');
+  const parts = [n(c.reviews, 'review for you', 'reviews for you'), n(c.waiting, 'question for your layer', 'questions for your layer'),
+    n(c.stale, 'mark', 'marks'), n(c.cases, 'case file', 'case files'), n(c.open, 'open question in all', 'open questions in all')].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Nothing waits here.';
+}
+
+/** What waits for the person in another kolab they belong to, as its card says it. */
+export function waitingStatus(w: NonNullable<WebKolab['waiting']>): string {
+  const n = (k: number, one: string, many: string) => (k ? `${k} ${k === 1 ? one : many}` : '');
+  const parts = [n(w.reviews, 'review for you', 'reviews for you'), n(w.questions, 'question for your layers', 'questions for your layers'),
+    n(w.marks, 'mark', 'marks'), n(w.cases, 'case file', 'case files')].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Nothing waits for you there.';
 }
 
 /** All kolabs the signed-in actor can reach. A session works in one; the others need a session of their own. */
 export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateKolab, start }: {
-  /** An empty kolab's first page: only the form for its first document. */
+  /** Only the form for a new document: an empty kolab's first page, and the rail's New document. */
   start?: boolean;
   overview: WebOverview; act: Act; onCreated(name: string): void; onOpen(kolab: string): void; onCreateKolab(name: string, title: string): Promise<boolean>;
   /** Reads another kolab's committed work in place, without leaving this session's kolab (D49). */
@@ -419,6 +548,7 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
           <article key={k.id} className={`kcard${k.current ? ' current' : ''}`} aria-labelledby={`k-${k.id}`}>
             <div className="khead"><h3 id={`k-${k.id}`}>{k.title || k.id}</h3><span className="slug">{k.id}</span>{k.current && <span className="kind">Open now</span>}</div>
             <p>{k.visibility} · owned by {k.owner}</p>
+            {k.current ? <p className="kstatus">{kolabStatus(overview.counts)}</p> : k.waiting && <p className="kstatus">{waitingStatus(k.waiting)}</p>}
             <div className="kfoot"><span className="why-not">{k.current ? `You work here as ${overview.me.name} (${overview.me.role}).` : `You hold ${k.access.level ?? 'no access'} here.`}</span>
               {k.current ? null : <span className="edit-row" style={{ marginTop: 0 }}>
                 {onRead && <button type="button" className="btn" onClick={() => onRead(k.id)} title="Its committed work, read only, without leaving this kolab">Read here</button>}
@@ -431,15 +561,16 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
         <p className="why-not">A kolab of your own, private until you share it. You’ll work in it as {overview.me.name} ({overview.me.role}); this session ends and one opens there.</p>
         <form onSubmit={async (e) => { e.preventDefault(); if (await onCreateKolab(kName, kTitle)) { setKTitle(''); setKName(''); setKTouched(false); } }}>
           <div className="field"><label htmlFor="kTitle">Name</label>
-            <input id="kTitle" value={kTitle} maxLength={60} autoComplete="off" placeholder="Billing" onChange={(e) => { setKTitle(e.target.value); if (!kTouched) setKName(slug(e.target.value)); }} /></div>
+            <input id="kTitle" value={kTitle} maxLength={60} autoComplete="off" aria-describedby="kTitle-hint" onChange={(e) => { setKTitle(e.target.value); if (!kTouched) setKName(slug(e.target.value)); }} />
+            <span className="hint" id="kTitle-hint">What people read, for example “Billing”.</span></div>
           <div className="field"><label htmlFor="kName">Short name</label>
-            <input id="kName" value={kName} maxLength={40} autoComplete="off" spellCheck={false} placeholder="billing" onChange={(e) => { setKName(e.target.value); setKTouched(true); }} />
+            <input id="kName" value={kName} maxLength={40} autoComplete="off" spellCheck={false} onChange={(e) => { setKName(e.target.value); setKTouched(true); }} />
             <span className="hint">Lowercase letters, digits and hyphens, unique across all of Konjir so the kolab can move to another owner. Its addresses are <span className="addr">kj:{kName || 'billing'}/…</span>, or just <span className="addr">kj:…</span> inside it.</span></div>
           <div className="edit-row"><button type="submit" className="btn primary" disabled={!kTitle.trim() || !kName.trim()}>Create kolab</button></div>
         </form>
       </section>
       </>}
-      {overview.me.access.layers.includes(overview.me.layer) && (
+      {start && overview.me.access.layers.includes(overview.me.layer) && (
         <section className="newk" aria-labelledby="n-new">
           <h2 className="section-title" id="n-new">New document in {overview.kolab.id}</h2>
           <p className="why-not">Your role writes the {overview.me.layer} layer. Its name is its address: <span className="addr">kj:{name || 'name'}</span>.</p>
@@ -447,9 +578,10 @@ export function KolabsView({ overview, act, onCreated, onOpen, onRead, onCreateK
             <div className="field"><label htmlFor="nKind">Kind</label>
               <select id="nKind" value={shown} onChange={(e) => setKind(e.target.value as Kind)}>{kinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}</select>
               {shown === 'binding' && <span className="hint">It binds this kolab’s spec{hasSpec ? '' : ', which it needs first'}. Its elements are its decisions and its work packages.</span>}</div>
-            <div className="field"><label htmlFor="nTitle">Title</label><input id="nTitle" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Checkout" /></div>
-            <div className="field"><label htmlFor="nName">Name</label><input id="nName" value={name} spellCheck={false} onChange={(e) => setName(e.target.value)} placeholder="checkout" />
-              <span className="hint">No spaces, and no “/”, “@”, “#” or “~”. Unique in this kolab.</span></div>
+            <div className="field"><label htmlFor="nTitle">Title</label><input id="nTitle" value={title} onChange={(e) => setTitle(e.target.value)} aria-describedby="nTitle-hint" />
+              <span className="hint" id="nTitle-hint">For example “Checkout”.</span></div>
+            <div className="field"><label htmlFor="nName">Name</label><input id="nName" value={name} spellCheck={false} onChange={(e) => setName(e.target.value)} />
+              <span className="hint">For example “checkout”. No spaces, and no “/”, “@”, “#” or “~”. Unique in this kolab.</span></div>
             <div className="edit-row"><button type="submit" className="btn primary" disabled={!title.trim() || !name.trim()}>Create</button></div>
           </form>
         </section>

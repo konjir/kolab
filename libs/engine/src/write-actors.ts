@@ -146,6 +146,8 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   clear: { recorded: ['invalidation.cleared_by', 'work_event.actor_id'] },
   raiseQuery: { recorded: ['query.raised_by'] },
   answerQuery: { recorded: ['query.answered_by'] },
+  sendMessage: { recorded: ['message.sent_by'] },
+  readMessages: { recorded: ['message_receipt.actor_id'] },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
   addPosition: { recorded: ['position.actor_id'] },
   rule: { recorded: ['ruling.actor_id'] },
