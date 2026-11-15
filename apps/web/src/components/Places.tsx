@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { WebCase, WebCasesView, WebMarksView, WebMe, WebOverview, WebPaged, WebQueriesView, WebQuery, WebReviewsView, WebRulingsView, WebWorkView, WorkDate } from '@konjir/types';
+import type { WebCase, WebCasesView, WebMarksView, WebMe, WebOutcome, WebOverview, WebPaged, WebQueriesView, WebQuery, WebReviewsView, WebRulingsView, WebVersionReview, WebWorkView, WorkDate } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
-import { Pill, useHref } from './bits.js';
-import { RulingBox } from './Cases.js';
+import { Addr, Pill, useHref, withAddrLinks } from './bits.js';
+import { CaseBox, RulingBox } from './Cases.js';
 import { PolicySettings } from './Onboarding.js';
-import { More, usePaged } from './Pages.js';
-import type { Act } from './Marks.js';
+import { More, WorkReviewItem, usePaged } from './Pages.js';
+import { MarkBox, QueryBox, type Act } from './Marks.js';
 
 /**
  * The places the web page's audit of 2026-11-08 asked for: the person's inbox as home, the work
@@ -16,11 +16,14 @@ import type { Act } from './Marks.js';
 /** A ruling's own name, as elements cite it in their text ("Source: D12, D47"). */
 const RULING_REF = /\b(D\d{1,4})\b/g;
 
-/** Element text with each ruling it cites made a link to that ruling. */
+/** Element text with each ruling it cites made a link to that ruling, and each address it mentions a link to what it names. */
 export function withRulingLinks(text: string): ReactNode {
-  const parts = text.split(RULING_REF);
-  if (parts.length === 1) return text;
-  return parts.map((p, i) => (i % 2 ? <RulingLink key={i} name={p} /> : <Fragment key={i}>{p}</Fragment>));
+  // Addresses first: an element's name in one, as kj:kolab#D12, is no ruling.
+  return withAddrLinks(text, (words) => {
+    const parts = words.split(RULING_REF);
+    if (parts.length === 1) return words;
+    return parts.map((p, i) => (i % 2 ? <RulingLink key={i} name={p} /> : <Fragment key={i}>{p}</Fragment>));
+  });
 }
 function RulingLink({ name }: { name: string }) {
   return <a className="ref" href={useHref()(`rulings/${name}`)}>{name}</a>;
@@ -72,25 +75,52 @@ function DateOf({ label, d }: { label: string; d: WorkDate }) {
 /** Where an address opens in the page, or undefined for text that isn't one. */
 const routeTo = (address: string, here: string) => { const a = parseKj(address); return a ? routeOf(a, here) : undefined; };
 
-/** One item of the inbox: what it is, where, and a line of why; the whole row opens it. */
-function Item({ pill, where, text, at, href }: { pill: ReactNode; where: string; text: string; at?: string; href?: string }) {
+/**
+ * One item of the inbox: what it is, where, and a line of why. Its address opens it where it lives;
+ * `verb` opens what settles it, here in the inbox, so nothing that waits needs another page.
+ */
+function Item({ pill, where, text, at, href, verb, children }: { pill: ReactNode; where: string; text: string; at?: string; href?: string; verb?: string; children?: ReactNode }) {
   const link = useHref();
+  const [open, setOpen] = useState(false);
   return (
     <li className="inbox-item">
       {pill}
-      {href ? <a href={link(href)} className="addr">{where}</a> : <span className="addr">{where}</span>}
-      <span className="inbox-text">{text}</span>
+      {href ? <a href={link(href)} className="addr">{where}</a> : <Addr>{where}</Addr>}
+      <span className="inbox-text">{withAddrLinks(text)}</span>
       {at && <time dateTime={at}>{ago(at)}</time>}
+      {verb && <button type="button" className="btn quiet" aria-expanded={open} aria-label={`${open ? 'Close' : verb} ${where}`} onClick={() => setOpen(!open)}>{open ? 'Close' : verb}</button>}
+      {open && <div className="inbox-act">{children}</div>}
     </li>
+  );
+}
+
+/** A version in review, decided from the inbox: approve it, or say what must change. Its address opens it to read first. */
+function VersionVerdict({ r, act }: { r: WebVersionReview; act: Act }) {
+  const [note, setNote] = useState('');
+  const id = `inbox-note-${r.node}-${r.seq}`;
+  const give = (verdict: 'approve' | 'request_changes') => act.run(
+    () => api<WebOutcome>(`nodes/${encodeURIComponent(r.node)}/versions/${r.seq}/review`, verdict === 'approve' ? { verdict } : { verdict, note }),
+    verdict === 'approve' ? `Approved ${r.subject}` : `Changes requested on ${r.subject}. The draft is back with its author.`);
+  return (
+    <div className="qbox">
+      <span className="why-not">Version {r.seq} of {addr(r.node)}, by {r.author}{r.product_review ? ': a product review, to check it doesn’t change behavior' : ''}. Its address above opens it, with what it changes. Nothing changes for anyone until it’s approved.</span>
+      <label className="why-not" htmlFor={id}>What must change, if anything</label>
+      <textarea id={id} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What must change, and why?" />
+      <div className="edit-row">
+        <button type="button" className="btn primary" onClick={() => give('approve')}>Approve</button>
+        <button type="button" className="btn" disabled={!note.trim()} onClick={() => give('request_changes')}>Request changes</button>
+      </div>
+    </div>
   );
 }
 
 /**
  * Home: what waits on the person, in the kolab and role they work in (Q6, AUT6). Reviews for their
  * verdict, questions their layer owns, marks on their layer, and case files open on it, each with
- * its count, and each opening where it can be acted on.
+ * its count, and each settled here: a review given, a question answered, a mark cleared or resolved,
+ * a side taken or a ruling given.
  */
-export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: WebOverview; tick: number; go(r: string): void }) {
+export function InboxView({ me, overview, tick, act, go }: { me: WebMe; overview: WebOverview; tick: number; act: Act; go(r: string): void }) {
   const reviews = usePaged<WebReviewsView>('reviews', tick);
   const c = overview.counts;
   const belongs = me.access.layers.length > 0;
@@ -115,21 +145,21 @@ export function InboxView({ me, overview, tick, go }: { me: WebMe; overview: Web
     <>
       <section className="summary" aria-label="Summary">
         <h1>{total ? `${total} thing${total === 1 ? '' : 's'} wait${total === 1 ? 's' : ''} on you` : 'Nothing waits on you'}</h1>
-        <span className="fact">In {overview.kolab.title || me.kolab}, working as {me.role}: what only your layer can settle. Agents do the rest.</span>
+        <span className="fact">In {overview.kolab.title || me.kolab}, working as {me.role}: what only your layer can settle, each settled here. Agents do the rest.</span>
       </section>
       {section('in-reviews', 'Reviews for you', c.reviews, 'No version or work package waits for your verdict.',
         forMe.map((r) => r.kind === 'version'
-          ? <Item key={r.subject} pill={<span className="kind">review</span>} where={r.subject} text={`submitted by ${r.author}${r.product_review ? ', for a product review' : ''}`} at={r.at} href={`node/${r.node}@${r.seq}`} />
-          : <Item key={r.subject} pill={<span className="kind">work</span>} where={r.subject} text={`${r.title ?? ''} · by ${r.assignee}`} at={r.at} href="reviews" />),
+          ? <Item key={r.subject} pill={<span className="kind">review</span>} where={r.subject} text={`submitted by ${r.author}${r.product_review ? ', for a product review' : ''}`} at={r.at} href={`node/${r.node}@${r.seq}`} verb="Review"><VersionVerdict r={r} act={act} /></Item>
+          : <Item key={r.subject} pill={<span className="kind">work</span>} where={r.subject} text={`${r.title ?? ''} · by ${r.assignee}`} at={r.at} href={`node/${r.binding}#${r.id}`} verb="Review"><ul className="qlist"><WorkReviewItem r={r} act={act} go={go} /></ul></Item>),
         reviews.more, reviews.busy, reviews.error, !reviews.pages)}
       {section('in-questions', `Questions ${me.role} answers`, c.waiting, 'No question waits on your layer.',
-        waiting.map((q) => <Item key={q.id} pill={<span className="kind">{q.kind}</span>} where={q.address} text={q.question} at={q.at} href={routeTo(q.address, me.kolab)} />),
+        waiting.map((q) => <Item key={q.id} pill={<span className="kind">{q.kind}</span>} where={q.address} text={q.question} at={q.at} href={routeTo(q.address, me.kolab)} verb={q.kind === 'note' ? 'Reply' : 'Answer'}><QueryBox query={q} me={me} act={act} /></Item>),
         undefined, false, queries?.error, !queries)}
       {section('in-marks', 'Marks on your layer', c.stale, 'Nothing on your layer is marked: everything it relies on still holds.',
-        myMarks.map((m) => <Item key={m.id} pill={<Pill tone="stale">{m.reason.replace(/_/g, ' ')}</Pill>} where={addr(m.node, m.seq, m.element)} text={m.because} at={m.at} href={`node/${m.node}${m.element ? `#${m.element}` : ''}`} />),
+        myMarks.map((m) => <Item key={m.id} pill={<Pill tone="stale">{m.reason.replace(/_/g, ' ')}</Pill>} where={addr(m.node, m.seq, m.element)} text={m.because} at={m.at} href={`node/${m.node}${m.element ? `#${m.element}` : ''}`} verb="Settle"><MarkBox mark={m} me={me} act={act} /></Item>),
         undefined, false, marks?.error, !marks)}
       {belongs && section('in-cases', 'Case files on your layer', c.cases, 'No case file is open on your layer.',
-        open.map((x) => <Item key={x.case} pill={<span className="kind">case file</span>} where={x.on} text={x.question ?? 'a case file'} at={x.opened_at ?? undefined} href="cases" />),
+        open.map((x) => <Item key={x.case} pill={<span className="kind">case file</span>} where={x.on} text={x.question ?? 'a case file'} at={x.opened_at ?? undefined} href={routeTo(x.on, me.kolab) ?? 'cases'} verb="Open"><CaseBox c={x} me={me} act={act} go={go} /></Item>),
         undefined, false, cases?.error, !cases)}
       <p className="why-not">The spec and each binding are in the rail. <button type="button" className="btn quiet" onClick={() => go('work')}>See the work board</button></p>
     </>
@@ -150,7 +180,9 @@ const FILTERS: { key: WorkFilter; label: string; test(w: WorkItem): boolean }[] 
 ];
 
 /** Why a package is blocked, in words (PLN19). */
-const blockWord = (w: WorkItem) => w.blocked.map((b) => (b.reason === 'depends_on' ? `${b.work.split('#')[1]} isn’t done` : b.reason === 'question' ? `a question on ${b.on}` : `a case file on ${b.on}`)).join(', ');
+const blockWord = (w: WorkItem) => w.blocked.map((b, i) => (
+  <Fragment key={i}>{i ? ', ' : ''}{b.reason === 'depends_on' ? `${b.work.split('#')[1]} isn’t done` : <>{b.reason === 'question' ? 'a question on ' : 'a case file on '}<Addr>{b.on}</Addr></>}</Fragment>
+));
 
 /**
  * The work board (PLN12, PLN19): each binding's work packages by state, as on an agile board, with
@@ -197,7 +229,7 @@ export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: stri
                       {col.map((w) => (
                         <li key={w.work} className={`card${w.at_risk ? ' risk' : ''}`}>
                           <a href={href(`node/${w.binding}#${w.id}`)} className="card-id">{w.id}</a>
-                          <span className="card-text">{w.text.split('\n')[0]}</span>
+                          <span className="card-text">{withAddrLinks(w.text.split('\n')[0])}</span>
                           <span className="card-facts">
                             {w.milestone && <span className="kind">milestone</span>}
                             {w.ready && <Pill tone="clean">ready</Pill>}

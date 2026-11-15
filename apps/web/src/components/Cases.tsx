@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import type { PositionVerdict, RulingEffect, WebCase, WebCasesView, WebMe, WebRuling, WebRulingsView } from '@konjir/types';
 import { api } from '../api.js';
 import { addr, ago, parseKj, routeOf, sideWord } from '../util.js';
-import { Pill, ProgressPills } from './bits.js';
+import { Pill, ProgressPills, withAddrLinks } from './bits.js';
 import type { Act } from './Marks.js';
 import { More, usePaged } from './Pages.js';
 
@@ -34,7 +34,7 @@ export function RulingBox({ ruling: r, me, go, showOn }: { ruling: WebRuling; me
           {showOn !== false && <> · on <AddrChip address={r.on} here={me.kolab} go={go} /></>}</span>
         {r.progress && <ProgressPills progress={r.progress} />}
       </div>
-      <blockquote>{r.text}</blockquote>
+      <blockquote>{withAddrLinks(r.text)}</blockquote>
       {r.replaces && <div className="why-not">Replaces: {r.replaces}</div>}
       <div className="by">{r.ruled_by} ruled{r.ruled_at ? (recordedLater(r) ? ` on ${r.ruled_at.slice(0, 10)}, recorded ${ago(r.recorded_at!)}` : ` ${ago(r.ruled_at)}`) : ''}{r.case ? ', on a case file' : ', directly'}. It is precedent here: agents are served it, so it isn’t argued again.</div>
     </div>
@@ -52,7 +52,7 @@ export function CaseBox({ c, me, act, go }: { c: WebCase; me: WebMe; act: Act; g
         {open ? <Pill tone="boundary">case file</Pill> : c.state === 'ruled' ? <Pill tone="clean">ruled</Pill> : <Pill tone="clean">superseded</Pill>}
         <span>on <AddrChip address={c.on} here={me.kolab} go={go} />{c.opened_by ? ` · opened by ${c.opened_by}` : ''}{c.opened_at ? ` ${ago(c.opened_at)}` : ''}</span>
       </div>
-      {c.question && <blockquote>{c.question}</blockquote>}
+      {c.question && <blockquote>{withAddrLinks(c.question)}</blockquote>}
       <div className="positions">
         {c.positions.map((p) => (
           <div key={p.position} className={`position${p.verdict ? ` ${p.verdict}` : ''}`} data-position={p.position}>
@@ -61,7 +61,7 @@ export function CaseBox({ c, me, act, go }: { c: WebCase; me: WebMe; act: Act; g
               {p.verdict && <Pill tone={p.verdict === 'sustained' ? 'clean' : 'boundary'}>{p.verdict}</Pill>}
             </div>
             <span className="why-not">{p.actor}{p.taken_at ? ` · ${ago(p.taken_at)}` : ''}</span>
-            <p>{p.claim}</p>
+            <p>{withAddrLinks(p.claim)}</p>
             {p.evidence.length > 0 && (
               <ul className="evidence" aria-label="Evidence">
                 {p.evidence.map((e, i) => <li key={i}>{e.startsWith('kj:') ? <AddrChip address={e} here={me.kolab} go={go} /> : <code>{e}</code>}</li>)}

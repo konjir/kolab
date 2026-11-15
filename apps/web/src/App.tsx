@@ -574,7 +574,7 @@ export function App() {
           {r.view === 'lineage' && <LineageView tick={tick} go={go} focus={r.focus} />}
           {r.view === 'activity' && <ActivityView tick={tick} here={me.kolab} />}
           {r.view === 'start' && <GettingStarted me={me} go={go} />}
-          {r.view === 'inbox' && overview && <InboxView me={me} overview={overview} tick={tick} go={go} />}
+          {r.view === 'inbox' && overview && <InboxView me={me} overview={overview} tick={tick} act={act} go={go} />}
           {r.view === 'work' && <WorkView me={me} tick={tick} go={go} />}
           {r.view === 'rulings' && <RulingsView me={me} tick={tick} go={go} focus={r.ref} />}
           {r.view === 'settings' && <SettingsView me={me} tick={tick} act={act} />}

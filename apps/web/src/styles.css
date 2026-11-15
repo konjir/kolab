@@ -351,9 +351,12 @@ main:focus { outline: none; }
 /* ---- inbox, work board, rulings search, activity filters ---- */
 .count-word { font-family: var(--font-sans); font-size: 14px; color: var(--ink-muted); font-variant-numeric: tabular-nums; margin-left: 6px; }
 .inbox { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
-.inbox-item { display: grid; grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.inbox-item { display: grid; grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .inbox-item .inbox-text { color: var(--ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-item time { font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
+.inbox-item > .btn { --kb-h: 28px; font-size: 12px; padding: 0 12px; }
+.inbox-item .inbox-act { grid-column: 1 / -1; padding: 4px 0 6px; min-width: 0; }
+.inbox-item .inbox-act .qitem { border-top: 0; padding-top: 0; }
 .inbox-section { display: grid; gap: 4px; }
 a.addr { text-decoration: none; }
 a.addr:hover { text-decoration: underline; }

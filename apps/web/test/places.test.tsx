@@ -1,10 +1,10 @@
 // The places from the web page's audit of 2026-11-08: the inbox as home, the work board, the
 // rulings as precedent to search, and links from element text to the rulings it cites.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { WebMe, WebOverview, WebRuling, WebWorkView } from '@konjir/types';
 import { InboxView, RulingsView, WorkView, withRulingLinks } from '../src/components/Places.js';
-import { ProgressPills } from '../src/components/bits.js';
+import { Addr, Here, ProgressPills } from '../src/components/bits.js';
 import { KolabsView, LineageView, ReviewsView, kolabStatus, waitingStatus } from '../src/components/Pages.js';
 import { parseRoute } from '../src/App.js';
 
@@ -29,6 +29,9 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+/** Runs what the page asks, as the app does, and says nothing. */
+const act = { run: async (what: () => Promise<unknown>) => { await what(); return true; } };
+
 test('home is the inbox: what waits on the person\'s layer, each kind with its count, each item opening where it is acted on', async () => {
   replies['/api/reviews'] = { for_me: [{ kind: 'version', subject: 'kj:password-reset@4', node: 'password-reset', seq: 4, author: 'pm-agent', at }], mine: [], next: null };
   replies['/api/queries?state=open'] = { queries: [
@@ -41,7 +44,7 @@ test('home is the inbox: what waits on the person\'s layer, each kind with its c
     { id: 'm2', reason: 'changed', node: 'password-reset-pg', seq: 2, element: 'B9', layer: 'technical', because: 'kj:password-reset#PR8 changed', next: '', at, target: null, override: null, question: null },
   ], next: null };
   replies['/api/cases?state=open'] = { cases: [], belongs: true, next: null };
-  render(<InboxView me={lee} overview={overview({ reviews: 1, waiting: 1, stale: 1 })} tick={0} go={() => undefined} />);
+  render(<InboxView me={lee} overview={overview({ reviews: 1, waiting: 1, stale: 1 })} tick={0} act={act} go={() => undefined} />);
   expect(await screen.findByRole('heading', { level: 1, name: '3 things wait on you' })).toBeTruthy();
   const reviews = screen.getByRole('region', { name: /Reviews for you/ });
   expect((await within(reviews).findByRole('link', { name: 'kj:password-reset@4' })).getAttribute('href')).toBe('#/node/password-reset@4');
@@ -51,8 +54,43 @@ test('home is the inbox: what waits on the person\'s layer, each kind with its c
   expect(within(questions).queryByText('Which queue?')).toBeNull();
   expect(within(questions).getByRole('link', { name: 'kj:password-reset@3#PR3' }).getAttribute('href')).toBe('#/node/password-reset@3#PR3');
   const marks = screen.getByRole('region', { name: /Marks on your layer/ });
-  expect(await within(marks).findByText('kj:other#R1 changed')).toBeTruthy();
-  expect(within(marks).queryByText('kj:password-reset#PR8 changed')).toBeNull();
+  // An address its words mention opens what it names.
+  expect((await within(marks).findByRole('link', { name: 'kj:other#R1' })).getAttribute('href')).toBe('#/node/other#R1');
+  expect(within(marks).queryByRole('link', { name: 'kj:password-reset#PR8' })).toBeNull();
+});
+
+test('what waits is settled in the inbox: a review given, a question answered, a mark cleared, each from its own row', async () => {
+  replies['/api/reviews'] = { for_me: [{ kind: 'version', subject: 'kj:password-reset@4', node: 'password-reset', seq: 4, author: 'pm-agent', at }], mine: [], next: null };
+  replies['/api/queries?state=open'] = { queries: [
+    { id: 'q1', kind: 'question', state: 'open', address: 'kj:password-reset@3#PR3', node: 'password-reset', seq: 3, element: 'PR3', quote: null, layer: 'functional', question: 'Timing too?', raised_by: 'eng-agent', at, answer: null, answered_by: null, from: null, mark: null, mark_reason: null },
+  ], next: null };
+  replies['/api/marks'] = { marks: [
+    { id: 'm1', reason: 'changed', node: 'password-reset', seq: 3, element: 'PR2', layer: 'functional', because: 'kj:other#R1 changed', next: '', at, question: null, override: null,
+      target: { node: 'other', element: 'R1', pinned: 1, now: 2, before: 'Old.', after: 'New.' } },
+  ], next: null };
+  replies['/api/cases?state=open'] = { cases: [], belongs: true, next: null };
+  const sent: { url: string; body: unknown }[] = [];
+  const read = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    if (init?.body) sent.push({ url: String(url), body: JSON.parse(String(init.body)) });
+    return read(url, init);
+  }) as typeof fetch;
+  render(<InboxView me={lee} overview={overview({ reviews: 1, waiting: 1, stale: 1 })} tick={0} act={act} go={() => undefined} />);
+  // Nothing is open until asked for: the list stays a list.
+  fireEvent.click(await screen.findByRole('button', { name: 'Review kj:password-reset@4' }));
+  expect(screen.getByRole('button', { name: 'Request changes' })).toHaveProperty('disabled', true);
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Answer kj:password-reset@3#PR3' }));
+  fireEvent.change(screen.getByLabelText(/^Answer\./), { target: { value: 'Timing too.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Settle kj:password-reset@3#PR2' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Still holds' }));
+  await waitFor(() => expect(sent.map((s) => s.url)).toEqual(['/api/nodes/password-reset/versions/4/review', '/api/queries/q1/answer', '/api/marks/m1/clear']));
+  expect(sent[0].body).toEqual({ verdict: 'approve' });
+  expect(sent[1].body).toMatchObject({ answer: 'Timing too.' });
+  // A row closes again, and its address still opens it where it lives.
+  fireEvent.click(screen.getByRole('button', { name: 'Close kj:password-reset@4' }));
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
 });
 
 test('an inbox section reads on, page after page, until it holds what its count counts', async () => {
@@ -64,7 +102,7 @@ test('an inbox section reads on, page after page, until it holds what its count 
   // The first page holds only the other layer's questions; Lee's is on the second.
   replies['/api/queries?state=open'] = { queries: [q('T1', 'technical'), q('T2', 'technical')], next: 'p2' };
   replies['/api/queries?state=open&cursor=p2'] = { queries: [q('F1', 'functional')], next: null };
-  render(<InboxView me={lee} overview={overview({ waiting: 1 })} tick={0} go={() => undefined} />);
+  render(<InboxView me={lee} overview={overview({ waiting: 1 })} tick={0} act={act} go={() => undefined} />);
   expect(await screen.findByText('About F1?')).toBeTruthy();
   expect(screen.queryByText('About T1?')).toBeNull();
   expect(calls).toContain('/api/queries?state=open&cursor=p2');
@@ -138,11 +176,29 @@ test('a reader who holds only Read is told the rulings belong to the kolab\'s wo
   expect(screen.getByText(/Rulings belong to this kolab’s work/)).toBeTruthy();
 });
 
+test('an address opens what it names: its node, at its version and element; another kolab\'s, read in place', () => {
+  render(<Here value="accounts"><Addr>kj:orders@3#R1</Addr><Addr>kj:accounts/orders</Addr><Addr>kj:other/specs@1#S1</Addr><Addr>R1</Addr></Here>);
+  expect(screen.getByRole('link', { name: 'kj:orders@3#R1' }).getAttribute('href')).toBe('#/k/accounts/node/orders@3#R1');
+  expect(screen.getByRole('link', { name: 'kj:accounts/orders' }).getAttribute('href')).toBe('#/k/accounts/node/orders');
+  expect(screen.getByRole('link', { name: 'kj:other/specs@1#S1' }).getAttribute('href')).toBe('#/k/accounts/read/other/specs@1#S1');
+  // Text that isn't a whole address, as an element's own name, opens nothing.
+  expect(screen.getAllByRole('link')).toHaveLength(3);
+  expect(screen.getByText('R1').tagName).toBe('SPAN');
+});
+
 test('an element\'s text links each ruling it cites', () => {
   render(<p>{withRulingLinks('Konjir is one service. Source: D12, D47')}</p>);
   expect(screen.getByRole('link', { name: 'D12' }).getAttribute('href')).toBe('#/rulings/D12');
   expect(screen.getByRole('link', { name: 'D47' }).getAttribute('href')).toBe('#/rulings/D47');
   expect(withRulingLinks('No citation here.')).toBe('No citation here.');
+});
+
+test('prose links each address it mentions, without the punctuation around it; an element named like a ruling is no ruling', () => {
+  render(<p>{withRulingLinks('Per D12, see kj:orders@3#R1. Also (kj:other/specs#D7), and kj:orders-pg?')}</p>);
+  expect(screen.getByRole('link', { name: 'kj:orders@3#R1' }).getAttribute('href')).toBe('#/node/orders@3#R1');
+  expect(screen.getByRole('link', { name: 'kj:other/specs#D7' }).getAttribute('href')).toBe('#/read/other/specs#D7');
+  expect(screen.getByRole('link', { name: 'kj:orders-pg' }).getAttribute('href')).toBe('#/node/orders-pg');
+  expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual(['D12', 'kj:orders@3#R1', 'kj:other/specs#D7', 'kj:orders-pg']);
 });
 
 test('a ruling\'s address in lower case finds it; typing other words there searches every ruling, keeping what was typed', async () => {
@@ -235,7 +291,9 @@ test('lineage reads an element in another kolab there, in place, and keeps each 
   render(<LineageView tick={0} go={go} />);
   const stale = await screen.findByRole('region', { name: 'Stale links (3)' });
   expect(within(stale).getAllByRole('listitem')).toHaveLength(3);
-  expect(within(stale).getByText('relies on kj:other/specs@1#S1, which changed since')).toBeTruthy();
+  // What the link is pinned to is an address, so it opens: another kolab's, read there in place.
+  expect(within(stale).getByRole('link', { name: 'kj:other/specs@1#S1' }).getAttribute('href')).toBe('#/read/other/specs@1#S1');
+  expect(within(stale).getAllByRole('link', { name: 'kj:orders@1#R1' })[0].getAttribute('href')).toBe('#/node/orders@1#R1');
   cleanup();
   render(<LineageView tick={0} go={go} focus="orders-pg#b1" />);
   const on = await screen.findByRole('region', { name: 'Relies on (3)' });
