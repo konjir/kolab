@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { nobodyCanReview, type Layer, type QueryKind, type WebElement, type WebLink, type WebMe, type WebNodeView, type WebOutcome, type WebQueriesView, type WebVersion, type WebVersionsView, type WebWorkState, type WorkFields } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, nextElementId } from '../util.js';
-import { Addr, Diff, Pill, ProgressPills, useHref } from './bits.js';
+import { Addr, Diff, Pill, ProgressPills, useHref, withAddrLinks } from './bits.js';
 import { MarkBox, QueryBox, markWord, type Act } from './Marks.js';
 import { CaseBox, DirectRuleForm, OpenCaseForm, RulingBox } from './Cases.js';
 import { More, useMore } from './Pages.js';
@@ -344,7 +344,7 @@ function Work({ work, state, name }: { work: WorkFields; state?: WebWorkState; n
     <dl className="work" aria-label="Work package">
       {state && <WorkStateLine state={state} name={name} />}
       {facts.length > 0 && <div><dt className="sr-only">Kind</dt><dd>{facts.join(' · ')}</dd></div>}
-      {work.done_when && <div><dt>Done when</dt><dd>{work.done_when}</dd></div>}
+      {work.done_when && <div><dt>Done when</dt><dd>{withAddrLinks(work.done_when)}</dd></div>}
       {work.depends_on?.length ? <div><dt>{work.milestone ? 'Members' : 'Depends on'}</dt><dd>{work.depends_on.map((d) => <code key={d} title={addr(name, null, d)}>{d}</code>)}</dd></div> : null}
     </dl>
   );
@@ -360,13 +360,15 @@ function WorkStateLine({ state, name }: { state: WebWorkState; name: string }) {
   const held = state.state === 'in_progress' && state.assignee
     ? ` · ${state.assignee}${state.lease_until ? `, lease until ${new Date(state.lease_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`
     : state.assignee && state.state !== 'todo' ? ` · ${state.assignee}` : '';
-  const why = state.blocked.map((b) => (b.reason === 'depends_on' ? `${b.work.replace(`kj:${name}#`, '')} (${STATE_LABEL[b.state]})`
-    : b.reason === 'question' ? `an open question on ${b.on}` : `an open case file on ${b.on}`));
+  const why = state.blocked.map((b, i) => (
+    <span key={i}>{i ? ', ' : ''}{b.reason === 'depends_on' ? `${b.work.replace(`kj:${name}#`, '')} (${STATE_LABEL[b.state]})`
+      : <>{b.reason === 'question' ? 'an open question on ' : 'an open case file on '}<Addr>{b.on}</Addr></>}</span>
+  ));
   return (
     <div className="work-state">
       <dt>State</dt>
       <dd><Pill tone={state.state === 'done' ? 'clean' : why.length && !state.milestone ? 'question' : 'stale'}>{STATE_LABEL[state.state]}</Pill>{state.approved && <> <Pill tone="clean">Approved, waiting for its release</Pill></>}{state.at_risk && <> <Pill tone="stale">At risk</Pill></>}{held}
-        {why.length > 0 && !state.milestone && <span className="blocked"> · Blocked by {why.join(', ')}</span>}</dd>
+        {why.length > 0 && !state.milestone && <span className="blocked"> · Blocked by {why}</span>}</dd>
     </div>
   );
 }
@@ -427,7 +429,9 @@ function ElementRow(p: RowProps) {
           </>
         ) : (
           <p style={p.removed ? { textDecoration: 'line-through' } : undefined} {...(p.section ? { role: 'heading', 'aria-level': p.section, className: 'section-head' } : {})}>
-            {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> : p.foreign || !p.belongs ? p.text : withRulingLinks(p.text)}</p>
+            {p.before !== undefined && p.before !== p.text ? <Diff before={p.before} after={p.text} /> 
+              // Another kolab's text names its own nodes, not this one's: it stays as written.
+              : p.foreign ? p.text : p.belongs ? withRulingLinks(p.text) : withAddrLinks(p.text)}</p>
         )}
         {(e.work || e.work_state) && <Work work={e.work ?? {}} state={e.work_state} name={p.name} />}
         {e.progress && <div className="links">progress <ProgressPills progress={e.progress} /></div>}

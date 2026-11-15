@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { WebMark, WebMe, WebQuery } from '@konjir/types';
-import { Addr, Diff, Pill } from './bits.js';
+import { Addr, Diff, Pill, withAddrLinks } from './bits.js';
 import { addr, ago } from '../util.js';
 import { api as call } from '../api.js';
 
@@ -33,7 +33,7 @@ export function MarkBox({ mark: m, me, act, onRevise }: { mark: WebMark; me: Web
           ? <span><Addr>{addr(m.target.node, null, m.target.element)}</Addr> {m.target.after === null ? `is gone in version ${m.target.now}` : `changed in version ${m.target.now}`}. This element was written against version {m.target.pinned}.</span>
           : m.override
             ? <span>The parent {m.override.parent_now === null ? 'removed' : 'changed'} <Addr>{m.override.element}</Addr>, which this variant overrides.</span>
-            : <span>{m.because}</span>}
+            : <span>{withAddrLinks(m.because)}</span>}
       </div>
       {m.target && m.target.before !== null && <div className="diff"><Diff before={m.target.before} after={m.target.after ?? ''} /></div>}
       {m.override && (
@@ -96,9 +96,9 @@ export function QueryBox({ query: q, me, act, readOnly }: { query: WebQuery; me:
         {q.state === 'open' && q.handed_off_at ? <> <Pill tone="boundary">waits on a person</Pill> <span className="why-not">a job handed it over {ago(q.handed_off_at)}</span></> : null}
       </div>
       {q.quote && <div className="why-not">“{q.quote}”</div>}
-      <blockquote>{q.question}</blockquote>
+      <blockquote>{readOnly ? q.question : withAddrLinks(q.question)}</blockquote>
       {q.state === 'answered' ? (
-        <div className="a"><span className="why-not">{q.answered_by} answered</span><br />{q.answer}
+        <div className="a"><span className="why-not">{q.answered_by} answered</span><br />{readOnly || !q.answer ? q.answer : withAddrLinks(q.answer)}
           {q.cites?.length ? <div className="why-not" aria-label="Cites">Cites {q.cites.map((c, i) => <span key={c}>{i ? ', ' : ''}{c.startsWith('kj:') ? <Addr>{c}</Addr> : <>ruling <span className="mono">{c}</span></>}</span>)}</div> : null}
         </div>
       ) : q.state === 'withdrawn' ? (

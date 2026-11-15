@@ -1,6 +1,6 @@
-import { createContext, useContext, type ReactNode } from 'react';
+import { Fragment, createContext, useContext, type ReactNode } from 'react';
 import type { BindingProgress, Progress, ProgressValue } from '@konjir/types';
-import { placeLink, wordDiff } from '../util.js';
+import { parseKj, placeLink, routeOf, wordDiff } from '../util.js';
 
 /** The session's kolab, which each link the page renders names, so a copied one opens there. */
 export const Here = createContext<string | undefined>(undefined);
@@ -47,7 +47,28 @@ export function Diff({ before, after }: { before: string; after: string }) {
   );
 }
 
-export const Addr = ({ children }: { children: ReactNode }) => <span className="addr">{children}</span>;
+/**
+ * An address, a link to what it names: the node's page at that version, on that element, read in
+ * place if it is another kolab's. Text that isn't a whole `kj:` address shows as it is.
+ */
+export function Addr({ children }: { children: ReactNode }) {
+  const here = useContext(Here);
+  const a = typeof children === 'string' && children.startsWith('kj:') ? parseKj(children) : undefined;
+  return a ? <a className="addr" href={placeLink(here, routeOf(a, here ?? ''))}>{children}</a> : <span className="addr">{children}</span>;
+}
+
+/** A `kj:` address as prose writes it: up to a space or the punctuation around it, without a closing full stop. */
+const ADDRESS = /(kj:[^\s·:,;()"“”'’]*[^\s·:,;()"“”'’.?!])/;
+
+/**
+ * Prose with each address it mentions made a link to what it names. `rest` renders the words
+ * between, as for the rulings they cite. Text that mentions none comes back as it is.
+ */
+export function withAddrLinks(text: string, rest: (words: string) => ReactNode = (w) => w): ReactNode {
+  const parts = text.split(ADDRESS);
+  if (parts.length === 1) return rest(text);
+  return parts.map((p, i) => (i % 2 ? <Addr key={i}>{p}</Addr> : <Fragment key={i}>{rest(p)}</Fragment>));
+}
 
 /** The wordmark: lowercase konjir, the sun as its o and the crescent moon as its j. */
 export function Wordmark() {

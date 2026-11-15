@@ -5,7 +5,7 @@ import {
 } from '@konjir/types';
 import { api, pushed } from '../api.js';
 import { addr, ago, parseKj, routeOf } from '../util.js';
-import { Addr, Pill, useHref } from './bits.js';
+import { Addr, Pill, useHref, withAddrLinks } from './bits.js';
 import { QueryBox, type Act } from './Marks.js';
 
 /** Re-reads `path` whenever `tick` moves. */
@@ -198,7 +198,7 @@ function workOutcome(o: WebWorkOutcome): string {
  * done-when, its assignee and the evidence this submission brought (earlier rounds folded away), the
  * repository and whether it is confirmed, and Approve or Request changes, as konjir_review work=… gives them.
  */
-function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: string): void }) {
+export function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: string): void }) {
   const [asking, setAsking] = useState(false);
   const [note, setNote] = useState('');
   const verdict = (v: 'approve' | 'request_changes') => act.run(
@@ -213,10 +213,10 @@ function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(route: 
         {r.open_marks ? <Pill tone="stale">at risk</Pill> : null}
         {r.findings.length ? <Pill tone="stale">acceptance failed</Pill> : null}</div>
       {r.missing ? <p className="why-not" role="alert">Kolab couldn’t read this package’s details just now. Open it on its binding, or read it with konjir read_work.</p>
-        : <div className="q">{r.title}</div>}
+        : <div className="q">{r.title ? withAddrLinks(r.title) : r.title}</div>}
       <dl className="work-fields">
-        <dt>Done when</dt><dd>{r.done_when ?? <span className="why-not">Not given: check the work against what it says above.</span>}</dd>
-        {r.note ? <><dt>Its note</dt><dd>{r.note}</dd></> : null}
+        <dt>Done when</dt><dd>{r.done_when ? withAddrLinks(r.done_when) : <span className="why-not">Not given: check the work against what it says above.</span>}</dd>
+        {r.note ? <><dt>Its note</dt><dd>{withAddrLinks(r.note)}</dd></> : null}
         <dt>This submission</dt>
         <dd>{r.evidence.length ? <EvidenceList items={r.evidence} more={r.evidence_more} /> : <span className="why-not">No evidence since it last went In progress.</span>}</dd>
         {r.earlier_count ? <><dt>Earlier rounds</dt><dd>
@@ -273,7 +273,7 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
             <div className="row"><Pill tone={r.state === 'committed' ? 'clean' : r.state === 'in_review' ? 'question' : 'boundary'}>{r.state.replace('_', ' ')}</Pill>
               <button type="button" className="chip" onClick={() => go(`node/${r.node}@${r.seq}`)}>{r.subject}</button></div>
             {r.verdicts.filter((v) => v.state !== 'open' && v.state !== 'withdrawn').map((v) => (
-              <div key={v.reviewer} className="a"><span className="why-not">{v.reviewer} {v.state === 'approved' ? 'approved' : 'requested changes'}</span>{v.note ? <><br />{v.note}</> : null}</div>
+              <div key={v.reviewer} className="a"><span className="why-not">{v.reviewer} {v.state === 'approved' ? 'approved' : 'requested changes'}</span>{v.note ? <><br />{withAddrLinks(v.note)}</> : null}</div>
             ))}
           </li>
         ))}</ul> : <p className="empty">You haven’t submitted anything for review in this kolab.</p>}
@@ -284,7 +284,7 @@ export function ReviewsView({ tick, act, go }: { tick: number; act: Act; go(r: s
             <div className="row"><Pill tone={v.state === 'approved' ? 'clean' : 'boundary'}>{v.state === 'approved' ? 'approved' : 'changes requested'}</Pill>
               <button type="button" className="chip" onClick={() => go(v.seq !== null ? `node/${v.node}@${v.seq}` : `node/${v.node}#${v.element}`)}>{v.subject}</button>
               <span>by {v.reviewer} · {ago(v.at)}</span>{v.product_review && <span className="why-not">product review</span>}</div>
-            {v.note ? <div className="a">{v.note}</div> : null}
+            {v.note ? <div className="a">{withAddrLinks(v.note)}</div> : null}
           </li>
         ))}</ul> : <p className="empty">None of your agents has reviewed anything in this kolab.</p>}
       </section>
@@ -374,7 +374,7 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
       {kolab
         ? <button type="button" className="chip" onClick={() => go(`read/${kolab}/${node}${element ? `#${element}` : ''}`)}>{`kj:${kolab}/${node}${element ? `#${element}` : ''}`}</button>
         : <button type="button" className="chip" onClick={() => go(lineageRoute(node, element))}>{addr(node, null, element)}</button>}{extra}
-      {!kolab && text.has(linKey(node, element)) && <span className="lin-text">{text.get(linKey(node, element))}</span>}
+      {!kolab && text.has(linKey(node, element)) && <span className="lin-text">{withAddrLinks(text.get(linKey(node, element))!)}</span>}
     </li>
   );
   const stopped = !!more && !reading;
@@ -404,7 +404,7 @@ export function LineageView({ tick, go, focus }: { tick: number; go(r: string): 
       )}
       {!focus && !q && (stale.length ? (
         <section aria-labelledby="lin-stale"><h3 id="lin-stale" className="section-title">Stale links ({stale.length})</h3>
-          <ul className="lin-list">{stale.map((l) => entry(l.edge, l.source.node, l.source.element, <span className="why-not">relies on {l.target.kolab ? `kj:${l.target.kolab}/${l.target.node}@${l.target.seq}${l.target.element ? `#${l.target.element}` : ''}` : addr(l.target.node, l.target.seq, l.target.element)}, which changed since</span>))}</ul></section>
+          <ul className="lin-list">{stale.map((l) => entry(l.edge, l.source.node, l.source.element, <span className="why-not">relies on <Addr>{l.target.kolab ? `kj:${l.target.kolab}/${l.target.node}@${l.target.seq}${l.target.element ? `#${l.target.element}` : ''}` : addr(l.target.node, l.target.seq, l.target.element)}</Addr>, which changed since</span>))}</ul></section>
       ) : <p className="empty">No link is stale. Find an element above to see what it relies on and what relies on it.</p>)}
       {stopped && <><p className="why-not">Lineage stopped reading after {loaded} pages of documents: read on for the rest.</p><More more={more} busy={busy} what="documents" /></>}
       <details className="lin-graph" open={graph} onToggle={(e) => setGraph((e.target as HTMLDetailsElement).open)}>
