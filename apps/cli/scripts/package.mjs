@@ -34,10 +34,11 @@
 // its licence text, and the Bun runtime the binaries embed, ship in the npm package and with the
 // binaries. The build refuses a manifest that declares any other licence.
 import { execFileSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installBun, runtime as fetchRuntime } from './bun-runtime.mjs';
+import { bundledPackages as packagesIn, checkBun as checkPinnedBun, fslPackages, notices as noticesOf, strayFirstParty } from '../../../tools/npm-bundle.mjs';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(app, '../..');
@@ -58,15 +59,7 @@ const cache = join(root, 'node_modules/.cache/konjir-bun', pinned.version);
 /** A pinned Bun build's executable, checked against its pin (scripts/bun-runtime.mjs). */
 const runtime = (name) => fetchRuntime(name, { pinned, cache });
 
-function checkBun() {
-  let have;
-  try {
-    have = execFileSync('bun', ['--version'], { encoding: 'utf8' }).trim();
-  } catch {
-    throw new Error(`no bun on PATH; install Bun ${pinned.version} (node apps/cli/scripts/package.mjs bun <dir> installs a verified one)`);
-  }
-  if (have !== pinned.version) throw new Error(`bun on PATH is ${have}, but apps/cli/bun-runtimes.json pins ${pinned.version}`);
-}
+const checkBun = () => checkPinnedBun(pinned.version);
 
 /** Bundles konjir into `out`/konjir.mjs, with Bun's metafile beside it (scripts/bundle.mjs); returns both paths. */
 function bundle(out) {
@@ -84,26 +77,9 @@ function bundle(out) {
  * the four if its package.json stops declaring Apache-2.0.
  */
 const FIRST_PARTY = ['apps/cli', 'libs/login', 'libs/brand', 'apps/channel-bridge'].map((dir) => join(root, dir));
-/** The workspace package a first-party input belongs to: the nearest directory above it with a package.json. */
-function owningPackage(path) {
-  for (let dir = dirname(path); dir.startsWith(root + '/'); dir = dirname(dir)) {
-    if (existsSync(join(dir, 'package.json'))) return dir;
-  }
-  return root;
-}
+const inputs = (metafile) => Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs);
 function checkFirstParty(metafile, out) {
-  const stray = [];
-  for (const input of Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs)) {
-    // What the bundle carries as absent (bundle.mjs) is no source of anyone's.
-    if (input.startsWith('absent:') || input.startsWith('no-import:')) continue;
-    const path = resolve(app, input);
-    if (/\/node_modules\//.test(path) && !/\/node_modules\/@konjir\//.test(path)) continue;
-    const pkg = owningPackage(path);
-    const { license } = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
-    if (!FIRST_PARTY.includes(pkg) || !path.startsWith(join(pkg, 'src') + '/') || license !== 'Apache-2.0') {
-      stray.push(`${path} (${pkg === root ? 'the workspace root' : pkg.slice(root.length + 1)}, licensed ${license ?? 'nothing'})`);
-    }
-  }
+  const stray = strayFirstParty(inputs(metafile), { app, firstParty: FIRST_PARTY, root });
   // Nothing is left behind from a build that fails it.
   if (stray.length) rmSync(out, { recursive: true, force: true });
   if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/cli/src, libs/login/src, libs/brand/src and apps/channel-bridge/src: ${stray.join(', ')}`);
@@ -111,50 +87,29 @@ function checkFirstParty(metafile, out) {
 
 /** No package the bundle inlines may be FSL-licensed, as the rest of this workspace is (D64). */
 function checkBundledLicences(packages, out) {
-  const fsl = packages.filter((p) => /\bFSL-|Functional Source License/i.test(`${p.license}\n${p.text ?? ''}`));
+  const fsl = fslPackages(packages);
   if (fsl.length) rmSync(out, { recursive: true, force: true });
   if (fsl.length) throw new Error(`the bundle inlines FSL-licensed packages, which the Apache-2.0 konjir can't carry: ${fsl.map((p) => p.name).join(', ')}`);
   return packages;
 }
 
 /** The packages the bundle inlines, from Bun's metafile: the last node_modules/<name> of each input. */
-function bundledPackages(metafile) {
-  const dirs = new Map();
-  for (const input of Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs)) {
-    const path = resolve(app, input);
-    const m = /^(.*\/node_modules\/(?:@[^/]+\/)?[^/]+)\//.exec(path);
-    if (m) dirs.set(m[1], true);
-  }
-  return [...dirs.keys()].map((dir) => {
-    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-    // The licence, and a NOTICE file where there is one (Apache-2.0 asks for it to be passed on).
-    const files = readdirSync(dir).filter((f) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(f)).sort();
-    const text = files.map((f) => readFileSync(join(dir, f), 'utf8').trim()).join('\n\n') || undefined;
-    return { name: pkg.name, version: pkg.version, license: pkg.license ?? 'see the package', text };
-  }).sort((a, b) => a.name.localeCompare(b.name));
-}
+const bundledPackages = (metafile) => packagesIn(inputs(metafile), app);
 
 function notices(packages) {
-  const parts = [
-    '# Third-party notices for konjir',
-    '',
-    `konjir ${manifest.version} is licensed under the Apache License 2.0 (see LICENSE). It bundles the following packages into konjir.mjs and into each single-file binary. Their licences follow.`,
-    '',
-    ...packages.flatMap((p) => [
-      `## ${p.name} ${p.version} (${p.license})`,
+  return noticesOf(packages, {
+    title: 'Third-party notices for konjir',
+    intro: `konjir ${manifest.version} is licensed under the Apache License 2.0 (see LICENSE). It bundles the following packages into konjir.mjs and into each single-file binary. Their licences follow.`,
+    after: [
+      `## Bun ${pinned.version} (binaries only)`,
       '',
-      p.text ? '```\n' + p.text + '\n```' : `No licence file ships with ${p.name}; its package.json declares ${p.license}.`,
+      'Each single-file binary (konjir-<os>-<arch>) embeds the Bun runtime. Bun is MIT-licensed. It statically links',
+      'JavaScriptCore and WebKit under the LGPL-2, and other libraries under their own licences, all listed in',
+      `https://github.com/oven-sh/bun/blob/bun-v${pinned.version}/LICENSE.md, with how to relink Bun. The application`,
+      'code each binary embeds is konjir.mjs, the same bundle the npm package ships.',
       '',
-    ]),
-    `## Bun ${pinned.version} (binaries only)`,
-    '',
-    'Each single-file binary (konjir-<os>-<arch>) embeds the Bun runtime. Bun is MIT-licensed. It statically links',
-    'JavaScriptCore and WebKit under the LGPL-2, and other libraries under their own licences, all listed in',
-    `https://github.com/oven-sh/bun/blob/bun-v${pinned.version}/LICENSE.md, with how to relink Bun. The application`,
-    'code each binary embeds is konjir.mjs, the same bundle the npm package ships.',
-    '',
-  ];
-  return parts.join('\n');
+    ],
+  });
 }
 
 const [mode, ...rest] = process.argv.slice(2);

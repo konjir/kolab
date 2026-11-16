@@ -1,0 +1,119 @@
+name: konnect
+
+# Builds the published konnect (@konjir/konnect on npm) on every pull request into main and every
+# push to main that touches it, and checks it against a Kolab started from the checkout. Nothing is
+# published: the npm package is uploaded as this run's artifact. release-konnect.yml publishes.
+#
+# One job, "Build konnect", on arm64 with production's Node version, as cli.yml's job runs:
+# - apps/konnect/scripts/package.mjs bundles konnect into one file for npm, with the Bun
+#   apps/cli/bun-runtimes.json pins, and fails on first-party code other than apps/konnect's,
+#   libs/login's and libs/brand's (tools/npm-bundle.mjs). The tarball is packed and its licence checked.
+# - The bundle, and the package installed outside the workspace as npx installs it, each run
+#   apps/konnect/scripts/e2e.mjs: a local Kolab from the checkout (bin/konjir serve, on PGlite, with
+#   the stub identity and a throwaway admin token), konnect team signing in through a browser the
+#   script plays, and a direct message each way with a second person.
+#
+# Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
+# dependencies installed without install scripts.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: &paths
+      - apps/konnect/**
+      - libs/login/**
+      - libs/brand/**
+      - tools/npm-bundle.mjs
+      - apps/cli/bun-runtimes.json
+      - apps/cli/scripts/bun-runtime.mjs
+      - apps/cli/scripts/download.mjs
+      - package.json
+      - package-lock.json
+      - nx.json
+      - .github/workflows/konnect.yml
+  push:
+    branches: [main]
+    paths: *paths
+
+concurrency:
+  group: konnect-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  build:
+    name: Build konnect
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # The Bun apps/cli/bun-runtimes.json pins, checked against its pin, as cli.yml installs it.
+      - name: Install Bun
+        run: |
+          bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
+          dirname "$bun" >> "$GITHUB_PATH"
+
+      - name: Bundle for npm
+        run: npx nx run @konjir/konnect:bundle --output-style=static
+
+      - name: Pack the npm package
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack ./apps/konnect/dist-npm --pack-destination "$RUNNER_TEMP/pack"
+          ls -l "$RUNNER_TEMP/pack"
+
+      # konnect is Apache-2.0: the tarball carries LICENSE and the third-party notices, and bundles
+      # none of the FSL-1.1-ALv2 rest of the repository (D64).
+      - name: Check the licence ships
+        run: apps/konnect/scripts/check-licence.sh "$RUNNER_TEMP"/pack/konjir-konnect-*.tgz
+
+      # The published konnect talks to the hosted Kolab by default, checked without connecting to it:
+      # its help names it, and with nothing signed in it says so before any request.
+      - name: The published build defaults to the hosted Kolab
+        run: |
+          cd "$RUNNER_TEMP"
+          env -u KONNECT_URL node "$GITHUB_WORKSPACE/apps/konnect/dist-npm/konnect.mjs" help | grep -F 'https://kolab.konjir.com/mcp'
+          if out=$(env -u KONNECT_URL KONNECT_CONFIG_DIR="$RUNNER_TEMP/none" node "$GITHUB_WORKSPACE/apps/konnect/dist-npm/konnect.mjs" who 2>&1); then echo "::error::konnect who succeeded with nothing signed in"; exit 1; fi
+          echo "$out" | grep -F "you aren't signed in to a team: run konnect team <name>"
+
+      - name: konnect against a local Kolab, as the bundle and as the installed package
+        timeout-minutes: 5
+        run: |
+          node apps/konnect/scripts/e2e.mjs --konnect apps/konnect/dist-npm/konnect.mjs
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/pack/konjir-konnect-*.tgz
+          node apps/konnect/scripts/e2e.mjs --konnect "$RUNNER_TEMP/installed/node_modules/.bin/konnect"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: konnect-npm
+          path: ${{ runner.temp }}/pack/
+          if-no-files-found: error
+          retention-days: 14

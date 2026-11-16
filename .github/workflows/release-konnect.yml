@@ -1,0 +1,263 @@
+name: Release konnect
+
+# Publishes konnect: the npm package @konjir/konnect, and a GitHub release named konnect@<version>
+# with its tarball. Lee runs it by hand from main (Actions > Release konnect > Run workflow). It never
+# runs on its own. Modelled on release-cli.yml, which publishes konjir.
+#
+# Four jobs, each with only the permissions it needs:
+# 1. "Build konnect release" (read-only): validates the version and sets it in the runner (from the
+#    newest konnect@* tag, or apps/konnect/package.json's before the first release), refuses a
+#    version npm or a tag already has, builds and packs the npm tarball, checks it carries LICENSE
+#    (Apache-2.0) and the third-party notices, runs it against a Kolab started from the checkout
+#    (apps/konnect/scripts/e2e.mjs), runs npm publish --dry-run on it, and uploads it as an
+#    artifact. It is the only job that installs dependencies or runs Bun.
+# 2. "Draft GitHub release" (contents, attestations): attests the tarball's build provenance and
+#    creates the release as a draft, with the tarball and generated notes. A draft has no tag yet.
+# 3. "Publish konnect to npm" (id-token, the npm-release environment): publishes the tarball the
+#    first job tested, byte for byte, with provenance, through npm trusted publishing alone. No
+#    checkout, no dependencies and no npm token: @konjir/konnect disallows tokens
+#    (npm run release:trust -- konnect).
+# 4. "Publish GitHub release" (contents): takes the draft out of draft, which creates the tag
+#    konnect@<version> on the commit the run built. The next run reads the version from that tag.
+# With dry-run on (the default), only the first job runs.
+#
+# Set up once (README, "Releasing konnect"): @konjir/konnect must exist on npm (a first version
+# published by hand) before it can trust this workflow; then `npm run release:trust -- konnect`
+# (tools/npm-trust.sh) makes it trust this workflow in the npm-release environment, which release-cli.yml
+# uses too, and sets it to disallow tokens.
+#
+# Recovery: as release-cli.yml's. A run that stops before job 3 has published nothing; delete its
+# draft release, if any, and run again. If job 3 published and job 4 failed, re-run job 4, or run
+# `gh release edit konnect@<version> --draft=false`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version: exact (0.1.0) or a bump (patch, minor, major). No prereleases.'
+        required: true
+        type: string
+      dry-run:
+        description: 'Dry run: build and check, publish nothing'
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-konnect
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  build:
+    name: Build konnect release
+    # A convenience: the npm-release environment, limited to main, is the gate.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      previous: ${{ steps.version.outputs.previous }}
+      node: ${{ steps.node.outputs.version }}
+
+    steps:
+      - name: Check the version input
+        env:
+          SPECIFIER: ${{ inputs.version }}
+        run: |
+          if [[ ! "$SPECIFIER" =~ ^(patch|minor|major|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::version must be patch, minor, major or X.Y.Z (got '$SPECIFIER')"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the newest konnect@* tag is the current version
+          persist-credentials: false
+
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install Bun
+        run: |
+          bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
+          dirname "$bun" >> "$GITHUB_PATH"
+
+      # Plain semver, as nx release versions konjir: a bump from the newest konnect@* tag, or from
+      # apps/konnect/package.json's version before the first release; or the exact version given.
+      - name: Set the version
+        id: version
+        env:
+          SPECIFIER: ${{ inputs.version }}
+        run: |
+          previous=$(git tag --list 'konnect@*' --sort=-v:refname | head -1)
+          current=${previous#konnect@}
+          [ -n "$current" ] || current=$(node -p 'require("./apps/konnect/package.json").version')
+          # shellcheck disable=SC2016 # the ${…} are JavaScript's
+          version=$(CURRENT="$current" node -e '
+            const s = process.env.SPECIFIER, [a, b, c] = process.env.CURRENT.split(/[.-]/).map(Number);
+            console.log(s === "major" ? `${a + 1}.0.0` : s === "minor" ? `${a}.${b + 1}.0` : s === "patch" ? `${a}.${b}.${c + 1}` : s)')
+          node -e 'const f="apps/konnect/package.json",fs=require("fs"),j=JSON.parse(fs.readFileSync(f,"utf8"));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$version"
+          if git rev-parse -q --verify "refs/tags/konnect@$version" >/dev/null; then
+            echo "::error::the tag konnect@$version already exists"
+            exit 1
+          fi
+          # npm view exits 0 with the version if it is published, and E404 if the package or the version isn't.
+          if published=$(npm view "@konjir/konnect@$version" version 2>"$RUNNER_TEMP/npm-view.err"); then
+            if [ -n "$published" ]; then
+              echo "::error::npm already has @konjir/konnect@$version"
+              exit 1
+            fi
+          elif ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
+            cat "$RUNNER_TEMP/npm-view.err"
+            echo "::error::couldn't ask npm whether @konjir/konnect@$version exists"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle for npm
+        run: npx nx run @konjir/konnect:bundle --skip-nx-cache --output-style=static
+
+      - name: Pack the npm package and checksum it
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          npm pack ./apps/konnect/dist-npm --pack-destination "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release" && sha256sum konjir-konnect-*.tgz > SHA256SUMS && cat SHA256SUMS
+
+      - name: Check the licence ships
+        run: apps/konnect/scripts/check-licence.sh "$RUNNER_TEMP"/release/konjir-konnect-*.tgz
+
+      - name: konnect against a local Kolab, as the bundle and as the installed package
+        timeout-minutes: 5
+        run: |
+          node apps/konnect/scripts/e2e.mjs --konnect apps/konnect/dist-npm/konnect.mjs
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/release/konjir-konnect-*.tgz
+          node apps/konnect/scripts/e2e.mjs --konnect "$RUNNER_TEMP/installed/node_modules/.bin/konnect"
+
+      - name: npm publish --dry-run
+        run: npm publish --dry-run --access public "$RUNNER_TEMP"/release/konjir-konnect-*.tgz
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: konnect-release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  draft:
+    name: Draft GitHub release
+    needs: build
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: write # the draft release
+      id-token: write # the attestation's Sigstore certificate
+      attestations: write
+
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: konnect-release
+          path: release
+
+      - name: Refuse a version that already has a release, draft or not
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if gh release view "konnect@$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::a release konnect@$VERSION already exists (perhaps a draft from an earlier run); delete it or finish it"
+            exit 1
+          fi
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/konjir-konnect-*.tgz
+
+      # Not marked latest: the repository's latest release stays konjir's.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PREVIOUS: ${{ needs.build.outputs.previous }}
+        run: |
+          since=()
+          [ -n "$PREVIOUS" ] && since=(--notes-start-tag "$PREVIOUS")
+          gh release create "konnect@$VERSION" release/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --latest=false \
+            --title "konnect $VERSION" --generate-notes "${since[@]}"
+
+  publish:
+    name: Publish konnect to npm
+    needs: [build, draft]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    # @konjir/konnect trusts this workflow in this environment alone (trusted publishing); there is
+    # no npm secret anywhere. Its deployment branches must be main only.
+    environment: npm-release
+    permissions:
+      id-token: write # npm trusted publishing and provenance
+
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: konnect-release
+          path: release
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ needs.build.outputs.node }}
+
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11.21.1 --no-audit --no-fund
+
+      - name: Check the tarball is the one the build tested
+        working-directory: release
+        run: sha256sum -c SHA256SUMS
+
+      # Expired or missing trust fails with "OIDC token exchange error", which npm logs only at
+      # verbose level (README, "Releasing the CLI").
+      - name: npm publish
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
+          VERSION: ${{ needs.build.outputs.version }}
+        run: npm publish "./release/konjir-konnect-$VERSION.tgz" --provenance --access public --tag latest
+
+  release:
+    name: Publish GitHub release
+    needs: [build, publish]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: write # take the release out of draft, which creates its tag
+
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: gh release edit "konnect@$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false

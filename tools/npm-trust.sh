@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Makes konjir on npm trust .github/workflows/release-cli.yml in konjir/kolab, run in the npm-release
 # environment, so GitHub Actions can publish it with provenance and no npm token (W7.16). The environment's
-# deployment branches are main only, so only a run from main can publish.
+# deployment branches are main only, so only a run from main can publish. With the argument konnect, it does
+# the same for @konjir/konnect and .github/workflows/release-konnect.yml. A package must be on npm already
+# (one version, published by hand) before it can trust a workflow.
 # Then sets konjir to require two-factor authentication and disallow tokens (mfa=publish), so a leaked npm
 # token can't publish it; trusted publishing still works.
 # Lee runs it once after `npm login` (npm run release:trust); if konjir already trusts the workflow, that is
@@ -15,6 +17,7 @@
 #   npm run release:trust                    # trust the workflow, set mfa=publish, list for review
 #   npm run release:trust -- --dry-run       # say what it would do, change nothing
 #   npm run release:trust -- --renew         # replace expired trust
+#   npm run release:trust -- konnect         # the same for @konjir/konnect (release-konnect.yml)
 #
 # Every npm call needs a one-time password. The script asks for one from your authenticator app and reuses it
 # until npm rejects it, then asks for the next, so a run takes a code about every 30 seconds rather than one
@@ -69,7 +72,9 @@ for arg in "$@"; do
     --renew) renew=true ;;
     --dry-run) dry_run=true; flags+=("$arg") ;;
     -*) flags+=("$arg") ;;
-    *) echo "ERROR: $PACKAGE is the only package; unexpected argument: $arg" >&2; exit 1 ;;
+    konjir) PACKAGE=konjir; WORKFLOW=release-cli.yml ;;
+    konnect) PACKAGE=@konjir/konnect; WORKFLOW=release-konnect.yml ;;
+    *) echo "ERROR: the packages are konjir (the default) and konnect; unexpected argument: $arg" >&2; exit 1 ;;
   esac
 done
 

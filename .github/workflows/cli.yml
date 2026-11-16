@@ -27,6 +27,7 @@ on:
       - libs/types/**
       - libs/login/**
       - libs/brand/**
+      - tools/npm-bundle.mjs
       - package.json
       - package-lock.json
       - nx.json
