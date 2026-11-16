@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
-import { setupDigest, type SetupPlan } from '@konjir/engine';
+import { setupDigest, type SetupPlan, type TeamPlan } from '@konjir/engine';
 import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
-import type { Access, InvitePreview, Role } from '@konjir/types';
+import type { Access, InvitePreview, PendingInvitation, Role } from '@konjir/types';
 
 /** Text made safe for HTML, in content and in attribute values. */
 export const esc = escapeHtml;
@@ -23,6 +23,9 @@ const STYLE = [
   'button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}',
   '.err{color:var(--boundary);font-weight:600}',
   'dl.locked{margin:16px 0}dl.locked dt{font-weight:600;margin-top:10px}dl.locked dd{margin:2px 0 0}dl.locked small{display:block;color:var(--ink-muted)}',
+  'ul.choices{list-style:none;padding:0;margin:8px 0}ul.choices li{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line-strong)}',
+  'ul.choices li:first-child{border-top:0}ul.choices small{display:block;color:var(--ink-muted)}ul.choices .row{margin-top:0}',
+  '.note{font-weight:600}',
 ].join('\n');
 const STYLE_HASH = createHash('sha256').update(STYLE).digest('base64');
 const csp = (formTargets: string[]) =>
@@ -284,5 +287,105 @@ ${list}
 ${hidden}
 <input type="hidden" name="shown" value="${esc(setupDigest(plan!))}">
 <div class="row"><button class="primary" type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
+}
+
+/** What a person's own sign-in page shows, whose scope leaves the kolab to it (personScope): who signed in, and the app asking. */
+interface PersonView {
+  signIn: string;
+  csrf: string;
+  client: string;
+  redirect: string;
+  person: string; login: string; provider: string; created: boolean;
+  /** The person is a Konjir admin: the app works as them, with every admin verb (D111), and the page says so. */
+  konjirAdmin?: boolean;
+  error?: string;
+  /** Why it can't be allowed at all (a scope that names its kolab badly, an app not on this computer): then only Deny. */
+  refused?: string;
+}
+
+/** A `choose:kolab` sign-in's page: the invitations waiting for this account, and the kolabs the person is a member of. */
+export interface ChooseView extends PersonView {
+  invitations: PendingInvitation[];
+  kolabs: { id: string; title: string; access: Access }[];
+  /** What the last choice did, when it didn't end the sign-in: an invitation declined. */
+  note?: string;
+}
+
+/** A `team:<name>` sign-in's page: what allowing it does (TeamPlan). */
+export interface TeamView extends PersonView {
+  plan?: TeamPlan;
+}
+
+const personHidden = (v: PersonView) => `<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
+<input type="hidden" name="csrf" value="${esc(v.csrf)}">`;
+const personIntro = (v: PersonView) => `<p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>`;
+const personAsks = (v: PersonView) => `<p><strong>${esc(v.client)}</strong> on this computer asks to work in Kolab as you, <code>${esc(v.person)}</code>, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just started it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.${v.konjirAdmin ? ' <strong>You are a Konjir admin: this app can run every admin verb as you.</strong>' : ''}</p>`;
+const denyOnly = (v: PersonView, why: string) => `<h1>This sign-in can't be allowed</h1>
+${personIntro(v)}
+<form class="card" method="post" action="/oauth/consent">
+${personAsks(v)}
+<p class="err" role="alert">${esc(why)}</p>
+<p class="muted">Nothing was made or joined. Deny it; the app says the same.</p>
+${personHidden(v)}
+<div class="row"><button class="primary" type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
+
+/**
+ * The page of a sign-in that names no kolab (`choose:kolab`): each invitation waiting for the account
+ * that signed in, to accept (which joins and signs in there at once) or decline, and each kolab the
+ * person is a member of, to sign in to. With neither, it says so and how to make a team. Every
+ * choice is a button of its own; Deny ends the sign-in.
+ */
+export function choosePage(v: ChooseView): string {
+  if (v.refused) return denyOnly(v, v.refused);
+  const invitations = v.invitations.length ? `<fieldset><legend>Invitations for <code>${esc(v.login)}</code></legend>
+<ul class="choices">
+${v.invitations.map((i) => `<li><span><code>${esc(i.kolab)}</code>${i.title && i.title !== i.kolab ? ` ${esc(i.title)}` : ''}<small>${esc(i.invited_by)} invites you, with ${esc(describe({ level: i.level, layers: [] }))}${i.owner !== i.invited_by ? `, owned by ${esc(i.owner)}` : ''}. Accept it only if you expected it.</small></span>
+<span class="row"><button class="primary" type="submit" name="pick" value="accept:${esc(i.id)}">Accept and sign in</button><button type="submit" name="pick" value="decline:${esc(i.id)}">Decline</button></span></li>`).join('\n')}
+</ul></fieldset>` : '';
+  const kolabs = v.kolabs.length ? `<fieldset><legend>Your kolabs</legend>
+<ul class="choices">
+${v.kolabs.map((k) => `<li><span><code>${esc(k.id)}</code>${k.title && k.title !== k.id ? ` ${esc(k.title)}` : ''}<small>You hold ${esc(describe(k.access))}</small></span>
+<span class="row"><button type="submit" name="pick" value="kolab:${esc(k.id)}">Sign in to ${esc(k.id)}</button></span></li>`).join('\n')}
+</ul></fieldset>` : '';
+  const none = !v.invitations.length && !v.kolabs.length
+    ? `<p><strong>No invitation waits for <code>${esc(v.login)}</code>, and you are a member of no kolab yet.</strong> To make a team of your own, run <code>npx @konjir/konnect team &lt;name&gt;</code>. To join someone else's, ask its owner to invite your ${esc(v.provider)} account, <code>${esc(v.login)}</code>, then sign in again.</p>` : '';
+  return `<h1>Choose where to sign in</h1>
+${personIntro(v)}
+<form class="card" method="post" action="/oauth/consent">
+${personAsks(v)}
+${v.note ? `<p class="note" role="status">${esc(v.note)}</p>` : ''}
+${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+${personHidden(v)}
+${invitations}
+${kolabs}
+${none}
+<div class="row"><button type="submit" name="decision" value="deny">${none ? 'Close' : 'Deny'}</button></div>
+</form>`;
+}
+
+/**
+ * The page of a make-or-switch sign-in (`team:<name>`): locked to the kolab its scope names. Free,
+ * it offers to make it, private and theirs, with no agent; theirs already, to sign in to it; anyone
+ * else's, it says so, with a free name to try, and offers only Deny. Allow or Deny, nothing else.
+ */
+export function teamPage(v: TeamView): string {
+  const plan = v.plan;
+  if (v.refused || !plan) return denyOnly(v, v.refused ?? 'this sign-in names no kolab Kolab can make or sign in to');
+  if (plan.kind === 'refused') return denyOnly(v, plan.refused);
+  const made = plan.kind === 'make';
+  return `<h1>${made ? 'Make' : 'Sign in to'} <code>${esc(plan.kolab)}</code></h1>
+${personIntro(v)}
+<form class="card" method="post" action="/oauth/consent">
+${personAsks(v)}
+${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+<dl class="locked">
+<dt>Kolab</dt><dd><code>${esc(plan.kolab)}</code>${plan.kind === 'member' && plan.title !== plan.kolab ? ` ${esc(plan.title)}` : ''}<small>${made ? 'New: made now, private, yours. No agent is made.' : `You are a member: you hold ${esc(describe(plan.access))}`}</small></dd>
+<dt>Works as</dt><dd><code>${esc(v.person)}</code><small>You yourself, not an agent</small></dd>
+</dl>
+${personHidden(v)}
+<input type="hidden" name="shown" value="${made ? 'make' : 'member'}">
+<div class="row"><button class="primary" type="submit" name="decision" value="allow">${made ? `Make ${esc(plan.kolab)} and sign in` : 'Allow'}</button><button type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
 }

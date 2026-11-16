@@ -1,11 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamPlan } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
-import { consentPage, formActionSource, lockAllowed, lockedTitle, sendError, sendPage, setupPage, type ConsentView, type SetupView } from './pages.js';
+import { choosePage, consentPage, formActionSource, lockAllowed, lockedTitle, sendError, sendPage, setupPage, teamPage, type ChooseView, type ConsentView, type SetupView, type TeamView } from './pages.js';
 
 /** The web interface's own client: first party, never registered, and only ever a person (W3.1). */
 export const WEB_CLIENT = 'konjir-web';
@@ -96,6 +96,8 @@ const lasting = (ttlS: number) => (ttlS % 60 ? `${ttlS} seconds` : `${ttlS / 60}
 const EXPIRED = (ttlS: number) => `This sign-in expired: it lasts ${lasting(ttlS)} from when the app opened it. Start again from the app you were connecting.`;
 const CLAIMED = 'This sign-in is being allowed right now: it can\'t be denied or allowed again meanwhile. Return to the app you were connecting, which says how it went.';
 const USED = 'This sign-in was already used: it was allowed, denied or cancelled. If the app you were connecting isn\'t signed in, start again from there.';
+/** What a `choose:kolab` sign-in's app is told when its page had nothing to choose: no invitation for the account, and no kolab of the person's. */
+export const NOTHING_TO_CHOOSE = 'nothing to sign in to: no invitation waits for this account, and it is a member of no kolab. Make a team, or ask a team\'s owner to invite this GitHub account';
 const NOT_HERE = `This sign-in didn't start in this browser, or the browser let it go: it holds ${OPEN_SIGN_INS} sign-ins at most, and newer ones took its place. Finish it in the browser the app opened, or start again from the app you were connecting.`;
 
 /**
@@ -444,12 +446,13 @@ export class OAuthController {
     return sendError(res, 400, status === 'expired' ? EXPIRED(this.kolab.oauth.requestTtlS) : status === 'open' ? NOT_HERE : status === 'claimed' ? CLAIMED : USED);
   }
 
-  private async consent(res: Response, status: number, id: string, binding: string, csrf: string, extra: { login?: string; created?: boolean; error?: string; pick?: ConsentView['pick'] }) {
+  private async consent(res: Response, status: number, id: string, binding: string, csrf: string, extra: { login?: string; created?: boolean; error?: string; pick?: ConsentView['pick']; note?: string }) {
     const pending = await this.kolab.pendingAuthorization(binding);
     if (!pending?.person) return this.stopped(res, { binding }, id);
     const client = await this.client(pending.clientId, '');
     const web = pending.clientId === WEB_CLIENT;
     if (!web && setupScope(pending.scope)) return this.setupConsent(res, status, id, csrf, pending, client, extra);
+    if (!web && personScope(pending.scope)) return this.personConsent(res, status, id, csrf, pending, client, extra);
     const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
@@ -518,6 +521,93 @@ export class OAuthController {
     sendPage(res, status, view.refused ? 'Setup can\'t be allowed' : 'Set up Konjir', setupPage(view), { formTargets: target ? [target] : [] });
   }
 
+  /**
+   * Why a person's own sign-in that leaves its kolab to the page (personScope) can't be allowed, or
+   * nothing when it can: a scope that names it badly, a client that isn't on the person's own machine
+   * (every redirect URI loopback, as setup's), or, for `team:<name>`, what teamPlan refuses. With the
+   * scope, and a team's plan, for the page.
+   */
+  private async personCheck(person: string, scope: string | null, client: { redirectUris: string[] } | undefined): Promise<{ refused?: string; scope?: { choose: true } | { team: string }; plan?: TeamPlan }> {
+    const asked = personScope(scope);
+    if (!asked) return { refused: 'this sign-in doesn\'t leave its kolab to this page' };
+    if ('error' in asked) return { refused: `the app asked for a sign-in Kolab can't do: ${asked.error}. Start it again` };
+    if (!client || !client.redirectUris.every(onLoopback)) return { refused: 'a sign-in that leaves its kolab to this page is only for an app on your own computer, such as konnect, and this one receives its answer elsewhere' };
+    if ('choose' in asked) return { scope: asked };
+    const plan = await this.kolab.teamPlan(person, asked.team);
+    return { scope: asked, plan, ...(plan.kind === 'refused' ? { refused: plan.refusedForApp } : {}) };
+  }
+
+  /** The page of a sign-in that leaves its kolab to it: the choice of kolab or invitation (`choose:kolab`), or the one kolab to make or switch to (`team:<name>`). */
+  private async personConsent(res: Response, status: number, id: string, csrf: string, pending: NonNullable<Awaited<ReturnType<Kolab['pendingAuthorization']>>>,
+    client: { name: string; redirectUris: string[] } | undefined, extra: { login?: string; created?: boolean; error?: string; note?: string }) {
+    const person = pending.person!;
+    const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
+    const check = await this.personCheck(person, pending.scope, client);
+    const base = {
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      konjirAdmin: await this.kolab.isAdmin(person), error: extra.error,
+    };
+    const target = formActionSource(pending.redirectUri);
+    const opts = { formTargets: target ? [target] : [] };
+    if (check.scope && 'team' in check.scope) {
+      const view: TeamView = { ...base, plan: check.plan, refused: check.plan?.kind === 'refused' ? undefined : check.refused };
+      return sendPage(res, status, check.refused ? 'Sign-in can\'t be allowed' : check.plan?.kind === 'make' ? `Make ${check.scope.team}` : `Sign in to ${check.scope.team}`, teamPage(view), opts);
+    }
+    const options = check.refused ? { invitations: [], kolabs: [] } : await this.kolab.chooseOptions(person);
+    const view: ChooseView = { ...base, ...options, refused: check.refused, note: extra.note };
+    sendPage(res, status, check.refused ? 'Sign-in can\'t be allowed' : 'Choose where to sign in', choosePage(view), opts);
+  }
+
+  /**
+   * The person's answer on a sign-in page that leaves its kolab to it (personConsent): a button's
+   * `pick` on the choose page (`kolab:<name>`, `accept:<id>` or `decline:<id>`, which declines and
+   * shows the page again), or `decision` allow with the page's `shown` on the team page; anything
+   * else denies it, and a sign-in that can't be allowed tells the app why.
+   */
+  private async personConsented(res: Response, base: string, str: (k: string) => string, s: { id: string; binding: string; csrf: string; person: string; scope: string | null; clientId: string }) {
+    const { id, binding, csrf, person } = s;
+    const check = await this.personCheck(person, s.scope, await this.client(s.clientId, ''));
+    const pick = str('pick');
+    const allowing = !check.refused && (check.scope && 'choose' in check.scope ? !!pick : str('decision') === 'allow');
+    if (!allowing) {
+      if (!check.refused && str('decision') !== 'deny' && (pick || str('decision'))) {
+        return this.consent(res, 400, id, binding, csrf, { error: 'Choose a kolab or an invitation, or deny it.' });
+      }
+      // A page with nothing on it to choose says so to the app, which can say what to do next.
+      const empty = !check.refused && check.scope && 'choose' in check.scope
+        && Object.values(await this.kolab.chooseOptions(person)).every((l) => !l.length);
+      const r = await this.kolab.declineAuthorization(binding, csrf);
+      if (!r) return this.stopped(res, { binding }, id);
+      clearBinding(res, this.options, id);
+      const why = check.refused ? `the sign-in can't be allowed: ${check.refused}` : empty ? NOTHING_TO_CHOOSE : 'the person declined';
+      return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: why, state: r.clientState ?? undefined, iss: base }));
+    }
+    let choice: Parameters<Kolab['consentPerson']>[2];
+    if (check.scope && 'team' in check.scope) choice = { team: check.scope.team, shown: str('shown') };
+    else if (pick.startsWith('decline:')) {
+      try {
+        const r = await this.kolab.declineInvitation(person, pick.slice('decline:'.length));
+        return this.consent(res, 200, id, binding, csrf, { note: `You declined the invitation to ${r.kolab}.` });
+      } catch (e) {
+        if (e instanceof TenancyError) return this.consent(res, 400, id, binding, csrf, { error: maskTokens(e) });
+        throw e;
+      }
+    } else if (pick.startsWith('accept:')) choice = { accept: pick.slice('accept:'.length) };
+    else if (pick.startsWith('kolab:')) choice = { kolab: pick.slice('kolab:'.length) };
+    else return this.consent(res, 400, id, binding, csrf, { error: 'Choose a kolab or an invitation, or deny it.' });
+    try {
+      const r = await this.kolab.consentPerson(binding, csrf, choice);
+      clearBinding(res, this.options, id);
+      return res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
+    } catch (e) {
+      if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
+      if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) {
+        return this.consent(res, 400, id, binding, csrf, { error: maskTokens(e) });
+      }
+      throw e;
+    }
+  }
+
   /** The person's choice, from the consent page's form: same origin only, with the form's token and the browser's binding. */
   @Post('oauth/consent')
   async consented(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
@@ -535,6 +625,10 @@ export class OAuthController {
     const pending = await this.kolab.pendingAuthorization(binding, { csrf });
     if (!pending?.person) return this.stopped(res, { binding }, id);
     const setup = pending.clientId !== WEB_CLIENT && !!setupScope(pending.scope);
+    // A sign-in that leaves its kolab to its own page answers there, and nowhere else.
+    if (!setup && pending.clientId !== WEB_CLIENT && personScope(pending.scope)) {
+      return this.personConsented(res, base, str, { id, binding, csrf, person: pending.person, scope: pending.scope, clientId: pending.clientId });
+    }
     if (str('decision') !== 'allow') {
       // A setup denied because it can't be allowed: the app is told why, so konjir connect can say it.
       // Without the person's list of kolabs, which only their own page shows: this goes to the app's redirect URI.
