@@ -3341,11 +3341,13 @@ export class Kolab {
    * an organization's, refuses the whole call, by name, before anything is written. An account that
    * is a member already (its person reaches the kolab by their own access, not only because it is
    * public) is named in `already_members`; one with an open invitation, in `already_invited`, the
-   * same invitation. Each grants INVITATION_LEVEL once. Only the kolab's owner, a person, invites;
+   * same invitation, unless its maker no longer owns the kolab, when it is withdrawn and a fresh one
+   * made; one that declined an invitation to this kolab in the last 30 days, in `declined_recently`,
+   * and isn't asked again. Each grants INVITATION_LEVEL once. Only the kolab's owner, a person, invites;
    * the checks, the limits and the inserts run under the access lock.
    */
   async inviteAccounts(sessionId: string, accounts: string[], lookup: { provider: string; find: AccountLookup }): Promise<{
-    kolab: string; invited: InvitationView[]; already_invited: InvitationView[]; already_members: string[];
+    kolab: string; invited: InvitationView[]; already_invited: InvitationView[]; already_members: string[]; declined_recently: string[];
   }> {
     if (!Array.isArray(accounts) || !accounts.length) throw new LimitError('name at least one GitHub account to invite');
     if (accounts.length > this.invitations.perCall) throw new LimitError(`name at most ${this.invitations.perCall} accounts at once`);
@@ -3370,24 +3372,32 @@ export class Kolab {
       else found.push({ login: name, subject: r.subject });
     }
     if (missing.length) throw new TenancyError(`no GitHub account ${missing.join(', ')}: check the spelling. Nothing was invited`);
-    if (orgs.length) throw new TenancyError(`${orgs.join(', ')} ${orgs.length === 1 ? 'is an organization' : 'are organizations'} on GitHub, not a person's account: invite its people by their own names. Nothing was invited`);
+    if (orgs.length) throw new TenancyError(`${orgs.join(', ')} ${orgs.length === 1 ? 'isn\'t a person\'s account' : 'aren\'t people\'s accounts'} on GitHub (an organization's or a bot's): invite people by their own names. Nothing was invited`);
     const invited: string[] = [];
     const already: string[] = [];
     const members: string[] = [];
+    const declined: string[] = [];
     await this.db.transaction(async (tx) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
       // Again, under the lock: the owner may have changed meanwhile.
       if (!(await ownsKolab(tx, s.actor_id, s.kolab))) throw new AccessError(`only the owner of kolab ${s.kolab} invites people there`);
+      // Only good invitations count toward the kolab's cap: one whose maker no longer owns it waits for no one.
       const c = (await tx.query<{ open: number; recent: number }>(
-        `select (select count(*)::int from kolab_invitation where kolab_id = $1 and ${openInvitation()}) as open,
+        `select (select count(*)::int from kolab_invitation i where i.kolab_id = $1 and ${liveInvitation('i.')}) as open,
                 (select count(*)::int from kolab_invitation where invited_by = $2 and created_at > now() - interval '1 hour') as recent`,
         [s.kolab, s.actor_id])).rows[0];
       for (const f of found) {
         const holder = (await tx.query<{ actor_id: string }>(`select actor_id from identity where provider = $1 and subject = $2`, [lookup.provider, f.subject])).rows[0]?.actor_id;
         if (holder && (holder === s.actor_id || (await ownerAccess(tx, holder, s.kolab)).level)) { members.push(f.login); continue; }
-        const open = (await tx.query<{ id: string }>(
-          `select id from kolab_invitation where kolab_id = $1 and provider = $2 and subject = $3 and ${openInvitation()}`, [s.kolab, lookup.provider, f.subject])).rows[0];
-        if (open) { if (!already.includes(open.id) && !invited.includes(open.id)) already.push(open.id); continue; }
+        // Declined lately: the kolab doesn't ask that account again for a while, so a decline sticks.
+        if ((await tx.query(`select 1 from kolab_invitation where kolab_id = $1 and provider = $2 and subject = $3 and declined_at > now() - ${DECLINED_FOR}`,
+          [s.kolab, lookup.provider, f.subject])).rows.length) { if (!declined.includes(f.login)) declined.push(f.login); continue; }
+        const open = (await tx.query<{ id: string; good: boolean }>(
+          `select i.id, ${inviterOwns('i.')} as good from kolab_invitation i where i.kolab_id = $1 and i.provider = $2 and i.subject = $3 and ${openInvitation('i.')}`,
+          [s.kolab, lookup.provider, f.subject])).rows[0];
+        if (open?.good) { if (!already.includes(open.id) && !invited.includes(open.id)) already.push(open.id); continue; }
+        // One its maker can no longer stand behind is withdrawn, by this owner, and a fresh one made in its place.
+        if (open) await tx.query(`update kolab_invitation set withdrawn_at = now(), withdrawn_by = $2 where id = $1`, [open.id, s.actor_id]);
         if (c.open + invited.length >= this.invitations.openPerKolab) throw new TenancyError(`kolab ${s.kolab} has ${c.open + invited.length} open invitations, the most it may hold (${this.invitations.openPerKolab}); withdraw some first. Nothing was invited`);
         if (c.recent + invited.length >= this.invitations.perPersonPerHour) throw new TenancyError(`you made ${c.recent + invited.length} invitations in the last hour; wait a while before making more. Nothing was invited`);
         const id = `ivt_${randomBytes(12).toString('base64url')}`;
@@ -3399,7 +3409,7 @@ export class Kolab {
     });
     const views = invited.length || already.length ? await this.invitationRows(s.kolab, { ids: [...invited, ...already] }) : [];
     const pick = (ids: string[]) => ids.map((id) => views.find((v) => v.id === id)!).map(({ key: _, ...v }) => v);
-    return { kolab: s.kolab, invited: pick(invited), already_invited: pick(already), already_members: members };
+    return { kolab: s.kolab, invited: pick(invited), already_invited: pick(already), already_members: members, declined_recently: declined };
   }
 
   /** One page of the open invitations of the session's kolab, newest first, for its owner (inviteAccounts). */
@@ -3430,13 +3440,14 @@ export class Kolab {
    * in a live kolab whose owner still made them (whoever invited must still own it). Oldest first.
    */
   async invitationsFor(person: string): Promise<PendingInvitation[]> {
-    return (await this.db.query<{ id: string; kolab_id: string; title: string; owner_id: string; invited_by: string; level: InviteLevel; created_at: Date }>(
-      `select i.id, i.kolab_id, k.title, k.owner_id, i.invited_by, i.level, i.created_at
+    return (await this.db.query<{ id: string; kolab_id: string; title: string; owner_id: string; invited_by: string; invited_by_login: string | null; level: InviteLevel; created_at: Date }>(
+      `select i.id, i.kolab_id, k.title, k.owner_id, i.invited_by, i.level, i.created_at,
+              (select w.login from identity w where w.actor_id = i.invited_by and w.provider = i.provider) as invited_by_login
          from kolab_invitation i join identity d on d.provider = i.provider and d.subject = i.subject join kolab k on k.id = i.kolab_id
         where d.actor_id = $1 and ${openInvitation('i.')} and not kj_kolab_archived(i.kolab_id)
           and ${INVITER_OWNS}
         order by i.created_at, i.id`, [person])).rows
-      .map((r) => ({ id: r.id, kolab: r.kolab_id, title: r.title, owner: r.owner_id, invited_by: r.invited_by, level: r.level, created_at: new Date(r.created_at).toISOString() }));
+      .map((r) => ({ id: r.id, kolab: r.kolab_id, title: r.title, owner: r.owner_id, invited_by: r.invited_by, invited_by_login: r.invited_by_login, level: r.level, created_at: new Date(r.created_at).toISOString() }));
   }
 
   /** `person` declines an invitation waiting for them (invitationsFor), on their sign-in page: no one can accept it any more. */
@@ -3490,9 +3501,9 @@ export class Kolab {
       accepted_by: string | null; accepted_at: Date | null; declined_by: string | null; declined_at: Date | null; withdrawn_by: string | null; withdrawn_at: Date | null }>(
       `select id, kolab_id, login, provider, level, invited_by, created_at, created_at::text as at_key,
               accepted_by, accepted_at, declined_by, declined_at, withdrawn_by, withdrawn_at
-         from kolab_invitation where kolab_id = $1 and ($2::text[] is null or id = any($2::text[])) and (not $3 or ${openInvitation()})
-          and ($4::text is null or (created_at, id) < ($4::timestamptz, $5::text))
-        order by created_at desc, id desc limit $6`,
+         from kolab_invitation i where i.kolab_id = $1 and ($2::text[] is null or i.id = any($2::text[])) and (not $3 or (${liveInvitation('i.')}))
+          and ($4::text is null or (i.created_at, i.id) < ($4::timestamptz, $5::text))
+        order by i.created_at desc, i.id desc limit $6`,
       [kolab, opts.ids ?? null, !!opts.open, opts.after?.[0] ?? null, opts.after?.[1] ?? null, opts.limit ?? 100])).rows;
     return rows.map((r) => {
       const [state, by, at] = r.accepted_at ? ['accepted' as const, r.accepted_by, r.accepted_at] : r.declined_at ? ['declined' as const, r.declined_by, r.declined_at]
@@ -3509,14 +3520,23 @@ export class Kolab {
    * audited as by `by`: a member removed, or leaving, takes their agents with them. Returns the
    * agents whose grants went.
    */
-  private async dropMemberGrants(tx: Q, kolab: string, person: string, by: Doer): Promise<string[]> {
+  private async dropMemberGrants(tx: Q, signal: Signal, kolab: string, person: string, by: Doer): Promise<{ agents: string[]; ended: number }> {
     const agents = (await tx.query<{ agent_id: string }>(
       `delete from kolab_grant where kolab_id = $1 and agent_id in (select id from actor where owner_id = $2 and kind = 'agent') returning agent_id`,
       [kolab, person])).rows.map((r) => r.agent_id).sort();
     for (const a of agents) await audit(tx, by, 'grant.removed', { kolab, subject: a, detail: { owner: person } });
     const own = await tx.query(`delete from kolab_grant where kolab_id = $1 and user_id = $2 returning user_id`, [kolab, person]);
     if (own.rows.length) await audit(tx, by, 'grant.removed', { kolab, subject: person });
-    return agents;
+    // Every session of theirs and their agents' in the kolab ends now, even one a public kolab's Read
+    // would keep open (endUnreachableIn ends only those left with nothing): they are no longer
+    // members, and a fresh sign-in reads a public kolab as anyone may.
+    const ended = (await tx.query<{ id: string }>(
+      `update session s set ended_at = now(), ended_by = $3
+        where s.kolab_id = $1 and s.ended_at is null
+          and (s.actor_id = $2 or s.actor_id in (select id from actor where owner_id = $2 and kind = 'agent'))
+       returning s.id`, [kolab, person, by])).rows;
+    for (const { id } of ended) await signal({ session: 'ended', id });
+    return { agents, ended: ended.length };
   }
 
   /**
@@ -3530,13 +3550,19 @@ export class Kolab {
   async removeKolabMember(sessionId: string, member: string): Promise<{ kolab: string; removed: string; agents: string[]; ended: number }> {
     const s = await this.requireKolabOwner(sessionId, 'removes members');
     if (member === s.actor_id) throw new TenancyError(`you own kolab ${s.kolab}, so you stay its member`);
-    let agents: string[] = [];
-    const r = await this.changeOwnGrant(sessionId, member, async (tx, s2, grantee) => {
+    let dropped = { agents: [] as string[], ended: 0 };
+    const r = await this.changeOwnGrant(sessionId, member, async (tx, s2, grantee, _current, signal) => {
       if (grantee.column !== 'user_id') throw new TenancyError(`${member} is an agent: remove its owner, and their agents go with them`);
       if (!(await ownsKolab(tx, s2.actor_id, s2.kolab))) throw new AccessError(`only the owner of kolab ${s2.kolab} removes members there`);
-      agents = await this.dropMemberGrants(tx, s2.kolab, member, s2.actor_id);
+      dropped = await this.dropMemberGrants(tx, signal, s2.kolab, member, s2.actor_id);
+    }).catch((e: unknown) => {
+      // Refused, nothing changes: not their grant, nor their agents'. Said plainly, since their agents keep working through what the person still holds.
+      if (e instanceof TenancyError && /holds no direct grant/.test(e.message)) {
+        throw new TenancyError(`${member} isn't a member of kolab ${s.kolab} by a grant of their own, so nothing was removed: access from its organization, a team or the base permission is changed where those are kept, and their agents keep only what that lends them`);
+      }
+      throw e;
     });
-    return { kolab: s.kolab, removed: member, agents, ended: r.ended };
+    return { kolab: s.kolab, removed: member, agents: dropped.agents, ended: r.ended + dropped.ended };
   }
 
   /**
@@ -3551,8 +3577,8 @@ export class Kolab {
     if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: a person leaves a kolab, and their agents leave with them`);
     if (await ownsKolab(this.db, s.actor_id, s.kolab)) throw new TenancyError(`you own kolab ${s.kolab}, so you can't leave it`);
     await this.requireLiveKolab(s.kolab, 'changes no access');
-    let agents: string[] = [];
-    const r = await this.changeAccess({ users: [s.actor_id] }, s.actor_id, async (tx) => {
+    let dropped = { agents: [] as string[], ended: 0 };
+    const r = await this.changeAccess({ users: [s.actor_id] }, s.actor_id, async (tx, signal) => {
       if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
         throw new RoleError('no open session for that token');
       }
@@ -3560,12 +3586,12 @@ export class Kolab {
       if (!(await tx.query(`select 1 from kolab_grant where kolab_id = $1 and user_id = $2`, [s.kolab, s.actor_id])).rows.length) {
         throw new TenancyError(`you hold no grant in kolab ${s.kolab} to give up: access from its organization, its base permission or a team is changed where those are kept`);
       }
-      agents = await this.dropMemberGrants(tx, s.kolab, s.actor_id, s.actor_id);
+      dropped = await this.dropMemberGrants(tx, signal, s.kolab, s.actor_id, s.actor_id);
       if (!(await holderRows(tx, s.kolab)).some((h) => h.kind === 'person' && h.rank === 5)) {
         throw new AccessError(`that would leave kolab ${s.kolab} with nobody holding Admin: give someone else Admin first`);
       }
     });
-    return { left: s.kolab, agents, ended: r.ended };
+    return { left: s.kolab, agents: dropped.agents, ended: r.ended + dropped.ended };
   }
 
   // ---- a person's own sign-in that leaves the kolab to the page (personScope) ----
@@ -3857,14 +3883,14 @@ export class Kolab {
    * changes of access (an organization's owners, archiving, teams) don't check it.
    */
   private async changeOwnGrant(sessionId: string, actor: string,
-    write: (tx: Db, s: Session, grantee: { column: 'user_id' | 'agent_id'; id: string; owner?: string }, current: Access) => Promise<unknown>): Promise<{ ended: number }> {
+    write: (tx: Db, s: Session, grantee: { column: 'user_id' | 'agent_id'; id: string; owner?: string }, current: Access, signal: Signal) => Promise<unknown>): Promise<{ ended: number }> {
     const s = await this.requireAccessAdmin(sessionId);
     if (typeof actor !== 'string' || actor.includes('/')) {
       throw new TenancyError(`a team's access is its grant to the team, kept with the organization's teams, not changed here`);
     }
     const none = () => new TenancyError(`${actor} holds no direct grant in kolab ${s.kolab}; access from owning it, its organization, the base permission or a team is changed where those are kept`);
     await this.requireLiveKolab(s.kolab, 'changes no access');
-    return this.changeAccess({ users: [actor] }, s.actor_id, async (tx) => {
+    return this.changeAccess({ users: [actor] }, s.actor_id, async (tx, signal) => {
       // Again, now, under the lock: a sign-out, an archive or another admin's change may have come first.
       if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
         throw new RoleError('no open session for that token');
@@ -3887,7 +3913,7 @@ export class Kolab {
           ? `${actor}, an agent, holds Admin in kolab ${s.kolab} by a grant from Konjir's admin or the kolab's owners: only the kolab's owners lower or remove it here`
           : `${actor} holds Admin in kolab ${s.kolab} by a grant its owners gave: only they lower or remove it`);
       }
-      await write(tx, s, grantee, current);
+      await write(tx, s, grantee, current, signal);
       if (!(await holderRows(tx, s.kolab)).some((h) => h.kind === 'person' && h.rank === 5)) {
         throw new AccessError(`that would leave kolab ${s.kolab} with nobody holding Admin: give someone else Admin first`);
       }
@@ -4482,12 +4508,12 @@ export class Kolab {
    * sessions ended. `by` made the change: `fn` records it in the audit log, and the sessions it
    * ends record it too (W2.20).
    */
-  private async changeAccess(who: Affected, by: Doer, fn: (tx: Db) => Promise<unknown>): Promise<{ ended: number }> {
+  private async changeAccess(who: Affected, by: Doer, fn: (tx: Db, signal: Signal) => Promise<unknown>): Promise<{ ended: number }> {
     const r = await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
       // Who the change can affect, found before it, while the team it may remove is still there.
       const holders = await holdersOf(tx, who);
-      await fn(tx);
+      await fn(tx, signal);
       // Links and forks across kolabs that they hold are marked, or settle, as access changes (LNK8).
       const catchUps = await this.reconcileAccessIn(tx, signal, holders);
       if (catchUps.length) await this.notifyWork(tx);
@@ -14293,9 +14319,18 @@ async function requireAnAdmin(tx: Q, who: string) {
 
 /** SQL true for an invitation (migration 0053) that is still open: not accepted, declined or withdrawn. `a` is its table's alias and a dot, if any. */
 const openInvitation = (a = '') => `${a}accepted_at is null and ${a}declined_at is null and ${a}withdrawn_at is null`;
-/** SQL true when the invitation `i` was made by someone who still owns its kolab (ownsKolab): one whose maker lost the kolab is no longer good. */
-const INVITER_OWNS = `exists (select 1 from kolab ok left join org_member om on om.org_id = ok.owner_id and om.user_id = i.invited_by
-                         where ok.id = i.kolab_id and (ok.owner_id = i.invited_by or om.role = 'owner'))`;
+/**
+ * SQL true when an invitation was made by someone who still owns its kolab (ownsKolab) and isn't
+ * archived: one whose maker lost the kolab, or was archived, is no longer good, as an invite whose
+ * maker lost Admin isn't. `a` is the invitation table's alias and a dot.
+ */
+const inviterOwns = (a: string) => `(not kj_actor_archived(${a}invited_by) and exists (select 1 from kolab ok left join org_member om on om.org_id = ok.owner_id and om.user_id = ${a}invited_by
+                         where ok.id = ${a}kolab_id and (ok.owner_id = ${a}invited_by or om.role = 'owner')))`;
+const INVITER_OWNS = inviterOwns('i.');
+/** SQL true for an invitation that is open and still good: its maker still owns its kolab. */
+const liveInvitation = (a: string) => `${openInvitation(a)} and ${inviterOwns(a)}`;
+/** How long a declined invitation keeps its kolab from inviting that account again. */
+const DECLINED_FOR = `interval '30 days'`;
 /** The one refusal for an invitation that can't be used, whatever the reason. */
 const INVITATION_GONE = 'that invitation isn\'t one waiting for you: it was accepted, declined or withdrawn, or isn\'t yours. Ask the kolab\'s owner to invite your account again';
 

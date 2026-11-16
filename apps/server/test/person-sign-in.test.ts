@@ -98,8 +98,13 @@ test('choose:kolab: the page lists the invitations waiting for the account and t
   expect(csp).toMatch(/^default-src 'none'; style-src 'sha256-[A-Za-z0-9+/=]+'; form-action 'self' http:\/\/127\.0\.0\.1:9; frame-ancestors 'none'; base-uri 'none'$/);
   expect(p.html).not.toMatch(/<script/i);
   expect(p.html).toContain('<strong>konnect</strong> on this computer asks to work in Kolab as you, <code>bob</code>');
-  expect(p.html).toContain('<code>anns</code> Ann&#39;s<small>ann invites you, with Read. Accept it only if you expected it.</small>');
-  expect(buttons(p.html)).toStrictEqual([`pick=accept:${inv.id}`, `pick=decline:${inv.id}`, 'pick=kolab:bobs', 'decision=deny']);
+  // The person's own kolabs come first; an invitation after, by the kolab's name and the inviter's own login, its title only as the owner's say-so.
+  expect(p.html).toContain('Kolab <code>anns</code><small>From Stub user <code>ann</code>, with Read. Its title, as its owner gives it: Ann&#39;s</small>');
+  expect(p.html).toContain('Anyone on Kolab can invite any Stub account. Accept only one you expected, from someone you know.');
+  expect(buttons(p.html)).toStrictEqual(['pick=kolab:bobs', `pick=accept:${inv.id}`, `pick=decline:${inv.id}`, 'decision=deny']);
+  expect(p.html.indexOf('Your kolabs')).toBeLessThan(p.html.indexOf('Invitations for'));
+  // Accept is no more prominent than Decline: no primary button on the page.
+  expect(p.html).not.toContain('class="primary"');
 
   // A form from anywhere but Kolab's own page is refused, as every consent is.
   expect((await p.post({ pick: `accept:${inv.id}` }, { origin: 'https://evil.example' })).res.status).toBe(403);

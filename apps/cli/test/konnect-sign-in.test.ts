@@ -87,7 +87,7 @@ test('a team made with no agent, a teammate invited by GitHub username who signs
 
   // She invites by GitHub username: a name with no account, or an organization's, invites no one.
   expect(await rejection(call(annMcp, 'invite', { accounts: ['bob', 'ghost'] }))).toMatch(/no GitHub account ghost: check the spelling\. Nothing was invited/);
-  expect(await rejection(call(annMcp, 'invite', { accounts: ['acme-inc'] }))).toMatch(/acme-inc is an organization on GitHub/);
+  expect(await rejection(call(annMcp, 'invite', { accounts: ['acme-inc'] }))).toMatch(/acme-inc isn't a person's account on GitHub \(an organization's or a bot's\)/);
   const invited = await call(annMcp, 'invite', { accounts: ['@bob'] }) as { kolab: string; invited: { id: string; account: string; state: string }[] };
   expect(invited).toMatchObject({ kolab: 'acme', invited: [{ account: 'bob', state: 'open', level: 'read' }], already_invited: [], already_members: [] });
   expect(await call(annMcp, 'list_invitations')).toMatchObject({ kolab: 'acme', invitations: [{ id: invited.invited[0].id, account: 'bob' }], next: null });
@@ -95,7 +95,7 @@ test('a team made with no agent, a teammate invited by GitHub username who signs
   // Bob signs in naming no kolab: the page lists the invitation, and he accepts it.
   idp.next({ subject: '22', login: 'bob' });
   const bob = await signInChoosing(url, { path: paths.bob, ...quiet, open: (u) => { void browse(u, (b, h) => { page = h; return pressing('pick=accept:')(b); }); } });
-  expect(page).toContain('ann invites you, with Read');
+  expect(page).toContain('From Stub user <code>ann</code>, with Read');
   expect(bob).toMatchObject({ kolab: 'acme', actor: 'bob', role: 'product' });
   const bobMcp = await connect(url, keptToken(paths.bob, url));
   closeAtEnd(bobMcp);
@@ -176,3 +176,39 @@ test('konjir_invite needs GitHub sign-in on the Kolab; konjir login is as it was
   expect(await call(ann, 'list_invitations')).toStrictEqual({ kolab: 'anns', invitations: [], next: null });
   expect(typeof login).toBe('function');
 });
+
+test('GitHub lookups are limited per person, whichever session asks, and counted per name: one person can\'t use up everyone\'s', async () => {
+  const { kolab, idp, url, paths } = await boot();
+  idp.next({ subject: '11', login: 'ann' });
+  await signInToTeam(url, 'acme', { path: paths.ann, ...quiet, open: (u) => { void browse(u, pressing('decision=allow')); } });
+  const viaSignIn = await connect(url, keptToken(paths.ann, url));
+  const viaToken = await connect(url, await kolab.openSession('ann', 'product', { kolab: 'acme' }));
+  closeAtEnd(viaSignIn, viaToken);
+  const names = (n: number) => Array.from({ length: 10 }, (_, i) => `nobody-${n}-${i}`);
+  for (let n = 0; n < 10; n++) expect(await rejection(call(viaSignIn, 'invite', { accounts: names(n) }))).toMatch(/no GitHub account/);
+  expect(idp.lookups).toBe(100);
+  // Her other session shares her budget: nothing more is asked of GitHub for her this hour.
+  expect(await rejection(call(viaToken, 'invite', { accounts: ['bob'] }))).toMatch(/too many GitHub accounts looked up just now/);
+  expect(idp.lookups).toBe(100);
+  // Someone else's invitations go on.
+  const { actor: dee } = await kolab.signInWith({ provider: 'stub', subject: '33', login: 'dee' });
+  await kolab.makeOwnKolab(dee, 'dees', 'Dee\'s');
+  const deeMcp = await connect(url, await kolab.openSession(dee, 'product', { kolab: 'dees' }));
+  closeAtEnd(deeMcp);
+  expect(await call(deeMcp, 'invite', { accounts: ['bob'] })).toMatchObject({ invited: [{ account: 'bob' }] });
+}, 60_000);
+
+test('a team sign-in that lands anywhere but the team asked for is revoked and forgotten, never kept', async () => {
+  const { kolab, idp, url, paths } = await boot();
+  const { actor: ann } = await kolab.signInWith({ provider: 'stub', subject: '11', login: 'ann' });
+  await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
+  // A choose sign-in's page, answered as if it were the team's: the app asked for acme, and got anns.
+  idp.next({ subject: '11', login: 'ann' });
+  const wrong = await signInToTeam(url, 'acme', {
+    path: paths.ann, ...quiet,
+    open: (u) => { u.searchParams.set('scope', 'konjir choose:kolab'); void browse(u, pressing('pick=kolab:anns')); },
+  }).catch((e: unknown) => e);
+  expect(String(wrong)).toMatch(/Kolab signed you in to kolab anns, not acme, which was asked for: the sign-in was revoked/);
+  expect(JSON.parse(readFileSync(paths.ann, 'utf8'))[url]).toBeUndefined();
+  expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
+}, 60_000);

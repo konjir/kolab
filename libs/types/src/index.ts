@@ -73,7 +73,10 @@ export interface InvitationView {
 }
 /** An invitation waiting for the person signing in, as their sign-in page lists it: the kolab, who owns it, who invites them, and what it grants. */
 export interface PendingInvitation {
-  id: string; kolab: string; title: string; owner: string; invited_by: string; level: InviteLevel; created_at: string;
+  id: string; kolab: string; title: string; owner: string; invited_by: string;
+  /** The inviter's login at the identity provider the invitation names (GitHub's), so the person can tell who it is from; null if they have none there. */
+  invited_by_login: string | null;
+  level: InviteLevel; created_at: string;
 }
 /** What an invite's link shows whoever holds it, before they accept: the kolab, the access, and who invites them. */
 export interface InvitePreview {

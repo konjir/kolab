@@ -339,10 +339,14 @@ ${personHidden(v)}
  */
 export function choosePage(v: ChooseView): string {
   if (v.refused) return denyOnly(v, v.refused);
+  // Anyone can make a kolab and invite any account, so an invitation is shown as what it is: below
+  // the person's own kolabs, by the kolab's name and the inviter's own login (a title is the
+  // inviter's say-so), and with Accept no more prominent than Decline.
   const invitations = v.invitations.length ? `<fieldset><legend>Invitations for <code>${esc(v.login)}</code></legend>
+<p class="muted">Anyone on Kolab can invite any ${esc(v.provider)} account. Accept only one you expected, from someone you know.</p>
 <ul class="choices">
-${v.invitations.map((i) => `<li><span><code>${esc(i.kolab)}</code>${i.title && i.title !== i.kolab ? ` ${esc(i.title)}` : ''}<small>${esc(i.invited_by)} invites you, with ${esc(describe({ level: i.level, layers: [] }))}${i.owner !== i.invited_by ? `, owned by ${esc(i.owner)}` : ''}. Accept it only if you expected it.</small></span>
-<span class="row"><button class="primary" type="submit" name="pick" value="accept:${esc(i.id)}">Accept and sign in</button><button type="submit" name="pick" value="decline:${esc(i.id)}">Decline</button></span></li>`).join('\n')}
+${v.invitations.map((i) => `<li><span>Kolab <code>${esc(i.kolab)}</code><small>From ${i.invited_by_login ? `${esc(v.provider)} user <code>${esc(i.invited_by_login)}</code>` : `<code>${esc(i.invited_by)}</code>`}${i.owner !== i.invited_by ? `, for <code>${esc(i.owner)}</code>` : ''}, with ${esc(describe({ level: i.level, layers: [] }))}.${i.title && i.title !== i.kolab ? ` Its title, as its owner gives it: ${esc(i.title)}` : ''}</small></span>
+<span class="row"><button type="submit" name="pick" value="accept:${esc(i.id)}">Accept and sign in</button><button type="submit" name="pick" value="decline:${esc(i.id)}">Decline</button></span></li>`).join('\n')}
 </ul></fieldset>` : '';
   const kolabs = v.kolabs.length ? `<fieldset><legend>Your kolabs</legend>
 <ul class="choices">
@@ -358,8 +362,8 @@ ${personAsks(v)}
 ${v.note ? `<p class="note" role="status">${esc(v.note)}</p>` : ''}
 ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
 ${personHidden(v)}
-${invitations}
 ${kolabs}
+${invitations}
 ${none}
 <div class="row"><button type="submit" name="decision" value="deny">${none ? 'Close' : 'Deny'}</button></div>
 </form>`;

@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { AccessError, Kolab, LimitError, sessionKey } from '@konjir/engine';
+import { AccessError, Kolab, LimitError } from '@konjir/engine';
 import { args } from './args.js';
 import { Limit } from './oauth/oauth.controller.js';
 import { PAGED, paging } from './paging.js';
@@ -25,10 +25,12 @@ const leaveKolab = args({});
 @Injectable()
 export class MemberTools {
   /**
-   * konjir_invite's calls, which look names up at GitHub on the OAuth app's own rate limit (5,000 an
-   * hour): 20 an hour from one session, and 200 in all, per process, counted before anything is asked.
+   * konjir_invite's lookups at GitHub, which share the OAuth app's one rate limit (5,000 an hour):
+   * each person at most 100 an hour, and all of them at most 2,000 an hour, per process, so no one
+   * person can use up what everyone else's invitations need. Counted per lookup, once Kolab has
+   * found the caller owns the kolab, and before GitHub is asked.
    */
-  private readonly lookups = new Limit(20, 200, 60 * 60_000);
+  private readonly lookups = new Limit(100, 2000, 60 * 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -37,21 +39,17 @@ export class MemberTools {
 
   @McpTool({
     name: 'konjir_invite',
-    description: 'For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account\'s permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or an organization\'s, refuses the whole call, by name, and nothing is invited. The person accepts or declines on Kolab\'s sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already.',
+    description: 'For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account\'s permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or one that isn\'t a person\'s (an organization\'s or a bot\'s), refuses the whole call, by name, and nothing is invited. You look up at most 100 names an hour. The person accepts or declines on Kolab\'s sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already; declined_recently, accounts that declined an invitation to your kolab in the last 30 days, which aren\'t asked again until then.',
     schema: invite,
   })
   invite({ accounts }: z.infer<typeof invite>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const idp = this.oauth.identity;
       if (!idp?.lookup) throw new AccessError('inviting people by their GitHub accounts needs GitHub sign-in set up on this Kolab');
-      // Each call may ask GitHub up to 10 times, on the OAuth app's one rate limit: so many calls a
-      // session, and in all, counted at the first lookup, so only once Kolab found the caller is the owner.
-      let counted = false;
+      // Keyed by the person, never their session: a person holds a session on each machine.
+      const { actor } = await this.kolab.sessionInfo(s);
       const find = async (login: string) => {
-        if (!counted) {
-          counted = true;
-          if (!this.lookups.take(sessionKey(s))) throw new LimitError('too many invitations asked for just now; wait a while before inviting more');
-        }
+        if (!this.lookups.take(`actor:${actor}`)) throw new LimitError('too many GitHub accounts looked up just now; wait a while before inviting more');
         return idp.lookup!(login);
       };
       return this.kolab.inviteAccounts(s, accounts, { provider: idp.id, find });
