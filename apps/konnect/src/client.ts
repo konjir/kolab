@@ -27,10 +27,32 @@ export const CLIENT_NAME = 'konnect';
 const MAX_ROUNDS = 50;
 
 export class TeamClient {
+  /** Who the sign-in is: the person, in this team (checked as it opens). */
+  me!: Me;
+
   private constructor(readonly team: string, readonly url: string, private readonly mcp: Client, private readonly login: StoredLogin) {}
 
-  /** Connects with the team's kept sign-in (`file`). Throws when there is none, or it has ended. */
+  /**
+   * Connects with the team's kept sign-in (`file`), and checks it is the person's own session in
+   * the team's kolab (konjir_whoami) before anything else is called: a file holding anyone else's
+   * sign-in, an agent's or another kolab's, is refused. Throws when there is none, or it has ended.
+   */
   static async open(team: string, url: string, file: string): Promise<TeamClient> {
+    const c = await TeamClient.connect(team, url, file);
+    try {
+      const me = await c.whoami();
+      if (!me || typeof me !== 'object' || me.kind !== 'person' || me.kolab !== team) {
+        throw new Error(`the sign-in kept for team ${team} isn't yours in team ${team}, so konnect won't use it: run konnect team ${team} to sign in again`);
+      }
+      c.me = me;
+      return c;
+    } catch (e) {
+      await c.close();
+      throw e;
+    }
+  }
+
+  private static async connect(team: string, url: string, file: string): Promise<TeamClient> {
     const login = new StoredLogin(url, { path: file, clientName: CLIENT_NAME });
     if (!login.signedIn) throw new Error(`you aren't signed in to team ${team}: run konnect team ${team}`);
     const mcp = new Client({ name: 'konnect', version: '0.1.0' }, { versionNegotiation: { mode: 'auto' } });
