@@ -26,6 +26,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { guardBundle } from '../../../tools/npm-bundle.mjs';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [out, version] = process.argv.slice(2);
@@ -62,12 +63,6 @@ const noImport = {
   },
 };
 
-/** What Bun writes for the bundle's own require, and what takes its place: Node's built-ins, and nothing else. */
-const REQUIRE = 'var __require=createRequire(import.meta.url);';
-const BUILTINS_ONLY = 'var __require=(()=>{const real=createRequire(import.meta.url),builtin=process.getBuiltinModule,'
-  + 'only=(name)=>{if(typeof name!=="string"||!builtin(name))throw Object.assign(new Error(`Cannot find module \'${name}\': the published konjir doesn\'t carry it`),{code:"MODULE_NOT_FOUND"});return name},'
-  + 'load=(name)=>real(only(name));load.resolve=(name)=>real.resolve(only(name));return load})();';
-
 mkdirSync(out, { recursive: true });
 // The @konjir/source condition bundles @konjir/login and the bridge from their source, as tsx runs
 // them, so the bundle needs no tsc build of either first.
@@ -87,11 +82,6 @@ const built = await Bun.build({
 for (const log of built.logs) console.error(String(log));
 if (!built.success || built.outputs.length !== 1) throw new Error(`the bundle is not one file: ${built.outputs.map((o) => o.path).join(', ') || 'nothing was written'}`);
 const file = join(out, 'konjir.mjs');
-const text = readFileSync(file, 'utf8');
-if (text.split(REQUIRE).length !== 2 || text.split('createRequire(').length !== 2) throw new Error(`the bundle doesn't define its require once, as ${REQUIRE}: Bun changed how it writes it, so bundle.mjs must change with it`);
-const guarded = text.replace(REQUIRE, () => BUILTINS_ONLY);
-// An import() of anything but a literal would be resolved as it runs.
-const computed = guarded.match(/(?<![\w$.])import\(\s*(?!["'`])[^)]{0,60}/);
-if (computed) throw new Error(`the bundle imports a name computed as it runs (${computed[0]}…): bundle what it loads, or carry it as absent`);
-writeFileSync(file, guarded);
+// Its require loads Node's built-ins alone, and it imports no name computed as it runs (tools/npm-bundle.mjs).
+writeFileSync(file, guardBundle(readFileSync(file, 'utf8'), 'konjir'));
 writeFileSync(join(out, '.metafile.json'), JSON.stringify(built.metafile));
