@@ -107,6 +107,15 @@ test('a database from the previous release is migrated on open', async () => {
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
     await kolab.db.exec(`
+      drop trigger kolab_general on kolab;
+      drop function kj_kolab_general();
+      drop table channel_read;
+      drop table channel_mention;
+      drop table channel_message;
+      drop table channel_follow;
+      drop table channel_setting;
+      drop table channel;
+      drop function kj_channel_fixed();
       alter table work_package drop constraint work_package_found_built;
       drop trigger work_found_built on work_package;
       drop function kj_work_found_built();

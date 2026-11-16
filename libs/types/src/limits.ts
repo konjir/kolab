@@ -151,3 +151,20 @@ export const MAX_MESSAGES_PER_HOUR = 240;
 export const MAX_ORG_MESSAGES_PER_HOUR = ORG_RATE_MULTIPLE * MAX_MESSAGES_PER_HOUR;
 /** Unread messages the answers resource and konjir_read_messages give at once, oldest first. */
 export const MESSAGES_AT_ONCE = 20;
+/**
+ * A channel's name (migration 0052): 1 to 40 lowercase letters, digits and hyphens, starting with a
+ * letter or a digit, unique in its kolab. Every kolab has `general` (GENERAL_CHANNEL), which a
+ * member follows unless they unfollow it.
+ */
+export const CHANNEL_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+export const GENERAL_CHANNEL = 'general';
+/** Members one channel message may mention: enough to name a team, few enough that a mention still means someone. */
+export const MAX_MENTIONS = 20;
+/**
+ * How many agent-sent messages in a row a channel carries, with none from a person, before further
+ * agent-sent messages there wake no agent until a person posts: a kolab's default, which its owner
+ * may change (channel_setting.agent_reply_cap, 1 to MAX_AGENT_REPLY_CAP). Two agents answering each
+ * other stop waking each other here, well inside the message rate.
+ */
+export const DEFAULT_AGENT_REPLY_CAP = 100;
+export const MAX_AGENT_REPLY_CAP = 100_000;

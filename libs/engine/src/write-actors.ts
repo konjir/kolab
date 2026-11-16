@@ -148,6 +148,13 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   answerQuery: { recorded: ['query.answered_by'] },
   sendMessage: { recorded: ['message.sent_by'] },
   readMessages: { recorded: ['message_receipt.actor_id'] },
+  // Channels (migration 0052): a channel names its maker, a message its sender, and a follow, a
+  // read position or a kolab's channel setting the member it is theirs, or who changed it.
+  makeChannel: { recorded: ['channel.made_by', 'channel_follow.actor_id'] },
+  followChannel: { recorded: ['channel_follow.actor_id'] },
+  sendChannelMessage: { recorded: ['channel_message.sent_by'] },
+  readChannel: { recorded: ['channel_read.actor_id'] },
+  setAgentReplyCap: { recorded: ['channel_setting.updated_by'] },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
   addPosition: { recorded: ['position.actor_id'] },
   rule: { recorded: ['ruling.actor_id'] },

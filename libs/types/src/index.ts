@@ -782,9 +782,47 @@ export interface Member {
   actor: string; kind: ActorKind;
   /** An agent's owner; null for a person. */
   owner: string | null;
+  /** An agent's label, its name without its owner's (`<owner>-<label>`), so it can be named `<owner>/<label>`; null for an agent named otherwise. Only an agent's entry has it. */
+  label?: string | null;
   /** Whether a session of theirs is open in the kolab now: a message reaches one that is listening at once, and waits for one that isn't. */
   here: boolean;
   you?: true;
+}
+
+/** A channel of a kolab, as a member sees it (migration 0052). */
+export interface Channel {
+  channel: string;
+  /** Whether the caller follows it: its unread messages are in their answers, and a message there signals them. */
+  following: boolean;
+  /** How many messages others sent there that the caller hasn't read, and how many of those mention the caller. */
+  unread: number; mentions: number;
+  /** Who made it; null for `general`, made with the kolab. */
+  made_by: string | null;
+  made_at: string;
+}
+
+/** A message in a channel: every member of its kolab reads it. */
+export interface ChannelMessage {
+  id: string; channel: string; from: string; message: string;
+  /** The message of the same channel it answers, if any. */
+  reply_to: string | null;
+  /** The members it mentions, by name. */
+  mentions: string[];
+  sent_at: string;
+}
+
+/** An unread channel message as the caller's answers carry it: whether it mentions them, and whether it should wake an agent. */
+export interface UnreadChannelMessage extends ChannelMessage {
+  mentions_you: boolean;
+  /** An agent sent it past the kolab's agent_reply_cap of agent messages in a row there, with none from a person: it wakes no agent. */
+  capped: boolean;
+  /** Whether it should start a turn for the caller: they are an agent, it mentions them, and it isn't capped. */
+  wakes: boolean;
+}
+
+/** The caller's unread messages in one channel: how many, how many mention them, and the oldest MESSAGES_AT_ONCE. */
+export interface UnreadChannel {
+  channel: string; following: boolean; unread: number; mentions: number; items: UnreadChannelMessage[];
 }
 
 export interface Query {
