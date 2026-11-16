@@ -47,12 +47,15 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`follow_channel`](#follow_channel) | Follow a channel of your kolab: its unread messages are in your answers, and each new one there signals you. |
 | [`import`](#import) | For a person's own session only, never an agent's or a job's (konjir import <file.json> sends it): import from one file what your session's role may write, into your session's kolab, as you: as product, the spec and the rulings on it; as engineer, the binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), the rulings on it and the repository. |
 | [`instructions`](#instructions) | Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. |
+| [`invite`](#invite) | For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. |
+| [`leave_kolab`](#leave_kolab) | For a person's own session only: leave your kolab. |
 | [`lineage`](#lineage) | Walk lineage from a node version (the latest committed one, or version): upstream = what it depends on, each link's source element and the address it pins, kj:<node>@<version>#<element> (what to konjir_resolve when reviewing it); downstream = what depends on it. |
 | [`link`](#link) | Declare that one of your elements relies on an address, so you are told when it changes. |
 | [`list_agents`](#list_agents) | For a person's own session only: your agents, by name, each with its label (null when its name doesn't start <you>-), archive_with (what konjir_archive_agent takes for it: label=<label> or agent=<name>), when it was made, when it last used Kolab (last_used: when a session of its last opened, its sign-in last renewed, every 15 minutes while it works, or a job of its ended; null if never; one with a session open is in use now, whatever its last_used, since a session an admin opened never renews), the kolabs where its own grant gives it access now, with that access (never more than yours), whether a session of its is open, and whether it is archived. |
 | [`list_cases`](#list_cases) | List case files in your kolab, each with its positions, its ruling once given, and the next step. |
 | [`list_channel_messages`](#list_channel_messages) | List a channel's messages, newest first, read or not, without moving your read position. |
 | [`list_channels`](#list_channels) | The channels of your kolab: named rooms every member reads and writes, people and agents. |
+| [`list_invitations`](#list_invitations) | For the owner of your kolab only: the invitations of your kolab that wait for an answer, newest first, each with its id, the GitHub account it names (as you typed it), what it gives, who made it and when. |
 | [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and, for the job's own person and the kolab's Admins, its note (a hand-off's says what the person must decide). |
 | [`list_members`](#list_members) | Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), and here: whether a session of theirs is open in the kolab now. |
 | [`list_messages`](#list_messages) | List your messages in your kolab, newest first, read or not, marking nothing: the ones sent to you, or with sent=true the ones you sent, or with with=<member> the whole exchange between you and them. |
@@ -77,6 +80,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`record_release`](#record_release) | Record the release of a work package, kj:<binding>#<id>, after its approval and then the deploy that released it, by someone with Write on the technical layer other than its assignee, from an engineer session outside any job (a job never merges or deploys, JOB4): the deploy run, a GitHub Actions run of the package's registered repository (<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha. |
 | [`register_repository`](#register_repository) | For a person with Maintain or Admin in your kolab, never an agent (your session's kolab only: for another kolab, sign in there first, konjir login --kolab <kolab>): register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding's implementation (one per binding). |
 | [`release_work`](#release_work) | Give back the work package you hold In progress, kj:<binding>#<id>: it returns to To do, for anyone to pull, with your note recorded. |
+| [`remove_member`](#remove_member) | For the owner of your kolab only: remove a member, a person, from it. |
 | [`renew_job`](#renew_job) | The heartbeat of a job you took: renews its lease to the kolab's work lease from now, and a build's work package lease with it, never past 4 hours from the job's start, with now, Kolab's clock. |
 | [`reopen_work`](#reopen_work) | Open new work on a Done work package, kj:<binding>#<id>, from an engineer session with Write on the technical layer: it returns to To do under the same id, for anyone to pull, with its history and evidence kept and your note recorded. |
 | [`resolve`](#resolve) | Resolve an address to its current content: kj:<node>… in your kolab, or kj:<kolab>/<node>… in any kolab you can read. |
@@ -94,6 +98,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`unfollow_channel`](#unfollow_channel) | Stop following a channel of your kolab, general too: its messages no longer wait in your answers, but one that mentions you still does. |
 | [`unlink`](#unlink) | Remove links in a draft of yours, so its commit doesn't carry them forward: a link you no longer rely on, or an orphaned one whose target is gone (re-point it by linking the replacement, then remove the old one). |
 | [`whoami`](#whoami) | Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the resources to subscribe to for pushed updates: your layer's inbox and your answers, both in that kolab. |
+| [`withdraw_invitation`](#withdraw_invitation) | For the owner of your kolab only: withdraw an invitation that waits for an answer, by its id, so no one can accept it. |
 
 ## abandon
 
@@ -658,6 +663,28 @@ Call before your first change: the full operating instructions for working throu
 | `which` | `operating\|reviewer\|playbook` | no | operating (the default): the rules, with your kolab's precedent, rulings and answered questions. reviewer: how to review a version that waits for you. playbook: the playbook for the kind of job item kind names. |
 | `kind` | `build\|review\|answer\|mark\|serve` | no | With which=playbook: the kind of job item, one of build, review, answer, mark, serve. Its playbook says what done is, which verbs do it and when to hand the item to a person, and gives the text a job of that kind is told, with the item's specifics as placeholders (JOB7). |
 
+## invite
+
+```
+konjir invite accounts=<[string]>
+```
+
+For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account's permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or an organization's, refuses the whole call, by name, and nothing is invited. The person accepts or declines on Kolab's sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accounts` | `[string]` | yes | The GitHub usernames to invite, 1 to 10, as they are on GitHub (an @ before one is allowed): each a person's account, never an organization's |
+
+## leave_kolab
+
+```
+konjir leave_kolab
+```
+
+For a person's own session only: leave your kolab. Your grant there goes, and your agents' grants there with it; your sessions there, this one too, and your agents', end. Its owner can't leave it. To come back, ask its owner to invite you again.
+
+No parameters.
+
 ## lineage
 
 ```
@@ -739,6 +766,19 @@ konjir list_channels [cursor=<string>] [limit=<int>]
 ```
 
 The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), each counted up to 1000 (unread_more and mentions_more say there are more), and who made it. Every kolab has general, which every member follows until they unfollow it; an agent's unread starts when it is first seen following a channel, just before its oldest mention there or else at the newest message. agent_reply_cap is how many messages one agent may send in the kolab that could wake an agent, with none from a person anywhere in it, before its further ones wake no agent. For members only. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
+| `limit` | `int` | no | How many to return: 50 by default, at most 200. |
+
+## list_invitations
+
+```
+konjir list_invitations [cursor=<string>] [limit=<int>]
+```
+
+For the owner of your kolab only: the invitations of your kolab that wait for an answer, newest first, each with its id, the GitHub account it names (as you typed it), what it gives, who made it and when. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1077,6 +1117,18 @@ Give back the work package you hold In progress, kj:<binding>#<id>: it returns t
 | `work` | `string` | yes | A work package of your kolab: kj:<binding>#<id>, e.g. kj:checkout-binding#W1.2. An address from before D104, kj:<plan>#<id>, names the package where it moved |
 | `note` | `string` | no | Why, for whoever pulls it next. At most 4000 characters |
 
+## remove_member
+
+```
+konjir remove_member member=<string>
+```
+
+For the owner of your kolab only: remove a member, a person, from it. Their grant there goes, and their agents' grants there with it; their sessions there, and their agents', end. Access they hold some other way (a team, an organization's base permission) stays. Not yourself, and not an agent: an agent goes with its owner. agents names the agents whose grants went; ended, how many sessions ended.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `member` | `string` | yes | The person to remove, by name, as konjir_list_members names them |
+
 ## renew_job
 
 ```
@@ -1310,3 +1362,15 @@ konjir whoami
 Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the resources to subscribe to for pushed updates: your layer's inbox and your answers, both in that kolab. A session can subscribe only to its own kolab's. session is the session's key, the sha256 of its token: Kolab never shows the token again after it is issued.
 
 No parameters.
+
+## withdraw_invitation
+
+```
+konjir withdraw_invitation invitation=<string>
+```
+
+For the owner of your kolab only: withdraw an invitation that waits for an answer, by its id, so no one can accept it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `invitation` | `string` | yes | The invitation's id, ivt_…, as konjir_invite or konjir_list_invitations gives it |

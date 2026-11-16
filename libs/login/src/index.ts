@@ -697,6 +697,84 @@ export async function login(url: string, opts: { path?: string; clientName?: str
 }
 
 /**
+ * The scope of a person's own sign-in that names no kolab (konnect, Lee's instruction of
+ * 2026-11-16): Kolab's page lists the invitations waiting for the account that signs in, to accept
+ * or decline, and the kolabs the person is a member of; the person picks one there.
+ */
+export const CHOOSE_SCOPE = 'konjir choose:kolab';
+
+/** A kolab's name as Kolab allows one: lowercase letters, digits and '-', starting with a letter or digit, at most 40. */
+const KOLAB_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/**
+ * The scope of a person's own make-or-switch sign-in to the kolab `name` (konnect's `team <name>`):
+ * Kolab's page offers to make it, private and theirs, with no agent, if the name is free; signs them
+ * in to it if they are a member; and refuses, suggesting a free name, if it is anyone else's.
+ */
+export function teamScope(name: string): string {
+  if (!KOLAB_NAME.test(name)) throw new Error(`${JSON.stringify(name)} isn't a team's name: up to 40 lowercase letters, digits and '-', starting with a letter or digit`);
+  return `konjir team:${name}`;
+}
+
+/** A person's own sign-in, kept: the kolab it works in (the one chosen or made on Kolab's page), who it is, its role, and where its credentials are kept. */
+export interface PersonSignIn {
+  kolab: string; actor: string; role: string;
+  /** The credentials file the sign-in is kept in, under the Kolab's MCP URL. */
+  credentials: string;
+  /** Another konjir's sign-in, kept meanwhile, was kept in place of this one (see login's yieldTo). */
+  yielded: boolean;
+}
+
+/**
+ * Kolab refused a sign-in on its page, or the person denied it there: `reason` says why, as Kolab
+ * did; `suggest` is a free kolab name Kolab offered, when the name asked for is someone else's.
+ */
+export class SignInRefused extends Error {
+  name = 'SignInRefused';
+  constructor(message: string, readonly denied: boolean, readonly suggest?: string) { super(message); }
+  /** The page had nothing to choose (signInChoosing): no invitation waits for the account, and it is a member of no kolab. */
+  get nothingToChoose() { return this.message.startsWith('nothing to sign in to:'); }
+}
+
+/** Signs a person in as themselves through a scope that leaves the kolab to Kolab's page; see signInChoosing and signInToTeam. */
+async function signInAsPerson(url: string, scope: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'>): Promise<PersonSignIn> {
+  let me: Awaited<ReturnType<typeof login>>;
+  try {
+    me = await login(url, { again: 'start the sign-in again', ...opts, scope });
+  } catch (e) {
+    // Said as what it is: refused on Kolab's page (it names why), or denied there.
+    const said = /^Kolab didn't sign you in: (.*)$/s.exec(String((e as Error)?.message ?? ''))?.[1];
+    if (said === undefined) throw e;
+    if (said === 'the person declined') throw new SignInRefused('you denied the sign-in on Kolab\'s page', true);
+    const why = said.replace(/^the sign-in can't be allowed: /, '').replace(/\.$/, '');
+    throw new SignInRefused(why, false, /The name ([a-z0-9][a-z0-9-]*) is free/.exec(why)?.[1]);
+  }
+  if (me.kind !== 'person') throw new Error(`Kolab signed in ${me.actor}, an agent, where a person's own sign-in was asked for: run it again`);
+  return { kolab: me.kolab, actor: me.actor, role: me.role, credentials: opts.path ?? credentialsPath(), yielded: me.yielded };
+}
+
+/**
+ * Signs the person in as themselves with no kolab named (konnect with no team): Kolab's page, in the
+ * browser, lists the invitations waiting for the account that signs in and the kolabs they are a
+ * member of, and they pick one there. The sign-in is kept as `login` keeps it, for the URL, in
+ * `path` or the credentials file. Resolves with the kolab picked; throws SignInRefused if the person
+ * denied it, or Kolab refused it.
+ */
+export function signInChoosing(url: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'> = {}): Promise<PersonSignIn> {
+  return signInAsPerson(url, CHOOSE_SCOPE, opts);
+}
+
+/**
+ * Signs the person in as themselves to the kolab `name` (konnect's `team <name>`), making it,
+ * private and theirs with no agent, when the name is free: Kolab's page says which, and the person
+ * allows it there. Refused, when the name is someone else's, with SignInRefused, whose `suggest` is
+ * a free name Kolab offered. Kept as signInChoosing keeps it.
+ */
+export function signInToTeam(url: string, name: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'> = {}): Promise<PersonSignIn> {
+  return signInAsPerson(url, teamScope(name), opts);
+}
+
+/**
  * A sign-in kept in this process's memory only, never written anywhere: `konjir connect`'s setup
  * (setup), whose token is used once, then revoked.
  */

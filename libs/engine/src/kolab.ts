@@ -20,7 +20,7 @@ import {
   ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
-  type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
+  type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
   type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Channel, type ChannelMessage, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
@@ -229,6 +229,52 @@ export function setupScope(scope: string | null | undefined): { kolab: string; a
   }
   return { kolab: kolabs[0], agents };
 }
+
+/** The role a person's own sign-in through a choose or team scope works in: fixed, since what such a client does needs no layer's Write. */
+export const PERSON_SIGN_IN_ROLE: Role = 'product';
+
+/**
+ * A person's own sign-in whose scope leaves the kolab to the sign-in page (Lee's instruction of
+ * 2026-11-16, konnect), one of two words:
+ * - `konjir choose:kolab`: no kolab named. The page lists the invitations waiting for the account
+ *   that signed in, to accept or decline, and the kolabs the person is a member of; the person
+ *   picks one, and the sign-in works there.
+ * - `konjir team:<name>`: one kolab named, made or switched to. Free, the page offers to make it,
+ *   private and theirs, with no agent; theirs already, it signs them in there; anyone else's, it
+ *   refuses, suggesting a free name, and never joins it.
+ * Either way the sign-in is the person's own, never an agent's, in PERSON_SIGN_IN_ROLE, and only for
+ * an app on the person's own computer (every redirect URI loopback). Undefined for a scope with
+ * neither word; `error` for one that names its kolab badly or mixes them with another sign-in's words.
+ */
+export function personScope(scope: string | null | undefined): { choose: true } | { team: string } | { error: string } | undefined {
+  const words = (scope ?? '').split(/\s+/).filter(Boolean);
+  const choose = words.filter((w) => w.startsWith('choose:'));
+  const teams = words.filter((w) => w.startsWith('team:'));
+  if (!choose.length && !teams.length) return undefined;
+  if (words.some((w) => /^(agent|role|as|kolab|setup):/.test(w))) return { error: 'it mixes a sign-in that leaves the kolab to the page with another sign-in\'s agent, role, kolab or setup' };
+  if (choose.length + teams.length !== 1) return { error: 'it names more than one choose: or team: word' };
+  if (choose.length) return choose[0] === 'choose:kolab' ? { choose: true } : { error: `${choose[0].slice(0, 60)} isn't choose:kolab` };
+  const name = teams[0].slice('team:'.length);
+  if (!isKolabName(name) || name.length > 40) return { error: `"${name.slice(0, 60)}" isn't a kolab's name: up to 40 lowercase letters, digits and '-', starting with a letter or digit` };
+  return { team: name };
+}
+
+/**
+ * What a `team:<name>` sign-in (personScope) would do for its person, for its page and for the
+ * consent that carries it out: `make` the kolab (free, and within makeOwnKolab's limits), sign in to
+ * it as a `member`, or why it can't be allowed (`refused`), with a free name to try (`suggest`) when
+ * the name is someone else's. `refusedForApp` is the refusal as the app is told it.
+ */
+export type TeamPlan =
+  | { kolab: string; kind: 'make' }
+  | { kolab: string; kind: 'member'; title: string; access: Access }
+  | { kolab: string; kind: 'refused'; refused: string; refusedForApp: string; suggest?: string };
+
+/** A GitHub username, as GitHub allows one: letters, digits and single hyphens, not at either end, at most 39. */
+export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+
+/** How an identity provider's account is looked up by username: undefined when there is none. Injected, so Kolab itself never calls the provider. */
+export type AccountLookup = (login: string) => Promise<{ subject: string; login: string; person: boolean } | undefined>;
 
 /** Whether a redirect URI is on the person's own machine: http on 127.0.0.1 or [::1], any port, as konjir's own are. */
 export function loopbackRedirect(uri: string): boolean {
@@ -2292,6 +2338,8 @@ export class Kolab {
     if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
     if (!ROLES.includes(choice.role)) throw new RoleError(`a role is one of ${ROLES.join(', ')}`);
     if (opts.selfOnly && choice.as.kind !== 'self') throw new AccessError('the web interface is for people: sign in as yourself');
+    // A sign-in that leaves its kolab to its own page (personScope) is allowed there alone (consentPerson), never here.
+    if (!opts.selfOnly && personScope(req.scope)) throw new AccessError('this sign-in is allowed on its own page only: choose there, or deny it');
     // A sign-in whose scope names its agent, kolab and role is locked to them (D97):
     // nothing posted for it grants anyone else, anywhere else, whatever the form says.
     const named = opts.selfOnly ? undefined : scopeLock(req.scope);
@@ -3266,6 +3314,388 @@ export class Kolab {
       state: r.accepted_at ? 'accepted' as const : r.revoked_at ? 'revoked' as const : r.expired ? 'expired' as const : 'open' as const,
       accepted_by: r.accepted_by, accepted_at: iso(r.accepted_at),
     }));
+  }
+
+  // ---- invitations by account: a kolab's owner invites a person by their GitHub name (migration 0053) ----
+
+  /**
+   * An invitation's limits: one call names at most `perCall` accounts, a kolab holds at most
+   * `openPerKolab` open ones, and a person makes at most `perPersonPerHour`, counted in the database.
+   */
+  readonly invitations = { perCall: 10, openPerKolab: 50, perPersonPerHour: 30 };
+
+  /** The session of a person who owns its kolab (ownsKolab): who invites by account, lists and withdraws invitations, and removes members. */
+  private async requireKolabOwner(sessionId: string, what: string) {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person ${what}, and only the kolab's owner`);
+    if (!(await ownsKolab(this.db, s.actor_id, s.kolab))) throw new AccessError(`only the owner of kolab ${s.kolab} ${what} there`);
+    return s;
+  }
+
+  /**
+   * The owner of the session's kolab invites people by their accounts at an identity provider, by
+   * username (GitHub's, as typed, an `@` before it allowed). Each name is looked up first, through
+   * `lookup.find` (injected: Kolab itself never calls the provider), for the account's permanent id,
+   * which the invitation keeps, with the name as typed for display: only a person whose identity is
+   * that account can accept it (on Kolab's sign-in page, consentPerson). A name with no account, or
+   * an organization's, refuses the whole call, by name, before anything is written. An account that
+   * is a member already (its person reaches the kolab by their own access, not only because it is
+   * public) is named in `already_members`; one with an open invitation, in `already_invited`, the
+   * same invitation. Each grants INVITATION_LEVEL once. Only the kolab's owner, a person, invites;
+   * the checks, the limits and the inserts run under the access lock.
+   */
+  async inviteAccounts(sessionId: string, accounts: string[], lookup: { provider: string; find: AccountLookup }): Promise<{
+    kolab: string; invited: InvitationView[]; already_invited: InvitationView[]; already_members: string[];
+  }> {
+    if (!Array.isArray(accounts) || !accounts.length) throw new LimitError('name at least one GitHub account to invite');
+    if (accounts.length > this.invitations.perCall) throw new LimitError(`name at most ${this.invitations.perCall} accounts at once`);
+    if (!IDP_NAME.test(lookup.provider)) throw new Error('an invitation names its identity provider as the identity table does');
+    const names: string[] = [];
+    for (const a of accounts) {
+      const name = typeof a === 'string' ? a.trim().replace(/^@/, '') : '';
+      if (!GITHUB_LOGIN.test(name)) throw new TenancyError(`${JSON.stringify(String(a).slice(0, 60))} isn't a GitHub username: letters, digits and single hyphens, at most 39 characters. Nothing was invited`);
+      if (!names.some((n) => n.toLowerCase() === name.toLowerCase())) names.push(name);
+    }
+    const s = await this.requireKolabOwner(sessionId, 'invites people');
+    await this.requireLiveKolab(s.kolab, 'takes no invitations');
+    // Every name looked up before anything is written, so a mistyped one invites no one.
+    const found: { login: string; subject: string }[] = [];
+    const missing: string[] = [];
+    const orgs: string[] = [];
+    for (const name of names) {
+      const r = await lookup.find(name);
+      if (!r) missing.push(name);
+      else if (!r.person) orgs.push(name);
+      else if (!IDP_SUBJECT.test(r.subject)) throw new Error(`the identity provider gave no usable id for ${name}`);
+      else found.push({ login: name, subject: r.subject });
+    }
+    if (missing.length) throw new TenancyError(`no GitHub account ${missing.join(', ')}: check the spelling. Nothing was invited`);
+    if (orgs.length) throw new TenancyError(`${orgs.join(', ')} ${orgs.length === 1 ? 'is an organization' : 'are organizations'} on GitHub, not a person's account: invite its people by their own names. Nothing was invited`);
+    const invited: string[] = [];
+    const already: string[] = [];
+    const members: string[] = [];
+    await this.db.transaction(async (tx) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      // Again, under the lock: the owner may have changed meanwhile.
+      if (!(await ownsKolab(tx, s.actor_id, s.kolab))) throw new AccessError(`only the owner of kolab ${s.kolab} invites people there`);
+      const c = (await tx.query<{ open: number; recent: number }>(
+        `select (select count(*)::int from kolab_invitation where kolab_id = $1 and ${openInvitation()}) as open,
+                (select count(*)::int from kolab_invitation where invited_by = $2 and created_at > now() - interval '1 hour') as recent`,
+        [s.kolab, s.actor_id])).rows[0];
+      for (const f of found) {
+        const holder = (await tx.query<{ actor_id: string }>(`select actor_id from identity where provider = $1 and subject = $2`, [lookup.provider, f.subject])).rows[0]?.actor_id;
+        if (holder && (holder === s.actor_id || (await ownerAccess(tx, holder, s.kolab)).level)) { members.push(f.login); continue; }
+        const open = (await tx.query<{ id: string }>(
+          `select id from kolab_invitation where kolab_id = $1 and provider = $2 and subject = $3 and ${openInvitation()}`, [s.kolab, lookup.provider, f.subject])).rows[0];
+        if (open) { if (!already.includes(open.id) && !invited.includes(open.id)) already.push(open.id); continue; }
+        if (c.open + invited.length >= this.invitations.openPerKolab) throw new TenancyError(`kolab ${s.kolab} has ${c.open + invited.length} open invitations, the most it may hold (${this.invitations.openPerKolab}); withdraw some first. Nothing was invited`);
+        if (c.recent + invited.length >= this.invitations.perPersonPerHour) throw new TenancyError(`you made ${c.recent + invited.length} invitations in the last hour; wait a while before making more. Nothing was invited`);
+        const id = `ivt_${randomBytes(12).toString('base64url')}`;
+        await tx.query(
+          `insert into kolab_invitation(id, kolab_id, provider, subject, login, level, invited_by) values ($1, $2, $3, $4, $5, $6, $7)`,
+          [id, s.kolab, lookup.provider, f.subject, f.login, INVITATION_LEVEL, s.actor_id]);
+        invited.push(id);
+      }
+    });
+    const views = invited.length || already.length ? await this.invitationRows(s.kolab, { ids: [...invited, ...already] }) : [];
+    const pick = (ids: string[]) => ids.map((id) => views.find((v) => v.id === id)!).map(({ key: _, ...v }) => v);
+    return { kolab: s.kolab, invited: pick(invited), already_invited: pick(already), already_members: members };
+  }
+
+  /** One page of the open invitations of the session's kolab, newest first, for its owner (inviteAccounts). */
+  async invitationsPage(sessionId: string, page: PageOpts = {}): Promise<{ kolab: string; items: InvitationView[]; next: string | null }> {
+    const s = await this.requireKolabOwner(sessionId, 'lists its invitations');
+    const size = pageSize(page.limit);
+    const list = scoped('invitations', { kolab: s.kolab });
+    const after = keyOf(list, page.cursor, ['ts', 'text']) as [string, string] | undefined;
+    const rows = await this.invitationRows(s.kolab, { open: true, after, limit: size + 1 });
+    const { rows: items, next } = pageOf(rows, size, list, (r) => [r.key, r.id]);
+    return { kolab: s.kolab, items: items.map(({ key: _, ...r }) => r), next };
+  }
+
+  /** The owner of the session's kolab withdraws an open invitation of it, by its id: no one can accept it any more. */
+  async withdrawInvitation(sessionId: string, id: string): Promise<InvitationView> {
+    const s = await this.requireKolabOwner(sessionId, 'withdraws its invitations');
+    await this.requireLiveKolab(s.kolab, 'changes no invitations');
+    const r = await this.db.query(
+      `update kolab_invitation set withdrawn_at = now(), withdrawn_by = $3 where id = $1 and kolab_id = $2 and ${openInvitation()} returning id`,
+      [typeof id === 'string' ? id : '', s.kolab, s.actor_id]);
+    if (!r.rows.length) throw new TenancyError(`no open invitation ${String(id).slice(0, 60)} in kolab ${s.kolab}: konjir_list_invitations lists them`);
+    const { key: _, ...v } = (await this.invitationRows(s.kolab, { ids: [id] }))[0];
+    return v;
+  }
+
+  /**
+   * The invitations waiting for `person`: those naming an account their identity is, still open,
+   * in a live kolab whose owner still made them (whoever invited must still own it). Oldest first.
+   */
+  async invitationsFor(person: string): Promise<PendingInvitation[]> {
+    return (await this.db.query<{ id: string; kolab_id: string; title: string; owner_id: string; invited_by: string; level: InviteLevel; created_at: Date }>(
+      `select i.id, i.kolab_id, k.title, k.owner_id, i.invited_by, i.level, i.created_at
+         from kolab_invitation i join identity d on d.provider = i.provider and d.subject = i.subject join kolab k on k.id = i.kolab_id
+        where d.actor_id = $1 and ${openInvitation('i.')} and not kj_kolab_archived(i.kolab_id)
+          and ${INVITER_OWNS}
+        order by i.created_at, i.id`, [person])).rows
+      .map((r) => ({ id: r.id, kolab: r.kolab_id, title: r.title, owner: r.owner_id, invited_by: r.invited_by, level: r.level, created_at: new Date(r.created_at).toISOString() }));
+  }
+
+  /** `person` declines an invitation waiting for them (invitationsFor), on their sign-in page: no one can accept it any more. */
+  async declineInvitation(person: string, id: string): Promise<{ kolab: string }> {
+    const r = (await this.db.query<{ kolab_id: string }>(
+      `update kolab_invitation i set declined_at = now(), declined_by = $2 from identity d
+        where i.id = $1 and d.actor_id = $2 and d.provider = i.provider and d.subject = i.subject
+          and ${openInvitation('i.')} and not kj_kolab_archived(i.kolab_id)
+        returning i.kolab_id`, [typeof id === 'string' ? id : '', person])).rows[0];
+    if (!r) throw new TenancyError(INVITATION_GONE);
+    return { kolab: r.kolab_id };
+  }
+
+  /**
+   * `person` accepts an invitation waiting for them, as acceptInvite accepts an invite: under the
+   * access lock, their own grant there raised to cover its level (never lowered), audited, and the
+   * invitation settled; `then` runs in the same transaction (the consent's code). Refused, saying
+   * nothing of why, if it isn't theirs, isn't open, its kolab is archived, or whoever made it no
+   * longer owns the kolab. Returns its kolab.
+   */
+  private async acceptInvitation(id: string, person: string, then: (tx: Q, kolab: string) => Promise<void>): Promise<string> {
+    const p = await this.findActor(person);
+    if (!p || p.kind !== 'person') throw new AccessError(`${person} isn't a person: only a person accepts an invitation; an agent gets its access from its owner`);
+    if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it accepts no invitation`);
+    let kolab: string | undefined;
+    await this.changeAccess({ users: [person] }, person, async (tx) => {
+      const inv = (await tx.query<{ id: string; kolab_id: string; level: InviteLevel; invited_by: string }>(
+        `select i.id, i.kolab_id, i.level, i.invited_by from kolab_invitation i join identity d on d.provider = i.provider and d.subject = i.subject
+          where i.id = $1 and d.actor_id = $2 and ${openInvitation('i.')}
+            and not kj_kolab_archived(i.kolab_id) and ${INVITER_OWNS}
+          for update of i`, [typeof id === 'string' ? id : '', person])).rows[0];
+      if (!inv) throw new TenancyError(INVITATION_GONE);
+      const want: Access = { level: inv.level, layers: layersOf(inv.level) };
+      const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
+        `select level, functional, technical from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person])).rows[0];
+      const merged = g ? mergeAccess({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, want) : { level: inv.level, layers: want.layers };
+      await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)
+                      on conflict (kolab_id, user_id) where user_id is not null
+                      do update set level = excluded.level, functional = excluded.functional, technical = excluded.technical`,
+        [inv.kolab_id, person, merged.level, merged.layers.includes('functional'), merged.layers.includes('technical')]);
+      await audit(tx, person, 'grant.set', { kolab: inv.kolab_id, subject: person, detail: { level: merged.level, layers: merged.layers, invitation: inv.id } });
+      await tx.query(`update kolab_invitation set accepted_at = now(), accepted_by = $2 where id = $1`, [inv.id, person]);
+      kolab = inv.kolab_id;
+      await then(tx, inv.kolab_id);
+    });
+    return kolab!;
+  }
+
+  private async invitationRows(kolab: string, opts: { ids?: string[]; open?: boolean; after?: [string, string]; limit?: number }): Promise<(InvitationView & { key: string })[]> {
+    const rows = (await this.db.query<{ id: string; kolab_id: string; login: string; provider: string; level: InviteLevel; invited_by: string; created_at: Date; at_key: string;
+      accepted_by: string | null; accepted_at: Date | null; declined_by: string | null; declined_at: Date | null; withdrawn_by: string | null; withdrawn_at: Date | null }>(
+      `select id, kolab_id, login, provider, level, invited_by, created_at, created_at::text as at_key,
+              accepted_by, accepted_at, declined_by, declined_at, withdrawn_by, withdrawn_at
+         from kolab_invitation where kolab_id = $1 and ($2::text[] is null or id = any($2::text[])) and (not $3 or ${openInvitation()})
+          and ($4::text is null or (created_at, id) < ($4::timestamptz, $5::text))
+        order by created_at desc, id desc limit $6`,
+      [kolab, opts.ids ?? null, !!opts.open, opts.after?.[0] ?? null, opts.after?.[1] ?? null, opts.limit ?? 100])).rows;
+    return rows.map((r) => {
+      const [state, by, at] = r.accepted_at ? ['accepted' as const, r.accepted_by, r.accepted_at] : r.declined_at ? ['declined' as const, r.declined_by, r.declined_at]
+        : r.withdrawn_at ? ['withdrawn' as const, r.withdrawn_by, r.withdrawn_at] : ['open' as const, null, null];
+      return {
+        key: r.at_key, id: r.id, kolab: r.kolab_id, account: r.login, provider: r.provider, level: r.level, invited_by: r.invited_by,
+        created_at: new Date(r.created_at).toISOString(), state, settled_by: by, settled_at: at === null ? null : new Date(at).toISOString(),
+      };
+    });
+  }
+
+  /**
+   * In `tx`, removes `person`'s direct grant on `kolab` and their agents' grants there, each
+   * audited as by `by`: a member removed, or leaving, takes their agents with them. Returns the
+   * agents whose grants went.
+   */
+  private async dropMemberGrants(tx: Q, kolab: string, person: string, by: Doer): Promise<string[]> {
+    const agents = (await tx.query<{ agent_id: string }>(
+      `delete from kolab_grant where kolab_id = $1 and agent_id in (select id from actor where owner_id = $2 and kind = 'agent') returning agent_id`,
+      [kolab, person])).rows.map((r) => r.agent_id).sort();
+    for (const a of agents) await audit(tx, by, 'grant.removed', { kolab, subject: a, detail: { owner: person } });
+    const own = await tx.query(`delete from kolab_grant where kolab_id = $1 and user_id = $2 returning user_id`, [kolab, person]);
+    if (own.rows.length) await audit(tx, by, 'grant.removed', { kolab, subject: person });
+    return agents;
+  }
+
+  /**
+   * The owner of the session's kolab removes a member, a person: their direct grant there, and
+   * their agents' grants there with it, as removeGrant removes one grant, with its checks (under the
+   * access lock: the caller's session still open, the kolab live, Admin there, the person holding a
+   * direct grant, someone still holding Admin after). Their sessions there, and their agents', end,
+   * their streams told (D41). Access they hold by other routes (a team, the base permission) stays.
+   * Never the owner themselves; an agent goes with its owner.
+   */
+  async removeKolabMember(sessionId: string, member: string): Promise<{ kolab: string; removed: string; agents: string[]; ended: number }> {
+    const s = await this.requireKolabOwner(sessionId, 'removes members');
+    if (member === s.actor_id) throw new TenancyError(`you own kolab ${s.kolab}, so you stay its member`);
+    let agents: string[] = [];
+    const r = await this.changeOwnGrant(sessionId, member, async (tx, s2, grantee) => {
+      if (grantee.column !== 'user_id') throw new TenancyError(`${member} is an agent: remove its owner, and their agents go with them`);
+      if (!(await ownsKolab(tx, s2.actor_id, s2.kolab))) throw new AccessError(`only the owner of kolab ${s2.kolab} removes members there`);
+      agents = await this.dropMemberGrants(tx, s2.kolab, member, s2.actor_id);
+    });
+    return { kolab: s.kolab, removed: member, agents, ended: r.ended };
+  }
+
+  /**
+   * A person leaves the session's kolab: their direct grant there goes, and their agents' grants
+   * there with it, under the access lock; their sessions there, this one among them, and their
+   * agents', end, their streams told (D41). Not its owner, who can't leave what they own; and not
+   * when it would leave the kolab with nobody holding Admin. Access by other routes (a team, the
+   * base permission) is kept where those are, and stays.
+   */
+  async leaveKolab(sessionId: string): Promise<{ left: string; agents: string[]; ended: number }> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: a person leaves a kolab, and their agents leave with them`);
+    if (await ownsKolab(this.db, s.actor_id, s.kolab)) throw new TenancyError(`you own kolab ${s.kolab}, so you can't leave it`);
+    await this.requireLiveKolab(s.kolab, 'changes no access');
+    let agents: string[] = [];
+    const r = await this.changeAccess({ users: [s.actor_id] }, s.actor_id, async (tx) => {
+      if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
+        throw new RoleError('no open session for that token');
+      }
+      if (await ownsKolab(tx, s.actor_id, s.kolab)) throw new TenancyError(`you own kolab ${s.kolab}, so you can't leave it`);
+      if (!(await tx.query(`select 1 from kolab_grant where kolab_id = $1 and user_id = $2`, [s.kolab, s.actor_id])).rows.length) {
+        throw new TenancyError(`you hold no grant in kolab ${s.kolab} to give up: access from its organization, its base permission or a team is changed where those are kept`);
+      }
+      agents = await this.dropMemberGrants(tx, s.kolab, s.actor_id, s.actor_id);
+      if (!(await holderRows(tx, s.kolab)).some((h) => h.kind === 'person' && h.rank === 5)) {
+        throw new AccessError(`that would leave kolab ${s.kolab} with nobody holding Admin: give someone else Admin first`);
+      }
+    });
+    return { left: s.kolab, agents, ended: r.ended };
+  }
+
+  // ---- a person's own sign-in that leaves the kolab to the page (personScope) ----
+
+  /** What a `choose:kolab` sign-in's page offers `person`: the invitations waiting for them, and the kolabs they are a member of. */
+  async chooseOptions(person: string): Promise<{ invitations: PendingInvitation[]; kolabs: { id: string; title: string; access: Access }[] }> {
+    const kolabs = [];
+    for (const id of await this.reachable(person)) {
+      const k = await this.requireKolab(id);
+      if (k.archived || !(await ownerAccess(this.db, person, id)).level) continue;
+      kolabs.push({ id, title: k.title, access: await accessIn(this.db, person, id) });
+    }
+    return { invitations: await this.invitationsFor(person), kolabs };
+  }
+
+  /**
+   * What a `team:<name>` sign-in would do for `person` (TeamPlan), checked as consentPerson checks
+   * it: sign in to a kolab of that name they are a member of (by their own access, not only because
+   * it is public); make it, when no kolab has the name and makeOwnKolab's name rules and limits
+   * allow; or refuse, when it is someone else's, suggesting a free name and saying so of an
+   * invitation to it that waits for them. It makes nothing.
+   */
+  async teamPlan(person: string, name: string): Promise<TeamPlan> {
+    const refuse = (why: string, suggest?: string): TeamPlan => ({ kolab: name, kind: 'refused', refused: why, refusedForApp: why, ...(suggest ? { suggest } : {}) });
+    const p = await this.findActor(person);
+    if (!p || p.kind !== 'person') return refuse(`${person} isn't a person here: only a person signs in this way`);
+    if (await this.archivedActor(person)) return refuse(`${person} is archived, so it signs in nowhere`);
+    if (!isKolabName(name) || name.length > 40) return refuse(`"${name.slice(0, 60)}" can't be a kolab's name: up to 40 lowercase letters, digits and '-', starting with a letter or digit`);
+    const k = (await this.db.query<{ title: string }>(`select title from kolab where id = $1`, [name])).rows[0];
+    if (k) {
+      // Access first, so an archived kolab reads as any other the person can't reach (D52).
+      const access = await accessIn(this.db, person, name);
+      if (access.level && (await ownerAccess(this.db, person, name)).level) return { kolab: name, kind: 'member', title: k.title, access };
+      const waiting = (await this.invitationsFor(person)).some((i) => i.kolab === name);
+      const suggest = await this.freeKolabName(name, person);
+      return refuse(`the kolab name ${name} is taken, by a kolab you aren't a member of: names are unique across Konjir, and this sign-in never joins anyone else's kolab.`
+        + (waiting ? ` An invitation to ${name} waits for you: sign in without naming a kolab to accept it.` : '')
+        + (suggest ? ` The name ${suggest} is free.` : ' Choose another name.'), suggest);
+    }
+    if (isReservedKolabName(name)) return refuse(`the kolab name ${name} is reserved for Konjir's own kolabs: choose another`);
+    const c = (await this.db.query<{ owned: number; recent: number }>(
+      `select count(*)::int as owned, count(*) filter (where created_at > now() - $2 * interval '1 millisecond')::int as recent
+         from kolab where owner_id = $1`, [person, this.ownKolabs.windowMs])).rows[0];
+    if (c.owned >= this.ownKolabs.max) return refuse(`you own ${c.owned} kolabs, the most a person may own here (${this.ownKolabs.max}), so a new kolab ${name} can't be made: choose one you have`);
+    if (c.recent >= this.ownKolabs.burst) return refuse(`you made ${c.recent} kolabs in the last ${Math.round(this.ownKolabs.windowMs / 60_000)} minutes; wait a while before making another`);
+    return { kolab: name, kind: 'make' };
+  }
+
+  /** A kolab name like `name` that is free now, for a refusal to suggest: `<name>-<person>`, then `<name>-2` to `<name>-9`; or none. */
+  private async freeKolabName(name: string, person: string): Promise<string | undefined> {
+    const mine = person.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const candidates = [...(mine ? [`${name}-${mine}`] : []), ...[2, 3, 4, 5, 6, 7, 8, 9].map((n) => `${name}-${n}`)]
+      .filter((c) => isKolabName(c) && c.length <= 40 && !isReservedKolabName(c));
+    if (!candidates.length) return undefined;
+    const taken = new Set((await this.db.query<{ id: string }>(`select id from kolab where id = any($1::text[])`, [candidates])).rows.map((r) => r.id));
+    return candidates.find((c) => !taken.has(c));
+  }
+
+  /**
+   * The person allows a sign-in that leaves its kolab to the page (personScope; POST /oauth/consent,
+   * with the form's `csrf` token), for themselves, never an agent, in PERSON_SIGN_IN_ROLE. Only for a
+   * registered client on the person's own computer (every redirect URI loopback). The scope decides
+   * what the form may choose, and nothing posted widens it:
+   * - `choose:kolab`: `{ kolab }`, one they are a member of (by their own access, not only because
+   *   it is public), or `{ accept }`, an invitation waiting for them, accepted (acceptInvitation) in
+   *   the transaction that issues the code.
+   * - `team:<name>`: `{ team, shown }`, that kolab and what its page showed (TeamPlan's kind):
+   *   made, private and theirs, with no agent (makeOwnKolab), or signed in to as a member. One that
+   *   changed since the page was shown, or that is someone else's, is refused.
+   * Returns the authorization code, one use, where to send it, and the kolab it signs in to; the
+   * authorization is used up.
+   */
+  async consentPerson(binding: string, csrf: string, choice: { kolab: string } | { accept: string } | { team: string; shown: string }): Promise<{ code: string; redirectUri: string; clientState: string | null; kolab: string; made: boolean }> {
+    const req = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string | null }>(
+      `update oauth_request set claimed_at = now()
+        where id = $1 and csrf_key = $2 and expires_at > now() and actor_id is not null and claimed_at is null
+       returning client_id, redirect_uri, client_state, code_challenge, scope, resource, actor_id`, [sessionKey(binding), sessionKey(csrf)])).rows[0];
+    if (!req?.actor_id) throw new OAuthGrantError('access_denied', 'this sign-in expired or was already used; start again');
+    try {
+      return await this.personClaimed(binding, csrf, { ...req, actor_id: req.actor_id }, choice);
+    } catch (e) {
+      // Released, so the person can choose again, or deny it.
+      await this.db.query(`update oauth_request set claimed_at = null where id = $1 and csrf_key = $2`, [sessionKey(binding), sessionKey(csrf)]).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  private async personClaimed(binding: string, csrf: string,
+    req: { client_id: string; redirect_uri: string; client_state: string | null; code_challenge: string; scope: string | null; resource: string | null; actor_id: string },
+    choice: { kolab: string } | { accept: string } | { team: string; shown: string }) {
+    const scope = personScope(req.scope);
+    if (!scope) throw new AccessError('this sign-in doesn\'t leave its kolab to the page');
+    if ('error' in scope) throw new AccessError(`this sign-in can't be allowed: ${scope.error}`);
+    const client = await this.oauthClient(req.client_id);
+    if (!client || !client.redirectUris.every(loopbackRedirect)) {
+      throw new AccessError('a sign-in that leaves its kolab to the page is only for an app on your own computer, and this one receives its answer elsewhere');
+    }
+    const person = req.actor_id;
+    const p = await this.findActor(person);
+    if (!p || p.kind !== 'person') throw new AccessError(`${person} isn't a person: only a person signs in this way`);
+    if (await this.archivedActor(person)) throw new ActorError(`${person} is archived, so it can't sign in`);
+    const code = `kjc_${randomBytes(24).toString('base64url')}`;
+    const role = PERSON_SIGN_IN_ROLE;
+    // One use: whichever submission deletes the request issues the code, in the transaction `tx`.
+    const issue = async (tx: Q, kolab: string) => {
+      const used = await tx.query(`delete from oauth_request where id = $1 and csrf_key = $2 returning id`, [sessionKey(binding), sessionKey(csrf)]);
+      if (!used.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in was already used; start again');
+      await tx.query(
+        `insert into oauth_code(key, client_id, redirect_uri, code_challenge, person_id, actor_id, kolab, role, scope, resource, expires_at)
+         values ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, now() + $10 * interval '1 second')`,
+        [sessionKey(code), req.client_id, req.redirect_uri, req.code_challenge, person, kolab, role, grantedScope(kolab, role), req.resource, this.oauth.codeTtlS]);
+    };
+    const issued = (kolab: string, made: boolean) => ({ code, redirectUri: req.redirect_uri, clientState: req.client_state, kolab, made });
+    if ('choose' in scope) {
+      if ('accept' in choice) return issued(await this.acceptInvitation(choice.accept, person, issue), false);
+      if (!('kolab' in choice) || typeof choice.kolab !== 'string') throw new AccessError('choose one of your kolabs, or an invitation, on the page');
+      const kolab = choice.kolab;
+      if (!(await accessIn(this.db, person, kolab)).level || !(await ownerAccess(this.db, person, kolab)).level) throw new AccessError(`you aren't a member of a kolab ${kolab}: choose one of yours, or an invitation`);
+      await this.db.transaction((tx) => issue(tx, kolab));
+      return issued(kolab, false);
+    }
+    if (!('team' in choice) || choice.team !== scope.team) throw new AccessError(`this sign-in is for kolab ${scope.team} only: allow that, or deny it`);
+    const plan = await this.teamPlan(person, scope.team);
+    if (plan.kind === 'refused') throw new AccessError(plan.refused);
+    // Allow carries out what the page showed, or nothing.
+    if (choice.shown !== plan.kind) throw new AccessError(`kolab ${scope.team} changed since this page was shown: deny it, and start again`);
+    if (plan.kind === 'make') await this.makeOwnKolab(person, scope.team, scope.team);
+    if (!(await accessIn(this.db, person, scope.team)).level) throw new AccessError(`no kolab ${scope.team} you can reach`);
+    await this.db.transaction((tx) => issue(tx, scope.team));
+    return issued(scope.team, plan.kind === 'make');
   }
 
   // ---- who holds access: a kolab's admins see it and change direct grants (W3.6, API8) ----
@@ -13860,6 +14290,14 @@ async function requireAnAdmin(tx: Q, who: string) {
     throw new TenancyError(`${who}, and the break-glass admin token is disabled here, so no one could administer Konjir: first make another person an admin, one who signs in with the identity provider`);
   }
 }
+
+/** SQL true for an invitation (migration 0053) that is still open: not accepted, declined or withdrawn. `a` is its table's alias and a dot, if any. */
+const openInvitation = (a = '') => `${a}accepted_at is null and ${a}declined_at is null and ${a}withdrawn_at is null`;
+/** SQL true when the invitation `i` was made by someone who still owns its kolab (ownsKolab): one whose maker lost the kolab is no longer good. */
+const INVITER_OWNS = `exists (select 1 from kolab ok left join org_member om on om.org_id = ok.owner_id and om.user_id = i.invited_by
+                         where ok.id = i.kolab_id and (ok.owner_id = i.invited_by or om.role = 'owner'))`;
+/** The one refusal for an invitation that can't be used, whatever the reason. */
+const INVITATION_GONE = 'that invitation isn\'t one waiting for you: it was accepted, declined or withdrawn, or isn\'t yours. Ask the kolab\'s owner to invite your account again';
 
 /** The one refusal for an invite that can't be used, whatever the reason, so its holder learns nothing more (W3.4). */
 const INVITE_GONE = 'this invite is unknown, already used, revoked or expired, or whoever made it can no longer invite; ask for a new one';

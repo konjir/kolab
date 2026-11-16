@@ -55,6 +55,26 @@ export interface OwnSession {
   session: string; current: boolean; via: 'web' | 'app' | 'token'; where: string; app: string | null;
   kolab: string; role: Role; started_at: string; last_used: string; expires_at: string | null;
 }
+/**
+ * The level an invitation by account grants (migration 0053): Read, the lowest a member holds. A
+ * member at Read sends and reads messages there, and lends their own agents what they hold (D30,
+ * D56), so their agents work there too; anything more is the owner's to give after.
+ */
+export const INVITATION_LEVEL = 'read' as const satisfies InviteLevel;
+/**
+ * An invitation by account (migration 0053), as the kolab's owner sees it: the account it names (the
+ * username as typed, and the identity provider's), what it grants, who made it and what became of it.
+ */
+export interface InvitationView {
+  id: string; kolab: string; account: string; provider: string; level: InviteLevel;
+  invited_by: string; created_at: string;
+  state: 'open' | 'accepted' | 'declined' | 'withdrawn';
+  settled_by: string | null; settled_at: string | null;
+}
+/** An invitation waiting for the person signing in, as their sign-in page lists it: the kolab, who owns it, who invites them, and what it grants. */
+export interface PendingInvitation {
+  id: string; kolab: string; title: string; owner: string; invited_by: string; level: InviteLevel; created_at: string;
+}
 /** What an invite's link shows whoever holds it, before they accept: the kolab, the access, and who invites them. */
 export interface InvitePreview {
   kolab: string; title: string; owner: string; level: InviteLevel; layers: Layer[];

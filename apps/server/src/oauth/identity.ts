@@ -21,6 +21,13 @@ export interface IdentityProvider {
    * `login` what they are called there now. Throws if the code is no good.
    */
   identify(p: { code: string; redirectUri: string; codeVerifier: string }): Promise<{ subject: string; login: string; name?: string }>;
+  /**
+   * The account a username names now, for an invitation by account (migration 0053): its permanent
+   * `subject`, as `identify` gives it, the login as the provider spells it, and whether it is a
+   * person's account (not an organization's). Undefined when no account has that name. Throws when
+   * the provider can't be asked. A provider without it takes no invitations by account.
+   */
+  lookup?(login: string): Promise<{ subject: string; login: string; person: boolean } | undefined>;
 }
 
 type Fetch = typeof fetch;
@@ -93,6 +100,28 @@ export class GitHubIdentity implements IdentityProvider {
     // user and app, revoking the oldest past that, and drops one unused for a year.
     return { subject: String(me.id), login: me.login, name: typeof me.name === 'string' && me.name ? me.name : undefined };
   }
+
+  /**
+   * The account a GitHub username names (GET /users/<login>), public data only: its numeric id,
+   * which never changes hands, the login as GitHub spells it, and whether it is a user's (not an
+   * organization's). Asked as the OAuth app itself, with its client id and secret (HTTP basic), for
+   * the app's rate limit rather than the anonymous one; no person's token is used. Undefined on 404.
+   */
+  async lookup(login: string) {
+    // A username GitHub allows, and nothing else, goes in the path.
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(login)) return undefined;
+    const res = await this.fetch(new URL(`/users/${encodeURIComponent(login)}`, this.api), {
+      headers: {
+        accept: 'application/vnd.github+json', 'user-agent': 'konjir-kolab', 'x-github-api-version': '2022-11-28',
+        authorization: `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64')}`,
+      },
+      signal: this.signal(),
+    });
+    if (res.status === 404) { await res.body?.cancel(); return undefined; }
+    const u = await res.json().catch(() => ({})) as { id?: unknown; login?: unknown; type?: unknown };
+    if (!res.ok || typeof u.id !== 'number' || typeof u.login !== 'string') throw new Error(`GitHub didn't say who ${login} is (${res.status}); try again in a while`);
+    return { subject: String(u.id), login: u.login, person: u.type === 'User' };
+  }
 }
 
 /**
@@ -110,8 +139,18 @@ export class StubIdentity implements IdentityProvider {
   /** Who signs in when nobody is queued; undefined to refuse. */
   as?: { subject: string; login: string; name?: string };
 
+  /** Accounts `lookup` finds, by login in any case: what GitHub's users would be. */
+  private readonly accounts = new Map<string, { subject: string; login: string; person: boolean }>();
+
   /** The next sign-in is this person. */
   next(who: { subject: string; login: string; name?: string }) { this.queue.push(who); return this; }
+
+  /** An account `lookup` finds by its login: a person's, unless `person` is false (an organization's). */
+  account(who: { subject: string; login: string; person?: boolean }) { this.accounts.set(who.login.toLowerCase(), { subject: who.subject, login: who.login, person: who.person ?? true }); return this; }
+
+  /** Looks a login up among the accounts the test made (account). `lookups` counts the calls. */
+  lookups = 0;
+  async lookup(login: string) { this.lookups++; return this.accounts.get(login.toLowerCase()); }
 
   authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string {
     const who = this.queue.shift() ?? this.as;
