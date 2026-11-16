@@ -91,15 +91,19 @@ test('members are listed by name for any member, with who is here now, and never
     kolab: 'hub', next: null,
     items: [
       { actor: 'ann', kind: 'person', owner: null, here: true },
-      { actor: 'ann-claude', kind: 'agent', owner: 'ann', here: false },
+      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', here: false },
       { actor: 'bo', kind: 'person', owner: null, here: true },
-      { actor: 'bo-claude', kind: 'agent', owner: 'bo', here: true, you: true },
+      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', here: true, you: true },
     ],
   });
+  // An agent's label is its own field, so it can be named <owner>/<label>; one named otherwise has none.
+  await kolab.addActor('helper', { owner: 'bo' });
+  await kolab.grant('hub', 'helper', 'write');
+  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, here: false });
   // A page at a time, by name; a cursor from another list is refused.
   const first = await kolab.membersPage(ann, { limit: 3 });
   expect(first.items.map((m) => m.actor)).toStrictEqual(['ann', 'ann-claude', 'bo']);
-  expect((await kolab.membersPage(ann, { limit: 3, cursor: first.next })).items.map((m) => m.actor)).toStrictEqual(['bo-claude']);
+  expect((await kolab.membersPage(ann, { limit: 3, cursor: first.next })).items.map((m) => m.actor)).toStrictEqual(['bo-claude', 'helper']);
   await kolab.sendMessage(ann, 'bo', 'one');
   await kolab.sendMessage(ann, 'bo', 'two');
   const page = await kolab.messagesPage(ann, { sent: true }, { limit: 1 });
