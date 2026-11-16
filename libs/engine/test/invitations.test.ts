@@ -74,7 +74,7 @@ test('the owner invites by GitHub username: each looked up first and kept by its
 
   // A name with no account refuses the whole call, by name, before anything is written; so does an organization's.
   expect(await rejection(kolab.inviteAccounts(session, ['ghost', 'dee', 'bob'], lookup()))).toMatch(/no GitHub account ghost, dee: check the spelling\. Nothing was invited/);
-  expect(await rejection(kolab.inviteAccounts(session, ['acme-org'], lookup()))).toMatch(/acme-org is an organization on GitHub, not a person's account/);
+  expect(await rejection(kolab.inviteAccounts(session, ['acme-org'], lookup()))).toMatch(/acme-org isn't a person's account on GitHub \(an organization's or a bot's\)/);
   expect(await rejection(kolab.inviteAccounts(session, ['not a name'], l))).toMatch(/"not a name" isn't a GitHub username/);
   expect(await rejection(kolab.inviteAccounts(session, ['-bob'], l))).toMatch(/isn't a GitHub username/);
   expect(await rejection(kolab.inviteAccounts(session, [], l))).toMatch(/name at least one GitHub account/);
@@ -129,7 +129,7 @@ test('the invited account, and only it, accepts on its sign-in page: it joins at
   const bob = await signingIn(kolab, { subject: '22', login: 'robert' }, 'konjir choose:kolab');
   expect(bob.person).toBe('robert');
   const offered = await kolab.chooseOptions(bob.person);
-  expect(offered).toStrictEqual({ kolabs: [], invitations: [{ id: inv.id, kolab: 'anns', title: 'Ann\'s', owner: 'ann', invited_by: 'ann', level: 'read', created_at: inv.created_at }] });
+  expect(offered).toStrictEqual({ kolabs: [], invitations: [{ id: inv.id, kolab: 'anns', title: 'Ann\'s', owner: 'ann', invited_by: 'ann', invited_by_login: 'ann', level: 'read', created_at: inv.created_at }] });
   // A kolab it isn't a member of can't be chosen instead.
   expect(await rejection(kolab.consentPerson(bob.binding, bob.csrf, { kolab: 'anns' }))).toMatch(/you aren't a member of a kolab anns/);
   const done = await kolab.consentPerson(bob.binding, bob.csrf, { accept: inv.id });
@@ -182,7 +182,8 @@ test('accepting never lowers a grant; a declined or withdrawn invitation, or one
   expect(await rejection(kolab.consentPerson(bob.binding, bob.csrf, { accept: forBob.id }))).toMatch(/isn't one waiting for you/);
   expect((await kolab.db.query(`select declined_by from kolab_invitation where id = $1`, [forBob.id])).rows).toStrictEqual([{ declined_by: 'bob' }]);
 
-  // A new one, withdrawn before it is accepted.
+  // A new one, a month later, withdrawn before it is accepted.
+  await kolab.db.query(`update kolab_invitation set declined_at = now() - interval '31 days' where id = $1`, [forBob.id]);
   const { invited: [second] } = await kolab.inviteAccounts(session, ['bob'], lookup());
   expect(second.id).not.toBe(forBob.id);
   expect((await kolab.chooseOptions(bob.person)).invitations.map((i) => i.id)).toStrictEqual([second.id]);
@@ -216,7 +217,7 @@ test('the owner removes a member, and a member leaves: their grant goes, their a
   expect(await rejection(kolab.removeKolabMember(bobAgentSession, cy))).toMatch(/bob-claude is an agent: only a person removes members/);
   expect(await rejection(kolab.removeKolabMember(session, ann))).toMatch(/you own kolab anns, so you stay its member/);
   expect(await rejection(kolab.removeKolabMember(session, bobAgent))).toMatch(/bob-claude is an agent: remove its owner/);
-  expect(await rejection(kolab.removeKolabMember(session, 'nobody'))).toMatch(/nobody holds no direct grant in kolab anns/);
+  expect(await rejection(kolab.removeKolabMember(session, 'nobody'))).toMatch(/nobody isn't a member of kolab anns by a grant of their own, so nothing was removed/);
 
   const removed = await kolab.removeKolabMember(session, bob);
   expect(removed).toStrictEqual({ kolab: 'anns', removed: 'bob', agents: ['bob-claude'], ended: 2 });
@@ -302,4 +303,63 @@ test('a person\'s own sign-in that leaves the kolab to the page is only for an a
   expect(ok.kolab).toBe('acme');
   // Used once.
   expect(await rejection(kolab.consentPerson(local.binding, local.csrf, { team: 'acme', shown: 'member' }))).toMatch(/expired or was already used/);
+});
+
+test('an invitation whose maker no longer owns the kolab, or is archived, waits for no one: it isn\'t listed or counted, and a new owner\'s invitation of the same account replaces it', async () => {
+  const kolab = await openKolab();
+  const { actor: amy } = await kolab.signInWith(github('11', 'amy'));
+  const { actor: ben } = await kolab.signInWith(github('12', 'ben'));
+  await kolab.addOrganization('acme');
+  await kolab.addMember('acme', amy, 'owner', { by: 'admin' });
+  await kolab.addMember('acme', ben, 'owner', { by: 'admin' });
+  await kolab.createKolab('acme-app', { owner: 'acme' });
+  const amyIn = await kolab.openSession(amy, 'product', { kolab: 'acme-app' });
+  const benIn = await kolab.openSession(ben, 'product', { kolab: 'acme-app' });
+  const { invited: [old] } = await kolab.inviteAccounts(amyIn, ['bob'], lookup());
+  const bob = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir choose:kolab');
+  expect((await kolab.chooseOptions(bob.person)).invitations.map((i) => [i.id, i.invited_by_login])).toStrictEqual([[old.id, 'amy']]);
+
+  // Amy is an owner no more: her invitation waits for no one, and the owners' list doesn't show it.
+  await kolab.addMember('acme', amy, 'member', { by: 'admin' });
+  expect((await kolab.chooseOptions(bob.person)).invitations).toStrictEqual([]);
+  expect((await kolab.invitationsPage(benIn)).items).toStrictEqual([]);
+  // Ben invites the same account: the dead one is withdrawn, by him, and a fresh one made.
+  const fresh = await kolab.inviteAccounts(benIn, ['bob'], lookup());
+  expect(fresh).toMatchObject({ already_invited: [], invited: [{ invited_by: 'ben', state: 'open' }] });
+  expect((await kolab.db.query(`select withdrawn_by from kolab_invitation where id = $1`, [old.id])).rows).toStrictEqual([{ withdrawn_by: 'ben' }]);
+  expect((await kolab.invitationsPage(benIn)).items.map((i) => i.id)).toStrictEqual([fresh.invited[0].id]);
+  expect((await kolab.chooseOptions(bob.person)).invitations.map((i) => i.invited_by)).toStrictEqual(['ben']);
+
+  // An archived maker's invitations are no good either, as an invite whose maker lost Admin isn't.
+  await kolab.archive({ actor: ben });
+  expect((await kolab.chooseOptions(bob.person)).invitations).toStrictEqual([]);
+  expect(await rejection(kolab.consentPerson(bob.binding, bob.csrf, { accept: fresh.invited[0].id }))).toMatch(/isn't one waiting for you/);
+});
+
+test('a declined invitation sticks: the kolab can\'t ask that account again for 30 days, and says so', async () => {
+  const { kolab, session } = await anns();
+  const { invited: [inv] } = await kolab.inviteAccounts(session, ['bob'], lookup());
+  const bob = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir choose:kolab');
+  await kolab.declineInvitation(bob.person, inv.id);
+  expect(await kolab.inviteAccounts(session, ['bob', 'cy'], lookup())).toMatchObject({ declined_recently: ['bob'], invited: [{ account: 'cy' }], already_invited: [] });
+  expect((await kolab.chooseOptions(bob.person)).invitations).toStrictEqual([]);
+  // After 30 days it may.
+  await kolab.db.query(`update kolab_invitation set declined_at = now() - interval '31 days' where id = $1`, [inv.id]);
+  expect(await kolab.inviteAccounts(session, ['bob'], lookup())).toMatchObject({ declined_recently: [], invited: [{ account: 'bob' }] });
+});
+
+test('removed from a public kolab, or leaving it, a member\'s sessions there end too, though anyone may read it', async () => {
+  const { kolab, session } = await anns();
+  await kolab.db.query(`update kolab set visibility = 'public' where id = 'anns'`);
+  const { actor: bob } = await kolab.signInWith(github('22', 'bob'));
+  const { actor: cy } = await kolab.signInWith(github('33', 'cy'));
+  for (const p of [bob, cy]) await kolab.grant('anns', p, 'write');
+  const bobIn = await kolab.openSession(bob, 'product', { kolab: 'anns' });
+  const cyIn = await kolab.openSession(cy, 'product', { kolab: 'anns' });
+  expect(await kolab.removeKolabMember(session, bob)).toMatchObject({ removed: 'bob', ended: 1 });
+  expect(await kolab.sessionOpen(bobIn)).toBe(false);
+  expect(await kolab.leaveKolab(cyIn)).toMatchObject({ left: 'anns', ended: 1 });
+  expect(await kolab.sessionOpen(cyIn)).toBe(false);
+  // A public kolab is still readable by them, as by anyone.
+  expect(await kolab.access(bob, 'anns')).toStrictEqual({ level: 'read', layers: [] });
 });

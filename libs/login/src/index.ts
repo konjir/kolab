@@ -737,7 +737,7 @@ export class SignInRefused extends Error {
 }
 
 /** Signs a person in as themselves through a scope that leaves the kolab to Kolab's page; see signInChoosing and signInToTeam. */
-async function signInAsPerson(url: string, scope: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'>): Promise<PersonSignIn> {
+async function signInAsPerson(url: string, scope: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'>, kolab?: string): Promise<PersonSignIn> {
   let me: Awaited<ReturnType<typeof login>>;
   try {
     me = await login(url, { again: 'start the sign-in again', ...opts, scope });
@@ -749,7 +749,13 @@ async function signInAsPerson(url: string, scope: string, opts: { path?: string;
     const why = said.replace(/^the sign-in can't be allowed: /, '').replace(/\.$/, '');
     throw new SignInRefused(why, false, /The name ([a-z0-9][a-z0-9-]*) is free/.exec(why)?.[1]);
   }
-  if (me.kind !== 'person') throw new Error(`Kolab signed in ${me.actor}, an agent, where a person's own sign-in was asked for: run it again`);
+  // Not what was asked for: what this attempt kept is revoked and forgotten, never left to be used.
+  const wrong = me.kind !== 'person' ? `Kolab signed in ${me.actor}, an agent, where a person's own sign-in was asked for`
+    : kolab !== undefined && me.kolab !== kolab ? `Kolab signed you in to kolab ${me.kolab}, not ${kolab}, which was asked for` : undefined;
+  if (wrong) {
+    if (!me.yielded) await logout(url, { path: opts.path, forget: true }).catch(() => undefined);
+    throw new Error(`${wrong}: the sign-in was revoked. Run it again`);
+  }
   return { kolab: me.kolab, actor: me.actor, role: me.role, credentials: opts.path ?? credentialsPath(), yielded: me.yielded };
 }
 
@@ -771,7 +777,7 @@ export function signInChoosing(url: string, opts: { path?: string; clientName?: 
  * a free name Kolab offered. Kept as signInChoosing keeps it.
  */
 export function signInToTeam(url: string, name: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'> = {}): Promise<PersonSignIn> {
-  return signInAsPerson(url, teamScope(name), opts);
+  return signInAsPerson(url, teamScope(name), opts, name);
 }
 
 /**

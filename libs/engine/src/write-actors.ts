@@ -109,7 +109,7 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   revokeInvite: { recorded: ['kolab_invite.revoked_by'] },
   acceptInvite: { recorded: ['kolab_invite.accepted_by', 'audit_event:grant.set'] },
   // Invitations by account (migration 0053): each names who made, withdrew, declined or accepted it.
-  inviteAccounts: { recorded: ['kolab_invitation.invited_by'] },
+  inviteAccounts: { recorded: ['kolab_invitation.invited_by', 'kolab_invitation.withdrawn_by'] },
   withdrawInvitation: { recorded: ['kolab_invitation.withdrawn_by'] },
   declineInvitation: { recorded: ['kolab_invitation.declined_by'] },
   // A person's own sign-in that leaves its kolab to the page: the person consents, makes their kolab, or accepts an invitation.
