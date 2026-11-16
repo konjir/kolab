@@ -5,13 +5,14 @@
 // remembers a team and is followed only to a Kolab konnect trusts; and the commands the server
 // can't serve yet say so. The "browser" follows Kolab's redirects with its cookies and submits the
 // consent page.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test } from '@jest/globals';
+import { afterEach, expect, test } from '@jest/globals';
 import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
-import { HOSTED_URL, main, type IO } from '../src/konnect.js';
+import { HOSTED_URL, main, normalUrl, parseArgs, readProject, rememberTeam, type IO } from '../src/konnect.js';
+import { printable } from '../src/names.js';
 
 /** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on konnect's loopback callback. */
 async function browse(start: URL, form: Record<string, string>): Promise<string> {
@@ -250,4 +251,121 @@ test('the commands the server can\'t serve yet say so, before anything is read o
   expect(await m.run(['--version'])).toBe('development (run from source)');
   // A Kolab that isn't there is said plainly.
   expect(await fails(m.run(['team', 'hub'], { open: () => undefined }))).toMatch(/^can't reach Kolab at http:\/\/127\.0\.0\.1:9\/mcp: check your connection and try again, or start the local Kolab$/);
+});
+
+// ---- the review of #151 ---------------------------------------------------------------------------
+
+const realFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = realFetch; });
+/** Makes every MCP call of `tool` fail as a network failure does, until the test ends. */
+function failCalls(tool: string) {
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (typeof init?.body === 'string' && init.body.includes(`"${tool}"`)) throw new TypeError('fetch failed');
+    return realFetch(input, init);
+  }) as typeof fetch;
+}
+
+test('a sign-in whose identity check fails is revoked and forgotten, never kept unchecked; a kept sign-in that isn\'t the person\'s in the team is refused before any call', async () => {
+  const { kolab, server, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  // konjir_whoami fails right after the tokens are saved: nothing stays kept, and the grant is revoked.
+  failCalls('konjir_whoami');
+  expect(await fails(signIn(ann, annId, 'hub'))).toMatch(/^can't reach Kolab/);
+  globalThis.fetch = realFetch;
+  expect(JSON.parse(readFileSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), 'utf8'))).toStrictEqual({});
+  expect((await kolab.db.query(`select 1 from session where actor_id = 'ann' and grant_id is not null and ended_at is null`)).rows).toStrictEqual([]);
+  expect(existsSync(join(ann.cwd, '.konnect.json'))).toBe(false);
+
+  // A file for team side that holds a sign-in to hub: refused when it opens, before anything is sent.
+  await signIn(ann, annId, 'hub');
+  copyFileSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'));
+  expect(await fails(ann.run(['send', '@bo', '--team', 'side', 'hi'])))
+    .toBe('the sign-in kept for team side isn\'t yours in team side, so konnect won\'t use it: run konnect team side to sign in again');
+  expect(await fails(ann.run(['who', '--team', 'side'])))
+    .toBe('the sign-in kept for team side isn\'t yours in team side, so konnect won\'t use it: run konnect team side to sign in again');
+});
+
+test('KONNECT_URL is kept as it reads back: a path of /mcp when it has none, its host lowercased, never with credentials, a query or a fragment', () => {
+  expect(normalUrl('https://kolab.example.com')).toBe('https://kolab.example.com/mcp');
+  expect(normalUrl('https://Kolab.Example.com/mcp')).toBe('https://kolab.example.com/mcp');
+  expect(normalUrl('http://127.0.0.1:7420/mcp')).toBe('http://127.0.0.1:7420/mcp');
+  expect(() => normalUrl('https://u:p@kolab.example.com/mcp')).toThrow(/user name or password/);
+  expect(() => normalUrl('https://kolab.example.com/mcp?x=1')).toThrow(/query or a fragment/);
+  expect(() => normalUrl('https://kolab.example.com/mcp#x')).toThrow(/query or a fragment/);
+  expect(() => normalUrl('ftp://kolab.example.com/mcp')).toThrow(/is ftp/);
+  // Whatever konnect writes, it reads back.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'konnect-url-')));
+  for (const u of ['https://kolab.example.com', 'https://Kolab.example.com/mcp', 'http://LOCALHOST:7420']) {
+    const path = rememberTeam(dir, 'hub', normalUrl(u));
+    expect(readProject(path)).toStrictEqual({ path, team: 'hub', url: normalUrl(u) });
+  }
+  expect(() => rememberTeam(dir, 'hub', 'https://u:p@kolab.example.com/mcp')).toThrow(/couldn't read it back/);
+});
+
+test('konnect read looks names up before it marks anything read: if that fails the messages still show, by stored name; --json needs no names', async () => {
+  const { server, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  await bo.run(['send', '@ann', 'first']);
+  failCalls('konjir_list_members');
+  expect(await ann.run(['read'])).toMatch(/@bo\n {2}first$/);
+  await bo.run(['send', '@ann', 'second']);
+  expect(JSON.parse(await ann.run(['read', '--json']))).toMatchObject([{ from: 'bo', message: 'second' }]);
+});
+
+test('a message is never read for flags: after the recipient, its words are the message as written; -- ends the flags', async () => {
+  expect(parseArgs(['send', '@ann', 'use', '--json', 'here'])).toStrictEqual({ json: false, forget: false, words: ['send', '@ann', 'use', '--json', 'here'] });
+  expect(parseArgs(['send', '@ann', 'try', '--team', 'x'])).toStrictEqual({ json: false, forget: false, words: ['send', '@ann', 'try', '--team', 'x'] });
+  expect(parseArgs(['--json', 'send', '--team', 'hub', '@ann', 'hi'])).toStrictEqual({ json: true, team: 'hub', forget: false, words: ['send', '@ann', 'hi'] });
+  expect(parseArgs(['send', '@ann', '--json', 'hi'])).toStrictEqual({ json: true, forget: false, words: ['send', '@ann', 'hi'] });
+  expect(parseArgs(['send', '@ann', '--', '--json'])).toStrictEqual({ json: false, forget: false, words: ['send', '@ann', '--json'] });
+  expect(parseArgs(['read', '--', '--json'])).toStrictEqual({ json: false, forget: false, words: ['read', '--json'] });
+
+  const { server, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  expect(await bo.run(['send', '@ann', 'use', '--json', 'here', '--team', 'side'])).toBe('Sent to @ann.');
+  expect(JSON.parse(await ann.run(['read', '--json']))).toMatchObject([{ message: 'use --json here --team side' }]);
+});
+
+test('text from Kolab or a file reaches the terminal as text: bidirectional and zero-width characters are shown as ?', () => {
+  expect(printable('ann‮gnp.exe')).toBe('ann?gnp.exe');
+  expect(printable('a​b\u001b[2Jc\nd')).toBe('a?b?[2Jc\nd');
+});
+
+test('konnect leaves a config folder it didn\'t make as it is, refusing one others may write in; it updates the .konnect.json it found, never shadows it; send reads its message before opening a session', async () => {
+  const { server, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  // A config folder that was there already, 0755: used, and left 0755.
+  const own = join(ann.root, 'mine');
+  mkdirSync(own);
+  chmodSync(own, 0o755);
+  ann.env.KONNECT_CONFIG_DIR = own;
+  await signIn(ann, annId, 'hub');
+  expect(statSync(own).mode & 0o777).toBe(0o755);
+  expect(statSync(join(own, 'teams')).mode & 0o777).toBe(0o700);
+  // One others may write in: refused, and left as it is.
+  const open = join(ann.root, 'open');
+  mkdirSync(open);
+  chmodSync(open, 0o777);
+  expect(await fails(ann.run(['team', 'hub'], { env: { ...ann.env, KONNECT_CONFIG_DIR: open } }))).toMatch(/^others may write in .*open, so konnect won't keep a sign-in there/);
+  expect(statSync(open).mode & 0o777).toBe(0o777);
+
+  // In a repository, konnect team below the root updates the root's .konnect.json.
+  const repo = join(ann.root, 'repo');
+  mkdirSync(join(repo, '.git'), { recursive: true });
+  mkdirSync(join(repo, 'src'));
+  writeFileSync(join(repo, '.konnect.json'), JSON.stringify({ team: 'side', other: 1 }));
+  expect(await ann.run(['team', 'hub'], { cwd: join(repo, 'src') })).toBe(`Using team hub as ann. ${join(repo, '.konnect.json')} remembers it.`);
+  expect(existsSync(join(repo, 'src', '.konnect.json'))).toBe(false);
+  expect(JSON.parse(readFileSync(join(repo, '.konnect.json'), 'utf8'))).toStrictEqual({ team: 'hub', other: 1, url: server.url });
+
+  // The message is read first: with no sign-in for the team, stdin was still read, before konnect found none.
+  let asked = 0;
+  expect(await fails(ann.run(['send', '@bo', '--team', 'side'], { stdin: async () => { asked++; return 'hi'; } }))).toBe('you aren\'t signed in to team side: run konnect team side');
+  expect(asked).toBe(1);
 });

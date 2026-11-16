@@ -47,17 +47,28 @@ export function teamFile(team: string, env: Record<string, string | undefined> =
 }
 
 /**
- * The team's file, its folders made ready: konnect's own, so made 0700, and refused if one is a
- * symbolic link, isn't a folder, or belongs to someone else (who could then swap the file).
+ * The team's file, its folders made ready. Each folder is refused if it is a symbolic link, isn't a
+ * folder, or belongs to someone else (who could then swap the file). The config folder is made
+ * 0700 when konnect makes it; one that was there already (KONNECT_CONFIG_DIR may name any folder)
+ * is never changed, and refused if others may write in it. `teams/` inside it is konnect's own,
+ * so it is kept at 0700.
  */
 export function teamFileReady(team: string, env: Record<string, string | undefined> = process.env): string {
   const file = teamFile(team, env);
-  for (const dir of [dirname(dirname(file)), dirname(file)]) {
-    try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if (codeOf(e) !== 'EEXIST') { if (codeOf(e) === 'ENOENT') mkdirSync(dir, { recursive: true, mode: 0o700 }); else throw e; } }
+  const config = dirname(dirname(file));
+  for (const dir of [config, dirname(file)]) {
+    let made = false;
+    try { mkdirSync(dir, { mode: 0o700 }); made = true; } catch (e) {
+      if (codeOf(e) === 'ENOENT') { mkdirSync(dir, { recursive: true, mode: 0o700 }); made = true; } else if (codeOf(e) !== 'EEXIST') throw e;
+    }
     const st = lstatSync(dir);
     if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} isn't a folder of konnect's (it is a symbolic link, or not a folder), so konnect won't keep a sign-in there: remove it`);
     if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} belongs to someone else, so konnect won't keep a sign-in there: remove it, or set KONNECT_CONFIG_DIR to a folder of your own`);
-    if ((st.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+    if (made || dir !== config) {
+      if ((st.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+    } else if (st.mode & 0o022) {
+      throw new Error(`others may write in ${dir}, so konnect won't keep a sign-in there, and leaves the folder as it is: set KONNECT_CONFIG_DIR to a folder only you can write in`);
+    }
   }
   return file;
 }
@@ -108,7 +119,7 @@ export function readProject(path: string): Project {
 }
 
 /** A URL written as it reads back: http(s), nothing hidden in it, no credentials, query or fragment. */
-function wellFormedUrl(url: string): boolean {
+export function wellFormedUrl(url: string): boolean {
   if (/[\p{Cc}\p{Z}]/u.test(url)) return false;
   try {
     const u = new URL(url);
@@ -139,6 +150,8 @@ export function rememberTeam(dir: string, team: string, url: string): string {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) was = raw as Record<string, unknown>;
   } catch { /* none, or not JSON: replaced */ }
   const { url: _, ...rest } = was;
+  // Only what readProject reads back is written: never a URL it would refuse, or one with credentials.
+  if (!TEAM.test(team) || (url !== HOSTED_URL && !wellFormedUrl(url))) throw new Error(`konnect won't write ${printable(path)} naming ${safeUrl(url)}: it couldn't read it back`);
   const next = { ...rest, team, ...(url !== HOSTED_URL ? { url } : {}) };
   const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });

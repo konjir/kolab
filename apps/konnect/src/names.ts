@@ -49,16 +49,17 @@ export function storedName(given: string): string {
 }
 
 /**
- * Text fit to print to a terminal: every control character but a line break shown as `?`, so a
- * message can't move the cursor or rewrite what konnect printed.
+ * Text fit to print to a terminal: every control character but a line break, and every format
+ * character (bidirectional overrides such as U+202E, zero-width ones such as U+200B), shown as
+ * `?`, so text from Kolab or a file can't move the cursor, reorder or hide what konnect printed.
  */
-export const printable = (text: string): string => text.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, (c) => (c === '\n' ? '\n' : '?'));
+export const printable = (text: string): string => String(text).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => (c === '\n' ? '\n' : '?'));
 
 /** One line per member: name, kind, connected or not. */
 export function formatMembers(members: Member[]): string {
   const rows = members.map((m) => [
     `${printable(shownName(m))}${m.you ? ' (you)' : ''}`,
-    m.kind === 'agent' ? 'agent' : m.kind,
+    printable(m.kind),
     m.here ? 'connected' : '',
   ]);
   const width = Math.max(0, ...rows.map((r) => r[0].length)) + 2;
@@ -67,7 +68,7 @@ export function formatMembers(members: Member[]): string {
 
 /** A message as a block of lines: when and who, then the words, indented. */
 export function formatMessage(m: Message, members: Member[]): string {
-  const when = m.sent_at.replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, '');
+  const when = printable(String(m.sent_at).replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, '')).replace(/\n/g, '?');
   const words = printable(m.message).split('\n').map((l) => `  ${l}`).join('\n');
   return `${when}  @${printable(shownActor(m.from, members))}\n${words}`;
 }
