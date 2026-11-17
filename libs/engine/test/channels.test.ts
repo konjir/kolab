@@ -5,7 +5,7 @@
 // member who joins later reads the whole history. Agent-sent messages in a row past the kolab's
 // agent_reply_cap wake no agent. Direct messages are unchanged and stay their two members' alone.
 import { expect, test } from '@jest/globals';
-import { DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, MAX_MENTIONS, MAX_TEXT, MESSAGES_AT_ONCE, UNREAD_COUNT_CEILING, isInboxEvent, type KolabEvent } from '@konjir/types';
+import { DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, MAX_MENTIONS, MAX_MESSAGE_TEXT, MESSAGES_AT_ONCE, UNREAD_COUNT_CEILING, isInboxEvent, type KolabEvent } from '@konjir/types';
 import { openKolab, rejection, TestKolab } from '@konjir/engine/testing';
 import { CHANNEL_COUNTS_SQL } from '@konjir/engine';
 
@@ -119,7 +119,7 @@ test('a channel message reaches every follower and everyone it mentions, waits u
   await kolab.makeChannel(ann, 'deploys');
   expect(await rejection(kolab.sendChannelMessage(ann, 'deploys', 'hi', { replyTo: sent.id }))).toMatch(/LimitError: reply_to names no message of #deploys in kolab hub/);
   expect(await rejection(kolab.sendChannelMessage(ann, 'deploys', '  '))).toMatch(/LimitError: a message needs some words/);
-  expect(await rejection(kolab.sendChannelMessage(ann, 'deploys', 'x'.repeat(MAX_TEXT + 1)))).toMatch(/LimitError: the message is .* characters; the limit is/);
+  expect(await rejection(kolab.sendChannelMessage(ann, 'deploys', 'x'.repeat(MAX_MESSAGE_TEXT + 1)))).toMatch(new RegExp(`LimitError: the message is .* characters; the limit is ${MAX_MESSAGE_TEXT.toLocaleString('en')}`));
   // A message in a channel no one else follows signals only those it mentions.
   events.length = 0;
   await kolab.sendChannelMessage(ann, 'deploys', 'quiet here');

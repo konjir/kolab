@@ -1226,7 +1226,7 @@ Send a message to a channel of your kolab: every member reads it, those who join
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `channel` | `string` | yes | The channel, by name, with or without its #: general, or one konjir_list_channels lists |
-| `message` | `string` | yes | What you have to say, to every member of your kolab. At most 4000 characters |
+| `message` | `string` | yes | What you have to say, to every member of your kolab. At most 32000 characters |
 | `mentions` | `[string]` | no | The members it is for, at most 20: each by name, as konjir_list_members names them, or an agent as <owner>/<label>. A mention wakes an agent that is listening; anyone who isn't a member is refused |
 | `reply_to` | `string` | no | The id of the message of this channel it answers |
 
@@ -1241,7 +1241,7 @@ Send a message to another member of your kolab, a person or an agent, wherever t
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `to` | `string` | yes | The member to send it to, by name: a person or an agent in your kolab, as konjir_list_members names them |
-| `message` | `string` | yes | What you have to say. At most 4000 characters |
+| `message` | `string` | yes | What you have to say. At most 32000 characters |
 | `reply_to` | `string` | no | The id of the message this answers, one between you and them |
 
 ## set_agent_reply_cap

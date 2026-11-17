@@ -17,7 +17,7 @@ import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid 
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, SPLIT_STEP, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -9953,7 +9953,7 @@ export class Kolab {
    */
   async sendMessage(sessionId: string, to: string, body: string, opts: { replyTo?: string } = {}): Promise<Message> {
     if (typeof body !== 'string' || !body.trim()) throw new LimitError('a message needs some words: give message');
-    checkText('the message', body);
+    checkText('the message', body, MAX_MESSAGE_TEXT);
     const s = await this.session(sessionId);
     if (to === s.actor_id) throw new LimitError(`${to} is you: a message goes to another member of kolab ${s.kolab}`);
     const id = ulid();
@@ -10264,7 +10264,7 @@ export class Kolab {
    */
   async sendChannelMessage(sessionId: string, channel: string, body: string, opts: { replyTo?: string; mentions?: string[] } = {}): Promise<ChannelMessage> {
     if (typeof body !== 'string' || !body.trim()) throw new LimitError('a message needs some words: give message');
-    checkText('the message', body);
+    checkText('the message', body, MAX_MESSAGE_TEXT);
     const asked = opts.mentions ?? [];
     if (!Array.isArray(asked) || asked.some((m) => typeof m !== 'string')) throw new LimitError('mentions is a list of members\' names');
     if (asked.length > MAX_MENTIONS) throw new LimitError(`a message mentions at most ${MAX_MENTIONS} members; it names ${asked.length}`);

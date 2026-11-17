@@ -5,7 +5,7 @@
 // members (reading a public kolab makes no one a member), have a rate budget of their own, are
 // never edited or removed, and touch nothing else: no question, mark, review or work.
 import { expect, test } from '@jest/globals';
-import { MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MAX_TEXT, MESSAGES_AT_ONCE, isInboxEvent, type KolabEvent } from '@konjir/types';
+import { MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MAX_MESSAGE_TEXT, MESSAGES_AT_ONCE, isInboxEvent, type KolabEvent } from '@konjir/types';
 import { openKolab, rejection, TestKolab } from '@konjir/engine/testing';
 
 /**
@@ -119,7 +119,7 @@ test('a message goes only to another member, in the sender\'s own kolab; the ref
   expect(await rejection(kolab.sendMessage(annAgent, 'nobody', 'hello'))).toMatch(/AccessError: nobody is not a member of kolab hub, so no message can go to them/);
   expect(await rejection(kolab.sendMessage(annAgent, 'ann-claude', 'hello'))).toMatch(/LimitError: ann-claude is you/);
   expect(await rejection(kolab.sendMessage(annAgent, 'bo', '   '))).toMatch(/LimitError: a message needs some words/);
-  expect(await rejection(kolab.sendMessage(annAgent, 'bo', 'x'.repeat(MAX_TEXT + 1)))).toMatch(new RegExp(`LimitError: the message is ${(MAX_TEXT + 1).toLocaleString('en')} characters; the limit is ${MAX_TEXT.toLocaleString('en')}`));
+  expect(await rejection(kolab.sendMessage(annAgent, 'bo', 'x'.repeat(MAX_MESSAGE_TEXT + 1)))).toMatch(new RegExp(`LimitError: the message is ${(MAX_MESSAGE_TEXT + 1).toLocaleString('en')} characters; the limit is ${MAX_MESSAGE_TEXT.toLocaleString('en')}`));
 
   // Another kolab is another room: its members aren't this one's, and its messages aren't read here.
   await kolab.createKolab('other', { owner: 'sam' });
