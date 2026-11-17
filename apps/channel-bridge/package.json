@@ -10,6 +10,16 @@
       "@konjir/source": "./src/channel.ts",
       "types": "./dist/channel.d.ts",
       "default": "./dist/channel.js"
+    },
+    "./bridge": {
+      "@konjir/source": "./src/bridge.ts",
+      "types": "./dist/bridge.d.ts",
+      "default": "./dist/bridge.js"
+    },
+    "./messages": {
+      "@konjir/source": "./src/messages.ts",
+      "types": "./dist/messages.d.ts",
+      "default": "./dist/messages.js"
     }
   },
   "scripts": {

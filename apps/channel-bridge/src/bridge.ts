@@ -54,6 +54,15 @@ export interface BridgeOptions {
    * none just now (reconnecting, say), and how long it waits for Kolab's answer once sent.
    */
   passthrough?: { connectWaitMs?: number; callTimeoutMs?: number };
+  /**
+   * How a change, and what waits when the bridge first connects, are said to the session: the
+   * Konjir channel's own words (messages.ts) by default. konnect's `konnect mcp` gives its own.
+   */
+  describe?: { change: typeof describeChange; startup: typeof describeStartup };
+  /** Whether to read and pass through Kolab's lists of tools, prompts and resources (true by default); konnect serves its own tools. */
+  catalog?: boolean;
+  /** What the session calls this channel in what it is told: "Konjir channel" by default. */
+  channelName?: string;
 }
 
 /** What Kolab lists, passed through to Claude Code. */
@@ -120,6 +129,9 @@ export class KolabBridge {
   constructor(private readonly opts: BridgeOptions) {
     if (!!opts.token === !!opts.login) throw new Error('the bridge takes a token or a sign-in, exactly one');
   }
+
+  /** What the session calls this channel. */
+  private get channel() { return this.opts.channelName ?? 'Konjir channel'; }
 
   /** The command the session is told signs this bridge in again. */
   private get loginCommand() { return this.opts.loginCommand ?? `konjir login --url ${safeUrl(this.opts.url)}`; }
@@ -201,7 +213,8 @@ export class KolabBridge {
         };
         client.setNotificationHandler('notifications/resources/updated', (n) => enqueue(n.params.uri));
         // Kolab's lists, passed through: re-read when Kolab says one changed.
-        const caps = client.getServerCapabilities() ?? {};
+        // Without a catalog (konnect), none is asked for, and none read.
+        const caps = this.opts.catalog === false ? {} : client.getServerCapabilities() ?? {};
         client.setNotificationHandler('notifications/tools/list_changed', () => { void this.refresh(c, ['tools']); });
         client.setNotificationHandler('notifications/prompts/list_changed', () => { void this.refresh(c, ['prompts']); });
         client.setNotificationHandler('notifications/resources/list_changed', () => { void this.refresh(c, ['resources', 'resourceTemplates']); });
@@ -226,13 +239,13 @@ export class KolabBridge {
         } else {
           this.lastProblem = undefined;
           // Kolab's lists, read afresh on every connection, so a change missed while away is caught.
-          await this.refresh(client, LIST_KINDS);
+          if (this.opts.catalog !== false) await this.refresh(client, LIST_KINDS);
           this.setLive(client);
           this.log(`${everConnected ? 'reconnected' : 'connected'} to Kolab at ${safeUrl(this.opts.url)} as ${me.actor} (${me.role}); watching ${me.subscribe.join(', ')}`);
           everConnected = true;
           if (!this.summarized && firstReads.length) {
             this.summarized = true;
-            const summary = describeStartup(firstReads);
+            const summary = (this.opts.describe?.startup ?? describeStartup)(firstReads);
             if (summary) await this.opts.forward({ content: this.redact(summary.content), meta: summary.meta });
           }
           this.onListening?.(me);
@@ -267,8 +280,8 @@ export class KolabBridge {
             awaiting ? `waiting for the browser sign-in to ${url} another konjir channel started, checking every ${Math.round(maxMs / 1000)}s`
               : `${none ? 'no sign-in is kept' : 'the sign-in kept has ended or was revoked'} for ${url}; waiting for ${this.loginCommand}, checking every ${Math.round(maxMs / 1000)}s`, {
               content: awaiting
-                ? `The Konjir channel is waiting for a sign-in to Kolab at ${url} that another Konjir channel started in the browser, and picks it up by itself once it is done. If none finishes, tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as.`
-                : `The Konjir channel ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${url}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
+                ? `The ${this.channel} is waiting for a sign-in to Kolab at ${url} that another Konjir channel started in the browser, and picks it up by itself once it is done. If none finishes, tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as.`
+                : `The ${this.channel} ${none ? 'has no sign-in to' : 'was signed out of'} Kolab at ${url}${none ? '' : ': its sign-in ended or was revoked'}, so inbox changes won't arrive. Tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as. The channel picks the sign-in up by itself, with no restart.`,
               meta: { kind: 'bridge', status: awaiting ? 'awaiting_sign_in' : none ? 'unconfigured' : 'signed_out' },
             });
         } else if (login && (isRefusal(e) || listenRefusal(e) === 'session_ended')) {
@@ -285,19 +298,19 @@ export class KolabBridge {
             ? `KONJIR_TOKEN works as ${e.message}, not KONJIR_AGENT ${agent}: serving nothing`
             : `the sign-in kept for ${agent} works as ${e.message}, not ${agent}: serving nothing; run ${this.loginCommand}, choosing ${agent}`, {
             content: byToken
-              ? `The Konjir channel's KONJIR_TOKEN works as ${e.message}, not ${agent} (KONJIR_AGENT), so it serves no Konjir tools and hears no inbox changes. Restart Claude Code with KONJIR_TOKEN unset, or set to ${agent}'s token. Tell the user.`
-              : `The Konjir channel's sign-in for ${agent} works as ${e.message}, not ${agent}, so it serves no Konjir tools and hears no inbox changes. Tell the user to run ${this.loginCommand} in a terminal and choose ${agent} on Kolab's page. The channel picks the new sign-in up by itself.`,
+              ? `The ${this.channel}'s KONJIR_TOKEN works as ${e.message}, not ${agent} (KONJIR_AGENT), so it serves no Konjir tools and hears no inbox changes. Restart Claude Code with KONJIR_TOKEN unset, or set to ${agent}'s token. Tell the user.`
+              : `The ${this.channel}'s sign-in for ${agent} works as ${e.message}, not ${agent}, so it serves no Konjir tools and hears no inbox changes. Tell the user to run ${this.loginCommand} in a terminal and choose ${agent} on Kolab's page. The channel picks the new sign-in up by itself.`,
             meta: { kind: 'bridge', status: 'wrong_actor' },
           });
         } else if (e instanceof NotAnAgentToken) {
           delay = maxMs;
           await this.problem('not-agent', `KONJIR_TOKEN is not an agent session token: ${msg}. Retrying every ${Math.round(maxMs / 1000)}s`, {
-            content: `The Konjir channel's KONJIR_TOKEN is not an agent session token (it may be the admin token), so it has no inbox to listen to. Restart Claude Code with KONJIR_TOKEN set to this agent's session token from konjir admin_open_session. Tell the user.`,
+            content: `The ${this.channel}'s KONJIR_TOKEN is not an agent session token (it may be the admin token), so it has no inbox to listen to. Restart Claude Code with KONJIR_TOKEN set to this agent's session token from konjir admin_open_session. Tell the user.`,
             meta: { kind: 'bridge', status: 'misconfigured' },
           });
         } else if (isRefusal(e) || listenRefusal(e) === 'session_ended') {
           await this.problem('refused', `Kolab at ${safeUrl(this.opts.url)} refused the token; retrying`, {
-            content: `The Konjir channel can't sign in to Kolab at ${safeUrl(this.opts.url)}: Kolab refused its session token (revoked or mistyped). Inbox changes won't arrive until KONJIR_TOKEN is fixed and Claude Code restarts. Tell the user.`,
+            content: `The ${this.channel} can't sign in to Kolab at ${safeUrl(this.opts.url)}: Kolab refused its session token (revoked or mistyped). Inbox changes won't arrive until KONJIR_TOKEN is fixed and Claude Code restarts. Tell the user.`,
             meta: { kind: 'bridge', status: 'refused' },
           });
         } else if (listenRefusal(e)) {
@@ -526,7 +539,7 @@ export class KolabBridge {
     const before = this.seen.get(uri);
     this.seen.set(uri, body);
     if (!had) { onFirst?.(body); return; }
-    const message = describeChange(uri, before, body);
+    const message = (this.opts.describe?.change ?? describeChange)(uri, before, body);
     if (message) await this.opts.forward({ content: this.redact(message.content), meta: message.meta });
   }
 

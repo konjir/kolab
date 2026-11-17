@@ -13,14 +13,14 @@ import { guardBundle, strayFirstParty } from '../../../tools/npm-bundle.mjs';
 
 const root = resolve(import.meta.dirname, '../../..');
 const app = join(root, 'apps/konnect');
-const FIRST_PARTY = ['apps/konnect', 'libs/login', 'libs/brand'].map((d) => join(root, d));
+const FIRST_PARTY = ['apps/konnect', 'libs/login', 'libs/brand', 'apps/channel-bridge'].map((d) => join(root, d));
 const stray = (inputs: string[]) => strayFirstParty(inputs, { app, firstParty: FIRST_PARTY, root }) as string[];
 const tmp = mkdtempSync(join(tmpdir(), 'konnect-bundle-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 test('the bundle may carry konnect\'s, @konjir/login\'s and @konjir/brand\'s source and npm packages; any other first-party code fails the build', () => {
   expect(stray(['src/main.ts', 'src/konnect.ts', '../../libs/login/src/index.ts', '../../libs/brand/src/index.ts', '../../node_modules/zod/index.js', '../../node_modules/@modelcontextprotocol/client/dist/index.js'])).toStrictEqual([]);
-  for (const input of ['../../apps/server/src/agent-tools.ts', '../../libs/engine/src/kolab.ts', '../../libs/types/src/limits.ts', '../../apps/cli/src/cli.ts', '../../apps/channel-bridge/src/channel.ts', 'scripts/bundle.mjs', '../../tools/npm-bundle.mjs']) {
+  for (const input of ['../../apps/server/src/agent-tools.ts', '../../libs/engine/src/kolab.ts', '../../libs/types/src/limits.ts', '../../apps/cli/src/cli.ts', 'scripts/bundle.mjs', '../../tools/npm-bundle.mjs']) {
     expect(stray([input])).toHaveLength(1);
   }
   // Through node_modules/@konjir/…, a workspace link, it is the same code.
@@ -45,7 +45,9 @@ try { bun = execFileSync('bun', ['--version'], { encoding: 'utf8' }).trim(); } c
   expect(stray(inputs)).toStrictEqual([]);
   expect(inputs.some((i) => i.endsWith('apps/konnect/src/konnect.ts') || i === 'src/konnect.ts')).toBe(true);
   expect(inputs.some((i) => i.includes('libs/login/src/'))).toBe(true);
-  expect(inputs.filter((i) => /apps\/(server|cli|channel-bridge)\/|libs\/(engine|db|address|types|log)\//.test(i))).toStrictEqual([]);
+  expect(inputs.filter((i) => /apps\/(server|cli)\/|libs\/(engine|db|address|types|log)\//.test(i))).toStrictEqual([]);
+  // Of the channel bridge, the subscription and its messages alone: never its NestJS server.
+  expect(inputs.map((i) => resolve(app, i)).filter((i) => i.startsWith(join(root, 'apps/channel-bridge') + '/')).map((i) => i.slice(join(root, 'apps/channel-bridge').length + 1)).sort()).toStrictEqual(['src/bridge.ts', 'src/messages.ts', 'src/version.ts']);
   const text = readFileSync(join(tmp, 'konnect.mjs'), 'utf8');
   expect(text).toContain('"0.0.0-test"');
 }, 120_000);

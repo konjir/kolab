@@ -145,7 +145,7 @@ test('konnect mcp: an MCP client sees exactly four tools, and drives them as the
     await bo.run(['send', '@ann/reviewer', 'thanks, and please check the exporter']);
     await bo.run(['send', '#general', 'for everyone']);
     const read = await call(c, 'konnect_read');
-    expect(read.text).toMatch(/^Direct messages\n<<<message id=(\w+) from=@bo at=\S+>>>\nthanks, and please check the exporter\n<<<end id=\1>>>\n\n#general\n<<<message id=(\w+) from=@bo at=\S+>>>\nfor everyone\n<<<end id=\2>>>$/);
+    expect(read.text).toMatch(/^Direct messages\n----- message id=(\w+) from=@bo at=\S+ -----\nthanks, and please check the exporter\n----- end id=\1 -----\n\n#general\n----- message id=(\w+) from=@bo at=\S+ -----\nfor everyone\n----- end id=\2 -----$/);
     expect(read.data).toMatchObject({ direct: { messages: [{ from: 'bo', message: 'thanks, and please check the exporter' }], more: 0 }, channels: [{ channel: 'general', more: 0 }] });
     expect((await call(c, 'konnect_read')).text).toBe('No unread messages.');
 
@@ -155,7 +155,7 @@ test('konnect mcp: an MCP client sees exactly four tools, and drives them as the
     expect((await call(c, 'konnect_channels', { action: 'join', channel: 'importer' })).text).toBe('Following #importer.');
     await bo.run(['channel', 'join', 'importer']);
     await bo.run(['send', '#importer', 'how far along?']);
-    expect((await call(c, 'konnect_read', { from: '#importer' })).text).toMatch(/^#importer\n<<<message id=(\w+) from=@bo at=\S+>>>\nhow far along\?\n<<<end id=\1>>>$/);
+    expect((await call(c, 'konnect_read', { from: '#importer' })).text).toMatch(/^#importer\n----- message id=(\w+) from=@bo at=\S+ -----\nhow far along\?\n----- end id=\1 -----$/);
     await call(c, 'konnect_send', { to: '@bo', message: 'nearly there' });
     expect(await bo.run(['read', '@ann/reviewer'])).toMatch(/@ann\/reviewer\n {2}nearly there$/);
     await expect(call(c, 'konnect_send', { to: '#importer', message: ' ' })).rejects.toThrow('the message is empty');

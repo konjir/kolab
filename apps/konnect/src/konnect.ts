@@ -14,18 +14,23 @@
  * names one) and --json. KONNECT_URL points konnect at another Kolab than the hosted one.
  */
 import { dirname } from 'node:path';
-import { StoredLogin, login, logout, safeUrl } from '@konjir/login';
-import { CLIENT_NAME, NotYet, Refused, TeamClient, said } from './client.js';
+import { logout, safeUrl } from '@konjir/login';
+import { Refused, TeamClient, said } from './client.js';
+import { INSTALL, checkLabel, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgent, shellLine, startTool, toolCommand, writeMcpJson, type Tool } from './agents.js';
+import { joinTeam, signInToTeam } from './sign-in.js';
 import { leftAfter, readAll, readOne, send, targetOf, type Block, type Sent, type Target } from './chat.js';
 import { serveStdio, type McpOptions } from './mcp.js';
-import { channelName, formatChannels, formatMembers, formatMessage, printable, shownActor, shownName, unreadLine, type Member } from './names.js';
-import { HOSTED_URL, PROJECT_FILE, allTeams, agentFileReady, checkTeam, checkUrl, findProject, rememberTeam, teamFile, teamFileReady, teamsAt, trustedUrl, wellFormedUrl, type Project } from './teams.js';
+import { channelName, formatChannels, formatMembers, formatMessage, printable, shownActor, shownName, storedName, unreadLine, type Member } from './names.js';
+import { HOSTED_URL, PROJECT_FILE, allTeams, agentFileReady, checkTeam, checkUrl, findProject, rememberTeam, teamFile, teamsAt, trustedUrl, wellFormedUrl, type Project } from './teams.js';
 
 export { TeamClient, NotYet, Refused } from './client.js';
 export { formatChannels, formatMembers, formatMessage, mentionsIn, shownName, storedName, unreadLine, type Channel, type ChannelMessage, type Member, type Message } from './names.js';
 export { framed, serveMcp, sessionGone, type McpOptions } from './mcp.js';
+export { describeWake, wakeDescriber } from './wake.js';
 export { readAll, send, targetOf, type Block } from './chat.js';
 export { SignInError, UNREAD_WAIT_MS } from './client.js';
+export { joinTeam, signInToTeam } from './sign-in.js';
+export { agentSetupScope, entryEnv, konnectCommand, mcpJsonText, serverName, toolCommand } from './agents.js';
 export { HOSTED_URL, PROJECT_FILE, agentFile, agentFileReady, allTeams, configDir, findProject, readProject, rememberTeam, teamFile, teamsAt, trustedUrl } from './teams.js';
 
 // The published build (scripts/bundle.mjs) defines this as the package's version.
@@ -34,8 +39,12 @@ declare const KONNECT_VERSION: string | undefined;
 /** What `konnect help` says. */
 export const USAGE = `konnect: chat for your team's people and AI agents, on Konjir.
 
-  konnect team <name>             sign in to a team with GitHub, and remember it in this folder
+  konnect                         with no team yet: sign in with GitHub and join a team you're
+                                  invited to; with one, what is unread and what to run next
+  konnect team <name>             sign in to a team, making it if the name is free, and remember it
+                                  in this folder
   konnect team                    list your teams, and the one this folder remembers
+  konnect join                    sign in and pick an invitation or a team in the browser
   konnect who                     the team's members, and who is connected
   konnect send '#channel' [message]
                                   send to a channel; @name or @owner/label in it mentions them
@@ -50,6 +59,16 @@ export const USAGE = `konnect: chat for your team's people and AI agents, on Kon
   konnect channel new <name>      make a channel, and follow it
   konnect channel join|leave <name>
                                   follow a channel, or stop
+  konnect recruit <github username>…
+                                  invite people to your team (its owner); --list shows who is
+                                  invited, --withdraw <username> takes one back
+  konnect remove @name            remove a member from your team (its owner)
+  konnect leave                   leave the team
+  konnect claude <label> [-- claude's arguments]
+                                  set up your agent <label> in the team and start Claude Code with it;
+                                  a message for it wakes it. --no-start sets up only; --listen '#a,#b'
+                                  wakes it on every message in those channels
+  konnect codex|opencode <label>  the same in Codex or OpenCode, which aren't woken by messages yet
   konnect mcp --agent <label>     the four konnect tools for an agent of yours, as a stdio MCP server
   konnect logout                  sign out of a team
 
@@ -58,18 +77,11 @@ export const USAGE = `konnect: chat for your team's people and AI agents, on Kon
   A message is taken as written: flags go before it, and -- ends them. Say where it goes: '#name'
   for a channel (quoted, for the shell), @name for a member; a bare name is refused.
 
-Not available yet:
-  konnect recruit <github login>… invite people to your team
-  konnect remove @name            remove a member, or leave
-  konnect claude|codex|opencode <label>
-                                  start an agent connected to the team
-  konnect                         live chat
+Not available yet: live chat (konnect, with a team).
 
 Sign-ins are kept in ~/.config/konnect (KONNECT_CONFIG_DIR), one per team. KONNECT_URL points konnect
 at another Kolab than ${HOSTED_URL}.`;
 
-/** What a command that the server can't serve yet says. */
-const notYet = (what: string) => new NotYet(`${what} isn't available yet.`);
 
 /** How a command's input and output reach the person: for tests. */
 export interface IO {
@@ -83,10 +95,14 @@ export interface IO {
   stdin?: () => Promise<string>;
   /** Serves `konnect mcp`; by default over this process's stdio. */
   serve?: (opts: McpOptions) => Promise<void>;
+  /** Starts an agent's tool (claude, codex, opencode); by default in this terminal. -1: it isn't installed. */
+  start?: (c: { cmd: string; args: string[]; env: Record<string, string> }, cwd: string) => Promise<number>;
+  /** How this konnect runs, for the agent's MCP entry; by default this process. */
+  self?: () => { command: string; args: string[]; keep?: { from: string; to: string } };
 }
 
 /** A command line, read: konnect's flags, and the words that aren't flags, in order. */
-export interface Args { json: boolean; team?: string; forget: boolean; words: string[]; history?: true; limit?: number; reply?: string; agent?: string }
+export interface Args { json: boolean; team?: string; forget: boolean; words: string[]; history?: true; limit?: number; reply?: string; agent?: string; list?: true; withdraw?: string; noStart?: true; listen?: string }
 
 /**
  * Reads konnect's flags (--json, --team <name>, --forget, --history, --limit <n>, --reply <id>,
@@ -110,6 +126,10 @@ export function parseArgs(argv: string[]): Args {
     if (w === '--json') { a.json = true; continue; }
     if (w === '--forget') { a.forget = true; continue; }
     if (w === '--history') { a.history = true; continue; }
+    if (w === '--list') { a.list = true; continue; }
+    if (w === '--no-start') { a.noStart = true; continue; }
+    if (w === '--withdraw') { a.withdraw = value(i, 'a GitHub username'); i++; continue; }
+    if (w === '--listen') { a.listen = value(i, 'channels, as \'#a,#b\''); i++; continue; }
     if (w === '--team') { a.team = value(i, 'a team\'s name'); i++; continue; }
     if (w === '--reply') { a.reply = value(i, 'the id of the message it answers'); i++; continue; }
     if (w === '--agent') { a.agent = value(i, 'an agent\'s label'); i++; continue; }
@@ -158,61 +178,6 @@ export function chooseTeam(given: string | undefined, project: Project | undefin
   if (!teams.length) throw new Error('you aren\'t signed in to a team: run konnect team <name>');
   throw new Error(`you're in ${teams.length} teams (${teams.join(', ')}): pass --team <name>, or run konnect team <name> here to remember one in this folder`);
 }
-
-/** The scope konnect's sign-in asks for: the team's kolab preselected on Kolab's page. */
-export const signInScope = (team: string) => `konjir kolab:${team}`;
-
-/**
- * `konnect team <name>`: signs in to an existing team the person is a member of, as themselves,
- * and keeps the sign-in in the team's own file. A sign-in kept already that still works is used
- * as it is. One that comes back as anyone but the person, or in another kolab, is revoked and
- * forgotten, never kept.
- *
- * Making a team whose name is free, and joining one by invitation, are the invitations track's: they
- * belong here, before the browser opens, once Kolab can do them.
- */
-export async function signInToTeam(team: string, url: string, io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }): Promise<{ me: { actor: string; kolab: string }; fresh: boolean }> {
-  const file = teamFileReady(team, io.env);
-  // Already signed in, and it still works: nothing to do.
-  if (teamsAt(url, io.env).includes(team)) {
-    try {
-      // open() checks the sign-in is the person's own, in this team.
-      const client = await TeamClient.open(team, url, file);
-      try { return { me: client.me, fresh: false }; } finally { await client.close(); }
-    } catch { /* signed in afresh below */ }
-  }
-  // The refresh token kept before, if any: a sign-in this one saved, and only that, is undone on failure.
-  const kept = () => new StoredLogin(url, { path: file }).saved().tokens?.refresh_token;
-  const before = kept();
-  let me: Awaited<ReturnType<typeof login>> | undefined;
-  try {
-    me = await login(url, {
-      path: file, scope: signInScope(team), clientName: CLIENT_NAME, open: io.open, log: io.log,
-      opening: `Opening your browser to sign in to team ${team} with GitHub. On Kolab's page, choose Yourself (not an agent) and kolab ${team}, then Allow.`,
-      again: `run konnect team ${team} again`,
-    });
-    if (!me || typeof me !== 'object' || me.kind !== 'person' || me.kolab !== team) {
-      const as = !me || typeof me !== 'object' || typeof me.kind !== 'string' ? 'as someone Kolab didn\'t name'
-        : me.kind === 'person' ? `in kolab ${printable(String(me.kolab))}` : `as ${printable(String(me.actor))}, an agent`;
-      throw new WrongIdentity(`you signed in ${as}, not as yourself in team ${team}`);
-    }
-    return { me, fresh: true };
-  } catch (e) {
-    // Whatever failed, a sign-in saved by this attempt is revoked and forgotten: never kept unchecked.
-    const saved = kept();
-    let revoked = true;
-    if (saved && saved !== before) revoked = (await logout(url, { path: file, forget: true }).catch(() => ({ revoked: false }))).revoked;
-    if (e instanceof WrongIdentity) {
-      throw new Error(`${e.message}, so konnect kept nothing${revoked ? '' : ' (that sign-in lapses within 30 days unused)'}. Run konnect team ${team} again, and on Kolab's page choose Yourself and kolab ${team}. `
-        + `If you aren't a member of ${team}, ask its owner to add you: konnect can't make a team or take an invitation yet.`);
-    }
-    const msg = String((e as Error)?.message ?? e);
-    if (/^Kolab didn't sign you in: the person declined$/.test(msg)) throw new Error(`you cancelled the sign-in to team ${team}: nothing was kept`);
-    throw said(e, team, url);
-  }
-}
-
-class WrongIdentity extends Error {}
 
 /**
  * KONNECT_URL as konnect keeps and writes it: http(s), no user name or password, no query or
@@ -269,13 +234,9 @@ export async function main(argv: string[], io: IO = {}) {
   const teamFlag = parsed.team;
   const [cmd, ...rest] = parsed.words;
   const print = (value: unknown, lines: () => string) => out(json ? JSON.stringify(value, null, 2) : lines());
-  if (cmd === undefined) throw notYet('Live chat (konnect with no command)');
-
-  // Commands the server can't serve yet: said before anything is read or sent.
-  if (cmd === 'recruit') throw notYet('Inviting people (konnect recruit)');
-  if (cmd === 'remove') throw notYet('Removing a member (konnect remove)');
-  if (['claude', 'codex', 'opencode'].includes(cmd)) throw notYet(`Starting an agent (konnect ${cmd})`);
-  if (!['team', 'who', 'send', 'read', 'channel', 'mcp', 'logout'].includes(cmd)) throw new Error(`konnect has no command ${printable(cmd)}: run konnect help`);
+  if (cmd !== undefined && !['team', 'join', 'who', 'send', 'read', 'channel', 'recruit', 'remove', 'leave', 'claude', 'codex', 'opencode', 'mcp', 'logout'].includes(cmd)) {
+    throw new Error(`konnect has no command ${printable(cmd)}: run konnect help`);
+  }
   if (parsed.forget && cmd !== 'logout') throw new Error(`konnect ${cmd} takes no --forget: only konnect logout does`);
 
   const project = findProject(cwd);
@@ -306,6 +267,132 @@ export async function main(argv: string[], io: IO = {}) {
     return;
   }
 
+  // konnect join, and bare konnect with no team signed in here: sign in naming no team, and land in the one picked.
+  if (cmd === 'join' || (cmd === undefined && !teamsAt(url, env).length && project?.team === undefined && teamFlag === undefined)) {
+    if (rest.length) throw new Error(`konnect join: unknown ${printable(rest.join(' '))}`);
+    const r = await joinTeam(url, { open: io.open, log: err, env });
+    const dir = project ? dirname(project.path) : cwd;
+    const path = rememberTeam(dir, r.team, url);
+    const client = await TeamClient.open(r.team, url, teamFile(r.team, env));
+    try {
+      const members = await client.members().catch(() => [] as Member[]);
+      print({ team: r.team, actor: r.actor, folder: path, members: members.map((m) => ({ ...m, name: shownName(m) })) }, () => [
+        `You're in team ${r.team}, as ${printable(r.actor)}. ${dir === cwd ? `This folder remembers it (${PROJECT_FILE}).` : `${printable(path)} remembers it.`}`,
+        ...(members.length ? ['', formatMembers(members), ''] : ['']),
+        'Next:',
+        `  konnect read                     what is waiting for you`,
+        `  konnect send '#general' "hello"   say hello to the team`,
+        `  konnect claude <label>           bring an agent of yours into the team`,
+      ].join('\n'));
+    } finally {
+      await client.close();
+    }
+    return;
+  }
+
+  if (cmd === undefined) {
+    // A team signed in here: no live chat yet; what is unread, and what to run.
+    const lines = ['Live chat isn\'t available yet.'];
+    let known: string | undefined;
+    try {
+      const team = chooseTeam(teamFlag, project, url, env);
+
+  if (cmd === 'claude' || cmd === 'codex' || cmd === 'opencode') {
+    const tool: Tool = cmd;
+    const [labelWord, ...extra] = rest;
+    const label = checkLabel(labelWord, tool);
+    const listen = listenList(parsed.listen);
+    if (listen.length && tool !== 'claude') throw new Error(`--listen wakes the agent on a channel's messages, and only Claude Code is woken in this release: konnect claude ${label} --listen …`);
+    // The person's own sign-in to the team, checked first: the agent's setup page signs them in again, in the browser.
+    const person = await TeamClient.open(team, url, teamFile(team, env));
+    await person.close();
+    const r = await setUpAgent(team, url, label, { open: io.open, log: err, env });
+    const self = (io.self ?? (() => konnectCommand(undefined, env)))();
+    if (self.keep) keepKonnect(self.keep);
+    const name = serverName(label);
+    const entry = { command: self.command, args: [...self.args, 'mcp'], env: entryEnv({ team, label, listen, ...(url !== HOSTED_URL ? { url } : {}) }) };
+    const written = tool === 'claude' ? writeMcpJson(cwd, name, entry) : undefined;
+    const run = toolCommand(tool, name, entry, extra);
+    const said = [`Your agent ${shownName({ actor: r.agent, kind: 'agent', owner: r.agent.slice(0, r.agent.length - label.length - 1) })} is ${r.made ? 'made and ' : ''}signed in to team ${team}${written ? `; ${printable(written)} has its entry, ${name}` : ''}.`];
+    if (tool !== 'claude') said.push(`${tool === 'codex' ? 'Codex' : 'OpenCode'} isn't woken by messages in this release: the agent checks for them (konnect_read) at the start of each turn.`);
+    if (parsed.noStart) {
+      said.push(`Start it with: ${shellLine([run.cmd, ...run.args])}`);
+      print({ team, agent: r.agent, made: r.made, entry, file: written ?? null, command: [run.cmd, ...run.args], env: run.env }, () => said.join('\n'));
+      return;
+    }
+    out(said.join('\n'));
+    const code = await (io.start ?? ((c, dir) => startTool(c, dir, env)))(run, cwd);
+    if (code === -1) {
+      throw new Error(`${tool} isn't installed here (no ${tool} on PATH). Install ${INSTALL[tool]}, then run: ${shellLine([run.cmd, ...run.args])}${Object.keys(run.env).length ? ' (with OPENCODE_CONFIG_CONTENT as konnect opencode --no-start --json gives it)' : ''}`);
+    }
+    process.exitCode = code;
+    return;
+  }
+
+  if (cmd === 'recruit' || cmd === 'remove' || cmd === 'leave') {
+    if (cmd === 'recruit' && !parsed.list && parsed.withdraw === undefined && !rest.length) throw new Error('konnect recruit <github username>…: name who to invite (--list shows who is invited)');
+    if (cmd === 'remove' && rest.length !== 1) throw new Error('konnect remove @name: name one member');
+    if (cmd === 'leave' && rest.length) throw new Error(`konnect leave: unknown ${printable(rest.join(' '))}`);
+    const client = await TeamClient.open(team, url, teamFile(team, env));
+    const ownerOnly = (e: unknown) => {
+      if (e instanceof Refused && /only the owner of kolab/.test(e.message)) return new Error(`only team ${team}'s owner can do that: ask them`);
+      if (e instanceof Refused && /you own kolab \S+, so you can't leave it/.test(e.message)) return new Error(`you own team ${team}, so you can't leave it`);
+      return e;
+    };
+    try {
+      if (cmd === 'recruit' && parsed.list) {
+        const list = await client.invitations().catch((e) => { throw ownerOnly(e); });
+        print(list, () => (list.length ? list.map((i) => `${printable(i.account)}  invited by ${printable(i.invited_by)} on ${i.created_at.slice(0, 10)}`).join('\n') : `No invitations to team ${team} are waiting.`));
+        return;
+      }
+      if (cmd === 'recruit' && parsed.withdraw !== undefined) {
+        const who = parsed.withdraw.replace(/^@/, '').toLowerCase();
+        const list = await client.invitations().catch((e) => { throw ownerOnly(e); });
+        const it = list.find((i) => i.account.toLowerCase() === who);
+        if (!it) throw new Error(`no invitation to team ${team} waits for ${printable(parsed.withdraw)}: konnect recruit --list shows who is invited`);
+        const w = await client.withdraw(it.id);
+        print(w, () => `Withdrew ${printable(it.account)}'s invitation to team ${team}.`);
+        return;
+      }
+      if (cmd === 'recruit') {
+        const r = await client.invite(rest).catch((e) => { throw ownerOnly(e); });
+        print(r, () => [
+          ...(r.invited.length ? [`Invited: ${r.invited.map((i) => printable(i.account)).join(', ')}.`] : []),
+          ...(r.already_invited.length ? [`Already invited: ${r.already_invited.map((i) => printable(i.account)).join(', ')}.`] : []),
+          ...(r.already_members.length ? [`Already in the team: ${r.already_members.map(printable).join(', ')}.`] : []),
+          ...(r.declined_recently.length ? [`Declined in the last 30 days, so not asked again yet: ${r.declined_recently.map(printable).join(', ')}.`] : []),
+          ...(r.invited.length || r.already_invited.length ? ['They join by running, with the GitHub account you named:', '  npx @konjir/konnect'] : []),
+        ].join('\n'));
+        return;
+      }
+      if (cmd === 'remove') {
+        const r = await client.removeMember(storedName(rest[0].startsWith('@') ? rest[0] : `@${rest[0]}`)).catch((e) => { throw ownerOnly(e); });
+        print(r, () => `Removed @${printable(r.removed)} from team ${team}${r.agents.length ? `, with their agents ${r.agents.map(printable).join(', ')}` : ''}: ${r.ended} session${r.ended === 1 ? '' : 's'} ended.`);
+        return;
+      }
+      const r = await client.leave().catch((e) => { throw ownerOnly(e); });
+      await logout(url, { path: teamFile(team, env), forget: true }).catch(() => undefined);
+      print(r, () => `You left team ${team}${r.agents.length ? `, and your agents ${r.agents.map(printable).join(', ')} with you` : ''}. konnect forgot its sign-in here.`);
+      return;
+    } finally {
+      await client.close();
+    }
+  }
+      known = team;
+      const client = await TeamClient.open(team, url, teamFile(team, env));
+      try {
+        const u = await client.unread().catch(() => undefined);
+        const line = u ? unreadLine(u) : '';
+        lines.push(line ? `Team ${team}: ${line}.` : `Team ${team}: nothing unread.`);
+      } finally { await client.close(); }
+    } catch (e) {
+      lines.push(known ? `Team ${known}: ${(e as Error)?.message ?? e}.` : String((e as Error)?.message ?? e));
+    }
+    lines.push('', '  konnect read                     read what is waiting', '  konnect send \'#general\' "…"     say something to the team', '  konnect help                     every command');
+    out(lines.join('\n'));
+    return;
+  }
+
   if (cmd === 'mcp') {
     // The agent's own tools over stdio: stdout is the protocol's alone from here.
     if (rest.length) throw new Error(`konnect mcp [--team <name>] --agent <label>: unknown ${printable(rest.join(' '))}`);
@@ -318,11 +405,94 @@ export async function main(argv: string[], io: IO = {}) {
     const owner = slash < 0 ? undefined : given.slice(0, slash);
     if (owner !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(owner)) throw new Error(`${printable(given)} isn't an agent: give its label, or <owner>/<label>`);
     const file = env.KONNECT_CREDENTIALS || agentFileReady(mcpTeam, agent, env);
-    await (io.serve ?? serveStdio)({ team: mcpTeam, url, file, label: agent, ...(owner ? { owner } : {}), log: err });
+    const listen = listenList(parsed.listen ?? (env.KONNECT_LISTEN ? env.KONNECT_LISTEN : undefined));
+    await (io.serve ?? serveStdio)({ team: mcpTeam, url, file, label: agent, ...(owner ? { owner } : {}), ...(listen.length ? { listen } : {}), log: err });
     return;
   }
 
   const team = chooseTeam(teamFlag, project, url, env);
+
+  if (cmd === 'claude' || cmd === 'codex' || cmd === 'opencode') {
+    const tool: Tool = cmd;
+    const [labelWord, ...extra] = rest;
+    const label = checkLabel(labelWord, tool);
+    const listen = listenList(parsed.listen);
+    if (listen.length && tool !== 'claude') throw new Error(`--listen wakes the agent on a channel's messages, and only Claude Code is woken in this release: konnect claude ${label} --listen …`);
+    // The person's own sign-in to the team, checked first: the agent's setup page signs them in again, in the browser.
+    const person = await TeamClient.open(team, url, teamFile(team, env));
+    await person.close();
+    const r = await setUpAgent(team, url, label, { open: io.open, log: err, env });
+    const self = (io.self ?? (() => konnectCommand(undefined, env)))();
+    if (self.keep) keepKonnect(self.keep);
+    const name = serverName(label);
+    const entry = { command: self.command, args: [...self.args, 'mcp'], env: entryEnv({ team, label, listen, ...(url !== HOSTED_URL ? { url } : {}) }) };
+    const written = tool === 'claude' ? writeMcpJson(cwd, name, entry) : undefined;
+    const run = toolCommand(tool, name, entry, extra);
+    const said = [`Your agent ${shownName({ actor: r.agent, kind: 'agent', owner: r.agent.slice(0, r.agent.length - label.length - 1) })} is ${r.made ? 'made and ' : ''}signed in to team ${team}${written ? `; ${printable(written)} has its entry, ${name}` : ''}.`];
+    if (tool !== 'claude') said.push(`${tool === 'codex' ? 'Codex' : 'OpenCode'} isn't woken by messages in this release: the agent checks for them (konnect_read) at the start of each turn.`);
+    if (parsed.noStart) {
+      said.push(`Start it with: ${shellLine([run.cmd, ...run.args])}`);
+      print({ team, agent: r.agent, made: r.made, entry, file: written ?? null, command: [run.cmd, ...run.args], env: run.env }, () => said.join('\n'));
+      return;
+    }
+    out(said.join('\n'));
+    const code = await (io.start ?? ((c, dir) => startTool(c, dir, env)))(run, cwd);
+    if (code === -1) {
+      throw new Error(`${tool} isn't installed here (no ${tool} on PATH). Install ${INSTALL[tool]}, then run: ${shellLine([run.cmd, ...run.args])}${Object.keys(run.env).length ? ' (with OPENCODE_CONFIG_CONTENT as konnect opencode --no-start --json gives it)' : ''}`);
+    }
+    process.exitCode = code;
+    return;
+  }
+
+  if (cmd === 'recruit' || cmd === 'remove' || cmd === 'leave') {
+    if (cmd === 'recruit' && !parsed.list && parsed.withdraw === undefined && !rest.length) throw new Error('konnect recruit <github username>…: name who to invite (--list shows who is invited)');
+    if (cmd === 'remove' && rest.length !== 1) throw new Error('konnect remove @name: name one member');
+    if (cmd === 'leave' && rest.length) throw new Error(`konnect leave: unknown ${printable(rest.join(' '))}`);
+    const client = await TeamClient.open(team, url, teamFile(team, env));
+    const ownerOnly = (e: unknown) => {
+      if (e instanceof Refused && /only the owner of kolab/.test(e.message)) return new Error(`only team ${team}'s owner can do that: ask them`);
+      if (e instanceof Refused && /you own kolab \S+, so you can't leave it/.test(e.message)) return new Error(`you own team ${team}, so you can't leave it`);
+      return e;
+    };
+    try {
+      if (cmd === 'recruit' && parsed.list) {
+        const list = await client.invitations().catch((e) => { throw ownerOnly(e); });
+        print(list, () => (list.length ? list.map((i) => `${printable(i.account)}  invited by ${printable(i.invited_by)} on ${i.created_at.slice(0, 10)}`).join('\n') : `No invitations to team ${team} are waiting.`));
+        return;
+      }
+      if (cmd === 'recruit' && parsed.withdraw !== undefined) {
+        const who = parsed.withdraw.replace(/^@/, '').toLowerCase();
+        const list = await client.invitations().catch((e) => { throw ownerOnly(e); });
+        const it = list.find((i) => i.account.toLowerCase() === who);
+        if (!it) throw new Error(`no invitation to team ${team} waits for ${printable(parsed.withdraw)}: konnect recruit --list shows who is invited`);
+        const w = await client.withdraw(it.id);
+        print(w, () => `Withdrew ${printable(it.account)}'s invitation to team ${team}.`);
+        return;
+      }
+      if (cmd === 'recruit') {
+        const r = await client.invite(rest).catch((e) => { throw ownerOnly(e); });
+        print(r, () => [
+          ...(r.invited.length ? [`Invited: ${r.invited.map((i) => printable(i.account)).join(', ')}.`] : []),
+          ...(r.already_invited.length ? [`Already invited: ${r.already_invited.map((i) => printable(i.account)).join(', ')}.`] : []),
+          ...(r.already_members.length ? [`Already in the team: ${r.already_members.map(printable).join(', ')}.`] : []),
+          ...(r.declined_recently.length ? [`Declined in the last 30 days, so not asked again yet: ${r.declined_recently.map(printable).join(', ')}.`] : []),
+          ...(r.invited.length || r.already_invited.length ? ['They join by running, with the GitHub account you named:', '  npx @konjir/konnect'] : []),
+        ].join('\n'));
+        return;
+      }
+      if (cmd === 'remove') {
+        const r = await client.removeMember(storedName(rest[0].startsWith('@') ? rest[0] : `@${rest[0]}`)).catch((e) => { throw ownerOnly(e); });
+        print(r, () => `Removed @${printable(r.removed)} from team ${team}${r.agents.length ? `, with their agents ${r.agents.map(printable).join(', ')}` : ''}: ${r.ended} session${r.ended === 1 ? '' : 's'} ended.`);
+        return;
+      }
+      const r = await client.leave().catch((e) => { throw ownerOnly(e); });
+      await logout(url, { path: teamFile(team, env), forget: true }).catch(() => undefined);
+      print(r, () => `You left team ${team}${r.agents.length ? `, and your agents ${r.agents.map(printable).join(', ')} with you` : ''}. konnect forgot its sign-in here.`);
+      return;
+    } finally {
+      await client.close();
+    }
+  }
 
   if (cmd === 'logout') {
     if (rest.length) throw new Error(`konnect logout [--team <name>] [--forget]: unknown ${printable(rest.join(' '))}`);

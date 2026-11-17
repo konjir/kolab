@@ -7,7 +7,7 @@
 # The tarball must hold LICENSE, the Apache License 2.0 text that apps/konnect/LICENSE and
 # apps/cli/LICENSE are, THIRD-PARTY-NOTICES.md and konnect.mjs, and its package.json must declare
 # "license": "Apache-2.0". The only first-party sources konnect may bundle are apps/konnect's,
-# libs/login's and libs/brand's; scripts/package.mjs fails the build on any other. Here, each must
+# libs/login's, libs/brand's and apps/channel-bridge's; scripts/package.mjs fails the build on any other. Here, each must
 # still declare Apache-2.0 and carry the licence, and the notices (every package the bundle inlines)
 # must name no @konjir/* package and no FSL licence.
 set -euo pipefail
@@ -18,10 +18,10 @@ fail() { echo "::error::$*" >&2; exit 1; }
 declared() { node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>console.log(JSON.parse(s).license))'; }
 
 head -4 "$licence" | grep -q 'Version 2.0, January 2004' || fail "apps/konnect/LICENSE isn't the Apache License"
-for pkg in apps/cli libs/login libs/brand; do
+for pkg in apps/cli libs/login libs/brand apps/channel-bridge; do
   cmp -s "$repo/$pkg/LICENSE" "$licence" || fail "$pkg has no LICENSE, or not apps/konnect/LICENSE"
 done
-for pkg in apps/konnect libs/login libs/brand; do
+for pkg in apps/konnect libs/login libs/brand apps/channel-bridge; do
   [ "$(declared <"$repo/$pkg/package.json")" = Apache-2.0 ] || fail "$pkg/package.json doesn't declare Apache-2.0"
 done
 files=$(tar -tzf "$tarball")

@@ -4,7 +4,8 @@
 //
 // konnect is an MCP client of Kolab, and for an agent (`konnect mcp`) a stdio MCP server: its own
 // source, @konjir/login (the OAuth client and its credentials store) with @konjir/brand (the
-// sign-in page's tokens), the MCP client and server SDKs, and zod, which the server's tools use. It
+// sign-in page's tokens), the channel bridge's subscription (apps/channel-bridge's bridge.ts and
+// messages.ts, which wake an agent), the MCP client and server SDKs, and zod, which the server's tools use. It
 // resolves nothing as it runs: a require of its own loads Node's built-ins alone, and the build
 // fails on an import() of a name computed as it runs (tools/npm-bundle.mjs), so a folder konnect is
 // run in can't put its own code in konnect's place. The @konjir/source condition bundles the
@@ -27,7 +28,8 @@ const built = await Bun.build({
   target: 'node',
   format: 'esm',
   conditions: ['@konjir/source'],
-  define: { KONNECT_VERSION: JSON.stringify(version) },
+  // KONJIR_VERSION too: the channel bridge's version.ts reads it, where it would otherwise read its package.json, which isn't there.
+  define: { KONNECT_VERSION: JSON.stringify(version), KONJIR_VERSION: JSON.stringify(version) },
   minify: { syntax: true, whitespace: true },
   metafile: true,
 });

@@ -8,8 +8,12 @@ import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
 import { main, type IO } from '../src/konnect.js';
 
-/** The person's browser: follows Kolab's redirects with its cookies, submits the consent page as `form` says, and lands on konnect's loopback callback. */
-export async function browse(start: URL, form: Record<string, string>): Promise<string> {
+/**
+ * The person's browser: follows Kolab's redirects with its cookies, submits the page as `form`
+ * says (the page's csrf, sign-in and `shown` with it), or, given a function, presses the button it
+ * picks from the page's buttons (name=value), and lands on konnect's loopback callback.
+ */
+export async function browse(start: URL, form: Record<string, string> | ((buttons: string[], html: string) => Record<string, string>)): Promise<string> {
   const jar = new Map<string, string>();
   const go = async (url: URL, init: RequestInit = {}) => {
     const res = await fetch(url, { ...init, redirect: 'manual', headers: { ...(init.headers as Record<string, string>), cookie: [...jar].map(([k, v]) => `${k}=${v}`).join('; ') } });
@@ -23,14 +27,28 @@ export async function browse(start: URL, form: Record<string, string>): Promise<
   const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
   const signIn = /name="sign_in" value="([^"]+)"/.exec(html)?.[1];
   if (!csrf) throw new Error(`no consent page at ${url.pathname}: ${res.status}`);
+  const shown = /name="shown" value="([^"]+)"/.exec(html)?.[1];
+  const fields = typeof form === 'function' ? form([...html.matchAll(/<button[^>]*name="([^"]+)" value="([^"]+)"/g)].map((m) => `${m[1]}=${m[2]}`), html) : { decision: 'allow', ...form };
   const done = await go(new URL('/oauth/consent', url), {
-    method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, sign_in: signIn ?? '', decision: 'allow', ...form }).toString(),
+    method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ csrf, sign_in: signIn ?? '', ...(shown ? { shown } : {}), ...fields }).toString(),
   });
-  await (await fetch(new URL(done.headers.get('location')!))).text();
+  const back = done.headers.get('location');
+  if (!back) throw new Error(`Kolab answered the page with ${done.status}: ${(await done.text()).slice(0, 300)}`);
+  await (await fetch(new URL(back))).text();
   return html;
 }
 
-export const AS_SELF = (team: string) => ({ as: 'self', kolab: `kolab:${team}`, role: 'product' });
+/** Presses the first button whose name=value starts with `prefix`. */
+export const pressing = (prefix: string) => (buttons: string[]) => {
+  const b = buttons.find((x) => x.startsWith(prefix));
+  if (!b) throw new Error(`no ${prefix} button among ${buttons.join(', ')}`);
+  const i = b.indexOf('=');
+  return { [b.slice(0, i)]: b.slice(i + 1) };
+};
+
+/** The team page (`konnect team <name>`): make it, or sign in to it, with Allow. */
+export const AS_SELF = (_team: string) => pressing('decision=allow');
 
 /** What a command that fails says: the line konnect prints. */
 export const fails = async (p: Promise<unknown>) => (await rejection(p)).replace(/^Error: /, '');
@@ -54,7 +72,8 @@ export function machine(url: string, name: string) {
 /** Ann owns team `hub`, where Bo writes and Ann's agent ann-reviewer works; Ann also owns `side`. */
 export async function teams() {
   const kolab: TestKolab = await openKolab();
-  const idp = new StubIdentity();
+  // GitHub's accounts, as konnect recruit looks them up: Ann, Bo and Cy, who isn't in any team yet.
+  const idp = new StubIdentity().account({ subject: '41', login: 'ann' }).account({ subject: '42', login: 'bo' }).account({ subject: '43', login: 'cy' });
   const server = await startServer({ adminToken: 'konnect-admin', kolab, identity: idp, webRoot: null });
   closeAtEnd(server);
   await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
@@ -64,7 +83,7 @@ export async function teams() {
   await kolab.grant('hub', 'bo', 'write');
   await kolab.addActor('ann-reviewer', { owner: 'ann' });
   await kolab.grant('hub', 'ann-reviewer', 'write');
-  const signIn = async (m: ReturnType<typeof machine>, login: { subject: string; login: string }, team: string, form = AS_SELF(team)) => {
+  const signIn = async (m: ReturnType<typeof machine>, login: { subject: string; login: string }, team: string, form: Parameters<typeof browse>[1] = AS_SELF(team)) => {
     idp.next(login);
     return m.run(['team', team], { open: (u) => { void browse(u, form); } });
   };
