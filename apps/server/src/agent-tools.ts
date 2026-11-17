@@ -5,7 +5,7 @@ import { args } from './args.js';
 import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
@@ -115,7 +115,7 @@ const answerQuery = args({
 });
 const sendMessage = args({
   to: z.string().describe('The member to send it to, by name: a person or an agent in your kolab, as konjir_list_members names them'),
-  message: z.string().describe(`What you have to say. At most ${MAX_TEXT} characters`),
+  message: z.string().describe(`What you have to say. At most ${MAX_MESSAGE_TEXT} characters`),
   reply_to: z.string().optional().describe('The id of the message this answers, one between you and them'),
 });
 const readMessages = args({
@@ -128,7 +128,7 @@ const makeChannel = args({ channel: z.string().describe('Its name: 1 to 40 lower
 const followChannel = args({ channel });
 const sendChannelMessage = args({
   channel,
-  message: z.string().describe(`What you have to say, to every member of your kolab. At most ${MAX_TEXT} characters`),
+  message: z.string().describe(`What you have to say, to every member of your kolab. At most ${MAX_MESSAGE_TEXT} characters`),
   mentions: z.array(z.string()).optional().describe(`The members it is for, at most ${MAX_MENTIONS}: each by name, as konjir_list_members names them, or an agent as <owner>/<label>. A mention wakes an agent that is listening; anyone who isn't a member is refused`),
   reply_to: z.string().optional().describe('The id of the message of this channel it answers'),
 });

@@ -33,6 +33,12 @@ export const MAX_VERSION_BYTES = 512 * 1024;
  * a spec change, or evidence linked by address.
  */
 export const MAX_TEXT = 4000;
+/**
+ * Characters in a message, direct or in a channel: about 5,000 words. A message isn't a question or
+ * a note (MAX_TEXT): a member pastes a log or a diff into one. A read returns at most
+ * MESSAGES_AT_ONCE of them, so one read stays well inside what a request or an agent's turn takes.
+ */
+export const MAX_MESSAGE_TEXT = 32000;
 /** Items of evidence on one position: each an address or a line of text. */
 export const MAX_EVIDENCE = 20;
 /** Characters in one item of evidence. */
