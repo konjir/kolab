@@ -15,7 +15,7 @@
 // `xdg-open`) on PATH that records the URL, and this script plays the browser with fetch, keeping
 // cookies, up to Kolab's consent page (which signs e2e up), grants e2e write in the team, and
 // allows the sign-in as e2e themselves. Then peer, with a session the admin token opens, and e2e,
-// through konnect, exchange direct messages: konnect read shows peer's and marks it read, konnect
+// through konnect, exchange direct messages and channel messages: konnect read shows peer's and marks it read, konnect
 // send reaches peer, konnect who names both, and konnect logout signs out.
 //
 // Exits nonzero, saying which check failed. The server and temp folders are removed either way
@@ -97,6 +97,49 @@ const konjir = async (token, args) => {
   check(r.code === 0, `konjir ${args[0]} exited ${r.code}:\n${r.out}${r.err}`);
   try { return JSON.parse(r.out); } catch { return r.out; }
 };
+
+/**
+ * `konnect mcp` as an MCP client starts it, over stdio: initialize, list its tools, call konnect_who.
+ * Returns the tool names, sorted, and konnect_who's result.
+ */
+async function mcpSession(args, extraEnv) {
+  const p = spawn(konnectCmd[0], [...konnectCmd.slice(1), ...args], { cwd: work, env: env({ KONNECT_URL: MCP, ...extraEnv }), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  live.add(p);
+  let buffer = '', err = '', id = 0;
+  const waiting = new Map();
+  p.stderr.on('data', (d) => { err += d; });
+  p.stdout.on('data', (d) => {
+    buffer += d;
+    for (let i = buffer.indexOf('\n'); i >= 0; i = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, i).trim();
+      buffer = buffer.slice(i + 1);
+      if (!line) continue;
+      let m;
+      try { m = JSON.parse(line); } catch { fail(`konnect mcp wrote something other than MCP to stdout: ${line.slice(0, 200)}`); }
+      if (m.id !== undefined && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+    }
+  });
+  const request = (method, params = {}) => new Promise((ok, no) => {
+    const n = ++id;
+    const t = setTimeout(() => no(new Failed(`konnect mcp didn't answer ${method} in 30s:\n${err}`)), 30_000);
+    waiting.set(n, (m) => { clearTimeout(t); ok(m); });
+    p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: n, method, params })}\n`);
+  });
+  try {
+    const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'konnect-e2e', version: '0' } });
+    check(init.result?.serverInfo?.name === 'konnect', `konnect mcp's initialize: ${JSON.stringify(init).slice(0, 300)}`);
+    p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+    const tools = ((await request('tools/list')).result?.tools ?? []).map((t) => t.name).sort();
+    const who = (await request('tools/call', { name: 'konnect_who', arguments: {} })).result;
+    return { tools, who };
+  } finally {
+    p.stdin.end();
+    const t = setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch { /* gone */ } }, 5_000);
+    await new Promise((ok) => (p.exitCode !== null ? ok() : p.once('exit', ok)));
+    clearTimeout(t);
+    live.delete(p);
+  }
+}
 
 async function startKolab() {
   const port = await freePort();
@@ -206,9 +249,23 @@ async function main() {
   const members = JSON.parse(who.out || '[]');
   check(members.some((m) => m.actor === 'peer') && members.some((m) => m.actor === LOGIN && m.you), `konnect who: ${who.out}${who.err}`);
 
-  step('a channel says it isn\'t available yet');
-  const channel = await konnect(['send', '#general', 'hi']);
-  check(channel.code !== 0 && channel.err.includes('isn\'t available yet'), `konnect send '#general': ${channel.code} ${channel.out}${channel.err}`);
+  step('channels: konnect channel new, a mention from the words, peer reads it; peer posts in general; konnect read reads it under #general');
+  const made = await konnect(['channel', 'new', 'deploys']);
+  check(made.code === 0 && made.out.startsWith('Made #deploys.'), `konnect channel new: ${made.code} ${made.out}${made.err}`);
+  const posted = await konnect(['send', '#deploys', 'deploy is green @peer']);
+  check(posted.code === 0 && posted.out.trim() === 'Sent to #deploys, mentioning @peer.', `konnect send '#deploys': ${posted.code} ${posted.out}${posted.err}`);
+  const peerRead = await konjir(peer, ['read_channel', 'channel=deploys']);
+  check(peerRead.messages?.[0]?.message === 'deploy is green @peer' && peerRead.messages[0].mentions?.[0] === 'peer', `peer read_channel: ${JSON.stringify(peerRead)}`);
+  await konjir(peer, ['send_channel_message', 'channel=general', 'message=standup in 5']);
+  const who2 = await konnect(['who']);
+  check(who2.code === 0 && who2.out.trim().endsWith('(1 unread in #general)'), `konnect who's last line: ${who2.out}${who2.err}`);
+  const all = await konnect(['read']);
+  check(all.code === 0 && /#general\n\S+ \S+ {2}@peer\n {2}standup in 5\s*$/.test(all.out), `konnect read: ${all.code}\n${all.out}${all.err}`);
+
+  step('konnect mcp over stdio: four tools, and a sign-in that isn\'t the agent\'s refused');
+  const listed = await mcpSession(['mcp', '--team', TEAM, '--agent', 'helper'], { KONNECT_CREDENTIALS: join(home, '.config', 'konnect', 'teams', `${TEAM}.json`) });
+  check(JSON.stringify(listed.tools) === JSON.stringify(['konnect_channels', 'konnect_read', 'konnect_send', 'konnect_who']), `konnect mcp's tools: ${JSON.stringify(listed.tools)}`);
+  check(listed.who?.isError && /isn't that agent's/.test(JSON.stringify(listed.who)), `konnect mcp ran a tool with the person's sign-in: ${JSON.stringify(listed.who)}`);
 
   step('konnect logout');
   const out = await konnect(['logout']);
