@@ -1,15 +1,83 @@
 /**
  * How konnect names the members of a team. A person is their name (`ann`). An agent is stored in
  * Kolab as `<owner>-<label>` (a slash can't be in an actor's id), and konnect shows and takes it as
- * `<owner>/<label>`. Until Kolab's member list gives an agent's label as a field of its own, the
- * label is what follows `<owner>-` in the stored name.
+ * `<owner>/<label>`, from the label Kolab's member list gives; where it gives none (an older Kolab),
+ * from what follows `<owner>-` in the stored name.
  */
 
-/** A member as konjir_list_members gives one; `label` is the field the server is to add. */
-export interface Member { actor: string; kind: string; owner: string | null; here: boolean; you?: true; label?: string }
+/** A member as konjir_list_members gives one: an agent with its `label` (null when it has none). */
+export interface Member { actor: string; kind: string; owner: string | null; here: boolean; you?: true; label?: string | null }
 
 /** A direct message as Kolab's message tools give one. */
 export interface Message { id: string; from: string; to: string; message: string; reply_to: string | null; sent_at: string; read_at: string | null }
+
+/** A channel message as Kolab's channel tools give one. */
+export interface ChannelMessage { id: string; channel: string; from: string; message: string; reply_to: string | null; mentions: string[]; sent_at: string }
+
+/** A channel as konjir_list_channels gives one, for the caller. */
+export interface Channel { channel: string; following: boolean; unread: number; unread_more: boolean; mentions: number; mentions_more: boolean; made_by: string | null; made_at: string }
+
+/** A channel's name, as Kolab allows one; a `#` before it is dropped. */
+export const CHANNEL = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** A channel's name from `#name` or `name`, checked. */
+export function channelName(given: string): string {
+  const name = given.startsWith('#') ? given.slice(1) : given;
+  if (!CHANNEL.test(name)) throw new Error(`${printable(given)} isn't a channel's name: 1 to 40 lowercase letters, digits and -, such as #general`);
+  return name;
+}
+
+/** The most members one channel message may mention (Kolab's MAX_MENTIONS). */
+export const MAX_MENTIONS = 20;
+
+/**
+ * The members a message's words mention, as stored names: each `@name` or `@owner/label` that names
+ * a member of `members`, in the order written, each once, at most MAX_MENTIONS. Anything else that
+ * looks like one (an email address, `@everyone`, someone not in the team) is left as plain words.
+ */
+export function mentionsIn(text: string, members: Member[]): string[] {
+  const found: string[] = [];
+  for (const m of text.matchAll(/(?<![\w.@/-])@([A-Za-z0-9][A-Za-z0-9._@-]*(?:\/[a-z0-9][a-z0-9-]*)?)/g)) {
+    // A sentence's full stop, or a trailing hyphen, isn't part of the name.
+    const word = m[1].replace(/[.@-]+$/, '');
+    const slash = word.indexOf('/');
+    const member = members.find((x) => (slash < 0
+      ? x.actor === word
+      : x.kind === 'agent' && shownName(x) === word));
+    if (member && !found.includes(member.actor)) found.push(member.actor);
+    if (found.length === MAX_MENTIONS) break;
+  }
+  return found;
+}
+
+/** A count, with `+` when Kolab counted no further. */
+const counted = (n: number, more: boolean) => `${n}${more ? '+' : ''}`;
+
+/** konnect channel list's lines: each channel, whether you follow it, and its unread and mentions. */
+export function formatChannels(channels: Channel[]): string {
+  const width = Math.max(0, ...channels.map((c) => c.channel.length + 1)) + 2;
+  return channels.map((c) => [
+    `#${printable(c.channel)}`.padEnd(width),
+    (c.following ? 'following' : '').padEnd(11),
+    c.unread ? `${counted(c.unread, c.unread_more)} unread` : '',
+    c.mentions ? `${c.unread ? ', ' : ''}${counted(c.mentions, c.mentions_more)} mentioning you` : '',
+  ].join('').trimEnd()).join('\n');
+}
+
+/**
+ * The one line that says what is unread elsewhere, such as `2 unread in #deploys, 1 direct
+ * message`, or '' when nothing is: each channel you follow with unread, each other channel that
+ * mentions you, then direct messages.
+ */
+export function unreadLine(u: { direct: number; directMore?: boolean; channels: { channel: string; following: boolean; unread: number; unread_more: boolean; mentions: number; mentions_more: boolean }[] }): string {
+  const parts: string[] = [];
+  for (const c of u.channels) {
+    if (c.following && c.unread) parts.push(`${counted(c.unread, c.unread_more)} unread in #${printable(c.channel)}`);
+    else if (c.mentions) parts.push(`${counted(c.mentions, c.mentions_more)} mentioning you in #${printable(c.channel)}`);
+  }
+  if (u.direct) parts.push(`${counted(u.direct, !!u.directMore)} direct message${u.direct === 1 && !u.directMore ? '' : 's'}`);
+  return parts.join(', ');
+}
 
 /** A team's name: a kolab's (lowercase letters, digits and -, at most 40 characters). */
 export const TEAM = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -67,7 +135,7 @@ export function formatMembers(members: Member[]): string {
 }
 
 /** A message as a block of lines: when and who, then the words, indented. */
-export function formatMessage(m: Message, members: Member[]): string {
+export function formatMessage(m: Pick<Message, 'from' | 'message' | 'sent_at'>, members: Member[]): string {
   const when = printable(String(m.sent_at).replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, '')).replace(/\n/g, '?');
   const words = printable(m.message).split('\n').map((l) => `  ${l}`).join('\n');
   return `${when}  @${printable(shownActor(m.from, members))}\n${words}`;

@@ -73,6 +73,17 @@ export function teamFileReady(team: string, env: Record<string, string | undefin
   return file;
 }
 
+/**
+ * The file an agent's sign-in to a team is kept in: `agents/<team>/<label>.json` in konnect's config
+ * folder, apart from the person's own (`teams/<team>.json`), so an agent's session never uses the
+ * person's. `konnect mcp` reads it (KONNECT_CREDENTIALS names another), and `konnect claude <label>`
+ * is to write it, as konjir connect claude keeps each agent's sign-in apart.
+ */
+export function agentFile(team: string, label: string, env: Record<string, string | undefined> = process.env): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new Error(`${printable(label)} isn't an agent's label: lowercase letters, digits and -, at most 24 characters`);
+  return join(configDir(env), 'agents', checkTeam(team), `${label}.json`);
+}
+
 /** The teams konnect keeps a sign-in for at `url`, by name. */
 export function teamsAt(url: string, env: Record<string, string | undefined> = process.env): string[] {
   return allTeams(env).filter((t) => t.urls.includes(url)).map((t) => t.team);

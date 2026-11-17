@@ -4,8 +4,10 @@
  *
  *   konnect team [<name>]              sign in to a team (GitHub, in the browser), or list your teams
  *   konnect who                        the team's members, and who is connected
- *   konnect send @name [message]       a direct message; the message from stdin when it is left out
- *   konnect read [@name]               your unread messages, oldest first, marked read
+ *   konnect send '#channel'|@name [message]  a channel or direct message; from stdin when left out
+ *   konnect read ['#channel'|@name]    your unread messages, oldest first, marked read
+ *   konnect channel list|new|join|leave
+ *   konnect mcp --agent <label>        konnect's four tools for an agent, over stdio (mcp.ts)
  *   konnect logout                     sign out of a team
  *
  * Every command takes --team <name> (optional with one team, or in a folder whose .konnect.json
@@ -14,12 +16,15 @@
 import { dirname } from 'node:path';
 import { StoredLogin, login, logout, safeUrl } from '@konjir/login';
 import { CLIENT_NAME, NotYet, Refused, TeamClient, said } from './client.js';
-import { formatMembers, formatMessage, printable, shownName, storedName, type Member, type Message } from './names.js';
-import { HOSTED_URL, PROJECT_FILE, allTeams, checkTeam, checkUrl, findProject, rememberTeam, teamFile, teamFileReady, teamsAt, trustedUrl, wellFormedUrl, type Project } from './teams.js';
+import { leftAfter, readAll, readOne, send, targetOf, type Sent, type Target } from './chat.js';
+import { serveStdio, type McpOptions } from './mcp.js';
+import { channelName, formatChannels, formatMembers, formatMessage, printable, shownActor, shownName, unreadLine, type Member } from './names.js';
+import { HOSTED_URL, PROJECT_FILE, allTeams, agentFile, checkTeam, checkUrl, findProject, rememberTeam, teamFile, teamFileReady, teamsAt, trustedUrl, wellFormedUrl, type Project } from './teams.js';
 
 export { TeamClient, NotYet, Refused } from './client.js';
-export { formatMembers, formatMessage, shownName, storedName, type Member, type Message } from './names.js';
-export { HOSTED_URL, PROJECT_FILE, allTeams, configDir, findProject, readProject, rememberTeam, teamFile, teamsAt, trustedUrl } from './teams.js';
+export { formatChannels, formatMembers, formatMessage, mentionsIn, shownName, storedName, unreadLine, type Channel, type ChannelMessage, type Member, type Message } from './names.js';
+export { serveMcp, type McpOptions } from './mcp.js';
+export { HOSTED_URL, PROJECT_FILE, agentFile, allTeams, configDir, findProject, readProject, rememberTeam, teamFile, teamsAt, trustedUrl } from './teams.js';
 
 // The published build (scripts/bundle.mjs) defines this as the package's version.
 declare const KONNECT_VERSION: string | undefined;
@@ -30,19 +35,27 @@ export const USAGE = `konnect: chat for your team's people and AI agents, on Kon
   konnect team <name>             sign in to a team with GitHub, and remember it in this folder
   konnect team                    list your teams, and the one this folder remembers
   konnect who                     the team's members, and who is connected
+  konnect send '#channel' [message]
+                                  send to a channel; @name or @owner/label in it mentions them
   konnect send @name [message]    send a direct message (@owner/label for an agent);
-                                  with no message, it reads one from stdin
-  konnect read [@name]            your unread messages, oldest first, and marks them read
+                                  with no message, either reads one from stdin; --reply <id> answers one
+  konnect read                    everything unread, oldest first, marked read: direct messages,
+                                  then each channel you follow
+  konnect read '#channel'         a channel's unread; --history [--limit n] shows its recent
+                                  messages instead, marking nothing
+  konnect read @name              their unread direct messages
+  konnect channel list            the channels, which you follow, and what is unread
+  konnect channel new <name>      make a channel, and follow it
+  konnect channel join|leave <name>
+                                  follow a channel, or stop
+  konnect mcp --agent <label>     the four konnect tools for an agent of yours, as a stdio MCP server
   konnect logout                  sign out of a team
 
   --team <name>   the team to use; not needed with one team, or where .konnect.json names one
   --json          print JSON instead of lines
-  A message is taken as written: flags go before it, and -- ends them.
+  A message is taken as written: flags go before it, and -- ends them. A channel is #name or name.
 
 Not available yet:
-  konnect send '#channel' …       channel messages
-  konnect read '#channel'
-  konnect channel new|join|leave|list
   konnect recruit <github login>… invite people to your team
   konnect remove @name            remove a member, or leave
   konnect claude|codex|opencode <label>
@@ -65,19 +78,27 @@ export interface IO {
   open?: (u: URL) => void | Promise<void>;
   /** The message, when `konnect send` is given none; by default, stdin. */
   stdin?: () => Promise<string>;
+  /** Serves `konnect mcp`; by default over this process's stdio. */
+  serve?: (opts: McpOptions) => Promise<void>;
 }
 
 /** A command line, read: konnect's flags, and the words that aren't flags, in order. */
-export interface Args { json: boolean; team?: string; forget: boolean; words: string[] }
+export interface Args { json: boolean; team?: string; forget: boolean; words: string[]; history?: true; limit?: number; reply?: string; agent?: string }
 
 /**
- * Reads konnect's flags (--json, --team <name>, --forget) from `argv`, left to right. `--` ends
- * them: everything after it is words. A message is never read for flags: for `send`, everything
- * after the recipient from the first word that isn't one of konnect's flags is the message, as
- * it is written, `--json` or `--team` in it included.
+ * Reads konnect's flags (--json, --team <name>, --forget, --history, --limit <n>, --reply <id>,
+ * --agent <label>) from `argv`, left to right. `--` ends them: everything after it is words. A
+ * message is never read for flags: for `send`, everything after the recipient from the first word
+ * that isn't one of konnect's flags is the message, as it is written, `--json` or `--team` in it
+ * included.
  */
 export function parseArgs(argv: string[]): Args {
   const a: Args = { json: false, forget: false, words: [] };
+  const value = (i: number, what: string) => {
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith('--')) throw new Error(`${argv[i]} needs ${what}`);
+    return v;
+  };
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i];
     if (w === '--') { a.words.push(...argv.slice(i + 1)); break; }
@@ -85,10 +106,14 @@ export function parseArgs(argv: string[]): Args {
     const inMessage = a.words[0] === 'send' && a.words.length >= 2;
     if (w === '--json') { a.json = true; continue; }
     if (w === '--forget') { a.forget = true; continue; }
-    if (w === '--team') {
-      const v = argv[i + 1];
-      if (v === undefined || v.startsWith('--')) throw new Error('--team needs a team\'s name');
-      a.team = v; i++; continue;
+    if (w === '--history') { a.history = true; continue; }
+    if (w === '--team') { a.team = value(i, 'a team\'s name'); i++; continue; }
+    if (w === '--reply') { a.reply = value(i, 'the id of the message it answers'); i++; continue; }
+    if (w === '--agent') { a.agent = value(i, 'an agent\'s label'); i++; continue; }
+    if (w === '--limit') {
+      const n = Number(value(i, 'a number'));
+      if (!Number.isInteger(n) || n < 1 || n > 200) throw new Error('--limit is a whole number from 1 to 200');
+      a.limit = n; i++; continue;
     }
     if (inMessage) { a.words.push(...argv.slice(i)); break; }
     a.words.push(w);
@@ -225,12 +250,10 @@ export async function main(argv: string[], io: IO = {}) {
   if (cmd === undefined) throw notYet('Live chat (konnect with no command)');
 
   // Commands the server can't serve yet: said before anything is read or sent.
-  if (cmd === 'channel') throw notYet('Channels (konnect channel)');
   if (cmd === 'recruit') throw notYet('Inviting people (konnect recruit)');
   if (cmd === 'remove') throw notYet('Removing a member (konnect remove)');
   if (['claude', 'codex', 'opencode'].includes(cmd)) throw notYet(`Starting an agent (konnect ${cmd})`);
-  if ((cmd === 'send' || cmd === 'read') && rest[0]?.startsWith('#')) throw notYet(`Channel messages (konnect ${cmd} '${printable(rest[0])}')`);
-  if (!['team', 'who', 'send', 'read', 'logout'].includes(cmd)) throw new Error(`konnect has no command ${printable(cmd)}: run konnect help`);
+  if (!['team', 'who', 'send', 'read', 'channel', 'mcp', 'logout'].includes(cmd)) throw new Error(`konnect has no command ${printable(cmd)}: run konnect help`);
   if (parsed.forget && cmd !== 'logout') throw new Error(`konnect ${cmd} takes no --forget: only konnect logout does`);
 
   const project = findProject(cwd);
@@ -261,6 +284,17 @@ export async function main(argv: string[], io: IO = {}) {
     return;
   }
 
+  if (cmd === 'mcp') {
+    // The agent's own tools over stdio: stdout is the protocol's alone from here.
+    if (rest.length) throw new Error(`konnect mcp [--team <name>] --agent <label>: unknown ${printable(rest.join(' '))}`);
+    const agent = parsed.agent ?? env.KONNECT_AGENT;
+    const mcpTeam = checkTeam(teamFlag ?? env.KONNECT_TEAM ?? project?.team ?? chooseTeam(undefined, project, url, env));
+    if (!agent) throw new Error('konnect mcp needs the agent it runs as: --agent <label>, or KONNECT_AGENT');
+    const file = env.KONNECT_CREDENTIALS || agentFile(mcpTeam, agent, env);
+    await (io.serve ?? serveStdio)({ team: mcpTeam, url, file, label: agent, log: err });
+    return;
+  }
+
   const team = chooseTeam(teamFlag, project, url, env);
 
   if (cmd === 'logout') {
@@ -273,12 +307,17 @@ export async function main(argv: string[], io: IO = {}) {
 
   // What each command needs from the person comes first: nothing waits on the terminal with a session open.
   if (cmd === 'who' && rest.length) throw new Error(`konnect who: unknown ${printable(rest.join(' '))}`);
-  if (cmd === 'read' && rest.length > 1) throw new Error(`konnect read [@name]: unknown ${printable(rest.slice(1).join(' '))}`);
-  let to = '', message = '';
+  if (cmd === 'read' && rest.length > 1) throw new Error(`konnect read [#channel | @name]: unknown ${printable(rest.slice(1).join(' '))}`);
+  if ((parsed.history || parsed.limit !== undefined) && !(cmd === 'read' && rest[0] !== undefined && !rest[0].startsWith('@'))) {
+    throw new Error('--history and --limit show a channel\'s recent messages: konnect read \'#channel\' --history [--limit n]');
+  }
+  if (parsed.reply !== undefined && cmd !== 'send') throw new Error('--reply answers a message as you send: konnect send … --reply <id> <message>');
+  let target: Target | undefined;
+  let message = '';
   if (cmd === 'send') {
-    const [who, ...words] = rest;
-    if (who === undefined) throw new Error('konnect send @name [message]: say who to send it to');
-    to = storedName(who);
+    const [where, ...words] = rest;
+    if (where === undefined) throw new Error('konnect send \'#channel\' | @name [message]: say where to send it');
+    target = targetOf(where);
     message = words.join(' ');
     if (!words.length) {
       if (!io.stdin && process.stdin.isTTY) err('Type your message, then press Ctrl-D on a line of its own.');
@@ -286,37 +325,101 @@ export async function main(argv: string[], io: IO = {}) {
     }
     if (!message.trim()) throw new Error('konnect send: the message is empty');
   }
-  const from = cmd === 'read' && rest[0] !== undefined ? storedName(rest[0]) : undefined;
+  if (cmd === 'read' && rest[0] !== undefined) target = targetOf(rest[0]);
+  let channelCmd: { verb: 'list' | 'new' | 'join' | 'leave'; name?: string } | undefined;
+  if (cmd === 'channel') {
+    const [verb, name, ...more] = rest;
+    if (verb === 'list' || verb === undefined) {
+      if (name !== undefined) throw new Error(`konnect channel list: unknown ${printable(rest.slice(1).join(' '))}`);
+      channelCmd = { verb: 'list' };
+    } else if (verb === 'new' || verb === 'join' || verb === 'leave') {
+      if (name === undefined || more.length) throw new Error(`konnect channel ${verb} <name>: name one channel`);
+      channelCmd = { verb, name: channelName(name) };
+    } else {
+      throw new Error(`konnect channel list|new|join|leave: no ${printable(verb)}`);
+    }
+  }
 
   const client = await TeamClient.open(team, url, teamFile(team, env));
+  // The last line, when anything is unread elsewhere: from what the command has, else one read of the answers.
+  const summary = async (known?: Parameters<typeof unreadLine>[0]) => {
+    if (json) return;
+    const u = known ?? await client.unread().catch(() => undefined);
+    const line = u ? unreadLine(u) : '';
+    if (line) out(`(${line})`);
+  };
   try {
     if (cmd === 'who') {
       const members = await client.members();
       print(members.map((m) => ({ ...m, name: shownName(m) })), () => formatMembers(members));
+      await summary();
       return;
     }
 
     if (cmd === 'send') {
-      const who = rest[0];
-      let sent: Message;
+      const to = target!;
+      let r: Sent;
       try {
-        sent = await client.sendDirect(to, message);
+        r = await send(client, to, message, parsed.reply);
       } catch (e) {
-        if (e instanceof Refused && /is not a member of kolab/.test(e.message)) throw new Error(`${printable(who)} isn't in team ${team}: konnect who lists who is`);
+        if (e instanceof Refused && to.kind === 'direct' && /is not a member of kolab/.test(e.message)) throw new Error(`${printable(to.given)} isn't in team ${team}: konnect who lists who is`);
         throw e;
       }
-      print(sent, () => `Sent to ${printable(who.startsWith('@') ? who : `@${who}`)}.`);
+      print(r.sent, () => {
+        if (r.kind === 'direct') return `Sent to ${printable(to.kind === 'direct' ? to.given : '')}.`;
+        const named = r.sent.mentions.map((m) => `@${printable(shownActor(m, r.members))}`);
+        return `Sent to #${r.sent.channel}${named.length ? `, mentioning ${named.join(', ')}` : ''}.`;
+      });
+      await summary();
       return;
     }
 
     if (cmd === 'read') {
-      // The names to show are looked up before anything is marked read, so a failure here loses
+      // The names to show are looked up before anything is marked read, so a failure there loses
       // nothing; without them, messages show stored names. JSON gives stored names, so needs none.
       const members = json ? [] : await client.members().catch(() => [] as Member[]);
-      const messages = from === undefined ? await client.readDirect() : await client.unreadFrom(from);
-      print(messages, () => (messages.length ? messages.map((m) => formatMessage(m, members)).join('\n\n') : `No unread messages${from ? ` from ${printable(rest[0])}` : ''}.`));
-      // Kolab marks one person's messages read only with all of yours (konjir_read_messages).
-      if (from !== undefined && messages.length && !json) err('These stay unread for now: konnect read, with no name, reads and marks all of them.');
+      const show = (ms: { from: string; message: string; sent_at: string }[]) => ms.map((m) => formatMessage(m, members)).join('\n\n');
+      if (target === undefined) {
+        const r = await readAll(client);
+        print({ direct: r.direct, channels: r.channels }, () => {
+          const blocks = [...(r.direct.length ? [show(r.direct)] : []), ...r.channels.map((c) => `#${c.channel}\n${show(c.messages)}`)];
+          return blocks.length ? blocks.join('\n\n') : 'No unread messages.';
+        });
+        await summary(leftAfter(r));
+        return;
+      }
+      if (target.kind === 'channel' && parsed.history) {
+        const ms = (await client.channelHistory(target.channel, parsed.limit ?? 20)).reverse();
+        print(ms, () => (ms.length ? `#${target!.kind === 'channel' ? target!.channel : ''}\n${show(ms)}` : `No messages in #${target!.kind === 'channel' ? target!.channel : ''} yet.`));
+        await summary();
+        return;
+      }
+      const ms = await readOne(client, target);
+      const where = target.kind === 'channel' ? `in #${target.channel}` : `from ${printable(target.given)}`;
+      print(ms, () => (ms.length ? show(ms) : `No unread messages ${where}.`));
+      await summary();
+      return;
+    }
+
+    if (cmd === 'channel') {
+      const c = channelCmd!;
+      if (c.verb === 'list') {
+        const channels = await client.channels();
+        print(channels, () => formatChannels(channels));
+        await summary();
+        return;
+      }
+      if (c.verb === 'new') {
+        const made = await client.makeChannel(c.name!);
+        print(made, () => `Made #${made.channel}. You follow it; anyone in the team can join it.`);
+      } else if (c.verb === 'join') {
+        const r = await client.follow(c.name!);
+        print(r, () => `Following #${r.channel}: konnect read shows what is new there.`);
+      } else {
+        const r = await client.unfollow(c.name!);
+        print(r, () => `Left #${r.channel}: you no longer follow it, though a message there that mentions you still reaches you.`);
+      }
+      await summary();
       return;
     }
   } finally {
