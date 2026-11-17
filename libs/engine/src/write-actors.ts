@@ -154,7 +154,7 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   // sender. Reading an agent's answers starts its read positions, as that agent's.
   makeChannel: { recorded: ['channel.made_by', 'channel_follow.actor_id', 'channel_read.actor_id'] },
   followChannel: { recorded: ['channel_follow.actor_id', 'channel_read.actor_id'] },
-  sendChannelMessage: { recorded: ['channel_message.sent_by'] },
+  sendChannelMessage: { recorded: ['channel_message.sent_by', 'channel_read.actor_id'] },
   readChannel: { recorded: ['channel_read.actor_id'] },
   unreadChannels: { recorded: ['channel_read.actor_id'] },
   setAgentReplyCap: { recorded: ['kolab_chat.cap_set_by'] },

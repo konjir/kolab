@@ -43,7 +43,7 @@ export type AnswersBody = {
   kolab?: string; actor: string; queries: QueryView[]; submissions?: SubmissionView[]; cases?: CaseView[];
   work?: { events?: WorkNoticeView[] };
   /** Unread messages, oldest first: how many in all, and the first of them. A Kolab from before messages leaves it out. */
-  messages?: { unread?: number; items?: MessageView[]; waking?: number };
+  messages?: { unread?: number; items?: MessageView[]; waking?: number; waking_more?: boolean };
   /** Unread channel messages, per channel. A Kolab from before channels leaves it out. */
   channels?: UnreadChannelView[];
 };
@@ -97,8 +97,8 @@ const WORK_WORDS: Record<string, string> = {
 const workLine = (e: WorkNoticeView) => `${e.work} ${WORK_WORDS[e.kind] ?? e.kind.replace(/_/g, ' ')}, by ${e.actor}${e.note ? `: ${quote(e.note)}` : ''}`;
 const workOf = (b: AnswersBody) => b.work?.events ?? [];
 const messagesOf = (b: AnswersBody) => b.messages?.items ?? [];
-/** How many unread messages may wake this agent (not capped), when Kolab says. */
-const wakingOf = (b: AnswersBody) => (typeof b.messages?.waking === 'number' ? b.messages.waking : undefined);
+/** How many unread messages may wake this agent (not capped), when Kolab says and hasn't stopped counting (waking_more). */
+const wakingOf = (b: AnswersBody) => (typeof b.messages?.waking === 'number' && b.messages.waking_more !== true ? b.messages.waking : undefined);
 const unreadOf = (b: AnswersBody) => b.messages?.unread ?? messagesOf(b).length;
 const messageLine = (m: MessageView) => `message ${m.id} from ${m.from}${m.reply_to ? `, answering ${m.reply_to}` : ''}: ${quote(m.message)}`;
 /** How to read messages, and whose words they are: a member's, never the operator's. */

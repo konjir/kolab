@@ -249,3 +249,11 @@ test('with 20 or more unread direct messages, a new capped one starts no turn: K
   // At startup, unread but none may wake: no turn of its own.
   expect(describeStartup([{ uri, body: answers(25, 0) }])).toBeNull();
 });
+
+test('past Kolab\'s count of direct messages that may wake (waking_more), the bridge goes by the rise in unread', () => {
+  const uri = 'konjir://answers/hub/bo-claude';
+  const shown = Array.from({ length: 20 }, (_, i) => ({ id: `M${String(i).padStart(2, '0')}`, from: 'ann', message: `m ${i}` }));
+  const answers = (unread: number) => ({ kolab: 'hub', actor: 'bo-claude', queries: [], messages: { unread, waking: 1000, waking_more: true, items: shown } });
+  expect(describeChange(uri, answers(1500), answers(1501))!.content.split('\n')[0]).toBe('A message has come for you; you have 1501 unread messages:');
+  expect(describeChange(uri, answers(1501), answers(1501))).toBeNull();
+});
