@@ -54,9 +54,19 @@ export function teamFile(team: string, env: Record<string, string | undefined> =
  * so it is kept at 0700.
  */
 export function teamFileReady(team: string, env: Record<string, string | undefined> = process.env): string {
-  const file = teamFile(team, env);
-  const config = dirname(dirname(file));
-  for (const dir of [config, dirname(file)]) {
+  return fileReady(teamFile(team, env), env);
+}
+
+/**
+ * `file`'s folders made ready, from konnect's config folder down: each refused if it is a symbolic
+ * link, isn't a folder, or belongs to someone else; the config folder never changed when konnect
+ * didn't make it, and refused if others may write in it; konnect's own folders below it kept at 0700.
+ */
+function fileReady(file: string, env: Record<string, string | undefined>): string {
+  const config = configDir(env);
+  const dirs: string[] = [];
+  for (let d = dirname(file); d.startsWith(config) && d !== config; d = dirname(d)) dirs.unshift(d);
+  for (const dir of [config, ...dirs]) {
     let made = false;
     try { mkdirSync(dir, { mode: 0o700 }); made = true; } catch (e) {
       if (codeOf(e) === 'ENOENT') { mkdirSync(dir, { recursive: true, mode: 0o700 }); made = true; } else if (codeOf(e) !== 'EEXIST') throw e;
@@ -82,6 +92,11 @@ export function teamFileReady(team: string, env: Record<string, string | undefin
 export function agentFile(team: string, label: string, env: Record<string, string | undefined> = process.env): string {
   if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new Error(`${printable(label)} isn't an agent's label: lowercase letters, digits and -, at most 24 characters`);
   return join(configDir(env), 'agents', checkTeam(team), `${label}.json`);
+}
+
+/** The agent's file, its folders made ready as a team's are (teamFileReady). */
+export function agentFileReady(team: string, label: string, env: Record<string, string | undefined> = process.env): string {
+  return fileReady(agentFile(team, label, env), env);
 }
 
 /** The teams konnect keeps a sign-in for at `url`, by name. */

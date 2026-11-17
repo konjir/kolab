@@ -2,8 +2,9 @@
 //
 //   bun scripts/bundle.mjs <out dir> <version>   -> <out dir>/konnect.mjs and <out dir>/.metafile.json
 //
-// konnect is an MCP client of Kolab: its own source, @konjir/login (the OAuth client and its
-// credentials store) with @konjir/brand (the sign-in page's tokens), and the MCP client SDK. It
+// konnect is an MCP client of Kolab, and for an agent (`konnect mcp`) a stdio MCP server: its own
+// source, @konjir/login (the OAuth client and its credentials store) with @konjir/brand (the
+// sign-in page's tokens), the MCP client and server SDKs, and zod, which the server's tools use. It
 // resolves nothing as it runs: a require of its own loads Node's built-ins alone, and the build
 // fails on an import() of a name computed as it runs (tools/npm-bundle.mjs), so a folder konnect is
 // run in can't put its own code in konnect's place. The @konjir/source condition bundles the

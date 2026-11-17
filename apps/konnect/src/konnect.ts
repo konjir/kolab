@@ -16,15 +16,17 @@
 import { dirname } from 'node:path';
 import { StoredLogin, login, logout, safeUrl } from '@konjir/login';
 import { CLIENT_NAME, NotYet, Refused, TeamClient, said } from './client.js';
-import { leftAfter, readAll, readOne, send, targetOf, type Sent, type Target } from './chat.js';
+import { leftAfter, readAll, readOne, send, targetOf, type Block, type Sent, type Target } from './chat.js';
 import { serveStdio, type McpOptions } from './mcp.js';
 import { channelName, formatChannels, formatMembers, formatMessage, printable, shownActor, shownName, unreadLine, type Member } from './names.js';
-import { HOSTED_URL, PROJECT_FILE, allTeams, agentFile, checkTeam, checkUrl, findProject, rememberTeam, teamFile, teamFileReady, teamsAt, trustedUrl, wellFormedUrl, type Project } from './teams.js';
+import { HOSTED_URL, PROJECT_FILE, allTeams, agentFileReady, checkTeam, checkUrl, findProject, rememberTeam, teamFile, teamFileReady, teamsAt, trustedUrl, wellFormedUrl, type Project } from './teams.js';
 
 export { TeamClient, NotYet, Refused } from './client.js';
 export { formatChannels, formatMembers, formatMessage, mentionsIn, shownName, storedName, unreadLine, type Channel, type ChannelMessage, type Member, type Message } from './names.js';
-export { serveMcp, type McpOptions } from './mcp.js';
-export { HOSTED_URL, PROJECT_FILE, agentFile, allTeams, configDir, findProject, readProject, rememberTeam, teamFile, teamsAt, trustedUrl } from './teams.js';
+export { framed, serveMcp, sessionGone, type McpOptions } from './mcp.js';
+export { readAll, send, targetOf, type Block } from './chat.js';
+export { SignInError, UNREAD_WAIT_MS } from './client.js';
+export { HOSTED_URL, PROJECT_FILE, agentFile, agentFileReady, allTeams, configDir, findProject, readProject, rememberTeam, teamFile, teamsAt, trustedUrl } from './teams.js';
 
 // The published build (scripts/bundle.mjs) defines this as the package's version.
 declare const KONNECT_VERSION: string | undefined;
@@ -53,7 +55,8 @@ export const USAGE = `konnect: chat for your team's people and AI agents, on Kon
 
   --team <name>   the team to use; not needed with one team, or where .konnect.json names one
   --json          print JSON instead of lines
-  A message is taken as written: flags go before it, and -- ends them. A channel is #name or name.
+  A message is taken as written: flags go before it, and -- ends them. Say where it goes: '#name'
+  for a channel (quoted, for the shell), @name for a member; a bare name is refused.
 
 Not available yet:
   konnect recruit <github login>… invite people to your team
@@ -228,6 +231,25 @@ export function normalUrl(given: string): string {
   return url;
 }
 
+/** How many of a channel's messages one read shows a person; the rest are counted, not shown. */
+export const SHOWN_AT_ONCE = 20;
+
+/**
+ * One block of `konnect read`, as lines: under its channel's name when `heading`; for a channel, the
+ * newest SHOWN_AT_ONCE alone when more were read (all are marked read), with one line saying how many
+ * earlier ones there are and how to see them; and when Kolab says more are unread still (a read
+ * stops after a bound), a line saying so.
+ */
+export function blockLines(b: Block, show: (ms: { from: string; message: string; sent_at: string }[]) => string, channel: boolean, heading: boolean): string {
+  const lines: string[] = [];
+  if (b.kind === 'channel' && heading) lines.push(`#${b.channel}`);
+  const hidden = b.kind === 'channel' && channel ? Math.max(0, b.messages.length - SHOWN_AT_ONCE) : 0;
+  if (hidden && b.kind === 'channel') lines.push(`(${hidden} earlier unread message${hidden === 1 ? '' : 's'} not shown, now marked read: konnect read '#${b.channel}' --history --limit ${Math.min(200, b.messages.length)} shows them)`);
+  lines.push(show(b.messages.slice(hidden)));
+  if (b.more) lines.push(`(${b.more} more still unread${b.kind === 'channel' ? ` in #${b.channel}: run konnect read '#${b.channel}'` : ': run konnect read'} again)`);
+  return lines.join('\n');
+}
+
 /** `konnect <argv…>`. */
 export async function main(argv: string[], io: IO = {}) {
   const env = io.env ?? process.env;
@@ -287,11 +309,16 @@ export async function main(argv: string[], io: IO = {}) {
   if (cmd === 'mcp') {
     // The agent's own tools over stdio: stdout is the protocol's alone from here.
     if (rest.length) throw new Error(`konnect mcp [--team <name>] --agent <label>: unknown ${printable(rest.join(' '))}`);
-    const agent = parsed.agent ?? env.KONNECT_AGENT;
+    // The agent, by its label, or as <owner>/<label> to pin whose agent it must be.
+    const given = parsed.agent ?? env.KONNECT_AGENT;
     const mcpTeam = checkTeam(teamFlag ?? env.KONNECT_TEAM ?? project?.team ?? chooseTeam(undefined, project, url, env));
-    if (!agent) throw new Error('konnect mcp needs the agent it runs as: --agent <label>, or KONNECT_AGENT');
-    const file = env.KONNECT_CREDENTIALS || agentFile(mcpTeam, agent, env);
-    await (io.serve ?? serveStdio)({ team: mcpTeam, url, file, label: agent, log: err });
+    if (!given) throw new Error('konnect mcp needs the agent it runs as: --agent <label> (or <owner>/<label>), or KONNECT_AGENT');
+    const slash = given.indexOf('/');
+    const agent = slash < 0 ? given : given.slice(slash + 1);
+    const owner = slash < 0 ? undefined : given.slice(0, slash);
+    if (owner !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(owner)) throw new Error(`${printable(given)} isn't an agent: give its label, or <owner>/<label>`);
+    const file = env.KONNECT_CREDENTIALS || agentFileReady(mcpTeam, agent, env);
+    await (io.serve ?? serveStdio)({ team: mcpTeam, url, file, label: agent, ...(owner ? { owner } : {}), log: err });
     return;
   }
 
@@ -317,7 +344,7 @@ export async function main(argv: string[], io: IO = {}) {
   if (cmd === 'send') {
     const [where, ...words] = rest;
     if (where === undefined) throw new Error('konnect send \'#channel\' | @name [message]: say where to send it');
-    target = targetOf(where);
+    target = targetOf(where, (w) => `konnect send @${w} … for a member, or konnect send '#${w}' … for a channel`);
     message = words.join(' ');
     if (!words.length) {
       if (!io.stdin && process.stdin.isTTY) err('Type your message, then press Ctrl-D on a line of its own.');
@@ -325,7 +352,7 @@ export async function main(argv: string[], io: IO = {}) {
     }
     if (!message.trim()) throw new Error('konnect send: the message is empty');
   }
-  if (cmd === 'read' && rest[0] !== undefined) target = targetOf(rest[0]);
+  if (cmd === 'read' && rest[0] !== undefined) target = targetOf(rest[0], (w) => `konnect read @${w} for a member's messages, or konnect read '#${w}' for a channel`);
   let channelCmd: { verb: 'list' | 'new' | 'join' | 'leave'; name?: string } | undefined;
   if (cmd === 'channel') {
     const [verb, name, ...more] = rest;
@@ -360,7 +387,7 @@ export async function main(argv: string[], io: IO = {}) {
       const to = target!;
       let r: Sent;
       try {
-        r = await send(client, to, message, parsed.reply);
+        r = await send(client, to, message, { replyTo: parsed.reply, warn: err });
       } catch (e) {
         if (e instanceof Refused && to.kind === 'direct' && /is not a member of kolab/.test(e.message)) throw new Error(`${printable(to.given)} isn't in team ${team}: konnect who lists who is`);
         throw e;
@@ -379,26 +406,46 @@ export async function main(argv: string[], io: IO = {}) {
       // nothing; without them, messages show stored names. JSON gives stored names, so needs none.
       const members = json ? [] : await client.members().catch(() => [] as Member[]);
       const show = (ms: { from: string; message: string; sent_at: string }[]) => ms.map((m) => formatMessage(m, members)).join('\n\n');
-      if (target === undefined) {
-        const r = await readAll(client);
-        print({ direct: r.direct, channels: r.channels }, () => {
-          const blocks = [...(r.direct.length ? [show(r.direct)] : []), ...r.channels.map((c) => `#${c.channel}\n${show(c.messages)}`)];
-          return blocks.length ? blocks.join('\n\n') : 'No unread messages.';
-        });
-        await summary(leftAfter(r));
-        return;
-      }
-      if (target.kind === 'channel' && parsed.history) {
+      if (target?.kind === 'channel' && parsed.history) {
         const ms = (await client.channelHistory(target.channel, parsed.limit ?? 20)).reverse();
         print(ms, () => (ms.length ? `#${target!.kind === 'channel' ? target!.channel : ''}\n${show(ms)}` : `No messages in #${target!.kind === 'channel' ? target!.channel : ''} yet.`));
         await summary();
         return;
       }
-      const ms = await readOne(client, target);
-      const where = target.kind === 'channel' ? `in #${target.channel}` : `from ${printable(target.given)}`;
-      print(ms, () => (ms.length ? show(ms) : `No unread messages ${where}.`));
-      await summary();
-      return;
+      // Each block is printed as soon as it is read: reading marks it read, so a failure later
+      // (or partway through this block) never loses what is already marked. JSON is printed once,
+      // with what was read and, on a failure, why it stopped.
+      const blocks: Block[] = [];
+      let printed = 0;
+      const onBlock = (b: Block) => {
+        blocks.push(b);
+        if (json || !b.messages.length) return;
+        const text = blockLines(b, show, b.kind === 'channel' && (target === undefined || b.kind === 'channel'), target === undefined);
+        out(`${printed++ ? '\n' : ''}${text}`);
+      };
+      const jsonOf = () => (target === undefined
+        ? { direct: blocks.find((b) => b.kind === 'direct')?.messages ?? [], channels: blocks.filter((b): b is Extract<Block, { kind: 'channel' }> => b.kind === 'channel' && b.messages.length > 0).map((b) => ({ channel: b.channel, messages: b.messages })) }
+        : blocks[0]?.messages ?? []);
+      try {
+        if (target === undefined) {
+          const r = await readAll(client, onBlock);
+          if (json) out(JSON.stringify(jsonOf(), null, 2));
+          else if (!printed) out('No unread messages.');
+          await summary(leftAfter(r.listed));
+          return;
+        }
+        const b = await readOne(client, target);
+        onBlock(b);
+        if (b.error) throw b.error;
+        if (json) out(JSON.stringify(jsonOf(), null, 2));
+        else if (!printed) out(`No unread messages ${target.kind === 'channel' ? `in #${target.channel}` : `from ${printable(target.given)}`}.`);
+        await summary();
+        return;
+      } catch (e) {
+        if (json && blocks.some((b) => b.messages.length)) out(JSON.stringify({ read: jsonOf(), stopped: String((e as Error)?.message ?? e) }, null, 2));
+        if (blocks.some((b) => b.messages.length)) throw new Error(`reading stopped early: ${(e as Error)?.message ?? e}. What is shown above was read and marked read`);
+        throw e;
+      }
     }
 
     if (cmd === 'channel') {
