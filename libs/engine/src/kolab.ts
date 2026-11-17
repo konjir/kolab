@@ -981,7 +981,9 @@ export class Kolab {
    * channels (migration 0052), a channel's row (for no key update, so its messages are numbered one
    * at a time; reads and follows, whose foreign keys take key share, don't wait on it), an agent's
    * kolab_chat_agent row (its run), and last the kolab's kolab_chat row (a person's send bumps its
-   * person_seq; making a channel locks it to count channels). None takes an earlier one after a later. On PGlite, one connection, a transaction has the database to itself
+   * person_seq; making a channel locks it to count channels), and after all of them a member's own
+   * channel_read row (a send moves its sender's position; a read locks the reader's, for update, so
+   * one member's reads of a channel run one at a time). None takes an earlier one after a later. On PGlite, one connection, a transaction has the database to itself
    * anyway, and everything inside it must go through `tx`.
    */
   private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string, opts: { access?: boolean } = {}): Promise<T> {
@@ -10380,7 +10382,14 @@ export class Kolab {
       await this.channelMembers(tx, s);
       const c = await this.channelIn(tx, s.kolab, name);
       await tx.exec('set local role kj_system');
-      const at = (await tx.query<{ read_to: string | null }>(`select read_to from channel_read where channel_id = $1 and actor_id = $2`, [c.id, s.actor_id])).rows[0]?.read_to ?? null;
+      // The reader's position, locked: a second read of the same member's at once waits for this one,
+      // then reads from where it left off, so two never return the same message. A position written
+      // here as null is none, as before (nothing read). A send by anyone else never waits on it.
+      if (!archived) {
+        await tx.query(`insert into channel_read(channel_id, kolab_id, actor_id, read_to) values ($1, $2, $3, null) on conflict (channel_id, actor_id) do nothing`, [c.id, s.kolab, s.actor_id]);
+      }
+      const at = (await tx.query<{ read_to: string | null }>(
+        `select read_to from channel_read where channel_id = $1 and actor_id = $2${archived ? '' : ' for update'}`, [c.id, s.actor_id])).rows[0]?.read_to ?? null;
       // The next UNREAD_SCAN messages after the position, the caller's own among them (skipped).
       const ahead = (await tx.query<{ id: string; sent_by: string }>(
         `select id, sent_by from channel_message where channel_id = $1 and id > coalesce($2::text, '') order by id limit $3`, [c.id, at, UNREAD_SCAN])).rows;
