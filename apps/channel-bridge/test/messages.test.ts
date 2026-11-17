@@ -217,3 +217,23 @@ test('a channel message that mentions the agent, and isn\'t capped, starts a tur
   expect(describeStartup([{ uri, body: answers([]) }])).toBeNull();
   expect(describeStartup([{ uri, body: answers([{ channel: 'general', unread: 1, items: [plain] }]) }])).toBeNull();
 });
+
+test('a direct message capped by the kolab\'s loop cap is delivered but starts no turn; one not capped still does', () => {
+  const uri = 'konjir://answers/hub/bo-claude';
+  const answers = (items: { id: string; from: string; message: string; capped?: boolean }[]) => ({ kolab: 'hub', actor: 'bo-claude', queries: [], messages: { unread: items.length, items } });
+  const loop = { id: 'M1', from: 'ann-claude', message: 'and again', capped: true };
+  expect(describeChange(uri, answers([]), answers([loop]))).toBeNull();
+  expect(describeStartup([{ uri, body: answers([loop]) }])).toBeNull();
+  const person = { id: 'M2', from: 'ann', message: 'stop there' };
+  const told = describeChange(uri, answers([loop]), answers([loop, person]))!;
+  expect(told.content.split('\n').slice(0, 2)).toStrictEqual(['A message has come for you; you have 2 unread messages:', '- message M2 from ann: "stop there"']);
+});
+
+test('a new mention wakes the agent however many unread messages come before it', () => {
+  const uri = 'konjir://answers/hub/bo-claude';
+  const chatter = Array.from({ length: 20 }, (_, i) => ({ id: `C${String(i).padStart(2, '0')}`, channel: 'general', from: 'ann', message: `chatter ${i}`, mentions_you: false, capped: false, wakes: false }));
+  const mention = { id: 'C99', channel: 'general', from: 'ann', message: 'bo-claude?', mentions_you: true, capped: false, wakes: true };
+  const answers = (unread: number, items: typeof chatter) => ({ kolab: 'hub', actor: 'bo-claude', queries: [], messages: { unread: 0, items: [] }, channels: [{ channel: 'general', unread, items }] });
+  const told = describeChange(uri, answers(25, chatter), answers(26, [...chatter, mention]))!;
+  expect(told.content.split('\n').slice(0, 2)).toStrictEqual(['A teammate mentioned you in a channel:', '- #general, message C99 from ann: "bo-claude?"']);
+});

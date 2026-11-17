@@ -2441,7 +2441,8 @@ const UNDO_0052 = String.raw`drop trigger kolab_general on kolab;
   drop table channel_mention;
   drop table channel_message;
   drop table channel_follow;
-  drop table channel_setting;
+  drop table kolab_chat;
+  alter table message drop constraint message_agent_run, drop column agent_run;
   drop table channel;
   drop function kj_channel_fixed();
   delete from kj_migration where version = 52;`;
@@ -2464,6 +2465,9 @@ test('a database at 0051 with kolabs, one archived, reaches 0052: each has gener
     ]);
     await db.query(`insert into kolab(id, owner_id, title, created_by) values ('new', 'acme', 'New', 'admin')`);
     expect((await db.query(`select name from channel where kolab_id = 'new'`)).rows).toStrictEqual([{ name: 'general' }]);
+    // Each kolab has its count of agent messages in a row, at none, and the default cap.
+    expect((await db.query(`select kolab_id, agent_run, agent_reply_cap, cap_set_by from kolab_chat order by kolab_id`)).rows).toStrictEqual(
+      ['hub', 'new', 'old'].map((kolab_id) => ({ kolab_id, agent_run: 0, agent_reply_cap: 100, cap_set_by: null })));
     // Only general is made by no one.
     expect(await rejection(db.query(`insert into channel(id, kolab_id, name) values ('c', 'hub', 'other')`))).toMatch(/channel_made_by/);
     expect(await rejection(checkMigrations(db, { migrations: MIGRATIONS.slice(0, at) }))).toMatch(/has migration 0052_channels\.sql, which this release of Kolab doesn't know/);

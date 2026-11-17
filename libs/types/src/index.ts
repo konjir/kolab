@@ -794,8 +794,8 @@ export interface Channel {
   channel: string;
   /** Whether the caller follows it: its unread messages are in their answers, and a message there signals them. */
   following: boolean;
-  /** How many messages others sent there that the caller hasn't read, and how many of those mention the caller. */
-  unread: number; mentions: number;
+  /** How many messages others sent there that the caller hasn't read, and how many of those mention the caller: each counted up to UNREAD_COUNT_CEILING, with unread_more and mentions_more true when there are more. */
+  unread: number; unread_more: boolean; mentions: number; mentions_more: boolean;
   /** Who made it; null for `general`, made with the kolab. */
   made_by: string | null;
   made_at: string;
@@ -820,9 +820,14 @@ export interface UnreadChannelMessage extends ChannelMessage {
   wakes: boolean;
 }
 
-/** The caller's unread messages in one channel: how many, how many mention them, and the oldest MESSAGES_AT_ONCE. */
+/**
+ * The caller's unread messages in one channel: how many and how many mention them (each counted up
+ * to UNREAD_COUNT_CEILING, with *_more when there are more), and as items, oldest first, the oldest
+ * MESSAGES_AT_ONCE unread (in a channel they follow) together with the newest MESSAGES_AT_ONCE
+ * unread that mention them, so a new mention is always among them.
+ */
 export interface UnreadChannel {
-  channel: string; following: boolean; unread: number; mentions: number; items: UnreadChannelMessage[];
+  channel: string; following: boolean; unread: number; unread_more: boolean; mentions: number; mentions_more: boolean; items: UnreadChannelMessage[];
 }
 
 export interface Query {

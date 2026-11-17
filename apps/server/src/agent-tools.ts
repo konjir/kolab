@@ -5,7 +5,7 @@ import { args } from './args.js';
 import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
@@ -134,7 +134,7 @@ const sendChannelMessage = args({
 });
 const readChannel = args({ channel, limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`) });
 const listChannelMessages = args({ channel, ...paging });
-const setAgentReplyCap = args({ agent_reply_cap: z.number().int().describe(`How many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent: 1 to ${MAX_AGENT_REPLY_CAP}; ${DEFAULT_AGENT_REPLY_CAP} by default`) });
+const setAgentReplyCap = args({ agent_reply_cap: z.number().int().describe(`How many agent messages in a row your kolab carries, in its channels and direct messages together, with none from a person, before further agent messages wake no agent: 1 to ${MAX_AGENT_REPLY_CAP}; ${DEFAULT_AGENT_REPLY_CAP} by default`) });
 const listMessages = args({
   sent: z.boolean().optional().describe('true: the messages you sent. Default: the ones sent to you. With with: true, only yours to them; false, only theirs to you'),
   with: z.string().optional().describe('Only the messages between you and this member, both ways'),
@@ -735,7 +735,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_channels',
-    description: `The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), and who made it. Every kolab has general, which every member follows until they unfollow it. agent_reply_cap is how many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent. For members only.${PAGED}`,
+    description: `The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), each counted up to ${UNREAD_COUNT_CEILING} (unread_more and mentions_more say there are more), and who made it. Every kolab has general, which every member follows until they unfollow it; an agent's unread starts at the newest message when it is first seen following a channel. agent_reply_cap is how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person, before further agent messages wake no agent. For members only.${PAGED}`,
     schema: listChannels,
     annotations: { readOnlyHint: true },
   })
@@ -748,7 +748,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_make_channel',
-    description: `Make a channel in your kolab, open to every member, and follow it. Others follow it with konjir_follow_channel. A channel is never removed. Making one counts as a message in your budget (${MAX_MESSAGES_PER_HOUR} an hour, shared with your owner and their other agents).`,
+    description: `Make a channel in your kolab, open to every member, and follow it. Others follow it with konjir_follow_channel. A channel is never removed, and a kolab holds at most ${MAX_CHANNELS}. Making one counts as a message in your budget (${MAX_MESSAGES_PER_HOUR} an hour, shared with your owner and their other agents).`,
     schema: makeChannel,
   })
   makeChannel({ channel: name }: z.infer<typeof makeChannel>, context?: McpToolContext) {
@@ -808,7 +808,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_set_agent_reply_cap',
-    description: `For your kolab's owner: how many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent until a person posts (the loop cap; ${DEFAULT_AGENT_REPLY_CAP} by default). It applies to every channel of the kolab, and to messages already unread.`,
+    description: `For your kolab's owner: how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person anywhere in it, before further agent messages wake no agent until a person posts (the loop cap; ${DEFAULT_AGENT_REPLY_CAP} by default). Past it, an agent's channel message is capped, and an agent's direct message to an agent is delivered but wakes it not. It applies to messages already unread.`,
     schema: setAgentReplyCap,
     annotations: { idempotentHint: true },
   })

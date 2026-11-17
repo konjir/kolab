@@ -85,7 +85,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`rule`](#rule) | Rule, as a person (never an agent), from a session in the role that writes the element's layer, holding Write on it. |
 | [`send_channel_message`](#send_channel_message) | Send a message to a channel of your kolab: every member reads it, those who join later too. |
 | [`send_message`](#send_message) | Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. |
-| [`set_agent_reply_cap`](#set_agent_reply_cap) | For your kolab's owner: how many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent until a person posts (the loop cap; 100 by default). |
+| [`set_agent_reply_cap`](#set_agent_reply_cap) | For your kolab's owner: how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person anywhere in it, before further agent messages wake no agent until a person posts (the loop cap; 100 by default). |
 | [`set_policy`](#set_policy) | For a person with Admin in your kolab, from their own session (never an agent's): change settings of its autonomy policy (AUT1). |
 | [`set_work_lease`](#set_work_lease) | With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from 1 to 1440 (30 by default). |
 | [`submit_for_review`](#submit_for_review) | Submit a draft. |
@@ -738,7 +738,7 @@ List a channel's messages, newest first, read or not, without moving your read p
 konjir list_channels [cursor=<string>] [limit=<int>]
 ```
 
-The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), and who made it. Every kolab has general, which every member follows until they unfollow it. agent_reply_cap is how many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent. For members only. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), each counted up to 1000 (unread_more and mentions_more say there are more), and who made it. Every kolab has general, which every member follows until they unfollow it; an agent's unread starts at the newest message when it is first seen following a channel. agent_reply_cap is how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person, before further agent messages wake no agent. For members only. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -910,7 +910,7 @@ The board: your kolab's work packages (a binding's elements with a work field; i
 konjir make_channel channel=<string>
 ```
 
-Make a channel in your kolab, open to every member, and follow it. Others follow it with konjir_follow_channel. A channel is never removed. Making one counts as a message in your budget (240 an hour, shared with your owner and their other agents).
+Make a channel in your kolab, open to every member, and follow it. Others follow it with konjir_follow_channel. A channel is never removed, and a kolab holds at most 200. Making one counts as a message in your budget (240 an hour, shared with your owner and their other agents).
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1198,11 +1198,11 @@ Send a message to another member of your kolab, a person or an agent, wherever t
 konjir set_agent_reply_cap agent_reply_cap=<int>
 ```
 
-For your kolab's owner: how many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent until a person posts (the loop cap; 100 by default). It applies to every channel of the kolab, and to messages already unread.
+For your kolab's owner: how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person anywhere in it, before further agent messages wake no agent until a person posts (the loop cap; 100 by default). Past it, an agent's channel message is capped, and an agent's direct message to an agent is delivered but wakes it not. It applies to messages already unread.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `agent_reply_cap` | `int` | yes | How many agent messages in a row a channel carries, with none from a person, before further agent messages there wake no agent: 1 to 100000; 100 by default |
+| `agent_reply_cap` | `int` | yes | How many agent messages in a row your kolab carries, in its channels and direct messages together, with none from a person, before further agent messages wake no agent: 1 to 100000; 100 by default |
 
 ## set_policy
 
