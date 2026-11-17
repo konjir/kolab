@@ -150,13 +150,12 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   readMessages: { recorded: ['message_receipt.actor_id'] },
   // Channels (migration 0052): a channel names its maker, a message its sender, a follow or a read
   // position the member it is theirs, and the kolab's agent_reply_cap who set it. A message's count
-  // in the kolab's agent_run is the message's, which names its sender. Reading a member's channels
-  // starts an agent's read positions, as that agent's.
+  // for the loop cap (kolab_chat, kolab_chat_agent, message_run) is the message's, which names its
+  // sender. Reading an agent's answers starts its read positions, as that agent's.
   makeChannel: { recorded: ['channel.made_by', 'channel_follow.actor_id', 'channel_read.actor_id'] },
   followChannel: { recorded: ['channel_follow.actor_id', 'channel_read.actor_id'] },
   sendChannelMessage: { recorded: ['channel_message.sent_by'] },
   readChannel: { recorded: ['channel_read.actor_id'] },
-  channelsPage: { recorded: ['channel_read.actor_id'] },
   unreadChannels: { recorded: ['channel_read.actor_id'] },
   setAgentReplyCap: { recorded: ['kolab_chat.cap_set_by'] },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },

@@ -43,7 +43,7 @@ export type AnswersBody = {
   kolab?: string; actor: string; queries: QueryView[]; submissions?: SubmissionView[]; cases?: CaseView[];
   work?: { events?: WorkNoticeView[] };
   /** Unread messages, oldest first: how many in all, and the first of them. A Kolab from before messages leaves it out. */
-  messages?: { unread?: number; items?: MessageView[] };
+  messages?: { unread?: number; items?: MessageView[]; waking?: number };
   /** Unread channel messages, per channel. A Kolab from before channels leaves it out. */
   channels?: UnreadChannelView[];
 };
@@ -97,6 +97,8 @@ const WORK_WORDS: Record<string, string> = {
 const workLine = (e: WorkNoticeView) => `${e.work} ${WORK_WORDS[e.kind] ?? e.kind.replace(/_/g, ' ')}, by ${e.actor}${e.note ? `: ${quote(e.note)}` : ''}`;
 const workOf = (b: AnswersBody) => b.work?.events ?? [];
 const messagesOf = (b: AnswersBody) => b.messages?.items ?? [];
+/** How many unread messages may wake this agent (not capped), when Kolab says. */
+const wakingOf = (b: AnswersBody) => (typeof b.messages?.waking === 'number' ? b.messages.waking : undefined);
 const unreadOf = (b: AnswersBody) => b.messages?.unread ?? messagesOf(b).length;
 const messageLine = (m: MessageView) => `message ${m.id} from ${m.from}${m.reply_to ? `, answering ${m.reply_to}` : ''}: ${quote(m.message)}`;
 /** How to read messages, and whose words they are: a member's, never the operator's. */
@@ -195,7 +197,12 @@ function answersMessage(uri: string, before: AnswersBody, after: AnswersBody): C
   const fresh = before.messages ? messagesOf(after).filter((m) => !seenMsg.has(m.id)) : [];
   // One from an agent past the kolab's loop cap (capped) is delivered, unread, but starts no turn.
   const messaged = fresh.filter((m) => m.capped !== true);
-  const arrived = before.messages ? Math.max(0, Math.max(fresh.length, unreadOf(after) - unreadOf(before)) - (fresh.length - messaged.length)) : 0;
+  // With Kolab's count of those that may wake, a rise in it is what arrived, shown or not; without
+  // it (an older Kolab), the unread count's rise, less the capped ones shown.
+  const [wasWaking, nowWaking] = [wakingOf(before), wakingOf(after)];
+  const arrived = !before.messages ? 0
+    : wasWaking !== undefined && nowWaking !== undefined ? Math.max(messaged.length, nowWaking - wasWaking)
+    : Math.max(0, Math.max(fresh.length, unreadOf(after) - unreadOf(before)) - (fresh.length - messaged.length));
   // A channel message that mentions this agent, and isn't capped, wakes it (Kolab says so: wakes).
   const seenCh = new Set(channelItemsOf(before).map((m) => m.id));
   const woken = before.channels ? channelItemsOf(after).filter((m) => m.wakes === true && !seenCh.has(m.id)) : [];
@@ -257,7 +264,8 @@ export function describeStartup(bodies: { uri: string; body: unknown }[]): Chann
     // Channel messages that wake no one are only counted, in a turn something else starts.
     // Nor do direct messages that are all capped (an agent's, past the loop cap).
     const shown = answers ? messagesOf(answers.body) : [];
-    const allCapped = shown.length > 0 && unread <= shown.length && shown.every((m) => m.capped === true);
+    const waking = answers ? wakingOf(answers.body) : undefined;
+    const allCapped = waking !== undefined ? waking === 0 : shown.length > 0 && unread <= shown.length && shown.every((m) => m.capped === true);
     if ((!unread || allCapped) && !woken.length) return null;
     return finish(waiting.join('\n'), { uri: answers!.uri, kind: 'answers', initial: 'true', ...kolabMeta(answers!.body), actor: answers!.body.actor, ...(unread ? { messages: String(unread) } : {}), ...channelMeta });
   }

@@ -928,7 +928,14 @@ export class Kolab {
    * With `lock`, the transaction first locks that node's row, so it is the only one writing the
    * node's versions until it ends (W1.17). It locks as Kolab's own login, before any `set local
    * role`, since kj_agent may not lock rows. Each transaction locks at most one node, so two can
-   * never wait on each other. On PGlite, one connection, a transaction has the database to itself
+   * never wait on each other.
+   *
+   * Every transaction takes its locks in this order, and skips those it doesn't need: the access
+   * lock (shared, or exclusive for a change of access); a node's row; then, for messages and
+   * channels (migration 0052), a channel's row (for no key update, so its messages are numbered one
+   * at a time; reads and follows, whose foreign keys take key share, don't wait on it), an agent's
+   * kolab_chat_agent row (its run), and last the kolab's kolab_chat row (a person's send bumps its
+   * person_seq; making a channel locks it to count channels). None takes an earlier one after a later. On PGlite, one connection, a transaction has the database to itself
    * anyway, and everything inside it must go through `tx`.
    */
   private async inTransaction<T>(fn: (tx: Db, signal: Signal) => Promise<T>, lock?: string, opts: { access?: boolean } = {}): Promise<T> {
@@ -9497,7 +9504,8 @@ export class Kolab {
       const members = await this.membersIn(tx, s.kolab);
       if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
       // One refusal for anyone who isn't a member, whether or not Konjir knows the name.
-      if (!members.some((h) => h.id === to)) throw new AccessError(`${to} is not a member of kolab ${s.kolab}, so no message can go to them: konjir_list_members lists who is`);
+      const recipient = members.find((h) => h.id === to);
+      if (!recipient) throw new AccessError(`${to} is not a member of kolab ${s.kolab}, so no message can go to them: konjir_list_members lists who is`);
       if (opts.replyTo !== undefined) {
         const r = (await tx.query<{ sent_by: string; sent_to: string }>(
           `select sent_by, sent_to from message where id = $1 and kolab_id = $2`, [opts.replyTo, s.kolab])).rows[0];
@@ -9505,12 +9513,14 @@ export class Kolab {
         if (!between) throw new LimitError(`reply_to names no message between you and ${to} in kolab ${s.kolab}: give the id of one, or leave it out`);
       }
       await tx.exec('set local role kj_system');
-      // Counted with the kolab's channel messages, for the loop cap (migration 0052).
-      const run = await this.countAgentRun(tx, s.kolab, s.kind);
+      // The loop cap (migration 0052): a person's message starts every agent's run again; an agent's
+      // to an agent counts in its own run, and one to a person counts nothing.
+      const run = await this.countRun(tx, s, recipient.kind === 'agent');
       await this.useRate(tx, hold);
       const sent = (await tx.query<{ sent_at: Date | string }>(
-        `insert into message(id, kolab_id, sent_by, sent_to, body, reply_to, agent_run) values ($1,$2,$3,$4,$5,$6,$7) returning sent_at`,
-        [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null, run])).rows[0];
+        `insert into message(id, kolab_id, sent_by, sent_to, body, reply_to) values ($1,$2,$3,$4,$5,$6) returning sent_at`,
+        [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null])).rows[0];
+      if (run) await tx.query(`insert into message_run(message_id, kolab_id, agent_run) values ($1, $2, $3)`, [id, s.kolab, run]);
       await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
       return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
     }, undefined, { access: true }));
@@ -9523,7 +9533,8 @@ export class Kolab {
   async unreadMessages(sessionId: string): Promise<{ unread: number; items: (Message & { capped?: true })[] }> {
     const s = await this.session(sessionId);
     const rows = (await this.db.query<MessageRow & { agent_run: number }>(
-      `select ${MESSAGE_COLUMNS}, m.agent_run from message m left join message_receipt r on r.message_id = m.id
+      `select ${MESSAGE_COLUMNS}, coalesce(mr.agent_run, 0) as agent_run from message m left join message_receipt r on r.message_id = m.id
+         left join message_run mr on mr.message_id = m.id
         where m.kolab_id = $1 and m.sent_to = $2 and r.message_id is null order by m.id limit $3`, [s.kolab, s.actor_id, MESSAGES_AT_ONCE])).rows;
     // Past the loop cap, an agent's message to an agent wakes it no more: still delivered, and unread (migration 0052).
     const cap = s.kind === 'agent' && rows.some((m) => m.agent_run > 0) ? await this.agentReplyCapIn(this.db, s.kolab) : Infinity;
@@ -9531,6 +9542,21 @@ export class Kolab {
       `select count(*)::int as n from message m where m.kolab_id = $1 and m.sent_to = $2
           and not exists (select 1 from message_receipt r where r.message_id = m.id)`, [s.kolab, s.actor_id])).rows[0].n;
     return { unread, items: rows.map((m) => ({ ...messageOf(m), ...(m.agent_run > cap ? { capped: true as const } : {}) })) };
+  }
+
+  /**
+   * How many of the session's actor's unread messages in its kolab may wake it: all of them, but
+   * for an agent those an agent sent it past the kolab's agent_reply_cap (capped). The answers carry
+   * it as messages.waking, so a client wakes when it rises, whether or not the new one is among the
+   * items shown.
+   */
+  async wakingMessages(sessionId: string): Promise<number> {
+    const s = await this.session(sessionId);
+    const cap = s.kind === 'agent' ? await this.agentReplyCapIn(this.db, s.kolab) : MAX_AGENT_REPLY_CAP + 1;
+    return (await this.db.query<{ n: number }>(
+      `select count(*)::int as n from message m left join message_run mr on mr.message_id = m.id
+        where m.kolab_id = $1 and m.sent_to = $2 and coalesce(mr.agent_run, 0) <= $3
+          and not exists (select 1 from message_receipt r where r.message_id = m.id)`, [s.kolab, s.actor_id, cap])).rows[0].n;
   }
 
   /**
@@ -9610,24 +9636,38 @@ export class Kolab {
   }
 
   /**
-   * In `tx`, counts a message `kind`'s actor sends in `kolab`, in a channel or directly, under the
-   * kolab's row lock (kolab_chat, for no key update), and returns its agent_run: how many agent-sent
-   * messages in a row the kolab holds with this one, since the last a person sent anywhere in it; 0
-   * for a person's. Every send takes the access lock first and then this one, so none waits on another
-   * in the other order.
+   * In `tx`, the loop cap's count for a message the session's actor sends in its kolab (migration
+   * 0052), returning the run to record with it. A person's message, anywhere in the kolab, bumps its
+   * person_seq, which starts every agent's run there again, and records 0. An agent's message that
+   * could wake an agent (`canWake`: a channel message, or a direct message to an agent) counts one
+   * more in that agent's own run since the last person's message, under its kolab_chat_agent row's
+   * lock; one to a person counts nothing and records 0. A row found missing is made, never assumed.
    */
-  private async countAgentRun(tx: Q, kolab: string, kind: ActorKind): Promise<number> {
-    const was = (await tx.query<{ agent_run: number }>(`select agent_run from kolab_chat where kolab_id = $1 for no key update`, [kolab])).rows[0]?.agent_run ?? 0;
-    const run = kind === 'agent' ? was + 1 : 0;
-    await tx.query(`update kolab_chat set agent_run = $2 where kolab_id = $1`, [kolab, run]);
+  private async countRun(tx: Q, s: Session, canWake: boolean): Promise<number> {
+    await tx.query(`insert into kolab_chat(kolab_id) values ($1) on conflict (kolab_id) do nothing`, [s.kolab]);
+    if (s.kind !== 'agent') {
+      await tx.query(`update kolab_chat set person_seq = person_seq + 1 where kolab_id = $1`, [s.kolab]);
+      return 0;
+    }
+    if (!canWake) return 0;
+    const seq = (await tx.query<{ seq: string }>(`select person_seq::text as seq from kolab_chat where kolab_id = $1`, [s.kolab])).rows[0].seq;
+    await tx.query(
+      `insert into kolab_chat_agent(kolab_id, actor_id, run, person_seq) values ($1, $2, 0, $3::bigint) on conflict (kolab_id, actor_id) do nothing`,
+      [s.kolab, s.actor_id, seq]);
+    const was = (await tx.query<{ run: number; seq: string }>(
+      `select run, person_seq::text as seq from kolab_chat_agent where kolab_id = $1 and actor_id = $2 for no key update`, [s.kolab, s.actor_id])).rows[0];
+    const run = was.seq === seq ? was.run + 1 : 1;
+    await tx.query(`update kolab_chat_agent set run = $3, person_seq = $4::bigint where kolab_id = $1 and actor_id = $2`, [s.kolab, s.actor_id, run, seq]);
     return run;
   }
 
   /**
-   * An agent's read position starts at each channel's newest message the first time it is seen
-   * following the channel (it has no use for the history as unread): written here, in the channels of
-   * its kolab it follows and has no position in, or only `channel`. A person's never starts: a person
-   * who has read nothing reads the whole history. Nothing is written in an archived kolab.
+   * An agent's read position starts the first time it is seen following a channel (it has no use
+   * for the history as unread, but has for a mention): just before its oldest mention there, or at
+   * the channel's newest message if none mentions it (AGENT_START). Written here, in the channels of
+   * its kolab it follows and has no position in, or only `channel`. A person's never starts: a
+   * person who has read nothing reads the whole history. Nothing is written in an archived kolab,
+   * nor when it is archived meanwhile: the read goes on without it.
    */
   private async startAgentPositions(s: Session, channel?: string) {
     if (s.kind !== 'agent') return;
@@ -9637,44 +9677,43 @@ export class Kolab {
           and not exists (select 1 from channel_read r where r.channel_id = c.id and r.actor_id = $2) limit 1`,
       [s.kolab, s.actor_id, GENERAL_CHANNEL, channel ?? null])).rows.length > 0;
     if (!missing) return;
-    await this.inTransaction(async (tx) => {
-      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) return;
-      await tx.exec('set local role kj_system');
-      await tx.query(
-        `insert into channel_read(channel_id, kolab_id, actor_id, read_to)
-         select c.id, c.kolab_id, $2, (select m.id from channel_message m where m.channel_id = c.id order by m.id desc limit 1)
-           from channel c left join channel_follow f on f.channel_id = c.id and f.actor_id = $2
-          where c.kolab_id = $1 and coalesce(f.following, c.name = $3) and ($4::text is null or c.id = $4)
-         on conflict (channel_id, actor_id) do nothing`, [s.kolab, s.actor_id, GENERAL_CHANNEL, channel ?? null]);
-    });
+    try {
+      await this.inTransaction(async (tx) => {
+        if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) return;
+        await tx.exec('set local role kj_system');
+        await tx.query(
+          `insert into channel_read(channel_id, kolab_id, actor_id, read_to)
+           select c.id, c.kolab_id, $2, ${AGENT_START('c.id', '$2')}
+             from channel c left join channel_follow f on f.channel_id = c.id and f.actor_id = $2
+            where c.kolab_id = $1 and coalesce(f.following, c.name = $3) and ($4::text is null or c.id = $4)
+           on conflict (channel_id, actor_id) do nothing`, [s.kolab, s.actor_id, GENERAL_CHANNEL, channel ?? null]);
+      });
+    } catch (e) {
+      // Archived between the check and the write: the position waits, and the read goes on.
+      if ((await this.db.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) return;
+      throw e;
+    }
   }
 
   /**
-   * In `q`, each channel of `kolab` (or the one after `after`, by name, up to `limit`) with `actor`'s
-   * follow state and read position, and their unread and unread mentions, each counted up to
-   * UNREAD_COUNT_CEILING + 1 rows of the channel's own index, so no count reads further.
+   * In `q`, each channel of `kolab` (or those after `after`, by name, up to `limit`) with `actor`'s
+   * follow state and read position (`pos`: for an agent never seen following a followed channel,
+   * where it would start, AGENT_START, so this writes nothing), and its unread and unread mentions.
+   * Each count is a range of one index from the position on ((channel_id, id), and the mention
+   * index), reading at most UNREAD_SCAN rows of messages (the caller's own among them, skipped) and
+   * UNREAD_COUNT_CEILING + 1 mentions, so no count reads further however long the channel.
    */
-  private async channelCounts(q: Q, kolab: string, actor: string, page: { after?: string; limit?: number } = {}) {
-    return (await q.query<ChannelCountRow>(
-      `select c.id, c.name, coalesce(f.following, c.name = $3) as following, r.read_to, c.made_by, c.made_at,
-              (select count(*)::int from (select 1 from channel_message m
-                 where m.channel_id = c.id and m.sent_by <> $2 and (r.read_to is null or m.id > r.read_to) limit $4) z) as unread,
-              (select count(*)::int from (select 1 from channel_mention x join channel_message m on m.id = x.message_id
-                 where x.channel_id = c.id and x.actor_id = $2 and (r.read_to is null or x.message_id > r.read_to) and m.sent_by <> $2 limit $4) z) as mentions
-         from channel c
-         left join channel_follow f on f.channel_id = c.id and f.actor_id = $2
-         left join channel_read r on r.channel_id = c.id and r.actor_id = $2
-        where c.kolab_id = $1 and ($5::text is null or c.name collate "C" > $5::text collate "C")
-        order by c.name collate "C" limit $6`,
-      [kolab, actor, GENERAL_CHANNEL, UNREAD_COUNT_CEILING + 1, page.after ?? null, page.limit ?? MAX_CHANNELS])).rows;
+  private async channelCounts(q: Q, s: Session, page: { after?: string; limit?: number } = {}) {
+    return (await q.query<ChannelCountRow>(CHANNEL_COUNTS_SQL,
+      [s.kolab, s.actor_id, GENERAL_CHANNEL, UNREAD_COUNT_CEILING + 1, page.after ?? null, page.limit ?? MAX_CHANNELS, s.kind === 'agent', UNREAD_SCAN])).rows;
   }
 
   /**
    * The channels of the session's kolab, for a member (konjir_list_channels): each with whether the
    * caller follows it, how many messages others sent there that the caller hasn't read, how many of
    * those mention them (each counted up to UNREAD_COUNT_CEILING), and who made it. With the kolab's
-   * agent_reply_cap. A page at a time, by name. An agent seen following a channel for the first time
-   * has its read position started there (startAgentPositions).
+   * agent_reply_cap. A page at a time, by name. It writes nothing: for an agent never seen following
+   * a channel it follows, it counts from where its position would start.
    */
   async channelsPage(sessionId: string, page: PageOpts = {}): Promise<{ kolab: string; agent_reply_cap: number; items: Channel[]; next: string | null }> {
     const s = await this.session(sessionId);
@@ -9682,8 +9721,7 @@ export class Kolab {
     const list = scoped('channels', { kolab: s.kolab });
     const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
     await this.channelMembers(this.db, s);
-    await this.startAgentPositions(s);
-    const rows = await this.channelCounts(this.db, s.kolab, s.actor_id, { after, limit: size + 1 });
+    const rows = await this.channelCounts(this.db, s, { after, limit: size + 1 });
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.name]);
     return {
       kolab: s.kolab, agent_reply_cap: await this.agentReplyCapIn(this.db, s.kolab), next,
@@ -9741,7 +9779,7 @@ export class Kolab {
       if (following && s.kind === 'agent') {
         await tx.query(
           `insert into channel_read(channel_id, kolab_id, actor_id, read_to)
-           values ($1, $2, $3, (select m.id from channel_message m where m.channel_id = $1 order by m.id desc limit 1))
+           values ($1, $2, $3, ${AGENT_START('$1::text', '$3')})
            on conflict (channel_id, actor_id) do nothing`, [c.id, s.kolab, s.actor_id]);
       }
       // The actor's sessions hear that their answers carry another set of channels.
@@ -9755,8 +9793,8 @@ export class Kolab {
    * reads it. `mentions` names members it is for, each by name or, for an agent, as
    * `<owner>/<label>`, resolved and checked now: one who isn't a member is refused, as a message's
    * recipient is. `replyTo` names a message of the same channel. It signals the answers of every
-   * member who follows the channel or is mentioned, but the sender. It is counted in the kolab's
-   * agent_run (countAgentRun), under whose lock the kolab's messages are numbered one at a time. One
+   * member who follows the channel or is mentioned, but the sender (who is never mentioned). It is
+   * counted for the loop cap (countRun), and numbered under the channel's row lock. One
    * from the sender's owner's budget of messages is held for it, as for a message. An archived kolab
    * takes none.
    */
@@ -9780,13 +9818,14 @@ export class Kolab {
           throw new AccessError(`${m} is not a member of kolab ${s.kolab}, so a message can't mention them: konjir_list_members lists who is`);
         }
         return id;
-      }))].sort();
+      }))].filter((id) => id !== s.actor_id).sort();
+      // The channel's row, as Kolab's own login, before any role: its messages are numbered one at a time.
+      await tx.query(`select 1 from channel where id = $1 for no key update`, [c.id]);
       if (opts.replyTo !== undefined && !(await tx.query(`select 1 from channel_message where id = $1 and channel_id = $2`, [opts.replyTo, c.id])).rows.length) {
         throw new LimitError(`reply_to names no message of #${c.name} in kolab ${s.kolab}: give the id of one, or leave it out`);
       }
       await tx.exec('set local role kj_system');
-      // The kolab's lock: its messages are counted, and this channel's numbered, one at a time.
-      const run = await this.countAgentRun(tx, s.kolab, s.kind);
+      const run = await this.countRun(tx, s, true);
       const last = (await tx.query<{ id: string }>(`select id from channel_message where channel_id = $1 order by id desc limit 1`, [c.id])).rows[0];
       // Each later than the last, so a read position never passes a message sent after it.
       const fresh = ulid();
@@ -9826,16 +9865,16 @@ export class Kolab {
     await this.startAgentPositions(s);
     const cap = await this.agentReplyCapIn(this.db, s.kolab);
     const out: UnreadChannel[] = [];
-    for (const c of await this.channelCounts(this.db, s.kolab, s.actor_id)) {
+    for (const c of await this.channelCounts(this.db, s)) {
       if (!(c.following && c.unread) && !c.mentions) continue;
       const rows = (await this.db.query<ChannelMessageRow>(
         `select * from (
            (select ${CHANNEL_MESSAGE_COLUMNS} from channel_message m join channel c on c.id = m.channel_id
-             where $5::boolean and m.channel_id = $1 and m.sent_by <> $2 and ($3::text is null or m.id > $3) order by m.id limit $4)
+             where $5::boolean and m.channel_id = $1 and m.id > coalesce($3::text, '') and m.sent_by <> $2 order by m.id limit $4)
            union
            (select ${CHANNEL_MESSAGE_COLUMNS} from channel_mention x join channel_message m on m.id = x.message_id join channel c on c.id = m.channel_id
-             where x.channel_id = $1 and x.actor_id = $2 and ($3::text is null or x.message_id > $3) and m.sent_by <> $2 order by x.message_id desc limit $4)
-         ) u order by u.id`, [c.id, s.actor_id, c.read_to, MESSAGES_AT_ONCE, c.following])).rows;
+             where x.channel_id = $1 and x.actor_id = $2 and x.message_id > coalesce($3::text, '') order by x.message_id desc limit $4)
+         ) u order by u.id`, [c.id, s.actor_id, c.pos, MESSAGES_AT_ONCE, c.following])).rows;
       const n = counted(c);
       out.push({
         channel: c.name, following: c.following,
@@ -9869,7 +9908,7 @@ export class Kolab {
       const c = await this.channelIn(tx, s.kolab, name);
       await tx.exec('set local role kj_system');
       const at = (await tx.query<{ read_to: string | null }>(`select read_to from channel_read where channel_id = $1 and actor_id = $2`, [c.id, s.actor_id])).rows[0]?.read_to ?? null;
-      const unread = `m.channel_id = $1 and m.sent_by <> $2 and ($3::text is null or m.id > $3)`;
+      const unread = `m.channel_id = $1 and m.id > coalesce($3::text, '') and m.sent_by <> $2`;
       const rows = (await tx.query<ChannelMessageRow>(
         `select ${CHANNEL_MESSAGE_COLUMNS} from channel_message m join channel c on c.id = m.channel_id
           where ${unread} order by m.id limit $4`, [c.id, s.actor_id, at, size])).rows;
@@ -14020,12 +14059,43 @@ function memberName(given: string): string {
 const agentLabel = (h: { id: string; owner_id: string | null }) =>
   h.owner_id !== null && h.id.startsWith(`${h.owner_id}-`) && h.id.length > h.owner_id.length + 1 ? h.id.slice(h.owner_id.length + 1) : null;
 /** A channel with a member's follow state, read position, and counts of unread and unread mentions, each up to UNREAD_COUNT_CEILING + 1. */
-interface ChannelCountRow { id: string; name: string; following: boolean; read_to: string | null; made_by: string | null; made_at: Date | string; unread: number; mentions: number }
-/** A channel's counts as a member reads them: each at most UNREAD_COUNT_CEILING, with whether there are more. */
-const counted = (r: { unread: number; mentions: number }) => ({
-  unread: Math.min(r.unread, UNREAD_COUNT_CEILING), unread_more: r.unread > UNREAD_COUNT_CEILING,
+interface ChannelCountRow { id: string; name: string; following: boolean; pos: string | null; made_by: string | null; made_at: Date | string; unread: number; scanned: number; mentions: number }
+/** A channel's counts as a member reads them: each at most UNREAD_COUNT_CEILING, with whether there are more (or, past UNREAD_SCAN rows read, may be). */
+const counted = (r: { unread: number; scanned: number; mentions: number }) => ({
+  unread: Math.min(r.unread, UNREAD_COUNT_CEILING), unread_more: r.unread > UNREAD_COUNT_CEILING || r.scanned >= UNREAD_SCAN,
   mentions: Math.min(r.mentions, UNREAD_COUNT_CEILING), mentions_more: r.mentions > UNREAD_COUNT_CEILING,
 });
+/** Most messages a channel's unread count reads, the member's own among them (which it skips): twice the ceiling. */
+const UNREAD_SCAN = 2 * UNREAD_COUNT_CEILING;
+/**
+ * Where an agent's read position in channel `channel` starts when it is first seen following it
+ * (`actor` the agent): the newest message older than its oldest mention there, so the mention and
+ * everything after it is unread (null, from the start, if the mention is the oldest message); or,
+ * if none mentions it, the channel's newest message (null in an empty channel).
+ */
+const AGENT_START = (channel: string, actor: string) => `(select case when fm.first is null
+    then (select m.id from channel_message m where m.channel_id = ${channel} order by m.id desc limit 1)
+    else (select m.id from channel_message m where m.channel_id = ${channel} and m.id < fm.first order by m.id desc limit 1) end
+   from (select min(x.message_id) as first from channel_mention x where x.channel_id = ${channel} and x.actor_id = ${actor}) fm)`;
+/**
+ * The channels of a kolab ($1) with a member's ($2; $7 whether an agent) follow state, read
+ * position and counts: channelCounts. $3 GENERAL_CHANNEL, $4 the mentions read at most, $5 and $6
+ * the page, $8 UNREAD_SCAN. Each count is a range scan of one index from the position on.
+ */
+export const CHANNEL_COUNTS_SQL = `select c.id, c.name, p.following, p.pos, c.made_by, c.made_at, u.unread, u.scanned,
+       (select count(*)::int from (select 1 from channel_mention x
+          where x.channel_id = c.id and x.actor_id = $2 and x.message_id > coalesce(p.pos, '') limit $4) z) as mentions
+  from channel c
+  left join channel_follow f on f.channel_id = c.id and f.actor_id = $2
+  left join channel_read r on r.channel_id = c.id and r.actor_id = $2
+  cross join lateral (select coalesce(f.following, c.name = $3) as following,
+                             case when r.actor_id is null and $7::boolean and coalesce(f.following, c.name = $3)
+                                  then ${AGENT_START('c.id', '$2')} else r.read_to end as pos) p
+  cross join lateral (select (count(*) filter (where w.sent_by <> $2))::int as unread, count(*)::int as scanned
+                        from (select m.sent_by from channel_message m
+                               where m.channel_id = c.id and m.id > coalesce(p.pos, '') order by m.id limit $8) w) u
+ where c.kolab_id = $1 and ($5::text is null or c.name collate "C" > $5::text collate "C")
+ order by c.name collate "C" limit $6`;
 /** Why a session that only reads a public kolab has no channels there. */
 const notInChannels = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: its channels are for those who hold access there, and reading a public kolab gives none`;
 /** Why a session that only reads a public kolab sends and reads no messages there. */

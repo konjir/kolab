@@ -7,6 +7,7 @@
 import { expect, test } from '@jest/globals';
 import { DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, MAX_MENTIONS, MAX_TEXT, MESSAGES_AT_ONCE, UNREAD_COUNT_CEILING, isInboxEvent, type KolabEvent } from '@konjir/types';
 import { openKolab, rejection, TestKolab } from '@konjir/engine/testing';
+import { CHANNEL_COUNTS_SQL } from '@konjir/engine';
 
 /**
  * Ann owns `hub`. Bo writes there. Each has an agent of their own with access (ann-claude,
@@ -169,45 +170,6 @@ test('a member who joins later reads the whole history, oldest first, a batch at
   expect(await rejection(kolab.readChannel(sam, 'general', { limit: 0 }))).toMatch(/LimitError: limit is a whole number/);
 });
 
-test('after agent_reply_cap agent messages in a row in a channel, with none from a person, further agent messages wake no agent until a person posts', async () => {
-  const { kolab, ann, bo, annAgent, boAgent } = await hub();
-  // Only the kolab's owner sets the cap.
-  expect(await rejection(kolab.setAgentReplyCap(bo, 2))).toMatch(/AccessError: bo does not own kolab hub: only its owner sets agent_reply_cap/);
-  expect(await rejection(kolab.setAgentReplyCap(annAgent, 2))).toMatch(/AccessError: ann-claude does not own kolab hub/);
-  expect(await rejection(kolab.setAgentReplyCap(ann, 0))).toMatch(/LimitError: agent_reply_cap is a whole number from 1 to/);
-  expect(await kolab.setAgentReplyCap(ann, 2)).toStrictEqual({ kolab: 'hub', agent_reply_cap: 2 });
-  expect((await kolab.channelsPage(bo)).agent_reply_cap).toBe(2);
-
-  // Two agents answer each other, each mentioning the other.
-  const a1 = await kolab.sendChannelMessage(annAgent, 'general', 'one', { mentions: ['bo/claude'] });
-  const b1 = await kolab.sendChannelMessage(boAgent, 'general', 'two', { mentions: ['ann/claude'] });
-  const a2 = await kolab.sendChannelMessage(annAgent, 'general', 'three', { mentions: ['bo/claude'] });
-  const b2 = await kolab.sendChannelMessage(boAgent, 'general', 'four', { mentions: ['ann/claude'] });
-  const flags = async (s: string) => (await kolab.unreadChannels(s))[0]?.items.map((m) => [m.message, m.capped, m.wakes]) ?? [];
-  // The first two wake; from the third, at the cap, none does, and the flag says so to any reader.
-  expect(await flags(boAgent)).toStrictEqual([['one', false, true], ['three', true, false]]);
-  expect(await flags(annAgent)).toStrictEqual([['two', false, true], ['four', true, false]]);
-  expect(await flags(bo)).toStrictEqual([['one', false, false], ['two', false, false], ['three', true, false], ['four', true, false]]);
-  expect((await kolab.db.query(`select id, agent_run from channel_message order by id`)).rows.map((r) => (r as { agent_run: number }).agent_run)).toStrictEqual([1, 2, 3, 4]);
-  expect([a1, b1, a2, b2].every((m) => typeof m.id === 'string')).toBe(true);
-
-  // A person posts: the run starts again. A person's message is never capped.
-  await kolab.readChannel(annAgent, 'general');
-  await kolab.readChannel(boAgent, 'general');
-  await kolab.sendChannelMessage(bo, 'general', 'carry on', { mentions: ['ann/claude', 'bo/claude'] });
-  await kolab.sendChannelMessage(annAgent, 'general', 'five', { mentions: ['bo/claude'] });
-  expect(await flags(boAgent)).toStrictEqual([['carry on', false, true], ['five', false, true]]);
-  expect(await flags(annAgent)).toStrictEqual([['carry on', false, true]]);
-
-  // The cap is per channel: another channel's run is its own.
-  await kolab.makeChannel(annAgent, 'side');
-  await kolab.sendChannelMessage(annAgent, 'side', 'six', { mentions: ['bo/claude'] });
-  expect((await kolab.unreadChannels(boAgent)).find((c) => c.channel === 'side')!.items.map((m) => [m.message, m.capped, m.wakes])).toStrictEqual([['six', false, true]]);
-  // Raising the cap applies to what is unread now.
-  await kolab.setAgentReplyCap(ann, 100);
-  expect(await flags(bo)).toStrictEqual([['one', false, false], ['two', false, false], ['three', false, false], ['four', false, false], ['five', false, false]]);
-});
-
 test('channel messages and channels are counted in the message budget, with direct messages; a refused one is not written', async () => {
   const { kolab, ann, annAgent, bo } = await hub();
   Object.assign(kolab.rates, { messages: 3 });
@@ -338,38 +300,6 @@ test('an agent\'s read position starts at the newest message the first time it i
   expect((await kolab.unreadChannels(helper)).map((c) => c.items.map((m) => m.id))).toStrictEqual([[later.id]]);
 });
 
-test('the loop cap counts agent messages in a row across the whole kolab: hopping channels doesn\'t reset it, an agent-to-agent direct message past it wakes no one, and a person anywhere resets it', async () => {
-  const { kolab, ann, bo, annAgent, boAgent } = await hub();
-  Object.assign(kolab.rates, { messages: Infinity });
-  await kolab.setAgentReplyCap(ann, 2);
-  for (const c of ['one', 'two', 'three']) await kolab.makeChannel(annAgent, c);
-  await kolab.followChannel(boAgent, 'three', true);
-  // Each message in a fresh channel: the run goes on.
-  await kolab.sendChannelMessage(annAgent, 'one', 'a', { mentions: ['bo/claude'] });
-  await kolab.sendChannelMessage(boAgent, 'two', 'b', { mentions: ['ann/claude'] });
-  await kolab.sendChannelMessage(annAgent, 'three', 'c', { mentions: ['bo/claude'] });
-  const flags = async (s: string) => (await kolab.unreadChannels(s)).flatMap((c) => c.items.map((m) => [c.channel, m.message, m.capped, m.wakes]));
-  expect(await flags(boAgent)).toStrictEqual([['one', 'a', false, true], ['three', 'c', true, false]]);
-
-  // Direct messages between agents count in the same run, and past the cap wake no one: still delivered, unread.
-  const d1 = await kolab.sendMessage(boAgent, 'ann-claude', 'still there?');
-  expect((await kolab.unreadMessages(annAgent)).items).toStrictEqual([{ ...d1, capped: true }]);
-  // One to a person is never capped.
-  const toPerson = await kolab.sendMessage(annAgent, 'bo', 'and you?');
-  expect((await kolab.unreadMessages(bo)).items).toStrictEqual([toPerson]);
-  // A person's message anywhere, here a direct one, starts the run again.
-  await kolab.sendMessage(bo, 'ann', 'carry on');
-  const d2 = await kolab.sendMessage(boAgent, 'ann-claude', 'back to it');
-  const d3 = await kolab.sendMessage(annAgent, 'bo-claude', 'yes');
-  const d4 = await kolab.sendMessage(boAgent, 'ann-claude', 'and again');
-  expect((await kolab.unreadMessages(annAgent)).items.map((m) => [m.id, m.capped ?? false])).toStrictEqual([[d1.id, true], [d2.id, false], [d4.id, true]]);
-  expect((await kolab.unreadMessages(boAgent)).items).toStrictEqual([d3]);
-  // And a person's channel message resets it for direct messages too.
-  await kolab.sendChannelMessage(ann, 'general', 'all good');
-  const d5 = await kolab.sendMessage(annAgent, 'bo-claude', 'ok');
-  expect((await kolab.unreadMessages(boAgent)).items.map((m) => [m.id, m.capped ?? false])).toStrictEqual([[d3.id, false], [d5.id, false]]);
-});
-
 test('a kolab holds at most MAX_CHANNELS channels, general among them', async () => {
   const { kolab, ann, bo } = await hub();
   await kolab.db.query(
@@ -397,4 +327,145 @@ test('messages sent at once to one channel are numbered in the order they commit
   expect(rows).toStrictEqual([...rows].sort());
   expect([...read].sort()).toStrictEqual([...rows].sort());
   expect(new Set(read).size).toBe(30);
+});
+
+test('after agent_reply_cap messages from one agent that could wake an agent, with none from a person, its further ones wake no agent until a person posts; two looping agents stop waking each other', async () => {
+  const { kolab, ann, bo, annAgent, boAgent } = await hub();
+  // Only the kolab's owner sets the cap.
+  expect(await rejection(kolab.setAgentReplyCap(bo, 2))).toMatch(/AccessError: bo does not own kolab hub: only its owner sets agent_reply_cap/);
+  expect(await rejection(kolab.setAgentReplyCap(annAgent, 2))).toMatch(/AccessError: ann-claude does not own kolab hub/);
+  expect(await rejection(kolab.setAgentReplyCap(ann, 0))).toMatch(/LimitError: agent_reply_cap is a whole number from 1 to/);
+  expect(await kolab.setAgentReplyCap(ann, 2)).toStrictEqual({ kolab: 'hub', agent_reply_cap: 2 });
+  expect((await kolab.channelsPage(bo)).agent_reply_cap).toBe(2);
+
+  // Two agents answer each other, each mentioning the other: each one's third wakes no one.
+  for (const [who, text] of [[annAgent, 'one'], [boAgent, 'two'], [annAgent, 'three'], [boAgent, 'four'], [annAgent, 'five'], [boAgent, 'six']] as const) {
+    await kolab.sendChannelMessage(who, 'general', text, { mentions: [who === annAgent ? 'bo/claude' : 'ann/claude'] });
+  }
+  const flags = async (s: string) => (await kolab.unreadChannels(s))[0]?.items.map((m) => [m.message, m.capped, m.wakes]) ?? [];
+  expect(await flags(boAgent)).toStrictEqual([['one', false, true], ['three', false, true], ['five', true, false]]);
+  expect(await flags(annAgent)).toStrictEqual([['two', false, true], ['four', false, true], ['six', true, false]]);
+  // The flag is the same to any reader; a person is never woken.
+  expect((await flags(bo)).map(([m, capped]) => [m, capped])).toStrictEqual([['one', false], ['two', false], ['three', false], ['four', false], ['five', true], ['six', true]]);
+  expect((await kolab.db.query<{ agent_run: number }>(`select agent_run from channel_message order by id`)).rows.map((r) => r.agent_run)).toStrictEqual([1, 1, 2, 2, 3, 3]);
+
+  // A person posts: every agent's run starts again. A person's message is never capped.
+  await kolab.readChannel(annAgent, 'general');
+  await kolab.readChannel(boAgent, 'general');
+  await kolab.sendChannelMessage(bo, 'general', 'carry on', { mentions: ['ann/claude', 'bo/claude'] });
+  await kolab.sendChannelMessage(annAgent, 'general', 'seven', { mentions: ['bo/claude'] });
+  expect(await flags(boAgent)).toStrictEqual([['carry on', false, true], ['seven', false, true]]);
+  expect(await flags(annAgent)).toStrictEqual([['carry on', false, true]]);
+  // The cap is judged as it is now: raising it uncaps what is still unread.
+  await kolab.setAgentReplyCap(ann, 100);
+  expect((await flags(bo)).every(([, capped]) => capped === false)).toBe(true);
+});
+
+test('the loop cap is each agent\'s own, across the whole kolab: hopping channels doesn\'t reset it, one member\'s agents exhausting theirs leave another\'s waking, direct messages to a person never count, and a person anywhere resets every run', async () => {
+  const { kolab, ann, bo, annAgent, boAgent } = await hub();
+  Object.assign(kolab.rates, { messages: Infinity });
+  await kolab.setAgentReplyCap(ann, 2);
+  await kolab.addActor('ann-helper', { owner: 'ann' });
+  await kolab.grant('hub', 'ann-helper', 'write');
+  const helper = await kolab.openSession('ann-helper', 'product', { kolab: 'hub' });
+  await kolab.unreadChannels(helper);
+  for (const c of ['one', 'two', 'three']) await kolab.makeChannel(annAgent, c);
+  for (const c of ['one', 'two', 'three']) await kolab.followChannel(boAgent, c, true);
+  // Each message in a fresh channel: ann-claude's run goes on, and its third is capped.
+  await kolab.sendChannelMessage(annAgent, 'one', 'a', { mentions: ['bo/claude'] });
+  await kolab.sendChannelMessage(annAgent, 'two', 'b', { mentions: ['bo/claude'] });
+  await kolab.sendChannelMessage(annAgent, 'three', 'c', { mentions: ['bo/claude'] });
+  // Ann's other agent is spent too, in direct messages to an agent.
+  const h1 = await kolab.sendMessage(helper, 'bo-claude', 'h1');
+  const h2 = await kolab.sendMessage(helper, 'bo-claude', 'h2');
+  const h3 = await kolab.sendMessage(helper, 'bo-claude', 'h3');
+  const flags = async (s: string) => (await kolab.unreadChannels(s)).flatMap((c) => c.items.map((m) => [c.channel, m.message, m.capped, m.wakes]));
+  expect(await flags(boAgent)).toStrictEqual([['one', 'a', false, true], ['three', 'c', true, false], ['two', 'b', false, true]]);
+  // Past the cap, an agent's direct message to an agent is delivered and unread, but wakes no one.
+  expect((await kolab.unreadMessages(boAgent)).items).toStrictEqual([h1, h2, { ...h3, capped: true }]);
+  expect(await kolab.wakingMessages(boAgent)).toBe(2);
+  // Bo's agent, another member's, is untouched: its mention still wakes ann-claude.
+  const fromBo = await kolab.sendChannelMessage(boAgent, 'general', 'ann-claude, a question', { mentions: ['ann/claude'] });
+  expect((await kolab.unreadChannels(annAgent)).flatMap((c) => c.items).find((m) => m.id === fromBo.id)).toMatchObject({ capped: false, wakes: true });
+
+  // Direct messages to a person never count, however many.
+  const before = (await kolab.db.query<{ run: number }>(`select run from kolab_chat_agent where actor_id = 'bo-claude'`)).rows;
+  for (let i = 0; i < 4; i++) await kolab.sendMessage(boAgent, 'ann', `to a person ${i}`);
+  expect((await kolab.db.query<{ run: number }>(`select run from kolab_chat_agent where actor_id = 'bo-claude'`)).rows).toStrictEqual(before);
+  expect((await kolab.unreadMessages(ann)).items.every((m) => m.capped === undefined)).toBe(true);
+
+  // A person's message anywhere, here a direct one, starts every agent's run again.
+  await kolab.sendMessage(bo, 'ann', 'carry on');
+  const d = await kolab.sendMessage(helper, 'bo-claude', 'again');
+  const c = await kolab.sendChannelMessage(annAgent, 'one', 'again', { mentions: ['bo/claude'] });
+  expect((await kolab.unreadMessages(boAgent)).items.at(-1)).toStrictEqual(d);
+  expect((await kolab.unreadChannels(boAgent)).flatMap((x) => x.items).find((m) => m.id === c.id)).toMatchObject({ capped: false, wakes: true });
+  // Two agents looping in direct messages stop waking each other at the cap.
+  await kolab.sendMessage(ann, 'bo', 'reset');
+  const loop = [];
+  for (let i = 0; i < 3; i++) {
+    loop.push(await kolab.sendMessage(annAgent, 'bo-claude', `ping ${i}`));
+    loop.push(await kolab.sendMessage(boAgent, 'ann-claude', `pong ${i}`));
+  }
+  const capped = async (s: string, ids: string[]) => (await kolab.unreadMessages(s)).items.filter((m) => ids.includes(m.id)).map((m) => m.capped ?? false);
+  expect(await capped(boAgent, loop.filter((m) => m.from === 'ann-claude').map((m) => m.id))).toStrictEqual([false, false, true]);
+  expect(await capped(annAgent, loop.filter((m) => m.from === 'bo-claude').map((m) => m.id))).toStrictEqual([false, false, true]);
+});
+
+test('a mention sent before an agent is first seen following the channel still wakes it: its position starts just before its oldest mention', async () => {
+  const { kolab, ann } = await hub();
+  await kolab.sendChannelMessage(ann, 'general', 'long ago');
+  await kolab.addActor('ann-helper', { owner: 'ann' });
+  await kolab.grant('hub', 'ann-helper', 'write');
+  await kolab.sendChannelMessage(ann, 'general', 'before');
+  const early = await kolab.sendChannelMessage(ann, 'general', 'helper, when you start, look here', { mentions: ['ann/helper'] });
+  const after = await kolab.sendChannelMessage(ann, 'general', 'and this');
+  const helper = await kolab.openSession('ann-helper', 'product', { kolab: 'hub' });
+  // list_channels writes nothing, and counts from where the position would start.
+  expect((await kolab.channelsPage(helper)).items[0]).toMatchObject({ channel: 'general', unread: 2, mentions: 1 });
+  expect((await kolab.db.query(`select 1 from channel_read where actor_id = 'ann-helper'`)).rows).toStrictEqual([]);
+  const general = (await kolab.unreadChannels(helper))[0];
+  expect(general.items.map((m) => [m.id, m.wakes])).toStrictEqual([[early.id, true], [after.id, false]]);
+  // The position stays where it started.
+  expect((await kolab.unreadChannels(helper))[0].items.map((m) => m.id)).toStrictEqual([early.id, after.id]);
+  // A channel whose oldest message mentions it starts from nothing read.
+  await kolab.makeChannel(ann, 'fresh');
+  await kolab.sendChannelMessage(ann, 'fresh', 'first, for helper', { mentions: ['ann/helper'] });
+  await kolab.sendChannelMessage(ann, 'fresh', 'second');
+  await kolab.followChannel(helper, 'fresh', true);
+  expect((await kolab.readChannel(helper, 'fresh')).messages.map((m) => m.message)).toStrictEqual(['first, for helper', 'second']);
+});
+
+test('an agent\'s first position is not written when its kolab is archived; the answers still read', async () => {
+  const { kolab, ann } = await hub();
+  await kolab.addActor('ann-helper', { owner: 'ann' });
+  await kolab.grant('hub', 'ann-helper', 'write');
+  await kolab.sendChannelMessage(ann, 'general', 'hi');
+  // Archiving ends the kolab's sessions, so a read that gets this far began before it: the write is skipped, not raised.
+  await kolab.db.query(`update kolab set archived_at = now() where id = 'hub'`);
+  const start = (kolab as unknown as { startAgentPositions(s: object): Promise<void> }).startAgentPositions.bind(kolab);
+  await expect(start({ id: 'x', actor_id: 'ann-helper', kolab: 'hub', kind: 'agent', owner: 'ann' })).resolves.toBeUndefined();
+  expect((await kolab.db.query(`select 1 from channel_read where actor_id = 'ann-helper'`)).rows).toStrictEqual([]);
+});
+
+// Under KONJIR_TEST_POSTGRES, on a server's planner; on PGlite too. With sequential scans off, each
+// count must be able to read an index range from the position on: a plan that can't falls back to a
+// sequential scan and fails.
+test('each of a channel\'s counts is a range of one index from the member\'s position', async () => {
+  const { kolab, bo } = await hub();
+  const plan = await kolab.db.transaction(async (tx) => {
+    await tx.exec('set local enable_seqscan = off');
+    return JSON.stringify((await tx.query<{ 'QUERY PLAN': unknown }>(`explain (format json) ${CHANNEL_COUNTS_SQL}`,
+      ['hub', 'bo', 'general', UNREAD_COUNT_CEILING + 1, null, MAX_CHANNELS, false, 2 * UNREAD_COUNT_CEILING])).rows[0]['QUERY PLAN']);
+  });
+  const nodes: { 'Node Type': string; 'Relation Name'?: string; 'Index Name'?: string; 'Index Cond'?: string }[] = [];
+  const walk = (n: Record<string, unknown>) => { nodes.push(n as never); for (const c of (n.Plans as Record<string, unknown>[] | undefined) ?? []) walk(c); };
+  walk((JSON.parse(plan) as { Plan: Record<string, unknown> }[])[0].Plan);
+  const on = (rel: string) => nodes.filter((n) => n['Relation Name'] === rel);
+  expect(on('channel_message').map((n) => [n['Node Type'].replace('Only ', ''), n['Index Name']]))
+    .toEqual(expect.arrayContaining([['Index Scan', 'channel_message_in']]));
+  expect(on('channel_message').filter((n) => n['Index Name'] === 'channel_message_in').some((n) => /channel_id.*id > /s.test(n['Index Cond'] ?? ''))).toBe(true);
+  expect(on('channel_mention').some((n) => n['Index Name'] === 'channel_mention_actor' && /message_id > /.test(n['Index Cond'] ?? ''))).toBe(true);
+  expect(nodes.some((n) => n['Node Type'] === 'Seq Scan' && ['channel_message', 'channel_mention'].includes(n['Relation Name'] ?? ''))).toBe(false);
+  expect(typeof bo).toBe('string');
 });
