@@ -7,12 +7,16 @@
 -- join later included: a channel keeps all its history.
 --
 --   kolab_chat        one row per kolab, made here for every kolab and by the trigger below for each
---                     new one: agent_run, how many agent-sent messages in a row the kolab holds, in
---                     its channels and its direct messages together, since the last a person sent
---                     anywhere in it; and agent_reply_cap, past which an agent-sent message wakes no
---                     agent (100 unless its owner changes it, cap_set_by). Every send locks this row
---                     (for no key update), so the kolab's messages are counted one at a time, and so is
---                     making a channel, so the count of channels holds (MAX_CHANNELS).
+--                     new one (Kolab also makes one it finds missing): person_seq, bumped by every
+--                     message a person sends anywhere in the kolab, which starts every agent's run
+--                     again; and agent_reply_cap, past which an agent's messages wake no agent (100
+--                     unless its owner changes it, cap_set_by). Making a channel locks it (for no key
+--                     update), so the count of channels holds (MAX_CHANNELS).
+--   kolab_chat_agent  one row per agent that has sent a message that could wake an agent in a kolab: a
+--                     channel message, or a direct message to an agent (never one to a person). run
+--                     is how many it has sent since the last message a person sent in the kolab, the
+--                     person_seq it was counted against: past the cap, that agent's messages wake no
+--                     agent, and other agents' are untouched.
 --   channel           one row per channel; its name is unique in its kolab (CHANNEL_NAME in
 --                     @konjir/types). Every kolab has `general`, made with the kolab by the trigger
 --                     below, and made here for every kolab that exists (made_by is null for it).
@@ -20,29 +24,39 @@
 --   channel_follow    a member's choice to follow a channel or not; without a row, a member follows
 --                     `general` and no other. So a new member follows `general` with nothing written.
 --   channel_message   one row per message, never edited or removed; reply_to names a message of the
---                     same channel. agent_run is the kolab's agent_run as it was sent, this message
+--                     same channel. agent_run is its sender's run as it was sent, this message
 --                     counted (0 for one a person sent).
 --   channel_mention   the members a message mentions, resolved as it is sent; never edited or removed
 --   channel_read      each member's read position in each channel: the newest message id read, or
 --                     null for none. A person without a row has read nothing, so a later joiner reads
---                     the whole history; an agent's row is written at the channel's newest message
---                     when it is first seen following it, since history is no use to it unread.
---   message.agent_run the same count for a direct message (0 for those sent before this migration):
---                     past the cap, one from an agent to an agent wakes no one.
+--                     the whole history; an agent's row is written when it is first seen following
+--                     the channel, at the newest message older than its oldest mention there, or at
+--                     the newest message if none mentions it: history is no use to it unread, but a
+--                     mention is.
+--   message_run       an agent's direct message to an agent, with its sender's run as it was sent:
+--                     past the cap, it is delivered and unread but wakes no one. Kept beside message,
+--                     so 0050's table is not touched.
 --
 -- Kolab reads and writes them as kj_system, after the engine's checks, as it does messages: no
 -- session's role is granted any of them.
 --
--- New tables, a `general` channel and a kolab_chat row for each kolab, triggers that make both for
--- each new kolab, and one column of message whose default holds for every row. No row that exists
--- changes, so it needs no preflight.
+-- New tables, and a `general` channel and a kolab_chat row for each kolab, with a trigger that makes
+-- both for each new kolab. No row or table that exists changes, so it needs no preflight.
 
 create table kolab_chat (
   kolab_id        text primary key references kolab(id),
-  agent_run       int not null default 0 constraint kolab_chat_agent_run check (agent_run >= 0),
+  person_seq      bigint not null default 0,
   agent_reply_cap int not null default 100 constraint kolab_chat_agent_reply_cap check (agent_reply_cap between 1 and 100000),
   cap_set_by      text references actor(id),                    -- who set agent_reply_cap; null while it is the default
   cap_set_at      timestamptz
+);
+
+create table kolab_chat_agent (
+  kolab_id   text not null references kolab(id),
+  actor_id   text not null references actor(id),
+  run        int not null constraint kolab_chat_agent_run check (run >= 0),
+  person_seq bigint not null,                                   -- the kolab's person_seq when run was last counted
+  primary key (kolab_id, actor_id)
 );
 
 create table channel (
@@ -103,7 +117,12 @@ create table channel_read (
   constraint channel_read_channel_fkey foreign key (channel_id, kolab_id) references channel(id, kolab_id)
 );
 
-alter table message add column agent_run int not null default 0 constraint message_agent_run check (agent_run >= 0);
+create table message_run (
+  message_id text primary key,
+  kolab_id   text not null references kolab(id),
+  agent_run  int not null constraint message_run_agent_run check (agent_run >= 0),
+  constraint message_run_message_fkey foreign key (message_id, kolab_id) references message(id, kolab_id)
+);
 
 -- Every kolab has `general` and its count: those there now, and each made from now on.
 insert into kolab_chat(kolab_id) select k.id from kolab k;
@@ -137,12 +156,14 @@ create trigger channel_mention_fixed before update or delete on channel_mention 
 create trigger channel_mention_kept before truncate on channel_mention for each statement execute function kj_channel_fixed();
 create trigger kolab_chat_fixed before delete or update of kolab_id on kolab_chat for each row execute function kj_channel_fixed();
 create trigger kolab_chat_kept before truncate on kolab_chat for each statement execute function kj_channel_fixed();
+create trigger message_run_fixed before update or delete on message_run for each row execute function kj_channel_fixed();
+create trigger message_run_kept before truncate on message_run for each statement execute function kj_channel_fixed();
 
 -- An archived kolab changes no more (0014): no channel, follow, message, mention, read or count.
 do $$
 declare t text;
 begin
-  foreach t in array array['kolab_chat', 'channel', 'channel_follow', 'channel_message', 'channel_mention', 'channel_read'] loop
+  foreach t in array array['kolab_chat', 'kolab_chat_agent', 'message_run', 'channel', 'channel_follow', 'channel_message', 'channel_mention', 'channel_read'] loop
     execute format('create trigger kolab_writable_insert after insert on %I referencing new table as kj_rows
                       for each statement execute function kj_kolab_writable()', t);
     execute format('create trigger kolab_writable_update after update on %I referencing new table as kj_rows
@@ -154,5 +175,5 @@ begin
   end loop;
 end
 $$;
-grant select, insert on channel, channel_message, channel_mention to kj_system;
-grant select, insert, update on kolab_chat, channel_follow, channel_read to kj_system;
+grant select, insert on channel, channel_message, channel_mention, message_run to kj_system;
+grant select, insert, update on kolab_chat, kolab_chat_agent, channel_follow, channel_read to kj_system;

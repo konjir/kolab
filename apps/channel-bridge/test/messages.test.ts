@@ -237,3 +237,15 @@ test('a new mention wakes the agent however many unread messages come before it'
   const told = describeChange(uri, answers(25, chatter), answers(26, [...chatter, mention]))!;
   expect(told.content.split('\n').slice(0, 2)).toStrictEqual(['A teammate mentioned you in a channel:', '- #general, message C99 from ann: "bo-claude?"']);
 });
+
+test('with 20 or more unread direct messages, a new capped one starts no turn: Kolab\'s count of those that may wake decides', () => {
+  const uri = 'konjir://answers/hub/bo-claude';
+  const shown = Array.from({ length: 20 }, (_, i) => ({ id: `M${String(i).padStart(2, '0')}`, from: 'ann-claude', message: `ping ${i}` }));
+  const answers = (unread: number, waking: number) => ({ kolab: 'hub', actor: 'bo-claude', queries: [], messages: { unread, waking, items: shown } });
+  // A capped one arrives past what is shown: the unread count rises, the waking count doesn't.
+  expect(describeChange(uri, answers(24, 22), answers(25, 22))).toBeNull();
+  // One that may wake arrives past what is shown: a turn, for one.
+  expect(describeChange(uri, answers(25, 22), answers(26, 23))!.content.split('\n')[0]).toBe('A message has come for you; you have 26 unread messages:');
+  // At startup, unread but none may wake: no turn of its own.
+  expect(describeStartup([{ uri, body: answers(25, 0) }])).toBeNull();
+});

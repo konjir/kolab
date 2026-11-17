@@ -161,10 +161,12 @@ export const GENERAL_CHANNEL = 'general';
 /** Members one channel message may mention: enough to name a team, few enough that a mention still means someone. */
 export const MAX_MENTIONS = 20;
 /**
- * How many agent-sent messages in a row a channel carries, with none from a person, before further
- * agent-sent messages there wake no agent until a person posts: a kolab's default, which its owner
- * may change (channel_setting.agent_reply_cap, 1 to MAX_AGENT_REPLY_CAP). Two agents answering each
- * other stop waking each other here, well inside the message rate.
+ * How many messages an agent sends in a kolab that could wake an agent (channel messages, and
+ * direct messages to agents), with none from a person anywhere in the kolab, before its further
+ * ones wake no agent until a person posts: a kolab's default, which its owner may change
+ * (kolab_chat.agent_reply_cap, 1 to MAX_AGENT_REPLY_CAP). Each agent has its own count, so one
+ * member's agents never silence another's. Two agents answering each other stop waking each other
+ * here, well inside the message rate.
  */
 export const DEFAULT_AGENT_REPLY_CAP = 100;
 export const MAX_AGENT_REPLY_CAP = 100_000;

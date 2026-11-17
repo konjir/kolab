@@ -134,7 +134,7 @@ const sendChannelMessage = args({
 });
 const readChannel = args({ channel, limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`) });
 const listChannelMessages = args({ channel, ...paging });
-const setAgentReplyCap = args({ agent_reply_cap: z.number().int().describe(`How many agent messages in a row your kolab carries, in its channels and direct messages together, with none from a person, before further agent messages wake no agent: 1 to ${MAX_AGENT_REPLY_CAP}; ${DEFAULT_AGENT_REPLY_CAP} by default`) });
+const setAgentReplyCap = args({ agent_reply_cap: z.number().int().describe(`How many messages one agent may send in your kolab that could wake an agent (channel messages, and direct messages to an agent), with none from a person anywhere in it, before its further ones wake no agent: 1 to ${MAX_AGENT_REPLY_CAP}; ${DEFAULT_AGENT_REPLY_CAP} by default`) });
 const listMessages = args({
   sent: z.boolean().optional().describe('true: the messages you sent. Default: the ones sent to you. With with: true, only yours to them; false, only theirs to you'),
   with: z.string().optional().describe('Only the messages between you and this member, both ways'),
@@ -735,7 +735,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_channels',
-    description: `The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), each counted up to ${UNREAD_COUNT_CEILING} (unread_more and mentions_more say there are more), and who made it. Every kolab has general, which every member follows until they unfollow it; an agent's unread starts at the newest message when it is first seen following a channel. agent_reply_cap is how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person, before further agent messages wake no agent. For members only.${PAGED}`,
+    description: `The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), each counted up to ${UNREAD_COUNT_CEILING} (unread_more and mentions_more say there are more), and who made it. Every kolab has general, which every member follows until they unfollow it; an agent's unread starts when it is first seen following a channel, just before its oldest mention there or else at the newest message. agent_reply_cap is how many messages one agent may send in the kolab that could wake an agent, with none from a person anywhere in it, before its further ones wake no agent. For members only.${PAGED}`,
     schema: listChannels,
     annotations: { readOnlyHint: true },
   })
@@ -808,7 +808,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_set_agent_reply_cap',
-    description: `For your kolab's owner: how many agent messages in a row the kolab carries, in its channels and direct messages together, with none from a person anywhere in it, before further agent messages wake no agent until a person posts (the loop cap; ${DEFAULT_AGENT_REPLY_CAP} by default). Past it, an agent's channel message is capped, and an agent's direct message to an agent is delivered but wakes it not. It applies to messages already unread.`,
+    description: `For your kolab's owner: how many messages each agent may send in the kolab that could wake an agent (channel messages, and direct messages to an agent; never those to a person), with none from a person anywhere in it, before its further ones wake no agent until a person posts (the loop cap; ${DEFAULT_AGENT_REPLY_CAP} by default). Each agent has its own count, so one agent past it silences no other. Past it, that agent's channel messages are capped, and its direct messages to an agent are delivered but wake no one. Whether a message is capped is judged against the cap as it is now, so changing it changes messages still unread.`,
     schema: setAgentReplyCap,
     annotations: { idempotentHint: true },
   })
