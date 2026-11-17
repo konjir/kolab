@@ -363,3 +363,27 @@ test('removed from a public kolab, or leaving it, a member\'s sessions there end
   // A public kolab is still readable by them, as by anyone.
   expect(await kolab.access(bob, 'anns')).toStrictEqual({ level: 'read', layers: [] });
 });
+
+test('a member removed, or one who left, no longer reads or posts in the kolab\'s channels, even where a public kolab lets them read its nodes; what they wrote stays', async () => {
+  const { kolab, session } = await anns();
+  await kolab.db.query(`update kolab set visibility = 'public' where id = 'anns'`);
+  const { actor: bob } = await kolab.signInWith(github('22', 'bob'));
+  const { actor: cy } = await kolab.signInWith(github('33', 'cy'));
+  for (const p of [bob, cy]) await kolab.grant('anns', p, 'read');
+  const bobIn = await kolab.openSession(bob, 'product', { kolab: 'anns' });
+  const cyIn = await kolab.openSession(cy, 'product', { kolab: 'anns' });
+  await kolab.sendChannelMessage(bobIn, 'general', 'hello from bob');
+  await kolab.readChannel(cyIn, 'general');
+  await kolab.removeKolabMember(session, bob);
+  await kolab.leaveKolab(cyIn);
+  // Signed in again, as anyone may read a public kolab: no channel, to read or to post.
+  for (const who of [bob, cy]) {
+    const again = await kolab.openSession(who, 'product', { kolab: 'anns' });
+    expect(await rejection(kolab.readChannel(again, 'general'))).toMatch(/AccessError/);
+    expect(await rejection(kolab.sendChannelMessage(again, 'general', 'still here?'))).toMatch(/AccessError/);
+    expect(await rejection(kolab.channelsPage(again))).toMatch(/AccessError/);
+    await kolab.endSession(again);
+  }
+  // What bob wrote stays, for the members.
+  expect((await kolab.readChannel(session, 'general')).messages.map((m) => m.message)).toContain('hello from bob');
+});
