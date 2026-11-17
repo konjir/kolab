@@ -113,7 +113,8 @@ test('a database from the previous release is migrated on open', async () => {
       drop table channel_mention;
       drop table channel_message;
       drop table channel_follow;
-      drop table channel_setting;
+      drop table kolab_chat;
+  alter table message drop constraint message_agent_run, drop column agent_run;
       drop table channel;
       drop function kj_channel_fixed();
       alter table work_package drop constraint work_package_found_built;

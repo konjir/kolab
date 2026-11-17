@@ -168,3 +168,11 @@ export const MAX_MENTIONS = 20;
  */
 export const DEFAULT_AGENT_REPLY_CAP = 100;
 export const MAX_AGENT_REPLY_CAP = 100_000;
+/** Channels a kolab holds at most, `general` among them: a channel is never removed, so this bounds what every member's answers walk. */
+export const MAX_CHANNELS = 200;
+/**
+ * The most unread messages, or mentions, Kolab counts in one channel for one member: past it, the
+ * count stops there and says there are more (unread_more, mentions_more), so a member who has never
+ * read a long channel costs no more to serve than one who has read most of it.
+ */
+export const UNREAD_COUNT_CEILING = 1000;

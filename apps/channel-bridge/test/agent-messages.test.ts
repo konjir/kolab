@@ -128,6 +128,12 @@ test('two agents of different owners, each behind its own bridge, exchange messa
   expect((await call<{ channels: { channel: string; unread: number }[] }>(a, 'list_channels')).channels).toMatchObject([{ channel: 'general', unread: 1 }]);
   await expect(call(a, 'send_channel_message', { channel: 'general', message: 'hi', mentions: ['nobody'] })).rejects.toThrow(/AccessError: nobody is not a member of kolab hub, so a message can't mention them/);
 
+  // A mention after more unread than the answers list still wakes B: the answers always carry B's mentions.
+  for (let i = 1; i <= 22; i++) await call(a, 'send_channel_message', { channel: 'general', message: `chatter ${i}` });
+  const { sent: late } = await call<{ sent: { id: string } }>(a, 'send_channel_message', { channel: 'general', message: 'Still with us?', mentions: ['bo/claude'] });
+  await until('B to be told of the late mention', () => toB.some((m) => m.content.includes(late.id)));
+  expect(toB.filter((m) => m.meta.mentions).length).toBe(2);
+
   // A refusal comes back as the tool's own answer; the admin token is no member of anything.
   await expect(call(a, 'send_message', { to: 'nobody', message: 'hello' })).rejects.toThrow(/AccessError: nobody is not a member of kolab hub.*konjir_list_members lists who is\. Your access/);
   await expect(call(admin, 'send_message', { to: 'bo', message: 'hello' })).rejects.toThrow(/needs an agent session token/);

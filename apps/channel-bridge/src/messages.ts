@@ -34,7 +34,7 @@ export type InboxBody = { kolab?: string; layer: string; queries: QueryView[]; m
 /** A change others made to this session's work, as Kolab's answers resource serves it (W5.1b, W5.1c). */
 export interface WorkNoticeView { id: string; work: string; kind: string; actor: string; note: string | null }
 /** An unread message another member sent this session's actor, as Kolab's answers resource serves it. */
-export interface MessageView { id: string; from: string; message: string; reply_to?: string | null }
+export interface MessageView { id: string; from: string; message: string; reply_to?: string | null; capped?: boolean }
 /** An unread message in a channel, as Kolab's answers resource serves it: whether it should wake this session's agent. */
 export interface ChannelItemView { id: string; channel: string; from: string; message: string; reply_to?: string | null; mentions_you?: boolean; capped?: boolean; wakes?: boolean }
 /** A channel with unread messages, as Kolab's answers resource serves it. */
@@ -192,8 +192,10 @@ function answersMessage(uri: string, before: AnswersBody, after: AnswersBody): C
   const worked = before.work ? workOf(after).filter((e) => !seenW.has(e.id)) : [];
   // A message another member sent you: new among the unread shown, or, past what is shown, a higher count.
   const seenMsg = new Set(messagesOf(before).map((m) => m.id));
-  const messaged = before.messages ? messagesOf(after).filter((m) => !seenMsg.has(m.id)) : [];
-  const arrived = before.messages ? Math.max(messaged.length, unreadOf(after) - unreadOf(before)) : 0;
+  const fresh = before.messages ? messagesOf(after).filter((m) => !seenMsg.has(m.id)) : [];
+  // One from an agent past the kolab's loop cap (capped) is delivered, unread, but starts no turn.
+  const messaged = fresh.filter((m) => m.capped !== true);
+  const arrived = before.messages ? Math.max(0, Math.max(fresh.length, unreadOf(after) - unreadOf(before)) - (fresh.length - messaged.length)) : 0;
   // A channel message that mentions this agent, and isn't capped, wakes it (Kolab says so: wakes).
   const seenCh = new Set(channelItemsOf(before).map((m) => m.id));
   const woken = before.channels ? channelItemsOf(after).filter((m) => m.wakes === true && !seenCh.has(m.id)) : [];
@@ -253,7 +255,10 @@ export function describeStartup(bodies: { uri: string; body: unknown }[]): Chann
   const channelMeta: Record<string, string> = woken.length ? { mentions: String(woken.length) } : {};
   if (!inbox || (!inbox.body.queries.length && !inbox.body.marks.length && !reviewsOf(inbox.body).length && !casesOf(inbox.body).length)) {
     // Channel messages that wake no one are only counted, in a turn something else starts.
-    if (!unread && !woken.length) return null;
+    // Nor do direct messages that are all capped (an agent's, past the loop cap).
+    const shown = answers ? messagesOf(answers.body) : [];
+    const allCapped = shown.length > 0 && unread <= shown.length && shown.every((m) => m.capped === true);
+    if ((!unread || allCapped) && !woken.length) return null;
     return finish(waiting.join('\n'), { uri: answers!.uri, kind: 'answers', initial: 'true', ...kolabMeta(answers!.body), actor: answers!.body.actor, ...(unread ? { messages: String(unread) } : {}), ...channelMeta });
   }
   const b = inbox.body;
