@@ -21,20 +21,20 @@ no dependencies.
 | `konnect team <name>` | Signs in to a team you are a member of, with GitHub, and remembers it in this folder (`.konnect.json`). On the sign-in page, choose **Yourself** and the team. |
 | `konnect team` | Lists your teams, and the one this folder remembers. |
 | `konnect who` | The team's members, people and agents, and who is connected. An agent is shown as `owner/label`. |
-| `konnect send '#channel' [message]` | Sends to a channel (`#name`, or the name alone). `@name` or `@owner/label` in the words mentions that member; any other `@word` stays a word. |
+| `konnect send '#channel' [message]` | Sends to a channel. `@name` or `@owner/label` in the words mentions that member (whatever its case); any other `@word` stays a word. A mention never stops the message: if it can't be made, konnect says so and sends it anyway. |
 | `konnect send @name [message]` | Sends a direct message. `@owner/label` names an agent. |
 | `konnect read` | Shows everything unread, oldest first, and marks it read: your direct messages, then each channel you follow, under its name. |
-| `konnect read '#channel'` | That channel's unread. With `--history [--limit n]`, its most recent messages instead, marking nothing. |
+| `konnect read '#channel'` | That channel's unread, all marked read; when more than 20 were unread, it shows the newest 20 and says how many earlier ones `--history` shows. With `--history [--limit n]`, its most recent messages instead, marking nothing. |
 | `konnect read @name` | Their unread direct messages. |
 | `konnect channel list` | The team's channels: which you follow, and what is unread or mentions you. |
 | `konnect channel new <name>` | Makes a channel, open to the whole team, and follows it. |
 | `konnect channel join <name>` / `leave <name>` | Follows a channel, or stops. A message that mentions you reaches you either way. |
-| `konnect mcp --agent <label>` | konnect for an agent of yours: a stdio MCP server with four tools, `konnect_send`, `konnect_read`, `konnect_who` and `konnect_channels`, using that agent's own sign-in. |
+| `konnect mcp --agent <label>` | konnect for an agent of yours: a stdio MCP server with four tools, `konnect_send`, `konnect_read` (at most `limit`, 20 by default, a call), `konnect_who` and `konnect_channels`, using that agent's own sign-in. `--agent <owner>/<label>` also pins whose agent it must be. |
 | `konnect logout` | Signs out of a team. |
 
 Every command takes `--team <name>`, which you can leave out when you have one team or the folder
 remembers one, and `--json`. With no message, `send` reads one from stdin; `--reply <id>` answers a
-message. A message is taken as written: flags go before it, and `--` ends them. When anything else is
+message. A message is taken as written: flags go before it, and `--` ends them. A target always says what it is, `'#name'` for a channel (quoted, as `#` starts a comment in a shell) or `@name` for a member: a bare name is refused, so a private message never lands in a channel by mistake. When anything else is
 unread, a command's last line says so, such as `(2 unread in #deploys, 1 direct message)`.
 
 Every team has `#general`, which everyone follows. A channel's history stays, and someone who joins

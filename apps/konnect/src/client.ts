@@ -17,6 +17,18 @@ export class NotYet extends Error {}
 /** Kolab's own refusal of a call (a tool error), told apart from a call that never reached it. */
 export class Refused extends Error {}
 
+/**
+ * A sign-in that can't be used: none kept, ended or revoked, or someone else's. Trying again
+ * changes nothing until it is renewed, so `konnect mcp` doesn't retry it.
+ */
+export class SignInError extends Error {}
+
+/** What a drain of a read tool read: oldest first, how many are still unread, and what stopped it, if anything did. */
+export interface Drained<T> { messages: T[]; more: number; error?: Error }
+
+/** How long the unread line may wait for Kolab: a command that has done its work never stalls on it. */
+export const UNREAD_WAIT_MS = 2_000;
+
 /** Who a session is, as konjir_whoami says. */
 export interface Me { actor: string; kind: string; owner: string | null; kolab: string; role: string; subscribe?: string[] }
 
@@ -30,19 +42,30 @@ export interface Unread {
  * Who a sign-in must be: the person themselves (konnect's commands), or an agent of theirs by its
  * label (`konnect mcp`, run for an agent).
  */
-export type As = { kind: 'person' } | { kind: 'agent'; label: string };
+export type As = { kind: 'person' } | { kind: 'agent'; label: string; owner?: string };
 
 /** The client's name on Kolab's sign-in page. */
 export const CLIENT_NAME = 'konnect';
 
 /** At most this many pages, or rounds of unread messages, in one command. */
 const MAX_ROUNDS = 50;
+/** Kolab's read tools read at most this many at a time (MESSAGES_AT_ONCE). */
+const AT_ONCE = 20;
+/** The most messages one drain reads, when no limit is given. */
+export const DRAIN_MAX = MAX_ROUNDS * AT_ONCE;
+
+/** What to tell whoever runs into a sign-in that has to be renewed: a person, or an agent's owner. */
+export function renewAdvice(team: string, as: As): string {
+  return as.kind === 'person'
+    ? `run konnect team ${team} to sign in again`
+    : `its owner should run konnect claude ${as.label} again (or the tool they connected it with) to renew it`;
+}
 
 export class TeamClient {
   /** Who the sign-in is (checked as it opens). */
   me!: Me;
 
-  private constructor(readonly team: string, readonly url: string, private readonly mcp: Client, private readonly login: StoredLogin) {}
+  private constructor(readonly team: string, readonly url: string, private readonly mcp: Client, private readonly login: StoredLogin, readonly as: As) {}
 
   /**
    * Connects with the team's kept sign-in (`file`), and checks, before anything else is called,
@@ -56,11 +79,11 @@ export class TeamClient {
       const me = await c.whoami();
       const ok = !!me && typeof me === 'object' && me.kolab === team && (as.kind === 'person'
         ? me.kind === 'person'
-        : me.kind === 'agent' && !!me.owner && me.actor === `${me.owner}-${as.label}`);
+        : me.kind === 'agent' && !!me.owner && me.actor === `${me.owner}-${as.label}` && (as.owner === undefined || me.owner === as.owner));
       if (!ok) {
-        throw new Error(as.kind === 'person'
+        throw new SignInError(as.kind === 'person'
           ? `the sign-in kept for team ${team} isn't yours in team ${team}, so konnect won't use it: run konnect team ${team} to sign in again`
-          : `the sign-in kept for agent ${as.label} isn't that agent's in team ${team}, so konnect won't use it`);
+          : `the connection kept for agent ${as.label} isn't that agent's in team ${team}, so konnect won't use it: ${renewAdvice(team, as)}`);
       }
       c.me = me;
       return c;
@@ -73,17 +96,17 @@ export class TeamClient {
   private static async connect(team: string, url: string, file: string, as: As): Promise<TeamClient> {
     const login = new StoredLogin(url, { path: file, clientName: CLIENT_NAME });
     if (!login.signedIn) {
-      throw new Error(as.kind === 'person' ? `you aren't signed in to team ${team}: run konnect team ${team}` : `agent ${as.label} isn't signed in to team ${team} (no sign-in in ${file})`);
+      throw new SignInError(as.kind === 'person' ? `you aren't signed in to team ${team}: run konnect team ${team}` : `agent ${as.label} has no connection to team ${team} on this machine: ${renewAdvice(team, as)}`);
     }
     const mcp = new Client({ name: 'konnect', version: '0.1.0' }, { versionNegotiation: { mode: 'auto' } });
     try {
       await mcp.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: login, fetch: login.fetch, onInsufficientScope: 'throw' }));
     } catch (e) {
       login.releaseLock();
-      throw said(e, team, url);
+      throw said(e, team, url, as);
     }
     mcp.onerror = () => login.releaseIdleLock();
-    return new TeamClient(team, url, mcp, login);
+    return new TeamClient(team, url, mcp, login, as);
   }
 
   async close() {
@@ -103,7 +126,7 @@ export class TeamClient {
     try {
       r = await this.mcp.callTool({ name: tool, arguments: args });
     } catch (e) {
-      throw said(e, this.team, this.url);
+      throw said(e, this.team, this.url, this.as);
     } finally {
       this.login.releaseIdleLock();
     }
@@ -125,15 +148,27 @@ export class TeamClient {
     return all;
   }
 
-  /** Reads a read tool until nothing more is unread: oldest first, each marked read. */
-  private async drain<T>(tool: string, args: Record<string, unknown>): Promise<T[]> {
-    const all: T[] = [];
-    for (let i = 0; i < MAX_ROUNDS; i++) {
-      const r = await this.call<{ messages: T[]; more: number }>(tool, args);
-      all.push(...r.messages);
-      if (!r.more || !r.messages.length) break;
+  /**
+   * Reads a read tool until nothing more is unread, or `max` are read (DRAIN_MAX by default):
+   * oldest first, each marked read as it is read. A failure partway is returned with what was read
+   * before it, never thrown, so the caller still shows what is now marked read. `more` is how many
+   * Kolab says are still unread after the last round.
+   */
+  private async drain<T>(tool: string, args: Record<string, unknown>, max = DRAIN_MAX): Promise<Drained<T>> {
+    const messages: T[] = [];
+    let more = 0;
+    for (let i = 0; i < MAX_ROUNDS && messages.length < max; i++) {
+      let r: { messages: T[]; more: number };
+      try {
+        r = await this.call<{ messages: T[]; more: number }>(tool, { ...args, limit: Math.min(AT_ONCE, max - messages.length) });
+      } catch (e) {
+        return { messages, more, error: e instanceof Error ? e : new Error(String(e)) };
+      }
+      messages.push(...r.messages);
+      more = r.more ?? 0;
+      if (!more || !r.messages.length) break;
     }
-    return all;
+    return { messages, more };
   }
 
   // ---- people and direct messages --------------------------------------------------------------
@@ -149,9 +184,9 @@ export class TeamClient {
     return (await this.call<{ sent: Message }>('konjir_send_message', { to, message, ...(replyTo ? { reply_to: replyTo } : {}) })).sent;
   }
 
-  /** konjir_read_messages until none are left: oldest first, each marked read; with `from`, only that member's. */
-  readDirect(from?: string): Promise<Message[]> {
-    return this.drain<Message>('konjir_read_messages', from !== undefined ? { from } : {});
+  /** konjir_read_messages until none are left, or `max` are read: oldest first, each marked read; with `from`, only that member's. */
+  readDirect(from?: string, max?: number): Promise<Drained<Message>> {
+    return this.drain<Message>('konjir_read_messages', from !== undefined ? { from } : {}, max);
   }
 
   // ---- channels --------------------------------------------------------------------------------
@@ -175,8 +210,8 @@ export class TeamClient {
     })).sent;
   }
 
-  /** konjir_read_channel until nothing more is unread there: oldest first, moving your position. */
-  readChannel(channel: string): Promise<ChannelMessage[]> { return this.drain<ChannelMessage>('konjir_read_channel', { channel }); }
+  /** konjir_read_channel until nothing more is unread there, or `max` are read: oldest first, moving your position. */
+  readChannel(channel: string, max?: number): Promise<Drained<ChannelMessage>> { return this.drain<ChannelMessage>('konjir_read_channel', { channel }, max); }
 
   /** konjir_list_channel_messages: the newest `limit` (one page, at most 200), newest first, marking nothing. */
   async channelHistory(channel: string, limit: number): Promise<ChannelMessage[]> {
@@ -191,13 +226,18 @@ export class TeamClient {
   async unread(): Promise<Unread> {
     const uri = `konjir://answers/${encodeURIComponent(this.me.kolab)}/${encodeURIComponent(this.me.actor)}`;
     let body: { messages?: { unread?: number; unread_more?: boolean }; channels?: Unread['channels'] } = {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const r = await this.mcp.readResource({ uri });
+      const r = await Promise.race([
+        this.mcp.readResource({ uri }),
+        new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error('Kolab took too long to say what is unread')), UNREAD_WAIT_MS); }),
+      ]);
       const c = r.contents[0];
       body = c && 'text' in c ? JSON.parse(c.text) : {};
     } catch (e) {
-      throw said(e, this.team, this.url);
+      throw said(e, this.team, this.url, this.as);
     } finally {
+      clearTimeout(timer);
       this.login.releaseIdleLock();
     }
     return {
@@ -216,14 +256,17 @@ export class TeamClient {
 }
 
 /** An error from the transport or the sign-in, in konnect's words, with what to do next. */
-export function said(e: unknown, team: string, url: string): Error {
+export function said(e: unknown, team: string, url: string, as: As = { kind: 'person' }): Error {
   const msg = String((e as Error)?.message ?? e);
   const cause = String((e as { cause?: unknown })?.cause ?? '');
   if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT/.test(`${msg} ${cause}`)) {
     return new Error(`can't reach Kolab at ${safeUrl(url)}: check your connection and try again${url.includes('127.0.0.1') || url.includes('localhost') ? ', or start the local Kolab' : ''}`);
   }
+  if (e instanceof SignInError || e instanceof Refused) return e;
   if (/401|Unauthorized|has ended or was revoked|run konjir login|invalid Konjir token/i.test(msg)) {
-    return new Error(`your sign-in to team ${team} has ended or was revoked: run konnect team ${team} to sign in again`);
+    return new SignInError(as.kind === 'person'
+      ? `your sign-in to team ${team} has ended or was revoked: ${renewAdvice(team, as)}`
+      : `agent ${as.label}'s connection to team ${team} has ended or was revoked: ${renewAdvice(team, as)}`);
   }
   return e instanceof Error ? e : new Error(msg);
 }

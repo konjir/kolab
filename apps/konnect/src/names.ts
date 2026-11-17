@@ -32,22 +32,25 @@ export const MAX_MENTIONS = 20;
 
 /**
  * The members a message's words mention, as stored names: each `@name` or `@owner/label` that names
- * a member of `members`, in the order written, each once, at most MAX_MENTIONS. Anything else that
- * looks like one (an email address, `@everyone`, someone not in the team) is left as plain words.
+ * a member of `members`, in the order written, each once, at most MAX_MENTIONS; `beyond` counts the
+ * members named past those, which stay plain words. Names match whatever their case (`@Ann` is
+ * `ann`). `@owner/label` mentions that agent or no one: never the owner. Anything else that looks
+ * like a mention (an email address, `@everyone`, someone not in the team) is left as plain words.
  */
-export function mentionsIn(text: string, members: Member[]): string[] {
+export function mentionsIn(text: string, members: Member[]): { mentions: string[]; beyond: number } {
   const found: string[] = [];
-  for (const m of text.matchAll(/(?<![\w.@/-])@([A-Za-z0-9][A-Za-z0-9._@-]*(?:\/[a-z0-9][a-z0-9-]*)?)/g)) {
+  const past = new Set<string>();
+  for (const m of text.matchAll(/(?<![\w.@/-])@([A-Za-z0-9][A-Za-z0-9._@-]*(?:\/[A-Za-z0-9._-]*)?)/g)) {
     // A sentence's full stop, or a trailing hyphen, isn't part of the name.
-    const word = m[1].replace(/[.@-]+$/, '');
-    const slash = word.indexOf('/');
-    const member = members.find((x) => (slash < 0
-      ? x.actor === word
-      : x.kind === 'agent' && shownName(x) === word));
-    if (member && !found.includes(member.actor)) found.push(member.actor);
-    if (found.length === MAX_MENTIONS) break;
+    const word = m[1].replace(/[.@/-]+$/, '').toLowerCase();
+    const member = members.find((x) => (word.includes('/')
+      ? x.kind === 'agent' && shownName(x).toLowerCase() === word
+      : x.actor.toLowerCase() === word));
+    if (!member || found.includes(member.actor)) continue;
+    if (found.length === MAX_MENTIONS) past.add(member.actor);
+    else found.push(member.actor);
   }
-  return found;
+  return { mentions: found, beyond: past.size };
 }
 
 /** A count, with `+` when Kolab counted no further. */

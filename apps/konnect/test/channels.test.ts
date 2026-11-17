@@ -16,11 +16,19 @@ const MEMBERS: Member[] = [
 ];
 
 test('mentions come from the words: @name and @owner/label that name a member, each once; anything else stays plain words', () => {
-  expect(mentionsIn('@bo and @ann/reviewer, please. cc @bo.', MEMBERS)).toStrictEqual(['bo', 'ann-reviewer']);
-  expect(mentionsIn('mail ann@example.com, tell @everyone, ask @sam and @ann/nobody', MEMBERS)).toStrictEqual([]);
-  expect(mentionsIn('(@ann) said hi', MEMBERS)).toStrictEqual(['ann']);
-  // An agent is mentioned by owner/label, never by its stored name alone being guessed from @ann.
-  expect(mentionsIn('@ann-reviewer', MEMBERS)).toStrictEqual(['ann-reviewer']);
+  const only = (text: string) => mentionsIn(text, MEMBERS).mentions;
+  expect(only('@bo and @ann/reviewer, please. cc @bo.')).toStrictEqual(['bo', 'ann-reviewer']);
+  expect(only('mail ann@example.com, tell @everyone, ask @sam and @ann/nobody')).toStrictEqual([]);
+  expect(only('(@ann) said hi')).toStrictEqual(['ann']);
+  expect(only('@ann-reviewer')).toStrictEqual(['ann-reviewer']);
+  // Whatever the case.
+  expect(only('@Ann and @BO and @Ann/Reviewer')).toStrictEqual(['ann', 'bo', 'ann-reviewer']);
+  // @owner/label mentions that agent or no one: never the owner in its place.
+  expect(only('@ann/nobody @ann/Reviewer2 @ann/')).toStrictEqual(['ann']);
+  expect(only('@ann/nobody')).toStrictEqual([]);
+  // Past 20, the rest are counted as plain words.
+  const many: Member[] = Array.from({ length: 25 }, (_, i) => ({ actor: `p${i}`, kind: 'person', owner: null, here: false }));
+  expect(mentionsIn(many.map((m) => `@${m.actor}`).join(' '), many)).toStrictEqual({ mentions: many.slice(0, 20).map((m) => m.actor), beyond: 5 });
 });
 
 test('the unread line: each followed channel with unread, each other channel that mentions you, then direct messages; nothing when nothing is', () => {
@@ -50,7 +58,7 @@ test('two people in a channel: made, joined, sent with a mention, each reading f
 
   // A message names its mentions in its words; an email address, @everyone and a stranger stay words.
   expect(await ann.run(['send', '#deploys', 'deploy is green @bo, mail ann@example.com or tell @everyone and @sam'])).toBe('Sent to #deploys, mentioning @bo.');
-  expect(await ann.run(['send', 'deploys', 'and @ann/reviewer: the importer is yours'])).toBe('Sent to #deploys, mentioning @ann/reviewer.');
+  expect(await ann.run(['send', '#deploys', 'and @ann/reviewer: the importer is yours'])).toBe('Sent to #deploys, mentioning @ann/reviewer.');
   const sent = JSON.parse(await ann.run(['send', '#deploys', '--json', 'third']));
   expect(sent).toMatchObject({ channel: 'deploys', from: 'ann', message: 'third', mentions: [] });
 
@@ -137,8 +145,8 @@ test('konnect mcp: an MCP client sees exactly four tools, and drives them as the
     await bo.run(['send', '@ann/reviewer', 'thanks, and please check the exporter']);
     await bo.run(['send', '#general', 'for everyone']);
     const read = await call(c, 'konnect_read');
-    expect(read.text).toMatch(/^Direct messages\n\S+ \S+ {2}@bo\n {2}thanks, and please check the exporter\n {2}\(id \w+\)\n\n#general\n\S+ \S+ {2}@bo\n {2}for everyone\n {2}\(id \w+\)$/);
-    expect(read.data).toMatchObject({ direct: [{ from: 'bo', message: 'thanks, and please check the exporter' }] });
+    expect(read.text).toMatch(/^Direct messages\n<<<message id=(\w+) from=@bo at=\S+>>>\nthanks, and please check the exporter\n<<<end id=\1>>>\n\n#general\n<<<message id=(\w+) from=@bo at=\S+>>>\nfor everyone\n<<<end id=\2>>>$/);
+    expect(read.data).toMatchObject({ direct: { messages: [{ from: 'bo', message: 'thanks, and please check the exporter' }], more: 0 }, channels: [{ channel: 'general', more: 0 }] });
     expect((await call(c, 'konnect_read')).text).toBe('No unread messages.');
 
     expect((await call(c, 'konnect_channels', { action: 'new', channel: 'importer' })).text).toBe('Made #importer; you follow it.');
@@ -147,7 +155,7 @@ test('konnect mcp: an MCP client sees exactly four tools, and drives them as the
     expect((await call(c, 'konnect_channels', { action: 'join', channel: 'importer' })).text).toBe('Following #importer.');
     await bo.run(['channel', 'join', 'importer']);
     await bo.run(['send', '#importer', 'how far along?']);
-    expect((await call(c, 'konnect_read', { from: '#importer' })).text).toMatch(/@bo\n {2}how far along\?\n {2}\(id \w+\)$/);
+    expect((await call(c, 'konnect_read', { from: '#importer' })).text).toMatch(/^#importer\n<<<message id=(\w+) from=@bo at=\S+>>>\nhow far along\?\n<<<end id=\1>>>$/);
     await call(c, 'konnect_send', { to: '@bo', message: 'nearly there' });
     expect(await bo.run(['read', '@ann/reviewer'])).toMatch(/@ann\/reviewer\n {2}nearly there$/);
     await expect(call(c, 'konnect_send', { to: '#importer', message: ' ' })).rejects.toThrow('the message is empty');
@@ -158,7 +166,7 @@ test('konnect mcp: an MCP client sees exactly four tools, and drives them as the
   // The person's own sign-in is no agent's: refused before any tool runs.
   const asBo = await connectTo({ team: 'hub', url: server.url, file: `${bo.env.KONNECT_CONFIG_DIR}/teams/hub.json`, label: 'reviewer' });
   try {
-    await expect(call(asBo.c, 'konnect_who')).rejects.toThrow('the sign-in kept for agent reviewer isn\'t that agent\'s in team hub, so konnect won\'t use it');
+    await expect(call(asBo.c, 'konnect_who')).rejects.toThrow('the connection kept for agent reviewer isn\'t that agent\'s in team hub, so konnect won\'t use it: its owner should run konnect claude reviewer again (or the tool they connected it with) to renew it');
   } finally {
     await asBo.close();
   }
