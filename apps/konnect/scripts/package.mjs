@@ -10,7 +10,8 @@
 //
 // konnect is licensed Apache-2.0, as konjir is (D63): apps/konnect/LICENSE is the full text, the
 // same as apps/cli/LICENSE. The only first-party code the bundle may inline is apps/konnect/src,
-// libs/login/src and libs/brand/src, each declaring Apache-2.0: the rest of the repository is
+// libs/login/src, libs/brand/src and apps/channel-bridge/src (the subscription that wakes an
+// agent: bridge.ts and messages.ts, never its NestJS server), each declaring Apache-2.0: the rest of the repository is
 // FSL-1.1-ALv2 (D64), and above all no server, engine, db or address code may ship in konnect. The
 // build fails on anything else, and on a bundled package that is FSL-licensed. LICENSE and
 // THIRD-PARTY-NOTICES.md, which lists every package the bundle inlines with its licence text, ship
@@ -28,7 +29,7 @@ const pinned = JSON.parse(readFileSync(join(root, 'apps/cli/bun-runtimes.json'),
 if (manifest.license !== 'Apache-2.0') throw new Error(`apps/konnect/package.json declares the licence ${manifest.license}, but konnect is Apache-2.0`);
 
 /** The packages whose source konnect.mjs may carry. */
-const FIRST_PARTY = ['apps/konnect', 'libs/login', 'libs/brand'].map((dir) => join(root, dir));
+const FIRST_PARTY = ['apps/konnect', 'libs/login', 'libs/brand', 'apps/channel-bridge'].map((dir) => join(root, dir));
 
 checkBun(pinned.version);
 const out = join(app, 'dist-npm');
@@ -44,7 +45,7 @@ const packages = bundledPackages(inputs, app);
 const fsl = fslPackages(packages);
 // Nothing is left behind from a build that fails.
 if (stray.length || fsl.length) rmSync(out, { recursive: true, force: true });
-if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/konnect/src, libs/login/src and libs/brand/src: ${stray.join(', ')}`);
+if (stray.length) throw new Error(`the bundle inlines first-party code outside the Apache-2.0 apps/konnect/src, libs/login/src, libs/brand/src and apps/channel-bridge/src: ${stray.join(', ')}`);
 if (fsl.length) throw new Error(`the bundle inlines FSL-licensed packages, which the Apache-2.0 konnect can't carry: ${fsl.map((p) => p.name).join(', ')}`);
 
 chmodSync(file, 0o755);

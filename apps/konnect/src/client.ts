@@ -246,14 +246,28 @@ export class TeamClient {
     };
   }
 
-  // ---- seams for tools the server doesn't have yet ---------------------------------------------
+  // ---- who belongs: the owner's invitations and removals, and leaving ---------------------------
 
-  /** `konnect recruit <github login>…`: the owner invites by GitHub account (the invitations track). */
-  async recruit(_logins: string[]): Promise<unknown> { throw new NotYet('invitations'); }
+  /** konjir_invite: the owner invites people by their GitHub usernames (at most 10 a call). */
+  invite(accounts: string[]) {
+    return this.call<{ kolab: string; invited: Invitation[]; already_invited: Invitation[]; already_members: string[]; declined_recently: string[] }>('konjir_invite', { accounts });
+  }
 
-  /** `konnect remove @name`: the owner removes a member, or a member leaves (the invitations track). */
-  async remove(_member: string): Promise<unknown> { throw new NotYet('removing members'); }
+  /** konjir_list_invitations, every page: the owner's invitations still waiting for an answer. */
+  invitations(): Promise<Invitation[]> { return this.all<Invitation>('konjir_list_invitations', 'invitations'); }
+
+  /** konjir_withdraw_invitation, by its id. */
+  async withdraw(invitation: string): Promise<Invitation> { return (await this.call<{ withdrawn: Invitation }>('konjir_withdraw_invitation', { invitation })).withdrawn; }
+
+  /** konjir_remove_member: the owner removes a person, and their agents go with them. */
+  removeMember(member: string) { return this.call<{ kolab: string; removed: string; agents: string[]; ended: number }>('konjir_remove_member', { member }); }
+
+  /** konjir_leave_kolab: the person leaves the team, and their agents with them. */
+  leave() { return this.call<{ left: string; agents: string[]; ended: number }>('konjir_leave_kolab'); }
 }
+
+/** An invitation, as Kolab's invitation tools give one. */
+export interface Invitation { id: string; kolab: string; account: string; state: string; invited_by: string; created_at: string }
 
 /** An error from the transport or the sign-in, in konnect's words, with what to do next. */
 export function said(e: unknown, team: string, url: string, as: As = { kind: 'person' }): Error {

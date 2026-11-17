@@ -9,9 +9,10 @@ name: konnect
 #   apps/cli/bun-runtimes.json pins, and fails on first-party code other than apps/konnect's,
 #   libs/login's and libs/brand's (tools/npm-bundle.mjs). The tarball is packed and its licence checked.
 # - The bundle, and the package installed outside the workspace as npx installs it, each run
-#   apps/konnect/scripts/e2e.mjs: a local Kolab from the checkout (bin/konjir serve, on PGlite, with
-#   the stub identity and a throwaway admin token), konnect team signing in through a browser the
-#   script plays, and a direct message each way with a second person.
+#   apps/konnect/scripts/e2e.mjs against a local Kolab from the checkout (scripts/e2e-kolab.ts, on
+#   PGlite, with the stub identity in GitHub's place): a team made, a teammate recruited who joins by
+#   the choosing sign-in, both talking in #general, and an agent set up with konnect claude
+#   --no-start whose entry, started as Claude Code starts it, is woken by a mention.
 #
 # Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
 # dependencies installed without install scripts.
@@ -21,6 +22,8 @@ on:
     branches: [main]
     paths: &paths
       - apps/konnect/**
+      - apps/channel-bridge/**
+      - apps/server/**
       - libs/login/**
       - libs/brand/**
       - tools/npm-bundle.mjs

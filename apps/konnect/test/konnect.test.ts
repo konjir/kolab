@@ -9,7 +9,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test } from '@jest/globals';
-import { AS_SELF, fails, machine, teams } from './team.js';
+import { fails, machine, pressing, teams } from './team.js';
 import { HOSTED_URL, normalUrl, parseArgs, readProject, rememberTeam, type IO } from '../src/konnect.js';
 import { printable } from '../src/names.js';
 
@@ -19,7 +19,7 @@ test('two people in one team exchange direct messages through konnect send and k
   const bo = machine(server.url, 'bo');
 
   expect(await signIn(ann, annId, 'hub')).toBe('Signed in to team hub as ann. This folder remembers it (.konnect.json).');
-  expect(ann.err.join('\n')).toContain('choose Yourself (not an agent) and kolab hub');
+  expect(ann.err.join('\n')).toContain('Opening your browser to sign in to team hub with GitHub.');
   expect(await signIn(bo, boId, 'hub')).toBe('Signed in to team hub as bo. This folder remembers it (.konnect.json).');
 
   // Each sign-in is kept in the person's own konnect folder, one file per team, closed to others; the folder's file holds no token.
@@ -118,15 +118,18 @@ test('several teams, one sign-in each: --team chooses, the folder remembers one,
   expect(await fails(ann.run(['who', '--team', 'Bad_Name']))).toBe('Bad_Name isn\'t a team\'s name: lowercase letters, digits and -, at most 40 characters');
 });
 
-test('a sign-in as an agent, or in another kolab, is revoked and never kept', async () => {
-  const { kolab, server, signIn, ann: annId } = await teams();
-  const ann = machine(server.url, 'ann');
-  expect(await fails(signIn(ann, annId, 'hub', { as: 'agent:ann-reviewer', kolab: 'kolab:hub', role: 'product' })))
-    .toMatch(/^you signed in as ann-reviewer, an agent, not as yourself in team hub, so konnect kept nothing\. Run konnect team hub again/);
-  expect(await fails(signIn(ann, annId, 'hub', AS_SELF('side')))).toMatch(/^you signed in in kolab side, not as yourself in team hub, so konnect kept nothing/);
-  expect(JSON.parse(readFileSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), 'utf8'))).toStrictEqual({});
-  expect(existsSync(join(ann.cwd, '.konnect.json'))).toBe(false);
-  expect((await kolab.db.query(`select 1 from session where actor_id in ('ann', 'ann-reviewer') and grant_id is not null and ended_at is null`)).rows).toStrictEqual([]);
+test('konnect team makes a team whose name is free; one that is someone else\'s is refused, nothing kept, with a free name suggested', async () => {
+  const { kolab, server, signIn, bo: boId } = await teams();
+  const bo = machine(server.url, 'bo');
+  let page = '';
+  expect(await signIn(bo, boId, 'bos-team', (b, h) => { page = h; return pressing('decision=allow')(b); })).toBe('Signed in to team bos-team as bo. This folder remembers it (.konnect.json).');
+  expect(page).toContain('<code>bos-team</code>');
+  expect(await kolab.kolabRow('bos-team')).toMatchObject({ owner: 'bo', visibility: 'private' });
+  // Ann's: refused on the page, which offers Deny alone.
+  const err = await fails(signIn(bo, boId, 'side', (b) => pressing('decision=')(b)));
+  expect(err).toMatch(/^Kolab didn't sign you in to team side: .*Make your own instead: konnect team \S+$/);
+  expect(Object.values(JSON.parse(readFileSync(join(bo.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'), 'utf8')) as { tokens?: unknown }[]).filter((v) => v.tokens)).toStrictEqual([]);
+  expect(JSON.parse(readFileSync(join(bo.cwd, '.konnect.json'), 'utf8')).team).toBe('bos-team');
 });
 
 test('.konnect.json: found from a folder below it in a repository, never above outside one, and its URL followed only to a Kolab konnect trusts', async () => {
@@ -173,13 +176,9 @@ test('.konnect.json: found from a folder below it in a repository, never above o
 test('the commands the server can\'t serve yet say so, before anything is read or sent; help names them', async () => {
   const m = machine('http://127.0.0.1:9/mcp', 'later');
   const said = async (argv: string[]) => fails(m.run(argv));
-  expect(await said([])).toBe('Live chat (konnect with no command) isn\'t available yet.');
-  expect(await said(['recruit', 'sam-gh'])).toBe('Inviting people (konnect recruit) isn\'t available yet.');
-  expect(await said(['remove', '@sam'])).toBe('Removing a member (konnect remove) isn\'t available yet.');
-  for (const tool of ['claude', 'codex', 'opencode']) expect(await said([tool, 'reviewer', '--team', 'acme'])).toBe(`Starting an agent (konnect ${tool}) isn't available yet.`);
   expect(await said(['frobnicate'])).toBe('konnect has no command frobnicate: run konnect help');
   const help = await m.run(['help']);
-  for (const line of ['konnect team <name>', 'konnect who', 'konnect send @name [message]', 'konnect send \'#channel\' [message]', 'konnect read @name', 'konnect read \'#channel\'', 'konnect logout', 'konnect channel new <name>', 'konnect channel join|leave <name>', 'konnect mcp --agent <label>', 'konnect recruit', 'konnect claude|codex|opencode <label>', 'live chat']) expect(help).toContain(line);
+  for (const line of ['konnect team <name>', 'konnect who', 'konnect send @name [message]', 'konnect send \'#channel\' [message]', 'konnect read @name', 'konnect read \'#channel\'', 'konnect logout', 'konnect channel new <name>', 'konnect channel join|leave <name>', 'konnect mcp --agent <label>', 'konnect recruit', 'konnect claude <label>', 'konnect codex|opencode <label>', 'konnect join', 'konnect leave', 'konnect remove @name', 'live chat']) expect(help).toContain(line);
   expect(await m.run(['--version'])).toBe('development (run from source)');
   // A Kolab that isn't there is said plainly.
   expect(await fails(m.run(['team', 'hub'], { open: () => undefined }))).toMatch(/^can't reach Kolab at http:\/\/127\.0\.0\.1:9\/mcp: check your connection and try again, or start the local Kolab$/);
