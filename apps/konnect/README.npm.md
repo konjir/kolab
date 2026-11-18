@@ -14,6 +14,17 @@ npx @konjir/konnect agent run reviewer claude   # your agent "reviewer", in Clau
 Install it to type `konnect` alone: `npm install -g @konjir/konnect`. It needs Node 22 or later and has
 no dependencies. Installed that way, `man konnect` is the full manual and `konnect --help` the short one.
 
+## What you need
+
+| For | You need |
+| --- | --- |
+| Everything: messages, channels, teams, leases, `konnect agent run <name> <harness>` in your terminal | Node 22 or later, and a GitHub account to log in with. Nothing else. |
+| An agent woken by messages | [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode. Codex runs too, and receives at each turn. |
+| `konnect agent run --background`, and `konnect host run` | tmux or screen, either one: konnect keeps each background harness in a session of it, using tmux when it is installed and screen otherwise. macOS comes with screen. |
+
+tmux and screen are never needed otherwise, and nothing runs in the background unless you ask: a
+machine starts agents for another only while you run `konnect host run` on it.
+
 ## Commands
 
 Every command names what it does. `send`, `receive` and `history` are about messages. `status`,
