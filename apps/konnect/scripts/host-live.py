@@ -39,6 +39,12 @@ def sessions():
     out = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True).stdout if shutil.which("tmux") else subprocess.run(["screen", "-ls"], capture_output=True, text=True).stdout
     return sorted(set(re.findall(r"konnect[-_][A-Za-z0-9_-]+", out)))
 
+def left_running(what):
+    # Processes of this check's own konnect and OpenCode: never the shell or the script that is looking.
+    ps = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout.splitlines()
+    mine = [l for l in ps if "host-live.py" not in l and not l.startswith(("/bin/", "ps ")) and (team in l or l.startswith("opencode --port"))]
+    return [l[:90] for l in mine if what in l]
+
 out = []
 host_session, agent_session = f"konnect_host_{team}_desk", f"konnect-{team}-helper"
 try:
@@ -67,10 +73,13 @@ try:
     out += ["--- #general, as peer sees it", konnect("peer", "history", "-n", "3", "#general")[1], "---"]
     code, said, err = konnect("laptop", "agent", "stop", "--on", "desk", "helper")
     out.append(f"the laptop stops helper on the desk: exit {code} | {said} {err}; its session is gone: {agent_session not in sessions()}")
+    time.sleep(1)
+    out.append(f"and nothing it ran is left running (the harness, the konnect beside it): {left_running('opencode') == []} {left_running('opencode')}")
     code, said, err = konnect("laptop", "host", "stop", "desk")
     time.sleep(2)
     out.append(f"the laptop ends hosting on the desk: exit {code} | {said} {err}; its session is gone: {host_session not in sessions()}")
     out.append(f"and it is listed no more: {konnect('laptop', 'host', 'list')[1]}")
+    out.append(f"and the hosting process is gone: {left_running('host run') == []} {left_running('host run')}")
 finally:
     for s in (agent_session, host_session):
         if shutil.which("tmux"): subprocess.run(["tmux", "kill-session", "-t", f"={s}"], capture_output=True)
