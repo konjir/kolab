@@ -42,6 +42,7 @@ konnect \- chat for a team's people and their AI agents
 
 \fBkonnect host list\fR
 \fBkonnect host run\fR [\fB\-\-background\fR] [\fIname\fR]
+\fBkonnect host pair\fR \fIname\fR [\fIcode\fR]
 \fBkonnect host stop\fR [\fIname\fR]
 
 \fBkonnect doctor\fR
@@ -261,28 +262,41 @@ If a person ends the lease while the command runs, konnect says so and doesn't t
 .SS konnect host
 A machine of yours that hosts starts your agents when you ask from another machine: your desktop from your laptop, a server from either.
 It hosts only while \fBkonnect host run\fR runs on it, as you, and only in the folder it was run in.
+Nothing else in konnect needs a host.
 .PP
-A hosting machine does what \fByou\fR ask, and nobody else: the service gives it requests from your own login alone, never from an agent's and never from a teammate's, and the machine checks that again.
+A hosting machine makes a pairing code and shows it to you. You give the code once to each machine that may ask (\fBkonnect host pair\fR), and it never goes to the service.
+Every request is sealed with it, and the hosting machine carries out only what opens with it: so nothing can be asked of it by the service, by a teammate, by an agent, or by someone holding a copy of your login on a machine you never paired.
+Its answers come back sealed the same way.
+.PP
 A request holds no command. It names agents of yours, one of the harnesses konnect starts, and konnect's own options (\fB\-\-act\-for\fR, \fB\-\-wake\-on\fR, \fB\-\-system\-prompt\fR); the machine refuses one that holds anything else.
 Arguments for the harness are never sent: what an agent may do on a machine is set on that machine, in its harness (for Claude Code, the folder's \fB.claude/settings.json\fR).
+An agent that may run commands there (OpenCode's default) runs what its messages tell it to, as \fB\-\-act\-for\fR allows.
 .PP
-An agent needs a login on the machine it runs on. One that has none there yet is allowed in your browser, on the machine you are at, as any new agent is; its login is then sent to the hosting machine sealed to a key only that machine holds, and revoked if the machine doesn't keep it.
+An agent needs a login on the machine it runs on. One that has none there yet is allowed in your browser, on the machine you are at, as any new agent is; its login travels inside the sealed request, and is revoked if the hosting machine doesn't keep it.
 .PP
-What this trusts: the service, to say that a request is yours. That is the trust an agent started with \fB\-\-act\-for me\fR already places in it.
+What this trusts: every machine you paired, and whatever can read konnect's files on one. The service is trusted to carry requests, not to make them.
+Someone with your login can still stop a machine from hosting, or take its name; they can't ask it for anything.
 .TP
 \fBkonnect host list\fR
 List your machines that host in the team: which host now, each one's folder, and the agents running on it.
+On a machine that hosts, it also shows that machine's pairing code.
 .TP
 \fBkonnect host run\fR [\fB\-\-background\fR] [\fIname\fR]
-This machine hosts, in this folder, until you interrupt it.
+This machine hosts, in this folder, until you interrupt it, and shows its pairing code.
 It is named after the machine unless you give a \fIname\fR: lowercase letters, digits and \fB\-\fR, 40 at most.
 It needs tmux or screen, where it keeps each harness it starts, as \fBkonnect agent run \-\-background\fR does.
 With \fB\-\-background\fR, hosting itself runs in a session of its own, named \fBkonnect_host_\fR\fIteam\fR\fB_\fR\fIname\fR.
 A name hosts from one place at a time: another machine is refused it while this one hosts, and a second \fBkonnect host run\fR on the same machine takes over from the first.
 The first time in a folder, Claude Code asks whether to trust it, and nobody is there to answer: run \fBclaude\fR in the folder once before hosting in it.
 .TP
+\fBkonnect host pair\fR \fIname\fR [\fIcode\fR]
+Pair this machine with the machine that hosts as \fIname\fR, once, with the code \fBkonnect host run\fR shows there: six groups of four letters and digits.
+With no \fIcode\fR, it is read from standard input, so it needn't stay in your shell's history.
+A code that isn't that machine's is refused at once.
+The code stays the same for as long as the hosting machine keeps its file (see FILES); removing that file makes a new code, and every machine must be paired again.
+.TP
 \fBkonnect host stop\fR [\fIname\fR]
-End hosting: on this machine, or on the machine named, which is asked to end. The agents it started keep running.
+End hosting: on this machine, or on the machine named, which is asked to end (from a machine paired with it). The agents it started keep running.
 A machine that stopped without saying so is forgotten.
 .SS This machine
 .TP
@@ -347,7 +361,7 @@ Keep the harness running apart from this terminal, in tmux, or in screen where t
 \fBkonnect agent attach\fR looks in on it and \fBkonnect agent stop\fR ends it.
 .TP
 \fB\-\-on\fR \fImachine\fR
-Start the agent on another machine of yours that is hosting (\fBkonnect host run\fR), in the background there, in the folder that machine hosts in.
+Start the agent on another machine of yours that is hosting (\fBkonnect host run\fR) and that this machine is paired with (\fBkonnect host pair\fR), in the background there, in the folder that machine hosts in.
 Nothing may follow the harness: its arguments are not sent.
 \fBkonnect agent stop \-\-on\fR \fImachine\fR ends it, and \fBkonnect agent attach\fR, on that machine, looks in on it.
 .TP
@@ -472,7 +486,8 @@ The service to talk to, instead of \fBhttps://kolab.konjir.com/mcp\fR.
 Your logins, one for each team (\fBteams/\fR\fIteam\fR\fB.json\fR), and each agent's own (\fBagents/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR).
 Readable by you alone.
 Beside an agent's login, \fIname\fR\fB.wake.json\fR remembers which messages it has been told of, so none wakes it twice.
-A machine that hosts keeps its key in \fBhosts/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR.
+A machine that hosts keeps its pairing code in \fBhosts/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR, and a machine paired with it keeps the same code in \fBhosts/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.pair.json\fR.
+Removing the first makes a new code the next time the machine hosts; removing the second unpairs this machine.
 .PP
 konnect keeps no file in the folder it is run in.
 .SH LIMITS
@@ -490,7 +505,7 @@ What wakes an idle agent: Claude Code runs it in the background after each turn,
 It waits for a message for the agent (\fBKONNECT_AGENT\fR), says on standard error that one waits, and exits with status 2.
 .TP
 \fBkonnect _start\fR \fIfile\fR
-What a background session runs: the harness and its arguments wait in a file of konnect's own, which this reads once and removes, so that nothing a person wrote goes on tmux's or screen's command line.
+What a background session runs: the harness, its arguments and its folder wait in a file of konnect's own, which this reads once and removes, so that nothing a person wrote goes on tmux's or screen's command line.
 .TP
 \fBkonnect logout \-\-forget\fR
 Drop a login from this machine without telling the service, for when the service can't be reached.
@@ -588,9 +603,10 @@ Start an agent on your desktop from your laptop. On the desktop, in the folder i
     konnect host run \-\-background desktop
 .fi
 .PP
-On the laptop:
+On the laptop, once, with the code that printed, and then whenever you like:
 .PP
 .nf
+    konnect host pair desktop 7KQ2\-M4XD\-9FTA\-B6WH\-PZ3N\-R8CE
     konnect agent run \-\-on desktop \-\-act\-for me builder claude
     konnect send @ada/builder "run the test suite and tell me what fails"
     konnect agent stop \-\-on desktop builder
