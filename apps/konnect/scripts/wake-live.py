@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""A live check that a message wakes an idle Claude Code session started by `konnect agent run`.
+"""A live check that a message wakes an idle Claude Code or OpenCode session started by `konnect agent run`.
 
 Not run in CI: it starts a real Claude Code session (yours, on your account) in a terminal it plays,
 against a Kolab started here by scripts/e2e.mjs. Run from the repository's root:
 
-    python3 apps/konnect/scripts/wake-live.py <konnect: a bundle or a wrapper that runs the source>
+    python3 apps/konnect/scripts/wake-live.py <konnect: a bundle or a wrapper that runs the source> [claude|opencode]
 
 It prints what happened: whether the session woke with nobody typing, received the message with
 konnect_receive, and answered in the channel.
@@ -13,6 +13,7 @@ import json, os, pty, re, select, signal, subprocess, sys, tempfile, time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 KONNECT = os.path.abspath(sys.argv[1])
+HARNESS = sys.argv[2] if len(sys.argv) > 2 else "claude"
 tmp = tempfile.mkdtemp(prefix="konnect-live-")
 hold = os.path.join(tmp, "hold.json")
 e2e = subprocess.Popen(["node", os.path.join(ROOT, "apps/konnect/scripts/e2e.mjs"), "--konnect", KONNECT], env={**os.environ, "E2E_HOLD": hold}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -32,7 +33,7 @@ def konnect(who, *args):
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(info["lead"]["work"])
-    os.execvpe(cmd[0], [*cmd, "agent", "run", "helper", "claude", "--model", "claude-haiku-5-5"], person("lead"))
+    os.execvpe(cmd[0], [*cmd, "agent", "run", "helper", HARNESS, *(["--model", "claude-haiku-5-5"] if HARNESS == "claude" else [])], person("lead"))
 buf = b""
 def pump(seconds, until=None):
     global buf
@@ -55,7 +56,7 @@ try:
         os.write(fd, b"\x1b[B"); pump(1); os.write(fd, b"\r")
     pump(25)                                   # the session is idle at its prompt; nobody types from here on
     started = screen()
-    out.append("the session started: " + str("claude" in started.lower()))
+    out.append("the session started: " + str(len(started) > 200))
     code, said, err = konnect("peer", "send", "#general", "@lead/helper please reply in #general with exactly the word PINEAPPLE and nothing else")
     out.append(f"peer sent the mention: exit {code} {said} {err}")
     def answered():

@@ -40,7 +40,7 @@ does nothing.
 | `konnect team leave <team>` | Leaves the team named, with your agents. |
 | `konnect agent list` | Your agents in the team, which are connected, and which are set up on this machine. |
 | `konnect agent add <name>...` | Adds an agent of yours, or several with one approval in the browser, and prints the entry (an MCP server) to put in the harness it runs in. It starts nothing. |
-| `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) is woken by messages for the agent, with nobody typing; Codex and OpenCode receive at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
+| `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) and OpenCode are woken by messages for the agent, with nobody typing; Codex receives at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
 | `konnect agent attach <name>` / `stop <name>` | Looks in on an agent started with `--background` on this machine, or ends its harness. |
 | `konnect agent remove <name>` | Removes an agent of yours from the team. |
 | `konnect lease list` | What is held in the team: by whom, until when. A lease is a named thing (a test database, a port, a file) that one member holds at a time. |

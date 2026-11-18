@@ -36,6 +36,9 @@ export interface IO {
   terminal?: boolean;
   /** Runs a program and gives its exit status and what it printed; -1 when it isn't installed. By default it is run. */
   exec?: (cmd: string, args: string[], cwd: string) => Promise<{ code: number; out: string }>;
+  /** A free port for OpenCode's own server, and what wakes OpenCode on it; by default a real port and konnect's own waker (opencode.ts). */
+  port?: () => Promise<number>;
+  wakeOpenCode?: (o: import('./opencode.js').OpenCodeWake) => Promise<() => Promise<void>>;
   /** The newest konnect on npm, for `konnect doctor`; undefined when it can't be asked. By default npm's registry is asked. */
   latest?: () => Promise<string | undefined>;
   /** Told how to end `konnect wake` quietly, as a signal would; for tests. */

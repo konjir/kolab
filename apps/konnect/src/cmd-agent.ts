@@ -18,6 +18,7 @@ import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
 import { printable, shownName } from './names.js';
+import { freePort, givenPort, wakeOpenCode } from './opencode.js';
 import { systemPrompt } from './system-prompt.js';
 import { HOSTED_URL, agentFile, agentFileReady, dropIfEmpty } from './teams.js';
 
@@ -191,7 +192,12 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       if (kind) {
         // In the background: in a terminal of its own that outlives this one, to look in on and to stop.
         const session = sessionName(team, name);
-        const line = ['env', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), run.cmd, ...run.args];
+        // OpenCode is woken by the konnect that started it, so in the background it is konnect that
+        // runs there, with OpenCode in front of it; the others run by themselves.
+        const self = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
+        const again = [self.command, ...self.args, '--team', team, 'agent', 'run', ...(ctx.args.actFor ? ['--act-for', ctx.args.actFor] : []), ...wakeOn(ctx).flatMap((c) => ['--wake-on', c]), ...(ctx.args.systemPrompt !== undefined ? ['--system-prompt', ctx.args.systemPrompt] : []), name, tool, ...extra];
+        const carried = Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).flatMap(([k, v]) => (v ? [`${k}=${v}`] : []));
+        const line = tool === 'opencode' ? ['env', ...carried, ...again] : ['env', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), run.cmd, ...run.args];
         // Those started before one that fails keep running: said, so none is left running unknown.
         const already = started.length ? ` ${started.map((s) => s.agent.slice(s.agent.indexOf('/') + 1)).join(', ')} ${started.length === 1 ? 'is' : 'are'} running in the background: konnect agent stop <name> ends one.` : '';
         // Looked at again, now: allowing agents in the browser can take minutes, and another run may have started this one meanwhile.
@@ -204,9 +210,19 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       ctx.err([
         `Your agent @${printable(r.owner)}/${name} is ${a.made ? 'added to' : 'in'} team ${team}.`,
         ...said,
-        ...(tool !== 'claude' ? [`${tool === 'codex' ? 'Codex' : 'OpenCode'} isn't woken by messages: the agent receives at the start of each turn.`] : []),
+        ...(tool === 'codex' ? ['Codex isn\'t woken by messages: the agent receives at the start of each turn.'] : []),
       ].join('\n'));
-      const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ ...run, env }, ctx.cwd);
+      // OpenCode is woken from here: it is started on a port of its own, and konnect stays beside it,
+      // submitting the notice of new messages as a prompt.
+      let stopWaking: (() => Promise<void>) | undefined;
+      if (tool === 'opencode') {
+        const port = givenPort(extra) ?? await (ctx.io.port ?? freePort)();
+        if (givenPort(extra) === undefined) run = { ...run, args: ['--port', String(port), ...run.args] };
+        stopWaking = await (ctx.io.wakeOpenCode ?? wakeOpenCode)({ team, url: ctx.url, file: agentFile(team, name, ctx.env), label: name, owner: r.owner, port, wakeOn: wakeOn(ctx).join(',') || undefined, log: ctx.err })
+          .catch((e: unknown) => { ctx.err(`konnect can't wake ${name} in OpenCode (${(e as Error)?.message ?? e}): it receives at the start of each turn`); return undefined; });
+      }
+      let code: number;
+      try { code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ ...run, env }, ctx.cwd); } finally { await stopWaking?.(); }
       if (code === -1) throw new Error(`${tool} isn't installed here (no ${tool} on PATH). Install ${INSTALL[tool]}, then run this again. To start it yourself: ${shellLine([run.cmd, ...run.args])}`);
       process.exitCode = code;
       return;
