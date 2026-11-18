@@ -40,6 +40,7 @@ if pid == 0:
 # The terminal this script plays: of a size, and answering what a harness asks of it as it starts (Codex draws nothing in one that doesn't).
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 buf = b""
+answered = set()
 def pump(seconds, until=None):
     global buf
     stop = time.time() + seconds
@@ -49,10 +50,16 @@ def pump(seconds, until=None):
             try: got = os.read(fd, 65536)
             except OSError: return
             buf += got
-            if b"\x1b[6n" in got: os.write(fd, b"\x1b[1;1R")
-            if b"\x1b[c" in got: os.write(fd, b"\x1b[?62;c")
-            if b"\x1b[?u" in got: os.write(fd, b"\x1b[?0u")
+            # Each question is answered once, as it is first asked: an answer sent again later would be read as keys.
+            for asked, answer in ((b"\x1b[6n", b"\x1b[1;1R"), (b"\x1b[c", b"\x1b[?62;c"), (b"\x1b[?u", b"\x1b[?0u")):
+                if asked in got and asked not in answered: answered.add(asked); os.write(fd, answer)
         if until and until(): return
+def shown(last=700):
+    # What is on the harness's screen, as words: for saying what it is waiting at.
+    s = buf.decode("utf8", "replace")
+    s = re.sub(r"\x1b\[[0-9;?>]*[a-zA-Z]", "", s); s = re.sub(r"\x1b[\]()][^\x07\x1b]*(\x07|\x1b\\)?", "", s)
+    s = re.sub(r"[\u2800-\u28ff]+", "", s)
+    return re.sub(r"\s{2,}", "  ", s)[-last:]
 def screen():
     s = buf.decode("utf8", "replace")
     s = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s); s = re.sub(r"\x1b[\]()][^\x07\x1b]*(\x07|\x1b\\)?", "", s)
@@ -71,11 +78,13 @@ try:
     seen = re.sub(r"\s+", "", screen()).lower()
     if HARNESS == "codex" and "signinwithchatgpt" in seen:
         sys.exit("Codex is asking to sign in here: run codex login in this terminal first, then this check again.")
-    if HARNESS == "codex" and "trustthisfolder" in seen:      # Codex's own question, for a folder this script made: Trust is the one it offers first
-        os.write(fd, b"\r"); pump(5)
+    if HARNESS == "codex" and "trustthisfolder" in seen:      # Codex's own question, for a folder this script made: 1 picks Trust, Enter confirms it
+        print("Codex asks whether to trust the folder this check made: answering Trust", flush=True)
+        os.write(fd, b"1"); pump(1); os.write(fd, b"\r"); pump(5)
     elif "trust" in seen:                      # Claude Code's folder-trust question: No is offered first
         os.write(fd, b"\x1b[B"); pump(1); os.write(fd, b"\r")
     pump(25)                                   # the session is idle at its prompt; nobody types from here on
+    if HARNESS == "codex": print("--- what Codex's screen says now\n" + shown() + "\n---", flush=True)
     started = screen()
     out.append("the session started: " + str(len(started) > 200))
     def state():
@@ -95,6 +104,7 @@ try:
         pump(5); ok = answered()
     after = screen()[len(started):]
     out.append(f"the agent answered in #general with nobody typing: {ok} (after {int(time.time() - t0)}s)")
+    if HARNESS == "codex" and not ok: print("--- what Codex's screen says now\n" + shown(1200) + "\n---", flush=True)
     pump(8)
     out.append(f"while it answered, the team list said: {sorted(states)}; and once it was waiting again: {state()}")
     out.append("the session called konnect_receive: " + str("konnect_receive" in after or "receive" in after.lower()))
