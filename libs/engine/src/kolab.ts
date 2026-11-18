@@ -17,7 +17,7 @@ import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid 
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, SPLIT_STEP, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, LEASE_NAME, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, LEASE_NAME, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, HOST_NAME, HOST_INSTANCE, HOST_PUBLIC_KEY, HOST_AGENT, MAX_HOST_AGENTS, MAX_HOST_FOLDER, HOST_FRESH_SECONDS, HOST_REQUEST_SECONDS, HOST_REQUEST_KEPT_SECONDS, MAX_HOSTS_PER_PERSON, MAX_HOST_REQUESTS_WAITING, HOST_REQUESTS_AT_ONCE, MAX_HOST_BODY, MAX_HOST_RESULT, HOST_FORGOTTEN_DAYS, HOST_REQUEST_KINDS, type Host, type HostRequest, type HostRequestKind, type HostRequestState, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
@@ -3557,6 +3557,9 @@ export class Kolab {
     if (own.rows.length) await audit(tx, by, 'grant.removed', { kolab, subject: person });
     // Their leases there go, and their agents' (migration 0054): what they held is free now.
     await tx.query(`delete from kolab_lease where kolab_id = $1 and (holder = $2 or holder in (select id from actor where owner_id = $2 and kind = 'agent'))`, [kolab, person]);
+    // Their hosts there go, with every request to them (migration 0055): no one reaches their machines through this kolab now.
+    await tx.query(`delete from kolab_host_request where kolab_id = $1 and owner = $2`, [kolab, person]);
+    await tx.query(`delete from kolab_host where kolab_id = $1 and owner = $2`, [kolab, person]);
     // Every session of theirs and their agents' in the kolab ends now, even one a public kolab's Read
     // would keep open (endUnreachableIn ends only those left with nothing): they are no longer
     // members, and a fresh sign-in reads a public kolab as anyone may.
@@ -10701,6 +10704,247 @@ export class Kolab {
     return { leases: rows.map(leaseOf) };
   }
 
+  // ---- hosts: a person's own machines (migration 0055) ----------------------------
+  //
+  // A host is one of a person's machines that runs `konnect host run`; from another, the same person
+  // asks it to start or stop one of their agents there. Everything here is the session's own actor's:
+  // no verb takes an owner, every query names the session's actor as owner, and another person's
+  // host or request answers exactly as one that doesn't exist. An agent's session is refused every
+  // verb, before anything is read. A request's body is opaque: Kolab never parses it, never logs it,
+  // never puts it in an error, and empties it once answered.
+
+  /**
+   * The session `sessionId`, for the host verbs: a person's, never an agent's (a host starts
+   * programs on its person's machine), or refused. `quiet` reads it as a poll does (whoami, inbox
+   * reads): it renews no work lease and no job lease, for a host calls every few seconds.
+   */
+  private async hostSession(sessionId: string, quiet: boolean): Promise<Session> {
+    const s = quiet ? await QUIET.run(true, () => this.session(sessionId)) : await this.session(sessionId);
+    if (s.kind !== 'person') {
+      throw new AccessError(`${s.actor_id} is an agent: hosts are a person's own machines, reached only from that person's own session, never an agent's; ask your person`);
+    }
+    return s;
+  }
+
+  /**
+   * In `q`, refuses `s` unless its actor is a member of its kolab now (a reader of a public kolab
+   * holds nothing), and, with `write`, unless the kolab can change (it isn't archived).
+   */
+  private async hostMember(q: Q, s: Session, write: boolean): Promise<void> {
+    if (write && (await q.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+    if (!(await holderRows(q, s.kolab, undefined, s.actor_id)).some((h) => h.id === s.actor_id && h.rank > 0)) throw new AccessError(notInHosts(s));
+  }
+
+  /**
+   * In `tx`, takes the lock on the session's actor's hosts in its kolab (a transaction-scoped
+   * advisory lock, after the shared access lock its transaction holds), and returns the one moment
+   * (Postgres's text for it) against which the transaction judges freshness and expiry and stamps
+   * what it writes. One person's host verbs in a kolab run one at a time under it, so a request is
+   * taken once and the caps hold.
+   */
+  private async hostLock(tx: Q, s: Session): Promise<string> {
+    return (await tx.query<{ at: string }>(
+      `with l as materialized (select pg_advisory_xact_lock(hashtext('kolab_host'), hashtext($1 || '/' || $2)))
+       select clock_timestamp()::text as at from l`, [s.kolab, s.actor_id])).rows[0].at;
+  }
+
+  /**
+   * The machine that hosts `name` for the session's person calls this every few seconds
+   * (konjir_serve_host): it registers or renews the host, and takes the requests waiting for it.
+   * Upserts the caller's host `name` in the session's kolab with what the machine says (its
+   * instance, public key, folder, agents and running), seen now; started now when new or when its
+   * instance changed. A host of that name seen within HOST_FRESH_SECONDS with another instance is
+   * another process's, and refused; one not seen since then is taken over, and the requests to it
+   * not yet answered go, being sealed to the key it had. Then the host's waiting requests (not
+   * taken, not answered, not expired) are taken, at most HOST_REQUESTS_AT_ONCE, oldest first: each
+   * is handed out once, ever. On the way, this kolab's requests over HOST_REQUEST_KEPT_SECONDS old
+   * and hosts not seen for HOST_FORGOTTEN_DAYS are cleared away. Quiet (hostSession), and spends
+   * no budget.
+   */
+  async serveHost(sessionId: string, input: { name: string; instance: string; public_key: string; folder?: string | null; agents?: string[] | null; running?: string[] | null }): Promise<{ host: Host; requests: HostRequest[] }> {
+    const s = await this.hostSession(sessionId, true);
+    const { name, instance, public_key } = input;
+    checkHostName(name);
+    if (typeof instance !== 'string' || !HOST_INSTANCE.test(instance)) throw new LimitError('instance names the process serving the host: 16 to 64 lowercase hex digits, new each time it starts');
+    if (typeof public_key !== 'string' || !HOST_PUBLIC_KEY.test(public_key)) throw new LimitError('public_key is the host\'s X25519 public key: 32 bytes in unpadded base64url, 43 characters');
+    const folder = input.folder === undefined || input.folder === null ? null : input.folder;
+    checkHostFolder(folder);
+    const agents = checkHostAgents('agents', input.agents);
+    const running = checkHostAgents('running', input.running);
+    return this.inTransaction(async (tx) => {
+      await this.hostMember(tx, s, true);
+      const at = await this.hostLock(tx, s);
+      await tx.exec('set local role kj_system');
+      // Cleared away lazily: the kolab's requests made over an hour ago, and its hosts long unseen (their requests with them).
+      await tx.query(`delete from kolab_host_request where kolab_id = $1 and created_at < $2::timestamptz - make_interval(secs => $3)`, [s.kolab, at, HOST_REQUEST_KEPT_SECONDS]);
+      await tx.query(`delete from kolab_host where kolab_id = $1 and seen_at < $2::timestamptz - make_interval(days => $3)`, [s.kolab, at, HOST_FORGOTTEN_DAYS]);
+      const old = (await tx.query<HostRow>(
+        `select ${HOST_COLUMNS('$4')} from kolab_host h where h.kolab_id = $1 and h.owner = $2 and h.name = $3`, [s.kolab, s.actor_id, name, at])).rows[0];
+      if (old && old.instance !== instance && old.serving) {
+        throw new TenancyError(`host ${name} is being served by another machine or process: it was last seen at ${iso(old.seen_at)}${old.folder === null ? '' : `, in ${old.folder}`}. Give this one another name, or stop that one: its name is free ${HOST_FRESH_SECONDS} seconds after it was last seen`);
+      }
+      if (!old) {
+        const n = (await tx.query<{ n: number }>(`select count(*)::int as n from kolab_host where kolab_id = $1 and owner = $2`, [s.kolab, s.actor_id])).rows[0].n;
+        if (n >= MAX_HOSTS_PER_PERSON) {
+          throw new LimitError(`you have ${n} hosts in kolab ${s.kolab}, the most a person has (${MAX_HOSTS_PER_PERSON}): end one you no longer use (konjir_list_hosts, konjir_end_host), or wait: a host not seen for ${HOST_FORGOTTEN_DAYS} days is forgotten`);
+        }
+      }
+      const row = (await tx.query<HostRow>(
+        `insert into kolab_host(kolab_id, owner, name, instance, public_key, folder, agents, running, started_at, seen_at)
+         values ($1, $2, $3, $4, $5, $6, $7::text[], $8::text[], $9::timestamptz, $9::timestamptz)
+         on conflict (kolab_id, owner, name) do update set
+           started_at = case when kolab_host.instance = excluded.instance then kolab_host.started_at else excluded.started_at end,
+           instance = excluded.instance, public_key = excluded.public_key, folder = excluded.folder,
+           agents = excluded.agents, running = excluded.running, seen_at = excluded.seen_at
+         returning ${HOST_COLUMNS('$9', 'kolab_host')}`, [s.kolab, s.actor_id, name, instance, public_key, folder, agents, running, at])).rows[0];
+      // Taken over: what waited for the process before was sealed to its key, and is no use to this one.
+      if (old && old.instance !== instance) {
+        await tx.query(`delete from kolab_host_request where kolab_id = $1 and owner = $2 and host = $3 and done_at is null`, [s.kolab, s.actor_id, name]);
+      }
+      const taken = (await tx.query<{ id: string; kind: HostRequestKind; body: string; owner: string; created_at: Date | string; expires_at: Date | string }>(
+        `with t as (
+           select q.id from kolab_host_request q
+            where q.kolab_id = $1 and q.owner = $2 and q.host = $3 and q.taken_at is null and q.done_at is null and q.expires_at > $4::timestamptz
+            order by q.created_at, q.id limit $5 for update
+         ), u as (
+           update kolab_host_request r set taken_at = $4::timestamptz from t
+            where r.id = t.id and r.taken_at is null and r.done_at is null
+           returning r.id, r.kind, r.body, r.owner, r.created_at, r.expires_at
+         )
+         select * from u order by u.created_at, u.id`, [s.kolab, s.actor_id, name, at, HOST_REQUESTS_AT_ONCE])).rows;
+      return {
+        host: hostOf(row),
+        requests: taken.map((r) => ({ id: r.id, kind: r.kind, body: r.body, from: r.owner, requested_at: iso(r.created_at)!, expires_at: iso(r.expires_at)! })),
+      };
+    }, undefined, { access: true });
+  }
+
+  /**
+   * The session's person asks their own host `host` in the session's kolab to do something
+   * (konjir_ask_host): a request of `kind` with an opaque `body`, which the host takes on its next
+   * call of konjir_serve_host, if it does so within HOST_REQUEST_SECONDS. Refused when the person
+   * has no host of that name (another person's is no host of theirs), when it isn't serving now,
+   * or when it has MAX_HOST_REQUESTS_WAITING requests not answered (waiting, or taken). The body
+   * is never read: only its length is checked.
+   */
+  async askHost(sessionId: string, host: string, kind: string, body: string): Promise<{ request: string; expires_at: string }> {
+    const s = await this.hostSession(sessionId, false);
+    checkHostName(host);
+    if (!(HOST_REQUEST_KINDS as readonly string[]).includes(kind)) throw new LimitError(`kind is what the request asks of the host: one of ${HOST_REQUEST_KINDS.join(', ')}`);
+    checkHostText('the request\'s body', body, MAX_HOST_BODY);
+    return this.inTransaction(async (tx) => {
+      await this.hostMember(tx, s, true);
+      const at = await this.hostLock(tx, s);
+      await tx.exec('set local role kj_system');
+      const h = (await tx.query<{ seen_at: Date | string; serving: boolean; open: number }>(
+        `select h.seen_at, h.seen_at >= $4::timestamptz - make_interval(secs => $5) as serving,
+                (select count(*)::int from kolab_host_request q
+                  where q.kolab_id = h.kolab_id and q.owner = h.owner and q.host = h.name and q.done_at is null
+                    and (q.taken_at is not null or q.expires_at > $4::timestamptz)) as open
+           from kolab_host h where h.kolab_id = $1 and h.owner = $2 and h.name = $3`,
+        [s.kolab, s.actor_id, host, at, HOST_FRESH_SECONDS])).rows[0];
+      if (!h) throw new TenancyError(noHost(s, host));
+      if (!h.serving) {
+        throw new TenancyError(`host ${host} is not serving: it was last seen at ${iso(h.seen_at)}, and a host serves while it calls at least every ${HOST_FRESH_SECONDS} seconds. Start it again on its machine (konnect host run), then ask again`);
+      }
+      if (h.open >= MAX_HOST_REQUESTS_WAITING) {
+        throw new LimitError(`host ${host} has ${h.open} requests not answered yet, the most a host has (${MAX_HOST_REQUESTS_WAITING}): wait for it to answer them (konjir_read_host_request)`);
+      }
+      const id = randomBytes(16).toString('hex');
+      const r = (await tx.query<{ expires_at: Date | string }>(
+        `insert into kolab_host_request(id, kolab_id, owner, host, kind, body, created_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $7::timestamptz + make_interval(secs => $8)) returning expires_at`,
+        [id, s.kolab, s.actor_id, host, kind, body, at, HOST_REQUEST_SECONDS])).rows[0];
+      return { request: id, expires_at: iso(r.expires_at)! };
+    }, undefined, { access: true });
+  }
+
+  /**
+   * A host's answer to a request it took (konjir_answer_host): the session's person's own request,
+   * taken and not answered yet, answered once. Records `ok` and `result` and empties the body, which
+   * may hold a sealed login and is not kept once answered. Anything else is refused: a request not
+   * the person's, or none, as unknown; one not taken, or answered already, saying so. Quiet.
+   */
+  async answerHost(sessionId: string, request: string, ok: boolean, result: string): Promise<{ answered: true }> {
+    const s = await this.hostSession(sessionId, true);
+    if (typeof request !== 'string' || !HOST_REQUEST_ID.test(request)) throw new TenancyError(noRequest(s));
+    if (typeof ok !== 'boolean') throw new LimitError('ok is true when the host did what was asked, false when it did not');
+    checkHostText('the answer\'s result', result, MAX_HOST_RESULT);
+    return this.inTransaction(async (tx) => {
+      await this.hostMember(tx, s, true);
+      const at = await this.hostLock(tx, s);
+      await tx.exec('set local role kj_system');
+      const r = (await tx.query<{ taken_at: Date | string | null; done_at: Date | string | null }>(
+        `select taken_at, done_at from kolab_host_request where id = $1 and kolab_id = $2 and owner = $3`, [request, s.kolab, s.actor_id])).rows[0];
+      if (!r) throw new TenancyError(noRequest(s));
+      if (r.done_at !== null) throw new TenancyError(`that request was answered at ${iso(r.done_at)}: a request is answered once`);
+      if (r.taken_at === null) throw new TenancyError('that request has not been taken by its host: a host answers a request it took (konjir_serve_host)');
+      await tx.query(
+        `update kolab_host_request set done_at = $4::timestamptz, ok = $5, result = $6, body = '', answered_by = $3
+          where id = $1 and kolab_id = $2 and owner = $3 and taken_at is not null and done_at is null`,
+        [request, s.kolab, s.actor_id, at, ok, result]);
+      return { answered: true as const };
+    }, undefined, { access: true });
+  }
+
+  /**
+   * What became of one of the session's person's requests (konjir_read_host_request): waiting (not
+   * taken, not expired), taken (not answered), done (with ok and result), or expired (never taken
+   * in time). Never its body. A request not theirs, or none, is refused as unknown. Quiet: an asker
+   * polls it every second while it waits.
+   */
+  async readHostRequest(sessionId: string, request: string): Promise<{ request: HostRequestState }> {
+    const s = await this.hostSession(sessionId, true);
+    if (typeof request !== 'string' || !HOST_REQUEST_ID.test(request)) throw new TenancyError(noRequest(s));
+    await this.hostMember(this.db, s, false);
+    const r = (await this.db.query<{ id: string; host: string; kind: HostRequestKind; created_at: Date | string; expires_at: Date | string; state: HostRequestState['state']; ok: boolean | null; result: string | null }>(
+      `select r.id, r.host, r.kind, r.created_at, r.expires_at, r.ok, r.result,
+              case when r.done_at is not null then 'done' when r.taken_at is not null then 'taken'
+                   when r.expires_at <= clock_timestamp() then 'expired' else 'waiting' end as state
+         from kolab_host_request r where r.id = $1 and r.kolab_id = $2 and r.owner = $3`, [request, s.kolab, s.actor_id])).rows[0];
+    if (!r) throw new TenancyError(noRequest(s));
+    return {
+      request: {
+        id: r.id, host: r.host, kind: r.kind, state: r.state, requested_at: iso(r.created_at)!, expires_at: iso(r.expires_at)!,
+        ...(r.state === 'done' ? { ok: r.ok!, result: r.result ?? '' } : {}),
+      },
+    };
+  }
+
+  /** The session's person's own hosts in its kolab, by name (konjir_list_hosts): at most MAX_HOSTS_PER_PERSON, so never paged. Quiet. */
+  async listHosts(sessionId: string): Promise<{ hosts: Host[] }> {
+    const s = await this.hostSession(sessionId, true);
+    await this.hostMember(this.db, s, false);
+    const rows = (await this.db.query<HostRow>(
+      `with n as (select clock_timestamp() as at)
+       select ${HOST_COLUMNS('n.at')} from kolab_host h cross join n where h.kolab_id = $1 and h.owner = $2 order by h.name collate "C"`,
+      [s.kolab, s.actor_id])).rows;
+    return { hosts: rows.map(hostOf) };
+  }
+
+  /**
+   * The session's person ends their host `name` in its kolab (konjir_end_host): its row goes, and
+   * every request to it. With `instance`, only while the host's instance is that one, so a process
+   * saying goodbye never ends a successor that took the name over. `ended: false` when there was no
+   * such host. Audited (host.ended), for Konjir's admins. Quiet: a host ends itself as it stops.
+   */
+  async endHost(sessionId: string, name: string, instance?: string | null): Promise<{ ended: boolean }> {
+    const s = await this.hostSession(sessionId, true);
+    checkHostName(name);
+    const only = instance === undefined || instance === null ? null : instance;
+    if (only !== null && (typeof only !== 'string' || !HOST_INSTANCE.test(only))) throw new LimitError('instance names the process serving the host: 16 to 64 lowercase hex digits');
+    return this.inTransaction(async (tx) => {
+      await this.hostMember(tx, s, true);
+      await this.hostLock(tx, s);
+      // As Kolab's own login, not kj_system: the audit log is written by it alone (0024). Its requests go with it (on delete cascade).
+      const gone = (await tx.query(
+        `delete from kolab_host where kolab_id = $1 and owner = $2 and name = $3 and ($4::text is null or instance = $4::text) returning name`,
+        [s.kolab, s.actor_id, name, only])).rows.length > 0;
+      if (gone) await audit(tx, s.actor_id, 'host.ended', { kolab: s.kolab, subject: s.actor_id, detail: { host: name } });
+      return { ended: gone };
+    }, undefined, { access: true });
+  }
+
   // ---- work: evidence, submitting, reviewing and reopening (W5.1c; PLN10, PLN16, PLN18, VER17, D98) ----
 
   /**
@@ -14500,8 +14744,9 @@ const SHOWN_FROM = (from: string, q = 'q') => `(${from}::text is null or ${q}.ko
 /**
  * Who holds access to `kolab`, or holds a grant there that gives nothing now. With `page`, highest
  * access first, then people before agents, then by id, `limit` + 1 of them after `after` (W2.21).
+ * With `only`, that actor's row alone, if they are one: a member's check costs one row's access.
  */
-async function holderRows(q: Q, kolab: string, page?: { after?: [number, boolean, string]; limit: number }) {
+async function holderRows(q: Q, kolab: string, page?: { after?: [number, boolean, string]; limit: number }, only?: string) {
   return (await q.query<{ id: string; kind: ActorKind; owner_id: string | null; rank: number; functional: boolean; technical: boolean; granted: boolean }>(
     `with recursive k as (
        select id, owner_id, visibility, base_permission from kolab where id = $1
@@ -14519,10 +14764,11 @@ async function holderRows(q: Q, kolab: string, page?: { after?: [number, boolean
        select a.id, a.kind, a.owner_id, x.rank, x.functional, x.technical,
               exists (select 1 from kolab_grant g where g.kolab_id = $1 and (g.user_id = a.id or g.agent_id = a.id)) as granted
          from cand c join actor a on a.id = c.id cross join lateral kj_access(a.id, $1) x
+        where ($6::text is null or c.id = $6::text)
      ) h where (h.rank > 0 or h.granted)
        and ($2::int is null or (-h.rank, h.kind <> 'person', h.id collate "C") > (-$2::int, $3::boolean, $4::text collate "C"))
       order by ${page ? `h.rank desc, h.kind <> 'person', h.id collate "C"` : 'h.id'} limit $5`,
-    [kolab, page?.after?.[0] ?? null, page?.after?.[1] ?? null, page?.after?.[2] ?? null, page ? page.limit + 1 : null])).rows;
+    [kolab, page?.after?.[0] ?? null, page?.after?.[1] ?? null, page?.after?.[2] ?? null, page ? page.limit + 1 : null, only ?? null])).rows;
 }
 
 /** Whether `want` gives anything `current` doesn't: a higher level, or at Write a layer more. */
@@ -14901,6 +15147,53 @@ function checkLeaseNote(note: unknown): asserts note is string | null {
 const LEASE_COLUMNS = `l.name, l.holder, l.claimed_at, l.expires_at, l.note`;
 type LeaseRow = { name: string; holder: string; claimed_at: Date | string; expires_at: Date | string; note: string | null };
 const leaseOf = (r: LeaseRow): Lease => ({ name: r.name, holder: r.holder, claimed_at: iso(r.claimed_at)!, expires_at: iso(r.expires_at)!, note: r.note });
+/** Why a session whose actor is no member of its kolab (a reader of a public kolab, say) has no hosts there. */
+const notInHosts = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: hosts are for those who hold access there, and reading a public kolab gives none`;
+/** A host the session's person doesn't have: another person's of that name answers just so. */
+const noHost = (s: Session, name: string) => `you have no host named ${name} in kolab ${s.kolab}: konjir_list_hosts lists yours, and a host is yours once it serves (konnect host run on its machine)`;
+/** A request that isn't the session's person's, or none: the same words either way, never echoing what was given. */
+const noRequest = (s: Session) => `there is no request of yours by that id in kolab ${s.kolab}`;
+/** A request's id, as askHost makes it: 128 random bits, in hex. */
+const HOST_REQUEST_ID = /^[a-f0-9]{32,64}$/;
+/** A host's name, or refused: HOST_NAME's. */
+function checkHostName(name: unknown): asserts name is string {
+  if (typeof name !== 'string' || !HOST_NAME.test(name)) {
+    throw new LimitError(`${JSON.stringify(typeof name === 'string' ? name.slice(0, 60) : name ?? null)} is no host name: a host is named with 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box)`);
+  }
+}
+/** A host's folder, or refused: at most MAX_HOST_FOLDER characters, on one line, as a lease's note is. */
+function checkHostFolder(folder: unknown): asserts folder is string | null {
+  if (folder === null) return;
+  if (typeof folder !== 'string' || !folder) throw new LimitError('folder is where the host runs: a path, or leave it out');
+  checkText('the host\'s folder', folder, MAX_HOST_FOLDER);
+  if (NOTE_UNSAFE.test(folder)) throw new LimitError('a host\'s folder is one line: no line breaks, tabs or other control characters');
+}
+/** A host's list of agents (`agents` or `running`), or refused: at most MAX_HOST_AGENTS labels, each HOST_AGENT's. None is an empty list. */
+function checkHostAgents(what: 'agents' | 'running', list: unknown): string[] {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list) || list.length > MAX_HOST_AGENTS || !list.every((l) => typeof l === 'string' && HOST_AGENT.test(l))) {
+    throw new LimitError(`${what} is a list of at most ${MAX_HOST_AGENTS} agent labels, each 1 to 24 lowercase letters, digits and hyphens, starting with a letter or digit`);
+  }
+  return list as string[];
+}
+/**
+ * A request's body or an answer's result, or refused: a string of at most `max` characters,
+ * counted as message text is (checkText), with no NUL, which the database can't hold. Nothing
+ * else of it is read, and no refusal quotes it.
+ */
+function checkHostText(what: string, text: unknown, max: number): asserts text is string {
+  if (typeof text !== 'string') throw new LimitError(`${what} is a string`);
+  checkText(what, text, max);
+  if (text.includes('\u0000')) throw new LimitError(`${what} holds a NUL character, which can't be kept: encode it`);
+}
+/** A host's columns (kolab_host, aliased `t`), with `serving`: seen within HOST_FRESH_SECONDS of `at`, one moment for the transaction. */
+const HOST_COLUMNS = (at: string, t = 'h') =>
+  `${t}.name, ${t}.instance, ${t}.folder, ${t}.agents, ${t}.running, ${t}.public_key, ${t}.started_at, ${t}.seen_at,
+   ${t}.seen_at >= ${at}::timestamptz - make_interval(secs => ${HOST_FRESH_SECONDS}) as serving`;
+type HostRow = { name: string; instance: string; folder: string | null; agents: string[]; running: string[]; public_key: string; started_at: Date | string; seen_at: Date | string; serving: boolean };
+const hostOf = (r: HostRow): Host => ({
+  name: r.name, folder: r.folder, serving: r.serving, started_at: iso(r.started_at)!, seen_at: iso(r.seen_at)!, agents: r.agents, running: r.running, public_key: r.public_key,
+});
 /** Why a session that only reads a public kolab sends and reads no messages there. */
 const notAMember = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: messages go between those who hold access there, and reading a public kolab gives none`;
 

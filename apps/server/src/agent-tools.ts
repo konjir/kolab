@@ -5,7 +5,7 @@ import { args } from './args.js';
 import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, HOST_FRESH_SECONDS, HOST_REQUEST_SECONDS, HOST_REQUEST_KINDS, HOST_REQUESTS_AT_ONCE, HOST_FORGOTTEN_DAYS, MAX_HOSTS_PER_PERSON, MAX_HOST_REQUESTS_WAITING, MAX_HOST_BODY, MAX_HOST_RESULT, MAX_HOST_AGENTS, MAX_HOST_FOLDER, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
@@ -143,6 +143,34 @@ const claimLease = args({
 });
 const leaseNamed = args({ name: leaseName });
 const listLeases = args({});
+const hostName = z.string().describe('The host\'s name, unique among your own hosts in this kolab: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box)');
+const hostInstance = z.string().describe('The process serving the host: 16 to 64 lowercase hex digits, chosen at random each time it starts');
+const hostAgents = (what: string) => z.array(z.string()).optional().describe(`${what}: at most ${MAX_HOST_AGENTS} agent labels, each 1 to 24 lowercase letters, digits and hyphens. Left out, none`);
+const serveHost = args({
+  name: hostName,
+  instance: hostInstance,
+  public_key: z.string().describe('The host\'s X25519 public key, 32 bytes in unpadded base64url (43 characters), which a request\'s body is sealed to'),
+  folder: z.string().nullable().optional().describe(`Where the host runs, shown to you: at most ${MAX_HOST_FOLDER} characters on one line. Left out, none`),
+  agents: hostAgents('The agents this host can start'),
+  running: hostAgents('The agents running on this host now'),
+});
+const askHost = args({
+  host: hostName,
+  kind: z.enum(HOST_REQUEST_KINDS).describe('What to ask of it: start an agent, stop one, or end the host'),
+  body: z.string().describe(`The request, opaque to Kolab (sealed to the host's public_key by the asker): at most ${MAX_HOST_BODY.toLocaleString('en')} characters. Kolab never reads it, and empties it once the host answers`),
+});
+const hostRequest = z.string().describe('The request\'s id, as konjir_ask_host gave it, or as konjir_serve_host handed it to its host');
+const answerHost = args({
+  request: hostRequest,
+  ok: z.boolean().describe('true when the host did what was asked, false when it did not'),
+  result: z.string().describe(`What came of it, for the asker: at most ${MAX_HOST_RESULT.toLocaleString('en')} characters`),
+});
+const readHostRequest = args({ request: hostRequest });
+const listHosts = args({});
+const endHost = args({
+  name: hostName,
+  instance: hostInstance.optional().describe('Only while this process serves it: a host saying goodbye names its own instance, so it never ends a successor that took the name over'),
+});
 const listMessages = args({
   sent: z.boolean().optional().describe('true: the messages you sent. Default: the ones sent to you. With with: true, only yours to them; false, only theirs to you'),
   with: z.string().optional().describe('Only the messages between you and this member, both ways: by name, or an agent as <owner>/<label>'),
@@ -862,6 +890,69 @@ export class AgentTools {
   })
   listLeases(_: z.infer<typeof listLeases>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.listLeases(s));
+  }
+
+  // ---- hosts: a person's own machines (migration 0055) ----------------------------
+  // Every one is for a person's own session, never an agent's, and reaches only that person's own
+  // hosts and requests. The engine reads serve, answer, read, list and end quietly (they are polls
+  // and a host's own calls, renewing no lease) and none spends a budget. A body or result is never
+  // logged or quoted: an error says what was wrong with it, never what it held.
+
+  @McpTool({
+    name: 'konjir_serve_host',
+    description: `For a person's own session only, never an agent's, and only for the machine you are on: the machine that hosts (konnect host run) calls this every few seconds. It registers or renews your host name in your kolab with what you pass, seen now, and takes the requests waiting for it: at most ${HOST_REQUESTS_AT_ONCE}, oldest first, each handed out once, ever; act on each and answer it with konjir_answer_host. A host is serving while it calls at least every ${HOST_FRESH_SECONDS} seconds. If your host of that name is serving from another instance, this is refused (it says when it was last seen and its folder): give this one another name. Once that one has been quiet ${HOST_FRESH_SECONDS} seconds this instance takes the name over, and the requests to the old one that were not answered go. Returns { host, requests }: host is { name, folder, serving, started_at, seen_at, agents, running, public_key }; each request is { id, kind, body, from, requested_at, expires_at }, from being you, who asked. You have at most ${MAX_HOSTS_PER_PERSON} hosts in a kolab; one not seen for ${HOST_FORGOTTEN_DAYS} days is forgotten. It renews no work lease and spends no budget.`,
+    schema: serveHost,
+  })
+  serveHost(input: z.infer<typeof serveHost>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.serveHost(s, input));
+  }
+
+  @McpTool({
+    name: 'konjir_ask_host',
+    description: `For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. The request waits ${HOST_REQUEST_SECONDS} seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), or when it has ${MAX_HOST_REQUESTS_WAITING} requests not answered yet. body is opaque to Kolab: seal it to the host's public_key.`,
+    schema: askHost,
+  })
+  askHost({ host, kind, body }: z.infer<typeof askHost>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.askHost(s, host, kind, body));
+  }
+
+  @McpTool({
+    name: 'konjir_answer_host',
+    description: 'For a person\'s own session only, never an agent\'s, and only for your own machines: the host\'s answer to a request it took from konjir_serve_host, once. ok says whether it did what was asked; result is what the asker reads. The request\'s body is emptied as it is answered. A request not taken, answered already, or not yours is refused. Returns { answered: true }.',
+    schema: answerHost,
+  })
+  answerHost({ request, ok, result }: z.infer<typeof answerHost>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.answerHost(s, request, ok, result));
+  }
+
+  @McpTool({
+    name: 'konjir_read_host_request',
+    description: 'For a person\'s own session only, never an agent\'s, and only for your own machines: what became of a request you made with konjir_ask_host. Returns { request: { id, host, kind, state, requested_at, expires_at, ok?, result? } }: state is waiting (not taken yet), taken (the host is on it), done (with ok and result), or expired (the host never took it in time, and never will). Never its body. One that is not yours reads as unknown. It renews no work lease: poll it while you wait.',
+    schema: readHostRequest,
+    annotations: { readOnlyHint: true },
+  })
+  readHostRequest({ request }: z.infer<typeof readHostRequest>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.readHostRequest(s, request));
+  }
+
+  @McpTool({
+    name: 'konjir_list_hosts',
+    description: `For a person's own session only, never an agent's, and only your own machines: your hosts in this kolab, by name, each { name, folder, serving, started_at, seen_at, agents, running, public_key }. serving is whether it was seen within the last ${HOST_FRESH_SECONDS} seconds. No one else's are listed, and no one else sees yours. At most ${MAX_HOSTS_PER_PERSON}, so there is no paging.`,
+    schema: listHosts,
+    annotations: { readOnlyHint: true },
+  })
+  listHosts(_: z.infer<typeof listHosts>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.listHosts(s));
+  }
+
+  @McpTool({
+    name: 'konjir_end_host',
+    description: 'For a person\'s own session only, never an agent\'s, and only for your own machines: end your host of that name in this kolab, with every request to it. With instance, only while that instance serves it: a host saying goodbye passes its own, so it never ends a successor that took the name over. Returns { ended }: false when there was no such host, or its instance differs.',
+    schema: endHost,
+    annotations: { idempotentHint: true },
+  })
+  endHost({ name, instance }: z.infer<typeof endHost>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.endHost(s, name, instance));
   }
 
   // ---- case files and rulings (CASE1–CASE7) ----------------------------------

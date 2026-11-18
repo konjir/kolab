@@ -34,16 +34,19 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`admin_revoke`](#admin_revoke) | Admin: remove a grant. |
 | [`admin_unarchive`](#admin_unarchive) | Admin: unarchive a kolab, an organization or an actor, named by exactly one of kolab, organization or actor (D52). |
 | [`annotate`](#annotate) | Leave a note on an address for the layer that owns it: an interpretation you are proceeding on, an assumption, a risk, or something you could not check. |
+| [`answer_host`](#answer_host) | For a person's own session only, never an agent's, and only for your own machines: the host's answer to a request it took from konjir_serve_host, once. |
 | [`answer_query`](#answer_query) | Answer an open question, or reply to a note, that your layer owns. |
 | [`archive_agent`](#archive_agent) | For a person's own session only: archive an agent of yours, <you>-<label> by label=<label>, or by agent=<name> one of yours whose name doesn't start <you>- (konjir_list_agents gives each one's archive_with). |
 | [`archive_repository`](#archive_repository) | For a person with Maintain or Admin in your kolab, never an agent: archive a repository (by URL or id). |
 | [`ask`](#ask) | Ask a question about an address. |
+| [`ask_host`](#ask_host) | For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. |
 | [`break_lease`](#break_lease) | For a person who is a member of your kolab, never an agent: end anyone's lease there, when its holder has gone quiet and the thing is needed. |
 | [`claim_lease`](#claim_lease) | Hold a lease on a named thing in your kolab (a test database, a port, a file) for a while, so the other members, people and agents, keep off it while you use it. |
 | [`clear_mark`](#clear_mark) | Clear a dirty mark on your layer after checking that your work still holds against the new upstream. |
 | [`create_agent`](#create_agent) | For a person's own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect sets agents up on Kolab's setup page instead, several at once). |
 | [`create_node`](#create_node) | Create a node in your kolab. |
 | [`draft`](#draft) | Draft a new version. |
+| [`end_host`](#end_host) | For a person's own session only, never an agent's, and only for your own machines: end your host of that name in this kolab, with every request to it. |
 | [`end_job`](#end_job) | End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. |
 | [`end_session`](#end_session) | For a person's own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. |
 | [`follow_channel`](#follow_channel) | Follow a channel of your kolab: its unread messages are in your answers, and each new one there signals you. |
@@ -57,6 +60,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`list_cases`](#list_cases) | List case files in your kolab, each with its positions, its ruling once given, and the next step. |
 | [`list_channel_messages`](#list_channel_messages) | List a channel's messages, newest first, read or not, without moving your read position. |
 | [`list_channels`](#list_channels) | The channels of your kolab: named rooms every member reads and writes, people and agents. |
+| [`list_hosts`](#list_hosts) | For a person's own session only, never an agent's, and only your own machines: your hosts in this kolab, by name, each { name, folder, serving, started_at, seen_at, agents, running, public_key }. |
 | [`list_invitations`](#list_invitations) | For the owner of your kolab only: the invitations of your kolab that wait for an answer, newest first, each with its id, the GitHub account it names (as you typed it), what it gives, who made it and when. |
 | [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and, for the job's own person and the kolab's Admins, its note (a hand-off's says what the person must decide). |
 | [`list_leases`](#list_leases) | Every lease held in your kolab now, soonest to expire first: each with its name, holder, when it was claimed and expires, and its note. |
@@ -75,6 +79,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`pull_work`](#pull_work) | Pull work: Kolab gives you the first ready work package of your kolab's binding in natural ID order (never a decision, nor a milestone), makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<binding>#<id>). |
 | [`read_case`](#read_case) | Read one case file of your kolab: the element in dispute, the question, each position with its evidence and verdict, and its ruling once given. |
 | [`read_channel`](#read_channel) | Read the messages in a channel of your kolab that you haven't read, oldest first, at most 20 at a time, and move your read position past them: each with its id, channel, who it is from, its words, the message it answers (reply_to), the members it mentions and when it was sent. |
+| [`read_host_request`](#read_host_request) | For a person's own session only, never an agent's, and only for your own machines: what became of a request you made with konjir_ask_host. |
 | [`read_messages`](#read_messages) | Read the unread messages sent to you in your kolab, oldest first, at most 20 at a time, and mark them read: each with its id, who it is from, its words, the message it answers (reply_to) and when it was sent. |
 | [`read_node`](#read_node) | Read the elements of a node version, with who wrote it and who made the node, each with its address, the questions and notes raised on it (open and answered, from any version: the newest 20, with more_questions counting the rest), the rulings on it, which are precedent, and its open case files; a binding's work packages show their work fields (work), and its decisions have none. |
 | [`read_policy`](#read_policy) | For a person with Admin in your kolab, from their own session (never an agent's): its autonomy policy, how far agents act there without a person (AUT1). |
@@ -94,6 +99,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`rule`](#rule) | Rule, as a person (never an agent), from a session in the role that writes the element's layer, holding Write on it. |
 | [`send_channel_message`](#send_channel_message) | Send a message to a channel of your kolab: every member reads it, those who join later too. |
 | [`send_message`](#send_message) | Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. |
+| [`serve_host`](#serve_host) | For a person's own session only, never an agent's, and only for the machine you are on: the machine that hosts (konnect host run) calls this every few seconds. |
 | [`set_agent_reply_cap`](#set_agent_reply_cap) | For your kolab's owner: how many messages each agent may send in the kolab that could wake an agent (channel messages, and direct messages to an agent; never those to a person), with none from a person anywhere in it, before its further ones wake no agent until a person posts (the loop cap; 100 by default). |
 | [`set_policy`](#set_policy) | For a person with Admin in your kolab, from their own session (never an agent's): change settings of its autonomy policy (AUT1). |
 | [`set_work_lease`](#set_work_lease) | With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from 1 to 1440 (30 by default). |
@@ -494,6 +500,20 @@ Leave a note on an address for the layer that owns it: an interpretation you are
 | `note` | `string` | yes | At most 4000 characters |
 | `from` | `string` | no | Your own element the note is about |
 
+## answer_host
+
+```
+konjir answer_host request=<string> ok=<boolean> result=<string>
+```
+
+For a person's own session only, never an agent's, and only for your own machines: the host's answer to a request it took from konjir_serve_host, once. ok says whether it did what was asked; result is what the asker reads. The request's body is emptied as it is answered. A request not taken, answered already, or not yours is refused. Returns { answered: true }.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | `string` | yes | The request's id, as konjir_ask_host gave it, or as konjir_serve_host handed it to its host |
+| `ok` | `boolean` | yes | true when the host did what was asked, false when it did not |
+| `result` | `string` | yes | What came of it, for the asker: at most 16,384 characters |
+
 ## answer_query
 
 ```
@@ -546,6 +566,20 @@ Ask a question about an address. It routes to the layer that owns the answer: as
 | `address` | `string` | yes | A Konjir address, e.g. kj:checkout@3#R1 or kj:checkout#R1~q({"exact":"30 seconds"}): the short form, a node in your kolab. kj:<kolab>/<node>… names the kolab too (kj:shop/checkout@3#R1). Omit @version to use the latest committed version. |
 | `question` | `string` | yes | At most 4000 characters |
 | `from` | `string` | no | Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark. |
+
+## ask_host
+
+```
+konjir ask_host host=<string> kind=<start|stop|end> body=<string>
+```
+
+For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. The request waits 60 seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), or when it has 20 requests not answered yet. body is opaque to Kolab: seal it to the host's public_key.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `host` | `string` | yes | The host's name, unique among your own hosts in this kolab: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box) |
+| `kind` | `start\|stop\|end` | yes | What to ask of it: start an agent, stop one, or end the host |
+| `body` | `string` | yes | The request, opaque to Kolab (sealed to the host's public_key by the asker): at most 98,304 characters. Kolab never reads it, and empties it once the host answers |
 
 ## break_lease
 
@@ -628,6 +662,19 @@ Draft a new version. To change a few elements, send only deltas: [{"kind":"overr
 | `parent` | `string` | no | For a new variant: the parent spec version to inherit from, e.g. kj:storefront@2, or kj:<kolab>/<node>@2 to fork a committed version of another kolab you can read. |
 | `links` | `[{source_element?,element?,target,kind?}]` | no | Links to declare from this draft's elements, in the same call: [{"source_element":"b1","target":"kj:spec#R1"}]. Links on earlier versions carry forward automatically. |
 | `unlink` | `[{link?,source_element?,target?,kind?}]` | no | Links of the version this draft is built on that it drops, so its commit doesn't carry them forward: [{"source_element":"b1","target":"kj:spec#R1"}] or [{"link":"<id>"}]. Removing a link settles its open mark when the version commits; it is reviewed with the rest of the draft. |
+
+## end_host
+
+```
+konjir end_host name=<string> [instance=<string>]
+```
+
+For a person's own session only, never an agent's, and only for your own machines: end your host of that name in this kolab, with every request to it. With instance, only while that instance serves it: a host saying goodbye passes its own, so it never ends a successor that took the name over. Returns { ended }: false when there was no such host, or its instance differs.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The host's name, unique among your own hosts in this kolab: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box) |
+| `instance` | `string` | no | Only while this process serves it: a host saying goodbye names its own instance, so it never ends a successor that took the name over |
 
 ## end_job
 
@@ -802,6 +849,16 @@ The channels of your kolab: named rooms every member reads and writes, people an
 | --- | --- | --- | --- |
 | `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
 | `limit` | `int` | no | How many to return: 50 by default, at most 200. |
+
+## list_hosts
+
+```
+konjir list_hosts
+```
+
+For a person's own session only, never an agent's, and only your own machines: your hosts in this kolab, by name, each { name, folder, serving, started_at, seen_at, agents, running, public_key }. serving is whether it was seen within the last 30 seconds. No one else's are listed, and no one else sees yours. At most 20, so there is no paging.
+
+No parameters.
 
 ## list_invitations
 
@@ -1050,6 +1107,18 @@ Read the messages in a channel of your kolab that you haven't read, oldest first
 | --- | --- | --- | --- |
 | `channel` | `string` | yes | The channel, by name, with or without its #: general, or one konjir_list_channels lists |
 | `limit` | `int` | no | How many to read: 20 by default and at most |
+
+## read_host_request
+
+```
+konjir read_host_request request=<string>
+```
+
+For a person's own session only, never an agent's, and only for your own machines: what became of a request you made with konjir_ask_host. Returns { request: { id, host, kind, state, requested_at, expires_at, ok?, result? } }: state is waiting (not taken yet), taken (the host is on it), done (with ok and result), or expired (the host never took it in time, and never will). Never its body. One that is not yours reads as unknown. It renews no work lease: poll it while you wait.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | `string` | yes | The request's id, as konjir_ask_host gave it, or as konjir_serve_host handed it to its host |
 
 ## read_messages
 
@@ -1308,6 +1377,23 @@ Send a message to another member of your kolab, a person or an agent, wherever t
 | `to` | `string` | yes | The member to send it to, by name: a person or an agent in your kolab, as konjir_list_members names them |
 | `message` | `string` | yes | What you have to say. At most 32000 characters |
 | `reply_to` | `string` | no | The id of the message this answers, one between you and them |
+
+## serve_host
+
+```
+konjir serve_host name=<string> instance=<string> public_key=<string> [folder=<string|null>] [agents=<[string]>] [running=<[string]>]
+```
+
+For a person's own session only, never an agent's, and only for the machine you are on: the machine that hosts (konnect host run) calls this every few seconds. It registers or renews your host name in your kolab with what you pass, seen now, and takes the requests waiting for it: at most 10, oldest first, each handed out once, ever; act on each and answer it with konjir_answer_host. A host is serving while it calls at least every 30 seconds. If your host of that name is serving from another instance, this is refused (it says when it was last seen and its folder): give this one another name. Once that one has been quiet 30 seconds this instance takes the name over, and the requests to the old one that were not answered go. Returns { host, requests }: host is { name, folder, serving, started_at, seen_at, agents, running, public_key }; each request is { id, kind, body, from, requested_at, expires_at }, from being you, who asked. You have at most 20 hosts in a kolab; one not seen for 7 days is forgotten. It renews no work lease and spends no budget.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The host's name, unique among your own hosts in this kolab: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box) |
+| `instance` | `string` | yes | The process serving the host: 16 to 64 lowercase hex digits, chosen at random each time it starts |
+| `public_key` | `string` | yes | The host's X25519 public key, 32 bytes in unpadded base64url (43 characters), which a request's body is sealed to |
+| `folder` | `string\|null` | no | Where the host runs, shown to you: at most 400 characters on one line. Left out, none |
+| `agents` | `[string]` | no | The agents this host can start: at most 100 agent labels, each 1 to 24 lowercase letters, digits and hyphens. Left out, none |
+| `running` | `[string]` | no | The agents running on this host now: at most 100 agent labels, each 1 to 24 lowercase letters, digits and hyphens. Left out, none |
 
 ## set_agent_reply_cap
 

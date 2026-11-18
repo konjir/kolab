@@ -172,6 +172,12 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   claimLease: { recorded: ['kolab_lease.holder'] },
   releaseLease: { recorded: ['kolab_lease.ended_by'] },
   breakLease: { recorded: ['kolab_lease.ended_by'] },
+  // Hosts (migration 0055): a host and a request name their owner, the person whose session made
+  // them; an answer names who answered; ending a host leaves no row, so it is audited.
+  serveHost: { recorded: ['kolab_host.owner'] },
+  askHost: { recorded: ['kolab_host_request.owner'] },
+  answerHost: { recorded: ['kolab_host_request.answered_by'] },
+  endHost: { recorded: ['audit_event:host.ended'] },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
   addPosition: { recorded: ['position.actor_id'] },
   rule: { recorded: ['ruling.actor_id'] },
