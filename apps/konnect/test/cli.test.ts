@@ -18,7 +18,10 @@ test('options may go anywhere, and -- ends them; after `send <to>` every word is
   expect(parseArgs(['send', '--json', '@ann', 'hi'])).toStrictEqual({ ...none, json: true, words: ['send', '@ann', 'hi'] });
   // After the recipient, nothing is an option: not --json, not --team, not -n.
   expect(parseArgs(['send', '@ann', 'use', '--json', 'here'])).toStrictEqual({ ...none, words: ['send', '@ann', 'use', '--json', 'here'] });
-  expect(parseArgs(['send', '@ann', '--json', 'hi'])).toStrictEqual({ ...none, words: ['send', '@ann', '--json', 'hi'] });
+  // An option of konnect's as the first word after the recipient is a slip, never sent as words or as the wrong person (2); -- says it is meant.
+  expect(() => parseArgs(['send', '@ann', '--json', 'hi'])).toThrow('konnect send: --json is an option of konnect\'s, and options go before <to>. To send it as words: konnect send @ann -- --json ...');
+  for (const o of ['--help', '-h', '--agent', '--team', '-n']) expect(() => parseArgs(['send', '#general', o, 'x'])).toThrow(UsageError);
+  expect(parseArgs(['send', '@ann', '-x', '--', 'hi'])).toStrictEqual({ ...none, words: ['send', '@ann', '-x', '--', 'hi'] });
   expect(parseArgs(['send', '#general', 'try', '--team', 'x', '-n', '3'])).toStrictEqual({ ...none, words: ['send', '#general', 'try', '--team', 'x', '-n', '3'] });
   expect(parseArgs(['send', '@ann', '--', '--json'])).toStrictEqual({ ...none, words: ['send', '@ann', '--json'] });
   expect(parseArgs(['receive', '--', '--json'])).toStrictEqual({ ...none, words: ['receive', '--json'] });
@@ -29,8 +32,8 @@ test('after `agent run <name>` every word is the harness and its own arguments, 
   expect(parseArgs(['agent', 'run', 'helper', 'claude', '--model', 'opus', '--team', 'x', '-h'])).toStrictEqual({ ...none, words: ['agent', 'run', 'helper', 'claude', '--model', 'opus', '--team', 'x', '-h'] });
   expect(parseArgs(['--team', 'hub', 'agent', 'run', '--act-for', 'me', '--wake-on', '#general', '--wake-on', 'deploys', '--system-prompt', '--be brief', 'helper', 'codex', '-p', 'hi']))
     .toStrictEqual({ ...none, team: 'hub', actFor: 'me', wakeOn: ['#general', 'deploys'], systemPrompt: '--be brief', words: ['agent', 'run', 'helper', 'codex', '-p', 'hi'] });
-  // An option after the name is the harness's, so it is no harness konnect starts.
-  expect(parseArgs(['agent', 'run', 'helper', '--wake-on', '#x', 'claude']).words).toStrictEqual(['agent', 'run', 'helper', '--wake-on', '#x', 'claude']);
+  // An option of konnect's right after the name is a slip: it goes before the name (2).
+  expect(() => parseArgs(['agent', 'run', 'helper', '--wake-on', '#x', 'claude'])).toThrow('konnect agent run: --wake-on is an option of konnect\'s, and options go before <name>: konnect agent run --wake-on ... helper <harness>');
   // agent add takes options anywhere: nothing follows its name.
   expect(parseArgs(['agent', 'add', 'helper', '--act-for', 'team'])).toStrictEqual({ ...none, actFor: 'team', words: ['agent', 'add', 'helper'] });
 });

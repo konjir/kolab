@@ -58,7 +58,8 @@ function fromOld(a: Args, say: (old: string, now: string) => void, resolveTeam: 
       if (a.withdraw !== undefined) return renamed(['team', 'remove', a.withdraw], 'team remove');
       return renamed(['team', 'invite', ...rest], 'team invite');
     case 'remove': return renamed(['team', 'remove', ...rest], 'team remove');
-    case 'leave': return renamed(['team', 'leave', ...(rest.length ? rest : [resolveTeam()])], 'team leave <team>');
+    // Leaving can't be undone, so the team is named now, never taken from where the command stands.
+    case 'leave': throw new UsageError(`konnect leave is now konnect team leave <team>: name the team to leave, such as konnect team leave ${(() => { try { return resolveTeam(); } catch { return '<team>'; } })()}`);
     case 'claude': case 'codex': case 'opencode': {
       const [name, ...extra] = rest;
       if (name === undefined) throw new UsageError(`konnect ${cmd} is now konnect agent run <name> ${cmd}: name the agent`);

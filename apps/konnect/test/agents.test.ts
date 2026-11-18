@@ -131,7 +131,7 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   expect(await fails(ann.run(['agent', 'run'], { self, start }))).toBe('konnect agent run <name> <harness> [<argument>...]: name the agent, then claude, codex or opencode');
   expect(await fails(ann.run(['agent', 'run', 'Bad Name', 'claude'], { self, start }))).toMatch(/^Bad Name isn't an agent's name: /);
   // An option after the name is the harness's: it is no harness.
-  expect(await fails(ann.run(['agent', 'run', 'helper', '--wake-on', '#x', 'claude'], { self, start }))).toMatch(/^konnect agent run starts claude, codex or opencode, and --wake-on is none of them/);
+  expect(await fails(ann.run(['agent', 'run', 'helper', '--wake-on', '#x', 'claude'], { self, start }))).toMatch(/^konnect agent run: --wake-on is an option of konnect's, and options go before <name>/);
   expect(await fails(ann.run(['agent', 'run', '--wake-on', 'Bad!', 'newer', 'claude'], { open: () => { throw new Error('no browser'); }, self, start }))).toBe('--wake-on names a channel (Bad! isn\'t one)');
   expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'newer.json'))).toBe(false);
   expect(started).toHaveLength(before);
@@ -201,7 +201,11 @@ test('konnect agent add prints the entry and starts nothing; agent list says whi
   // agent remove: someone else's agent is refused (4); your own is removed, and its login here dropped.
   expect(await exitOf(bo.run(['agent', 'remove', 'helper']))).toBe(4);
   expect(await fails(ann.run(['agent', 'remove', 'helper', 'x']))).toBe('konnect agent remove <name>: unknown x');
-  expect(await ann.run(['agent', 'remove', 'helper'])).toMatch(/^Removed your agent helper from team hub: \d+ sessions? ended\.$/);
+  // Named as someone else's, it is refused (4), never taken for your own of that name.
+  expect(await fails(ann.run(['agent', 'remove', '@bo/helper']))).toBe('@bo/helper is bo\'s agent, not yours: only its owner can add, run or remove it');
+  expect(await exitOf(ann.run(['agent', 'remove', 'bo/helper']))).toBe(4);
+  expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'helper.json'))).toBe(true);
+  expect(await ann.run(['agent', 'remove', '@ann/helper'])).toMatch(/^Removed your agent helper from team hub: \d+ sessions? ended\.$/);
   expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'helper.json'))).toBe(false);
   expect(await ann.run(['agent', 'list'])).not.toMatch(/^helper\b/m);
   expect(await exitOf(ann.run(['agent', 'remove', 'helper']))).toBe(4);

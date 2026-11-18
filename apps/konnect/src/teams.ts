@@ -9,7 +9,7 @@
  *
  * konnect keeps no file in the folder it is run in.
  */
-import { chmodSync, lstatSync, mkdirSync, readdirSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { checkKolabUrl, keptSignIns, safeUrl } from '@konjir/login';
@@ -88,6 +88,15 @@ export function agentFile(team: string, label: string, env: Record<string, strin
 /** The agent's file, its folders made ready as a team's are (teamFileReady). */
 export function agentFileReady(team: string, label: string, env: Record<string, string | undefined> = process.env): string {
   return fileReady(agentFile(team, label, env), env);
+}
+
+/** Removes a login file that holds no login any more (its last one was dropped), and its folder if that leaves it empty. */
+export function dropIfEmpty(file: string) {
+  try {
+    if (keptSignIns(file).length) return;
+    rmSync(file, { force: true });
+    rmdirSync(dirname(file));
+  } catch { /* still holds one, or the folder does */ }
 }
 
 /** The teams konnect keeps a sign-in for at `url`, by name. */
