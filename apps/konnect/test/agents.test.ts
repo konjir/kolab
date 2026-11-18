@@ -176,7 +176,7 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   // Given nothing of the person's own, Codex starts with a first turn that receives what waits: which is also how its session gets a name to wake.
   await ann.run(['agent', 'run', 'coder', 'codex'], { self, start });
   expect(ann.err.join('\n')).toContain('Codex starts with a first turn that receives what waits. From then on messages wake it (Codex 0.149 or later; an earlier one receives at the start of each turn).');
-  expect(started[1].args).toStrictEqual([...overrides, 'Receive your konnect messages now with konnect_receive, and answer any that are for you. Then wait.']);
+  expect(started[1].args).toStrictEqual([...overrides, 'Receive your konnect messages now with konnect_receive, and answer any that are for you. Then end your turn: a new one starts by itself when a message arrives for you.']);
   started.splice(1, 1);
   // OpenCode is woken by the konnect that started it: it is started on a port of its own, and konnect
   // stays beside it as the agent, submitting the notice of new messages as a prompt, until it ends.
