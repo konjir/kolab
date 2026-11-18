@@ -138,9 +138,14 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
    */
   let saying: ReturnType<typeof setInterval> | undefined;
   let says = true;
-  const say = async (state: AgentState | 'gone') => {
-    if (!says || !client) return;
-    await client.then((c) => c.sayState(state)).catch((e: unknown) => { if (e instanceof NotYet) says = false; });
+  // One at a time, each after the last: none is ever on its way when the session is closed under it.
+  let said: Promise<void> = Promise.resolve();
+  const say = (state: AgentState | 'gone'): Promise<void> => {
+    said = said.then(async () => {
+      if (!says || !client) return;
+      await client.then((c) => c.sayState(state)).catch((e: unknown) => { if (e instanceof NotYet) says = false; });
+    });
+    return said;
   };
   const startSaying = () => {
     if (saying) return;
@@ -385,8 +390,12 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
   await server.connect(transport);
   const close = async () => {
     clearInterval(saying);
-    // Said as it ends, so the lists don't show it for another minute and a half.
-    await say('gone');
+    // Said as it ends, so the lists don't show it for another minute and a half; but a service that
+    // doesn't answer mustn't keep the server from closing.
+    let gave: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([say('gone'), new Promise<void>((r) => { gave = setTimeout(r, 3_000); gave.unref?.(); })]);
+    clearTimeout(gave);
+    says = false;
     const c = client;
     client = undefined;
     await bridge?.stop().catch(() => undefined);
