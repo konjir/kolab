@@ -17,12 +17,12 @@ import { DID_OUTCOMES, jobKinds, jobMachine, jobOutcome, poolLabel, type JobDid 
 import { parseImportFile, type ImportFile, type ImportOutcome, type ImportReport, type ImportRuling, type ImportStep } from './import.js';
 import { fillPlaybook, jobInstructions, oneLineId, quoteText, SPLIT_STEP, UnsafeSpecificError, type BriefOf } from './playbooks.js';
 import {
-  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
+  ACCESS_LEVELS, ADMIN_DOER, FINDING_KINDS, MAX_CITES, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, CHANNEL_NAME, GENERAL_CHANNEL, MAX_MENTIONS, DEFAULT_AGENT_REPLY_CAP, MAX_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, LEASE_NAME, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, RATE_WINDOW_MS, MAX_ELEMENT_TEXT, MAX_EVIDENCE, MAX_EVIDENCE_TEXT, MAX_FINDINGS, MAX_KOLAB_TITLE, MAX_NAME, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_TITLE, INVITE_LEVELS, isInboxEvent, KINDS, KIND_WORDS, notAKind, variantKindAllowed, LAYERS, LAYER_OF_KIND, PARENT_KIND, LAYER_OF_ROLE, nobodyCanReview, ORG_ROLES, PLAN_RETIRED, POSITION_VERDICTS, ROLES, ROLE_OF_LAYER, RULING_EFFECTS, RULING_REF, textLength, VISIBILITIES,
   type OutboxKind, type OutboxState,
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Channel, type ChannelMessage, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Channel, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
@@ -3555,6 +3555,8 @@ export class Kolab {
     for (const a of agents) await audit(tx, by, 'grant.removed', { kolab, subject: a, detail: { owner: person } });
     const own = await tx.query(`delete from kolab_grant where kolab_id = $1 and user_id = $2 returning user_id`, [kolab, person]);
     if (own.rows.length) await audit(tx, by, 'grant.removed', { kolab, subject: person });
+    // Their leases there go, and their agents' (migration 0054): what they held is free now.
+    await tx.query(`delete from kolab_lease where kolab_id = $1 and (holder = $2 or holder in (select id from actor where owner_id = $2 and kind = 'agent'))`, [kolab, person]);
     // Every session of theirs and their agents' in the kolab ends now, even one a public kolab's Read
     // would keep open (endUnreachableIn ends only those left with nothing): they are no longer
     // members, and a fresh sign-in reads a public kolab as anyone may.
@@ -3651,6 +3653,8 @@ export class Kolab {
       const gone = await tx.query(`delete from kolab_grant where kolab_id = $1 and agent_id = $2 returning agent_id`, [s.kolab, agent]);
       if (!gone.rows.length) throw new TenancyError(`${agent} holds no grant in kolab ${s.kolab}, so nothing was removed`);
       await audit(tx, s.actor_id, 'grant.removed', { kolab: s.kolab, subject: agent, detail: { owner: s.actor_id } });
+      // Its leases there go (migration 0054): what it held is free now.
+      await tx.query(`delete from kolab_lease where kolab_id = $1 and holder = $2`, [s.kolab, agent]);
       // Its sign-ins to this kolab (a grant's scope names its kolab, grantedScope), revoked.
       revoked = (await tx.query(
         `update oauth_grant set revoked_at = now(), revoked_by = $3
@@ -10543,6 +10547,130 @@ export class Kolab {
     }, undefined, { access: true });
   }
 
+  // ---- leases in a kolab (migration 0054) ----------------------------------------
+
+  /** In `q`, the names of the kolab's members, refusing a session whose actor is none (a reader of a public kolab holds nothing). */
+  private async leaseMembers(q: Q, s: Session): Promise<string[]> {
+    const members = (await this.membersIn(q, s.kolab)).map((h) => h.id);
+    if (!members.includes(s.actor_id)) throw new AccessError(notInLeases(s));
+    return members;
+  }
+
+  /** In `q`, the live lease of the kolab named `name`: not ended, not expired, and held by one of `members`; or null. */
+  private async liveLease(q: Q, kolab: string, name: string, members: string[]): Promise<Lease | null> {
+    const r = (await q.query<LeaseRow>(
+      `select ${LEASE_COLUMNS} from kolab_lease l where l.kolab_id = $1 and l.name = $2 and ${LIVE_LEASE} and l.holder = any($3::text[])`,
+      [kolab, name, members])).rows[0];
+    return r ? leaseOf(r) : null;
+  }
+
+  /**
+   * The session's actor claims a lease on `name` in its kolab (konjir_claim_lease), for `seconds`
+   * (DEFAULT_LEASE_SECONDS when not given), with an optional note others see. Free, expired, ended
+   * or held by someone who is no longer a member: the caller holds it now. Already the caller's: it
+   * is renewed to run `seconds` from now, its note replaced when one is given. Someone else's: not an
+   * error, but `claimed: false` with their lease, so the caller can say who holds it and until when.
+   * Claims in a kolab take its lease lock, so of two claimants of one free name exactly one wins and
+   * the other sees the winner's lease, and MAX_LEASES_PER_MEMBER and MAX_LEASES hold. Each claim
+   * first deletes the kolab's leases that are free, so they never pile up.
+   */
+  async claimLease(sessionId: string, name: string, opts: { seconds?: number | null; note?: string | null } = {}): Promise<{ claimed: true; renewed: boolean; lease: Lease } | { claimed: false; lease: Lease }> {
+    checkLeaseName(name);
+    const seconds = opts.seconds ?? DEFAULT_LEASE_SECONDS;
+    if (!Number.isInteger(seconds) || seconds < MIN_LEASE_SECONDS || seconds > MAX_LEASE_SECONDS) {
+      throw new LimitError(`seconds is how long the lease is held: a whole number from ${MIN_LEASE_SECONDS} to ${MAX_LEASE_SECONDS} (${MAX_LEASE_SECONDS / 3600} hours); ${DEFAULT_LEASE_SECONDS} when left out`);
+    }
+    const note = opts.note === undefined || opts.note === null || opts.note === '' ? null : opts.note;
+    if (note !== null && (typeof note !== 'string' || !note.trim() || note.length > MAX_LEASE_NOTE)) {
+      throw new LimitError(`a lease's note is at most ${MAX_LEASE_NOTE} characters, saying what you are doing with it`);
+    }
+    const s = await this.session(sessionId);
+    return this.inTransaction(async (tx) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+      const members = await this.leaseMembers(tx, s);
+      await tx.query(`select pg_advisory_xact_lock(hashtext('kolab_lease'), hashtext($1))`, [s.kolab]);
+      await tx.exec('set local role kj_system');
+      // What is free goes: ended, expired, or its holder no longer a member.
+      await tx.query(`delete from kolab_lease l where l.kolab_id = $1 and not (${LIVE_LEASE} and l.holder = any($2::text[]))`, [s.kolab, members]);
+      const held = await this.liveLease(tx, s.kolab, name, members);
+      if (held && held.holder !== s.actor_id) return { claimed: false as const, lease: held };
+      if (held) {
+        const r = (await tx.query<LeaseRow>(
+          `update kolab_lease l set expires_at = clock_timestamp() + make_interval(secs => $3), note = coalesce($4::text, l.note)
+            where l.kolab_id = $1 and l.name = $2 returning ${LEASE_COLUMNS}`, [s.kolab, name, seconds, note])).rows[0];
+        return { claimed: true as const, renewed: true, lease: leaseOf(r) };
+      }
+      const counts = (await tx.query<{ mine: number; everyone: number }>(
+        `select count(*) filter (where l.holder = $2)::int as mine, count(*)::int as everyone from kolab_lease l where l.kolab_id = $1`, [s.kolab, s.actor_id])).rows[0];
+      if (counts.mine >= MAX_LEASES_PER_MEMBER) {
+        throw new LimitError(`you hold ${counts.mine} leases in kolab ${s.kolab}, the most a member holds at once (${MAX_LEASES_PER_MEMBER}): release one with konjir_release_lease first`);
+      }
+      if (counts.everyone >= MAX_LEASES) {
+        throw new LimitError(`kolab ${s.kolab} holds ${counts.everyone} leases, the most a kolab holds at once (${MAX_LEASES}): wait for one to be released or expire (konjir_list_leases)`);
+      }
+      const r = (await tx.query<LeaseRow>(
+        `insert into kolab_lease(kolab_id, name, holder, note, expires_at) values ($1, $2, $3, $4, clock_timestamp() + make_interval(secs => $5))
+         on conflict (kolab_id, name) do nothing returning name, holder, claimed_at, expires_at, note`, [s.kolab, name, s.actor_id, note, seconds])).rows[0];
+      if (r) return { claimed: true as const, renewed: false, lease: leaseOf(r) };
+      // Taken meanwhile, which the lease lock should never let happen: the caller sees whose it is.
+      const now = await this.liveLease(tx, s.kolab, name, members);
+      if (!now) throw new TenancyError(`lease ${name} in kolab ${s.kolab} changed as you claimed it: claim it again`);
+      return { claimed: false as const, lease: now };
+    }, undefined, { access: true });
+  }
+
+  /**
+   * The holder of a lease in the session's kolab gives it up (konjir_release_lease), so it is free
+   * now. One that isn't held (or has expired) is `released: false`; one someone else holds is refused,
+   * naming them.
+   */
+  async releaseLease(sessionId: string, name: string): Promise<{ released: boolean; name: string }> {
+    checkLeaseName(name);
+    const s = await this.session(sessionId);
+    return this.inTransaction(async (tx) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+      const members = await this.leaseMembers(tx, s);
+      await tx.exec('set local role kj_system');
+      const held = await this.liveLease(tx, s.kolab, name, members);
+      if (!held) return { released: false, name };
+      if (held.holder !== s.actor_id) {
+        throw new AccessError(`lease ${name} in kolab ${s.kolab} is held by ${held.holder} until ${held.expires_at}, not by you: only its holder releases it, and a person who is a member may break it (konjir_break_lease)`);
+      }
+      await tx.query(`update kolab_lease set ended_at = clock_timestamp(), ended_by = $3 where kolab_id = $1 and name = $2`, [s.kolab, name, s.actor_id]);
+      return { released: true, name };
+    }, undefined, { access: true });
+  }
+
+  /**
+   * A person who is a member of the session's kolab ends anyone's lease there (konjir_break_lease):
+   * for a lease whose holder has gone quiet. Never an agent's session. Returns the lease as it was,
+   * or `broken: false` when nothing was held.
+   */
+  async breakLease(sessionId: string, name: string): Promise<{ broken: true; lease: Lease } | { broken: false; name: string }> {
+    checkLeaseName(name);
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person breaks a lease, from their own session; ask the holder to release it, or your person to break it`);
+    return this.inTransaction(async (tx) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+      const members = await this.leaseMembers(tx, s);
+      await tx.exec('set local role kj_system');
+      const held = await this.liveLease(tx, s.kolab, name, members);
+      if (!held) return { broken: false as const, name };
+      await tx.query(`update kolab_lease set ended_at = clock_timestamp(), ended_by = $3 where kolab_id = $1 and name = $2`, [s.kolab, name, s.actor_id]);
+      return { broken: true as const, lease: held };
+    }, undefined, { access: true });
+  }
+
+  /** Every live lease in the session's kolab, soonest to expire first (konjir_list_leases): at most MAX_LEASES, so never paged. For members only. */
+  async listLeases(sessionId: string): Promise<{ leases: Lease[] }> {
+    const s = await this.session(sessionId);
+    const members = await this.leaseMembers(this.db, s);
+    const rows = (await this.db.query<LeaseRow>(
+      `select ${LEASE_COLUMNS} from kolab_lease l where l.kolab_id = $1 and ${LIVE_LEASE} and l.holder = any($2::text[])
+        order by l.expires_at, l.name limit $3`, [s.kolab, members, MAX_LEASES])).rows;
+    return { leases: rows.map(leaseOf) };
+  }
+
   // ---- work: evidence, submitting, reviewing and reopening (W5.1c; PLN10, PLN16, PLN18, VER17, D98) ----
 
   /**
@@ -14718,6 +14846,19 @@ const isArchivedRefusal = (e: unknown, kolab: string) =>
   (e as { code?: string }).code === '23514' && String((e as Error).message ?? '').startsWith(`kolab ${kolab} is archived:`);
 /** Why a session that only reads a public kolab has no channels there. */
 const notInChannels = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: its channels are for those who hold access there, and reading a public kolab gives none`;
+/** Why a session that only reads a public kolab lists and claims no leases there. */
+const notInLeases = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: its leases are for those who hold access there, and reading a public kolab gives none`;
+/** A lease's name, or refused: LEASE_NAME's, compared exactly as given. */
+function checkLeaseName(name: unknown): asserts name is string {
+  if (typeof name !== 'string' || !LEASE_NAME.test(name)) {
+    throw new LimitError(`${JSON.stringify(typeof name === 'string' ? name.slice(0, 60) : name ?? null)} is no lease name: a lease is named with 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts)`);
+  }
+}
+/** A lease row (kolab_lease, aliased l) is live while it hasn't ended or expired; its holder is checked to be a member besides. */
+const LIVE_LEASE = `l.ended_at is null and l.expires_at > clock_timestamp()`;
+const LEASE_COLUMNS = `l.name, l.holder, l.claimed_at, l.expires_at, l.note`;
+type LeaseRow = { name: string; holder: string; claimed_at: Date | string; expires_at: Date | string; note: string | null };
+const leaseOf = (r: LeaseRow): Lease => ({ name: r.name, holder: r.holder, claimed_at: iso(r.claimed_at)!, expires_at: iso(r.expires_at)!, note: r.note });
 /** Why a session that only reads a public kolab sends and reads no messages there. */
 const notAMember = (s: Session) => `${s.actor_id} is not a member of kolab ${s.kolab}: messages go between those who hold access there, and reading a public kolab gives none`;
 

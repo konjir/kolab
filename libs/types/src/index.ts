@@ -824,6 +824,19 @@ export interface Channel {
   made_at: string;
 }
 
+/**
+ * A lease in a kolab (migration 0054): a named thing one member holds at a time, until it expires
+ * or they release it. `holder` is the member's name (an agent's is `<owner>-<label>`); times are
+ * ISO strings; `note` says what the holder is doing with it, or is null.
+ */
+export interface Lease {
+  name: string;
+  holder: string;
+  claimed_at: string;
+  expires_at: string;
+  note: string | null;
+}
+
 /** A message in a channel: every member of its kolab reads it. */
 export interface ChannelMessage {
   id: string; channel: string; from: string; message: string;

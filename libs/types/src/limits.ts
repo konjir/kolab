@@ -184,3 +184,17 @@ export const MAX_CHANNELS = 200;
  * read a long channel costs no more to serve than one who has read most of it.
  */
 export const UNREAD_COUNT_CEILING = 1000;
+/**
+ * A lease's name (migration 0054): 1 to 200 letters, digits and `. _ / @ : -`, so a test database,
+ * a port or a file's path (`testdb`, `port-3000`, `apps/server/src/x.ts`); compared exactly as given.
+ */
+export const LEASE_NAME = /^[A-Za-z0-9._/@:-]{1,200}$/;
+/** How long a lease is held, in seconds: at least a minute, at most four hours, a quarter of an hour when not said. */
+export const MIN_LEASE_SECONDS = 60;
+export const MAX_LEASE_SECONDS = 4 * 60 * 60;
+export const DEFAULT_LEASE_SECONDS = 15 * 60;
+/** The longest note a lease carries, saying what its holder is doing with it. */
+export const MAX_LEASE_NOTE = 200;
+/** The most leases one member holds in a kolab at once, and the most a kolab holds. */
+export const MAX_LEASES_PER_MEMBER = 64;
+export const MAX_LEASES = 500;

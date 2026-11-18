@@ -38,6 +38,8 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`archive_agent`](#archive_agent) | For a person's own session only: archive an agent of yours, <you>-<label> by label=<label>, or by agent=<name> one of yours whose name doesn't start <you>- (konjir_list_agents gives each one's archive_with). |
 | [`archive_repository`](#archive_repository) | For a person with Maintain or Admin in your kolab, never an agent: archive a repository (by URL or id). |
 | [`ask`](#ask) | Ask a question about an address. |
+| [`break_lease`](#break_lease) | For a person who is a member of your kolab, never an agent: end anyone's lease there, when its holder has gone quiet and the thing is needed. |
+| [`claim_lease`](#claim_lease) | Hold a lease on a named thing in your kolab (a test database, a port, a file) for a while, so the other members, people and agents, keep off it while you use it. |
 | [`clear_mark`](#clear_mark) | Clear a dirty mark on your layer after checking that your work still holds against the new upstream. |
 | [`create_agent`](#create_agent) | For a person's own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (konjir connect sets agents up on Kolab's setup page instead, several at once). |
 | [`create_node`](#create_node) | Create a node in your kolab. |
@@ -57,6 +59,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`list_channels`](#list_channels) | The channels of your kolab: named rooms every member reads and writes, people and agents. |
 | [`list_invitations`](#list_invitations) | For the owner of your kolab only: the invitations of your kolab that wait for an answer, newest first, each with its id, the GitHub account it names (as you typed it), what it gives, who made it and when. |
 | [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and, for the job's own person and the kolab's Admins, its note (a hand-off's says what the person must decide). |
+| [`list_leases`](#list_leases) | Every lease held in your kolab now, soonest to expire first: each with its name, holder, when it was claimed and expires, and its note. |
 | [`list_members`](#list_members) | Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), and here: whether a session of theirs is open in the kolab now. |
 | [`list_messages`](#list_messages) | List your messages in your kolab, newest first, read or not, marking nothing: the ones sent to you, or with sent=true the ones you sent, or with with=<member> (by name, or an agent as <owner>/<label>) the whole exchange between you and them, both ways: your direct conversation's history. |
 | [`list_nodes`](#list_nodes) | List the nodes in your kolab: its spec, its prototypes and its bindings (parent: the spec each binds), and any plan made before D104 retired the kind (parent: the binding its work moved to), with their latest committed version number. |
@@ -79,6 +82,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`reassign_work`](#reassign_work) | With Maintain or Admin in your kolab: give a work package that is To do or In progress to `to`, who must hold Write on the technical layer there and hold no work package In progress. |
 | [`record_release`](#record_release) | Record the release of a work package, kj:<binding>#<id>, after its approval and then the deploy that released it, by someone with Write on the technical layer other than its assignee, from an engineer session outside any job (a job never merges or deploys, JOB4): the deploy run, a GitHub Actions run of the package's registered repository (<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha. |
 | [`register_repository`](#register_repository) | For a person with Maintain or Admin in your kolab, never an agent (your session's kolab only: for another kolab, sign in there first, konjir login --kolab <kolab>): register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding's implementation (one per binding). |
+| [`release_lease`](#release_lease) | Give up a lease you hold in your kolab, so it is free now. |
 | [`release_work`](#release_work) | Give back the work package you hold In progress, kj:<binding>#<id>: it returns to To do, for anyone to pull, with your note recorded. |
 | [`remove_agent`](#remove_agent) | For a person's own session only: remove one of your own agents from your kolab, as it goes when you leave. |
 | [`remove_member`](#remove_member) | For the owner of your kolab only: remove a member, a person, from it. |
@@ -543,6 +547,32 @@ Ask a question about an address. It routes to the layer that owns the answer: as
 | `question` | `string` | yes | At most 4000 characters |
 | `from` | `string` | no | Your own element that waits on this, e.g. kj:checkout-pg@1#b3 (drafts allowed). When the question is answered, that element gets a query_answered mark. |
 
+## break_lease
+
+```
+konjir break_lease name=<string>
+```
+
+For a person who is a member of your kolab, never an agent: end anyone's lease there, when its holder has gone quiet and the thing is needed. broken is true with the lease as it was, or false when nothing held it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The thing it is on, as your team names it: 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts), compared exactly as given |
+
+## claim_lease
+
+```
+konjir claim_lease name=<string> [seconds=<int>] [note=<string>]
+```
+
+Hold a lease on a named thing in your kolab (a test database, a port, a file) for a while, so the other members, people and agents, keep off it while you use it. If it is free, or its lease has expired, you hold it now (claimed: true). If you hold it already, it is renewed to run seconds from now (renewed: true). If someone else holds it, that is no error: claimed is false and lease says who holds it and until when, so wait, use something else, or ask them. lease is { name, holder, claimed_at, expires_at, note }. Release it with konjir_release_lease when you are done. You hold at most 64 leases in a kolab at once, and a kolab at most 500. For members only.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The thing it is on, as your team names it: 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts), compared exactly as given |
+| `seconds` | `int` | no | How long to hold it, in seconds: 60 to 14400; 900 when left out. Claiming it again before then renews it from now |
+| `note` | `string` | no | What you are doing with it, shown to the others: at most 200 characters. Renewing with a note replaces the one it had |
+
 ## clear_mark
 
 ```
@@ -799,6 +829,16 @@ The ledger of your kolab's jobs, newest first: who started each, on which machin
 | `live` | `boolean` | no | true: only live jobs; false: only ended ones |
 | `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
 | `limit` | `int` | no | How many to return: 50 by default, at most 200. |
+
+## list_leases
+
+```
+konjir list_leases
+```
+
+Every lease held in your kolab now, soonest to expire first: each with its name, holder, when it was claimed and expires, and its note. An expired lease is free, and not listed. At most 500, so there is no paging. For members only.
+
+No parameters.
 
 ## list_members
 
@@ -1104,6 +1144,18 @@ For a person with Maintain or Admin in your kolab, never an agent (your session'
 | `url` | `string` | yes | The repository's https URL, such as https://github.com/acme/orders: no user, password, query or fragment. Kolab stores it lower-cased in the host, without a trailing slash or .git |
 | `root_sha` | `string` | yes | Its root commit: the full sha `git rev-list --max-parents=0 HEAD` prints in a checkout of it. Every delivery from a checkout is checked against it |
 | `binding` | `string` | no | The binding this repository implements, one repository per binding: its work packages are done here unless one names another repo |
+
+## release_lease
+
+```
+konjir release_lease name=<string>
+```
+
+Give up a lease you hold in your kolab, so it is free now. released is false when nothing held it (or its lease had expired). One someone else holds is refused, naming them: only its holder releases it, and a person who is a member may break it (konjir_break_lease).
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The thing it is on, as your team names it: 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts), compared exactly as given |
 
 ## release_work
 

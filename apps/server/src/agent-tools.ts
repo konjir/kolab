@@ -5,7 +5,7 @@ import { args } from './args.js';
 import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
@@ -135,6 +135,14 @@ const sendChannelMessage = args({
 const readChannel = args({ channel, limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`) });
 const listChannelMessages = args({ channel, ...paging });
 const setAgentReplyCap = args({ agent_reply_cap: z.number().int().describe(`How many messages one agent may send in your kolab that could wake an agent (channel messages, and direct messages to an agent), with none from a person anywhere in it, before its further ones wake no agent: 1 to ${MAX_AGENT_REPLY_CAP}; ${DEFAULT_AGENT_REPLY_CAP} by default`) });
+const leaseName = z.string().describe('The thing it is on, as your team names it: 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts), compared exactly as given');
+const claimLease = args({
+  name: leaseName,
+  seconds: z.number().int().optional().describe(`How long to hold it, in seconds: ${MIN_LEASE_SECONDS} to ${MAX_LEASE_SECONDS}; ${DEFAULT_LEASE_SECONDS} when left out. Claiming it again before then renews it from now`),
+  note: z.string().optional().describe(`What you are doing with it, shown to the others: at most ${MAX_LEASE_NOTE} characters. Renewing with a note replaces the one it had`),
+});
+const leaseNamed = args({ name: leaseName });
+const listLeases = args({});
 const listMessages = args({
   sent: z.boolean().optional().describe('true: the messages you sent. Default: the ones sent to you. With with: true, only yours to them; false, only theirs to you'),
   with: z.string().optional().describe('Only the messages between you and this member, both ways: by name, or an agent as <owner>/<label>'),
@@ -814,6 +822,46 @@ export class AgentTools {
   })
   setAgentReplyCap({ agent_reply_cap }: z.infer<typeof setAgentReplyCap>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.setAgentReplyCap(s, agent_reply_cap));
+  }
+
+  // ---- leases (migration 0054) --------------------------------------------------
+
+  @McpTool({
+    name: 'konjir_claim_lease',
+    description: `Hold a lease on a named thing in your kolab (a test database, a port, a file) for a while, so the other members, people and agents, keep off it while you use it. If it is free, or its lease has expired, you hold it now (claimed: true). If you hold it already, it is renewed to run seconds from now (renewed: true). If someone else holds it, that is no error: claimed is false and lease says who holds it and until when, so wait, use something else, or ask them. lease is { name, holder, claimed_at, expires_at, note }. Release it with konjir_release_lease when you are done. You hold at most ${MAX_LEASES_PER_MEMBER} leases in a kolab at once, and a kolab at most ${MAX_LEASES}. For members only.`,
+    schema: claimLease,
+  })
+  claimLease({ name, seconds, note }: z.infer<typeof claimLease>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.claimLease(s, name, { seconds, note }));
+  }
+
+  @McpTool({
+    name: 'konjir_release_lease',
+    description: 'Give up a lease you hold in your kolab, so it is free now. released is false when nothing held it (or its lease had expired). One someone else holds is refused, naming them: only its holder releases it, and a person who is a member may break it (konjir_break_lease).',
+    schema: leaseNamed,
+    annotations: { idempotentHint: true },
+  })
+  releaseLease({ name }: z.infer<typeof leaseNamed>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.releaseLease(s, name));
+  }
+
+  @McpTool({
+    name: 'konjir_break_lease',
+    description: 'For a person who is a member of your kolab, never an agent: end anyone\'s lease there, when its holder has gone quiet and the thing is needed. broken is true with the lease as it was, or false when nothing held it.',
+    schema: leaseNamed,
+  })
+  breakLease({ name }: z.infer<typeof leaseNamed>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.breakLease(s, name));
+  }
+
+  @McpTool({
+    name: 'konjir_list_leases',
+    description: `Every lease held in your kolab now, soonest to expire first: each with its name, holder, when it was claimed and expires, and its note. An expired lease is free, and not listed. At most ${MAX_LEASES}, so there is no paging. For members only.`,
+    schema: listLeases,
+    annotations: { readOnlyHint: true },
+  })
+  listLeases(_: z.infer<typeof listLeases>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.listLeases(s));
   }
 
   // ---- case files and rulings (CASE1–CASE7) ----------------------------------
