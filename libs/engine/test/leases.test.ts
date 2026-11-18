@@ -4,7 +4,7 @@
 // says who holds it. Its holder releases it; only a person who is a member breaks it. Leases are
 // per kolab, for members only, and go with a member who is removed or leaves, or an agent removed.
 import { expect, test } from '@jest/globals';
-import { DEFAULT_LEASE_SECONDS, MAX_LEASES, MAX_LEASES_PER_MEMBER } from '@konjir/types';
+import { DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES, MAX_LEASES_PER_MEMBER } from '@konjir/types';
 import { openKolab, rejection, TestKolab } from '@konjir/engine/testing';
 
 /** Ann owns `hub`; Bo writes there; each has an agent there (ann-claude, bo-claude). Sam has nothing. */
@@ -124,8 +124,91 @@ test('names: 1 to 200 letters, digits and . _ / @ : -, compared exactly; seconds
   }
   expect(await kolab.claimLease(bo, 'fresh', { seconds: 14400 })).toMatchObject({ claimed: true });
   expect(await kolab.claimLease(bo, 'fresh2', { seconds: 60, note: 'n'.repeat(200) })).toMatchObject({ claimed: true });
-  expect(await rejection(kolab.claimLease(bo, 'fresh3', { note: 'n'.repeat(201) }))).toMatch(/^LimitError: a lease's note is at most 200 characters/);
-  expect(await rejection(kolab.claimLease(bo, 'fresh3', { note: '   ' }))).toMatch(/note is at most 200/);
+  expect(await rejection(kolab.claimLease(bo, 'fresh3', { note: 'n'.repeat(MAX_LEASE_NOTE + 1) })))
+    .toMatch(new RegExp(`^LimitError: the lease's note is ${MAX_LEASE_NOTE + 1} characters; the limit is ${MAX_LEASE_NOTE}`));
+  expect(await rejection(kolab.claimLease(bo, 'fresh3', { note: '   ' }))).toMatch(/^LimitError: a lease's note says what you are doing with it/);
+});
+
+test('a note is counted in characters as message text is, and is one line: no line break, tab or other control character', async () => {
+  const { kolab, bo } = await hub();
+  // Counted in code points, as messages are: 200 emoji are 400 UTF-16 units, and allowed.
+  expect(await kolab.claimLease(bo, 'wide', { note: '😀'.repeat(MAX_LEASE_NOTE) })).toMatchObject({ claimed: true, lease: { note: '😀'.repeat(MAX_LEASE_NOTE) } });
+  expect(await rejection(kolab.claimLease(bo, 'wider', { note: '😀'.repeat(MAX_LEASE_NOTE + 1) })))
+    .toMatch(new RegExp(`^LimitError: the lease's note is ${MAX_LEASE_NOTE + 1} characters; the limit is ${MAX_LEASE_NOTE}`));
+  for (const bad of ['two\nlines', 'cr\rhere', 'tab\there', 'nul\u0000here', 'bell\u0007', 'del\u007f', 'c1\u0085', 'ls\u2028', 'ps\u2029']) {
+    expect(await rejection(kolab.claimLease(bo, 'lined', { note: bad }))).toMatch(/^LimitError: a lease's note is one line shown to the other members: no line breaks, tabs or other control characters/);
+    // A renewal's note is checked the same way.
+    expect(await rejection(kolab.claimLease(bo, 'wide', { note: bad }))).toMatch(/one line shown to the other members/);
+  }
+  expect((await kolab.listLeases(bo)).leases.map((l) => l.name)).toStrictEqual(['wide']);
+});
+
+/**
+ * Runs `inject` on the transaction's own connection right after the statement whose SQL includes
+ * `marker` returns, once: a write by another claimant landing at that exact point, as far as one
+ * connection lets a test place it.
+ */
+function after(kolab: TestKolab, marker: string, inject: (q: (sql: string, params?: unknown[]) => Promise<unknown>, result: { rows: Record<string, unknown>[] }) => Promise<void>) {
+  const proto = Object.getPrototypeOf(kolab.db);
+  const query = proto.query;
+  const state = { fired: false };
+  proto.query = async function (this: unknown, sql: string, params?: unknown[]) {
+    const result = await query.call(this, sql, params);
+    if (!state.fired && sql.includes(marker)) {
+      state.fired = true;
+      await inject((s, p) => query.call(this, s, p), result);
+    }
+    return result;
+  };
+  return { state, restore: () => { proto.query = query; } };
+}
+
+test('a release or a break ends only the holding it read: a lease claimed meanwhile by someone else is left alone', async () => {
+  const { kolab, ann, bo, boAgent } = await hub();
+  // bo-claude's lease expires, and ann claims the name, between bo-claude's read of it and its release.
+  await kolab.claimLease(boAgent, 'testdb');
+  const replace = (holder: string) => (q: (sql: string, params?: unknown[]) => Promise<unknown>) => q(
+    `update kolab_lease set holder = $1, claimed_at = clock_timestamp() + interval '1 second', expires_at = clock_timestamp() + interval '1 hour', note = 'theirs' where name = 'testdb'`, [holder]).then(() => undefined);
+  let hook = after(kolab, 'l.claimed_at::text as key', replace('ann'));
+  try {
+    expect(await kolab.releaseLease(boAgent, 'testdb')).toStrictEqual({ released: false, name: 'testdb' });
+  } finally { hook.restore(); }
+  expect(hook.state.fired).toBe(true);
+  expect((await kolab.listLeases(ann)).leases).toMatchObject([{ name: 'testdb', holder: 'ann', note: 'theirs' }]);
+
+  // A break that read ann's lease never ends bo's, claimed in its place meanwhile, nor says it broke ann's.
+  hook = after(kolab, 'l.claimed_at::text as key', replace('bo'));
+  try {
+    expect(await kolab.breakLease(bo, 'testdb')).toStrictEqual({ broken: false, name: 'testdb' });
+  } finally { hook.restore(); }
+  expect(hook.state.fired).toBe(true);
+  expect((await kolab.listLeases(ann)).leases).toMatchObject([{ name: 'testdb', holder: 'bo', note: 'theirs' }]);
+  expect((await kolab.db.query(`select ended_by from kolab_lease where name = 'testdb'`)).rows).toStrictEqual([{ ended_by: null }]);
+
+  // Unhooked, each ends the lease it reads.
+  expect(await kolab.breakLease(ann, 'testdb')).toMatchObject({ broken: true, lease: { holder: 'bo' } });
+});
+
+test('a claim judges every lease at one moment: one that expires mid-claim is still its holder\'s, renewed, and still refuses another', async () => {
+  const { kolab, ann, boAgent } = await hub();
+  // Right after the claim reads its moment, the lease is made to expire one microsecond later, so it
+  // is live at that moment and expired at every later clock reading the claim could have made.
+  const expireJustAfter = (q: (sql: string, params?: unknown[]) => Promise<unknown>, result: { rows: Record<string, unknown>[] }) =>
+    q(`update kolab_lease set expires_at = $1::timestamptz + interval '1 microsecond' where name = 'testdb'`, [result.rows[0].at]).then(() => undefined);
+  await kolab.claimLease(boAgent, 'testdb', { seconds: 60 });
+
+  let hook = after(kolab, 'clock_timestamp()::text as at', expireJustAfter);
+  try {
+    expect(await kolab.claimLease(ann, 'testdb')).toMatchObject({ claimed: false, lease: { holder: 'bo-claude' } });
+  } finally { hook.restore(); }
+  expect(hook.state.fired).toBe(true);
+
+  await kolab.claimLease(boAgent, 'testdb', { seconds: 60 });
+  hook = after(kolab, 'clock_timestamp()::text as at', expireJustAfter);
+  let renewed;
+  try { renewed = await kolab.claimLease(boAgent, 'testdb', { seconds: 600 }); } finally { hook.restore(); }
+  expect(renewed).toMatchObject({ claimed: true, renewed: true, lease: { holder: 'bo-claude' } });
+  expect(seconds(new Date().toISOString(), renewed!.lease.expires_at)).toBeGreaterThan(590);
 });
 
 test(`a member holds at most ${MAX_LEASES_PER_MEMBER} leases in a kolab, and a kolab at most ${MAX_LEASES}: past either, refused, saying which`, async () => {
