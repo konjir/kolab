@@ -192,8 +192,12 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
         // In the background: in a terminal of its own that outlives this one, to look in on and to stop.
         const session = sessionName(team, name);
         const line = ['env', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), run.cmd, ...run.args];
+        // Those started before one that fails keep running: said, so none is left running unknown.
+        const already = started.length ? ` ${started.map((s) => s.agent.slice(s.agent.indexOf('/') + 1)).join(', ')} ${started.length === 1 ? 'is' : 'are'} running in the background: konnect agent stop <name> ends one.` : '';
+        // Looked at again, now: allowing agents in the browser can take minutes, and another run may have started this one meanwhile.
+        if (await running(ctx, kind, session)) throw new Refused(`your agent ${name} is running in the background here already, so it wasn't started again.${already}`);
         const went = kind === 'tmux' ? await exec(ctx)('tmux', ['new-session', '-d', '-s', session, '-c', ctx.cwd, ...line], ctx.cwd) : await exec(ctx)('screen', ['-dmS', session, ...line], ctx.cwd);
-        if (went.code !== 0) throw new Error(`${kind} couldn't start ${tool} in the background as ${name}: ${went.out.trim() || `it exited with ${went.code}`}`);
+        if (went.code !== 0) throw new Error(`${kind} couldn't start ${tool} in the background as ${name}: ${went.out.trim() || `it exited with ${went.code}`}.${already}`);
         started.push({ agent: `${r.owner}/${name}`, session });
         continue;
       }

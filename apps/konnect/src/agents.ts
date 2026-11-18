@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { keepSignIn, setup } from '@konjir/login';
+import { keepSignIn, revokeIssued, setup } from '@konjir/login';
 import { printable } from './names.js';
 import { agentFileReady, configDir } from './teams.js';
 
@@ -61,11 +61,23 @@ export async function setUpAgents(team: string, url: string, labels: string[], i
   } catch (e) {
     throw new Error(String((e as Error)?.message ?? e).replace(/run konjir connect again/g, again).replace(/konjir connect/g, 'konnect'));
   }
+  // A login issued and not kept is revoked, never left to lapse by itself: every one is checked to be
+  // there before any is kept, and when keeping one fails, those not yet kept are revoked.
+  const issued = labels.map((label) => done.agents.find((x) => x.label === label));
+  const lacking = labels.filter((_, i) => !issued[i]?.tokens);
+  if (lacking.length) {
+    await revokeIssued(url, done.client, issued.flatMap((a) => (a?.tokens ? [a.tokens] : [])));
+    throw new Error(`the service added ${lacking.join(', ')} but issued ${lacking.length === 1 ? 'it' : 'them'} no login, so none was kept: run the command again`);
+  }
   const out = [];
   for (const [i, label] of labels.entries()) {
-    const a = done.agents.find((x) => x.label === label);
-    if (!a?.tokens) throw new Error(`the service added ${label} but issued it no login: run the command again`);
-    await keepSignIn(url, files[i], { client: done.client, tokens: a.tokens, ...(done.discovery ? { discovery: done.discovery } : {}) });
+    const a = issued[i]!;
+    try {
+      await keepSignIn(url, files[i], { client: done.client, tokens: a.tokens!, ...(done.discovery ? { discovery: done.discovery } : {}) });
+    } catch (e) {
+      await revokeIssued(url, done.client, issued.slice(i).map((x) => x!.tokens!));
+      throw new Error(`konnect couldn't keep ${label}'s login (${(e as Error)?.message ?? e})${i ? `; ${labels.slice(0, i).join(', ')} ${i === 1 ? 'is' : 'are'} added and logged in` : ''}: run the command again`);
+    }
     out.push({ label, agent: a.agent, made: a.made, file: files[i] });
   }
   return out;

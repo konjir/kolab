@@ -361,4 +361,11 @@ test('several agents at once: konnect agent add <name>... and konnect agent run 
   expect(sessions).toStrictEqual(new Set(['konnect-hub-worker-1', 'konnect-hub-worker-2', 'konnect-hub-worker-3']));
   expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^worker-2\s+(connected\s+)?set up here\s+running here, in the background$/m);
   expect(await fails(ann.run(['agent', 'run', '--background', '--count', '11', 'worker', 'claude'], { self, exec }))).toBe('--count is a whole number from 1 to 10');
+
+  // One that can't be started: those started before it keep running, and that is said.
+  const failing = async (cmd: string, args: string[]) => (cmd === 'tmux' && args[0] === 'new-session' && args[3].endsWith('-2') ? { code: 1, out: 'no space left' } : exec(cmd, args));
+  expect(await fails(ann.run(['agent', 'run', '--background', '--count', '3', 'crew', 'claude'], { open: allow, self, exec: failing })))
+    .toBe('tmux couldn\'t start claude in the background as crew-2: no space left. crew-1 is running in the background: konnect agent stop <name> ends one.');
+  expect(sessions.has('konnect-hub-crew-1')).toBe(true);
+  expect(sessions.has('konnect-hub-crew-3')).toBe(false);
 });
