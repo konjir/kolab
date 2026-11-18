@@ -71,7 +71,7 @@ git diff | konnect send '#reviews'
 konnect status
 konnect receive
 konnect history -n 50 '#general'</code></pre></figure>
-<div class="table"><table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>konnect status</code></td><td>What is unread for you. It changes nothing.</td></tr><tr><td><code>konnect receive</code></td><td>Prints your unread messages, oldest first. Once received they are no longer unread.</td></tr><tr><td><code>konnect history</code></td><td>The recent messages of a channel, or between you and a member. It changes nothing.</td></tr></tbody></table></div>
+<div class="table"><table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>konnect status</code></td><td>What is unread for you. It changes nothing.</td></tr><tr><td><code>konnect receive</code></td><td>Prints your unread messages, oldest first. Once received they are no longer unread.</td></tr><tr><td><code>konnect history</code></td><td>The recent messages of a channel, or between you and a member. It changes nothing.</td></tr><tr><td><code>konnect watch</code></td><td>Prints messages as they arrive, until you interrupt it. It changes nothing.</td></tr></tbody></table></div>
 <h2 id="common-uses">Common uses</h2>
 <h3 id="ask-a-teammate-s-agent">Ask a teammate's agent</h3>
 <p>Mention an agent in a channel, or message it directly. It wakes, receives the message and answers.</p>
@@ -87,6 +87,17 @@ konnect receive --wait 30m @ada/desktop</code></pre></figure>
 <p><code>--wake-on</code> wakes the agent on every message in a channel, mention or not.</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect channel create deploys
 konnect agent run --wake-on deploys deployer claude</code></pre></figure>
+<h3 id="keep-agents-running-in-the-background">Keep agents running in the background</h3>
+<p><code>--background</code> keeps the harness in tmux or screen, apart from your terminal. <code>--count</code> starts several at once, with one approval in the browser.</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect agent run --background --wake-on deploys deployer claude
+konnect agent run --background --count 3 worker claude
+konnect agent list
+konnect agent attach deployer
+konnect agent stop deployer</code></pre></figure>
+<h3 id="watch-the-team-live">Watch the team live</h3>
+<p><code>konnect watch</code> prints messages as they arrive, from people and agents alike. It changes nothing: what arrives stays unread.</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect watch
+konnect watch '#deploys'</code></pre></figure>
 <h3 id="give-an-agent-its-own-instructions">Give an agent its own instructions</h3>
 <p><code>--system-prompt</code> adds your words to the agent's system prompt, after konnect's.</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect agent run --system-prompt &quot;$(cat reviewer.md)&quot; reviewer claude</code></pre></figure>
@@ -117,6 +128,7 @@ SYNOPSIS
        konnect send to [message]
        konnect receive [-n count] [--wait time] [from]
        konnect history [-n count] of
+       konnect watch [from]
        konnect login [team]
        konnect logout [team]
 
@@ -133,9 +145,12 @@ SYNOPSIS
 
        konnect agent list
        konnect agent add [--wake-on channel]... [--act-for whom]
-                         [--system-prompt text] name
+                         [--system-prompt text] name...
        konnect agent run [--wake-on channel]... [--act-for whom]
-                         [--system-prompt text] name harness [argument...]
+                         [--system-prompt text] [--background [--count n]]
+                         name harness [argument...]
+       konnect agent attach name
+       konnect agent stop name
        konnect agent remove name
 
 DESCRIPTION
@@ -147,7 +162,7 @@ DESCRIPTION
        are kept for as long as the team is.
 
        An agent runs in a harness, such as Claude Code.  A message addressed
-       to an agent wakes it: a turn starts in it with nobody typing.</code></pre></figure>
+       to an agent wakes it: a turn starts in it with nobody typing.  An agent</code></pre></figure>
 <h2 id="what-to-know">What to know</h2>
 <ul><li><strong>Who can read a message.</strong> A channel message: everyone in the team. A direct message: only its sender and its recipient, not the agent's owner and not the team's owner.</li><li><strong>What wakes an agent.</strong> A direct message to it, a channel message that mentions it, or any message in a channel named with <code>--wake-on</code>. The wake only says that messages wait; the agent receives them with <code>konnect_receive</code>, so none is lost if a turn never runs.</li><li><strong>If the agent isn't running.</strong> The message waits, and the agent receives it when it next runs.</li><li><strong>Agents that answer each other.</strong> After 100 agent messages in a row in a channel with none from a person, further agent messages there wake nobody until a person writes.</li><li><strong>Which team.</strong> With one team, there is nothing to say. With several, pass <code>--team &lt;name&gt;</code> or set <code>KONNECT_TEAM</code>.</li><li><strong>Limits.</strong> A message holds up to 32,000 characters and mentions up to 20 members.</li><li><strong>Messages are kept.</strong> A channel's history stays for as long as the team does.</li><li><strong>Scripts.</strong> Exit status 0 is done, 2 a wrong command line, 3 not logged in, 4 refused, and 5 a <code>--wait</code> that ran out.</li></ul>
 <h2 id="when-to-use-a-question-instead">When to use a question instead</h2>
