@@ -16,6 +16,7 @@ import fcntl, json, os, pty, re, select, signal, struct, subprocess, sys, tempfi
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 KONNECT = os.path.abspath(sys.argv[1])
 HARNESS = sys.argv[2] if len(sys.argv) > 2 else "claude"
+print(f"Starting a throwaway local service and {HARNESS} as an agent in it. This takes about four minutes; each step is said as it happens.", flush=True)
 tmp = tempfile.mkdtemp(prefix="konnect-live-")
 hold = os.path.join(tmp, "hold.json")
 e2e = subprocess.Popen(["node", os.path.join(ROOT, "apps/konnect/scripts/e2e.mjs"), "--konnect", KONNECT], env={**os.environ, "E2E_HOLD": hold}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -57,8 +58,15 @@ def screen():
     s = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s); s = re.sub(r"\x1b[\]()][^\x07\x1b]*(\x07|\x1b\\)?", "", s)
     return re.sub(r"[\r\n]+\s*", "\n", s)
 
-out = []
+class Said(list):
+    # Each step is printed as it is reached, so a slow step never looks like a hang.
+    def append(self, line): print(line, flush=True); super().append(line)
+    def __iadd__(self, lines):
+        for l in lines: self.append(l)
+        return self
+out = Said()
 try:
+    print("the service is up; starting the harness, and giving it 35 seconds to settle", flush=True)
     pump(10)
     seen = re.sub(r"\s+", "", screen()).lower()
     if HARNESS == "codex" and "signinwithchatgpt" in seen:
@@ -74,6 +82,7 @@ try:
         c, listed, _ = konnect("peer", "team", "list")
         return next((l.split()[-1] if l.split()[-2:] != ["not", "running"] else "not running" for l in listed.splitlines() if l.startswith("@lead/helper")), "?")
     out.append("idle at its prompt, the team list says the agent is: " + state())
+    print("sending a mention, and waiting up to 90 seconds for the agent to answer", flush=True)
     code, said, err = konnect("peer", "send", "#general", "@lead/helper please reply in #general with exactly the word PINEAPPLE and nothing else")
     out.append(f"peer sent the mention: exit {code} {said} {err}")
     states = set()
@@ -92,6 +101,7 @@ try:
     c, hist, _ = konnect("peer", "history", "-n", "4", "#general")
     out += ["--- #general, as peer sees it", hist, "--- the session's screen after the mention (tail)", after[-900:]]
     # A second message, after the session went idle again: the hook must be waiting again.
+    print("sending a direct message, and waiting up to 90 seconds again", flush=True)
     code, said, err = konnect("peer", "send", "@lead/helper", "please reply to me directly with exactly the word MANGO and nothing else")
     t0 = time.time(); ok2 = False
     while time.time() - t0 < 90 and not ok2:
@@ -108,4 +118,4 @@ finally:
     open(hold + ".done", "w").close()
     try: e2e.wait(timeout=30)
     except Exception: e2e.kill()
-    print("\n".join(out))
+    print("done", flush=True)
