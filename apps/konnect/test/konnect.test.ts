@@ -258,7 +258,7 @@ test('the names 0.1.0 used still work for one release, each saying its new name 
   const ran = await old(ann, ['claude', 'helper', '--listen', '#general', '--', '--model', 'opus'], { open: allow, self, start: async (c) => { started.push(c); return 0; } });
   expect(ran.err[0]).toBe('(konnect claude is now konnect agent run helper claude)');
   expect(started).toMatchObject([{ cmd: 'claude' }]);
-  expect(JSON.parse(readFileSync(join(ann.cwd, '.mcp.json'), 'utf8')).mcpServers['konnect-helper'].env.KONNECT_WAKE_ON).toBe('general');
+  expect(started[0].env.KONNECT_WAKE_ON).toBe('general');
   const added = await old(ann, ['codex', 'coder', '--no-start'], { open: allow, self, start: async () => { throw new Error('started'); } });
   expect(added.err[0]).toBe('(konnect codex is now konnect agent add coder)');
   expect(added.err.filter((l) => l.startsWith('('))).toHaveLength(1);

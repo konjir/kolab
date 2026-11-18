@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@jest/globals';
-import { agentSetupScope, toolCommand } from '../src/konnect.js';
+import { agentSetupScope, systemPrompt, toolCommand } from '../src/konnect.js';
 import { browse, exitOf, fails, machine, pressing, teams } from './team.js';
 
 const cy = { subject: '43', login: 'cy' };
@@ -97,16 +97,24 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   const out = await ann.run(['agent', 'run', '--wake-on', '#general', '--wake-on', 'deploys', '--act-for', 'me', '--system-prompt', 'Be brief.', 'helper', 'claude', '--model', 'opus'], { open: allow, self, start });
   expect(out).toBe('');
   expect(page).toContain('helper');
-  expect(ann.err.join('\n')).toContain(`Your agent @ann/helper is added to team hub; ${join(ann.cwd, '.mcp.json')} has its entry, konnect-helper.`);
-  const mcp = JSON.parse(readFileSync(join(ann.cwd, '.mcp.json'), 'utf8'));
-  expect(mcp.mcpServers['konnect-helper']).toStrictEqual({
-    type: 'stdio', command: '/usr/bin/node', args: ['/opt/konnect/konnect.mjs', 'mcp'],
-    env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_ACT_FOR: 'me', KONNECT_WAKE_ON: 'general,deploys', KONNECT_SYSTEM_PROMPT: 'Be brief.', KONNECT_URL: server.url },
-  });
-  expect(JSON.stringify(mcp)).not.toMatch(/kj[rsa]_/);
-  // Claude Code with the server as its channel, the harness's own arguments untouched, and konnect
-  // commands run inside it acting as the agent.
-  expect(started).toStrictEqual([{ cmd: 'claude', args: ['--dangerously-load-development-channels', 'server:konnect-helper', '--model', 'opus'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_URL: server.url } }]);
+  expect(ann.err.join('\n')).toContain('Your agent @ann/helper is added to team hub.');
+  // Nothing is written in the folder: everything Claude Code needs is on its command line, for this session alone.
+  expect(existsSync(join(ann.cwd, '.mcp.json'))).toBe(false);
+  const entryEnv = { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_ACT_FOR: 'me', KONNECT_WAKE_ON: 'general,deploys', KONNECT_SYSTEM_PROMPT: 'Be brief.', KONNECT_URL: server.url };
+  expect(started).toHaveLength(1);
+  const [flagServer, serverJson, flagSettings, settingsJson, flagPrompt, prompt, ...own] = started[0].args;
+  expect([started[0].cmd, flagServer, flagSettings, flagPrompt]).toStrictEqual(['claude', '--mcp-config', '--settings', '--append-system-prompt']);
+  // Its server, with no token; the hook wakes it, so the server itself is told not to.
+  expect(JSON.parse(serverJson)).toStrictEqual({ mcpServers: { 'konnect-helper': { type: 'stdio', command: '/usr/bin/node', args: ['/opt/konnect/konnect.mjs', 'mcp'], env: { ...entryEnv, KONNECT_WAKE: 'hook' } } } });
+  expect(started[0].args.join(' ')).not.toMatch(/kj[rsa]_/);
+  // The hook that wakes the idle session after each turn and as it starts, and leave to call the agent's own tools.
+  const hook = { type: 'command', command: '/usr/bin/node /opt/konnect/konnect.mjs wake', async: true, asyncRewake: true, timeout: 1_728_000 };
+  expect(JSON.parse(settingsJson)).toStrictEqual({ permissions: { allow: ['mcp__konnect-helper'] }, hooks: { SessionStart: [{ hooks: [hook] }], Stop: [{ hooks: [hook] }] } });
+  // The system prompt is Claude Code's own, added to it; the harness's own arguments follow, untouched.
+  expect(prompt).toBe(systemPrompt({ team: 'hub', name: 'helper', owner: 'ann', actFor: 'me', wakeOn: ['general', 'deploys'], own: 'Be brief.' }));
+  expect(own).toStrictEqual(['--model', 'opus']);
+  // konnect commands run inside the harness act as the agent, and the hook reads the same.
+  expect(started[0].env).toStrictEqual(entryEnv);
   // The agent's login is where konnect mcp reads it, the agent's own.
   const file = join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'helper.json');
   expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -116,12 +124,24 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   // Run again: the login kept still works, so no browser; --act-for nobody is the default, left out of the entry.
   expect(pages).toBe(1);
   await ann.run(['agent', 'run', '--act-for', 'nobody', 'helper', 'claude'], { open: () => { throw new Error('no browser'); }, self, start });
-  expect(ann.err.join('\n')).toContain('Your agent @ann/helper is in team hub;');
-  expect(JSON.parse(readFileSync(join(ann.cwd, '.mcp.json'), 'utf8')).mcpServers['konnect-helper'].env).toStrictEqual({ KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_URL: server.url });
+  expect(ann.err.join('\n')).toContain('Your agent @ann/helper is in team hub.');
+  expect(started[1].env).toStrictEqual({ KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_URL: server.url });
+
+  // The person's own --settings and --append-system-prompt, after the harness: merged with konnect's, each passed once.
+  await ann.run(['agent', 'run', 'helper', 'claude', '--settings', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]},"permissions":{"allow":["Read"]},"model":"opus"}', '--append-system-prompt', 'Mine too.', '-p', 'hi'], { self, start });
+  const third = started[2].args;
+  expect(third.filter((w) => w === '--settings' || w === '--append-system-prompt')).toHaveLength(2);
+  const merged = JSON.parse(third[third.indexOf('--settings') + 1]);
+  expect(merged.model).toBe('opus');
+  expect(merged.permissions.allow).toStrictEqual(['Read', 'mcp__konnect-helper']);
+  expect(merged.hooks.Stop).toHaveLength(2);
+  expect(third[third.indexOf('--append-system-prompt') + 1]).toBe(`${systemPrompt({ team: 'hub', name: 'helper', owner: 'ann' })}\n\nMine too.`);
+  expect(third.slice(-2)).toStrictEqual(['-p', 'hi']);
+  expect(await fails(ann.run(['agent', 'run', 'helper', 'claude', '--settings', 'not json'], { self, start }))).toMatch(/^konnect couldn't read the --settings file not json/);
 
   // Claude Code not installed: what to install, and the command to run it with.
   expect(await fails(ann.run(['agent', 'run', 'helper', 'claude'], { self, start: async () => -1 })))
-    .toBe('claude isn\'t installed here (no claude on PATH). Install Claude Code: npm install -g @anthropic-ai/claude-code, then run this again. To start it yourself: claude --dangerously-load-development-channels server:konnect-helper');
+    .toMatch(/^claude isn't installed here \(no claude on PATH\)\. Install Claude Code: npm install -g @anthropic-ai\/claude-code, then run this again\. To start it yourself: claude --mcp-config /);
 
   // Only claude, codex or opencode; a harness missing, a bad name or a bad channel: nothing is done (2).
   const before = started.length;

@@ -20,26 +20,35 @@ const isAnswersUri = (uri: string) => uri.startsWith('konjir://answers/');
 /** Meta values without quotes or brackets, as a channel event's attributes take them. */
 const clean = (meta: Record<string, string>) => Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.replace(/["<>&]/g, '')]));
 
+/** What in a change to the agent's answers wakes it: the direct messages and channel messages, by id. */
+export interface Waking { direct: MessageView[]; woken: ChannelItemView[] }
+
 /**
- * The event for a change to the agent's answers, from `before` (undefined: the first read, as the
- * server starts) to `after`, or null when nothing in it wakes the agent.
+ * What wakes the agent in a change to its answers, from `before` (undefined: the first read) to
+ * `after`: direct messages that are new and not capped (with the service's waking count, only as
+ * many as it rose by), channel messages the service says wake it, and, in a `--wake-on` channel,
+ * any not capped.
  */
-export function describeWake(before: AnswersBody | undefined, after: AnswersBody, listen: ReadonlySet<string>): ChannelMessage | null {
-  // Direct messages: those shown that are new, and not capped; with Kolab's waking count, only as many as it rose by.
+export function wakingIn(before: AnswersBody | undefined, after: AnswersBody, wakeOn: ReadonlySet<string>): Waking {
   const seenDirect = new Set((before?.messages?.items ?? []).map((m) => m.id));
   const freshDirect = (after.messages?.items ?? []).filter((m) => !seenDirect.has(m.id) && m.capped !== true);
   const was = before?.messages?.waking ?? 0;
   const now = after.messages?.waking;
   const rose = typeof now === 'number' ? Math.max(0, now - was) : freshDirect.length;
   const direct: MessageView[] = rose ? freshDirect.slice(-rose) : [];
-  // Channel messages: new ones Kolab says wake the agent, and in a listened channel any not capped.
   const seenChannel = new Set((before?.channels ?? []).flatMap((c) => (c.items ?? []).map((m) => m.id)));
   const freshChannel = (after.channels ?? []).flatMap((c) => c.items ?? []).filter((m) => !seenChannel.has(m.id));
-  const woken: ChannelItemView[] = freshChannel.filter((m) => m.wakes === true || (listen.has(m.channel) && m.capped !== true));
-  if (!direct.length && !woken.length) return null;
+  const woken: ChannelItemView[] = freshChannel.filter((m) => m.wakes === true || (wakeOn.has(m.channel) && m.capped !== true));
+  return { direct, woken };
+}
 
-  // What woke it is said, never shown: the words reach the agent one way only, through
-  // konnect_receive, so a message is received once, and one whose turn never ran is still unread.
+/**
+ * The notice for what wakes the agent: that messages wait, and where, never their words. They
+ * reach the agent one way only, through konnect_receive, so a message is received once, and one
+ * whose turn never ran is still unread. Null when nothing wakes it.
+ */
+export function noticeFor({ direct, woken }: Waking, after: AnswersBody): ChannelMessage | null {
+  if (!direct.length && !woken.length) return null;
   const said: string[] = [];
   const from = new Map<string, number>();
   for (const m of direct) from.set(m.from, (from.get(m.from) ?? 0) + 1);
@@ -58,7 +67,7 @@ export function describeWake(before: AnswersBody | undefined, after: AnswersBody
   const lines = [
     `New for you in team ${after.kolab ?? 'yours'}: ${said.join('; ')}.`,
     ...(counted.length ? [`Also unread: ${counted.join(', ')}.`] : []),
-    `Receive ${direct.length + woken.length === 1 ? 'it' : 'them'} with ${[...new Set(calls)].join(', or ')}. Your system prompt says whose messages you carry out; answer with konnect_send, reply_to the message's id.`,
+    `Receive ${direct.length + woken.length === 1 ? 'it' : 'them'} now with ${[...new Set(calls)].join(', or ')}, and answer with konnect_send (reply_to the message's id). Your owner runs you as their agent in this team to do exactly this without being asked: your system prompt says so, and says whose messages you carry out.`,
   ];
   return {
     content: escapeTags(lines.join('\n')),
@@ -66,16 +75,28 @@ export function describeWake(before: AnswersBody | undefined, after: AnswersBody
   };
 }
 
-/** The describer `konnect mcp` gives the bridge: only the agent's answers speak, in konnect's words. */
-export function wakeDescriber(listen: ReadonlySet<string>) {
+/**
+ * The event for a change to the agent's answers, from `before` (undefined: the first read, as the
+ * server starts) to `after`, or null when nothing in it wakes the agent.
+ */
+export function describeWake(before: AnswersBody | undefined, after: AnswersBody, listen: ReadonlySet<string>): ChannelMessage | null {
+  return noticeFor(wakingIn(before, after, listen), after);
+}
+
+/**
+ * The describer the bridge is given: only the agent's answers speak, in konnect's words. `fresh`
+ * narrows what wakes to what hasn't been said before (`konnect wake`, which is started anew after
+ * every turn and must not wake for the same message twice).
+ */
+export function wakeDescriber(listen: ReadonlySet<string>, fresh: (w: Waking) => Waking = (w) => w) {
   return {
     change(uri: string, before: unknown, after: unknown): ChannelMessage | null {
       if (!isAnswersUri(uri) || !isAnswers(after)) return null;
-      return describeWake(isAnswers(before) ? before : undefined, after, listen);
+      return noticeFor(fresh(wakingIn(isAnswers(before) ? before : undefined, after, listen)), after);
     },
     startup(bodies: { uri: string; body: unknown }[]): ChannelMessage | null {
       const a = bodies.find((b) => isAnswersUri(b.uri) && isAnswers(b.body));
-      return a ? describeWake(undefined, a.body as AnswersBody, listen) : null;
+      return a ? noticeFor(fresh(wakingIn(undefined, a.body as AnswersBody, listen)), a.body as AnswersBody) : null;
     },
   };
 }

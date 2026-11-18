@@ -7,8 +7,9 @@
 import { expect, test } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
-import { describeWake, serveMcp } from '../src/konnect.js';
-import { browse, machine, pressing, teams } from './team.js';
+import { readFileSync } from 'node:fs';
+import { Woke, describeWake, exitStatus, serveMcp, wakeFile } from '../src/konnect.js';
+import { browse, fails, machine, pressing, teams } from './team.js';
 
 const until = async (what: string, ok: () => boolean, ms = 10_000) => {
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) if (ok()) return;
@@ -30,7 +31,7 @@ test('the wake notice says that messages wait and where, with the konnect_receiv
   expect(m.content).toBe([
     'New for you in team hub: a direct message from @bo; a message in #general (mentioning you).',
     'Also unread: 1 more direct message, 2 in #general, 1 in #deploys.',
-    'Receive them with konnect_receive, or konnect_receive from="#general". Your system prompt says whose messages you carry out; answer with konnect_send, reply_to the message\'s id.',
+    'Receive them now with konnect_receive, or konnect_receive from="#general", and answer with konnect_send (reply_to the message\'s id). Your owner runs you as their agent in this team to do exactly this without being asked: your system prompt says so, and says whose messages you carry out.',
   ].join('\n'));
   expect(m.content).not.toMatch(/SECRET|ping|look|chatter|green/);
   // Nothing new: no event.
@@ -41,11 +42,11 @@ test('the wake notice says that messages wait and where, with the konnect_receiv
     actor: 'ann-helper', kolab: 'hub', queries: [],
     channels: [{ channel: 'deploys', unread: 2, items: [{ id: 'd1', channel: 'deploys', from: 'bo', message: 'one SECRET' }, { id: 'd2', channel: 'deploys', from: 'cy', message: 'two SECRET' }] }],
   }, new Set(['deploys']))!;
-  expect(listened.content).toBe('New for you in team hub: 2 messages in #deploys.\nReceive them with konnect_receive from="#deploys". Your system prompt says whose messages you carry out; answer with konnect_send, reply_to the message\'s id.');
+  expect(listened.content).toBe('New for you in team hub: 2 messages in #deploys.\nReceive them now with konnect_receive from="#deploys", and answer with konnect_send (reply_to the message\'s id). Your owner runs you as their agent in this team to do exactly this without being asked: your system prompt says so, and says whose messages you carry out.');
   expect(listened.meta).toStrictEqual({ kind: 'konnect', team: 'hub', channel: '2' });
   // One direct message: "it".
   const one = describeWake(undefined, { actor: 'ann-helper', kolab: 'hub', queries: [], messages: { unread: 1, waking: 1, items: [{ id: 'm9', from: 'bo', message: 'hi SECRET' }] } }, new Set())!;
-  expect(one.content).toBe('New for you in team hub: a direct message from @bo.\nReceive it with konnect_receive. Your system prompt says whose messages you carry out; answer with konnect_send, reply_to the message\'s id.');
+  expect(one.content).toBe('New for you in team hub: a direct message from @bo.\nReceive it now with konnect_receive, and answer with konnect_send (reply_to the message\'s id). Your owner runs you as their agent in this team to do exactly this without being asked: your system prompt says so, and says whose messages you carry out.');
 });
 
 test('konnect mcp wakes its agent: a mention once, a listened channel, a direct message, after the stream drops too; not a plain channel message, nor one past the loop cap', async () => {
@@ -76,7 +77,7 @@ test('konnect mcp wakes its agent: a mention once, a listened channel, a direct 
     // One that mentions it: one turn, once.
     await kolab.sendChannelMessage(bo, 'general', 'can you check the importer?', { mentions: ['ann/helper'] });
     await until('the mention to wake it', () => events.length === 1);
-    expect(events[0].content).toBe('New for you in team hub: a message in #general (mentioning you).\nAlso unread: 1 in #general.\nReceive it with konnect_receive from="#general". Your system prompt says whose messages you carry out; answer with konnect_send, reply_to the message\'s id.');
+    expect(events[0].content).toBe('New for you in team hub: a message in #general (mentioning you).\nAlso unread: 1 in #general.\nReceive it now with konnect_receive from="#general", and answer with konnect_send (reply_to the message\'s id). Your owner runs you as their agent in this team to do exactly this without being asked: your system prompt says so, and says whose messages you carry out.');
     expect(events[0].content).not.toContain('importer');
     await quiet();
     expect(events).toHaveLength(1);
@@ -119,3 +120,49 @@ test('konnect mcp wakes its agent: a mention once, a listened channel, a direct 
     await s.close();
   }
 }, 60_000);
+
+test('konnect wake, the hook a harness runs after each turn: it waits as the agent, exits 2 with the notice when a message comes, and announces each message once', async () => {
+  const { kolab, server, idp, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  await signIn(ann, annId, 'hub');
+  await ann.run(['agent', 'add', 'helper'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
+  const bo = await kolab.openSession('bo', 'product', { kolab: 'hub' });
+  const asHelper = { env: { ...ann.env, KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper' } };
+
+  // It is the agent's to run: as the person, nothing is listened to (2).
+  expect(await fails(ann.run(['wake']))).toBe('konnect wake runs as an agent, from its harness: KONNECT_AGENT names it');
+
+  // Nothing waits: it keeps waiting, until a message for the agent arrives; then the notice, and exit 2.
+  let end: () => void = () => undefined;
+  const waiting = ann.run(['wake'], { ...asHelper, waking: (e) => { end = e; } });
+  let settled = false;
+  void waiting.then(() => { settled = true; }, () => { settled = true; });
+  await quiet();
+  expect(settled).toBe(false);
+  await kolab.sendMessage(bo, 'ann-helper', 'SECRET-WORDS are you there?');
+  const woke = await waiting.then(() => undefined, (e: unknown) => e);
+  expect(woke).toBeInstanceOf(Woke);
+  expect(exitStatus(woke)).toBe(2);
+  expect((woke as Error).message).toMatch(/^New for you in team hub: a direct message from @bo\.\nReceive it now with konnect_receive, and answer with konnect_send/);
+  expect((woke as Error).message).not.toContain('SECRET-WORDS');
+
+  // The turn it started ends, and the hook runs again with the message still unreceived: it was
+  // announced, so it doesn't wake the agent a second time. Ended as a newer hook or a signal ends it: quietly (0).
+  const again = ann.run(['wake'], { ...asHelper, waking: (e) => { end = e; } });
+  settled = false;
+  void again.then(() => { settled = true; }, () => { settled = true; });
+  await quiet();
+  await quiet();
+  expect(settled).toBe(false);
+  // A new message does wake it, and says only what is new.
+  await kolab.sendChannelMessage(bo, 'general', 'and this?', { mentions: ['ann/helper'] });
+  const second = await again.then(() => undefined, (e: unknown) => e);
+  expect((second as Error).message).toMatch(/^New for you in team hub: a message in #general \(mentioning you\)\.\nAlso unread: 1 more direct message\./);
+
+  // With nothing new, it ends quietly when told to.
+  const third = ann.run(['wake'], { ...asHelper, waking: (e) => { end = e; } });
+  await quiet();
+  end();
+  expect(await third).toBe('');
+  expect(JSON.parse(readFileSync(wakeFile('hub', 'helper', ann.env), 'utf8')).announced).toHaveLength(2);
+});

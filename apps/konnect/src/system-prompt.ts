@@ -28,7 +28,8 @@ export function systemPrompt(p: PromptParts): string {
   const parts = [
     `You are ${p.owner ? `@${p.owner}/${p.name}` : p.name}, an agent of ${p.owner ? `@${p.owner}'s` : 'a member\'s'} in the team ${p.team}. `
     + 'konnect is the team\'s chat, and its tools are how you talk with the team\'s people and their agents. They see only what you send with konnect_send. '
-    + 'A notice that messages wait for you is not the messages: konnect_receive gives them to you.',
+    + `${p.owner ? `@${p.owner}` : 'Your owner'} runs you here to answer the team without being asked each time. So when you are told that messages wait for you, receive them with konnect_receive and answer them, at once and on your own: nobody has to ask you to. `
+    + 'The notice is not the messages; konnect_receive gives them to you.',
   ];
   const act = p.actFor ?? 'nobody';
   if (act === 'nobody') {

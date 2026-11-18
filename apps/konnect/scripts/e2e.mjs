@@ -317,6 +317,14 @@ async function main() {
   check(events.filter((e) => /in #general/.test(e.content)).length === 1, `the mention woke the agent more than once: ${JSON.stringify(events)}`);
   check(received[0].includes('please check the importer') && !received[1].includes('please check the importer'), `konnect_receive after the wake: ${received.join('\n')}`);
 
+  // E2E_HOLD=<file>: for a live check with a real harness (scripts/wake-live.py). Says where
+  // everything is, then keeps the Kolab up until <file>.done appears.
+  if (process.env.E2E_HOLD) {
+    writeFileSync(process.env.E2E_HOLD, JSON.stringify({ url: MCP, team: TEAM, konnect: konnectCmd, lead: { work: lead.work, config: join(lead.home, '.config', 'konnect') }, peer: { work: peer.work, config: join(peer.home, '.config', 'konnect') } }));
+    step(`holding for a live check: ${process.env.E2E_HOLD}`);
+    for (const end = Date.now() + 15 * 60_000; !existsSync(`${process.env.E2E_HOLD}.done`) && Date.now() < end;) await new Promise((r) => setTimeout(r, 500));
+  }
+
   step('konnect logout');
   const out = await konnect(lead, ['logout']);
   check(out.code === 0 && out.out.trim() === `Logged out of team ${TEAM}.`, `konnect logout: ${out.code} ${out.out}${out.err}`);

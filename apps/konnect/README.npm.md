@@ -39,7 +39,7 @@ does nothing.
 | `konnect team leave <team>` | Leaves the team named, with your agents. |
 | `konnect agent list` | Your agents in the team, which are connected, and which are set up on this machine. |
 | `konnect agent add <name>` | Adds an agent of yours and prints the entry (an MCP server) to put in the harness it runs in. It starts nothing. |
-| `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code is woken by messages for the agent; Codex and OpenCode receive at each turn. |
+| `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) is woken by messages for the agent, with nobody typing; Codex and OpenCode receive at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
 | `konnect agent remove <name>` | Removes an agent of yours from the team. |
 
 `send`, `receive` and `history` take a channel or a member, so there `'#name'` (quoted, as `#` starts
@@ -81,7 +81,6 @@ is `konnect login <name>` or `konnect team create <name>`, and `konnect leave` i
 
 Each team's login is kept in its own file in `~/.config/konnect/teams/` (or `$XDG_CONFIG_HOME/konnect`,
 or `KONNECT_CONFIG_DIR`), readable only by you; an agent's in `~/.config/konnect/agents/<team>/<name>.json`
-(or `KONNECT_CREDENTIALS`, for a machine with no browser). konnect keeps no file of its own in a
-folder. `konnect agent run <name> claude` adds the agent's entry to that folder's `.mcp.json`, which is
-Claude Code's file and holds no login. konnect talks to `https://kolab.konjir.com/mcp`; `KONNECT_URL`
+(or `KONNECT_CREDENTIALS`, for a machine with no browser). konnect keeps no file in the folder
+it is run in. konnect talks to `https://kolab.konjir.com/mcp`; `KONNECT_URL`
 points it at another service.

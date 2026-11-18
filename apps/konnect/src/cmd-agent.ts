@@ -11,12 +11,13 @@
  */
 import { existsSync } from 'node:fs';
 import { logout } from '@konjir/login';
-import { HARNESSES, INSTALL, checkLabel, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgent, shellLine, startTool, toolCommand, writeMcpJson, type Tool } from './agents.js';
+import { HARNESSES, INSTALL, checkLabel, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgent, shellLine, startTool, toolCommand, type Tool } from './agents.js';
 import { NotYet, Refused, TeamClient } from './client.js';
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
 import { printable, shownName } from './names.js';
+import { systemPrompt } from './system-prompt.js';
 import { HOSTED_URL, agentFile, agentFileReady, dropIfEmpty } from './teams.js';
 
 /** The channels --wake-on names (each given once, or 0.1.0's --listen '#a,#b'), checked. */
@@ -123,12 +124,13 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const r = await ready(ctx, team, given, `agent run ${name} ${tool}`);
     const entry = entryFor(ctx, team, name);
     const server = serverName(name);
-    const written = tool === 'claude' ? writeMcpJson(ctx.cwd, server, entry) : undefined;
-    const run = toolCommand(tool, server, entry, extra);
-    // konnect commands run inside the harness act as the agent, never as the person.
-    const env = { ...run.env, KONNECT_TEAM: team, KONNECT_AGENT: name, ...(ctx.url !== HOSTED_URL ? { KONNECT_URL: ctx.url } : {}) };
+    let run;
+    const prompt = systemPrompt({ team, name, owner: r.owner, actFor: ctx.args.actFor, wakeOn: wakeOn(ctx), own: ctx.args.systemPrompt });
+    try { run = toolCommand(tool, server, entry, extra, prompt); } catch (e) { throw new UsageError(String((e as Error)?.message ?? e)); }
+    // konnect commands run inside the harness act as the agent, never as the person; the hook that wakes it reads the same.
+    const env = { ...run.env, ...entry.env };
     ctx.err([
-      `Your agent @${printable(r.owner)}/${name} is ${r.made ? 'added to' : 'in'} team ${team}${written ? `; ${printable(written)} has its entry, ${server}` : ''}.`,
+      `Your agent @${printable(r.owner)}/${name} is ${r.made ? 'added to' : 'in'} team ${team}.`,
       ...(tool !== 'claude' ? [`${tool === 'codex' ? 'Codex' : 'OpenCode'} isn't woken by messages: the agent receives at the start of each turn.`] : []),
     ].join('\n'));
     const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ ...run, env }, ctx.cwd);

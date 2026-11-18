@@ -34,6 +34,8 @@ export interface IO {
   pause?: (ms: number) => Promise<void>;
   /** Whether a person is at a terminal, so a browser may be opened; by default, whether one is. */
   terminal?: boolean;
+  /** Told how to end `konnect wake` quietly, as a signal would; for tests. */
+  waking?: (end: () => void) => void;
 }
 
 export type Env = Record<string, string | undefined>;
