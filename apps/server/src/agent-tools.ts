@@ -156,7 +156,7 @@ const serveHost = args({
 });
 const askHost = args({
   host: hostName,
-  kind: z.enum(HOST_REQUEST_KINDS).describe('What to ask of it: start an agent, stop one, or end the host'),
+  kind: z.enum(HOST_REQUEST_KINDS).describe('What to ask of it: start an agent, stop one, end the host, or hello: ask the machine for a fresh word that the next request must carry, so a request kept and sent again later does nothing'),
   body: z.string().describe(`The request, opaque to Kolab (sealed to the host's public_key by the asker): at most ${MAX_HOST_BODY.toLocaleString('en')} characters. Kolab never reads it, and empties it once the host answers`),
 });
 const hostRequest = z.string().describe('The request\'s id, as konjir_ask_host gave it, or as konjir_serve_host handed it to its host');
@@ -909,7 +909,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_ask_host',
-    description: `For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. The request waits ${HOST_REQUEST_SECONDS} seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), when it has ${MAX_HOST_REQUESTS_WAITING} requests not answered yet (waiting, or taken in the last ${HOST_TAKEN_SECONDS / 60} minutes), or when you have made ${MAX_HOST_ASKS_PER_HOUR} requests in this kolab in the last hour (it says when to try again). body is opaque to Kolab: seal it to the host's public_key. One the host doesn't take in time reads as expired, and its body is emptied.`,
+    description: `For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end; a hello asks the machine for a fresh word that the next request must carry, so a request kept and sent again later does nothing. Kolab gives no kind a meaning. The request waits ${HOST_REQUEST_SECONDS} seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), when it has ${MAX_HOST_REQUESTS_WAITING} requests not answered yet (waiting, or taken in the last ${HOST_TAKEN_SECONDS / 60} minutes), or when you have made ${MAX_HOST_ASKS_PER_HOUR} requests in this kolab in the last hour (it says when to try again). body is opaque to Kolab: seal it to the host's public_key. One the host doesn't take in time reads as expired, and its body is emptied.`,
     schema: askHost,
   })
   askHost({ host, kind, body }: z.infer<typeof askHost>, context?: McpToolContext) {

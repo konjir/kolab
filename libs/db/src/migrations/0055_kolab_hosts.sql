@@ -12,7 +12,7 @@
 --                       the asker can seal a request to it; folder, agents and running are what it
 --                       said last; seen_at is when it last called, started_at when this instance began.
 --                       A host not seen for HOST_FORGOTTEN_DAYS is cleared away, lazily.
---   kolab_host_request  a request to one host, made by its owner: kind start, stop or end, and an
+--   kolab_host_request  a request to one host, made by its owner: kind start, stop, end or hello, and an
 --                       opaque body (at most MAX_HOST_BODY characters). It waits until expires_at
 --                       for its host to take it (taken_at), once, and is answered once (done_at, ok,
 --                       result, answered_by), which empties its body: a body may hold a sealed
@@ -60,7 +60,7 @@ create table kolab_host_request (
   kolab_id    text not null,
   owner       text not null references actor(id),
   host        text not null,
-  kind        text not null constraint kolab_host_request_kind_check check (kind in ('start', 'stop', 'end')),   -- HOST_REQUEST_KINDS
+  kind        text not null constraint kolab_host_request_kind_check check (kind in ('start', 'stop', 'end', 'hello')),   -- HOST_REQUEST_KINDS
   body        text not null constraint kolab_host_request_body_check check (length(body) <= 98304),   -- MAX_HOST_BODY
   created_at  timestamptz not null,
   expires_at  timestamptz not null,

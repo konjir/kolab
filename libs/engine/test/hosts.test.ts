@@ -237,7 +237,8 @@ test('asking a host that is not serving is refused, saying when it was last seen
   expect((await kolab.listHosts(ann)).hosts).toMatchObject([{ name: 'laptop', serving: false }]);
   await kolab.serveHost(ann, serving('laptop'));
   expect((await kolab.listHosts(ann)).hosts).toMatchObject([{ name: 'laptop', serving: true }]);
-  expect(await rejection(kolab.askHost(ann, 'laptop', 'restart', 'b'))).toMatch(/^LimitError: kind is what the request asks of the host: one of start, stop, end/);
+  expect(await rejection(kolab.askHost(ann, 'laptop', 'restart', 'b'))).toMatch(/^LimitError: kind is what the request asks of the host: one of start, stop, end, hello/);
+  expect((await kolab.askHost(ann, 'laptop', 'hello', 'b')).request).toMatch(/^[a-f0-9]{32}$/);
   expect((await kolab.askHost(ann, 'laptop', 'end', 'b')).request).toMatch(/^[a-f0-9]{32}$/);
 });
 

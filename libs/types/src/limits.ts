@@ -249,6 +249,6 @@ export const MAX_HOST_BODY = 98304;
 export const MAX_HOST_RESULT = 16384;
 /** A host not seen for this many days is forgotten: its row and its requests are cleared away. */
 export const HOST_FORGOTTEN_DAYS = 7;
-/** What a request asks of a host. */
-export const HOST_REQUEST_KINDS = ['start', 'stop', 'end'] as const;
+/** What a request asks of a host; Kolab gives none of them a meaning. A `hello` asks the machine for a fresh word that the next request must carry. */
+export const HOST_REQUEST_KINDS = ['start', 'stop', 'end', 'hello'] as const;
 export type HostRequestKind = typeof HOST_REQUEST_KINDS[number];
