@@ -10556,12 +10556,41 @@ export class Kolab {
     return members;
   }
 
-  /** In `q`, the live lease of the kolab named `name`: not ended, not expired, and held by one of `members`; or null. */
-  private async liveLease(q: Q, kolab: string, name: string, members: string[]): Promise<Lease | null> {
-    const r = (await q.query<LeaseRow>(
-      `select ${LEASE_COLUMNS} from kolab_lease l where l.kolab_id = $1 and l.name = $2 and ${LIVE_LEASE} and l.holder = any($3::text[])`,
-      [kolab, name, members])).rows[0];
-    return r ? leaseOf(r) : null;
+  /**
+   * In `tx`, takes the kolab's lease lock, after the shared access lock its transaction holds, and
+   * returns the one moment (Postgres's text for it, microseconds kept) against which the transaction
+   * judges every lease's liveness and stamps what it writes, so no lease expires between one
+   * statement and the next and is judged both ways. Claims, releases and breaks in a kolab run one
+   * at a time under it, so none acts on a row another replaced meanwhile.
+   */
+  private async leaseLock(tx: Q, kolab: string): Promise<string> {
+    await tx.query(`select pg_advisory_xact_lock(hashtext('kolab_lease'), hashtext($1))`, [kolab]);
+    return (await tx.query<{ at: string }>(`select clock_timestamp()::text as at`)).rows[0].at;
+  }
+
+  /**
+   * In `q`, the live lease of the kolab named `name` at `at`: not ended, not expired, and held by one
+   * of `members`; or null. With `key`, its claimed_at as Postgres's text, which tells this holding of
+   * the name from any later one, so a write can apply to it alone.
+   */
+  private async liveLease(q: Q, kolab: string, name: string, members: string[], at: string): Promise<(Lease & { key: string }) | null> {
+    const r = (await q.query<LeaseRow & { key: string }>(
+      `select ${LEASE_COLUMNS}, l.claimed_at::text as key from kolab_lease l
+        where l.kolab_id = $1 and l.name = $2 and ${LIVE_LEASE('$4')} and l.holder = any($3::text[])`,
+      [kolab, name, members, at])).rows[0];
+    return r ? { ...leaseOf(r), key: r.key } : null;
+  }
+
+  /**
+   * In `tx`, ends the lease `held` (as liveLease found it) as by `by`, at `at`: only that holding of
+   * the name, and only while it is live, so a lease claimed since, by anyone, is never ended by it.
+   * Whether it ended.
+   */
+  private async endLease(tx: Q, kolab: string, held: Lease & { key: string }, by: string, at: string): Promise<boolean> {
+    return (await tx.query(
+      `update kolab_lease l set ended_at = $5::timestamptz, ended_by = $6
+        where l.kolab_id = $1 and l.name = $2 and l.holder = $3 and l.claimed_at = $4::timestamptz and ${LIVE_LEASE('$5')}
+       returning l.name`, [kolab, held.name, held.holder, held.key, at, by])).rows.length > 0;
   }
 
   /**
@@ -10570,9 +10599,10 @@ export class Kolab {
    * or held by someone who is no longer a member: the caller holds it now. Already the caller's: it
    * is renewed to run `seconds` from now, its note replaced when one is given. Someone else's: not an
    * error, but `claimed: false` with their lease, so the caller can say who holds it and until when.
-   * Claims in a kolab take its lease lock, so of two claimants of one free name exactly one wins and
-   * the other sees the winner's lease, and MAX_LEASES_PER_MEMBER and MAX_LEASES hold. Each claim
-   * first deletes the kolab's leases that are free, so they never pile up.
+   * Claims in a kolab take its lease lock (leaseLock), so of two claimants of one free name exactly
+   * one wins and the other sees the winner's lease, and MAX_LEASES_PER_MEMBER and MAX_LEASES hold;
+   * every lease is judged at the lock's one moment. Each claim first deletes the kolab's leases that
+   * are free, so they never pile up.
    */
   async claimLease(sessionId: string, name: string, opts: { seconds?: number | null; note?: string | null } = {}): Promise<{ claimed: true; renewed: boolean; lease: Lease } | { claimed: false; lease: Lease }> {
     checkLeaseName(name);
@@ -10581,25 +10611,24 @@ export class Kolab {
       throw new LimitError(`seconds is how long the lease is held: a whole number from ${MIN_LEASE_SECONDS} to ${MAX_LEASE_SECONDS} (${MAX_LEASE_SECONDS / 3600} hours); ${DEFAULT_LEASE_SECONDS} when left out`);
     }
     const note = opts.note === undefined || opts.note === null || opts.note === '' ? null : opts.note;
-    if (note !== null && (typeof note !== 'string' || !note.trim() || note.length > MAX_LEASE_NOTE)) {
-      throw new LimitError(`a lease's note is at most ${MAX_LEASE_NOTE} characters, saying what you are doing with it`);
-    }
+    checkLeaseNote(note);
     const s = await this.session(sessionId);
     return this.inTransaction(async (tx) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
       const members = await this.leaseMembers(tx, s);
-      await tx.query(`select pg_advisory_xact_lock(hashtext('kolab_lease'), hashtext($1))`, [s.kolab]);
+      const at = await this.leaseLock(tx, s.kolab);
       await tx.exec('set local role kj_system');
-      // What is free goes: ended, expired, or its holder no longer a member.
-      await tx.query(`delete from kolab_lease l where l.kolab_id = $1 and not (${LIVE_LEASE} and l.holder = any($2::text[]))`, [s.kolab, members]);
-      const held = await this.liveLease(tx, s.kolab, name, members);
-      if (held && held.holder !== s.actor_id) return { claimed: false as const, lease: held };
+      // What is free at `at` goes: ended, expired, or its holder no longer a member.
+      await tx.query(`delete from kolab_lease l where l.kolab_id = $1 and not (${LIVE_LEASE('$3')} and l.holder = any($2::text[]))`, [s.kolab, members, at]);
+      const held = await this.liveLease(tx, s.kolab, name, members, at);
+      if (held && held.holder !== s.actor_id) return { claimed: false as const, lease: leaseOf(held) };
       if (held) {
         const r = (await tx.query<LeaseRow>(
-          `update kolab_lease l set expires_at = clock_timestamp() + make_interval(secs => $3), note = coalesce($4::text, l.note)
-            where l.kolab_id = $1 and l.name = $2 returning ${LEASE_COLUMNS}`, [s.kolab, name, seconds, note])).rows[0];
+          `update kolab_lease l set expires_at = $3::timestamptz + make_interval(secs => $4), note = coalesce($5::text, l.note)
+            where l.kolab_id = $1 and l.name = $2 returning ${LEASE_COLUMNS}`, [s.kolab, name, at, seconds, note])).rows[0];
         return { claimed: true as const, renewed: true, lease: leaseOf(r) };
       }
+      // Every row left is live at `at`: the purge took the rest.
       const counts = (await tx.query<{ mine: number; everyone: number }>(
         `select count(*) filter (where l.holder = $2)::int as mine, count(*)::int as everyone from kolab_lease l where l.kolab_id = $1`, [s.kolab, s.actor_id])).rows[0];
       if (counts.mine >= MAX_LEASES_PER_MEMBER) {
@@ -10609,20 +10638,18 @@ export class Kolab {
         throw new LimitError(`kolab ${s.kolab} holds ${counts.everyone} leases, the most a kolab holds at once (${MAX_LEASES}): wait for one to be released or expire (konjir_list_leases)`);
       }
       const r = (await tx.query<LeaseRow>(
-        `insert into kolab_lease(kolab_id, name, holder, note, expires_at) values ($1, $2, $3, $4, clock_timestamp() + make_interval(secs => $5))
-         on conflict (kolab_id, name) do nothing returning name, holder, claimed_at, expires_at, note`, [s.kolab, name, s.actor_id, note, seconds])).rows[0];
+        `insert into kolab_lease(kolab_id, name, holder, note, claimed_at, expires_at) values ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz + make_interval(secs => $6))
+         on conflict (kolab_id, name) do nothing returning name, holder, claimed_at, expires_at, note`, [s.kolab, name, s.actor_id, note, at, seconds])).rows[0];
       if (r) return { claimed: true as const, renewed: false, lease: leaseOf(r) };
-      // Taken meanwhile, which the lease lock should never let happen: the caller sees whose it is.
-      const now = await this.liveLease(tx, s.kolab, name, members);
-      if (!now) throw new TenancyError(`lease ${name} in kolab ${s.kolab} changed as you claimed it: claim it again`);
-      return { claimed: false as const, lease: now };
+      // Under the lease lock, judged at one moment, the purge left no row for the name: never here.
+      throw new TenancyError(`lease ${name} in kolab ${s.kolab} changed as you claimed it: claim it again`);
     }, undefined, { access: true });
   }
 
   /**
    * The holder of a lease in the session's kolab gives it up (konjir_release_lease), so it is free
    * now. One that isn't held (or has expired) is `released: false`; one someone else holds is refused,
-   * naming them.
+   * naming them. Under the kolab's lease lock, and only the holding it read is ended (endLease).
    */
   async releaseLease(sessionId: string, name: string): Promise<{ released: boolean; name: string }> {
     checkLeaseName(name);
@@ -10630,21 +10657,22 @@ export class Kolab {
     return this.inTransaction(async (tx) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
       const members = await this.leaseMembers(tx, s);
+      const at = await this.leaseLock(tx, s.kolab);
       await tx.exec('set local role kj_system');
-      const held = await this.liveLease(tx, s.kolab, name, members);
+      const held = await this.liveLease(tx, s.kolab, name, members, at);
       if (!held) return { released: false, name };
       if (held.holder !== s.actor_id) {
         throw new AccessError(`lease ${name} in kolab ${s.kolab} is held by ${held.holder} until ${held.expires_at}, not by you: only its holder releases it, and a person who is a member may break it (konjir_break_lease)`);
       }
-      await tx.query(`update kolab_lease set ended_at = clock_timestamp(), ended_by = $3 where kolab_id = $1 and name = $2`, [s.kolab, name, s.actor_id]);
-      return { released: true, name };
+      return { released: await this.endLease(tx, s.kolab, held, s.actor_id, at), name };
     }, undefined, { access: true });
   }
 
   /**
    * A person who is a member of the session's kolab ends anyone's lease there (konjir_break_lease):
    * for a lease whose holder has gone quiet. Never an agent's session. Returns the lease as it was,
-   * or `broken: false` when nothing was held.
+   * or `broken: false` when nothing was held. Under the kolab's lease lock, and only the holding it
+   * read is ended (endLease).
    */
   async breakLease(sessionId: string, name: string): Promise<{ broken: true; lease: Lease } | { broken: false; name: string }> {
     checkLeaseName(name);
@@ -10653,11 +10681,11 @@ export class Kolab {
     return this.inTransaction(async (tx) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
       const members = await this.leaseMembers(tx, s);
+      const at = await this.leaseLock(tx, s.kolab);
       await tx.exec('set local role kj_system');
-      const held = await this.liveLease(tx, s.kolab, name, members);
-      if (!held) return { broken: false as const, name };
-      await tx.query(`update kolab_lease set ended_at = clock_timestamp(), ended_by = $3 where kolab_id = $1 and name = $2`, [s.kolab, name, s.actor_id]);
-      return { broken: true as const, lease: held };
+      const held = await this.liveLease(tx, s.kolab, name, members, at);
+      if (!held || !(await this.endLease(tx, s.kolab, held, s.actor_id, at))) return { broken: false as const, name };
+      return { broken: true as const, lease: leaseOf(held) };
     }, undefined, { access: true });
   }
 
@@ -10665,9 +10693,11 @@ export class Kolab {
   async listLeases(sessionId: string): Promise<{ leases: Lease[] }> {
     const s = await this.session(sessionId);
     const members = await this.leaseMembers(this.db, s);
+    // One moment for every row, as a claim judges them (leaseLock).
+    const at = (await this.db.query<{ at: string }>(`select clock_timestamp()::text as at`)).rows[0].at;
     const rows = (await this.db.query<LeaseRow>(
-      `select ${LEASE_COLUMNS} from kolab_lease l where l.kolab_id = $1 and ${LIVE_LEASE} and l.holder = any($2::text[])
-        order by l.expires_at, l.name limit $3`, [s.kolab, members, MAX_LEASES])).rows;
+      `select ${LEASE_COLUMNS} from kolab_lease l where l.kolab_id = $1 and ${LIVE_LEASE('$4')} and l.holder = any($2::text[])
+        order by l.expires_at, l.name limit $3`, [s.kolab, members, MAX_LEASES, at])).rows;
     return { leases: rows.map(leaseOf) };
   }
 
@@ -14854,8 +14884,20 @@ function checkLeaseName(name: unknown): asserts name is string {
     throw new LimitError(`${JSON.stringify(typeof name === 'string' ? name.slice(0, 60) : name ?? null)} is no lease name: a lease is named with 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts)`);
   }
 }
-/** A lease row (kolab_lease, aliased l) is live while it hasn't ended or expired; its holder is checked to be a member besides. */
-const LIVE_LEASE = `l.ended_at is null and l.expires_at > clock_timestamp()`;
+/**
+ * A lease row (kolab_lease, aliased l) is live at the moment `at` (a parameter, read once per
+ * transaction: leaseLock) while it hasn't ended or expired; its holder is checked to be a member besides.
+ */
+const LIVE_LEASE = (at: string) => `l.ended_at is null and l.expires_at > ${at}::timestamptz`;
+/** What a lease's note may not hold, being one line shown to others: C0 and C1 controls (NUL among them), and the line and paragraph separators. */
+const NOTE_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+/** A lease's note, or refused: at most MAX_LEASE_NOTE characters, counted as message text is (checkText), on one line. */
+function checkLeaseNote(note: unknown): asserts note is string | null {
+  if (note === null) return;
+  if (typeof note !== 'string' || !note.trim()) throw new LimitError('a lease\'s note says what you are doing with it, in a few words: give some, or leave it out');
+  checkText('the lease\'s note', note, MAX_LEASE_NOTE);
+  if (NOTE_UNSAFE.test(note)) throw new LimitError('a lease\'s note is one line shown to the other members: no line breaks, tabs or other control characters');
+}
 const LEASE_COLUMNS = `l.name, l.holder, l.claimed_at, l.expires_at, l.note`;
 type LeaseRow = { name: string; holder: string; claimed_at: Date | string; expires_at: Date | string; note: string | null };
 const leaseOf = (r: LeaseRow): Lease => ({ name: r.name, holder: r.holder, claimed_at: iso(r.claimed_at)!, expires_at: iso(r.expires_at)!, note: r.note });
