@@ -3,9 +3,10 @@
 // Everything is the session's own person's: an agent's session is refused every verb, a non-member
 // is refused, and another person's host or request answers exactly as one that doesn't exist. A
 // request is taken once, ever; answered once, which empties its body; and never read back with it.
+import { createHash } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import {
-  HOST_FORGOTTEN_DAYS, HOST_FRESH_SECONDS, HOST_REQUEST_SECONDS, HOST_REQUESTS_AT_ONCE, MAX_HOST_BODY, MAX_HOST_REQUESTS_WAITING, MAX_HOST_RESULT, MAX_HOSTS_PER_PERSON,
+  HOST_CLEANUP_OTHERS, HOST_TAKEN_SECONDS, MAX_HOST_ASKS_PER_HOUR, HOST_FORGOTTEN_DAYS, HOST_FRESH_SECONDS, HOST_REQUEST_SECONDS, HOST_REQUESTS_AT_ONCE, MAX_HOST_BODY, MAX_HOST_REQUESTS_WAITING, MAX_HOST_RESULT, MAX_HOSTS_PER_PERSON,
 } from '@konjir/types';
 import { openKolab, rejection, TestKolab } from '@konjir/engine/testing';
 
@@ -26,6 +27,7 @@ async function hub(kolab?: TestKolab) {
   return { kolab: k, ann, bo, annAgent, boAgent };
 }
 
+const md5 = (s: string) => createHash('md5').update(s).digest('hex');
 const KEY = 'k'.repeat(43);
 const I1 = 'a'.repeat(32);
 const I2 = 'b'.repeat(32);
@@ -247,14 +249,140 @@ test('a request not taken in time reads as expired and is never handed out; one 
   await expire(kolab, late.request);
   expect((await kolab.readHostRequest(ann, late.request)).request.state).toBe('expired');
   expect((await kolab.serveHost(ann, serving('laptop'))).requests).toStrictEqual([]);
+  // Its body is emptied as the host serves, and the row stays, reading as expired, for the rest of its hour.
+  const body = async (id: string) => (await kolab.db.query<{ body: string }>(`select body from kolab_host_request where id = $1`, [id])).rows[0]?.body;
+  expect(await body(late.request)).toBe('');
   expect((await kolab.readHostRequest(ann, late.request)).request.state).toBe('expired');
   expect(await rejection(kolab.answerHost(ann, late.request, true, 'r'))).toMatch(/has not been taken by its host/);
-  // A taken request past its expiry is still the host's to answer.
+  // Asking empties the asker's own expired bodies too.
+  const another = await kolab.askHost(ann, 'laptop', 'start', 'sealed');
+  await expire(kolab, another.request);
+  expect(await body(another.request)).toBe('sealed');
+  await kolab.askHost(ann, 'laptop', 'stop', 'b');
+  expect(await body(another.request)).toBe('');
+  expect((await kolab.readHostRequest(ann, another.request)).request.state).toBe('expired');
+  // A taken request past its expiry is still the host's to answer, and keeps its body until then.
+  await kolab.serveHost(ann, serving('laptop'));
   const slow = await kolab.askHost(ann, 'laptop', 'start', 'b');
   await kolab.serveHost(ann, serving('laptop'));
   await expire(kolab, slow.request);
+  await kolab.serveHost(ann, serving('laptop'));
+  expect(await body(slow.request)).toBe('b');
   expect((await kolab.readHostRequest(ann, slow.request)).request.state).toBe('taken');
   expect(await kolab.answerHost(ann, slow.request, true, 'started late')).toStrictEqual({ answered: true });
+});
+
+test('answering a request that went between its read and its write is refused as unknown, never reported as answered', async () => {
+  const { kolab, ann } = await hub();
+  await kolab.serveHost(ann, serving('laptop'));
+  const { request } = await kolab.askHost(ann, 'laptop', 'start', 'b');
+  await kolab.serveHost(ann, serving('laptop'));
+  // Deleted right after answerHost reads it, as another member's cleanup could.
+  const proto = Object.getPrototypeOf(kolab.db);
+  const query = proto.query;
+  let fired = false;
+  proto.query = async function (this: unknown, sql: string, params?: unknown[]) {
+    const result = await query.call(this, sql, params);
+    if (!fired && sql.includes('select taken_at, done_at from kolab_host_request')) {
+      fired = true;
+      await query.call(this, `delete from kolab_host_request where id = $1`, [request]);
+    }
+    return result;
+  };
+  try {
+    expect(await rejection(kolab.answerHost(ann, request, true, 'r'))).toBe('TenancyError: there is no request of yours by that id in kolab hub');
+  } finally { proto.query = query; }
+  expect(fired).toBe(true);
+});
+
+test(`a request taken and never answered stops counting toward the ${MAX_HOST_REQUESTS_WAITING} after ${HOST_TAKEN_SECONDS} seconds, and still reads as taken`, async () => {
+  const { kolab, ann } = await hub();
+  await kolab.serveHost(ann, serving('laptop'));
+  for (let i = 0; i < MAX_HOST_REQUESTS_WAITING; i++) await kolab.askHost(ann, 'laptop', 'start', 'b');
+  const taken = [...(await kolab.serveHost(ann, serving('laptop'))).requests, ...(await kolab.serveHost(ann, serving('laptop'))).requests];
+  expect(taken).toHaveLength(MAX_HOST_REQUESTS_WAITING);
+  expect(await rejection(kolab.askHost(ann, 'laptop', 'start', 'b'))).toMatch(/requests not answered yet/);
+  // The host crashed: just inside the window, they still count; past it, they don't.
+  await kolab.db.query(`update kolab_host_request set taken_at = clock_timestamp() - make_interval(secs => $1)`, [HOST_TAKEN_SECONDS - 5]);
+  expect(await rejection(kolab.askHost(ann, 'laptop', 'start', 'b'))).toMatch(/requests not answered yet/);
+  await kolab.db.query(`update kolab_host_request set taken_at = clock_timestamp() - make_interval(secs => $1)`, [HOST_TAKEN_SECONDS + 1]);
+  expect((await kolab.askHost(ann, 'laptop', 'start', 'b')).request).toMatch(/^[a-f0-9]{32}$/);
+  expect((await kolab.readHostRequest(ann, taken[0].id)).request.state).toBe('taken');
+  expect(await kolab.answerHost(ann, taken[0].id, true, 'late')).toStrictEqual({ answered: true });
+});
+
+test(`a person makes at most ${MAX_HOST_ASKS_PER_HOUR} requests in a kolab an hour, counted from their requests of the last hour; past it, told when to try again`, async () => {
+  const { kolab, ann, bo } = await hub();
+  await kolab.serveHost(ann, serving('laptop'));
+  await kolab.serveHost(bo, serving('laptop'));
+  // Answered requests of the last hour, as asking and answering leave them: they count, though none waits.
+  const made = (owner: string, n: number, minutesAgo: number) => kolab.db.query(
+    `insert into kolab_host_request(id, kolab_id, owner, host, kind, body, created_at, expires_at, taken_at, done_at, ok, answered_by)
+     select md5($1 || i::text), 'hub', $1, 'laptop', 'start', '', t, t + interval '1 minute', t, t, true, $1
+       from generate_series(1, $2) i, lateral (select clock_timestamp() - make_interval(mins => $3) - make_interval(secs => i) as t) x`, [owner, n, minutesAgo]);
+  await made('ann', MAX_HOST_ASKS_PER_HOUR - 1, 30);
+  expect((await kolab.askHost(ann, 'laptop', 'start', 'b')).request).toMatch(/^[a-f0-9]{32}$/);
+  const refused = await rejection(kolab.askHost(ann, 'laptop', 'start', 'b'));
+  expect(refused).toMatch(new RegExp(`^LimitError: you have made ${MAX_HOST_ASKS_PER_HOUR} requests of your hosts in kolab hub in the last hour, the most a person makes \\(${MAX_HOST_ASKS_PER_HOUR}\\): try again after (\\S+)$`));
+  // When the oldest of them is an hour old.
+  const oldest = (await kolab.db.query<{ t: Date }>(`select min(created_at) as t from kolab_host_request where owner = 'ann'`)).rows[0].t;
+  expect(refused.endsWith(`after ${new Date(new Date(oldest).getTime() + 3600_000).toISOString()}`)).toBe(true);
+  // Another person's budget is their own.
+  expect((await kolab.askHost(bo, 'laptop', 'start', 'b')).request).toMatch(/^[a-f0-9]{32}$/);
+  // Past the hour, they no longer count, and they are cleared away.
+  await kolab.db.query(`update kolab_host_request set created_at = created_at - interval '31 minutes', expires_at = expires_at - interval '31 minutes' where owner = 'ann' and body = ''`);
+  expect((await kolab.askHost(ann, 'laptop', 'start', 'b')).request).toMatch(/^[a-f0-9]{32}$/);
+  expect((await kolab.db.query(`select count(*)::int as n from kolab_host_request where owner = 'ann'`)).rows[0]).toStrictEqual({ n: 2 });
+});
+
+test(`cleanup clears the caller's own old rows without limit, and at most ${HOST_CLEANUP_OTHERS} of anyone else's a call, oldest first`, async () => {
+  const { kolab, ann, bo } = await hub();
+  await kolab.serveHost(ann, serving('laptop'));
+  await kolab.serveHost(bo, serving('laptop'));
+  const old = (owner: string, n: number) => kolab.db.query(
+    `insert into kolab_host_request(id, kolab_id, owner, host, kind, body, created_at, expires_at)
+     select md5($1 || i::text), 'hub', $1, 'laptop', 'start', 'sealed', t, t + interval '1 minute'
+       from generate_series(1, $2) i, lateral (select clock_timestamp() - interval '2 hours' - make_interval(secs => i) as t) x`, [owner, n]);
+  const count = async (owner: string) => (await kolab.db.query<{ n: number }>(`select count(*)::int as n from kolab_host_request where owner = $1`, [owner])).rows[0].n;
+  await old('ann', 50);
+  await old('bo', 50);
+  // Ann serving: all of hers go, and the 20 oldest of Bo's.
+  await kolab.serveHost(ann, serving('laptop'));
+  expect(await count('ann')).toBe(0);
+  expect(await count('bo')).toBe(50 - HOST_CLEANUP_OTHERS);
+  const left = (await kolab.db.query<{ id: string }>(`select id from kolab_host_request where owner = 'bo' order by created_at`)).rows.map((r) => r.id);
+  expect(left).toStrictEqual(Array.from({ length: 30 }, (_, i) => i + 1).reverse().map((i) => md5(`bo${i}`)));
+  // Asking clears too: Ann's own new old rows, and 20 more of Bo's.
+  await old('ann', 5);
+  await kolab.askHost(ann, 'laptop', 'start', 'b');
+  expect(await count('ann')).toBe(1);
+  expect(await count('bo')).toBe(50 - 2 * HOST_CLEANUP_OTHERS);
+  // Bo's own serve clears the rest of his.
+  await kolab.serveHost(bo, serving('laptop'));
+  expect(await count('bo')).toBe(0);
+
+  // Expired bodies: the caller's own all, others' at most 20 a call.
+  const expired = (owner: string, n: number) => kolab.db.query(
+    `insert into kolab_host_request(id, kolab_id, owner, host, kind, body, created_at, expires_at)
+     select md5('x' || $1 || i::text), 'hub', $1, 'laptop', 'start', 'sealed', t, t + interval '1 minute'
+       from generate_series(1, $2) i, lateral (select clock_timestamp() - interval '10 minutes' - make_interval(secs => i) as t) x`, [owner, n]);
+  await expired('ann', 30);
+  await expired('bo', 30);
+  await kolab.serveHost(ann, serving('laptop'));
+  const sealed = async (owner: string) => (await kolab.db.query<{ n: number }>(`select count(*)::int as n from kolab_host_request where owner = $1 and body <> '' and taken_at is null`, [owner])).rows[0].n;
+  expect(await sealed('ann')).toBe(0);
+  expect(await sealed('bo')).toBe(30 - HOST_CLEANUP_OTHERS);
+  // The rows stay, reading as expired.
+  expect(await count('bo')).toBe(30);
+  expect((await kolab.db.query(`select count(*)::int as n from kolab_host_request where owner = 'ann' and taken_at is null`)).rows[0]).toStrictEqual({ n: 30 });
+
+  // Forgotten hosts: the caller's own, and at most 20 of others'.
+  await kolab.db.query(
+    `insert into kolab_host(kolab_id, owner, name, instance, public_key, started_at, seen_at)
+     select 'hub', 'bo', 'old-' || i, $1, $2, t, t from generate_series(1, 25) i,
+       lateral (select clock_timestamp() - interval '8 days' - make_interval(secs => i) as t) x`, [I1, KEY]);
+  await kolab.serveHost(ann, serving('laptop'));
+  expect((await kolab.db.query(`select count(*)::int as n from kolab_host where owner = 'bo' and name like 'old-%'`)).rows[0]).toStrictEqual({ n: 25 - HOST_CLEANUP_OTHERS });
 });
 
 test('a request taken at the very moment it expires is judged at the serve\'s one moment', async () => {
@@ -427,14 +555,40 @@ test('serve, answer, read, list and end are quiet: they renew no work lease', as
   }
 });
 
-test('an archived kolab\'s hosts change no more: serving, asking, answering and ending are refused', async () => {
+test('archiving a kolab ends its sessions, so every host verb answers no open session; and the database refuses any change to its hosts and requests', async () => {
   const { kolab, ann } = await hub();
   await kolab.serveHost(ann, serving('laptop'));
   const { request } = await kolab.askHost(ann, 'laptop', 'start', 'b');
   await kolab.serveHost(ann, serving('laptop'));
   await kolab.archive({ kolab: 'hub' });
-  // An archived kolab's sessions may be gone; the database refuses the change regardless.
+  const ended = /^RoleError: no open session for that token/;
+  expect(await rejection(kolab.serveHost(ann, serving('laptop')))).toMatch(ended);
+  expect(await rejection(kolab.askHost(ann, 'laptop', 'start', 'b'))).toMatch(ended);
+  expect(await rejection(kolab.answerHost(ann, request, true, 'r'))).toMatch(ended);
+  expect(await rejection(kolab.readHostRequest(ann, request))).toMatch(ended);
+  expect(await rejection(kolab.listHosts(ann))).toMatch(ended);
+  expect(await rejection(kolab.endHost(ann, 'laptop'))).toMatch(ended);
+  // Nothing changed, and the database refuses a change made around the verbs.
+  expect((await kolab.db.query(`select done_at from kolab_host_request where id = $1`, [request])).rows).toStrictEqual([{ done_at: null }]);
   expect(await rejection(kolab.db.query(`update kolab_host set folder = 'x'`))).toMatch(/archived/);
   expect(await rejection(kolab.db.query(`delete from kolab_host_request`))).toMatch(/archived/);
-  void request;
+});
+
+test('quiet only skips renewing leases: an ended or revoked session is refused serve, read, list, answer and end', async () => {
+  const { kolab, ann, bo } = await hub();
+  for (const who of [ann, bo]) await kolab.serveHost(who, serving('laptop'));
+  const annReq = (await kolab.askHost(ann, 'laptop', 'start', 'b')).request;
+  const boReq = (await kolab.askHost(bo, 'laptop', 'start', 'b')).request;
+  for (const who of [ann, bo]) await kolab.serveHost(who, serving('laptop'));
+  const everyQuietVerb = (s: string, req: string) => [
+    kolab.serveHost(s, serving('laptop')), kolab.readHostRequest(s, req), kolab.listHosts(s), kolab.answerHost(s, req, true, 'r'), kolab.endHost(s, 'laptop'),
+  ];
+  // Ended: ann signs out.
+  await kolab.endSession(ann, { signingOut: true });
+  for (const p of everyQuietVerb(ann, annReq)) expect(await rejection(p)).toMatch(/^RoleError: no open session for that token/);
+  // Revoked: bo's grant goes, and his session with it.
+  await kolab.revoke('hub', 'bo');
+  for (const p of everyQuietVerb(bo, boReq)) expect(await rejection(p)).toMatch(/no open session for that token|can no longer reach kolab hub/);
+  expect((await kolab.db.query(`select count(*)::int as n from kolab_host_request where done_at is not null`)).rows[0]).toStrictEqual({ n: 0 });
+  expect((await kolab.db.query(`select count(*)::int as n from kolab_host`)).rows[0]).toStrictEqual({ n: 2 });
 });

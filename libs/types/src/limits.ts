@@ -225,6 +225,23 @@ export const HOST_REQUEST_KEPT_SECONDS = 60 * 60;
 export const MAX_HOSTS_PER_PERSON = 20;
 /** The most requests a host has waiting or taken and not answered at once. */
 export const MAX_HOST_REQUESTS_WAITING = 20;
+/**
+ * A request taken this many seconds ago or less and not answered still counts toward
+ * MAX_HOST_REQUESTS_WAITING; past it (its host stopped, say), it no longer does, though it still
+ * reads as taken until it is answered or cleared away.
+ */
+export const HOST_TAKEN_SECONDS = 5 * 60;
+/**
+ * The most requests one person makes in a kolab in the last hour (konjir_ask_host), counted from
+ * their requests made in that hour: its own budget, apart from messages' and drafts'.
+ */
+export const MAX_HOST_ASKS_PER_HOUR = 120;
+/**
+ * The most of other people's rows one call of konjir_serve_host or konjir_ask_host clears away of
+ * each kind (old requests, forgotten hosts, expired bodies), oldest first: the caller's own are
+ * cleared without limit, and no one's call pays for all of someone else's backlog.
+ */
+export const HOST_CLEANUP_OTHERS = 20;
 /** The most requests one call of konjir_serve_host takes, oldest first. */
 export const HOST_REQUESTS_AT_ONCE = 10;
 /** The longest request body, and the longest answer, in characters (counted as message text is). */

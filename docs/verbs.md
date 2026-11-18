@@ -573,7 +573,7 @@ Ask a question about an address. It routes to the layer that owns the answer: as
 konjir ask_host host=<string> kind=<start|stop|end> body=<string>
 ```
 
-For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. The request waits 60 seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), or when it has 20 requests not answered yet. body is opaque to Kolab: seal it to the host's public_key.
+For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. The request waits 60 seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), when it has 20 requests not answered yet (waiting, or taken in the last 5 minutes), or when you have made 120 requests in this kolab in the last hour (it says when to try again). body is opaque to Kolab: seal it to the host's public_key. One the host doesn't take in time reads as expired, and its body is emptied.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

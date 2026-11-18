@@ -16,8 +16,12 @@
 --                       opaque body (at most MAX_HOST_BODY characters). It waits until expires_at
 --                       for its host to take it (taken_at), once, and is answered once (done_at, ok,
 --                       result, answered_by), which empties its body: a body may hold a sealed
---                       login, and is not kept once answered. Requests go with their host (on
---                       delete cascade), and are cleared away an hour after they were made.
+--                       login, and is not kept once answered. One that expires untaken has its
+--                       body emptied too, and still reads as expired until its row goes: so an
+--                       empty body is allowed on any request, and required once it is answered.
+--                       Requests go with their host (on delete cascade), and are cleared away an
+--                       hour after they were made; the person's requests of that hour are their
+--                       budget (MAX_HOST_ASKS_PER_HOUR).
 --
 -- Kolab reads and writes both as kj_system, after the engine's checks, as it does leases: no
 -- session's role is granted them. An archived kolab's hosts and requests can't change
@@ -73,8 +77,10 @@ create table kolab_host_request (
 );
 -- A host's requests, oldest first, as serving takes them and as they are counted.
 create index kolab_host_request_host on kolab_host_request(kolab_id, owner, host, created_at);
--- A kolab's requests by when they were made, which clearing away reads.
+-- A kolab's requests by when they were made, which clearing away and the hourly budget read.
 create index kolab_host_request_created on kolab_host_request(kolab_id, created_at);
+-- Requests that wait with a body, by when they expire: once expired untaken, the body is emptied.
+create index kolab_host_request_unblanked on kolab_host_request(kolab_id, expires_at) where taken_at is null and done_at is null and body <> '';
 
 create trigger kolab_writable_insert after insert on kolab_host referencing new table as kj_rows
   for each statement execute function kj_kolab_writable();
