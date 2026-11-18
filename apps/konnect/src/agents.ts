@@ -1,19 +1,20 @@
 /**
- * `konnect claude|codex|opencode <label>`: an agent of the person's, in their team, with konnect's
- * four tools (`konnect mcp`), started in the tool they use.
+ * `konnect agent add|run`: an agent of the person's, in their team, with konnect's tools
+ * (`konnect mcp`), started in the harness they use.
  *
- * 1. The agent is made if it is new, and signed in, by Kolab's setup page, the same flow `konjir
+ * 1. The agent is made if it is new, and logged in, by Kolab's setup page, the same flow `konjir
  *    connect` uses (@konjir/login's setup: one page in the browser, scope
- *    `konjir kolab:<team> setup:<label>:engineer`, which mints the agent's own sign-in). Every agent
+ *    `konjir kolab:<team> setup:<label>:engineer`, which mints the agent's own login). Every agent
  *    konnect makes has the role engineer, which konnect never shows: konnect's agents talk, and
  *    the role only decides what else they could do in Kolab.
- * 2. Its sign-in is kept where `konnect mcp` reads it, `<config>/agents/<team>/<label>.json`.
- * 3. The MCP entry runs `konnect mcp` with the team and the agent in its environment, and no token:
- *    Claude Code's goes in the project's `.mcp.json` (as `konnect-<label>`); Codex's is passed on its
- *    command line (`-c mcp_servers.…`) and OpenCode's in OPENCODE_CONFIG_CONTENT, writing nothing.
- * 4. The tool is started in this folder: Claude Code with the server loaded as its channel, so a
- *    message for the agent wakes it (`konnect mcp` sends it); Codex and OpenCode aren't woken in
- *    this release, and check for messages at the start of each turn (konnect_read says so).
+ * 2. Its login is kept where `konnect mcp` reads it, `<config>/agents/<team>/<label>.json`.
+ * 3. The MCP entry runs `konnect mcp` with the team and the agent in its environment, and no token.
+ *    Nothing is written in the folder: Claude Code takes it on its command line (--mcp-config),
+ *    Codex as `-c mcp_servers.…`, OpenCode in OPENCODE_CONFIG_CONTENT.
+ * 4. The harness is started in this folder. Claude Code is also passed, in --settings, the hook that
+ *    wakes its idle session when a message comes for the agent (cmd-wake.ts) and leave to call the
+ *    agent's own tools, and the agent's system prompt (--append-system-prompt). Codex and OpenCode
+ *    aren't woken, and receive at the start of each turn.
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -130,31 +131,6 @@ export function listenList(given: string | undefined): string[] {
   return [...new Set(names)];
 }
 
-/**
- * The project's `.mcp.json` with the agent's entry set, as `mcpServers[konnect-<label>]`; other
- * entries are kept. One that isn't a JSON object is refused, never replaced.
- */
-export function mcpJsonText(before: string, name: string, entry: { command: string; args: string[]; env: Record<string, string> }): string {
-  let doc: Record<string, unknown> = {};
-  if (before.trim()) {
-    try { doc = JSON.parse(before); } catch { throw new Error('.mcp.json isn\'t JSON, so konnect won\'t change it: fix it, or move it away'); }
-    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('.mcp.json isn\'t a JSON object, so konnect won\'t change it');
-  }
-  const servers = doc.mcpServers && typeof doc.mcpServers === 'object' && !Array.isArray(doc.mcpServers) ? doc.mcpServers as Record<string, unknown> : {};
-  return `${JSON.stringify({ ...doc, mcpServers: { ...servers, [name]: { type: 'stdio', ...entry } } }, null, 2)}\n`;
-}
-
-/** Writes `.mcp.json` in `dir` whole, then moves it into place. */
-export function writeMcpJson(dir: string, name: string, entry: { command: string; args: string[]; env: Record<string, string> }): string {
-  const path = join(dir, '.mcp.json');
-  const before = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  const text = mcpJsonText(before, name, entry);
-  const tmp = join(dir, `.mcp.json.${randomBytes(6).toString('hex')}.tmp`);
-  writeFileSync(tmp, text, { flag: 'wx', mode: 0o644 });
-  renameSync(tmp, path);
-  return path;
-}
-
 /** The TOML value of a string, an array of strings, or a table of strings, for Codex's `-c key=value`. */
 const toml = (v: string | string[] | Record<string, string>): string => (typeof v === 'string' ? JSON.stringify(v)
   : Array.isArray(v) ? `[${v.map((s) => JSON.stringify(s)).join(', ')}]`
@@ -165,8 +141,30 @@ const toml = (v: string | string[] | Record<string, string>): string => (typeof 
  * program, its arguments, and environment to add. Codex takes the server as `-c` overrides of
  * `mcp_servers.<name>`, OpenCode as OPENCODE_CONFIG_CONTENT; neither writes a file.
  */
-export function toolCommand(tool: Tool, name: string, entry: { command: string; args: string[]; env: Record<string, string> }, extra: string[]): { cmd: string; args: string[]; env: Record<string, string> } {
-  if (tool === 'claude') return { cmd: 'claude', args: ['--dangerously-load-development-channels', `server:${name}`, ...extra], env: {} };
+export function toolCommand(tool: Tool, name: string, entry: { command: string; args: string[]; env: Record<string, string> }, extra: string[], prompt?: string): { cmd: string; args: string[]; env: Record<string, string> } {
+  if (tool === 'claude') {
+    // Everything Claude Code needs is on its command line, for this session alone: nothing is written
+    // in the folder or in the person's settings. The server (--mcp-config), then --settings with the
+    // hook that wakes the idle session (cmd-wake.ts) and leave to call the agent's own tools, so a
+    // turn that starts with nobody there isn't stopped at a permission question.
+    const hook = { type: 'command', command: shellLine([entry.command, ...entry.args.slice(0, -1), 'wake']), async: true, asyncRewake: true, timeout: WAKE_HOOK_SECONDS };
+    const ours = { permissions: { allow: [`mcp__${name}`] }, hooks: { SessionStart: [{ hooks: [hook] }], Stop: [{ hooks: [hook] }] } };
+    const merged = withSettings(extra, ours);
+    const settings = merged.settings;
+    // The agent's system prompt, as Claude Code's own (added to it, with any the person passes after it).
+    const rest: string[] = [];
+    let theirs: string | undefined;
+    for (let i = 0; i < merged.rest.length; i++) {
+      const w = merged.rest[i];
+      if (w === '--append-system-prompt' && merged.rest[i + 1] !== undefined) theirs = merged.rest[++i];
+      else if (w.startsWith('--append-system-prompt=')) theirs = w.slice('--append-system-prompt='.length);
+      else rest.push(w);
+    }
+    const said = [prompt, theirs].filter((x): x is string => !!x?.trim()).join('\n\n');
+    const server = { mcpServers: { [name]: { type: 'stdio', command: entry.command, args: entry.args, env: { ...entry.env, KONNECT_WAKE: 'hook' } } } };
+    // --mcp-config takes several values, so an option always follows it: the person's own first word is never read as one.
+    return { cmd: 'claude', args: ['--mcp-config', JSON.stringify(server), '--settings', JSON.stringify(settings), ...(said ? ['--append-system-prompt', said] : []), ...rest], env: {} };
+  }
   if (tool === 'codex') {
     const key = `mcp_servers.${name}`;
     return { cmd: 'codex', args: ['-c', `${key}.command=${toml(entry.command)}`, '-c', `${key}.args=${toml(entry.args)}`, '-c', `${key}.env=${toml(entry.env)}`, ...extra], env: {} };
@@ -175,6 +173,34 @@ export function toolCommand(tool: Tool, name: string, entry: { command: string; 
     cmd: 'opencode', args: extra,
     env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { [name]: { type: 'local', command: [entry.command, ...entry.args], environment: entry.env, enabled: true } } }) },
   };
+}
+
+/** How long Claude Code lets the wake hook wait: 20 days, after which the next turn starts another. */
+const WAKE_HOOK_SECONDS = 1_728_000;
+
+type Settings = { permissions?: { allow?: unknown[] } & Record<string, unknown>; hooks?: Record<string, unknown[]> } & Record<string, unknown>;
+
+/**
+ * Claude Code takes one --settings: when the person passes their own after the harness's name,
+ * konnect's are merged into theirs (their hooks and permissions kept, konnect's added) and one is
+ * passed. Theirs may be JSON or a file of it; anything else is refused, never dropped.
+ */
+export function withSettings(extra: string[], ours: Settings): { settings: Settings; rest: string[] } {
+  const rest: string[] = [];
+  let theirs: Settings = {};
+  for (let i = 0; i < extra.length; i++) {
+    const w = extra[i];
+    const given = w === '--settings' ? extra[++i] : w.startsWith('--settings=') ? w.slice('--settings='.length) : undefined;
+    if (given === undefined) { if (w === '--settings') throw new Error('--settings needs a file or JSON'); rest.push(w); continue; }
+    let text = given;
+    if (!given.trim().startsWith('{')) { try { text = readFileSync(given, 'utf8'); } catch { throw new Error(`konnect couldn't read the --settings file ${printable(given)}, which it merges its own into`); } }
+    try { theirs = JSON.parse(text) as Settings; } catch { throw new Error('the --settings you passed isn\'t JSON, so konnect can\'t add its own to it'); }
+    if (!theirs || typeof theirs !== 'object' || Array.isArray(theirs)) throw new Error('the --settings you passed isn\'t a JSON object, so konnect can\'t add its own to it');
+  }
+  const hooks: Record<string, unknown[]> = { ...(theirs.hooks ?? {}) };
+  for (const [event, list] of Object.entries(ours.hooks ?? {})) hooks[event] = [...(Array.isArray(hooks[event]) ? hooks[event] : []), ...list];
+  const allow = [...(Array.isArray(theirs.permissions?.allow) ? theirs.permissions.allow : []), ...(ours.permissions?.allow ?? [])];
+  return { settings: { ...theirs, permissions: { ...(theirs.permissions ?? {}), allow }, hooks }, rest };
 }
 
 /** What to install when a tool isn't on PATH. */

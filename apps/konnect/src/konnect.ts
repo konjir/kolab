@@ -18,6 +18,7 @@ import { listenList } from './agents.js';
 import { agent } from './cmd-agent.js';
 import { history, receive, sendMessage, status } from './cmd-messages.js';
 import { channel, logOut, login, team } from './cmd-team.js';
+import { wake } from './cmd-wake.js';
 import { Ctx, actingAs, chooseTeam, type IO } from './context.js';
 import { UsageError } from './errors.js';
 import { USAGE, helpFor } from './help.js';
@@ -28,14 +29,15 @@ import { agentFileReady } from './teams.js';
 export { TeamClient, NotYet, Refused, SignInError, UNREAD_WAIT_MS } from './client.js';
 export { counted, formatChannels, formatTeam, formatMessage, memberJson, mentionsIn, shownName, storedName, unreadLine, type Channel, type ChannelMessage, type Member, type Message } from './names.js';
 export { framed, serveMcp, sessionGone, type McpOptions } from './mcp.js';
-export { describeWake, wakeDescriber } from './wake.js';
+export { describeWake, noticeFor, wakeDescriber, wakingIn, type Waking } from './wake.js';
 export { readAll, send, targetOf, type Block } from './chat.js';
 export { joinTeam, signInToTeam } from './sign-in.js';
-export { agentSetupScope, entryEnv, konnectCommand, mcpJsonText, serverName, toolCommand } from './agents.js';
+export { agentSetupScope, entryEnv, konnectCommand, serverName, toolCommand, withSettings } from './agents.js';
 export { HOSTED_URL, agentFile, agentFileReady, allTeams, configDir, teamFile, teamsAt } from './teams.js';
 export { parseArgs, duration, type Args } from './args.js';
 export { Ctx, chooseTeam, kolabUrl, normalUrl, type IO } from './context.js';
-export { UsageError, WaitRanOut, exitStatus } from './errors.js';
+export { UsageError, WaitRanOut, Woke, exitStatus } from './errors.js';
+export { unannounced, wakeFile } from './cmd-wake.js';
 export { USAGE, helpFor } from './help.js';
 export { systemPrompt } from './system-prompt.js';
 
@@ -116,9 +118,12 @@ export async function main(argv: string[], io: IO = {}) {
     const wakeOn = listenList(parsed.wakeOn.length ? parsed.wakeOn.join(',') : parsed.listen ?? env.KONNECT_WAKE_ON ?? env.KONNECT_LISTEN ?? undefined);
     const actFor = parsed.actFor ?? (ACT_FOR.includes(env.KONNECT_ACT_FOR as ActFor) ? env.KONNECT_ACT_FOR as ActFor : undefined);
     const own = parsed.systemPrompt ?? env.KONNECT_SYSTEM_PROMPT;
-    await (io.serve ?? serveStdio)({ team: mcpTeam, url: ctx.url, file, label: as.label, ...(as.owner ? { owner: as.owner } : {}), ...(wakeOn.length ? { wakeOn } : {}), ...(actFor ? { actFor } : {}), ...(own ? { own } : {}), log: err });
+    await (io.serve ?? serveStdio)({ team: mcpTeam, url: ctx.url, file, label: as.label, ...(as.owner ? { owner: as.owner } : {}), ...(wakeOn.length ? { wakeOn } : {}), ...(actFor ? { actFor } : {}), ...(own ? { own } : {}), ...(env.KONNECT_WAKE === 'hook' ? { wake: false } : {}), log: err });
     return;
   }
+
+  // Plumbing: the hook that wakes an agent's idle harness.
+  if (parsed.words[0] === 'wake') return wake(ctx, parsed.words.slice(1));
 
   const said = new Set<string>();
   const words = fromOld(parsed, (old, now) => { if (!said.has(old)) { said.add(old); err(`(${old} is now ${now})`); } }, () => ctx.team());
