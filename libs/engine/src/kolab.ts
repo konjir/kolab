@@ -10704,6 +10704,24 @@ export class Kolab {
     return { leases: rows.map(leaseOf) };
   }
 
+  // ---- an agent's state (konjir_say_state) ---------------------------------------
+
+  /**
+   * The session `sessionId` of an agent that is a member of its kolab now, for konjir_say_state:
+   * its key (the id a SessionEndedEvent names), actor and kolab. Read quietly, as the host verbs
+   * are: a running agent says its state twice a minute, which renews no work or job lease and
+   * spends no budget; an ended, revoked or expired session is still refused. A person's session is
+   * refused, and so is a non-member's. What the agent says is kept by the server, never here.
+   */
+  async agentStateSession(sessionId: string): Promise<{ session: string; actor: string; kolab: string }> {
+    const s = await QUIET.run(true, () => this.session(sessionId));
+    if (s.kind !== 'agent') throw new AccessError(`${s.actor_id} is a person: only an agent's own session says what it is doing`);
+    if (!(await holderRows(this.db, s.kolab, undefined, s.actor_id)).some((h) => h.id === s.actor_id && h.rank > 0)) {
+      throw new AccessError(`${s.actor_id} is not a member of kolab ${s.kolab}: an agent says what it is doing in a kolab it is a member of`);
+    }
+    return { session: s.id, actor: s.actor_id, kolab: s.kolab };
+  }
+
   // ---- hosts: a person's own machines (migration 0055) ----------------------------
   //
   // A host is one of a person's machines that runs `konnect host run`; from another, the same person

@@ -252,3 +252,17 @@ export const HOST_FORGOTTEN_DAYS = 7;
 /** What a request asks of a host; Kolab gives none of them a meaning. A `hello` asks the machine for a fresh word that the next request must carry. */
 export const HOST_REQUEST_KINDS = ['start', 'stop', 'end', 'hello'] as const;
 export type HostRequestKind = typeof HOST_REQUEST_KINDS[number];
+/**
+ * What a running agent says it is doing (konjir_say_state), as konjir_list_members shows it: idle,
+ * its harness waits and a message starts a turn at once; working, it is in a turn and sees new
+ * messages when the turn ends; running, its harness runs and its client can't tell which. `gone`
+ * is said once, as the harness ends, and is never shown: it clears what the session said.
+ */
+export const AGENT_STATES = ['idle', 'working', 'running'] as const;
+export type AgentState = typeof AGENT_STATES[number];
+export const SAID_STATES = [...AGENT_STATES, 'gone'] as const;
+export type SaidState = typeof SAID_STATES[number];
+/** What a session said is shown for this many seconds; a client says it again every 30. */
+export const AGENT_STATE_FRESH_SECONDS = 90;
+/** The most sessions a server process keeps a state for at once. */
+export const MAX_AGENT_STATES = 20_000;
