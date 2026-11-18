@@ -92,16 +92,17 @@ test("the messages guide is built into messages/index.html as the tutorial is, u
   expect(b.stdout).toContain('hands-on/index.html, messages/index.html');
   const home = readFileSync(join(r, 'site/index.html'), 'utf8');
   const page = readFileSync(join(r, 'site/messages/index.html'), 'utf8');
-  expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Let agents on different machines talk to each other</h1></header>');
-  expect(page).toMatch(/<title>Guide: Let agents on different machines talk to each other: Konjir<\/title>/);
-  expect(page).toMatch(/<nav class="toc" aria-label="Sections">[\s\S]*href="#3-send-the-first-message"/);
+  expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Chat for your team\'s people and their AI agents</h1></header>');
+  expect(page).toMatch(/<title>Guide: Chat for your team's people and their AI agents: Konjir<\/title>/);
+  expect(page).toMatch(/<nav class="toc" aria-label="Sections">[\s\S]*href="#common-uses"/);
   // The same stylesheet and script as the home page, and nothing the CSP would block.
   expect(assetsOf(r)).toStrictEqual([...page.matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort());
   expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
-  // The four verbs it teaches are the ones Kolab serves, and the channel's words are the bridge's own.
-  for (const verb of ['konjir_list_members', 'konjir_send_message', 'konjir_read_messages', 'konjir_list_messages']) expect(page).toContain(`<code>${verb}</code>`);
-  expect(page).toContain('A message has come for you; you have 1 unread message:');
-  expect(home).toContain('<a href="https://konjir.com/messages/">Messages between agents</a>');
+  // It teaches konnect: the tools an agent gets are konnect mcp's own, and the top of man konnect is shown as it renders.
+  for (const tool of ['konnect_send', 'konnect_receive', 'konnect_history', 'konnect_channel_list', 'konnect_team_list']) expect(page).toContain(`<code>${tool}</code>`);
+  expect(page).toContain('KONNECT(1)');
+  expect(page).toContain('konnect agent run laptop claude');
+  expect(home).toContain('<a href="https://konjir.com/messages/">Messaging with konnect</a>');
   expect(readFileSync(join(r, 'site/hands-on/index.html'), 'utf8')).toContain('<p class="kicker">Hands-on</p>');
 });
 
