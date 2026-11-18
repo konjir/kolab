@@ -14,7 +14,7 @@ import { exitOf, fails, machine } from './team.js';
 
 const NOWHERE = 'http://127.0.0.1:9/mcp';
 /** parseArgs's answer when nothing but `words` was given. */
-const none = { json: false, help: false, version: false, wakeOn: [], background: false, forget: false };
+const none = { json: false, help: false, version: false, wakeOn: [], background: false, newCode: false, forget: false };
 
 test('options may go anywhere, and -- ends them; after `send <to>` every word is the message as written', () => {
   expect(parseArgs(['--json', 'send', '--team', 'hub', '@ann', 'hi'])).toStrictEqual({ ...none, json: true, team: 'hub', words: ['send', '@ann', 'hi'] });

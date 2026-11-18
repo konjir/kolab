@@ -100,6 +100,7 @@ function checkOptions(a: Args, words: string[]) {
   only(a.systemPrompt !== undefined, '--system-prompt', starts, 'konnect agent add and konnect agent run do');
   only(a.background, '--background', (cmd === 'agent' || cmd === 'host') && verb === 'run', 'konnect agent run and konnect host run do');
   only(a.on !== undefined, '--on', cmd === 'agent' && (verb === 'run' || verb === 'stop'), 'konnect agent run and konnect agent stop do');
+  only(a.newCode, '--new-code', cmd === 'host' && verb === 'run', 'only konnect host run does');
   if (a.on !== undefined && a.background) throw new UsageError('konnect agent run --on starts the agent in the background on that machine already: leave --background out');
   only(a.count !== undefined, '--count', cmd === 'agent' && verb === 'run', 'only konnect agent run does');
   only(a.forget, '--forget', cmd === 'logout', 'only konnect logout does');

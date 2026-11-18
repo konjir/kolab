@@ -185,21 +185,21 @@ test('konnect host run makes a machine start your agents when you ask from one p
   // From the laptop: the agent is new, so it is allowed in the browser there, and started on the desk.
   const out = await laptop.run(['agent', 'run', '--on', 'desk', '--act-for', 'me', '--wake-on', 'general', '--system-prompt', 'be brief;', 'helper', 'claude'], { open: allow, pause: soon });
   expect(out).toBe('Your agent @ann/helper is added to team hub, and claude is running as it on desk, in ~/work.\n  konnect agent stop --on desk helper     end it\nTo look in on it, on desk: konnect agent attach helper');
-  expect(there.sessions).toStrictEqual(new Set(['konnect-hub-helper']));
+  expect(there.sessions).toStrictEqual(new Set(['konnect_hub_helper']));
   // Its login is kept on the desk, where it runs, and not on the laptop, where it was allowed.
   expect(existsSync(agentFile('hub', 'helper', desk.env))).toBe(true);
   expect(existsSync(agentFile('hub', 'helper', laptop.env))).toBe(false);
   // The desk started what konnect agent run --background starts, in its own folder, from its own konnect:
   // tmux is given konnect's plumbing and a file's name, and what is to run, and where, waits in the file.
-  const first = there.started('konnect-hub-helper');
-  expect(first.line.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect-hub-helper', 'env', `KONNECT_CONFIG_DIR=${desk.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
+  const first = there.started('konnect_hub_helper');
+  expect(first.line.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect_hub_helper', 'env', `KONNECT_CONFIG_DIR=${desk.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
   expect(first.file).toMatch(new RegExp(`^${desk.env.KONNECT_CONFIG_DIR}/agents/hub/helper\\.[0-9a-f]{12}\\.start\\.json$`));
   expect(first.waiting.cmd).toBe('claude');
   expect(first.waiting.cwd).toBe(desk.cwd);
   expect(first.waiting.env).toMatchObject({ KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_ACT_FOR: 'me', KONNECT_WAKE_ON: 'general', KONNECT_SYSTEM_PROMPT: 'be brief;', KONNECT_CONFIG_DIR: desk.env.KONNECT_CONFIG_DIR });
   // Nothing a person wrote reached tmux's command line, where a ';' would end its command.
   expect(there.ran.flat().some((w) => w.includes(';') || w.includes('be brief'))).toBe(false);
-  expect(deskErr.join('\n')).toMatch(/\d\d:\d\d:\d\d {2}started helper in claude \(tmux session konnect-hub-helper\)/);
+  expect(deskErr.join('\n')).toMatch(/\d\d:\d\d:\d\d {2}started helper in claude \(tmux session konnect_hub_helper\)/);
 
   // The lists say where it runs; a second start of the same agent there is refused (4).
   await until(async () => /^desk\s+hosting\s+\S+\s+running: helper$/.test(await laptop.run(['host', 'list'])), 'the desk says helper runs there');
@@ -227,7 +227,7 @@ test('konnect host run makes a machine start your agents when you ask from one p
   // --count: several, allowed on one page, each started there.
   expect(await laptop.run(['agent', 'run', '--on', 'desk', '--count', '2', 'worker', 'claude'], { open: allow, pause: soon }))
     .toMatch(/^Your agents @ann\/worker-1, @ann\/worker-2 are in team hub, and claude is running as each on desk, /);
-  expect(there.sessions).toStrictEqual(new Set(['konnect-hub-helper', 'konnect-hub-worker-1', 'konnect-hub-worker-2']));
+  expect(there.sessions).toStrictEqual(new Set(['konnect_hub_helper', 'konnect_hub_worker-1', 'konnect_hub_worker-2']));
 
   // Only you: a teammate has no machine of that name to ask, an agent can't ask at all, and neither sees yours.
   expect(await bo.run(['host', 'list'])).toBe('No machine of yours hosts in team hub. On one that should: konnect host run');
@@ -289,7 +289,7 @@ test('konnect host run makes a machine start your agents when you ask from one p
   const made = await asked('stop', { agent: 'worker-1' }, hex());
   expect(await send('stop', made.body, made.id)).toMatchObject({ ok: false, why: expect.stringMatching(/^that request is no longer fresh/) });
   await asAnn.close();
-  expect(there.sessions).toStrictEqual(new Set(['konnect-hub-helper', 'konnect-hub-worker-1']));
+  expect(there.sessions).toStrictEqual(new Set(['konnect_hub_helper', 'konnect_hub_worker-1']));
 
   // A login kept on the desk that no longer works: the desk says so, the laptop has a new one allowed and sends it, once.
   await laptop.run(['agent', 'stop', '--on', 'desk', 'helper'], { pause: soon });
@@ -302,7 +302,7 @@ test('konnect host run makes a machine start your agents when you ask from one p
   expect(await laptop.run(['host', 'stop', 'desk'], { pause: soon, exec: tmux().exec })).toBe('desk no longer hosts in team hub. Agents it started keep running there.');
   await hosting;
   expect(deskErr.at(-1)).toBe('This machine no longer hosts as desk. Agents it started keep running: konnect agent list shows them.');
-  expect(there.sessions.has('konnect-hub-helper')).toBe(true);
+  expect(there.sessions.has('konnect_hub_helper')).toBe(true);
   expect(await laptop.run(['host', 'list'])).toBe('No machine of yours hosts in team hub. On one that should: konnect host run');
   expect(await fails(laptop.run(['host', 'stop', 'desk'], { pause: soon, exec: tmux().exec }))).toBe('no machine of yours hosts as desk in team hub: konnect host list shows yours');
 });
@@ -346,9 +346,25 @@ test('hosting under one name: another machine can\'t take a name that is hosting
   await second;
   expect(await laptop.run(['host', 'list'])).toBe('No machine of yours hosts in team hub. On one that should: konnect host run');
 
+  // --new-code: it hosts with a new code in place of the one it had, and a machine paired with the old one is refused until it pairs again.
+  let endThird: () => void = () => undefined;
+  const thirdErr: string[] = [];
+  const third = desk.run(['host', 'run', '--new-code', 'desk'], { exec: there.exec, self, pause: soon, waking: (end) => { endThird = end; }, err: (l) => thirdErr.push(l) });
+  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])), 'the desk hosts again');
+  const renewed = /konnect host pair desk (\S+)/.exec(thirdErr[0])![1];
+  expect(renewed).not.toBe(code);
+  expect(thirdErr[0]).toContain(`konnect host pair desk ${renewed}\nThis is a new code: a machine paired with the old one is refused until it is paired again.\n`);
+  expect(await fails(laptop.run(['agent', 'stop', '--on', 'desk', 'helper'], { pause: soon }))).toBe('desk\'s code isn\'t the one this machine was paired with: pair again with konnect host pair desk <code>, the code konnect host run shows on desk');
+  expect(await fails(laptop.run(['host', 'pair', 'desk', code]))).toMatch(/^that isn't desk's code/);
+  await laptop.run(['host', 'pair', 'desk', renewed]);
+  expect(await laptop.run(['agent', 'stop', '--on', 'desk', 'helper'], { pause: soon })).toBe('Stopped your agent helper\'s harness on desk. It stays in team hub.');
+  endThird();
+  await third;
+  expect(await fails(desk.run(['host', 'list', '--new-code']))).toBe('konnect host list takes no --new-code: only konnect host run does');
+
   // --background: in a session of its own, started from a file as an agent's is; the code is said where it is started.
   const out = await desk.run(['host', 'run', '--background', 'desk'], { exec: there.exec, self, pause: soon });
-  expect(out).toBe(`This machine hosts for you in team hub as desk, in ~/work, in the background (tmux session konnect_host_hub_desk).\nTo ask it from another machine of yours, pair that machine once, there:\n  konnect host pair desk ${code}\nThen, from it: konnect agent run --on desk <name> claude\nTo end hosting: konnect host stop desk`);
+  expect(out).toBe(`This machine hosts for you in team hub as desk, in ~/work, in the background (tmux session konnect_host_hub_desk).\nTo ask it from another machine of yours, pair that machine once, there:\n  konnect host pair desk ${renewed}\nThen, from it: konnect agent run --on desk <name> claude\nTo end hosting: konnect host stop desk`);
   const started = there.started('konnect_host_hub_desk');
   expect(started.line.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect_host_hub_desk', 'env', `KONNECT_CONFIG_DIR=${desk.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
   expect(started.file).toMatch(/\/hosts\/hub\/desk\.[0-9a-f]{12}\.start\.json$/);

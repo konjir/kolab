@@ -128,7 +128,7 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
     const own = cmd === 'receive' ? ['-n', '--wait'] : cmd === 'history' ? ['-n']
       : cmd === 'agent' && verb === 'run' ? ['--act-for', '--wake-on', '--system-prompt', '--background', '--count', '--on']
       : cmd === 'agent' && verb === 'stop' ? ['--on']
-      : cmd === 'host' && verb === 'run' ? ['--background']
+      : cmd === 'host' && verb === 'run' ? ['--background', '--new-code']
       : cmd === 'agent' && verb === 'add' ? ['--act-for', '--wake-on', '--system-prompt']
       : cmd === 'lease' && (verb === 'claim' || verb === 'run') ? ['--for', '--wait'] : [];
     return [...own, ...GLOBAL];

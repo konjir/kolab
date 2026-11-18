@@ -46,7 +46,7 @@ def left_running(what):
     return [l[:90] for l in mine if what in l]
 
 out = []
-host_session, agent_session = f"konnect_host_{team}_desk", f"konnect-{team}-helper"
+host_session, agent_session = f"konnect_host_{team}_desk", f"konnect_{team}_helper"
 try:
     code, said, err = konnect("desk", "host", "run", "--background", "desk")
     pair = re.search(r"konnect host pair desk (\S+)", said)

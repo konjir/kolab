@@ -28,7 +28,7 @@ import { dirname, join } from 'node:path';
 import { keepSignIn, logout } from '@konjir/login';
 import { konnectCommand } from './agents.js';
 import { NotYet, Refused, SignInError, TeamClient, type Host, type HostRequest } from './client.js';
-import { endSession, inSession, multiplexer, running, sessionName, sessions, startInBackground } from './cmd-agent.js';
+import { earlierSessionName, endSession, inSession, multiplexer, running, sessionOf, sessionName, sessions, startInBackground } from './cmd-agent.js';
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
@@ -57,15 +57,22 @@ const write = (file: string, kept: Kept) => {
   renameSync(tmp, file);
 };
 
-/** What this machine keeps of hosting as `name`, made now if it kept nothing: the code is made once, and stays until the file is removed. */
-function keptHere(team: string, name: string, env: Record<string, string | undefined>): { file: string; kept: Kept } {
+/**
+ * What this machine keeps of hosting as `name`, made now if it kept nothing: the code is made once,
+ * and stays until `fresh` asks for a new one (konnect host run --new-code), after which every
+ * machine paired with the old one must pair again.
+ */
+function keptHere(team: string, name: string, env: Record<string, string | undefined>, fresh = false): { file: string; kept: Kept; renewed: boolean } {
   const file = hostFileReady(team, name, env);
   const before = read(file);
-  if (before) return { file, kept: before };
-  const made: Kept = { instance: randomBytes(16).toString('hex'), code: newCode() };
+  if (before && !fresh) return { file, kept: before, renewed: false };
+  const made: Kept = { instance: before?.instance ?? randomBytes(16).toString('hex'), code: newCode() };
   write(file, made);
-  return { file, kept: made };
+  return { file, kept: made, renewed: !!before };
 }
+
+/** Said with a code that has just replaced another. */
+const RENEWED = 'This is a new code: a machine paired with the old one is refused until it is paired again.';
 
 /** The name this machine hosts as unless one is given: its own, as a machine's name is written. */
 export function thisMachine(given: string = hostname()): string | undefined {
@@ -212,7 +219,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     await client.hosts().finally(() => client.close());
     const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
     const me = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
-    const mine = keptHere(team, name, ctx.env);
+    const mine = keptHere(team, name, ctx.env, ctx.args.newCode);
     const went = await inSession(ctx, kind, session, mine.file.slice(0, -5), { cmd: me.command, args: [...me.args, '--team', team, 'host', 'run', name], env: carried });
     if (went.code !== 0) throw new Error(`${kind} couldn't start hosting in the background: ${went.out.trim() || `it exited with ${went.code}`}`);
     // A session that is gone a moment later hosts nothing.
@@ -222,6 +229,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
       `This machine hosts for you in team ${team} as ${name}, in ${folder}, in the background (${kind} session ${session}).`,
       'To ask it from another machine of yours, pair that machine once, there:',
       pairLine(name, mine.kept.code),
+      ...(mine.renewed ? [RENEWED] : []),
       `Then, from it: konnect agent run --on ${name} <name> claude`,
       `To end hosting: konnect host stop ${name}`,
     ].join('\n'));
@@ -230,7 +238,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
 
   let client = await ctx.open(team);
   const me = client.me.actor;
-  const { file, kept: before } = keptHere(team, name, ctx.env);
+  const { file, kept: before, renewed } = keptHere(team, name, ctx.env, ctx.args.newCode);
   // The newest konnect host run under a name on this machine hosts: an older one sees so and ends.
   const claim = randomBytes(12).toString('hex');
   const mine: Kept = { ...before, claim };
@@ -242,7 +250,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     const beat = async (): Promise<HostRequest[]> => {
       const all = new Set(await sessions(ctx, kind));
       const logins = loginsHere(team, ctx.env);
-      const r = await client.serveHost({ name, instance: mine.instance, public_key: fingerprint(key, team, name), folder, agents: logins, running: logins.filter((l) => all.has(sessionName(team, l))) });
+      const r = await client.serveHost({ name, instance: mine.instance, public_key: fingerprint(key, team, name), folder, agents: logins, running: logins.filter((l) => all.has(sessionName(team, l)) || all.has(earlierSessionName(team, l))) });
       // Whatever the service gives in place of requests, only what could be one is looked at.
       return (Array.isArray(r?.requests) ? r.requests : []).filter((q) => !!q && typeof q === 'object' && typeof q.id === 'string' && typeof q.body === 'string' && typeof q.kind === 'string');
     };
@@ -259,6 +267,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
       `This machine hosts for you (@${printable(me)}) in team ${team} as ${name}, in ${folder}.`,
       'To ask it from another machine of yours, pair that machine once, there:',
       pairLine(name, mine.code),
+      ...(renewed ? [RENEWED] : []),
       `Then, from it: konnect agent run --on ${name} <name> claude`,
       'It starts claude, codex or opencode as an agent of yours, with konnect\'s own options, and only for a machine paired with it; what the agent may do here is set in its harness. Ctrl-C ends hosting.',
       ...(trusted(ctx.cwd, ctx.env) === false ? ['Claude Code hasn\'t been run in this folder: run claude here once and answer its question, or an agent started here waits at it.'] : []),
@@ -309,7 +318,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
       fresh(asked);
       const r: Started & { id: string } = { v: 1, id: asked.id, ok: false, in: kind, folder, started: [], failed: [], needs_login: [], kept: [] };
       for (const a of asked.agents) {
-        if (await running(ctx, kind, sessionName(team, a.name))) r.failed.push({ name: a.name, why: 'it is running there already' });
+        if (await sessionOf(ctx, kind, team, a.name)) r.failed.push({ name: a.name, why: 'it is running there already' });
       }
       if (r.failed.length) return r;
       // Each agent needs a login here: one kept here that works, else the one sent.
@@ -384,8 +393,8 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
         if (req.kind === 'stop') {
           const asked = readStop(text);
           fresh(asked);
-          const s = sessionName(team, asked.agent);
-          if (!await running(ctx, kind, s)) { await sealed({ v: 1, ok: false, why: `your agent ${asked.agent} isn't running in the background there` }); return; }
+          const s = await sessionOf(ctx, kind, team, asked.agent);
+          if (!s) { await sealed({ v: 1, ok: false, why: `your agent ${asked.agent} isn't running in the background there` }); return; }
           const went = await endSession(ctx, kind, s);
           if (went.code !== 0) { await sealed({ v: 1, ok: false, why: `${kind} couldn't end ${s}` }); return; }
           say(`stopped ${asked.agent}`);

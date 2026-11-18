@@ -81,7 +81,14 @@ async function ready(ctx: Ctx, team: string, givens: { name: string; owner?: str
 }
 
 /** The background session an agent's harness runs in on this machine: one for each agent in each team. */
-export const sessionName = (team: string, name: string) => `konnect-${team}-${name}`;
+export const sessionName = (team: string, name: string) => `konnect_${team}_${name}`;
+/**
+ * What konnect 0.7.0 and earlier named it. Still looked for, so an agent one of them started is
+ * listed, looked in on and stopped; never given to a new session, since two agents could share one
+ * (team a-b's agent c, and team a's agent b-c). Neither a team's name nor an agent's holds a '_',
+ * so no two share today's.
+ */
+export const earlierSessionName = (team: string, name: string) => `konnect-${team}-${name}`;
 
 /** Runs a program, giving its exit status and what it printed; -1 when it isn't installed. */
 export const exec = (ctx: Ctx) => ctx.io.exec ?? ((cmd: string, args: string[], cwd: string) => new Promise<{ code: number; out: string }>((resolve) => {
@@ -111,6 +118,12 @@ const screenLine = (session: string) => new RegExp(`^\\s*(\\d+)\\.${session}\\s`
 export async function running(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<boolean> {
   if (kind === 'tmux') return (await exec(ctx)('tmux', ['has-session', '-t', `=${session}`], ctx.cwd)).code === 0;
   return screenLine(session).test((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out);
+}
+
+/** The session the agent's harness runs in on this machine now, by today's name or the earlier one; undefined when it isn't running. */
+export async function sessionOf(ctx: Ctx, kind: 'tmux' | 'screen', team: string, name: string): Promise<string | undefined> {
+  for (const s of [sessionName(team, name), earlierSessionName(team, name)]) if (await running(ctx, kind, s)) return s;
+  return undefined;
 }
 
 /** The entry that runs `konnect mcp` for the agent: no token, only what names it and sets its system prompt. */
@@ -260,7 +273,7 @@ export async function startInBackground(ctx: Ctx, kind: 'tmux' | 'screen', a: { 
   try { run = toolCommand(tool, server, entry, a.extra, prompt); } catch (e) { throw new UsageError(String((e as Error)?.message ?? e)); }
   const session = sessionName(team, name);
   // Looked at now: allowing agents in the browser can take minutes, and another run may have started this one meanwhile.
-  if (await running(ctx, kind, session)) throw new Refused(`your agent ${name} is running in the background here already, so it wasn't started again.`);
+  if (await sessionOf(ctx, kind, team, name)) throw new Refused(`your agent ${name} is running in the background here already, so it wasn't started again.`);
   const dropped = tool === 'claude' ? dropOldEntry(ctx.cwd, server, name) : undefined;
   // Where this konnect keeps its logins and which service it talks to go with the session, whatever the multiplexer's own environment says.
   const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR ? resolve(ctx.env.KONNECT_CONFIG_DIR) : undefined, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
@@ -295,7 +308,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       const mine = (await client.members()).filter((m) => m.kind === 'agent' && m.owner === client.me.actor)
         .map((m) => { const full = shownName(m); const name = full.slice(full.indexOf('/') + 1); return { name, connected: m.here, set_up_here: existsSync(agentFile(team, name, ctx.env)), running_here: false, running_on: [] as string[] }; });
       const kind = mine.length ? await multiplexer(ctx) : undefined;
-      if (kind) for (const a of mine) a.running_here = await running(ctx, kind, sessionName(team, a.name));
+      if (kind) for (const a of mine) a.running_here = !!await sessionOf(ctx, kind, team, a.name);
       // And on the person's other machines that are hosting now, as each last said.
       const hosting = mine.length ? (await client.hosts().catch(() => [])).filter((h) => h.serving) : [];
       for (const a of mine) a.running_on = hosting.filter((h) => h.running.includes(a.name)).map((h) => h.name);
@@ -354,7 +367,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     if (ctx.args.background) {
       if (!kind) throw new Error('konnect agent run --background keeps the harness in tmux or screen, and neither is installed here: install tmux, or run it without --background');
       for (const g of givens) {
-        if (await running(ctx, kind, sessionName(team, g.name))) throw new Refused(`your agent ${g.name} is running in the background here already: look in with konnect agent attach ${g.name}, or stop it with konnect agent stop ${g.name}`);
+        if (await sessionOf(ctx, kind, team, g.name)) throw new Refused(`your agent ${g.name} is running in the background here already: look in with konnect agent attach ${g.name}, or stop it with konnect agent stop ${g.name}`);
       }
     }
     const r = await ready(ctx, team, givens, `agent run${ctx.args.background ? ' --background' : ''}${count !== undefined ? ` --count ${count}` : ''} ${given.name} ${tool}`);
@@ -423,9 +436,9 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const given = label(rest[0], `konnect agent ${verb} <name>: name the agent running in the background`);
     if (rest.length > 1) throw new UsageError(`konnect agent ${verb} <name>: unknown ${printable(rest.slice(1).join(' '))}`);
     if (ctx.args.on !== undefined) return stopOn(ctx, team, given, mine);
-    const session = sessionName(team, given.name);
     const kind = await multiplexer(ctx);
-    if (!kind || !await running(ctx, kind, session)) throw new Refused(`your agent ${given.name} isn't running in the background on this machine: konnect agent run --background ${given.name} <harness> starts it`);
+    const session = kind ? await sessionOf(ctx, kind, team, given.name) : undefined;
+    if (!kind || !session) throw new Refused(`your agent ${given.name} isn't running in the background on this machine: konnect agent run --background ${given.name} <harness> starts it`);
     if (verb === 'stop') {
       const r = await endSession(ctx, kind, session);
       if (r.code !== 0) throw new Error(`${kind} couldn't end ${session}: ${r.out.trim() || `it exited with ${r.code}`}`);
