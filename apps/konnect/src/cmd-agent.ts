@@ -312,6 +312,8 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       // And on the person's other machines that are hosting now, as each last said.
       const hosting = mine.length ? (await client.hosts().catch(() => [])).filter((h) => h.serving) : [];
       for (const a of mine) a.running_on = hosting.filter((h) => h.running.includes(a.name)).map((h) => h.name);
+      // A harness that is there and has said nothing is starting, or waiting at a question nobody has answered: not "not running".
+      for (const a of mine) if (a.state === null && (a.running_here || a.running_on.length)) a.word = 'not answering';
       ctx.print(mine.map(({ word: _, ...a }) => a), () => {
         if (!mine.length) return `You have no agents in team ${team}. Add one with: konnect agent run <name> claude`;
         const width = Math.max(...mine.map((a) => a.name.length)) + 3;

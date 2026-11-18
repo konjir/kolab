@@ -142,9 +142,12 @@ test('konnect wake, the hook a harness runs after each turn: it waits as the age
   void waiting.then(() => { settled = true; }, () => { settled = true; });
   await quiet();
   expect(settled).toBe(false);
+  // While it waits, the harness is idle, which the agent's own server reads here to tell the service; once it wakes the harness, it isn't.
+  expect(JSON.parse(readFileSync(wakeFile('hub', 'helper', ann.env), 'utf8')).waiting).toBe(true);
   await kolab.sendMessage(bo, 'ann-helper', 'SECRET-WORDS are you there?');
   const woke = await waiting.then(() => undefined, (e: unknown) => e);
   expect(woke).toBeInstanceOf(Woke);
+  expect(JSON.parse(readFileSync(wakeFile('hub', 'helper', ann.env), 'utf8')).waiting).toBeUndefined();
   expect(exitStatus(woke)).toBe(2);
   expect((woke as Error).message).toMatch(/^New for you in team hub: a direct message from @bo\.\nReceive it now with konnect_receive, and answer with konnect_send/);
   expect((woke as Error).message).not.toContain('SECRET-WORDS');
@@ -264,4 +267,43 @@ test('Codex is woken with its own codex queue: its session is named by the agent
     expect(ran).toStrictEqual([['queue', '--help']]);
     expect(logged.filter((l) => l.includes('can\'t be woken by messages'))).toHaveLength(1);
   } finally { await c2.close(); await s2.close(); }
+});
+
+test('a running agent says what it is doing, and the lists and konnect send say it: idle, working, then not running once it has ended', async () => {
+  const { server, idp, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  await ann.run(['agent', 'add', 'helper'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
+  const file = `${ann.env.KONNECT_CONFIG_DIR}/agents/hub/helper.json`;
+  const helperLine = async () => (await bo.run(['team', 'list'])).split('\n').find((l) => l.startsWith('@ann/helper'));
+  // Its login is kept, and nothing runs as it.
+  expect(await helperLine()).toBe('@ann/helper    agent   not running');
+  expect(await bo.run(['send', '@ann/helper', 'are you there?'])).toBe('Sent to @ann/helper. It isn\'t running now, so the message waits for it.');
+
+  // konnect mcp runs for as long as the agent's harness does, and says its state as it starts and every so often after.
+  let state: 'idle' | 'working' | 'running' = 'idle';
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const s = await serveMcp({ team: 'hub', url: server.url, file, label: 'helper', wake: false, state: () => state, stateEveryMs: 60 }, b);
+  const c = new Client({ name: 'harness-stand-in', version: '0' });
+  await c.connect(a);
+  try {
+    for (let i = 0; i < 100 && await helperLine() !== '@ann/helper    agent   idle'; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(await helperLine()).toBe('@ann/helper    agent   idle');
+    expect(await bo.run(['send', '@ann/helper', 'hello'])).toBe('Sent to @ann/helper.');
+    expect(JSON.parse(await bo.run(['team', 'list', '--json'])).members).toContainEqual({ name: 'ann/helper', kind: 'agent', owner: 'ann', connected: true, state: 'idle' });
+    expect(await ann.run(['agent', 'list'])).toMatch(/^helper\s+idle\s+set up here$/m);
+    // In a turn: a message is seen when the turn ends, and that is said to whoever sends one.
+    state = 'working';
+    for (let i = 0; i < 100 && await helperLine() !== '@ann/helper    agent   working'; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(await helperLine()).toBe('@ann/helper    agent   working');
+    expect(await bo.run(['send', '@ann/helper', 'when you can'])).toBe('Sent to @ann/helper. It is in the middle of a turn, and sees the message when that ends.');
+    // A harness konnect can't see into is only known to be running.
+    state = 'running';
+    for (let i = 0; i < 100 && await helperLine() !== '@ann/helper    agent   running'; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(await helperLine()).toBe('@ann/helper    agent   running');
+  } finally { await c.close(); await s.close(); }
+  // Its harness ended: said as it goes, so nobody waits a minute and a half to learn it.
+  expect(await helperLine()).toBe('@ann/helper    agent   not running');
 });

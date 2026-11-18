@@ -49,23 +49,24 @@ test('two people in one team exchange direct messages through konnect send and k
   expect(got.direct[0].read_at).not.toBeNull();
   expect(JSON.parse(await bo.run(['receive', '--json']))).toStrictEqual({ direct: [], channels: [], more: 0 });
 
-  // An agent is @owner/name, stored as owner-name. Sending to one says when it isn't connected.
-  expect(await bo.run(['send', '@ann/reviewer', 'please review the importer'])).toBe('Sent to @ann/reviewer. It isn\'t connected, so the message waits for it.');
+  // An agent is @owner/name, stored as owner-name. Sending to one says when nothing is running as it: an open
+  // login alone isn't a harness that would answer.
+  expect(await bo.run(['send', '@ann/reviewer', 'please review the importer'])).toBe('Sent to @ann/reviewer. It isn\'t running now, so the message waits for it.');
   const reviewer = await kolab.openSession('ann-reviewer', 'product', { kolab: 'hub' });
-  expect(await bo.run(['send', '@ann/reviewer', 'and the exporter'])).toBe('Sent to @ann/reviewer.');
+  expect(await bo.run(['send', '@ann/reviewer', 'and the exporter'])).toBe('Sent to @ann/reviewer. It isn\'t running now, so the message waits for it.');
   expect((await kolab.readMessages(reviewer)).messages).toMatchObject([{ from: 'bo', to: 'ann-reviewer', message: 'please review the importer' }, { message: 'and the exporter' }]);
   // Its answer reads as from @ann/reviewer.
   await kolab.sendMessage(reviewer, 'bo', 'on it');
   expect(await bo.run(['receive'])).toMatch(/ {2}@ann\/reviewer\n {2}on it$/);
 
-  // konnect team list: each person, their agents under them, you marked; connected is said of agents alone.
+  // konnect team list: each person, their agents under them, you marked; what it is doing is said of an agent alone.
   expect((await bo.run(['team', 'list'])).split('\n')).toStrictEqual([
     '@ann           person',
-    '@ann/reviewer  agent   connected',
+    '@ann/reviewer  agent   not running',
     '@bo (you)      person',
   ]);
   const listed = JSON.parse(await bo.run(['team', 'list', '--json']));
-  expect(listed.members).toContainEqual({ name: 'ann/reviewer', kind: 'agent', owner: 'ann', connected: true });
+  expect(listed.members).toContainEqual({ name: 'ann/reviewer', kind: 'agent', owner: 'ann', connected: true, state: null });
   expect(listed.members).toContainEqual(expect.objectContaining({ name: 'bo', kind: 'person', owner: null, you: true }));
   // Who is invited is the owner's to see: Bo's list has none, Ann's says none wait.
   expect(listed.invited).toBeUndefined();
