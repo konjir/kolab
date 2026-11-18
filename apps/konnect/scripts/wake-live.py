@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""A live check that a message wakes an idle Claude Code or OpenCode session started by `konnect agent run`.
+"""A live check that a message wakes an idle Claude Code, OpenCode or Codex session started by `konnect agent run`.
 
 Not run in CI: it starts a real Claude Code session (yours, on your account) in a terminal it plays,
 against a Kolab started here by scripts/e2e.mjs. Run from the repository's root:
 
-    python3 apps/konnect/scripts/wake-live.py <konnect: a bundle or a wrapper that runs the source> [claude|opencode]
+    python3 apps/konnect/scripts/wake-live.py <konnect: a bundle or a wrapper that runs the source> [claude|opencode|codex]
+
+Run it from a terminal of your own for Codex: Codex must be signed in (codex login) where this runs.
 
 It prints what happened: whether the session woke with nobody typing, received the message with
 konnect_receive, and answered in the channel.
 """
-import json, os, pty, re, select, signal, subprocess, sys, tempfile, time
+import fcntl, json, os, pty, re, select, signal, struct, subprocess, sys, tempfile, termios, time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 KONNECT = os.path.abspath(sys.argv[1])
@@ -34,6 +36,8 @@ pid, fd = pty.fork()
 if pid == 0:
     os.chdir(info["lead"]["work"])
     os.execvpe(cmd[0], [*cmd, "agent", "run", "helper", HARNESS, *(["--model", "claude-haiku-5-5"] if HARNESS == "claude" else [])], person("lead"))
+# The terminal this script plays: of a size, and answering what a harness asks of it as it starts (Codex draws nothing in one that doesn't).
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 buf = b""
 def pump(seconds, until=None):
     global buf
@@ -41,8 +45,12 @@ def pump(seconds, until=None):
     while time.time() < stop:
         r, _, _ = select.select([fd], [], [], 0.5)
         if r:
-            try: buf += os.read(fd, 65536)
+            try: got = os.read(fd, 65536)
             except OSError: return
+            buf += got
+            if b"\x1b[6n" in got: os.write(fd, b"\x1b[1;1R")
+            if b"\x1b[c" in got: os.write(fd, b"\x1b[?62;c")
+            if b"\x1b[?u" in got: os.write(fd, b"\x1b[?0u")
         if until and until(): return
 def screen():
     s = buf.decode("utf8", "replace")
@@ -52,7 +60,12 @@ def screen():
 out = []
 try:
     pump(10)
-    if "trust" in screen().lower():           # the folder-trust question, for a folder this script made
+    seen = re.sub(r"\s+", "", screen()).lower()
+    if HARNESS == "codex" and "signinwithchatgpt" in seen:
+        sys.exit("Codex is asking to sign in here: run codex login in this terminal first, then this check again.")
+    if HARNESS == "codex" and "trustthisfolder" in seen:      # Codex's own question, for a folder this script made: Trust is the one it offers first
+        os.write(fd, b"\r"); pump(5)
+    elif "trust" in seen:                      # Claude Code's folder-trust question: No is offered first
         os.write(fd, b"\x1b[B"); pump(1); os.write(fd, b"\r")
     pump(25)                                   # the session is idle at its prompt; nobody types from here on
     started = screen()
