@@ -214,7 +214,10 @@ It writes nothing in the folder or in your settings.
 Your own \fB\-\-settings\fR and \fB\-\-append\-system\-prompt\fR after \fBclaude\fR are merged with konnect's.
 .TP
 \fBcodex\fR
-Codex. Not woken: it receives at each turn.
+Codex, 0.149 or later to be woken. konnect starts it with a first turn that receives what waits, unless you give it arguments of your own; from the agent's first use of a konnect tool on, a message for it is queued for its session with Codex's own \fBcodex queue\fR, which starts a turn in it when it is idle (within about ten seconds) and follows the running turn when it isn't.
+A turn you interrupted with Esc holds queued messages until you type.
+konnect passes the agent's tools, and leave to call them without asking, on Codex's command line for that session alone, and writes nothing in \fB~/.codex\fR.
+An earlier Codex isn't woken: the agent receives at each turn.
 .TP
 \fBopencode\fR
 OpenCode. Messages for the agent wake it: konnect starts it on a port of its own on this machine, stays beside it, and submits the notice as a prompt.

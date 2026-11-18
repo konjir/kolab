@@ -32,6 +32,7 @@ import { wakeDescriber } from './wake.js';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod';
 import type { ActFor } from './args.js';
+import { spawn } from 'node:child_process';
 import { CLIENT_NAME, NotYet, Refused, SignInError, TeamClient } from './client.js';
 import { readAll, readOne, send, targetOf, type Block } from './chat.js';
 import { formatLeases, until } from './cmd-lease.js';
@@ -51,6 +52,14 @@ export interface McpOptions {
   own?: string;
   /** Whether to hold the subscription stream and wake the agent (true by default). */
   wake?: boolean;
+  /**
+   * The harness is Codex (KONNECT_WAKE=codex): it is woken by queueing a message for its session,
+   * `codex queue --thread <id> --message <notice>`, which starts a turn in it when it is idle and
+   * follows the running one when it isn't (Codex 0.149 or later). `queue` runs codex with those
+   * arguments; by default it is run.
+   */
+  codex?: boolean;
+  queue?: (args: string[]) => Promise<{ code: number; out: string }>;
   /**
    * What the agent is doing now, asked each time it is told to the service (every `stateEveryMs`,
    * half a minute unless given): by default `running`, since only a harness whose hooks konnect
@@ -138,6 +147,44 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
     saying.unref?.();
   };
 
+  /**
+   * Codex: the session to wake is named by Codex itself, with every tool call (`_meta.threadId`),
+   * so it is known from the agent's first konnect call on. One wake is queued at a time: a notice
+   * says that messages wait, and until the agent has received, another would only start another turn.
+   */
+  let thread: string | undefined;
+  let queued = false;
+  let canQueue: boolean | undefined;
+  const runCodex = opts.queue ?? ((args: string[]) => new Promise<{ code: number; out: string }>((resolve) => {
+    let out = '';
+    const child = spawn('codex', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, out: String(e.message) }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code: code ?? 1, out }); });
+  }));
+  const called = (name: string, meta: unknown) => {
+    if (name === 'konnect_receive') queued = false;
+    const id = (meta as { threadId?: unknown } | undefined)?.threadId;
+    // It becomes a word on a command line: only what a session's name looks like is kept.
+    if (opts.codex && typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(id)) thread = id;
+  };
+  const wakeCodex = async (notice: string) => {
+    if (!thread || queued) return;
+    if (canQueue === undefined) {
+      canQueue = (await runCodex(['queue', '--help'])).code === 0;
+      if (!canQueue) log('konnect mcp: this Codex can\'t be woken by messages (Codex 0.149 or later can): the agent receives at the start of each turn');
+    }
+    if (!canQueue) return;
+    queued = true;
+    const r = await runCodex(['queue', `--thread=${thread}`, `--message=${notice}`]);
+    if (r.code !== 0) {
+      queued = false;
+      log(`konnect mcp: couldn't wake Codex (codex queue: ${r.out.trim().split('\n').at(-1) ?? `exit ${r.code}`}): the agent receives at the start of its next turn`);
+    }
+  };
+
   let bridge: KolabBridge | undefined;
   const startWaking = (c: TeamClient) => {
     if (opts.wake === false || bridge) return;
@@ -146,6 +193,7 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
       catalog: false, channelName: 'konnect channel', describe: wakeDescriber(new Set(opts.wakeOn ?? [])),
       loginCommand: `konnect agent add ${opts.label} (run by the agent's owner)`,
       forward: async (m) => {
+        if (opts.codex) { await wakeCodex(m.content); return; }
         if (!server.isConnected()) return;
         await server.server.notification({ method: 'notifications/claude/channel', params: { content: m.content, meta: m.meta } } as never);
       },
@@ -173,7 +221,8 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
     instructions,
   });
   /** A tool's answer: its text, and the same as structured content. A session the service says is gone is opened again, once. */
-  const tool = <A>(fn: (c: TeamClient, args: A) => Promise<{ text: string; data: Record<string, unknown> }>) => async (args: A) => {
+  const tool = <A>(fn: (c: TeamClient, args: A) => Promise<{ text: string; data: Record<string, unknown> }>, name = '') => async (args: A, ctx?: { mcpReq?: { _meta?: unknown } }) => {
+    called(name, ctx?.mcpReq?._meta);
     const run = async () => {
       const s = session();
       try { return await fn(await s, args); } catch (e) {
@@ -253,7 +302,7 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
         ...(stopped ? { stopped } : {}),
       },
     };
-  }));
+  }, 'konnect_receive'));
 
   server.registerTool('konnect_history', {
     description: `The most recent messages of a channel (#name), or between you and one member (@name), oldest first. It changes nothing: what was unread stays unread. At most limit (${READ_DEFAULT} by default, ${READ_MAX} at most). ${WORDS}`,

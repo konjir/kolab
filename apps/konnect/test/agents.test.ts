@@ -157,7 +157,7 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   expect(started).toHaveLength(before);
 });
 
-test('konnect agent run in codex and opencode: the entry on the command line or in the environment, no file written; Codex isn\'t woken, and OpenCode is, by the konnect beside it', async () => {
+test('konnect agent run in codex and opencode: the entry on the command line or in the environment, no file written; Codex is woken by its own server, and OpenCode by the konnect beside it', async () => {
   const { server, idp, signIn, ann: annId } = await teams();
   const ann = machine(server.url, 'ann');
   await signIn(ann, annId, 'hub');
@@ -167,12 +167,16 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   const start = async (c: { cmd: string; args: string[]; env: Record<string, string> }) => { started.push(c); return 0; };
 
   await ann.run(['agent', 'run', 'coder', 'codex', 'exec', 'hi'], { open: allow, self, start });
-  expect(ann.err.join('\n')).toMatch(/^Your agent @ann\/coder is added to team hub\.\nCodex isn't woken by messages: the agent receives at the start of each turn\.$/m);
-  expect(started[0]).toStrictEqual({
-    cmd: 'codex',
-    args: ['-c', 'mcp_servers.konnect-coder.command="/usr/bin/node"', '-c', 'mcp_servers.konnect-coder.args=["/opt/konnect/konnect.mjs", "mcp"]', '-c', `mcp_servers.konnect-coder.env={ KONNECT_TEAM = "hub", KONNECT_AGENT = "coder", KONNECT_URL = ${JSON.stringify(server.url)} }`, 'exec', 'hi'],
-    env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_URL: server.url },
-  });
+  expect(ann.err.join('\n')).toMatch(/^Your agent @ann\/coder is added to team hub\.\nCodex 0\.149 or later is woken by messages once the agent has used one of its konnect tools; an earlier Codex receives at the start of each turn\.$/m);
+  // The server, told that it wakes this session itself, and leave to call the agent's own tools: all as overrides
+  // on Codex's command line, for this session alone. What the person gave Codex follows, untouched.
+  const overrides = ['-c', 'mcp_servers.konnect-coder.command="/usr/bin/node"', '-c', 'mcp_servers.konnect-coder.args=["/opt/konnect/konnect.mjs", "mcp"]', '-c', `mcp_servers.konnect-coder.env={ KONNECT_TEAM = "hub", KONNECT_AGENT = "coder", KONNECT_URL = ${JSON.stringify(server.url)}, KONNECT_WAKE = "codex" }`, '-c', 'mcp_servers.konnect-coder.default_tools_approval_mode="approve"'];
+  expect(started[0]).toStrictEqual({ cmd: 'codex', args: [...overrides, 'exec', 'hi'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_URL: server.url } });
+  // Given nothing of the person's own, Codex starts with a first turn that receives what waits: which is also how its session gets a name to wake.
+  await ann.run(['agent', 'run', 'coder', 'codex'], { self, start });
+  expect(ann.err.join('\n')).toContain('Codex starts with a first turn that receives what waits. From then on messages wake it (Codex 0.149 or later; an earlier one receives at the start of each turn).');
+  expect(started[1].args).toStrictEqual([...overrides, 'Receive your konnect messages now with konnect_receive, and answer any that are for you. Then wait.']);
+  started.splice(1, 1);
   // OpenCode is woken by the konnect that started it: it is started on a port of its own, and konnect
   // stays beside it as the agent, submitting the notice of new messages as a prompt, until it ends.
   const waking: { port: number; label: string; owner: string; wakeOn?: string }[] = [];
@@ -184,7 +188,7 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   expect(waking).toStrictEqual([{ port: 4777, label: 'coder', owner: 'ann', wakeOn: 'general' }]);
   expect(stops).toBe(1);
   // The server is told not to wake the session itself; konnect does.
-  expect(JSON.parse(started[1].env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['/usr/bin/node', '/opt/konnect/konnect.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_WAKE_ON: 'general', KONNECT_URL: server.url, KONNECT_WAKE: 'hook' }, enabled: true });
+  expect(JSON.parse(started[1].env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['/usr/bin/node', '/opt/konnect/konnect.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_WAKE_ON: 'general', KONNECT_URL: server.url, KONNECT_WAKE: 'beside' }, enabled: true });
   expect(readdirSync(ann.cwd)).toStrictEqual([]);
   // A port the person gives OpenCode themselves is the one used, and isn't given twice.
   await ann.run(['agent', 'run', 'coder', 'opencode', '--port', '5123'], { self, start, port: async () => { throw new Error('asked for a port'); }, wakeOpenCode });

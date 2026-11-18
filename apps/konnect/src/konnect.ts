@@ -134,7 +134,7 @@ export async function main(argv: string[], io: IO = {}) {
     const wakeOn = listenList(parsed.wakeOn.length ? parsed.wakeOn.join(',') : parsed.listen ?? env.KONNECT_WAKE_ON ?? env.KONNECT_LISTEN ?? undefined);
     const actFor = parsed.actFor ?? (ACT_FOR.includes(env.KONNECT_ACT_FOR as ActFor) ? env.KONNECT_ACT_FOR as ActFor : undefined);
     const own = parsed.systemPrompt ?? env.KONNECT_SYSTEM_PROMPT;
-    await (io.serve ?? serveStdio)({ team: mcpTeam, url: ctx.url, file, label: as.label, ...(as.owner ? { owner: as.owner } : {}), ...(wakeOn.length ? { wakeOn } : {}), ...(actFor ? { actFor } : {}), ...(own ? { own } : {}), ...(env.KONNECT_WAKE ? { wake: false } : {}),
+    await (io.serve ?? serveStdio)({ team: mcpTeam, url: ctx.url, file, label: as.label, ...(as.owner ? { owner: as.owner } : {}), ...(wakeOn.length ? { wakeOn } : {}), ...(actFor ? { actFor } : {}), ...(own ? { own } : {}), ...(env.KONNECT_WAKE === 'hook' || env.KONNECT_WAKE === 'beside' ? { wake: false } : {}), ...(env.KONNECT_WAKE === 'codex' ? { codex: true } : {}),
       // Claude Code's hook says when the harness waits; any other harness is only known to be running.
       ...(env.KONNECT_WAKE === 'hook' ? { state: () => (waitingNow(mcpTeam, as.label, env) ? 'idle' as const : 'working' as const) } : {}), log: err });
     return;
