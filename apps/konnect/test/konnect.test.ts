@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { afterEach, expect, test } from '@jest/globals';
 import { browse, exitOf, fails, machine, pressing, teams } from './team.js';
 import { normalUrl } from '../src/konnect.js';
+import { teamsAt } from '../src/teams.js';
 import { wellFormedUrl } from '../src/teams.js';
 import { printable } from '../src/names.js';
 
@@ -188,11 +189,34 @@ test('konnect login <team> to someone else\'s team is refused (4), and nothing k
   expect(Object.values(JSON.parse(readFileSync(join(bo.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'), 'utf8')) as { tokens?: unknown }[]).filter((v) => v.tokens)).toStrictEqual([]);
 });
 
-// @konjir/login is passed the intent ('join' for login <team>, 'create' for team create <name>),
-// but the service doesn't honour it yet (a server change is in flight): today both still log in to
-// the team when the person is in it, and make it when the name is free.
-test.todo('konnect login <team> refuses a team that isn\'t there, instead of creating it, and keeps nothing');
-test.todo('konnect team create <name> refuses a name already taken, even a team you are in, and logs in to nothing');
+test('konnect login <team> never creates a team, and konnect team create <name> never joins one: each is refused, and keeps nothing', async () => {
+  const { server, signIn, create, ann: annId, bo: boId } = await teams();
+  const bo = machine(server.url, 'bo');
+  const deny = (b: string[]) => pressing('decision=')(b);
+
+  // A name nobody has: login refuses it (4), where 0.1.0's konnect team <name> would have made the team.
+  const noSuch = await fails(signIn(bo, boId, 'nowhere', deny));
+  expect(noSuch).toMatch(/^the service didn't log you in to team nowhere: /);
+  expect(noSuch).toMatch(/no team named nowhere exists/);
+  expect(noSuch).not.toMatch(/konnect team create/);
+  expect(await exitOf(signIn(bo, boId, 'nowhere', deny))).toBe(4);
+  expect(teamsAt(server.url, bo.env)).toStrictEqual([]);
+
+  // A name that is taken: team create refuses it (4), with a free name to try, and logs in to nothing.
+  const taken = await fails(create(bo, boId, 'side', deny));
+  expect(taken).toMatch(/^the service didn't create team side: /);
+  expect(taken).toMatch(/A name that is free: konnect team create side-/);
+  expect(await exitOf(create(bo, boId, 'side', deny))).toBe(4);
+  // Even a team the person is in: on a machine not logged in to it, create still never joins.
+  const ann = machine(server.url, 'ann');
+  expect(await fails(create(ann, annId, 'hub', deny))).toMatch(/^the service didn't create team hub: /);
+  expect(teamsAt(server.url, ann.env)).toStrictEqual([]);
+  expect(teamsAt(server.url, bo.env)).toStrictEqual([]);
+
+  // A free name is created, and its maker logged in to it.
+  expect(await create(bo, boId, 'bos-own')).toMatch(/^Created team bos-own, with you \(@bo\) as its owner, and logged in to it\./);
+  expect(teamsAt(server.url, bo.env)).toStrictEqual(['bos-own']);
+});
 
 test('the names 0.1.0 used still work for one release, each saying its new name once on stderr; konnect team <name> is not kept', async () => {
   const { kolab, server, idp, signIn, ann: annId, bo: boId } = await teams();
