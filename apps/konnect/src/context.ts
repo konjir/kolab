@@ -36,6 +36,8 @@ export interface IO {
   terminal?: boolean;
   /** Runs a program and gives its exit status and what it printed; -1 when it isn't installed. By default it is run. */
   exec?: (cmd: string, args: string[], cwd: string) => Promise<{ code: number; out: string }>;
+  /** Sends a signal to a process, or with a negative number to a group of them, and says whether any took it; signal 0 only asks. By default it is sent. */
+  signal?: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   /** A free port for OpenCode's own server, and what wakes OpenCode on it; by default a real port and konnect's own waker (opencode.ts). */
   port?: () => Promise<number>;
   wakeOpenCode?: (o: import('./opencode.js').OpenCodeWake) => Promise<() => Promise<void>>;

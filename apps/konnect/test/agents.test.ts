@@ -425,7 +425,28 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   const dying = async (cmd: string, args: string[]) => { const r = await exec(cmd, args); if (args[0] === 'new-session') sessions.clear(); return r; };
   expect(await fails(ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec: dying, start }))).toBe('claude ended as soon as it was started in the background as helper: run konnect agent run helper claude in a terminal here to see why.');
   await ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start });
-  await ann.run(['agent', 'stop', 'helper'], { exec });
+
+  // Stopping ends what the session runs, not only the session: the window's own group is hung up on, as a closed
+  // terminal would, then told to end, and only then is a session still there closed. (On macOS, screen leaves a harness running.)
+  const signals: [number, string | number][] = [];
+  let alive = true;
+  const signal = (pid: number, sig: NodeJS.Signals | 0) => { signals.push([pid, sig]); if (sig === 'SIGTERM') alive = false; return alive || sig === 'SIGTERM'; };
+  const panes = async (cmd: string, args: string[]) => { if (cmd === 'tmux' && args[0] === 'list-panes') { ran.push([cmd, ...args]); return { code: 0, out: '4242\n' }; } if (cmd === 'pgrep') { ran.push([cmd, ...args]); return { code: 0, out: '5151\n' }; } return exec(cmd, args); };
+  expect(await ann.run(['agent', 'stop', 'helper'], { exec: panes, signal, pause: async () => undefined })).toBe('Stopped your agent helper\'s harness here. It stays in team hub.');
+  expect([...ran].reverse().find((c) => c[1] === 'list-panes')).toStrictEqual(['tmux', 'list-panes', '-s', '-t', '=konnect-hub-helper', '-F', '#{pane_pid}']);
+  expect(signals.filter(([, sig]) => sig !== 0).map(([pid, sig]) => `${pid} ${sig}`)).toStrictEqual(['-4242 SIGHUP', '-4242 SIGTERM']);
+  expect(sessions.size).toBe(0);
+  // Under screen, the window's process is found beneath screen's own, by the session's full name.
+  has.tmux = false;
+  await ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start });
+  signals.length = 0; alive = true;
+  await ann.run(['agent', 'stop', 'helper'], { exec: panes, signal, pause: async () => undefined });
+  expect([...ran].reverse().find((c) => c[0] === 'pgrep')).toStrictEqual(['pgrep', '-P', '1234']);
+  expect(signals.filter(([, sig]) => sig !== 0).map(([pid, sig]) => `${pid} ${sig}`)).toStrictEqual(['-5151 SIGHUP', '-5151 SIGTERM']);
+  // A pid that could be every process, or none, is never signalled.
+  expect(signals.every(([pid]) => pid < -1)).toBe(true);
+  has.tmux = true;
+  await ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start });
 
   // With neither, it says what to install, and starts nothing; --background belongs to agent run alone (2).
   has.tmux = false; has.screen = false;
