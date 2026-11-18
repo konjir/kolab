@@ -13,8 +13,8 @@
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { logout } from '@konjir/login';
 import { HARNESSES, INSTALL, checkLabel, dropOldEntry, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgents, shellLine, startTool, toolCommand, type Tool } from './agents.js';
 import { NotYet, Refused, TeamClient } from './client.js';
@@ -119,6 +119,9 @@ function entryFor(ctx: Ctx, team: string, name: string, said: Said) {
 /** What a background session is to run: a program, its arguments, and environment to add. */
 interface Kept { cmd: string; args: string[]; env: Record<string, string> }
 
+/** How long after a background session is started konnect looks whether it is still there: one that ended at once started nothing. */
+const START_LOOK_MS = 800;
+
 /** The names every session of one multiplexer on this machine goes by. */
 export async function sessions(ctx: Ctx, kind: 'tmux' | 'screen'): Promise<string[]> {
   if (kind === 'tmux') {
@@ -129,30 +132,49 @@ export async function sessions(ctx: Ctx, kind: 'tmux' | 'screen'): Promise<strin
 }
 
 /**
- * Starts `kept` in a background session of its own, in this folder. The multiplexer is given only
- * konnect's own plumbing and a file's name, never the words themselves: tmux reads an argument that
- * ends in ';' as the end of its command and runs what follows as another of its own, so a system
- * prompt, or anything else a person (or a request from another machine) wrote, never goes on its
- * command line. What is to run waits in `file`, the person's alone, which `konnect _start` reads
- * once and removes.
+ * A session as screen itself knows it, `<pid>.<name>`. screen takes a name as the start of one, so
+ * a name alone could reach another session that begins with it (helper, helper-1); this names one.
  */
-export async function inSession(ctx: Ctx, kind: 'tmux' | 'screen', session: string, file: string, kept: Kept): Promise<{ code: number; out: string }> {
+async function screenId(ctx: Ctx, session: string): Promise<string | undefined> {
+  return new RegExp(`(\\d+\\.${session})\\s`).exec((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out)?.[1];
+}
+
+/** Ends a background session: that one, and no other whose name begins with its name. */
+export async function endSession(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<{ code: number; out: string }> {
+  if (kind === 'tmux') return exec(ctx)('tmux', ['kill-session', '-t', `=${session}`], ctx.cwd);
+  const id = await screenId(ctx, session);
+  return id ? exec(ctx)('screen', ['-S', id, '-X', 'quit'], ctx.cwd) : { code: 1, out: 'there is no such session' };
+}
+
+/**
+ * Starts `kept` in a background session of its own, in this folder. The multiplexer is given only
+ * konnect's own plumbing, where konnect keeps its files, and a file's name; never the words to run,
+ * and never the folder. tmux reads an argument that ends in ';' as the end of its command and runs
+ * what follows as another of its own, and it runs `#(...)` in the folder it is told to start in: so
+ * a system prompt, a folder's name, or anything else a person (or a request from another machine)
+ * wrote, never goes on its command line. What is to run, and where, waits in a file of its own
+ * (`<stem>.<random>.start.json`), the person's alone, which `konnect _start` reads once and removes.
+ */
+export async function inSession(ctx: Ctx, kind: 'tmux' | 'screen', session: string, stem: string, kept: Kept): Promise<{ code: number; out: string }> {
   const self = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
   if (self.keep) keepKonnect(self.keep);
-  const line = [self.command, ...self.args, '_start', file];
-  if (line.some((w) => w.endsWith(';'))) throw new Error(`konnect can't start a background session from a path that ends in ';' (${printable(line.find((w) => w.endsWith(';'))!)})`);
-  const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
-  writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600, flag: 'wx' });
-  renameSync(tmp, file);
-  const went = kind === 'tmux' ? await exec(ctx)('tmux', ['new-session', '-d', '-s', session, '-c', ctx.cwd, ...line], ctx.cwd) : await exec(ctx)('screen', ['-dmS', session, ...line], ctx.cwd);
+  const file = `${resolve(stem)}.${randomBytes(6).toString('hex')}.start.json`;
+  // tmux gives a session its own server's environment, not this command's: where konnect keeps its
+  // files goes with the session, or `konnect _start` would look for the file somewhere else.
+  const line = ['env', `KONNECT_CONFIG_DIR=${resolve(configDir(ctx.env))}`, self.command, ...self.args, '_start', file];
+  const odd = line.find((w) => w.endsWith(';'));
+  if (odd !== undefined) throw new Error(`konnect can't start a background session from a path that ends in ';' (${printable(odd)})`);
+  writeFileSync(file, JSON.stringify({ ...kept, cwd: ctx.cwd }), { mode: 0o600, flag: 'wx' });
+  const went = kind === 'tmux' ? await exec(ctx)('tmux', ['new-session', '-d', '-s', session, ...line], ctx.cwd) : await exec(ctx)('screen', ['-dmS', session, ...line], ctx.cwd);
   if (went.code !== 0) rmSync(file, { force: true });
   return went;
 }
 
 /**
  * `konnect _start <file>`: plumbing, run inside a background session. Runs what `inSession` kept in
- * the file, in this terminal, and exits as it does. Only a file konnect itself wrote is run: one in
- * konnect's own config folder, the person's own, that no one else can write.
+ * the file, in the folder it names, in this terminal, and exits as it does. Only a file konnect
+ * itself wrote is run: one in konnect's own config folder, the person's own, that no one else can
+ * write.
  */
 export async function startKept(ctx: Ctx, rest: string[]) {
   const [given] = rest;
@@ -160,15 +182,15 @@ export async function startKept(ctx: Ctx, rest: string[]) {
   if (given === undefined || rest.length !== 1) throw plumbing;
   const file = resolve(given);
   if (!file.startsWith(resolve(configDir(ctx.env)) + sep) || !basename(file).endsWith('.start.json')) throw plumbing;
-  let kept: Kept;
+  let kept: Kept & { cwd?: unknown };
   try {
     const st = lstatSync(file);
     if (!st.isFile() || (process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) throw plumbing;
-    kept = JSON.parse(readFileSync(file, 'utf8')) as Kept;
+    kept = JSON.parse(readFileSync(file, 'utf8')) as Kept & { cwd?: unknown };
   } catch { throw plumbing; } finally { rmSync(file, { force: true }); }
   const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
-  if (!kept || typeof kept.cmd !== 'string' || !strings(kept.args) || !kept.env || typeof kept.env !== 'object' || !strings(Object.values(kept.env))) throw plumbing;
-  const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ cmd: kept.cmd, args: kept.args, env: kept.env }, ctx.cwd);
+  if (!kept || typeof kept.cmd !== 'string' || !strings(kept.args) || !kept.env || typeof kept.env !== 'object' || !strings(Object.values(kept.env)) || typeof kept.cwd !== 'string' || !isAbsolute(kept.cwd)) throw plumbing;
+  const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ cmd: kept.cmd, args: kept.args, env: kept.env }, kept.cwd);
   if (code === -1) throw new Error(`${printable(kept.cmd)} isn't installed here (it isn't on PATH), so nothing was started`);
   process.exitCode = code;
 }
@@ -190,7 +212,7 @@ export async function startInBackground(ctx: Ctx, kind: 'tmux' | 'screen', a: { 
   if (await running(ctx, kind, session)) throw new Refused(`your agent ${name} is running in the background here already, so it wasn't started again.`);
   const dropped = tool === 'claude' ? dropOldEntry(ctx.cwd, server, name) : undefined;
   // Where this konnect keeps its logins and which service it talks to go with the session, whatever the multiplexer's own environment says.
-  const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
+  const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR ? resolve(ctx.env.KONNECT_CONFIG_DIR) : undefined, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
   let kept: Kept;
   if (tool === 'opencode') {
     // OpenCode is woken by the konnect that started it, so in the background it is konnect that
@@ -201,8 +223,11 @@ export async function startInBackground(ctx: Ctx, kind: 'tmux' | 'screen', a: { 
     // konnect commands run inside the harness act as the agent, never as the person; the hook that wakes it reads the same.
     kept = { cmd: run.cmd, args: run.args, env: { ...carried, ...run.env, ...entry.env } };
   }
-  const went = await inSession(ctx, kind, session, join(dirname(agentFileReady(team, name, ctx.env)), `${name}.start.json`), kept);
+  const went = await inSession(ctx, kind, session, join(dirname(agentFileReady(team, name, ctx.env)), name), kept);
   if (went.code !== 0) throw new Error(`${kind} couldn't start ${tool} in the background as ${name}: ${went.out.trim() || `it exited with ${went.code}`}.`);
+  // A session that is gone a moment later started nothing: the harness isn't installed, or it refused its command line.
+  await ctx.pause(START_LOOK_MS);
+  if (!await running(ctx, kind, session)) throw new Error(`${tool} ended as soon as it was started in the background as ${name}: run konnect agent run ${name} ${tool} in a terminal here to see why.`);
   return { session, ...(dropped ? { dropped } : {}) };
 }
 
@@ -226,7 +251,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       ctx.print(mine, () => {
         if (!mine.length) return `You have no agents in team ${team}. Add one with: konnect agent run <name> claude`;
         const width = Math.max(...mine.map((a) => a.name.length)) + 3;
-        return mine.map((a) => `${printable(a.name).padEnd(width)}${(a.connected ? 'connected' : '').padEnd(12)}${(a.set_up_here ? 'set up here' : '').padEnd(14)}${[...(a.running_here ? ['running here, in the background'] : []), ...(a.running_on.length ? [`running on ${a.running_on.join(', ')}`] : [])].join('; ')}`.trimEnd()).join('\n');
+        return mine.map((a) => `${printable(a.name).padEnd(width)}${(a.connected ? 'connected' : '').padEnd(12)}${(a.set_up_here ? 'set up here' : '').padEnd(14)}${[...(a.running_here ? ['running here, in the background'] : []), ...(a.running_on.length ? [`running on ${a.running_on.map(printable).join(', ')}`] : [])].join('; ')}`.trimEnd()).join('\n');
       });
     } finally { await client.close(); }
     return;
@@ -351,13 +376,13 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const kind = await multiplexer(ctx);
     if (!kind || !await running(ctx, kind, session)) throw new Refused(`your agent ${given.name} isn't running in the background on this machine: konnect agent run --background ${given.name} <harness> starts it`);
     if (verb === 'stop') {
-      const r = kind === 'tmux' ? await exec(ctx)('tmux', ['kill-session', '-t', `=${session}`], ctx.cwd) : await exec(ctx)('screen', ['-S', session, '-X', 'quit'], ctx.cwd);
+      const r = await endSession(ctx, kind, session);
       if (r.code !== 0) throw new Error(`${kind} couldn't end ${session}: ${r.out.trim() || `it exited with ${r.code}`}`);
       ctx.print({ team, agent: given.name, stopped: true }, () => `Stopped your agent ${given.name}'s harness here. It stays in team ${team}.`);
       return;
     }
     // The terminal is the harness's until it is left (tmux: Ctrl-b d; screen: Ctrl-a d).
-    const attach = kind === 'tmux' ? { cmd: 'tmux', args: ['attach-session', '-t', `=${session}`], env: {} } : { cmd: 'screen', args: ['-r', session], env: {} };
+    const attach = kind === 'tmux' ? { cmd: 'tmux', args: ['attach-session', '-t', `=${session}`], env: {} } : { cmd: 'screen', args: ['-r', await screenId(ctx, session) ?? session], env: {} };
     process.exitCode = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))(attach, ctx.cwd);
     return;
   }
