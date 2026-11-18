@@ -83,6 +83,8 @@ const READ_MAX = 100;
 const OWNER_WAIT_MS = 4_000;
 /** How often a running agent says what it is doing: the service forgets one that hasn't for a minute and a half. */
 const STATE_EVERY_MS = 30_000;
+/** How often it looks whether that has changed: a look reads a small file of its own, and asks nothing of the service. */
+const STATE_LOOK_MS = 2_000;
 
 type Transport = Parameters<McpServer['connect']>[0];
 
@@ -142,8 +144,21 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
   };
   const startSaying = () => {
     if (saying) return;
-    void say((opts.state ?? (() => 'running' as const))());
-    saying = setInterval(() => void say((opts.state ?? (() => 'running' as const))()), opts.stateEveryMs ?? STATE_EVERY_MS);
+    const now = opts.state ?? (() => 'running' as const);
+    const every = opts.stateEveryMs ?? STATE_EVERY_MS;
+    // Looked at often, and said at once when it changes (a turn began, or ended), so the lists are
+    // seconds behind, not half a minute; said again every so often all the same, so the service keeps it.
+    let last: AgentState | undefined;
+    let at = 0;
+    const look = () => {
+      const state = now();
+      if (state === last && Date.now() - at < every) return;
+      last = state;
+      at = Date.now();
+      void say(state);
+    };
+    look();
+    saying = setInterval(look, Math.min(every, STATE_LOOK_MS));
     saying.unref?.();
   };
 
@@ -384,6 +399,15 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
 /** `konnect mcp`: serves over this process's stdin and stdout until the client closes them. */
 export async function serveStdio(opts: McpOptions): Promise<void> {
   const s = await serveMcp(opts, new StdioServerTransport());
-  await new Promise<void>((resolve) => { process.stdin.once('end', resolve); process.stdin.once('close', resolve); });
-  await s.close();
+  // Its harness ends it by closing its input, or with a signal: either way it says it is gone before it
+  // goes, so the lists don't show the agent for another minute and a half.
+  let signalled = false;
+  await new Promise<void>((resolve) => {
+    process.stdin.once('end', resolve);
+    process.stdin.once('close', resolve);
+    for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) process.once(signal, () => { signalled = true; resolve(); });
+  });
+  // A moment to say so, and no longer: a service that can't be reached mustn't keep a server its harness has ended.
+  await Promise.race([s.close(), new Promise((r) => { setTimeout(r, 3_000).unref?.(); })]);
+  if (signalled) process.exit(0);
 }

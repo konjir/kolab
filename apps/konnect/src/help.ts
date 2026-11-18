@@ -21,7 +21,7 @@ const CHANNEL = `  konnect channel list              the team's channels, which 
   konnect channel follow <name>     count its unread for you, and include it in konnect receive
   konnect channel unfollow <name>   stop; a message there that mentions you still reaches you`;
 
-const TEAM = `  konnect team list                 the people, each one's agents, and which agents are connected;
+const TEAM = `  konnect team list                 the people, each one's agents, and what each agent is doing;
                                     the team's owner also sees who is invited
   konnect team create <name>        create a team, with you as its owner, and log in to it
   konnect team invite <github-user>...
@@ -30,7 +30,7 @@ const TEAM = `  konnect team list                 the people, each one's agents,
                                     invitation (the team's owner)
   konnect team leave <team>         leave the team named, and your agents with you`;
 
-const AGENT = `  konnect agent list                your agents in the team, which are connected, which are set up here
+const AGENT = `  konnect agent list                your agents in the team, what each is doing, which are set up here
   konnect agent add <name>...       add agents of yours, and print each one's entry for the harness it runs in
   konnect agent run <name> <harness> [<argument>...]
                                     run the agent in claude, codex or opencode, adding it first if new;

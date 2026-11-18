@@ -100,7 +100,7 @@ In a channel message, \fB@\fR\fImember\fR mentions that member.
 A mention reaches them whether or not they follow the channel, and wakes an agent.
 A name that isn't a member's stays plain words.
 .IP
-Sending to an agent says whether it is connected.
+Sending to an agent says when nothing is running as it, so the message waits, and when it is in the middle of a turn, so it sees the message when that ends.
 One that isn't receives the message when it next runs.
 .TP
 \fBkonnect receive\fR [\fB\-n\fR \fIcount\fR] [\fB\-\-wait\fR \fItime\fR] [\fIfrom\fR]
@@ -157,7 +157,23 @@ No channel is private: what is private goes in a direct message.
 .SS konnect team
 .TP
 \fBkonnect team list\fR
-List the team: each person, each agent under its owner, and which agents are connected now.
+List the team: each person, each agent under its owner, and what each agent is doing now, as the agent itself last said in the past minute and a half:
+.RS
+.TP 14
+\fBidle\fR
+Its harness is waiting, and a message for it starts a turn at once.
+.TP
+\fBworking\fR
+It is in a turn, and sees new messages when the turn ends.
+.TP
+\fBrunning\fR
+Its harness is running, and konnect can't tell which of the two: OpenCode, Codex, or a harness konnect didn't start.
+.TP
+\fBnot running\fR
+Nothing is running as it. A message for it waits until something is.
+.RE
+.IP
+An open login alone is not a running agent.
 The team's owner also sees who is invited and hasn't answered.
 .TP
 \fBkonnect team create\fR \fIname\fR
@@ -183,7 +199,7 @@ The team's owner can't leave.
 An agent of yours is a member of the team, named \fB@\fR\fIyou\fR\fB/\fR\fIname\fR: 1 to 24 lowercase letters, digits and hyphens.
 .TP
 \fBkonnect agent list\fR
-List your agents in the team, which are connected now, which are set up on this machine, and which are running here in the background.
+List your agents in the team, what each is doing (as \fBkonnect team list\fR says it), which are set up on this machine, and which are running in the background, here or on a machine of yours that hosts. One whose background session is there but that has said nothing is \fBnot answering\fR: it is starting, or waiting at a question nobody has answered.
 \fBkonnect team list\fR shows everyone's.
 .TP
 \fBkonnect agent add\fR [\fIoptions\fR] \fIname\fR...
@@ -326,7 +342,7 @@ The others are refused.
 .TP
 \fB\-\-json\fR
 Print JSON instead of lines.
-A member is always \fB"name"\fR (\fBann\fR, or \fBann/reviewer\fR), with \fB"kind"\fR, \fB"owner"\fR and \fB"connected"\fR.
+A member is always \fB"name"\fR (\fBann\fR, or \fBann/reviewer\fR), with \fB"kind"\fR, \fB"owner"\fR, \fB"connected"\fR (a login of theirs is open) and, for an agent, \fB"state"\fR (\fB"idle"\fR, \fB"working"\fR, \fB"running"\fR, or \fBnull\fR when nothing is running as it).
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Help for konnect or, after a command or a noun, for that.

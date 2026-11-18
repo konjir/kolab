@@ -57,9 +57,15 @@ try:
     pump(25)                                   # the session is idle at its prompt; nobody types from here on
     started = screen()
     out.append("the session started: " + str(len(started) > 200))
+    def state():
+        c, listed, _ = konnect("peer", "team", "list")
+        return next((l.split()[-1] if l.split()[-2:] != ["not", "running"] else "not running" for l in listed.splitlines() if l.startswith("@lead/helper")), "?")
+    out.append("idle at its prompt, the team list says the agent is: " + state())
     code, said, err = konnect("peer", "send", "#general", "@lead/helper please reply in #general with exactly the word PINEAPPLE and nothing else")
     out.append(f"peer sent the mention: exit {code} {said} {err}")
+    states = set()
     def answered():
+        states.add(state())
         c, hist, _ = konnect("peer", "history", "-n", "5", "#general")
         return bool(re.search(r"@lead/helper\n\s+PINEAPPLE", hist))
     t0 = time.time(); ok = False
@@ -67,6 +73,8 @@ try:
         pump(5); ok = answered()
     after = screen()[len(started):]
     out.append(f"the agent answered in #general with nobody typing: {ok} (after {int(time.time() - t0)}s)")
+    pump(8)
+    out.append(f"while it answered, the team list said: {sorted(states)}; and once it was waiting again: {state()}")
     out.append("the session called konnect_receive: " + str("konnect_receive" in after or "receive" in after.lower()))
     c, hist, _ = konnect("peer", "history", "-n", "4", "#general")
     out += ["--- #general, as peer sees it", hist, "--- the session's screen after the mention (tail)", after[-900:]]
@@ -81,6 +89,9 @@ finally:
     except OSError: pass
     try: os.kill(pid, signal.SIGTERM)
     except OSError: pass
+    time.sleep(3)
+    try: out.append("after its harness ended, the team list says the agent is: " + state())
+    except Exception as e: out.append(f"(the team list couldn't be read at the end: {e})")
     open(hold + ".done", "w").close()
     try: e2e.wait(timeout=30)
     except Exception: e2e.kill()
