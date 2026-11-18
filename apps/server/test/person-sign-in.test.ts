@@ -191,6 +191,56 @@ test('team:<name>: a free name is made with no agent; a member is signed in; som
   expect(await kolab.access('dee', 'anns')).toMatchObject({ level: null });
 });
 
+test('team:<name> with an intent: the page says plainly whether Allow creates or joins; join refuses a free name as no such kolab, create refuses a taken one with a free name, and the app is told so', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  await world(kolab);
+  const client = await register(base);
+
+  // Without an intent, the page says which will happen too.
+  const plain = await page(base, idp, client, 'konjir team:acme');
+  expect(plain.html).toContain('Allowing it creates a new kolab, <code>acme</code>, and joins no existing one.');
+  expect(plain.html).not.toContain('asked only to');
+
+  // join, free name: refused, nothing made, and no free name offered.
+  const nothing = await page(base, idp, client, 'konjir team:acme intent:join');
+  expect(nothing.html).toContain('<h1>This sign-in can\'t be allowed</h1>');
+  expect(nothing.html).toContain('no kolab named acme exists, so there is nothing to join and nothing was made');
+  expect(nothing.html).not.toMatch(/is free/);
+  expect(buttons(nothing.html)).toStrictEqual(['decision=deny']);
+  const forced = await nothing.post({ decision: 'allow', shown: 'make' });
+  expect(forced.left!.searchParams.get('error_description')).toMatch(/^the sign-in can't be allowed: no kolab named acme exists/);
+  expect(await kolab.kolabRow('acme')).toBeUndefined();
+
+  // join, a member: Allow joins, and says it creates nothing.
+  const joining = await page(base, idp, client, 'konjir team:bobs intent:join');
+  expect(joining.html).toContain('<h1>Sign in to <code>bobs</code></h1>');
+  expect(joining.html).toContain('Allowing it joins <code>bobs</code>, a kolab you are already a member of, and creates nothing.');
+  expect(joining.html).toContain('konnect asked only to join an existing kolab.');
+  const joined = await joining.post({ decision: 'allow', shown: 'member' });
+  expect((await tokenFor(base, client, joined.left!.searchParams.get('code')!)).body.scope).toBe('konjir kolab:bobs role:product');
+
+  // create, the person's own kolab: refused with a free name, even though they are a member.
+  const own = await page(base, idp, client, 'konjir team:bobs intent:create');
+  expect(own.html).toContain('<h1>This sign-in can\'t be allowed</h1>');
+  expect(own.html).toContain('The name bobs-bob is free.');
+  const told = await own.post({ decision: 'deny' });
+  expect(told.left!.searchParams.get('error_description')).toBe('the sign-in can\'t be allowed: the kolab name bobs is taken, by a kolab you are a member of: join it instead of creating it. This sign-in only creates a new kolab, and names are unique across Konjir. The name bobs-bob is free.');
+
+  // create, a free name: Allow creates it, and says it joins nothing.
+  const creating = await page(base, idp, client, 'konjir team:acme intent:create');
+  expect(creating.html).toContain('<h1>Make <code>acme</code></h1>');
+  expect(creating.html).toContain('Allowing it creates a new kolab, <code>acme</code>, and joins no existing one.');
+  expect(creating.html).toContain('konnect asked only to create a new kolab.');
+  const created = await creating.post({ decision: 'allow', shown: 'make' });
+  expect(created.left!.searchParams.get('code')).toBeTruthy();
+  expect(await kolab.kolabRow('acme')).toMatchObject({ owner: 'bob', visibility: 'private' });
+
+  // A bad intent is refused as a bad scope.
+  const bad = await page(base, idp, client, 'konjir team:acme intent:admin');
+  expect(bad.html).toContain('isn&#39;t intent:join or intent:create');
+});
+
 test('a sign-in that leaves the kolab to the page is only for an app on the person\'s own computer: a hosted app\'s page offers only Deny, and the app is told why', async () => {
   const kolab = await openKolab();
   const { base, idp } = await serve(kolab);

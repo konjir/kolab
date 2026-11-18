@@ -496,3 +496,25 @@ test('a setup\'s code replayed before its token is used: the token it bought doe
   expect((await useSetup(base, first.body.access_token, client)).body.error).toBe('invalid_grant');
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant`)).rows[0]).toStrictEqual({ n: 0 });
 });
+
+test('an agent its person removed from the kolab is signed out there for good, its refresh token renewing nothing; set up again by its label, it is granted and signed in afresh', async () => {
+  const kolab = await openKolab();
+  const { base, mcp, idp } = await serve(kolab);
+  const client = await register(base);
+  const first = await allowSetup(base, idp, client, setupScope('anns', ['pm:product']));
+  const agent = first.used.body.agents[0];
+  expect(await initialize(mcp, agent.access_token!)).toBe(200);
+  const ann = await kolab.openSession('ann', 'product', { kolab: 'anns' });
+
+  expect(await kolab.removeOwnAgent(ann, 'pm')).toStrictEqual({ kolab: 'anns', removed: 'ann-pm', label: 'pm', revoked: 1, ended: 1 });
+  expect(await initialize(mcp, agent.access_token!)).toBe(401);
+  const refresh = await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: agent.refresh_token!, client_id: client }).toString() });
+  expect(refresh.status).toBe(400);
+  expect(await kolab.access('ann-pm', 'anns')).toMatchObject({ level: null });
+
+  // The same label set up again: the same agent, granted and signed in afresh.
+  const again = await allowSetup(base, idp, client, setupScope('anns', ['pm:product']));
+  expect(again.used.body.agents[0]).toMatchObject({ agent: 'ann-pm', made: false });
+  expect(await initialize(mcp, again.used.body.agents[0].access_token!)).toBe(200);
+  expect(await kolab.access('ann-pm', 'anns')).toMatchObject({ level: 'write' });
+});

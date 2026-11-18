@@ -68,6 +68,9 @@ async function boot() {
 test('the scopes konnect signs in with', () => {
   expect(CHOOSE_SCOPE).toBe('konjir choose:kolab');
   expect(teamScope('acme')).toBe('konjir team:acme');
+  expect(teamScope('acme', 'join')).toBe('konjir team:acme intent:join');
+  expect(teamScope('acme', 'create')).toBe('konjir team:acme intent:create');
+  expect(() => teamScope('acme', 'admin' as 'join')).toThrow(/isn't an intent: join or create/);
   for (const bad of ['Acme', '', '-acme', 'a b', 'a'.repeat(41), 'acme:x']) expect(() => teamScope(bad)).toThrow(/isn't a team's name/);
 });
 
@@ -162,6 +165,48 @@ test('a team name that is someone else\'s is refused with a free name, never joi
   const no = await signInChoosing(url, { path: paths.dee, ...quiet, open: (u) => { void browse(u, pressing('decision=deny')); } }).catch((e: unknown) => e);
   expect(no).toMatchObject({ denied: true, nothingToChoose: false, message: 'you denied the sign-in on Kolab\'s page' });
 }, 60_000);
+
+test('signInToTeam with an intent: join never makes a team, create never joins one; then a person removes their own agent, and a conversation\'s history is listed', async () => {
+  const { kolab, idp, url, paths } = await boot();
+  // join, a free name: refused as no such team, with no free name offered, and nothing made.
+  idp.next({ subject: '11', login: 'ann' });
+  const none = await signInToTeam(url, 'acme', { path: paths.ann, intent: 'join', ...quiet, open: (u) => { void browse(u, pressing('decision=deny')); } }).catch((e: unknown) => e);
+  expect(none).toBeInstanceOf(SignInRefused);
+  expect(none).toMatchObject({ denied: false, suggest: undefined, message: expect.stringMatching(/^no kolab named acme exists, so there is nothing to join and nothing was made/) });
+  expect(await kolab.kolabRow('acme')).toBeUndefined();
+
+  // create, a free name: made, as the page says.
+  idp.next({ subject: '11', login: 'ann' });
+  let page = '';
+  const made = await signInToTeam(url, 'acme', { path: paths.ann, intent: 'create', ...quiet, open: (u) => { void browse(u, (b, h) => { page = h; return pressing('decision=allow')(b); }); } });
+  expect(page).toContain('Allowing it creates a new kolab, <code>acme</code>, and joins no existing one.');
+  expect(made).toMatchObject({ kolab: 'acme', actor: 'ann' });
+
+  // create, her own team: refused with a free name.
+  idp.next({ subject: '11', login: 'ann' });
+  const taken = await signInToTeam(url, 'acme', { path: paths.ann, intent: 'create', ...quiet, open: (u) => { void browse(u, pressing('decision=deny')); } }).catch((e: unknown) => e);
+  expect(taken).toMatchObject({ denied: false, suggest: 'acme-ann', message: expect.stringMatching(/^the kolab name acme is taken, by a kolab you are a member of/) });
+
+  // join, her own team: signed in.
+  idp.next({ subject: '11', login: 'ann' });
+  const joined = await signInToTeam(url, 'acme', { path: paths.ann, intent: 'join', ...quiet, open: (u) => { void browse(u, (b, h) => { page = h; return pressing('decision=allow')(b); }); } });
+  expect(page).toContain('Allowing it joins <code>acme</code>, a kolab you are already a member of, and creates nothing.');
+  expect(joined).toMatchObject({ kolab: 'acme', actor: 'ann' });
+
+  // Her agent, over MCP: a conversation's history, then she removes it.
+  const annMcp = await connect(url, keptToken(paths.ann, url));
+  const agent = await kolab.addOwnAgent('ann', 'claude');
+  await kolab.grant('acme', agent, 'read');
+  const agentMcp = await connect(url, await kolab.openSession(agent, 'product', { kolab: 'acme' }));
+  closeAtEnd(annMcp, agentMcp);
+  await call(annMcp, 'send_message', { to: 'ann-claude', message: 'one' });
+  await call(agentMcp, 'send_message', { to: 'ann', message: 'two' });
+  expect(((await call(annMcp, 'list_messages', { with: 'ann/claude', limit: 20 })) as { messages: { message: string }[] }).messages.map((m) => m.message)).toStrictEqual(['two', 'one']);
+  expect(await rejection(call(agentMcp, 'remove_agent', { agent: 'claude' }))).toMatch(/ann-claude is an agent: only a person removes their agents/);
+  expect(await call(annMcp, 'remove_agent', { agent: 'claude' })).toStrictEqual({ kolab: 'acme', removed: 'ann-claude', label: 'claude', revoked: 0, ended: 1 });
+  expect(await rejection(call(agentMcp, 'whoami'))).toMatch(/./);
+  expect(await kolab.access(agent, 'acme')).toMatchObject({ level: null });
+}, 120_000);
 
 test('konjir_invite needs GitHub sign-in on the Kolab; konjir login is as it was', async () => {
   const kolab = await openKolab();

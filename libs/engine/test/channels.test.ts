@@ -1,8 +1,9 @@
 // Channels in a kolab (migration 0052): named rooms every member reads and writes. Every kolab has
 // `general`, which a member follows unless they unfollow it; any member makes another. A channel
 // message may mention members, resolved as it is sent; it signals every follower and everyone it
-// mentions, and waits unread in their answers, each member with a read position of their own. A
-// member who joins later reads the whole history. Agent-sent messages in a row past the kolab's
+// mentions, and waits unread in their answers, each member with a read position of their own,
+// which starts when they follow the channel (or join, for those they follow then): what was said
+// before is history, listed but not unread. Agent-sent messages in a row past the kolab's
 // agent_reply_cap wake no agent. Direct messages are unchanged and stay their two members' alone.
 import { expect, test } from '@jest/globals';
 import { DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, MAX_MENTIONS, MAX_MESSAGE_TEXT, MESSAGES_AT_ONCE, UNREAD_COUNT_CEILING, isInboxEvent, type KolabEvent } from '@konjir/types';
@@ -149,12 +150,18 @@ test('a mention names a member, by name or as <owner>/<label>; anyone else is re
   expect((await kolab.db.query(`select count(*)::int as n from channel_mention`)).rows[0]).toStrictEqual({ n: 4 });
 });
 
-test('a member who joins later reads the whole history, oldest first, a batch at a time; their own messages are never unread to them', async () => {
+test('a member who joins later starts unread at their joining, the history still listed; then reads oldest first, a batch at a time; their own messages are never unread to them', async () => {
   const { kolab, ann, events } = await hub();
-  const n = MESSAGES_AT_ONCE + 2;
-  for (let i = 1; i <= n; i++) await kolab.sendChannelMessage(ann, 'general', `message ${i}`);
+  await kolab.sendChannelMessage(ann, 'general', 'before sam');
   await kolab.grant('hub', 'sam', 'read');
   const sam = await kolab.openSession('sam', 'product', { kolab: 'hub' });
+  // What was said before is history: listed, never unread.
+  expect(await kolab.unreadChannels(sam)).toStrictEqual([]);
+  expect((await kolab.channelsPage(sam)).items.map((c) => [c.channel, c.unread])).toStrictEqual([['general', 0]]);
+  expect((await kolab.channelMessagesPage(sam, 'general')).items.map((m) => m.message)).toStrictEqual(['before sam']);
+  expect(await kolab.readChannel(sam, 'general')).toStrictEqual({ channel: 'general', messages: [], more: 0 });
+  const n = MESSAGES_AT_ONCE + 2;
+  for (let i = 1; i <= n; i++) await kolab.sendChannelMessage(ann, 'general', `message ${i}`);
   const waiting = await kolab.unreadChannels(sam);
   expect(waiting.map((c) => [c.channel, c.unread, c.items.length])).toStrictEqual([['general', n, MESSAGES_AT_ONCE]]);
   expect(waiting[0].items[0].message).toBe('message 1');
@@ -282,7 +289,57 @@ test('a mention is among the items however much is unread before it, and wakes i
   expect((await kolab.unreadChannels(bo))[0]).toMatchObject({ unread: UNREAD_COUNT_CEILING, unread_more: true });
 });
 
-test('an agent\'s read position starts at the newest message the first time it is seen in a channel, followed or not; a person\'s never does', async () => {
+test('a person\'s read position starts when they follow a channel: at its newest message, or just before the oldest that mentions them; one who joined before positions started so reads the whole history', async () => {
+  const { kolab, ann, bo } = await hub();
+  await kolab.makeChannel(ann, 'deploys');
+  await kolab.sendChannelMessage(ann, 'deploys', 'old one');
+  await kolab.sendChannelMessage(ann, 'deploys', 'old two');
+  // Following starts Bo's unread now; the history stays listed.
+  expect(await kolab.followChannel(bo, 'deploys', true)).toStrictEqual({ channel: 'deploys', following: true });
+  expect((await kolab.channelsPage(bo)).items.map((c) => [c.channel, c.unread])).toStrictEqual([['deploys', 0], ['general', 0]]);
+  expect(await kolab.unreadChannels(bo)).toStrictEqual([]);
+  expect((await kolab.channelMessagesPage(bo, 'deploys')).items.map((m) => m.message)).toStrictEqual(['old two', 'old one']);
+  const after = await kolab.sendChannelMessage(ann, 'deploys', 'after');
+  expect((await kolab.unreadChannels(bo)).map((c) => [c.channel, c.items.map((m) => m.id)])).toStrictEqual([['deploys', [after.id]]]);
+  // Unfollowing and following again moves nothing: the position stays where it was.
+  await kolab.followChannel(bo, 'deploys', false);
+  await kolab.followChannel(bo, 'deploys', true);
+  expect((await kolab.readChannel(bo, 'deploys')).messages.map((m) => m.message)).toStrictEqual(['after']);
+
+  // A mention of them before they follow is kept: their unread starts just before it.
+  await kolab.makeChannel(ann, 'ops');
+  await kolab.sendChannelMessage(ann, 'ops', 'ops history');
+  const mention = await kolab.sendChannelMessage(ann, 'ops', 'bo, look at this', { mentions: ['bo'] });
+  const next = await kolab.sendChannelMessage(ann, 'ops', 'and this');
+  await kolab.followChannel(bo, 'ops', true);
+  expect((await kolab.readChannel(bo, 'ops')).messages.map((m) => m.id)).toStrictEqual([mention.id, next.id]);
+
+  // A member with no position (one who joined before positions started at joining) reads the whole history.
+  await kolab.db.query(`delete from channel_read where actor_id = 'bo' and channel_id = 'general:hub'`);
+  await kolab.sendChannelMessage(ann, 'general', 'g1');
+  await kolab.sendChannelMessage(ann, 'general', 'g2');
+  expect((await kolab.readChannel(bo, 'general')).messages.map((m) => m.message)).toStrictEqual(['g1', 'g2']);
+});
+
+test('a person granted access to a kolab starts unread at their joining in the channels they follow; one who held access already keeps what they had', async () => {
+  const { kolab, ann } = await hub();
+  await kolab.sendChannelMessage(ann, 'general', 'before');
+  // Rejoining after leaving keeps the position they had.
+  await kolab.grant('hub', 'sam', 'read');
+  const sam = await kolab.openSession('sam', 'product', { kolab: 'hub' });
+  expect(await kolab.unreadChannels(sam)).toStrictEqual([]);
+  await kolab.revoke('hub', 'sam', { by: 'ann' });
+  await kolab.sendChannelMessage(ann, 'general', 'while away');
+  await kolab.grant('hub', 'sam', 'read');
+  const back = await kolab.openSession('sam', 'product', { kolab: 'hub' });
+  expect((await kolab.unreadChannels(back)).map((c) => c.items.map((m) => m.message))).toStrictEqual([['while away']]);
+  // A grant changed for someone who holds one already starts nothing.
+  await kolab.db.query(`delete from channel_read where actor_id = 'sam'`);
+  await kolab.grant('hub', 'sam', 'write');
+  expect((await kolab.unreadChannels(back)).map((c) => c.items.map((m) => m.message))).toStrictEqual([['before', 'while away']]);
+});
+
+test('an agent\'s read position starts at the newest message the first time it is seen in a channel, followed or not', async () => {
   const { kolab, ann } = await hub();
   await kolab.sendChannelMessage(ann, 'general', 'history');
   await kolab.makeChannel(ann, 'deploys');

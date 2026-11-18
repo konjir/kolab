@@ -117,6 +117,7 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   // A member removed by the kolab's owner, or leaving: their grant and their agents' go, each audited, and sessions end.
   removeKolabMember: { recorded: ['audit_event:grant.removed', 'session.ended_by'] },
   leaveKolab: { recorded: ['audit_event:grant.removed', 'session.ended_by'] },
+  removeOwnAgent: { recorded: ['audit_event:grant.removed', 'oauth_grant.revoked_by', 'session.ended_by'] },
   changeGrant: { recorded: ['audit_event:grant.set', 'session.ended_by'] },
   removeGrant: { recorded: ['audit_event:grant.removed', 'session.ended_by'] },
 

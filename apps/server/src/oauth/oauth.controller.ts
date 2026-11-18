@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamPlan } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
@@ -527,13 +527,13 @@ export class OAuthController {
    * (every redirect URI loopback, as setup's), or, for `team:<name>`, what teamPlan refuses. With the
    * scope, and a team's plan, for the page.
    */
-  private async personCheck(person: string, scope: string | null, client: { redirectUris: string[] } | undefined): Promise<{ refused?: string; scope?: { choose: true } | { team: string }; plan?: TeamPlan }> {
+  private async personCheck(person: string, scope: string | null, client: { redirectUris: string[] } | undefined): Promise<{ refused?: string; scope?: { choose: true } | { team: string; intent?: TeamIntent }; plan?: TeamPlan }> {
     const asked = personScope(scope);
     if (!asked) return { refused: 'this sign-in doesn\'t leave its kolab to this page' };
     if ('error' in asked) return { refused: `the app asked for a sign-in Kolab can't do: ${asked.error}. Start it again` };
     if (!client || !client.redirectUris.every(onLoopback)) return { refused: 'a sign-in that leaves its kolab to this page is only for an app on your own computer, such as konnect, and this one receives its answer elsewhere' };
     if ('choose' in asked) return { scope: asked };
-    const plan = await this.kolab.teamPlan(person, asked.team);
+    const plan = await this.kolab.teamPlan(person, asked.team, asked.intent);
     return { scope: asked, plan, ...(plan.kind === 'refused' ? { refused: plan.refusedForApp } : {}) };
   }
 
@@ -550,7 +550,7 @@ export class OAuthController {
     const target = formActionSource(pending.redirectUri);
     const opts = { formTargets: target ? [target] : [] };
     if (check.scope && 'team' in check.scope) {
-      const view: TeamView = { ...base, plan: check.plan, refused: check.plan?.kind === 'refused' ? undefined : check.refused };
+      const view: TeamView = { ...base, plan: check.plan, intent: check.scope.intent, refused: check.plan?.kind === 'refused' ? undefined : check.refused };
       return sendPage(res, status, check.refused ? 'Sign-in can\'t be allowed' : check.plan?.kind === 'make' ? `Make ${check.scope.team}` : `Sign in to ${check.scope.team}`, teamPage(view), opts);
     }
     const options = check.refused ? { invitations: [], kolabs: [] } : await this.kolab.chooseOptions(person);

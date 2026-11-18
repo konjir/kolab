@@ -241,23 +241,43 @@ export const PERSON_SIGN_IN_ROLE: Role = 'product';
  *   picks one, and the sign-in works there.
  * - `konjir team:<name>`: one kolab named, made or switched to. Free, the page offers to make it,
  *   private and theirs, with no agent; theirs already, it signs them in there; anyone else's, it
- *   refuses, suggesting a free name, and never joins it.
+ *   refuses, suggesting a free name, and never joins it. With `intent:join` beside it, it only signs
+ *   in: a free name is refused as no such kolab, and nothing is made; with `intent:create`, it only
+ *   makes: a taken name is refused with a free one suggested, even one the person is a member of.
+ *   An intent only ever narrows what the sign-in may do (TeamIntent).
  * Either way the sign-in is the person's own, never an agent's, in PERSON_SIGN_IN_ROLE, and only for
  * an app on the person's own computer (every redirect URI loopback). Undefined for a scope with
  * neither word; `error` for one that names its kolab badly or mixes them with another sign-in's words.
  */
-export function personScope(scope: string | null | undefined): { choose: true } | { team: string } | { error: string } | undefined {
+export function personScope(scope: string | null | undefined): { choose: true } | { team: string; intent?: TeamIntent } | { error: string } | undefined {
   const words = (scope ?? '').split(/\s+/).filter(Boolean);
   const choose = words.filter((w) => w.startsWith('choose:'));
   const teams = words.filter((w) => w.startsWith('team:'));
+  const intents = words.filter((w) => w.startsWith('intent:'));
   if (!choose.length && !teams.length) return undefined;
   if (words.some((w) => /^(agent|role|as|kolab|setup):/.test(w))) return { error: 'it mixes a sign-in that leaves the kolab to the page with another sign-in\'s agent, role, kolab or setup' };
   if (choose.length + teams.length !== 1) return { error: 'it names more than one choose: or team: word' };
-  if (choose.length) return choose[0] === 'choose:kolab' ? { choose: true } : { error: `${choose[0].slice(0, 60)} isn't choose:kolab` };
+  if (intents.length > 1) return { error: 'it names more than one intent: word' };
+  if (choose.length) {
+    if (intents.length) return { error: 'an intent: word goes only with team:<name>' };
+    return choose[0] === 'choose:kolab' ? { choose: true } : { error: `${choose[0].slice(0, 60)} isn't choose:kolab` };
+  }
   const name = teams[0].slice('team:'.length);
   if (!isKolabName(name) || name.length > 40) return { error: `"${name.slice(0, 60)}" isn't a kolab's name: up to 40 lowercase letters, digits and '-', starting with a letter or digit` };
-  return { team: name };
+  if (!intents.length) return { team: name };
+  const intent = intents[0].slice('intent:'.length);
+  if (!TEAM_INTENTS.includes(intent as TeamIntent)) return { error: `${intents[0].slice(0, 60)} isn't intent:join or intent:create` };
+  return { team: name, intent: intent as TeamIntent };
 }
+
+/**
+ * What a `team:<name>` sign-in asks for beside its name (personScope's `intent:` word): `join`, only
+ * sign in to a kolab the person is a member of, never make one; `create`, only make a new one, never
+ * sign in to one that exists. Without one, either, as the name decides. Each only narrows what the
+ * sign-in may do, so a client that forges one gains nothing.
+ */
+export type TeamIntent = 'join' | 'create';
+export const TEAM_INTENTS: readonly TeamIntent[] = ['join', 'create'];
 
 /**
  * What a `team:<name>` sign-in (personScope) would do for its person, for its page and for the
@@ -3280,12 +3300,15 @@ export class Kolab {
       const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
         `select level, functional, technical from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person])).rows[0];
       const merged = g ? mergeAccess({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, want) : { level: inv.level, layers: want.layers };
+      const joining = !(await ownerAccess(tx, person, inv.kolab_id)).level;
       // Made or replaced in place, so the audit row it needs is grant.set (kj_access_audited).
       await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)
                       on conflict (kolab_id, user_id) where user_id is not null
                       do update set level = excluded.level, functional = excluded.functional, technical = excluded.technical`,
         [inv.kolab_id, person, merged.level, merged.layers.includes('functional'), merged.layers.includes('technical')]);
       await audit(tx, person, 'grant.set', { kolab: inv.kolab_id, subject: person, detail: { level: merged.level, layers: merged.layers, invite: inv.id } });
+      // A new member's unread starts now (startFollowedPositionsIn).
+      if (joining) await startFollowedPositionsIn(tx, inv.kolab_id, person);
       await tx.query(`update kolab_invite set accepted_by = $2, accepted_at = now() where id = $1`, [inv.id, person]);
       kolab = inv.kolab_id;
       if (then) await then(tx, inv.kolab_id);
@@ -3486,11 +3509,14 @@ export class Kolab {
       const g = (await tx.query<{ level: AccessLevel; functional: boolean; technical: boolean }>(
         `select level, functional, technical from kolab_grant where kolab_id = $1 and user_id = $2`, [inv.kolab_id, person])).rows[0];
       const merged = g ? mergeAccess({ level: g.level, layers: LAYERS.filter((l) => (l === 'functional' ? g.functional : g.technical)) }, want) : { level: inv.level, layers: want.layers };
+      const joining = !(await ownerAccess(tx, person, inv.kolab_id)).level;
       await tx.query(`insert into kolab_grant(kolab_id, user_id, level, functional, technical) values ($1, $2, $3, $4, $5)
                       on conflict (kolab_id, user_id) where user_id is not null
                       do update set level = excluded.level, functional = excluded.functional, technical = excluded.technical`,
         [inv.kolab_id, person, merged.level, merged.layers.includes('functional'), merged.layers.includes('technical')]);
       await audit(tx, person, 'grant.set', { kolab: inv.kolab_id, subject: person, detail: { level: merged.level, layers: merged.layers, invitation: inv.id } });
+      // A new member's unread starts now (startFollowedPositionsIn).
+      if (joining) await startFollowedPositionsIn(tx, inv.kolab_id, person);
       await tx.query(`update kolab_invitation set accepted_at = now(), accepted_by = $2 where id = $1`, [inv.id, person]);
       kolab = inv.kolab_id;
       await then(tx, inv.kolab_id);
@@ -3596,6 +3622,51 @@ export class Kolab {
     return { left: s.kolab, agents: dropped.agents, ended: r.ended + dropped.ended };
   }
 
+  /**
+   * A person removes one agent of their own from the session's kolab (konjir_remove_agent), named
+   * by its label, its whole name, or `<owner>/<label>`: its grant there goes, as it goes with its
+   * owner when they are removed or leave (dropMemberGrants), under the access lock and audited; its
+   * sign-ins to that kolab are revoked, so a refresh token renews nothing there; and its sessions
+   * there end, their streams told (D41). The agent itself stays, with its grants elsewhere, and a
+   * setup naming its label again grants it afresh. Only a person's own session, and only their own
+   * agent: anyone else's, or a name that is no agent of theirs, is refused alike.
+   */
+  async removeOwnAgent(sessionId: string, named: string): Promise<{ kolab: string; removed: string; label: string | null; revoked: number; ended: number }> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person removes their agents, from their own session`);
+    const given = typeof named === 'string' ? named.trim().replace(/^@/, '') : '';
+    const slash = given.indexOf('/');
+    const own = (await this.db.query<{ id: string }>(`select id from actor where owner_id = $1 and kind = 'agent'`, [s.actor_id])).rows.map((r) => r.id);
+    // <owner>/<label> names the owner's agent <owner>-<label>; a label alone, the caller's.
+    const agent = slash >= 0 ? (given.slice(0, slash) === s.actor_id ? `${s.actor_id}-${given.slice(slash + 1)}` : '') : namedAgent(given, s.actor_id, own);
+    // One refusal for someone else's agent and for no agent at all: nothing is said of others' agents.
+    if (!given || !own.includes(agent)) throw new AccessError(`you have no agent ${given || '(none named)'}: name one of yours by its label, as konjir_list_agents lists them`);
+    await this.requireLiveKolab(s.kolab, 'changes no access');
+    let revoked = 0;
+    let ended = 0;
+    const r = await this.changeAccess({ users: [agent] }, s.actor_id, async (tx, signal) => {
+      if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
+        throw new RoleError('no open session for that token');
+      }
+      const gone = await tx.query(`delete from kolab_grant where kolab_id = $1 and agent_id = $2 returning agent_id`, [s.kolab, agent]);
+      if (!gone.rows.length) throw new TenancyError(`${agent} holds no grant in kolab ${s.kolab}, so nothing was removed`);
+      await audit(tx, s.actor_id, 'grant.removed', { kolab: s.kolab, subject: agent, detail: { owner: s.actor_id } });
+      // Its sign-ins to this kolab (a grant's scope names its kolab, grantedScope), revoked.
+      revoked = (await tx.query(
+        `update oauth_grant set revoked_at = now(), revoked_by = $3
+          where actor_id = $1 and revoked_at is null and position($2 in ' ' || scope || ' ') > 0 returning id`,
+        [agent, ` kolab:${s.kolab} `, s.actor_id])).rows.length;
+      // Every session of its there ends now, even one a public kolab's Read would keep open.
+      const out = (await tx.query<{ id: string }>(
+        `update session set ended_at = now(), ended_by = $3 where kolab_id = $1 and actor_id = $2 and ended_at is null returning id`,
+        [s.kolab, agent, s.actor_id])).rows;
+      for (const { id } of out) await signal({ session: 'ended', id });
+      ended = out.length;
+    });
+    const label = agent.startsWith(`${s.actor_id}-`) ? agent.slice(s.actor_id.length + 1) : null;
+    return { kolab: s.kolab, removed: agent, label, revoked, ended: r.ended + ended };
+  }
+
   // ---- a person's own sign-in that leaves the kolab to the page (personScope) ----
 
   /** What a `choose:kolab` sign-in's page offers `person`: the invitations waiting for them, and the kolabs they are a member of. */
@@ -3616,7 +3687,7 @@ export class Kolab {
    * allow; or refuse, when it is someone else's, suggesting a free name and saying so of an
    * invitation to it that waits for them. It makes nothing.
    */
-  async teamPlan(person: string, name: string): Promise<TeamPlan> {
+  async teamPlan(person: string, name: string, intent?: TeamIntent): Promise<TeamPlan> {
     const refuse = (why: string, suggest?: string): TeamPlan => ({ kolab: name, kind: 'refused', refused: why, refusedForApp: why, ...(suggest ? { suggest } : {}) });
     const p = await this.findActor(person);
     if (!p || p.kind !== 'person') return refuse(`${person} isn't a person here: only a person signs in this way`);
@@ -3626,13 +3697,27 @@ export class Kolab {
     if (k) {
       // Access first, so an archived kolab reads as any other the person can't reach (D52).
       const access = await accessIn(this.db, person, name);
-      if (access.level && (await ownerAccess(this.db, person, name)).level) return { kolab: name, kind: 'member', title: k.title, access };
+      const member = !!access.level && !!(await ownerAccess(this.db, person, name)).level;
+      if (intent === 'create') {
+        // Only a new kolab: an existing one, theirs or not, is refused, with a free name to make instead.
+        const suggest = await this.freeKolabName(name, person);
+        return refuse(`the kolab name ${name} is taken${member ? ', by a kolab you are a member of: join it instead of creating it' : ''}. This sign-in only creates a new kolab, and names are unique across Konjir.`
+          + (suggest ? ` The name ${suggest} is free.` : ' Choose another name.'), suggest);
+      }
+      if (member) return { kolab: name, kind: 'member', title: k.title, access };
       const waiting = (await this.invitationsFor(person)).some((i) => i.kolab === name);
+      if (intent === 'join') {
+        // Joining names no free kolab to make instead: it never creates.
+        return refuse(`you aren't a member of kolab ${name}, so this sign-in can't join it: only its owner can invite you.`
+          + (waiting ? ` An invitation to ${name} waits for you: sign in without naming a kolab to accept it.` : ' Ask its owner to invite your account, then sign in again.'));
+      }
       const suggest = await this.freeKolabName(name, person);
       return refuse(`the kolab name ${name} is taken, by a kolab you aren't a member of: names are unique across Konjir, and this sign-in never joins anyone else's kolab.`
         + (waiting ? ` An invitation to ${name} waits for you: sign in without naming a kolab to accept it.` : '')
         + (suggest ? ` The name ${suggest} is free.` : ' Choose another name.'), suggest);
     }
+    // Joining never makes one: a free name is no kolab to join.
+    if (intent === 'join') return refuse(`no kolab named ${name} exists, so there is nothing to join and nothing was made. Check the name with whoever asked you to join.`);
     if (isReservedKolabName(name)) return refuse(`the kolab name ${name} is reserved for Konjir's own kolabs: choose another`);
     const c = (await this.db.query<{ owned: number; recent: number }>(
       `select count(*)::int as owned, count(*) filter (where created_at > now() - $2 * interval '1 millisecond')::int as recent
@@ -3716,7 +3801,7 @@ export class Kolab {
       return issued(kolab, false);
     }
     if (!('team' in choice) || choice.team !== scope.team) throw new AccessError(`this sign-in is for kolab ${scope.team} only: allow that, or deny it`);
-    const plan = await this.teamPlan(person, scope.team);
+    const plan = await this.teamPlan(person, scope.team, scope.intent);
     if (plan.kind === 'refused') throw new AccessError(plan.refused);
     // Allow carries out what the page showed, or nothing.
     if (choice.shown !== plan.kind) throw new AccessError(`kolab ${scope.team} changed since this page was shown: deny it, and start again`);
@@ -4443,12 +4528,15 @@ export class Kolab {
     return this.changeAccess(granted(grantee), by, async (tx) => {
       // Against what its owner holds now, in this transaction.
       if (grantee.column === 'agent_id') await requireWithinCap(tx, grantee, kolab, { level, layers });
+      const joining = grantee.column === 'user_id' && !(await ownerAccess(tx, grantee.id, kolab)).level;
       // Made or replaced in place, so the audit row it needs is grant.set (kj_access_audited).
       await tx.query(`insert into kolab_grant(kolab_id, ${grantee.column}, level, functional, technical) values ($1, $2, $3, $4, $5)
                       on conflict (kolab_id, ${grantee.column}) where ${grantee.column} is not null
                       do update set level = excluded.level, functional = excluded.functional, technical = excluded.technical`,
         [kolab, grantee.id, level, layers.includes('functional'), layers.includes('technical')]);
       await audit(tx, by, 'grant.set', { kolab, subject: grantee.id, detail: { level, layers } });
+      // A person new to the kolab: their unread starts now (startFollowedPositionsIn).
+      if (joining) await startFollowedPositionsIn(tx, kolab, grantee.id);
     });
   }
 
@@ -10056,11 +10144,16 @@ export class Kolab {
   /**
    * One page of the session's actor's messages in its kolab, newest first (konjir_list_messages):
    * the ones sent to it, or with `sent` the ones it sent; with `with`, only those exchanged with
-   * that member, both ways. Read or not, and it marks nothing.
+   * that member, both ways (by name, or an agent as `<owner>/<label>`): a direct conversation's
+   * history. Only the two of them ever see a message between them: the query names the caller as
+   * one end, so no third member, an agent's owner or an admin reads it here. Read or not, and it
+   * marks nothing.
    */
-  async messagesPage(sessionId: string, filter: { sent?: boolean; with?: string } = {}, page: PageOpts = {}): Promise<{ items: Message[]; next: string | null }> {
+  async messagesPage(sessionId: string, given: { sent?: boolean; with?: string } = {}, page: PageOpts = {}): Promise<{ items: Message[]; next: string | null }> {
     const s = await this.session(sessionId);
     const size = pageSize(page.limit);
+    // `with` by name, or an agent as <owner>/<label>, as konjir_read_messages takes `from`.
+    const filter = { ...given, with: typeof given.with === 'string' ? memberName(given.with) : undefined };
     const list = scoped('messages', { kolab: s.kolab, actor: s.actor_id, sent: filter.sent || undefined, with: filter.with });
     const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
     const whose = filter.with !== undefined
@@ -10130,8 +10223,10 @@ export class Kolab {
    * answers or reading it (it has no use for the history as unread, but has for a mention): just
    * before its oldest mention there, or at the channel's newest message if none mentions it
    * (AGENT_START). Written here, in the channels of its kolab it has no position in, or only
-   * `channel`. A person's never starts: a person who has read nothing reads the whole history.
-   * Nothing is written in an archived kolab, nor when it is archived meanwhile: the read goes on.
+   * `channel`. A person's starts when they follow a channel (followChannel), or, for those they
+   * follow on joining, when they become a member (startFollowedPositionsIn); a person with none
+   * (one who joined before positions started so) reads the whole history. Nothing is written in an
+   * archived kolab, nor when it is archived meanwhile: the read goes on.
    */
   private async startAgentPositions(s: Session, channel?: string) {
     if (s.kind !== 'agent') return;
@@ -10227,7 +10322,9 @@ export class Kolab {
    * (konjir_follow_channel, konjir_unfollow_channel): a followed channel's unread messages are in
    * the member's answers, and a message there signals them. Without a choice, a member follows
    * `general` and no other. A channel unfollowed still shows an unread message that mentions them.
-   * An agent that follows a channel it has no read position in starts at its newest message.
+   * A member, person or agent, who follows a channel they have no read position in starts at its
+   * newest message, or just before the oldest message there that mentions them (AGENT_START): what
+   * was said before is history, which konjir_list_channel_messages still lists, not unread.
    */
   async followChannel(sessionId: string, name: string, following: boolean): Promise<{ channel: string; following: boolean }> {
     const s = await this.session(sessionId);
@@ -10240,7 +10337,7 @@ export class Kolab {
         `insert into channel_follow(channel_id, kolab_id, actor_id, following) values ($1, $2, $3, $4)
          on conflict (channel_id, actor_id) do update set following = excluded.following, changed_at = clock_timestamp()`,
         [c.id, s.kolab, s.actor_id, following]);
-      if (following && s.kind === 'agent') {
+      if (following) {
         await tx.query(
           `insert into channel_read(channel_id, kolab_id, actor_id, read_to)
            values ($1, $2, $3, ${AGENT_START('$1::text', '$3')})
@@ -10366,11 +10463,12 @@ export class Kolab {
   /**
    * Reads the session's actor's unread messages in one channel of its kolab, oldest first, at most
    * `limit` (MESSAGES_AT_ONCE by default and at most), and moves its read position past them
-   * (konjir_read_channel). Only its own position moves: every member has their own, and a person
-   * who has none reads the channel from its first message (an agent's starts where it was first
-   * seen in the channel). Its own messages are never unread. `more` is how many stay unread among
-   * the next UNREAD_SCAN messages, at most UNREAD_COUNT_CEILING: while it isn't 0, call again. In an
-   * archived kolab, which changes no more, the position stays.
+   * (konjir_read_channel). Only its own position moves: every member has their own. A person's
+   * starts when they follow the channel, or join the kolab for those they follow then; one who has
+   * none (a channel they never followed) reads it from its first message. An agent's starts where
+   * it was first seen in the channel. Its own messages are never unread. `more` is how many stay
+   * unread among the next UNREAD_SCAN messages, at most UNREAD_COUNT_CEILING: while it isn't 0, call
+   * again. In an archived kolab, which changes no more, the position stays.
    */
   async readChannel(sessionId: string, name: string, opts: { limit?: number | null } = {}): Promise<{ channel: string; messages: ChannelMessage[]; more: number }> {
     const s = await this.session(sessionId);
@@ -14600,6 +14698,21 @@ export const CHANNEL_COUNTS_SQL = `select c.id, c.name, p.following, p.pos, c.ma
                                where m.channel_id = c.id and m.id > coalesce(p.pos, '') order by m.id limit $8) w) u
  where c.kolab_id = $1 and ($5::text is null or c.name collate "C" > $5::text collate "C")
  order by c.name collate "C" limit $6`;
+/**
+ * In `tx`, a person who has just become a member of `kolab` (holding nothing there of their own
+ * before) has their read position started in each channel they follow there, `general` unless they
+ * unfollowed it before, as following a channel starts it (followChannel): at its newest message, or
+ * just before the oldest that mentions them (AGENT_START). So their unread starts when they join,
+ * and the history stays readable (konjir_list_channel_messages). A position they hold stays.
+ */
+async function startFollowedPositionsIn(tx: Q, kolab: string, person: string) {
+  await tx.query(
+    `insert into channel_read(channel_id, kolab_id, actor_id, read_to)
+     select c.id, c.kolab_id, $2, ${AGENT_START('c.id', '$2')}
+       from channel c left join channel_follow f on f.channel_id = c.id and f.actor_id = $2
+      where c.kolab_id = $1 and coalesce(f.following, c.name = $3)
+     on conflict (channel_id, actor_id) do nothing`, [kolab, person, GENERAL_CHANNEL]);
+}
 /** Whether `e` is the database's refusal of a write to `kolab` because it is archived (kj_kolab_writable, 0014). */
 const isArchivedRefusal = (e: unknown, kolab: string) =>
   (e as { code?: string }).code === '23514' && String((e as Error).message ?? '').startsWith(`kolab ${kolab} is archived:`);
