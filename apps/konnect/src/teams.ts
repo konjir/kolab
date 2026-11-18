@@ -92,12 +92,27 @@ export function agentFileReady(team: string, label: string, env: Record<string, 
 
 /**
  * The file a machine keeps what it hosts as in a team: `hosts/<team>/<name>.json` in konnect's
- * config folder, its folders made ready as a login's are. It holds the key agents' logins are
- * sealed to (seal.ts), so it is the person's alone.
+ * config folder, its folders made ready as a login's are. It holds the machine's pairing code
+ * (seal.ts), so it is the person's alone.
  */
 export function hostFileReady(team: string, name: string, env: Record<string, string | undefined> = process.env): string {
+  return fileReady(hostFile(team, name, env), env);
+}
+
+/** Where that file is, nothing made. */
+export function hostFile(team: string, name: string, env: Record<string, string | undefined> = process.env): string {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(name)) throw new Error(`${printable(name)} isn't a machine's name: lowercase letters, digits and -, at most 40 characters`);
-  return fileReady(join(configDir(env), 'hosts', checkTeam(team), `${name}.json`), env);
+  return join(configDir(env), 'hosts', checkTeam(team), `${name}.json`);
+}
+
+/** The file a machine keeps the code of another machine it may ask: beside the hosts' own, `hosts/<team>/<name>.pair.json`. */
+export function pairFile(team: string, name: string, env: Record<string, string | undefined> = process.env): string {
+  return `${hostFile(team, name, env).slice(0, -5)}.pair.json`;
+}
+
+/** That file, its folders made ready. */
+export function pairFileReady(team: string, name: string, env: Record<string, string | undefined> = process.env): string {
+  return fileReady(pairFile(team, name, env), env);
 }
 
 /** Removes a login file that holds no login any more (its last one was dropped), and its folder if that leaves it empty. */

@@ -3,15 +3,19 @@
  *
  *   konnect host list
  *   konnect host run [--background] [<name>]     this machine hosts, in this folder, until it is ended
+ *   konnect host pair <name> [<code>]            once, on a machine that may ask <name>
  *   konnect host stop [<name>]
  *
  * A machine hosts only while `konnect host run` runs on it, as you, in the folder you ran it in.
- * It then takes requests from the service every few seconds, and the service gives it only yours:
- * from your own login, never an agent's and never a teammate's. A request names agents of yours,
- * one of the harnesses konnect starts, and konnect's own options; it carries no command, no path
- * and no argument for the harness (host-ask.ts reads it, and refuses anything it doesn't know).
- * Each agent is started as `konnect agent run --background` starts one here, in this folder. What
- * that agent may then do on this machine is set here, in its harness, never by the request.
+ * It then takes requests from the service every few seconds. It carries out only a request that is
+ * sealed with its pairing code (seal.ts), which it made itself and showed you, and which you gave
+ * to each machine that may ask: the service never has it, so a request can't come from the
+ * service, from a teammate, from an agent, or from a copy of your login on a machine you never
+ * paired. A request names agents of yours, one of the harnesses konnect starts, and konnect's own
+ * options; it carries no command, no path and no argument for the harness (host-ask.ts reads it,
+ * and refuses anything it doesn't know). Each agent is started as `konnect agent run --background`
+ * starts one here, in this folder. What that agent may then do on this machine is set here, in its
+ * harness, never by the request.
  *
  * `konnect agent run --on <name> …` and `konnect agent stop --on <name> …` ask (host-ask.ts).
  */
@@ -22,27 +26,27 @@ import { dirname, join } from 'node:path';
 import { keepSignIn, logout } from '@konjir/login';
 import { konnectCommand } from './agents.js';
 import { NotYet, Refused, SignInError, TeamClient, type Host, type HostRequest } from './client.js';
-import { exec, inSession, multiplexer, running, sessionName, sessions, startInBackground } from './cmd-agent.js';
+import { endSession, inSession, multiplexer, running, sessionName, sessions, startInBackground } from './cmd-agent.js';
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
-import { HOST_NAME, ago, askHost, bound, checkHost, readStart, readStop, type Started } from './host-ask.js';
+import { HOST_NAME, REQUEST_FRESH_MS, ago, answerBound, askHost, checkHost, keepPairing, pairing, readEnd, readStart, readStop, requestBound, type Asked, type Started } from './host-ask.js';
 import { printable } from './names.js';
-import { newKeys, unseal } from './seal.js';
-import { agentFile, agentFileReady, dropIfEmpty, hostFileReady } from './teams.js';
+import { CODE, fingerprint, keyOf, newCode, readCode, seal, unseal } from './seal.js';
+import { agentFile, agentFileReady, dropIfEmpty, hostFile, hostFileReady } from './teams.js';
 
 /** How often a hosting machine tells the service it is there and takes what waits for it. */
 const TICK_MS = 3_000;
 /** While the service can't be reached, how long between tries, at most. */
 const RETRY_MS = 30_000;
 
-/** What a machine keeps of hosting under one name: who it is to the service, the key logins are sealed to, and whose turn it is. */
-interface Kept { instance: string; publicKey: string; privateKey: string; claim?: string }
+/** What a machine keeps of hosting under one name: who it is to the service, its pairing code, and whose turn it is. */
+interface Kept { instance: string; code: string; claim?: string }
 
 const read = (file: string): Kept | undefined => {
   try {
     const k = JSON.parse(readFileSync(file, 'utf8')) as Kept;
-    return k && typeof k.instance === 'string' && /^[a-f0-9]{16,64}$/.test(k.instance) && typeof k.publicKey === 'string' && typeof k.privateKey === 'string' ? k : undefined;
+    return k && typeof k.instance === 'string' && /^[a-f0-9]{16,64}$/.test(k.instance) && typeof k.code === 'string' && CODE.test(k.code) ? k : undefined;
   } catch { return undefined; }
 };
 const write = (file: string, kept: Kept) => {
@@ -50,6 +54,16 @@ const write = (file: string, kept: Kept) => {
   writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600, flag: 'wx' });
   renameSync(tmp, file);
 };
+
+/** What this machine keeps of hosting as `name`, made now if it kept nothing: the code is made once, and stays until the file is removed. */
+function keptHere(team: string, name: string, env: Record<string, string | undefined>): { file: string; kept: Kept } {
+  const file = hostFileReady(team, name, env);
+  const before = read(file);
+  if (before) return { file, kept: before };
+  const made: Kept = { instance: randomBytes(16).toString('hex'), code: newCode() };
+  write(file, made);
+  return { file, kept: made };
+}
 
 /** The name this machine hosts as unless one is given: its own, as a machine's name is written. */
 export function thisMachine(given: string = hostname()): string | undefined {
@@ -90,6 +104,9 @@ function trusted(dir: string, env: Record<string, string | undefined>): boolean 
 
 const brief = (e: unknown) => printable(String((e as Error)?.message ?? e)).replace(/\s+/g, ' ').slice(0, 500);
 
+/** How another machine is paired with this one: said where hosting starts, and in the list, on the machine that hosts. */
+const pairLine = (name: string, code: string) => `  konnect host pair ${name} ${code}`;
+
 /** One line for each machine: its name, whether it hosts now, its folder, and the agents running there. */
 export function formatHosts(hosts: Host[], now = Date.now()): string {
   const rows = hosts.map((h) => [printable(h.name), h.serving ? 'hosting' : `last seen ${ago(h.seen_at, now)}`, h.folder ? printable(h.folder) : '', h.serving && h.running.length ? `running: ${h.running.map(printable).join(', ')}` : '']);
@@ -99,7 +116,7 @@ export function formatHosts(hosts: Host[], now = Date.now()): string {
 
 export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
   if (verb === undefined) throw new UsageError(helpFor(['host']));
-  if (!['list', 'run', 'stop'].includes(verb)) throw new UsageError(`konnect host has no ${printable(verb)}: it is list, run or stop`);
+  if (!['list', 'run', 'pair', 'stop'].includes(verb)) throw new UsageError(`konnect host has no ${printable(verb)}: it is list, run, pair or stop`);
   ctx.personOnly(`host ${verb}`);
   const team = ctx.team();
 
@@ -108,7 +125,30 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     const client = await ctx.open(team);
     try {
       const hosts = await client.hosts();
-      ctx.print(hosts.map(({ public_key: _, ...h }) => h), () => (hosts.length ? formatHosts(hosts) : `No machine of yours hosts in team ${team}. On one that should: konnect host run`));
+      // On the machine that hosts, its code is said again, for pairing another machine with it.
+      const here = hosts.flatMap((h) => { const k = HOST_NAME.test(h.name) ? read(hostFile(team, h.name, ctx.env)) : undefined; return k && h.public_key === fingerprint(keyOf(k.code, team, h.name), team, h.name) ? [pairLine(h.name, k.code)] : []; });
+      ctx.print(hosts.map(({ public_key: _, ...h }) => h), () => (hosts.length
+        ? [formatHosts(hosts), ...(here.length ? ['', 'To ask this machine from another machine of yours, pair that machine once, there:', ...here] : [])].join('\n')
+        : `No machine of yours hosts in team ${team}. On one that should: konnect host run`));
+    } finally { await client.close(); }
+    return;
+  }
+
+  if (verb === 'pair') {
+    const name = checkHost(rest[0], 'konnect host pair <name> [<code>]: name the machine, then the code konnect host run shows on it');
+    if (rest.length > 2) throw new UsageError(`konnect host pair <name> [<code>]: unknown ${printable(rest.slice(2).join(' '))}`);
+    // The code, or with none given, a line of standard input: so it needn't be left in the shell's history.
+    const given = rest[1] ?? (await (ctx.io.stdin ?? (async () => { let t = ''; for await (const c of process.stdin) t += c; return t; }))()).trim();
+    const code = readCode(given);
+    if (!code) throw new UsageError(`that isn't a pairing code: it is six groups of four letters and digits, as konnect host run shows on ${name}`);
+    const client = await ctx.open(team);
+    try {
+      const h = (await client.hosts()).find((x) => x.name === name);
+      if (!h) throw new Refused(`no machine of yours hosts as ${name} in team ${team}: on that machine, run konnect host run ${name}`);
+      // Checked against what the machine published, so a mistyped code is said now, not at the first request.
+      if (h.public_key !== fingerprint(keyOf(code, team, name), team, name)) throw new Refused(`that isn't ${name}'s code: it is the one konnect host run shows on ${name}, or konnect host list there`);
+      keepPairing(team, name, code, ctx.env);
+      ctx.print({ team, host: name, paired: true }, () => `Paired with ${name}. From this machine: konnect agent run --on ${name} <name> claude`);
     } finally { await client.close(); }
     return;
   }
@@ -123,7 +163,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     try {
       if (kind && await running(ctx, kind, session)) {
         // Hosting in the background on this machine: its session is ended, and the service told.
-        const r = kind === 'tmux' ? await exec(ctx)('tmux', ['kill-session', '-t', `=${session}`], ctx.cwd) : await exec(ctx)('screen', ['-S', session, '-X', 'quit'], ctx.cwd);
+        const r = await endSession(ctx, kind, session);
         if (r.code !== 0) throw new Error(`${kind} couldn't end ${session}: ${r.out.trim() || `it exited with ${r.code}`}`);
         await client.endHost(name).catch(() => undefined);
         ctx.print({ team, host: name, stopped: true }, () => `This machine no longer hosts as ${name} in team ${team}. Agents it started keep running: konnect agent stop <name> ends one.`);
@@ -133,8 +173,15 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
       if (!h) throw new Refused(`no machine of yours hosts as ${name} in team ${team}: konnect host list shows yours`);
       if (h.serving) {
         // Hosting somewhere else (another machine, or another terminal here): it is asked to end itself.
-        const a = await askHost<{ why?: string }>(ctx, client, name, 'end', { v: 1 });
-        if (!a.ok) throw new Error(`${name} didn't stop hosting${typeof a.result.why === 'string' ? `: ${printable(a.result.why)}` : ''}`);
+        const key = pairing(ctx, team, h);
+        let a: { ok?: boolean; why?: string };
+        try { a = await askHost<{ ok?: boolean; why?: string }>(ctx, client, team, name, key, 'end', {}); } catch (e) {
+          // A machine that ends says so to the service, and its requests go with it: an answer that
+          // can no longer be read, from a machine that no longer hosts, is the answer.
+          if ((await client.hosts()).some((x) => x.name === name && x.serving)) throw e;
+          a = { ok: true };
+        }
+        if (a.ok !== true) throw new Error(`${name} didn't stop hosting${typeof a.why === 'string' ? `: ${printable(a.why)}` : ''}`);
         ctx.print({ team, host: name, stopped: true }, () => `${name} no longer hosts in team ${team}. Agents it started keep running there.`);
         return;
       }
@@ -154,38 +201,45 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     // The login is tried here, where someone reads what it says, before a session nobody watches is started.
     const client = await ctx.open(team);
     await client.hosts().finally(() => client.close());
-    const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
+    const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
     const me = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
-    const went = await inSession(ctx, kind, session, `${hostFileReady(team, name, ctx.env).slice(0, -5)}.start.json`, { cmd: me.command, args: [...me.args, '--team', team, 'host', 'run', name], env: carried });
+    const mine = keptHere(team, name, ctx.env);
+    const went = await inSession(ctx, kind, session, mine.file.slice(0, -5), { cmd: me.command, args: [...me.args, '--team', team, 'host', 'run', name], env: carried });
     if (went.code !== 0) throw new Error(`${kind} couldn't start hosting in the background: ${went.out.trim() || `it exited with ${went.code}`}`);
+    // A session that is gone a moment later hosts nothing.
+    await ctx.pause(800);
+    if (!await running(ctx, kind, session)) throw new Error(`hosting ended as soon as it was started in the background: run konnect host run ${name} in a terminal here to see why`);
     ctx.print({ team, host: name, folder, session, in: kind }, () => [
       `This machine hosts for you in team ${team} as ${name}, in ${folder}, in the background (${kind} session ${session}).`,
-      `  konnect agent run --on ${name} <name> claude     from any machine you are logged in on, start an agent here`,
-      `  konnect host stop ${name}                        end it`,
+      'To ask it from another machine of yours, pair that machine once, there:',
+      pairLine(name, mine.kept.code),
+      `Then, from it: konnect agent run --on ${name} <name> claude`,
+      `To end hosting: konnect host stop ${name}`,
     ].join('\n'));
     return;
   }
 
-  const file = hostFileReady(team, name, ctx.env);
   let client = await ctx.open(team);
   const me = client.me.actor;
+  const { file, kept: before } = keptHere(team, name, ctx.env);
+  // The newest konnect host run under a name on this machine hosts: an older one sees so and ends.
+  const claim = randomBytes(12).toString('hex');
+  const mine: Kept = { ...before, claim };
+  write(file, mine);
+  const stillMine = () => read(file)?.claim === claim;
+  const key = keyOf(mine.code, team, name);
   let goodbye = true;
   try {
-    // The newest konnect host run under a name on this machine hosts: an older one sees so and ends.
-    const claim = randomBytes(12).toString('hex');
-    const before = read(file);
-    const kept: Kept = { ...(before ?? { instance: randomBytes(16).toString('hex'), ...newKeys() }), claim };
-    write(file, kept);
-    const mine = () => read(file)?.claim === claim;
-
-    const beat = async () => client.serveHost({
-      name, instance: kept.instance, public_key: kept.publicKey, folder,
-      agents: loginsHere(team, ctx.env),
-      running: await (async () => { const all = new Set(await sessions(ctx, kind)); return loginsHere(team, ctx.env).filter((l) => all.has(sessionName(team, l))); })(),
-    });
+    const beat = async (): Promise<HostRequest[]> => {
+      const all = new Set(await sessions(ctx, kind));
+      const logins = loginsHere(team, ctx.env);
+      const r = await client.serveHost({ name, instance: mine.instance, public_key: fingerprint(key, team, name), folder, agents: logins, running: logins.filter((l) => all.has(sessionName(team, l))) });
+      // Whatever the service gives in place of requests, only what could be one is looked at.
+      return (Array.isArray(r?.requests) ? r.requests : []).filter((q) => !!q && typeof q === 'object' && typeof q.id === 'string' && typeof q.body === 'string' && typeof q.kind === 'string');
+    };
     // Refused here when another machine, or another process, hosts under this name now.
     let waiting: HostRequest[];
-    try { waiting = (await beat()).requests; } catch (e) {
+    try { waiting = await beat(); } catch (e) {
       goodbye = false;
       if (e instanceof Refused) throw new Refused(e.message.replace(/kolab (\S+)/g, 'team $1'));
       throw e;
@@ -194,8 +248,10 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     const say = (line: string) => ctx.err(`${new Date().toISOString().slice(11, 19)}  ${line}`);
     ctx.err([
       `This machine hosts for you (@${printable(me)}) in team ${team} as ${name}, in ${folder}.`,
-      `From any machine you are logged in on: konnect agent run --on ${name} <name> claude`,
-      'Only you can start an agent here, and only claude, codex or opencode with konnect\'s own options; what it may do here is set in its harness. Ctrl-C ends hosting.',
+      'To ask it from another machine of yours, pair that machine once, there:',
+      pairLine(name, mine.code),
+      `Then, from it: konnect agent run --on ${name} <name> claude`,
+      'It starts claude, codex or opencode as an agent of yours, with konnect\'s own options, and only for a machine paired with it; what the agent may do here is set in its harness. Ctrl-C ends hosting.',
       ...(trusted(ctx.cwd, ctx.env) === false ? ['Claude Code hasn\'t been run in this folder: run claude here once and answer its question, or an agent started here waits at it.'] : []),
     ].join('\n'));
 
@@ -208,51 +264,55 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     process.on('SIGHUP', end);
     (ctx.io.waking ?? (() => undefined))(end);
 
-    const answer = async (req: HostRequest, ok: boolean, result: unknown) => {
-      try { await client.answerHost(req.id, ok, JSON.stringify(result)); } catch (e) { say(`couldn't answer a request (${brief(e)})`); }
+    /** The requests carried out of late, by their own word: one sent again does nothing. */
+    const seen = new Map<string, number>();
+    /** Refuses a request made too long ago (or by a clock too far from this one), or seen before. */
+    const once = (a: Asked) => {
+      const now = Date.now();
+      for (const [id, at] of seen) if (now - at > 2 * REQUEST_FRESH_MS) seen.delete(id);
+      if (Math.abs(now - a.at) > REQUEST_FRESH_MS) throw new Error('the request was made too long ago, or the two machines\' clocks are more than ten minutes apart');
+      if (seen.has(a.id)) throw new Error('that request was carried out already');
+      seen.set(a.id, now);
     };
 
-    /** Whether the agent's login kept here works, as that agent of this person. */
-    const works = async (label: string) => {
+    /** Whether the agent's login kept here works, as that agent of this person: no when there is none or it has ended, unknown when the service couldn't say. */
+    const works = async (label: string): Promise<'yes' | 'no' | 'unknown'> => {
       const f = agentFile(team, label, ctx.env);
-      if (!existsSync(f)) return false;
-      try { await (await TeamClient.open(team, ctx.url, f, { kind: 'agent', label, owner: me })).close(); return true; } catch { return false; }
+      if (!existsSync(f)) return 'no';
+      try { await (await TeamClient.open(team, ctx.url, f, { kind: 'agent', label, owner: me })).close(); return 'yes'; } catch (e) { return e instanceof SignInError ? 'no' : 'unknown'; }
     };
 
-    const start = async (req: HostRequest): Promise<[boolean, Started]> => {
-      const r: Started = { v: 1, in: kind, folder, started: [], failed: [], needs_login: [], kept: [] };
-      const asked = readStart(req.body);
+    const start = async (text: string): Promise<Started & { id: string }> => {
+      const asked = readStart(text);
+      once(asked);
+      const r: Started & { id: string } = { v: 1, id: asked.id, ok: false, in: kind, folder, started: [], failed: [], needs_login: [], kept: [] };
       for (const a of asked.agents) {
         if (await running(ctx, kind, sessionName(team, a.name))) r.failed.push({ name: a.name, why: 'it is running there already' });
       }
-      if (r.failed.length) return [false, r];
-      // Each agent needs a login here: one kept here that works, else the one sent, sealed to this machine's key.
+      if (r.failed.length) return r;
+      // Each agent needs a login here: one kept here that works, else the one sent.
       for (const a of asked.agents) {
-        if (await works(a.name)) continue;
+        const has = await works(a.name);
+        if (has === 'yes') continue;
+        // The service couldn't say just now: what is kept here is left exactly as it is.
+        if (has === 'unknown') { r.failed.push({ name: a.name, why: 'its login there couldn\'t be checked just now: try again' }); continue; }
         if (a.login === undefined) { r.needs_login.push(a.name); continue; }
         const f = agentFileReady(team, a.name, ctx.env);
-        // What was kept here before is touched only once the login sent has been opened and read.
-        let replaced = false;
         try {
-          const o = JSON.parse(unseal(kept, a.login, bound(team, name, a.name))) as { client?: Record<string, unknown>; tokens?: Record<string, unknown> };
-          const t = o?.tokens;
-          if (!o || typeof o !== 'object' || !o.client || typeof o.client !== 'object' || typeof o.client.client_id !== 'string' || !t || typeof t !== 'object' || typeof t.access_token !== 'string' || typeof t.refresh_token !== 'string') throw new Error('not a login');
-          // What is kept is the login alone, for this machine's own service: where to renew it is found
-          // out here, never taken from the request.
-          const tokens = Object.fromEntries(Object.entries({ access_token: t.access_token, refresh_token: t.refresh_token, token_type: typeof t.token_type === 'string' ? t.token_type : 'Bearer', expires_in: typeof t.expires_in === 'number' ? t.expires_in : undefined, scope: typeof t.scope === 'string' ? t.scope : undefined, issuer: typeof t.issuer === 'string' ? t.issuer : undefined }).filter(([, v]) => v !== undefined));
-          replaced = true;
-          await keepSignIn(ctx.url, f, { client: o.client as never, tokens: tokens as never });
-          if (!await works(a.name)) throw new Error('not that agent\'s');
+          // Kept for this machine's own service: where to renew it is found out here, never taken from the request.
+          await keepSignIn(ctx.url, f, { client: a.login.client as never, tokens: a.login.tokens as never });
+          const now = await works(a.name);
+          if (now === 'no') throw new Error('not that agent\'s');
+          if (now === 'unknown') { r.failed.push({ name: a.name, why: 'the login sent for it couldn\'t be checked just now: try again' }); continue; }
           r.kept.push(a.name);
         } catch {
-          if (replaced) {
-            await logout(ctx.url, { path: f, forget: true }).catch(() => undefined);
-            dropIfEmpty(f);
-          }
+          // What was there before had ended (the service said so); what was sent isn't this agent's login: neither is kept.
+          await logout(ctx.url, { path: f, forget: true }).catch(() => undefined);
+          dropIfEmpty(f);
           r.failed.push({ name: a.name, why: 'the login sent for it couldn\'t be used there' });
         }
       }
-      if (r.failed.length || r.needs_login.length) return [false, r];
+      if (r.failed.length || r.needs_login.length) return r;
       for (const a of asked.agents) {
         try {
           const s = await startInBackground(ctx, kind, { team, owner: me, name: a.name, tool: asked.harness, extra: [], said: { actFor: asked.act_for, wakeOn: asked.wake_on ?? [], systemPrompt: asked.system_prompt } });
@@ -264,42 +324,63 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
         }
       }
       if (asked.harness === 'claude' && trusted(ctx.cwd, ctx.env) === false) r.untrusted = true;
-      return [r.failed.length === 0, r];
+      r.ok = r.failed.length === 0;
+      return r;
     };
 
     const handle = async (req: HostRequest) => {
-      // The service gives a machine only its own person's requests; one from anyone else is never carried out.
-      if (req.from !== me) { await answer(req, false, { v: 1, why: 'that request isn\'t from this machine\'s person' }); say('refused a request that wasn\'t yours'); return; }
+      const answer = async (result: string) => { try { await client.answerHost(req.id, true, result); } catch (e) { say(`couldn't answer a request (${brief(e)})`); } };
+      // Only what opens with this machine's code is read at all. Anything else is answered with one
+      // word, unsealed, so a machine paired with an earlier code is told to pair again.
+      let text: string;
+      try { text = unseal(key, req.body, requestBound(req.kind, team, name)); } catch {
+        say('refused a request that wasn\'t sealed with this machine\'s code');
+        await answer(JSON.stringify({ v: 1, why: 'unpaired' }));
+        return;
+      }
+      // Its answer is sealed too, as the answer to this request alone.
+      let id = '';
+      try { const b = JSON.parse(text) as { id?: unknown }; if (typeof b?.id === 'string' && /^[a-f0-9]{32}$/.test(b.id)) id = b.id; } catch { /* answered below, to no request's word */ }
+      const sealed = (a: object) => answer(seal(key, JSON.stringify(a), answerBound(team, name, id)));
       try {
-        if (req.kind === 'start') { const [ok, r] = await start(req); await answer(req, ok, r); return; }
+        if (req.kind === 'start') { await sealed(await start(text)); return; }
         if (req.kind === 'stop') {
-          const { agent } = readStop(req.body);
-          const s = sessionName(team, agent);
-          if (!await running(ctx, kind, s)) { await answer(req, false, { v: 1, why: `your agent ${agent} isn't running in the background there` }); return; }
-          const went = kind === 'tmux' ? await exec(ctx)('tmux', ['kill-session', '-t', `=${s}`], ctx.cwd) : await exec(ctx)('screen', ['-S', s, '-X', 'quit'], ctx.cwd);
-          if (went.code !== 0) { await answer(req, false, { v: 1, why: `${kind} couldn't end ${s}` }); return; }
-          say(`stopped ${agent}`);
-          await answer(req, true, { v: 1, stopped: true });
+          const asked = readStop(text);
+          once(asked);
+          const s = sessionName(team, asked.agent);
+          if (!await running(ctx, kind, s)) { await sealed({ v: 1, ok: false, why: `your agent ${asked.agent} isn't running in the background there` }); return; }
+          const went = await endSession(ctx, kind, s);
+          if (went.code !== 0) { await sealed({ v: 1, ok: false, why: `${kind} couldn't end ${s}` }); return; }
+          say(`stopped ${asked.agent}`);
+          await sealed({ v: 1, ok: true, stopped: true });
           return;
         }
-        if (req.kind === 'end') { await answer(req, true, { v: 1, ended: true }); say('asked to stop hosting'); end(); return; }
-        await answer(req, false, { v: 1, why: 'this konnect doesn\'t know that kind of request: update konnect on that machine' });
+        if (req.kind === 'end') {
+          once(readEnd(text));
+          await sealed({ v: 1, ok: true, ended: true });
+          say('asked to stop hosting');
+          // A moment for the asker to read the answer, before this machine's goodbye takes its requests with it.
+          await ctx.pause(1_500);
+          end();
+          return;
+        }
+        await sealed({ v: 1, ok: false, why: 'this konnect doesn\'t know that kind of request: update konnect on that machine' });
       } catch (e) {
-        await answer(req, false, { v: 1, why: brief(e), started: [], failed: [], needs_login: [], kept: [] });
+        await sealed({ v: 1, ok: false, why: brief(e), started: [], failed: [], needs_login: [], kept: [] });
         say(`refused a request: ${brief(e)}`);
       }
     };
 
     let unreached = 0;
     while (!ended) {
-      for (const req of waiting) { if (ended) break; await handle(req); }
+      for (const req of waiting) { if (ended) break; await handle(req).catch((e: unknown) => say(`a request couldn't be handled: ${brief(e)}`)); }
       waiting = [];
       if (ended) break;
       await Promise.race([ctx.pause(unreached ? Math.min(TICK_MS * 2 ** unreached, RETRY_MS) : TICK_MS), stopped]);
+      if (!stillMine()) { goodbye = false; say(`another konnect host run hosts as ${name} on this machine now: this one ends`); break; }
       if (ended) break;
-      if (!mine()) { goodbye = false; say(`another konnect host run hosts as ${name} on this machine now: this one ends`); break; }
       try {
-        waiting = (await beat()).requests;
+        waiting = await beat();
         if (unreached) say('the service is reached again');
         unreached = 0;
       } catch (e) {
@@ -316,8 +397,8 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     process.off('SIGHUP', end);
     if (goodbye) ctx.err(`This machine no longer hosts as ${name}. Agents it started keep running: konnect agent list shows them.`);
   } finally {
-    // Said to the service, so the list doesn't show a machine that is gone; only while it is still this one.
-    if (goodbye) { const k = read(file); if (k) await client.endHost(name, k.instance).catch(() => undefined); }
+    // Said to the service, so the list doesn't show a machine that is gone; only while this run is still the one hosting here.
+    if (goodbye && stillMine()) await client.endHost(name, mine.instance).catch(() => undefined);
     await client.close();
   }
 }

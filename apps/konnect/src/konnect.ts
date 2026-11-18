@@ -45,8 +45,8 @@ export { Ctx, chooseTeam, kolabUrl, normalUrl, type IO } from './context.js';
 export { UsageError, WaitRanOut, Woke, exitStatus } from './errors.js';
 export { unannounced, wakeFile } from './cmd-wake.js';
 export { USAGE, helpFor } from './help.js';
-export { newKeys, seal, unseal } from './seal.js';
-export { readStart, readStop, bound } from './host-ask.js';
+export { fingerprint, keyOf, newCode, readCode, seal, unseal } from './seal.js';
+export { answerBound, readStart, readStop, requestBound } from './host-ask.js';
 export { thisMachine, formatHosts } from './cmd-host.js';
 export { systemPrompt } from './system-prompt.js';
 

@@ -48,7 +48,8 @@ const AGENT = `  konnect agent list                your agents in the team, whic
   --background                      keep the harness running in tmux or screen, apart from this terminal
   --count <n>                       with --background or --on: start <n> agents, <name>-1 to <name>-<n>
   --on <machine>                    start it in the background on another machine of yours that is
-                                    hosting (konnect host run); nothing after the harness is sent`;
+                                    hosting (konnect host run) and that this one is paired with
+                                    (konnect host pair); nothing after the harness is sent`;
 
 const LEASE = `  konnect lease list                who holds what, and until when
   konnect lease claim <name> [<note>]
@@ -64,15 +65,19 @@ const LEASE = `  konnect lease list                who holds what, and until whe
   --wait <time>                     if someone else holds it, wait up to this long for it`;
 
 const HOST = `  konnect host list                 your machines that host, and the agents running on each
-  konnect host run [<name>]         this machine hosts, in this folder, until interrupted: you can then
-                                    start your agents here from another machine, with konnect agent
-                                    run --on <name>. Named after the machine unless <name> is given.
-                                    --background keeps it running in tmux or screen
+  konnect host run [<name>]         this machine hosts, in this folder, until interrupted, and shows
+                                    its pairing code: a machine paired with it can then start your
+                                    agents here, with konnect agent run --on <name>. Named after the
+                                    machine unless <name> is given. --background keeps it running
+                                    in tmux or screen
+  konnect host pair <name> [<code>] pair this machine with one that hosts, once, with the code
+                                    konnect host run shows there; with no code, from standard input
   konnect host stop [<name>]        end hosting, here or on the machine named
 
-  A machine hosts for you alone: only your own login can ask it, never an agent's or a teammate's.
-  It starts claude, codex or opencode as an agent of yours, with konnect's own options and nothing
-  else; what that agent may do on the machine is set there, in its harness.`;
+  A machine that hosts carries out only requests sealed with its pairing code, which the service
+  never has: not the service's, not a teammate's, not an agent's. It starts claude, codex or
+  opencode as an agent of yours, with konnect's own options and nothing else; what that agent may
+  do on the machine is set there, in its harness.`;
 
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
   --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,

@@ -24,7 +24,7 @@ const VERBS: Record<string, string[]> = {
   team: ['list', 'create', 'invite', 'remove', 'leave'],
   agent: ['list', 'add', 'run', 'attach', 'stop', 'remove'],
   lease: ['list', 'claim', 'release', 'break', 'run'],
-  host: ['list', 'run', 'stop'],
+  host: ['list', 'run', 'pair', 'stop'],
 };
 const GLOBAL = ['--team', '--agent', '--json', '--help'];
 /** Options that take a value, so the word after one isn't a command or a name. */
@@ -146,7 +146,7 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
   }
   if (cmd === 'channel' && (verb === 'follow' || verb === 'unfollow') && pos.length === 2) return (await names(ctx, team)).channels;
   if (cmd === 'team' && verb === 'remove' && pos.length === 2) return (await names(ctx, team)).people;
-  if (cmd === 'host' && verb === 'stop' && pos.length === 2) return hostsOf(await names(ctx, team));
+  if (cmd === 'host' && (verb === 'stop' || verb === 'pair') && pos.length === 2) return hostsOf(await names(ctx, team));
   return [];
 }
 
