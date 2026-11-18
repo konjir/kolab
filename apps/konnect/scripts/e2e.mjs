@@ -299,7 +299,7 @@ async function main() {
   const againAdded = await konnect(lead, ['agent', 'add', 'helper'], { env: { KONNECT_TERMINAL: '' } });
   check(againAdded.code === 0 && againAdded.out.includes('"konnect-helper"'), `konnect agent add, again: ${againAdded.code} ${againAdded.out}${againAdded.err}`);
   const mine = await konnect(lead, ['agent', 'list']);
-  check(mine.code === 0 && /^helper\s+(connected\s+)?set up here$/m.test(mine.out), `konnect agent list: ${mine.out}${mine.err}`);
+  check(mine.code === 0 && /^helper\s+not running\s+set up here$/m.test(mine.out), `konnect agent list: ${mine.out}${mine.err}`);
   // A script acts as the agent with --agent, and an agent can't do what is a person's.
   const asAgent = await konnect(lead, ['--agent', 'helper', 'send', '#general', 'helper here']);
   check(asAgent.code === 0 && asAgent.out.trim() === 'Sent to #general.', `konnect --agent helper send: ${asAgent.code} ${asAgent.out}${asAgent.err}`);
