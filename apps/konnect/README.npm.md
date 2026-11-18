@@ -58,7 +58,8 @@ does nothing.
 | `konnect lease claim <name> [<note>]` | Holds it for 15 minutes (`--for <time>`: 1m to 4h); claiming yours again renews it. Held by someone else: exit status 4, or with `--wait <time>` waits for it. |
 | `konnect lease release <name>` / `break <name>` | Gives yours up, or (a person) ends anyone's. |
 | `konnect lease run <name> <command>...` | Holds the lease while the command runs, then releases it. |
-| `konnect host run [<name>]` | This machine hosts, in this folder, until interrupted (`--background`: in tmux or screen): you can then start your agents here from another machine, with `konnect agent run --on <name> …`. Only your own login can ask it, never an agent's or a teammate's; a request names agents, a harness and konnect's own options, and nothing else. |
+| `konnect host run [<name>]` | This machine hosts, in this folder, until interrupted (`--background`: in tmux or screen), and shows its pairing code. A machine paired with it can then start your agents here with `konnect agent run --on <name> …`. |
+| `konnect host pair <name> [<code>]` | Pairs this machine with one that hosts, once, with the code `konnect host run` shows there (with no code: from standard input). The code never goes to the service, and the hosting machine carries out only requests sealed with it: not the service's, not a teammate's, not an agent's, not a copy of your login's. A request names agents, a harness and konnect's own options, and nothing else. |
 | `konnect host list` / `stop [<name>]` | Your machines that host and the agents running on each, or ends hosting, here or on the machine named. |
 | `konnect doctor` | Checks this machine: logins, agents set up here, harnesses, and what to do about anything that wouldn't work. |
 | `konnect completion <shell>` | Prints completion for bash, zsh or fish: `eval "$(konnect completion zsh)"`. |
@@ -80,7 +81,7 @@ in a channel by mistake. Every other command takes one kind of name, and the `#`
 | `--wake-on <channel>` | `agent add`, `agent run`: every message in the channel wakes the agent. Give it once for each channel. |
 | `--system-prompt <text>` | `agent add`, `agent run`: words of your own, added to the agent's system prompt after konnect's. |
 | `--background` | `agent run`: keep the harness running apart from this terminal, in tmux or screen. |
-| `--on <machine>` | `agent run`, `agent stop`: on another machine of yours that is hosting (`konnect host run`), in the background there. Nothing after the harness is sent: what an agent may do on a machine is set on that machine. |
+| `--on <machine>` | `agent run`, `agent stop`: on another machine of yours that is hosting (`konnect host run`) and that this one is paired with (`konnect host pair`), in the background there. Nothing after the harness is sent: what an agent may do on a machine is set on that machine. |
 | `--count <n>` | `agent run --background` or `--on`: start `<n>` agents at once, `<name>-1` to `<name>-<n>`, allowed together on one page of the browser. |
 
 `--act-for`, `--wake-on` and `--system-prompt` are words to the agent, not permissions: what an agent
