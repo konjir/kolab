@@ -23,7 +23,7 @@ import { host } from './cmd-host.js';
 import { lease } from './cmd-lease.js';
 import { history, receive, sendMessage, status } from './cmd-messages.js';
 import { channel, logOut, login, team } from './cmd-team.js';
-import { wake } from './cmd-wake.js';
+import { waitingNow, wake } from './cmd-wake.js';
 import { watch } from './cmd-watch.js';
 import { Ctx, actingAs, chooseTeam, type IO } from './context.js';
 import { UsageError } from './errors.js';
@@ -134,7 +134,9 @@ export async function main(argv: string[], io: IO = {}) {
     const wakeOn = listenList(parsed.wakeOn.length ? parsed.wakeOn.join(',') : parsed.listen ?? env.KONNECT_WAKE_ON ?? env.KONNECT_LISTEN ?? undefined);
     const actFor = parsed.actFor ?? (ACT_FOR.includes(env.KONNECT_ACT_FOR as ActFor) ? env.KONNECT_ACT_FOR as ActFor : undefined);
     const own = parsed.systemPrompt ?? env.KONNECT_SYSTEM_PROMPT;
-    await (io.serve ?? serveStdio)({ team: mcpTeam, url: ctx.url, file, label: as.label, ...(as.owner ? { owner: as.owner } : {}), ...(wakeOn.length ? { wakeOn } : {}), ...(actFor ? { actFor } : {}), ...(own ? { own } : {}), ...(env.KONNECT_WAKE === 'hook' ? { wake: false } : {}), log: err });
+    await (io.serve ?? serveStdio)({ team: mcpTeam, url: ctx.url, file, label: as.label, ...(as.owner ? { owner: as.owner } : {}), ...(wakeOn.length ? { wakeOn } : {}), ...(actFor ? { actFor } : {}), ...(own ? { own } : {}), ...(env.KONNECT_WAKE ? { wake: false } : {}),
+      // Claude Code's hook says when the harness waits; any other harness is only known to be running.
+      ...(env.KONNECT_WAKE === 'hook' ? { state: () => (waitingNow(mcpTeam, as.label, env) ? 'idle' as const : 'working' as const) } : {}), log: err });
     return;
   }
 

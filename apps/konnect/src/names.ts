@@ -6,7 +6,21 @@
  */
 
 /** A member as konjir_list_members gives one: an agent with its `label` (null when it has none). */
-export interface Member { actor: string; kind: string; owner: string | null; here: boolean; you?: true; label?: string | null }
+export interface Member { actor: string; kind: string; owner: string | null; here: boolean; you?: true; label?: string | null; state?: AgentState | null }
+
+/** What a running agent says of itself: waiting, and woken at once by a message; in a turn; or running, in a harness that can't say which. */
+export type AgentState = 'idle' | 'working' | 'running';
+
+/**
+ * What a list says of an agent: its state when something runs as it, `not running` when nothing
+ * does (a message for it waits). A service that doesn't tell states yet says only whether the
+ * agent's login is open, which is all `connected` ever meant.
+ */
+export function stateWord(m: Pick<Member, 'kind' | 'here' | 'state'>): string {
+  if (m.kind !== 'agent') return '';
+  if (m.state === undefined) return m.here ? 'connected' : '';
+  return m.state ?? 'not running';
+}
 
 /** A direct message as Kolab's message tools give one. */
 export interface Message { id: string; from: string; to: string; message: string; reply_to: string | null; sent_at: string; read_at: string | null }
@@ -131,15 +145,15 @@ export function formatMembers(members: Member[]): string {
   const rows = members.map((m) => [
     `${printable(shownName(m))}${m.you ? ' (you)' : ''}`,
     printable(m.kind),
-    m.here ? 'connected' : '',
+    m.kind === 'agent' ? stateWord(m) : m.here ? 'connected' : '',
   ]);
   const width = Math.max(0, ...rows.map((r) => r[0].length)) + 2;
   return rows.map((r) => `${r[0].padEnd(width)}${r[1].padEnd(8)}${r[2]}`.trimEnd()).join('\n');
 }
 
 /** A member as `--json` gives one: always by the name konnect shows. */
-export function memberJson(m: Member): { name: string; kind: string; owner: string | null; connected: boolean; you?: true } {
-  return { name: shownName(m), kind: m.kind, owner: m.owner, connected: m.here, ...(m.you ? { you: true as const } : {}) };
+export function memberJson(m: Member): { name: string; kind: string; owner: string | null; connected: boolean; state?: AgentState | null; you?: true } {
+  return { name: shownName(m), kind: m.kind, owner: m.owner, connected: m.here, ...(m.kind === 'agent' && m.state !== undefined ? { state: m.state } : {}), ...(m.you ? { you: true as const } : {}) };
 }
 
 /**
@@ -151,7 +165,7 @@ export function formatTeam(members: Member[], invited: { account: string; create
   const agents = members.filter((m) => m.kind === 'agent');
   const ordered = [...people.flatMap((p) => [p, ...agents.filter((a) => a.owner === p.actor)]), ...agents.filter((a) => !people.some((p) => p.actor === a.owner))];
   const rows = [
-    ...ordered.map((m) => [`@${printable(shownName(m))}${m.you ? ' (you)' : ''}`, printable(m.kind), m.kind === 'agent' && m.here ? 'connected' : '']),
+    ...ordered.map((m) => [`@${printable(shownName(m))}${m.you ? ' (you)' : ''}`, printable(m.kind), stateWord(m)]),
     ...invited.map((i) => [`@${printable(i.account)}`, 'person', `invited ${printable(i.created_at.slice(0, 10))}`]),
   ];
   const width = Math.max(0, ...rows.map((r) => r[0].length)) + 2;
