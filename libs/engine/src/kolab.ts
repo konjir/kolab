@@ -1771,6 +1771,20 @@ export class Kolab {
   }
 
   /**
+   * The agents of `kolab` with an open session there among the sessions with these ids, in one
+   * query: for konjir_list_members, the agents listening for messages on this server (their
+   * sessions' ids being those of its listen streams). Only an agent's own session counts, never its
+   * owner's, and only a session of `kolab`, so no other kolab's shows.
+   */
+  async agentsListeningIn(kolab: string, ids: string[]): Promise<Set<string>> {
+    if (!ids.length) return new Set();
+    const r = await this.db.query<{ actor_id: string }>(
+      `select distinct s.actor_id from session s join actor a on a.id = s.actor_id left join oauth_grant g on g.id = s.grant_id
+        where s.id = any($1) and s.kolab_id = $2 and a.kind = 'agent' and ${OPEN_SESSION}`, [ids, kolab]);
+    return new Set(r.rows.map((x) => x.actor_id));
+  }
+
+  /**
    * Which of the sessions with these ids are still open, in one query, whatever their access
    * tokens' expiry: a grant's session lives until it ends or its grant lapses (D55). A listen
    * stream lives as long as its session (D41).

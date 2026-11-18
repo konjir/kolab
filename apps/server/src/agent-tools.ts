@@ -16,6 +16,7 @@ import { PAGED, paging } from './paging.js';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
 import { AgentStates } from './agent-states.js';
+import { ListenStreams } from './listen-streams.js';
 import { answersUri, inboxUri } from './uris.js';
 
 const address = z.string().describe('A Konjir address, e.g. kj:checkout@3#R1 or kj:checkout#R1~q({"exact":"30 seconds"}): the short form, a node in your kolab. kj:<kolab>/<node>… names the kolab too (kj:shop/checkout@3#R1). Omit @version to use the latest committed version.');
@@ -307,6 +308,7 @@ export class AgentTools {
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
     @Inject(AgentStates) private readonly states: AgentStates,
+    @Inject(ListenStreams) private readonly streams: ListenStreams,
   ) {}
 
   // ---- read ----------------------------------------------------------------
@@ -732,7 +734,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_members',
-    description: `Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), here: whether a session of theirs is open in the kolab now, and, for an agent, state: idle (its harness waits, and a message starts a turn at once), working (it is in a turn, and sees a message when the turn ends), running (its harness runs, and can't tell which), or null (nothing running as it has said so in the last ${AGENT_STATE_FRESH_SECONDS} seconds: a message waits, unread, until something runs as it). state, not here, is what tells whether an agent will answer now: here is true for any sign-in that hasn't ended, even with no harness running. A message to someone who is here and listening reaches them at once; to anyone else it waits, unread, until they next read their messages. you marks yourself. Not what each holds: that is for the kolab's Admins. For members only: reading a public kolab makes no one a member.${PAGED}`,
+    description: `Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), here: whether a session of theirs is open in the kolab now, and, for an agent, state: idle (its harness waits, and a message starts a turn at once), working (it is in a turn, and sees a message when the turn ends), running (its harness runs, and can't tell which), or null (nothing running as it has said so in the last ${AGENT_STATE_FRESH_SECONDS} seconds, and none of its sessions is listening for messages: a message waits, unread, until something runs as it). An agent that hasn't said what it is doing but is listening for messages reads running. state, not here, is what tells whether an agent will answer now: here is true for any sign-in that hasn't ended, even with no harness running. A message to someone who is here and listening reaches them at once; to anyone else it waits, unread, until they next read their messages. you marks yourself. Not what each holds: that is for the kolab's Admins. For members only: reading a public kolab makes no one a member.${PAGED}`,
     schema: listMembers,
     annotations: { readOnlyHint: true },
   })
@@ -741,7 +743,14 @@ export class AgentTools {
       const { kolab, items, next } = await this.kolab.membersPage(s, { cursor, limit });
       // An agent's state, from what its sessions told this process (AgentStates), by this kolab and
       // that agent alone; only while a session of it is open here, so an expired one says nothing.
-      const members = items.map((m) => (m.kind === 'agent' ? { ...m, state: m.here ? this.states.stateOf(kolab, m.actor) : null } : m));
+      // One that said nothing fresh but whose own session listens for messages on this process (a
+      // konnect older than konjir_say_state) is running: its listening sessions, resolved in one
+      // query, only once some agent needs them, and only this kolab's.
+      const said = new Map(items.filter((m) => m.kind === 'agent' && m.here).map((m) => [m.actor, this.states.stateOf(kolab, m.actor)]));
+      const listening = [...said.values()].includes(null) ? await this.kolab.agentsListeningIn(kolab, this.streams.listeningSessions()) : new Set<string>();
+      const members = items.map((m) => (m.kind === 'agent'
+        ? { ...m, state: m.here ? said.get(m.actor) ?? (listening.has(m.actor) ? 'running' as const : null) : null }
+        : m));
       return { kolab, members, next };
     });
   }

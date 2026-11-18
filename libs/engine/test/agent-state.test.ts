@@ -48,3 +48,18 @@ test('an ended or revoked session is refused', async () => {
   await kolab.endSession(again, { signingOut: true });
   expect(await rejection(kolab.agentStateSession(again))).toMatch(/^RoleError: no open session for that token/);
 });
+
+test('the agents listening in a kolab, from listening sessions\' ids: only an agent\'s own open session of that kolab counts', async () => {
+  const { kolab, agent } = await hub();
+  await kolab.createKolab('side', { owner: 'ann' });
+  const ids = (await kolab.db.query<{ id: string }>(`select id from session where ended_at is null order by actor_id`)).rows.map((r) => r.id);
+  const { session } = await kolab.agentStateSession(agent);
+  // The person's session among them marks no one; the agent's marks it, in its own kolab alone.
+  expect(await kolab.agentsListeningIn('hub', ids)).toStrictEqual(new Set(['ann-claude']));
+  expect(await kolab.agentsListeningIn('side', ids)).toStrictEqual(new Set());
+  expect(await kolab.agentsListeningIn('hub', ids.filter((id) => id !== session))).toStrictEqual(new Set());
+  expect(await kolab.agentsListeningIn('hub', [])).toStrictEqual(new Set());
+  // Ended: no longer.
+  await kolab.endSession(agent, { signingOut: true });
+  expect(await kolab.agentsListeningIn('hub', ids)).toStrictEqual(new Set());
+});

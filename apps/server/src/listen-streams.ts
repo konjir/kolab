@@ -59,6 +59,14 @@ export class ListenStreams implements OnModuleInit, OnModuleDestroy {
     clearInterval(this.sweep);
   }
 
+  /**
+   * The ids (keys) of the sessions holding a listen stream on this process now, each once: never a
+   * stream itself or its auth, which hold the bearer token. For konjir_list_members (AgentStates).
+   */
+  listeningSessions(): string[] {
+    return [...new Set(this.mcp.getListenStreams().filter(isAgent).map((s) => s.authInfo.clientId))];
+  }
+
   /** Close every listen stream of the session with this id (its key). Other sessions' streams are left alone. */
   closeSession(key: string) {
     return this.mcp.closeListenStreams((s) => isAgent(s) && s.authInfo.clientId === key);

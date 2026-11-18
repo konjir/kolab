@@ -82,3 +82,66 @@ test('an agent says what it is doing, and the member list shows it while fresh; 
   await call(admin, 'admin_grant', { kolab: 'hub', to: 'ann-claude', level: 'write' });
   expect(await entry(bo, 'ann-claude')).toMatchObject({ state: null });
 });
+
+test('an agent that says nothing but listens for messages (a konnect older than say_state) reads running; a said state wins; a person\'s stream marks no agent; no other kolab sees it', async () => {
+  let now = Date.parse('2026-11-18T12:00:00Z');
+  const server = await startServer({ adminToken: ADMIN, ...(await testStore()), agentStateClock: () => now });
+  const admin = await connect(server.url, ADMIN);
+  closeAtEnd(server, admin);
+  for (const id of ['ann', 'bo', 'cy']) await call(admin, 'admin_add_actor', { id });
+  await call(admin, 'admin_add_actor', { id: 'ann-claude', owner: 'ann' });
+  await call(admin, 'admin_add_actor', { id: 'bo-claude', owner: 'bo' });
+  await call(admin, 'admin_add_kolab', { name: 'hub', owner: 'ann' });
+  await call(admin, 'admin_add_kolab', { name: 'side', owner: 'cy' });
+  for (const to of ['bo', 'ann-claude', 'bo-claude']) await call(admin, 'admin_grant', { kolab: 'hub', to, level: 'write' });
+  await call(admin, 'admin_grant', { kolab: 'side', to: 'ann', level: 'write' });
+  await call(admin, 'admin_grant', { kolab: 'side', to: 'ann-claude', level: 'write' });
+  const session = async (actor: string, kolab: string) => {
+    const { token } = await call(admin, 'admin_open_session', { actor, role: 'engineer', kolab }) as { token: string };
+    const client = await connect(server.url, token);
+    closeAtEnd(client);
+    return client;
+  };
+  const ann = await session('ann', 'hub');
+  const bo = await session('bo', 'hub');
+  const cy = await session('cy', 'side');
+  const agent = await session('ann-claude', 'hub');
+  await session('bo-claude', 'hub');
+  type C = Awaited<ReturnType<typeof session>>;
+  const stateOf = async (who: C, actor: string) =>
+    ((await call(who, 'list_members', {})) as { members: { actor: string; state?: unknown }[] }).members.find((m) => m.actor === actor)?.state;
+  /** Waits for the list to read `want`: a stream's opening and closing reach the server as it handles them. */
+  const until = async (who: C, actor: string, want: unknown) => {
+    for (let i = 0; i < 100 && (await stateOf(who, actor)) !== want; i++) await new Promise((r) => setTimeout(r, 20));
+    return stateOf(who, actor);
+  };
+
+  // A person's own stream marks none of their agents, and gives the person no state.
+  const annStream = await ann.listen({ resourceSubscriptions: ['konjir://answers/hub/ann'] });
+  expect(await stateOf(bo, 'ann')).toBeUndefined();
+  expect(await stateOf(bo, 'ann-claude')).toBeNull();
+
+  // The agent listens and says nothing: running, to the others and to itself; the other agent, not listening, stays null.
+  const stream = await agent.listen({ resourceSubscriptions: ['konjir://answers/hub/ann-claude'] });
+  expect(await until(bo, 'ann-claude', 'running')).toBe('running');
+  expect(await stateOf(agent, 'ann-claude')).toBe('running');
+  expect(await stateOf(bo, 'bo-claude')).toBeNull();
+  // No other kolab's list shows it.
+  expect(await stateOf(cy, 'ann-claude')).toBeNull();
+
+  // A said state wins over the stream, idle or working; once stale, the stream reads running again; after gone too.
+  await call(agent, 'say_state', { state: 'idle' });
+  expect(await stateOf(bo, 'ann-claude')).toBe('idle');
+  await call(agent, 'say_state', { state: 'working' });
+  expect(await stateOf(bo, 'ann-claude')).toBe('working');
+  now += (AGENT_STATE_FRESH_SECONDS + 1) * 1000;
+  expect(await stateOf(bo, 'ann-claude')).toBe('running');
+  await call(agent, 'say_state', { state: 'idle' });
+  await call(agent, 'say_state', { state: 'gone' });
+  expect(await stateOf(bo, 'ann-claude')).toBe('running');
+
+  // The stream closed: null again.
+  await stream.close();
+  expect(await until(bo, 'ann-claude', null)).toBeNull();
+  await annStream.close();
+});
