@@ -99,10 +99,10 @@ export async function doctor(ctx: Ctx, rest: string[]) {
     const wakes = !!v && !older(v, CLAUDE_MIN);
     say(wakes, `Claude Code ${v ? v.join('.') : 'of an unknown version'}${wakes ? ': messages wake an idle session' : ' is too old to be woken by messages'}`, wakes ? undefined : `update Claude Code to ${CLAUDE_MIN.join('.')} or later`);
   }
-  for (const [cmd, name] of [['codex', 'Codex'], ['opencode', 'OpenCode']] as const) {
-    const r = await exec(ctx)(cmd, ['--version'], ctx.cwd);
-    if (r.code !== -1) say('note', `${name} ${version(r.out)?.join('.') ?? ''} is installed: it isn't woken by messages, and receives at each turn`.replace('  ', ' '));
-  }
+  const opencode = await exec(ctx)('opencode', ['--version'], ctx.cwd);
+  if (opencode.code !== -1) say(true, `OpenCode ${version(opencode.out)?.join('.') ?? ''}: messages wake an idle session`.replace('  ', ' '));
+  const codex = await exec(ctx)('codex', ['--version'], ctx.cwd);
+  if (codex.code !== -1) say('note', `Codex ${version(codex.out)?.join('.') ?? ''} is installed: it isn't woken by messages, and receives at each turn`.replace('  ', ' '));
   const mux = await multiplexer(ctx);
   say(mux ? true : 'note', mux ? `${mux} is installed: konnect agent run --background works` : 'neither tmux nor screen is installed: konnect agent run --background needs one');
 

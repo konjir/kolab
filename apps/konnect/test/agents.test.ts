@@ -157,7 +157,7 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   expect(started).toHaveLength(before);
 });
 
-test('konnect agent run in codex and opencode: the entry on the command line or in the environment, no file written, and not woken, said so', async () => {
+test('konnect agent run in codex and opencode: the entry on the command line or in the environment, no file written; Codex isn\'t woken, and OpenCode is, by the konnect beside it', async () => {
   const { server, idp, signIn, ann: annId } = await teams();
   const ann = machine(server.url, 'ann');
   await signIn(ann, annId, 'hub');
@@ -173,13 +173,60 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
     args: ['-c', 'mcp_servers.konnect-coder.command="/usr/bin/node"', '-c', 'mcp_servers.konnect-coder.args=["/opt/konnect/konnect.mjs", "mcp"]', '-c', `mcp_servers.konnect-coder.env={ KONNECT_TEAM = "hub", KONNECT_AGENT = "coder", KONNECT_URL = ${JSON.stringify(server.url)} }`, 'exec', 'hi'],
     env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_URL: server.url },
   });
-  await ann.run(['agent', 'run', 'coder', 'opencode'], { self, start });
-  expect(ann.err.join('\n')).toContain('OpenCode isn\'t woken by messages: the agent receives at the start of each turn.');
-  expect(started[1]).toMatchObject({ cmd: 'opencode', args: [], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_URL: server.url } });
-  expect(JSON.parse(started[1].env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['/usr/bin/node', '/opt/konnect/konnect.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_URL: server.url }, enabled: true });
+  // OpenCode is woken by the konnect that started it: it is started on a port of its own, and konnect
+  // stays beside it as the agent, submitting the notice of new messages as a prompt, until it ends.
+  const waking: { port: number; label: string; owner: string; wakeOn?: string }[] = [];
+  let stops = 0;
+  const wakeOpenCode = async (o: { port: number; label: string; owner: string; wakeOn?: string }) => { waking.push({ port: o.port, label: o.label, owner: o.owner, wakeOn: o.wakeOn }); return async () => { stops++; }; };
+  await ann.run(['agent', 'run', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y'], { self, start, port: async () => 4777, wakeOpenCode });
+  expect(ann.err.join('\n')).not.toContain('isn\'t woken');
+  expect(started[1]).toMatchObject({ cmd: 'opencode', args: ['--port', '4777', '--model', 'x/y'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_WAKE_ON: 'general', KONNECT_URL: server.url } });
+  expect(waking).toStrictEqual([{ port: 4777, label: 'coder', owner: 'ann', wakeOn: 'general' }]);
+  expect(stops).toBe(1);
+  // The server is told not to wake the session itself; konnect does.
+  expect(JSON.parse(started[1].env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['/usr/bin/node', '/opt/konnect/konnect.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_WAKE_ON: 'general', KONNECT_URL: server.url, KONNECT_WAKE: 'hook' }, enabled: true });
   expect(readdirSync(ann.cwd)).toStrictEqual([]);
-  const oc = toolCommand('opencode', 'konnect-coder', { command: 'node', args: ['k.mjs', 'mcp'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder' } }, []);
-  expect(JSON.parse(oc.env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['node', 'k.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder' }, enabled: true });
+  // A port the person gives OpenCode themselves is the one used, and isn't given twice.
+  await ann.run(['agent', 'run', 'coder', 'opencode', '--port', '5123'], { self, start, port: async () => { throw new Error('asked for a port'); }, wakeOpenCode });
+  expect(started[2].args).toStrictEqual(['--port', '5123']);
+  expect(waking[1].port).toBe(5123);
+
+  // In the background it is konnect that runs in the session, with OpenCode in front of it, so that something is there to wake it.
+  const ran: string[][] = [];
+  const exec = async (cmd: string, args: string[]) => { ran.push([cmd, ...args]); return cmd === 'tmux' ? { code: args[0] === 'has-session' ? 1 : 0, out: '' } : { code: -1, out: '' }; };
+  await ann.run(['agent', 'run', '--background', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y'], { self, start, exec, wakeOpenCode });
+  const line = ran.find((c) => c[1] === 'new-session')!;
+  expect(line.slice(line.indexOf('env'))).toStrictEqual(['env', `KONNECT_URL=${server.url}`, `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '--team', 'hub', 'agent', 'run', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y']);
+});
+
+test('OpenCode is woken through its own API: the notice is put in its prompt box and submitted, each message once, and tried again while OpenCode isn\'t up', async () => {
+  const { kolab, server, idp, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  await signIn(ann, annId, 'hub');
+  await ann.run(['agent', 'add', 'coder'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
+  const bo = await kolab.openSession('bo', 'product', { kolab: 'hub' });
+  const { wakeOpenCode, givenPort } = await import('../src/opencode.js');
+  expect([givenPort(['--model', 'x']), givenPort(['--port', '5123']), givenPort(['--port=77']), givenPort(['--port', 'x'])]).toStrictEqual([undefined, 5123, 77, undefined]);
+
+  const given: string[] = [];
+  let up = false;
+  const stop = await wakeOpenCode({ team: 'hub', url: server.url, file: join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'coder.json'), label: 'coder', owner: 'ann', port: 1, submit: async (text) => { if (!up) return false; given.push(text); return true; } });
+  try {
+    // A message while OpenCode isn't answering yet: tried again, and given once it is.
+    await kolab.sendMessage(bo, 'ann-coder', 'SECRET are you there?');
+    await new Promise((r) => setTimeout(r, 600));
+    expect(given).toStrictEqual([]);
+    up = true;
+    for (const end = Date.now() + 10_000; !given.length && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+    expect(given).toHaveLength(1);
+    expect(given[0]).toMatch(/^New for you in team hub: a direct message from @bo\.\nReceive it now with konnect_receive/);
+    expect(given[0]).not.toContain('SECRET');
+    // Another message: a second notice, of that one alone.
+    await kolab.sendChannelMessage(bo, 'general', 'and this?', { mentions: ['ann/coder'] });
+    for (const end = Date.now() + 10_000; given.length < 2 && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+    expect(given[1]).toMatch(/^New for you in team hub: a message in #general \(mentioning you\)\./);
+    expect(given).toHaveLength(2);
+  } finally { await stop(); }
 });
 
 test('konnect agent add prints the entry and starts nothing; agent list says which agents are connected and which are set up here', async () => {
