@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StubIdentity, startServer } from '@konjir/server';
 import { closeAtEnd, openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
-import { main, type IO } from '../src/konnect.js';
+import { exitStatus, main, type IO } from '../src/konnect.js';
 
 /**
  * The person's browser: follows Kolab's redirects with its cookies, submits the page as `form`
@@ -47,11 +47,14 @@ export const pressing = (prefix: string) => (buttons: string[]) => {
   return { [b.slice(0, i)]: b.slice(i + 1) };
 };
 
-/** The team page (`konnect team <name>`): make it, or sign in to it, with Allow. */
+/** The team page (`konnect login <team>`, `konnect team create <name>`): Allow. */
 export const AS_SELF = (_team: string) => pressing('decision=allow');
 
 /** What a command that fails says: the line konnect prints. */
 export const fails = async (p: Promise<unknown>) => (await rejection(p)).replace(/^Error: /, '');
+
+/** The status konnect exits with for what `p` does (main.ts): 0 when it succeeds. */
+export const exitOf = async (p: Promise<unknown>) => { try { await p; return 0; } catch (e) { return exitStatus(e); } };
 
 /** One person's machine: their own config folder and a folder to work in, and what konnect printed there. */
 export function machine(url: string, name: string) {
@@ -72,7 +75,7 @@ export function machine(url: string, name: string) {
 /** Ann owns team `hub`, where Bo writes and Ann's agent ann-reviewer works; Ann also owns `side`. */
 export async function teams() {
   const kolab: TestKolab = await openKolab();
-  // GitHub's accounts, as konnect recruit looks them up: Ann, Bo and Cy, who isn't in any team yet.
+  // GitHub's accounts, as konnect team invite looks them up: Ann, Bo and Cy, who isn't in any team yet.
   const idp = new StubIdentity().account({ subject: '41', login: 'ann' }).account({ subject: '42', login: 'bo' }).account({ subject: '43', login: 'cy' });
   const server = await startServer({ adminToken: 'konnect-admin', kolab, identity: idp, webRoot: null });
   closeAtEnd(server);
@@ -83,10 +86,16 @@ export async function teams() {
   await kolab.grant('hub', 'bo', 'write');
   await kolab.addActor('ann-reviewer', { owner: 'ann' });
   await kolab.grant('hub', 'ann-reviewer', 'write');
+  /** `konnect login <team>`, as `login` on GitHub, pressing what `form` says on the page. */
   const signIn = async (m: ReturnType<typeof machine>, login: { subject: string; login: string }, team: string, form: Parameters<typeof browse>[1] = AS_SELF(team)) => {
     idp.next(login);
-    return m.run(['team', team], { open: (u) => { void browse(u, form); } });
+    return m.run(['login', team], { open: (u) => { void browse(u, form); } });
   };
-  return { kolab, server, idp, signIn, ann: { subject: '41', login: 'ann' }, bo: { subject: '42', login: 'bo' } };
+  /** `konnect team create <name>`, as `login` on GitHub. */
+  const create = async (m: ReturnType<typeof machine>, login: { subject: string; login: string }, team: string, form: Parameters<typeof browse>[1] = AS_SELF(team)) => {
+    idp.next(login);
+    return m.run(['team', 'create', team], { open: (u) => { void browse(u, form); } });
+  };
+  return { kolab, server, idp, signIn, create, ann: { subject: '41', login: 'ann' }, bo: { subject: '42', login: 'bo' } };
 }
 

@@ -66,10 +66,13 @@ const published = {
   license: manifest.license,
   type: 'module',
   bin: { konnect: 'konnect.mjs' },
-  files: ['konnect.mjs', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
+  // `man konnect`, for an install with -g: npm links it beside the command.
+  man: 'konnect.1',
+  files: ['konnect.mjs', 'konnect.1', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
   engines: manifest.engines,
   publishConfig: manifest.publishConfig,
 };
 writeFileSync(join(out, 'package.json'), `${JSON.stringify(published, null, 2)}\n`);
 copyFileSync(join(app, 'README.npm.md'), join(out, 'README.md'));
 copyFileSync(join(app, 'LICENSE'), join(out, 'LICENSE'));
+copyFileSync(join(app, 'man/konnect.1'), join(out, 'konnect.1'));

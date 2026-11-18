@@ -64,8 +64,10 @@ export function kolabUrl(env: Env): string {
  * for at `url`. Said plainly what to do when none or several could be meant.
  */
 export function chooseTeam(given: string | undefined, url: string, env: Env): string {
-  if (given !== undefined) return checkTeam(given);
-  if (env.KONNECT_TEAM) return checkTeam(env.KONNECT_TEAM);
+  // A name that can't be a team's is a wrong command line (2), as konnect login <name> says it is.
+  const named = (t: string) => { try { return checkTeam(t); } catch (e) { throw new UsageError(String((e as Error)?.message ?? e)); } };
+  if (given !== undefined) return named(given);
+  if (env.KONNECT_TEAM) return named(env.KONNECT_TEAM);
   const teams = teamsAt(url, env);
   if (teams.length === 1) return teams[0];
   if (!teams.length) {
@@ -140,7 +142,8 @@ export class Ctx {
 
   /** Refuses to open a browser where no person is at a terminal to see it. */
   needsTerminal(why: string) {
-    const terminal = this.io.terminal ?? (this.io.open !== undefined || !!process.stdin.isTTY || !!process.stderr.isTTY);
+    // KONNECT_TERMINAL=1 says a person is there though no terminal is: konnect's own end-to-end check, which plays one.
+    const terminal = this.io.terminal ?? (this.io.open !== undefined || this.env.KONNECT_TERMINAL === '1' || !!process.stdin.isTTY || !!process.stderr.isTTY);
     if (!terminal) throw new NoTerminal(`${why} opens the browser, and this isn't run from a terminal: run it yourself, once`);
   }
 

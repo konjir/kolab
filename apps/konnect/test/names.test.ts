@@ -1,7 +1,7 @@
 // How konnect names members: an agent is stored as <owner>-<label> and shown and taken as
 // <owner>/<label>; a person is their name.
 import { expect, test } from '@jest/globals';
-import { formatMembers, shownName, storedName } from '../src/konnect.js';
+import { formatTeam, memberJson, shownName, storedName } from '../src/konnect.js';
 
 test('@owner/label is the stored owner-label; @name is name; anything else is refused, saying how to name a member', () => {
   expect(storedName('@ann')).toBe('ann');
@@ -22,14 +22,28 @@ test('an agent shows as owner/label: from the server\'s label when it gives one,
   expect(shownName({ actor: 'reviewer', kind: 'agent', owner: 'ann' })).toBe('reviewer');
 });
 
-test('konnect who\'s lines: name, kind, connected; a name can\'t carry a control character to the terminal', () => {
-  expect(formatMembers([
+test('konnect team list\'s lines: each person, their agents under them, connected said of agents alone, then who is invited; a name can\'t carry a control character to the terminal', () => {
+  expect(formatTeam([
+    { actor: 'bo', kind: 'person', owner: null, here: true },
+    { actor: 'zed-x', kind: 'agent', owner: 'zed', label: 'x', here: true },
+    { actor: 'ann-reviewer', kind: 'agent', owner: 'ann', label: 'reviewer', here: true },
     { actor: 'ann', kind: 'person', owner: null, here: true, you: true },
-    { actor: 'ann-reviewer', kind: 'agent', owner: 'ann', here: false },
-    { actor: 'b\u001b[2Jo', kind: 'person', owner: null, here: true },
-  ]).split('\n')).toStrictEqual([
-    'ann (you)     person  connected',
-    'ann/reviewer  agent',
-    'b?[2Jo        person  connected',
+    { actor: 'bo-bot', kind: 'agent', owner: 'bo', label: 'bot', here: false },
+    { actor: 'c\u001b[2Jy', kind: 'person', owner: null, here: false },
+  ], [{ account: 'dee', created_at: '2026-11-16T10:00:00Z' }]).split('\n')).toStrictEqual([
+    '@bo            person',
+    '@bo/bot        agent',
+    '@ann (you)     person',
+    '@ann/reviewer  agent   connected',
+    '@c?[2Jy        person',
+    // An agent whose owner isn't a member comes after the people.
+    '@zed/x         agent   connected',
+    '@dee           person  invited 2026-11-16',
   ]);
+  expect(formatTeam([], [])).toBe('');
+});
+
+test('a member as --json gives one: by the name konnect shows, connected, and you only when it is you', () => {
+  expect(memberJson({ actor: 'ann-reviewer', kind: 'agent', owner: 'ann', label: 'reviewer', here: true })).toStrictEqual({ name: 'ann/reviewer', kind: 'agent', owner: 'ann', connected: true });
+  expect(memberJson({ actor: 'bo', kind: 'person', owner: null, here: false, you: true })).toStrictEqual({ name: 'bo', kind: 'person', owner: null, connected: false, you: true });
 });

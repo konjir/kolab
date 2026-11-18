@@ -25,7 +25,7 @@ for pkg in apps/konnect libs/login libs/brand apps/channel-bridge; do
   [ "$(declared <"$repo/$pkg/package.json")" = Apache-2.0 ] || fail "$pkg/package.json doesn't declare Apache-2.0"
 done
 files=$(tar -tzf "$tarball")
-for f in package/LICENSE package/THIRD-PARTY-NOTICES.md package/package.json package/konnect.mjs; do
+for f in package/LICENSE package/THIRD-PARTY-NOTICES.md package/package.json package/konnect.mjs package/konnect.1; do
   grep -qx "$f" <<<"$files" || fail "$tarball has no $f"
 done
 tar -xOzf "$tarball" package/LICENSE | cmp -s - "$licence" || fail "$tarball's LICENSE isn't apps/konnect/LICENSE"

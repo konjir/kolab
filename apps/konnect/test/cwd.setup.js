@@ -1,6 +1,6 @@
-// Every konnect test file runs from an empty folder of its own, outside any repository, so no
-// .konnect.json in a folder above reaches a test, and no sign-in of the person's either: konnect's
-// config folder is one of the test's own. A test that needs a folder file makes one.
+// Every konnect test file runs from an empty folder of its own, outside any repository, with no
+// KONNECT_ variable of the person's and none of their logins: konnect's config folder is one of
+// the test's own. A test that needs a folder file makes one.
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
