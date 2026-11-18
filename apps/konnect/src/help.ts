@@ -69,7 +69,8 @@ const HOST = `  konnect host list                 your machines that host, and t
                                     its pairing code: a machine paired with it can then start your
                                     agents here, with konnect agent run --on <name>. Named after the
                                     machine unless <name> is given. --background keeps it running
-                                    in tmux or screen
+                                    in tmux or screen; --new-code replaces its pairing code, so
+                                    every machine paired with it must pair again
   konnect host pair <name> [<code>] pair this machine with one that hosts, once, with the code
                                     konnect host run shows there; with no code, from standard input
   konnect host stop [<name>]        end hosting, here or on the machine named

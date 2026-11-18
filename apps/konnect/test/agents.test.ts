@@ -203,7 +203,7 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   await ann.run(['agent', 'run', '--background', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y'], { self, start, exec, wakeOpenCode, pause: async () => undefined });
   // tmux is given konnect's own plumbing, where konnect keeps its files, and a file's name; what is to run, and where, waits in the file.
   const line = ran.find((c) => c[1] === 'new-session')!;
-  expect(line.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect-hub-coder', 'env', `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
+  expect(line.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect_hub_coder', 'env', `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
   expect(line.at(-1)).toMatch(/\/agents\/hub\/coder\.[0-9a-f]{12}\.start\.json$/);
   expect(JSON.parse(readFileSync(line.at(-1)!, 'utf8'))).toStrictEqual({ cmd: '/usr/bin/node', args: ['/opt/konnect/konnect.mjs', '--team', 'hub', 'agent', 'run', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y'], env: { KONNECT_URL: server.url, KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR }, cwd: ann.cwd });
 });
@@ -366,12 +366,12 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
 
   // With screen alone: the harness is started detached, with the agent's environment and Claude Code's command line.
   const out = await ann.run(['agent', 'run', '--background', '--act-for', 'me', 'helper', 'claude', '--model', 'opus'], { open: allow, self, exec, start });
-  expect(out).toMatch(/^Your agent @ann\/helper is added to team hub, and claude is running as it in the background \(screen session konnect-hub-helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-a d leaves it running\n {2}konnect agent stop helper {7}end it\nThe first time in a folder, Claude Code asks whether to trust it: attach once and answer\.$/);
+  expect(out).toMatch(/^Your agent @ann\/helper is added to team hub, and claude is running as it in the background \(screen session konnect_hub_helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-a d leaves it running\n {2}konnect agent stop helper {7}end it\nThe first time in a folder, Claude Code asks whether to trust it: attach once and answer\.$/);
   // screen is given konnect's own plumbing, where konnect keeps its files, and a file's name, never the words
   // themselves or the folder: what is to run, and where, waits in the file, the person's alone.
   const launch = ran.find((c) => c[0] === 'screen' && c[1] === '-dmS')!;
   const kept = launch.at(-1)!;
-  expect(launch.slice(0, -1)).toStrictEqual(['screen', '-dmS', 'konnect-hub-helper', 'env', `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
+  expect(launch.slice(0, -1)).toStrictEqual(['screen', '-dmS', 'konnect_hub_helper', 'env', `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
   expect(kept).toMatch(new RegExp(`^${ann.env.KONNECT_CONFIG_DIR}/agents/hub/helper\\.[0-9a-f]{12}\\.start\\.json$`));
   expect(statSync(kept).mode & 0o777).toBe(0o600);
   const { cwd: where, ...waiting } = JSON.parse(readFileSync(kept, 'utf8')) as { cmd: string; args: string[]; env: Record<string, string>; cwd: string };
@@ -390,7 +390,7 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   writeFileSync(join(ann.cwd, 'x.start.json'), JSON.stringify({ ...waiting, cwd: ann.cwd }));
   expect(await fails(ann.run(['_start', join(ann.cwd, 'x.start.json')], { start }))).toMatch(/^konnect _start is plumbing/);
   expect(await fails(ann.run(['_start', kept], { start }))).toMatch(/^konnect _start is plumbing/);
-  expect(sessions).toStrictEqual(new Set(['konnect-hub-helper']));
+  expect(sessions).toStrictEqual(new Set(['konnect_hub_helper']));
 
   // It is said where your agents are listed; a second one for the same agent is refused (4).
   expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^helper\s+(connected\s+)?set up here\s+running here, in the background$/m);
@@ -399,7 +399,7 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   // attach hands this terminal to the session; stop ends it, and the agent stays in the team.
   const attached: { cmd: string; args: string[] }[] = [];
   await ann.run(['agent', 'attach', 'helper'], { exec, start: async (c) => { attached.push(c); return 0; } });
-  expect(attached).toMatchObject([{ cmd: 'screen', args: ['-r', '1234.konnect-hub-helper'] }]);
+  expect(attached).toMatchObject([{ cmd: 'screen', args: ['-r', '1234.konnect_hub_helper'] }]);
   expect(await ann.run(['agent', 'stop', 'helper'], { exec })).toBe('Stopped your agent helper\'s harness here. It stays in team hub.');
   expect(sessions.size).toBe(0);
   expect(await fails(ann.run(['agent', 'stop', 'helper'], { exec }))).toBe('your agent helper isn\'t running in the background on this machine: konnect agent run --background helper <harness> starts it');
@@ -408,9 +408,9 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
 
   // With tmux installed it is tmux, started in this folder.
   has.tmux = true;
-  expect(await ann.run(['agent', 'run', '--background', 'helper', 'codex'], { self, exec, start })).toMatch(/codex is running as it in the background \(tmux session konnect-hub-helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-b d leaves it running/);
+  expect(await ann.run(['agent', 'run', '--background', 'helper', 'codex'], { self, exec, start })).toMatch(/codex is running as it in the background \(tmux session konnect_hub_helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-b d leaves it running/);
   const tmux = ran.find((c) => c[0] === 'tmux' && c[1] === 'new-session')!;
-  expect(tmux.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect-hub-helper', 'env', `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
+  expect(tmux.slice(0, -1)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect_hub_helper', 'env', `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start']);
   // The folder is never tmux's to read (it would run a #(...) in its name): it waits in the file with the rest.
   expect(tmux).not.toContain('-c');
   expect(JSON.parse(readFileSync(tmux.at(-1)!, 'utf8')).cwd).toBe(ann.cwd);
@@ -433,7 +433,7 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   const signal = (pid: number, sig: NodeJS.Signals | 0) => { signals.push([pid, sig]); if (sig === 'SIGTERM') alive = false; return alive || sig === 'SIGTERM'; };
   const panes = async (cmd: string, args: string[]) => { if (cmd === 'tmux' && args[0] === 'list-panes') { ran.push([cmd, ...args]); return { code: 0, out: '4242\n' }; } if (cmd === 'ps') { ran.push([cmd, ...args]); return { code: 0, out: ' 4242     1  4242\n 4300  4242  4242\n 5151  1234  5151\n 6000  1234  5999\n 7000     1  7000\n' }; } return exec(cmd, args); };
   expect(await ann.run(['agent', 'stop', 'helper'], { exec: panes, signal, pause: async () => undefined })).toBe('Stopped your agent helper\'s harness here. It stays in team hub.');
-  expect([...ran].reverse().find((c) => c[1] === 'list-panes')).toStrictEqual(['tmux', 'list-panes', '-s', '-t', '=konnect-hub-helper', '-F', '#{pane_pid}']);
+  expect([...ran].reverse().find((c) => c[1] === 'list-panes')).toStrictEqual(['tmux', 'list-panes', '-s', '-t', '=konnect_hub_helper', '-F', '#{pane_pid}']);
   expect(signals.filter(([, sig]) => sig !== 0).map(([pid, sig]) => `${pid} ${sig}`)).toStrictEqual(['-4242 SIGHUP', '-4242 SIGTERM']);
   expect(sessions.size).toBe(0);
   // Under screen, the window's process is found beneath screen's own, by the session's full name.
@@ -446,7 +446,7 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   expect(signals.filter(([, sig]) => sig !== 0).map(([pid, sig]) => `${pid} ${sig}`)).toStrictEqual(['-5151 SIGHUP', '-5151 SIGTERM']);
   // A session someone named so that it ends in an agent's session name isn't taken for it: it isn't running,
   // and nothing is signalled (read loosely, its "pid" would be 1, and every process's parent).
-  const planted = async (cmd: string, args: string[]) => (cmd === 'screen' && args[0] === '-ls' ? { code: 0, out: 'There is a screen on:\n\t90184.x1.konnect-hub-helper\t(Detached)\n' } : cmd === 'screen' && args[0] === '-v' ? { code: 1, out: 'Screen version 4.00.03' } : panes(cmd, args));
+  const planted = async (cmd: string, args: string[]) => (cmd === 'screen' && args[0] === '-ls' ? { code: 0, out: 'There is a screen on:\n\t90184.x1.konnect_hub_helper\t(Detached)\n' } : cmd === 'screen' && args[0] === '-v' ? { code: 1, out: 'Screen version 4.00.03' } : panes(cmd, args));
   signals.length = 0;
   expect(await fails(ann.run(['agent', 'stop', 'helper'], { exec: planted, signal, pause: async () => undefined }))).toBe('your agent helper isn\'t running in the background on this machine: konnect agent run --background helper <harness> starts it');
   expect(await ann.run(['agent', 'list'], { exec: planted })).toMatch(/^helper\s+(connected\s+)?set up here$/m);
@@ -454,6 +454,17 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   // A pid that could be every process, or none, is never signalled.
   expect(signals.every(([pid]) => pid < -1)).toBe(true);
   has.tmux = true;
+  await ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start });
+
+  // A session konnect 0.7.0 or earlier started goes by its earlier name: it is still listed, never started over, and stopped.
+  await ann.run(['agent', 'stop', 'helper'], { exec });
+  const earlier = ['konnect', 'hub', 'helper'].join('-');
+  sessions.add(earlier);
+  expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^helper\s+(connected\s+)?set up here\s+running here, in the background$/m);
+  expect(await exitOf(ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start }))).toBe(4);
+  expect(await ann.run(['agent', 'stop', 'helper'], { exec })).toBe('Stopped your agent helper\'s harness here. It stays in team hub.');
+  expect(ran.at(-1)).toStrictEqual(['tmux', 'kill-session', '-t', `=${earlier}`]);
+  expect(sessions.size).toBe(0);
   await ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start });
 
   // With neither, it says what to install, and starts nothing; --background belongs to agent run alone (2).
@@ -492,8 +503,8 @@ test('several agents at once: konnect agent add <name>... and konnect agent run 
   expect(await fails(ann.run(['agent', 'run', '--count', '3', 'worker', 'claude'], { open: allow, self, exec }))).toBe('konnect agent run --count starts several harnesses, which one terminal can\'t hold: add --background');
   const out = await ann.run(['agent', 'run', '--background', '--count', '3', 'worker', 'claude'], { open: allow, self, exec });
   expect(pages).toBe(2);
-  expect(out).toMatch(/^Your agents @ann\/worker-1, @ann\/worker-2, @ann\/worker-3 are in team hub, and claude is running as each in the background \(tmux sessions konnect-hub-worker-1 to konnect-hub-worker-3\)\./);
-  expect(sessions).toStrictEqual(new Set(['konnect-hub-worker-1', 'konnect-hub-worker-2', 'konnect-hub-worker-3']));
+  expect(out).toMatch(/^Your agents @ann\/worker-1, @ann\/worker-2, @ann\/worker-3 are in team hub, and claude is running as each in the background \(tmux sessions konnect_hub_worker-1 to konnect_hub_worker-3\)\./);
+  expect(sessions).toStrictEqual(new Set(['konnect_hub_worker-1', 'konnect_hub_worker-2', 'konnect_hub_worker-3']));
   expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^worker-2\s+(connected\s+)?set up here\s+running here, in the background$/m);
   expect(await fails(ann.run(['agent', 'run', '--background', '--count', '11', 'worker', 'claude'], { self, exec }))).toBe('--count is a whole number from 1 to 10');
 
@@ -501,6 +512,6 @@ test('several agents at once: konnect agent add <name>... and konnect agent run 
   const failing = async (cmd: string, args: string[]) => (cmd === 'tmux' && args[0] === 'new-session' && args[3].endsWith('-2') ? { code: 1, out: 'no space left' } : exec(cmd, args));
   expect(await fails(ann.run(['agent', 'run', '--background', '--count', '3', 'crew', 'claude'], { open: allow, self, exec: failing })))
     .toBe('tmux couldn\'t start claude in the background as crew-2: no space left. crew-1 is running in the background: konnect agent stop <name> ends one.');
-  expect(sessions.has('konnect-hub-crew-1')).toBe(true);
-  expect(sessions.has('konnect-hub-crew-3')).toBe(false);
+  expect(sessions.has('konnect_hub_crew-1')).toBe(true);
+  expect(sessions.has('konnect_hub_crew-3')).toBe(false);
 });
