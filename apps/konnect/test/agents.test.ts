@@ -209,9 +209,9 @@ test('konnect agent add prints the entry and starts nothing; agent list says whi
   expect(lines).toHaveLength(2);
   expect(lines[0]).toMatch(/^helper {5}(connected {3}| {12})set up here$/);
   expect(lines[1]).toBe('reviewer');
-  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'helper', connected: expect.any(Boolean), set_up_here: true });
+  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'helper', connected: expect.any(Boolean), set_up_here: true, running_here: false });
   await kolab.openSession('ann-reviewer', 'product', { kolab: 'hub' });
-  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'reviewer', connected: true, set_up_here: false });
+  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'reviewer', connected: true, set_up_here: false, running_here: false });
   expect((await ann.run(['agent', 'list'])).split('\n')).toContain('reviewer   connected');
   // Someone with none.
   const bo = machine(server.url, 'bo');
@@ -261,4 +261,68 @@ test('--agent <name> (or KONNECT_AGENT): status, send, receive, history, channel
   expect(await fails(ann.run(['--agent', 'nothere', 'status']))).toBe('agent nothere has no login to team hub on this machine: its owner should run konnect agent add nothere again to renew it');
   // Anything else is refused as the agent (4).
   expect(await exitOf(ann.run(['--agent', 'helper', 'channel', 'create', 'x']))).toBe(4);
+});
+
+test('konnect agent run --background keeps the harness in tmux, or in screen where tmux is missing; agent attach looks in, agent stop ends it, agent list says it is running here', async () => {
+  const { server, idp, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  await signIn(ann, annId, 'hub');
+  const self = () => ({ command: '/usr/bin/node', args: ['/opt/konnect/konnect.mjs'] });
+  const allow = (u: URL) => { idp.next(annId); void browse(u, pressing('decision=allow')); };
+  // A stand-in for the machine's tmux and screen: which are installed, and which sessions are running.
+  const has = { tmux: false, screen: true };
+  const sessions = new Set<string>();
+  const ran: string[][] = [];
+  const exec = async (cmd: string, args: string[]) => {
+    ran.push([cmd, ...args]);
+    if (!has[cmd as 'tmux' | 'screen']) return { code: -1, out: 'not installed' };
+    if (cmd === 'tmux' && args[0] === '-V') return { code: 0, out: 'tmux 3.4' };
+    if (cmd === 'tmux' && args[0] === 'has-session') return { code: sessions.has(args[2].slice(1)) ? 0 : 1, out: '' };
+    if (cmd === 'tmux' && args[0] === 'new-session') { sessions.add(args[3]); return { code: 0, out: '' }; }
+    if (cmd === 'tmux' && args[0] === 'kill-session') { sessions.delete(args[2].slice(1)); return { code: 0, out: '' }; }
+    if (cmd === 'screen' && args[0] === '-v') return { code: 1, out: 'Screen version 4.00.03' };
+    if (cmd === 'screen' && args[0] === '-ls') return { code: 0, out: [...sessions].map((s) => `\t1234.${s}\t(Detached)`).join('\n') };
+    if (cmd === 'screen' && args[0] === '-dmS') { sessions.add(args[1]); return { code: 0, out: '' }; }
+    if (cmd === 'screen' && args[0] === '-S') { sessions.delete(args[1]); return { code: 0, out: '' }; }
+    return { code: 1, out: 'unexpected' };
+  };
+  const start = async () => { throw new Error('started in this terminal'); };
+
+  // With screen alone: the harness is started detached, with the agent's environment and Claude Code's command line.
+  const out = await ann.run(['agent', 'run', '--background', '--act-for', 'me', 'helper', 'claude', '--model', 'opus'], { open: allow, self, exec, start });
+  expect(out).toMatch(/^Your agent @ann\/helper is added to team hub, and claude is running as it in the background \(screen session konnect-hub-helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-a d leaves it running\n {2}konnect agent stop helper {7}end it\nThe first time in a folder, Claude Code asks whether to trust it: attach once and answer\.$/);
+  const launch = ran.find((c) => c[0] === 'screen' && c[1] === '-dmS')!;
+  expect(launch.slice(0, 4)).toStrictEqual(['screen', '-dmS', 'konnect-hub-helper', 'env']);
+  expect(launch).toContain('KONNECT_AGENT=helper');
+  expect(launch).toContain('KONNECT_ACT_FOR=me');
+  expect(launch.slice(launch.indexOf('claude'), launch.indexOf('claude') + 2)).toStrictEqual(['claude', '--mcp-config']);
+  expect(launch.slice(-2)).toStrictEqual(['--model', 'opus']);
+  expect(launch.join(' ')).not.toMatch(/kj[rsa]_/);
+  expect(sessions).toStrictEqual(new Set(['konnect-hub-helper']));
+
+  // It is said where your agents are listed; a second one for the same agent is refused (4).
+  expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^helper\s+(connected\s+)?set up here\s+running here, in the background$/m);
+  expect(await fails(ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start }))).toBe('your agent helper is running in the background here already: look in with konnect agent attach helper, or stop it with konnect agent stop helper');
+
+  // attach hands this terminal to the session; stop ends it, and the agent stays in the team.
+  const attached: { cmd: string; args: string[] }[] = [];
+  await ann.run(['agent', 'attach', 'helper'], { exec, start: async (c) => { attached.push(c); return 0; } });
+  expect(attached).toMatchObject([{ cmd: 'screen', args: ['-r', 'konnect-hub-helper'] }]);
+  expect(await ann.run(['agent', 'stop', 'helper'], { exec })).toBe('Stopped your agent helper\'s harness here. It stays in team hub.');
+  expect(sessions.size).toBe(0);
+  expect(await fails(ann.run(['agent', 'stop', 'helper'], { exec }))).toBe('your agent helper isn\'t running in the background on this machine: konnect agent run --background helper <harness> starts it');
+  expect(await exitOf(ann.run(['agent', 'attach', 'helper'], { exec }))).toBe(4);
+  expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^helper\s+(connected\s+)?set up here$/m);
+
+  // With tmux installed it is tmux, started in this folder.
+  has.tmux = true;
+  expect(await ann.run(['agent', 'run', '--background', 'helper', 'codex'], { self, exec, start })).toMatch(/codex is running as it in the background \(tmux session konnect-hub-helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-b d leaves it running/);
+  const tmux = ran.find((c) => c[0] === 'tmux' && c[1] === 'new-session')!;
+  expect(tmux.slice(0, 8)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect-hub-helper', '-c', ann.cwd, 'env']);
+  await ann.run(['agent', 'stop', 'helper'], { exec });
+
+  // With neither, it says what to install, and starts nothing; --background belongs to agent run alone (2).
+  has.tmux = false; has.screen = false;
+  expect(await fails(ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start }))).toBe('konnect agent run --background keeps the harness in tmux or screen, and neither is installed here: install tmux, or run it without --background');
+  expect(await fails(ann.run(['agent', 'add', '--background', 'helper'], { self, exec }))).toBe('konnect agent add takes no --background: only konnect agent run does');
 });

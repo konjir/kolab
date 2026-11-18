@@ -19,6 +19,7 @@ import { agent } from './cmd-agent.js';
 import { history, receive, sendMessage, status } from './cmd-messages.js';
 import { channel, logOut, login, team } from './cmd-team.js';
 import { wake } from './cmd-wake.js';
+import { watch } from './cmd-watch.js';
 import { Ctx, actingAs, chooseTeam, type IO } from './context.js';
 import { UsageError } from './errors.js';
 import { USAGE, helpFor } from './help.js';
@@ -87,6 +88,7 @@ function checkOptions(a: Args, words: string[]) {
   only(a.wakeOn.length > 0 || a.listen !== undefined, '--wake-on', starts, 'konnect agent add and konnect agent run do');
   only(a.actFor !== undefined, '--act-for', starts, 'konnect agent add and konnect agent run do');
   only(a.systemPrompt !== undefined, '--system-prompt', starts, 'konnect agent add and konnect agent run do');
+  only(a.background, '--background', cmd === 'agent' && verb === 'run', 'only konnect agent run does');
   only(a.forget, '--forget', cmd === 'logout', 'only konnect logout does');
   only(a.reply !== undefined, '--reply', cmd === 'send', 'only konnect send does');
 }
@@ -135,6 +137,7 @@ export async function main(argv: string[], io: IO = {}) {
     case 'send': return sendMessage(ctx, rest);
     case 'receive': return receive(ctx, rest);
     case 'history': return history(ctx, rest);
+    case 'watch': return watch(ctx, rest);
     case 'login': return login(ctx, rest);
     case 'logout': return logOut(ctx, rest);
     case 'channel': return channel(ctx, rest[0], rest.slice(1));

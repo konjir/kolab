@@ -7,6 +7,12 @@
 import { expect, test } from '@jest/globals';
 import { exitOf, fails, machine, teams } from './team.js';
 
+const until = async (ok: () => boolean, ms = 10_000) => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) if (ok()) return;
+  throw new Error(`it didn't happen in ${ms} ms`);
+};
+const quiet = () => new Promise((r) => setTimeout(r, 400));
+
 test('konnect receive pages oldest first, at most 20 by default, showing every message it receives, and says how many more wait', async () => {
   const { kolab, server, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
@@ -100,4 +106,47 @@ test('konnect history: a channel\'s newest messages, newest last, at most -n, ch
   expect((await bo.run(['receive', '@ann'])).match(/^ {2}\w+$/gm)).toStrictEqual(['  first', '  third']);
   // Someone who isn't in the team is refused (4).
   expect(await exitOf(bo.run(['history', '@nobody-here']))).toBe(4);
+});
+
+test('konnect watch prints messages as they arrive, from what you follow or from one place, and marks nothing; --json gives a line each', async () => {
+  const { kolab, server, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  await ann.run(['send', '#general', 'before watching']);
+  const annSession = await kolab.openSession('ann', 'product', { kolab: 'hub' });
+
+  // Bo watches everything: what was there before isn't printed; what arrives is, as it arrives.
+  const lines: string[] = [];
+  let end: () => void = () => undefined;
+  const watching = bo.run(['watch'], { out: (l) => lines.push(l), waking: (e) => { end = e; } });
+  await until(() => bo.err.some((l) => l.startsWith('Watching team hub as @bo.')));
+  await quiet();
+  await kolab.sendChannelMessage(annSession, 'general', 'first in general');
+  await until(() => lines.length === 1);
+  await kolab.sendMessage(annSession, 'bo', 'a direct one');
+  await until(() => lines.length === 2);
+  await kolab.sendChannelMessage(annSession, 'general', 'second in general');
+  await until(() => lines.length === 3);
+  end();
+  await watching;
+  expect(lines[0]).toMatch(/^#general\n\S+ \S+ {2}@ann\n {2}first in general$/);
+  expect(lines[1]).toMatch(/^\nDirect, from @ann\n\S+ \S+ {2}@ann\n {2}a direct one$/);
+  expect(lines[2]).toMatch(/^\n#general\n\S+ \S+ {2}@ann\n {2}second in general$/);
+  // Nothing was marked: all of it is still Bo's to receive.
+  expect((await bo.run(['receive'])).match(/^ {2}.+$/gm)).toStrictEqual(['  a direct one', '  before watching', '  first in general', '  second in general']);
+
+  // One place alone, as JSON lines.
+  const json: string[] = [];
+  const one = bo.run(['watch', '--json', '@ann'], { out: (l) => json.push(l), waking: (e) => { end = e; } });
+  await quiet();
+  await quiet();
+  await kolab.sendChannelMessage(annSession, 'general', 'not watched');
+  await kolab.sendMessage(annSession, 'bo', 'only this');
+  await until(() => json.length === 1);
+  end();
+  await one;
+  expect(JSON.parse(json[0])).toMatchObject({ direct: true, from: 'ann', to: 'bo', message: 'only this' });
+  expect(await fails(bo.run(['watch', 'general']))).toMatch(/^say whether general is a member or a channel/);
 });

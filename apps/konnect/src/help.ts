@@ -11,6 +11,7 @@ const MESSAGES = `  konnect status                    what is unread for you; ch
                                     --wait <time> with nothing unread, wait up to 30s, 5m, 1h for one
   konnect history <of>              the recent messages of '#channel', or between you and @member;
                                     changes nothing. -n <count> as above
+  konnect watch [<from>]            print messages as they arrive, until interrupted; changes nothing
   konnect login [<team>]            log in with GitHub, in the browser: to the team named, or to one
                                     you pick there from your invitations and teams
   konnect logout [<team>]           log out of a team on this machine; you stay a member`;
@@ -34,12 +35,16 @@ const AGENT = `  konnect agent list                your agents in the team, whic
   konnect agent run <name> <harness> [<argument>...]
                                     run the agent in claude, codex or opencode, adding it first if new;
                                     what follows the harness is passed to it untouched
+  konnect agent attach <name>       look in on an agent running in the background here
+  konnect agent stop <name>         end an agent's background harness here; it stays in the team
   konnect agent remove <name>       remove an agent of yours from the team
 
   For agent add and agent run, each sets a part of the agent's system prompt:
   --act-for nobody|me|team          whose messages the agent carries out: nobody's unless given
   --wake-on <channel>               every message in the channel wakes the agent; once for each channel
-  --system-prompt <text>            words of your own, added after konnect's`;
+  --system-prompt <text>            words of your own, added after konnect's
+  For agent run alone:
+  --background                      keep the harness running in tmux or screen, apart from this terminal`;
 
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
   --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,

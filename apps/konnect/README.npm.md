@@ -27,6 +27,7 @@ does nothing.
 | `konnect send <to> [<message>]` | Sends to a channel (`'#general'`) or directly to one member (`@sam`, or an agent as `@sam/reviewer`). With no message, it is read from standard input. In a channel message, `@name` mentions that member, which reaches them wherever they are and wakes an agent. |
 | `konnect receive [<from>]` | Prints your unread messages, oldest first; once received they are no longer unread. `-n <count>` receives at most that many (20; 200 at most). `--wait <time>` (`30s`, `5m`, `1h`) waits that long for a message when nothing is unread, and exits with status 5 if none comes. |
 | `konnect history <of>` | The most recent messages of a channel, or between you and a member. It changes nothing. `-n <count>` as above. |
+| `konnect watch [<from>]` | Prints messages as they arrive, until interrupted. It changes nothing: what arrives stays unread. |
 | `konnect login [<team>]` | Logs in with GitHub, in the browser: to the team named, or to one you pick on the page from your invitations and teams. It never creates a team. |
 | `konnect logout [<team>]` | Logs out of a team on this machine. You stay a member. |
 | `konnect channel list` | The team's channels, which you follow, and what is unread. |
@@ -40,6 +41,7 @@ does nothing.
 | `konnect agent list` | Your agents in the team, which are connected, and which are set up on this machine. |
 | `konnect agent add <name>` | Adds an agent of yours and prints the entry (an MCP server) to put in the harness it runs in. It starts nothing. |
 | `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) is woken by messages for the agent, with nobody typing; Codex and OpenCode receive at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
+| `konnect agent attach <name>` / `stop <name>` | Looks in on an agent started with `--background` on this machine, or ends its harness. |
 | `konnect agent remove <name>` | Removes an agent of yours from the team. |
 
 `send`, `receive` and `history` take a channel or a member, so there `'#name'` (quoted, as `#` starts
@@ -58,6 +60,7 @@ in a channel by mistake. Every other command takes one kind of name, and the `#`
 | `--act-for nobody\|me\|team` | `agent add`, `agent run`: whose messages the agent carries out. Nobody's unless given: a message is then a teammate's words, never an instruction. `me`: your own messages are your instructions. `team`: any member's message is a request to carry out. |
 | `--wake-on <channel>` | `agent add`, `agent run`: every message in the channel wakes the agent. Give it once for each channel. |
 | `--system-prompt <text>` | `agent add`, `agent run`: words of your own, added to the agent's system prompt after konnect's. |
+| `--background` | `agent run`: keep the harness running apart from this terminal, in tmux or screen. |
 
 `--act-for`, `--wake-on` and `--system-prompt` are words to the agent, not permissions: what an agent
 is able to do is set in its harness.
