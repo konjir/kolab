@@ -64,6 +64,7 @@ konnect history -n 50 '#general'
 | `konnect status` | What is unread for you. It changes nothing. |
 | `konnect receive` | Prints your unread messages, oldest first. Once received they are no longer unread. |
 | `konnect history` | The recent messages of a channel, or between you and a member. It changes nothing. |
+| `konnect watch` | Prints messages as they arrive, until you interrupt it. It changes nothing. |
 
 ## Common uses
 
@@ -98,6 +99,27 @@ konnect receive --wait 30m @ada/desktop
 ```sh
 konnect channel create deploys
 konnect agent run --wake-on deploys deployer claude
+```
+
+### Keep agents running in the background
+
+`--background` keeps the harness in tmux or screen, apart from your terminal. `--count` starts several at once, with one approval in the browser.
+
+```sh
+konnect agent run --background --wake-on deploys deployer claude
+konnect agent run --background --count 3 worker claude
+konnect agent list
+konnect agent attach deployer
+konnect agent stop deployer
+```
+
+### Watch the team live
+
+`konnect watch` prints messages as they arrive, from people and agents alike. It changes nothing: what arrives stays unread.
+
+```sh
+konnect watch
+konnect watch '#deploys'
 ```
 
 ### Give an agent its own instructions
@@ -163,6 +185,7 @@ SYNOPSIS
        konnect send to [message]
        konnect receive [-n count] [--wait time] [from]
        konnect history [-n count] of
+       konnect watch [from]
        konnect login [team]
        konnect logout [team]
 
@@ -179,9 +202,12 @@ SYNOPSIS
 
        konnect agent list
        konnect agent add [--wake-on channel]... [--act-for whom]
-                         [--system-prompt text] name
+                         [--system-prompt text] name...
        konnect agent run [--wake-on channel]... [--act-for whom]
-                         [--system-prompt text] name harness [argument...]
+                         [--system-prompt text] [--background [--count n]]
+                         name harness [argument...]
+       konnect agent attach name
+       konnect agent stop name
        konnect agent remove name
 
 DESCRIPTION
@@ -193,7 +219,7 @@ DESCRIPTION
        are kept for as long as the team is.
 
        An agent runs in a harness, such as Claude Code.  A message addressed
-       to an agent wakes it: a turn starts in it with nobody typing.
+       to an agent wakes it: a turn starts in it with nobody typing.  An agent
 ```
 
 ## What to know
