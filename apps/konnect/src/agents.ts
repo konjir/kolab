@@ -25,6 +25,7 @@ import { agentFileReady, configDir } from './teams.js';
 
 /** The tools konnect starts an agent in. */
 export type Tool = 'claude' | 'codex' | 'opencode';
+export const HARNESSES: readonly Tool[] = ['claude', 'codex', 'opencode'];
 
 /** The role every agent konnect makes has, never shown. */
 export const AGENT_ROLE = 'engineer';
@@ -36,9 +37,8 @@ export const agentSetupScope = (team: string, label: string) => `konjir kolab:${
 export const serverName = (label: string) => `konnect-${label}`;
 
 /** An agent's label: as Kolab allows one. */
-export function checkLabel(label: string | undefined, tool: Tool): string {
-  if (label === undefined) throw new Error(`konnect ${tool} <label>: name the agent, such as konnect ${tool} reviewer`);
-  if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new Error(`${printable(label)} isn't an agent's label: lowercase letters, digits and -, at most 24 characters, such as reviewer`);
+export function checkLabel(label: string): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(label)) throw new Error(`${printable(label)} isn't an agent's name: lowercase letters, digits and -, at most 24 characters, such as reviewer`);
   return label;
 }
 
@@ -46,20 +46,20 @@ export function checkLabel(label: string | undefined, tool: Tool): string {
  * Makes the agent if it is new, and signs it in: Kolab's setup page, in the browser, where the
  * person allows it; the agent's own sign-in is kept in its file. Returns its stored name.
  */
-export async function setUpAgent(team: string, url: string, label: string, io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }): Promise<{ agent: string; made: boolean; file: string }> {
+export async function setUpAgent(team: string, url: string, label: string, io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }, again = `run konnect agent add ${label} again`): Promise<{ agent: string; made: boolean; file: string }> {
   const file = agentFileReady(team, label, io.env);
   let done;
   try {
     done = await setup(url, {
       scope: agentSetupScope(team, label), mint: true, clientName: 'konnect agent', open: io.open, log: io.log,
-      opening: `Opening your browser to set up your agent ${label} in team ${team}. Check what Kolab's page names, then Allow.`,
-      again: `run konnect claude ${label} again`,
+      opening: `Opening your browser to add your agent ${label} to team ${team}. Check what the page names, then Allow.`,
+      again,
     });
   } catch (e) {
     throw new Error(String((e as Error)?.message ?? e).replace(/run konjir connect again/g, `run the konnect command for ${label} again`).replace(/konjir connect/g, 'konnect'));
   }
   const a = done.agents.find((x) => x.label === label) ?? done.agents[0];
-  if (!a?.tokens) throw new Error(`Kolab set up ${label} but issued it no sign-in: run the command again`);
+  if (!a?.tokens) throw new Error(`the service added ${label} but issued it no login: run the command again`);
   await keepSignIn(url, file, { client: done.client, tokens: a.tokens, ...(done.discovery ? { discovery: done.discovery } : {}) });
   return { agent: a.agent, made: a.made, file };
 }
@@ -107,16 +107,22 @@ export function keepKonnect(keep: { from: string; to: string }) {
   try { renameSync(tmp, keep.to); } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
 }
 
-/** The environment of the agent's `konnect mcp`: its team, its label, the channels it listens to, and Kolab's URL when it isn't the hosted one. No token. */
-export function entryEnv(o: { team: string; label: string; listen?: string[]; url?: string }): Record<string, string> {
+/**
+ * The environment of the agent's `konnect mcp`: its team, its name, what sets its system prompt
+ * (whose messages it carries out, the channels that wake it, the owner's own words), and the
+ * service's URL when it isn't the hosted one. No token.
+ */
+export function entryEnv(o: { team: string; label: string; wakeOn?: string[]; actFor?: string; systemPrompt?: string; url?: string }): Record<string, string> {
   return {
     KONNECT_TEAM: o.team, KONNECT_AGENT: o.label,
-    ...(o.listen?.length ? { KONNECT_LISTEN: o.listen.join(',') } : {}),
+    ...(o.actFor && o.actFor !== 'nobody' ? { KONNECT_ACT_FOR: o.actFor } : {}),
+    ...(o.wakeOn?.length ? { KONNECT_WAKE_ON: o.wakeOn.join(',') } : {}),
+    ...(o.systemPrompt?.trim() ? { KONNECT_SYSTEM_PROMPT: o.systemPrompt } : {}),
     ...(o.url ? { KONNECT_URL: o.url } : {}),
   };
 }
 
-/** The channels `--listen '#a,#b'` names, checked. */
+/** The channels `--wake-on` names (KONNECT_WAKE_ON, as 'a,b'), checked. */
 export function listenList(given: string | undefined): string[] {
   if (given === undefined) return [];
   const names = given.split(',').map((s) => s.trim().replace(/^#/, '')).filter(Boolean);

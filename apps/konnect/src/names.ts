@@ -54,7 +54,7 @@ export function mentionsIn(text: string, members: Member[]): { mentions: string[
 }
 
 /** A count, with `+` when Kolab counted no further. */
-const counted = (n: number, more: boolean) => `${n}${more ? '+' : ''}`;
+export const counted = (n: number, more: boolean) => `${n}${more ? '+' : ''}`;
 
 /** konnect channel list's lines: each channel, whether you follow it, and its unread and mentions. */
 export function formatChannels(channels: Channel[]): string {
@@ -112,10 +112,10 @@ export function storedName(given: string): string {
   const slash = name.indexOf('/');
   if (slash >= 0) {
     const owner = name.slice(0, slash), label = name.slice(slash + 1);
-    if (!ACTOR.test(owner) || !LABEL.test(label)) throw new Error(`${given} isn't a member's name: an agent is @<owner>/<label>, such as @ann/reviewer. konnect who lists your team`);
+    if (!ACTOR.test(owner) || !LABEL.test(label)) throw new Error(`${given} isn't a member's name: an agent is @<owner>/<name>, such as @ann/reviewer. konnect team list shows your team`);
     return `${owner}-${label}`;
   }
-  if (!ACTOR.test(name)) throw new Error(`${given} isn't a member's name: give @<name>, or @<owner>/<label> for an agent. konnect who lists your team`);
+  if (!ACTOR.test(name)) throw new Error(`${given} isn't a member's name: give @<name>, or @<owner>/<name> for an agent. konnect team list shows your team`);
   return name;
 }
 
@@ -133,6 +133,27 @@ export function formatMembers(members: Member[]): string {
     printable(m.kind),
     m.here ? 'connected' : '',
   ]);
+  const width = Math.max(0, ...rows.map((r) => r[0].length)) + 2;
+  return rows.map((r) => `${r[0].padEnd(width)}${r[1].padEnd(8)}${r[2]}`.trimEnd()).join('\n');
+}
+
+/** A member as `--json` gives one: always by the name konnect shows. */
+export function memberJson(m: Member): { name: string; kind: string; owner: string | null; connected: boolean; you?: true } {
+  return { name: shownName(m), kind: m.kind, owner: m.owner, connected: m.here, ...(m.you ? { you: true as const } : {}) };
+}
+
+/**
+ * konnect team list's lines: each person, their agents under them, then whoever is invited and
+ * hasn't answered. Connected is said of agents alone: a person holds no session between commands.
+ */
+export function formatTeam(members: Member[], invited: { account: string; created_at: string }[]): string {
+  const people = members.filter((m) => m.kind !== 'agent');
+  const agents = members.filter((m) => m.kind === 'agent');
+  const ordered = [...people.flatMap((p) => [p, ...agents.filter((a) => a.owner === p.actor)]), ...agents.filter((a) => !people.some((p) => p.actor === a.owner))];
+  const rows = [
+    ...ordered.map((m) => [`@${printable(shownName(m))}${m.you ? ' (you)' : ''}`, printable(m.kind), m.kind === 'agent' && m.here ? 'connected' : '']),
+    ...invited.map((i) => [`@${printable(i.account)}`, 'person', `invited ${printable(i.created_at.slice(0, 10))}`]),
+  ];
   const width = Math.max(0, ...rows.map((r) => r[0].length)) + 2;
   return rows.map((r) => `${r[0].padEnd(width)}${r[1].padEnd(8)}${r[2]}`.trimEnd()).join('\n');
 }

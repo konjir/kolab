@@ -44,6 +44,10 @@ export interface Unread {
  */
 export type As = { kind: 'person' } | { kind: 'agent'; label: string; owner?: string };
 
+/** The service's tools for direct-message history and for removing one's own agent. */
+export const DIRECT_HISTORY_TOOL = 'konjir_list_direct_messages';
+export const REMOVE_AGENT_TOOL = 'konjir_remove_agent';
+
 /** The client's name on Kolab's sign-in page. */
 export const CLIENT_NAME = 'konnect';
 
@@ -57,8 +61,8 @@ export const DRAIN_MAX = MAX_ROUNDS * AT_ONCE;
 /** What to tell whoever runs into a sign-in that has to be renewed: a person, or an agent's owner. */
 export function renewAdvice(team: string, as: As): string {
   return as.kind === 'person'
-    ? `run konnect team ${team} to sign in again`
-    : `its owner should run konnect claude ${as.label} again (or the tool they connected it with) to renew it`;
+    ? `run konnect login ${team}`
+    : `its owner should run konnect agent add ${as.label} again to renew it`;
 }
 
 export class TeamClient {
@@ -82,8 +86,8 @@ export class TeamClient {
         : me.kind === 'agent' && !!me.owner && me.actor === `${me.owner}-${as.label}` && (as.owner === undefined || me.owner === as.owner));
       if (!ok) {
         throw new SignInError(as.kind === 'person'
-          ? `the sign-in kept for team ${team} isn't yours in team ${team}, so konnect won't use it: run konnect team ${team} to sign in again`
-          : `the connection kept for agent ${as.label} isn't that agent's in team ${team}, so konnect won't use it: ${renewAdvice(team, as)}`);
+          ? `the login kept for team ${team} isn't yours in team ${team}, so konnect won't use it: run konnect login ${team}`
+          : `the login kept for agent ${as.label} isn't that agent's in team ${team}, so konnect won't use it: ${renewAdvice(team, as)}`);
       }
       c.me = me;
       return c;
@@ -96,7 +100,7 @@ export class TeamClient {
   private static async connect(team: string, url: string, file: string, as: As): Promise<TeamClient> {
     const login = new StoredLogin(url, { path: file, clientName: CLIENT_NAME });
     if (!login.signedIn) {
-      throw new SignInError(as.kind === 'person' ? `you aren't signed in to team ${team}: run konnect team ${team}` : `agent ${as.label} has no connection to team ${team} on this machine: ${renewAdvice(team, as)}`);
+      throw new SignInError(as.kind === 'person' ? `you aren't logged in to team ${team}: run konnect login ${team}` : `agent ${as.label} has no login to team ${team} on this machine: ${renewAdvice(team, as)}`);
     }
     const mcp = new Client({ name: 'konnect', version: '0.1.0' }, { versionNegotiation: { mode: 'auto' } });
     try {
@@ -230,7 +234,7 @@ export class TeamClient {
     try {
       const r = await Promise.race([
         this.mcp.readResource({ uri }),
-        new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error('Kolab took too long to say what is unread')), UNREAD_WAIT_MS); }),
+        new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error('the service took too long to say what is unread')), UNREAD_WAIT_MS); }),
       ]);
       const c = r.contents[0];
       body = c && 'text' in c ? JSON.parse(c.text) : {};
@@ -262,6 +266,24 @@ export class TeamClient {
   /** konjir_remove_member: the owner removes a person, and their agents go with them. */
   removeMember(member: string) { return this.call<{ kolab: string; removed: string; agents: string[]; ended: number }>('konjir_remove_member', { member }); }
 
+  /** A tool this service may not have yet (an older one): NotYet says so plainly, where a refusal would mislead. */
+  private async newer<T>(tool: string, args: Record<string, unknown>, what: string): Promise<T> {
+    try { return await this.call<T>(tool, args); } catch (e) {
+      if (/unknown tool|tool .* not found|-32602|-32601/i.test(String((e as Error)?.message ?? e))) throw new NotYet(`the service at ${safeUrl(this.url)} can't ${what} yet`);
+      throw e;
+    }
+  }
+
+  /** DIRECT_HISTORY_TOOL: the newest `limit` direct messages between the session and `member` (stored name), newest first, marking nothing. */
+  async directHistory(member: string, limit: number): Promise<Message[]> {
+    return (await this.newer<{ messages: Message[] }>(DIRECT_HISTORY_TOOL, { with: member, limit }, 'show the history of direct messages')).messages;
+  }
+
+  /** REMOVE_AGENT_TOOL: a person removes an agent of their own, by its name. */
+  removeAgent(label: string) {
+    return this.newer<{ removed: string; ended: number }>(REMOVE_AGENT_TOOL, { agent: label }, 'remove an agent');
+  }
+
   /** konjir_leave_kolab: the person leaves the team, and their agents with them. */
   leave() { return this.call<{ left: string; agents: string[]; ended: number }>('konjir_leave_kolab'); }
 }
@@ -274,13 +296,13 @@ export function said(e: unknown, team: string, url: string, as: As = { kind: 'pe
   const msg = String((e as Error)?.message ?? e);
   const cause = String((e as { cause?: unknown })?.cause ?? '');
   if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT/.test(`${msg} ${cause}`)) {
-    return new Error(`can't reach Kolab at ${safeUrl(url)}: check your connection and try again${url.includes('127.0.0.1') || url.includes('localhost') ? ', or start the local Kolab' : ''}`);
+    return new Error(`can't reach the service at ${safeUrl(url)}: check your connection and try again${url.includes('127.0.0.1') || url.includes('localhost') ? ', or start the local one' : ''}`);
   }
   if (e instanceof SignInError || e instanceof Refused) return e;
   if (/401|Unauthorized|has ended or was revoked|run konjir login|invalid Konjir token/i.test(msg)) {
     return new SignInError(as.kind === 'person'
-      ? `your sign-in to team ${team} has ended or was revoked: ${renewAdvice(team, as)}`
-      : `agent ${as.label}'s connection to team ${team} has ended or was revoked: ${renewAdvice(team, as)}`);
+      ? `your login to team ${team} has ended or was revoked: ${renewAdvice(team, as)}`
+      : `agent ${as.label}'s login to team ${team} has ended or was revoked: ${renewAdvice(team, as)}`);
   }
   return e instanceof Error ? e : new Error(msg);
 }

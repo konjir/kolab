@@ -1,21 +1,15 @@
 /**
- * Where konnect keeps its sign-ins, and the folder's `.konnect.json`.
+ * Where konnect keeps its logins.
  *
- * konnect keeps one sign-in per team, each in a file of its own, `teams/<team>.json` in konnect's
+ * konnect keeps one login per team, each in a file of its own, `teams/<team>.json` in konnect's
  * config folder (KONNECT_CONFIG_DIR, else `konnect` in $XDG_CONFIG_HOME, ~/.config by default),
- * never in konjir's. Each file is @konjir/login's credentials store, keyed by Kolab's MCP URL, under
- * its lock: a team is a kolab, and a Kolab session works in one kolab, so several teams are several
- * sign-ins. The folders are the person's alone (0700) and the files too (0600).
+ * never in konjir's. Each file is @konjir/login's credentials store, keyed by the service's MCP
+ * URL, under its lock: a team is a kolab, and a session works in one kolab, so several teams are
+ * several logins. The folders are the person's alone (0700) and the files too (0600).
  *
- * `.konnect.json` in a folder remembers the team konnect works in there, and Kolab's URL when it
- * isn't the hosted one. It holds no token. konnect reads it as konjir reads `.konjir.json`: in a git
- * repository, the nearest from the folder up to the repository's root; outside one, the folder's
- * own alone. Its URL is followed unasked only to the hosted Kolab, to a Kolab on this machine, or to
- * one konnect keeps a sign-in for, which the person once gave it themselves: a cloned repository's
- * file can't send konnect, or the browser it opens, anywhere else.
+ * konnect keeps no file in the folder it is run in.
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { chmodSync, lstatSync, mkdirSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { checkKolabUrl, keptSignIns, safeUrl } from '@konjir/login';
@@ -23,9 +17,6 @@ import { TEAM, printable } from './names.js';
 
 /** Konjir's hosted Kolab: where konnect talks by default. */
 export const HOSTED_URL = 'https://kolab.konjir.com/mcp';
-
-/** The folder's file. */
-export const PROJECT_FILE = '.konnect.json';
 
 const codeOf = (e: unknown) => (e as { code?: string } | undefined)?.code;
 
@@ -112,38 +103,6 @@ export function allTeams(env: Record<string, string | undefined> = process.env):
   return files.map((f) => ({ team: f.slice(0, -5), urls: keptSignIns(join(dir, f)) })).filter((t) => t.urls.length);
 }
 
-/** What a `.konnect.json` says: the team, and Kolab's URL, each when it says it. */
-export interface Project { path: string; team?: string; url?: string }
-
-/** The `.konnect.json` a command run in `cwd` takes, or undefined when there is none. */
-export function findProject(cwd: string): Project | undefined {
-  const repo = inRepository(cwd);
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    const path = join(dir, PROJECT_FILE);
-    if (existsSync(path)) return readProject(path);
-    if (!repo || existsSync(join(dir, '.git')) || dirname(dir) === dir) return undefined;
-  }
-}
-
-function inRepository(cwd: string): boolean {
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    if (existsSync(join(dir, '.git'))) return true;
-    if (dirname(dir) === dir) return false;
-  }
-}
-
-/** A `.konnect.json`'s team and URL, checked; refused, never passed over, when it isn't what konnect writes. */
-export function readProject(path: string): Project {
-  const bad = (why: string) => new Error(`${printable(path)} ${why}: it names a team, {"team": "<name>"}, as konnect team <name> writes it. Fix it, or run konnect team <name> here to write it again`);
-  let raw: unknown;
-  try { raw = JSON.parse(readFileSync(path, 'utf8') || 'null'); } catch { throw bad('isn\'t JSON'); }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('isn\'t a JSON object');
-  const { team, url } = raw as { team?: unknown; url?: unknown };
-  if (team !== undefined && (typeof team !== 'string' || !TEAM.test(team))) throw bad('names a team badly');
-  if (url !== undefined && (typeof url !== 'string' || !wellFormedUrl(url))) throw bad('names Kolab\'s URL badly');
-  return { path, ...(team !== undefined ? { team } : {}), ...(url !== undefined ? { url: url as string } : {}) };
-}
-
 /** A URL written as it reads back: http(s), nothing hidden in it, no credentials, query or fragment. */
 export function wellFormedUrl(url: string): boolean {
   if (/[\p{Cc}\p{Z}]/u.test(url)) return false;
@@ -153,42 +112,10 @@ export function wellFormedUrl(url: string): boolean {
   } catch { return false; }
 }
 
-/** Whether a URL's host is this machine. */
-const loopback = (url: string) => { try { return /^(localhost|127(\.\d+){3}|\[::1\])$/.test(new URL(url).hostname); } catch { return false; } };
-
-/**
- * Whether konnect follows `url`, which only a `.konnect.json` names: the hosted Kolab, one on this
- * machine, or one konnect keeps a sign-in for.
- */
-export function trustedUrl(url: string, env: Record<string, string | undefined> = process.env): boolean {
-  return url === HOSTED_URL || loopback(url) || allTeams(env).some((t) => t.urls.includes(url));
-}
-
-/**
- * Writes the folder's `.konnect.json`: the team, and the URL when it isn't the hosted one. Other
- * keys already there are kept. Written whole to a new file, then moved into place.
- */
-export function rememberTeam(dir: string, team: string, url: string): string {
-  const path = join(dir, PROJECT_FILE);
-  let was: Record<string, unknown> = {};
-  try {
-    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) was = raw as Record<string, unknown>;
-  } catch { /* none, or not JSON: replaced */ }
-  const { url: _, ...rest } = was;
-  // Only what readProject reads back is written: never a URL it would refuse, or one with credentials.
-  if (!TEAM.test(team) || (url !== HOSTED_URL && !wellFormedUrl(url))) throw new Error(`konnect won't write ${printable(path)} naming ${safeUrl(url)}: it couldn't read it back`);
-  const next = { ...rest, team, ...(url !== HOSTED_URL ? { url } : {}) };
-  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });
-  renameSync(tmp, path);
-  return path;
-}
-
 /** Kolab's URL, checked as a sign-in needs it, said in konnect's words. */
 export function checkUrl(url: string, from: string): string {
   try { checkKolabUrl(url); } catch {
-    throw new Error(`${from} names ${safeUrl(url)}, which konnect can't sign in to: give Kolab's https URL, such as ${HOSTED_URL}`);
+    throw new Error(`${from} names ${safeUrl(url)}, which konnect can't log in to: give the service's https URL, such as ${HOSTED_URL}`);
   }
   return url;
 }
