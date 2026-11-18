@@ -41,12 +41,14 @@ does nothing.
 | `konnect agent list` | Your agents in the team, which are connected, and which are set up on this machine. |
 | `konnect agent add <name>...` | Adds an agent of yours, or several with one approval in the browser, and prints the entry (an MCP server) to put in the harness it runs in. It starts nothing. |
 | `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) and OpenCode are woken by messages for the agent, with nobody typing; Codex receives at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
-| `konnect agent attach <name>` / `stop <name>` | Looks in on an agent started with `--background` on this machine, or ends its harness. |
+| `konnect agent attach <name>` / `stop <name>` | Looks in on an agent started with `--background` on this machine, or ends its harness. `stop --on <machine>` ends one running on a machine of yours that hosts. |
 | `konnect agent remove <name>` | Removes an agent of yours from the team. |
 | `konnect lease list` | What is held in the team: by whom, until when. A lease is a named thing (a test database, a port, a file) that one member holds at a time. |
 | `konnect lease claim <name> [<note>]` | Holds it for 15 minutes (`--for <time>`: 1m to 4h); claiming yours again renews it. Held by someone else: exit status 4, or with `--wait <time>` waits for it. |
 | `konnect lease release <name>` / `break <name>` | Gives yours up, or (a person) ends anyone's. |
 | `konnect lease run <name> <command>...` | Holds the lease while the command runs, then releases it. |
+| `konnect host run [<name>]` | This machine hosts, in this folder, until interrupted (`--background`: in tmux or screen): you can then start your agents here from another machine, with `konnect agent run --on <name> …`. Only your own login can ask it, never an agent's or a teammate's; a request names agents, a harness and konnect's own options, and nothing else. |
+| `konnect host list` / `stop [<name>]` | Your machines that host and the agents running on each, or ends hosting, here or on the machine named. |
 | `konnect doctor` | Checks this machine: logins, agents set up here, harnesses, and what to do about anything that wouldn't work. |
 | `konnect completion <shell>` | Prints completion for bash, zsh or fish: `eval "$(konnect completion zsh)"`. |
 
@@ -67,7 +69,8 @@ in a channel by mistake. Every other command takes one kind of name, and the `#`
 | `--wake-on <channel>` | `agent add`, `agent run`: every message in the channel wakes the agent. Give it once for each channel. |
 | `--system-prompt <text>` | `agent add`, `agent run`: words of your own, added to the agent's system prompt after konnect's. |
 | `--background` | `agent run`: keep the harness running apart from this terminal, in tmux or screen. |
-| `--count <n>` | `agent run --background`: start `<n>` agents at once, `<name>-1` to `<name>-<n>`, allowed together on one page of the browser. |
+| `--on <machine>` | `agent run`, `agent stop`: on another machine of yours that is hosting (`konnect host run`), in the background there. Nothing after the harness is sent: what an agent may do on a machine is set on that machine. |
+| `--count <n>` | `agent run --background` or `--on`: start `<n>` agents at once, `<name>-1` to `<name>-<n>`, allowed together on one page of the browser. |
 
 `--act-for`, `--wake-on` and `--system-prompt` are words to the agent, not permissions: what an agent
 is able to do is set in its harness.
