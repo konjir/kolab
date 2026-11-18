@@ -100,7 +100,7 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   expect(ann.err.join('\n')).toContain('Your agent @ann/helper is added to team hub.');
   // Nothing is written in the folder: everything Claude Code needs is on its command line, for this session alone.
   expect(existsSync(join(ann.cwd, '.mcp.json'))).toBe(false);
-  const entryEnv = { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_ACT_FOR: 'me', KONNECT_WAKE_ON: 'general,deploys', KONNECT_SYSTEM_PROMPT: 'Be brief.', KONNECT_URL: server.url };
+  const entryEnv = { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR, KONNECT_ACT_FOR: 'me', KONNECT_WAKE_ON: 'general,deploys', KONNECT_SYSTEM_PROMPT: 'Be brief.', KONNECT_URL: server.url };
   expect(started).toHaveLength(1);
   const [flagServer, serverJson, flagSettings, settingsJson, flagPrompt, prompt, ...own] = started[0].args;
   expect([started[0].cmd, flagServer, flagSettings, flagPrompt]).toStrictEqual(['claude', '--mcp-config', '--settings', '--append-system-prompt']);
@@ -125,7 +125,7 @@ test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s
   expect(pages).toBe(1);
   await ann.run(['agent', 'run', '--act-for', 'nobody', 'helper', 'claude'], { open: () => { throw new Error('no browser'); }, self, start });
   expect(ann.err.join('\n')).toContain('Your agent @ann/helper is in team hub.');
-  expect(started[1].env).toStrictEqual({ KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_URL: server.url });
+  expect(started[1].env).toStrictEqual({ KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR, KONNECT_URL: server.url });
 
   // The person's own --settings and --append-system-prompt, after the harness: merged with konnect's, each passed once.
   await ann.run(['agent', 'run', 'helper', 'claude', '--settings', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]},"permissions":{"allow":["Read"]},"model":"opus"}', '--append-system-prompt', 'Mine too.', '-p', 'hi'], { self, start });
@@ -170,8 +170,9 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   expect(ann.err.join('\n')).toMatch(/^Your agent @ann\/coder is added to team hub\.\nCodex 0\.149 or later is woken by messages once the agent has used one of its konnect tools; an earlier Codex receives at the start of each turn\.$/m);
   // The server, told that it wakes this session itself, and leave to call the agent's own tools: all as overrides
   // on Codex's command line, for this session alone. What the person gave Codex follows, untouched.
-  const overrides = ['-c', 'mcp_servers.konnect-coder.command="/usr/bin/node"', '-c', 'mcp_servers.konnect-coder.args=["/opt/konnect/konnect.mjs", "mcp"]', '-c', `mcp_servers.konnect-coder.env={ KONNECT_TEAM = "hub", KONNECT_AGENT = "coder", KONNECT_URL = ${JSON.stringify(server.url)}, KONNECT_WAKE = "codex" }`, '-c', 'mcp_servers.konnect-coder.default_tools_approval_mode="approve"'];
-  expect(started[0]).toStrictEqual({ cmd: 'codex', args: [...overrides, 'exec', 'hi'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_URL: server.url } });
+  // Where konnect keeps the agent's login rides in the entry too: Codex hands its own environment on to no server it starts.
+  const overrides = ['-c', 'mcp_servers.konnect-coder.command="/usr/bin/node"', '-c', 'mcp_servers.konnect-coder.args=["/opt/konnect/konnect.mjs", "mcp"]', '-c', `mcp_servers.konnect-coder.env={ KONNECT_TEAM = "hub", KONNECT_AGENT = "coder", KONNECT_CONFIG_DIR = ${JSON.stringify(ann.env.KONNECT_CONFIG_DIR)}, KONNECT_URL = ${JSON.stringify(server.url)}, KONNECT_WAKE = "codex" }`, '-c', 'mcp_servers.konnect-coder.default_tools_approval_mode="approve"'];
+  expect(started[0]).toStrictEqual({ cmd: 'codex', args: [...overrides, 'exec', 'hi'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR, KONNECT_URL: server.url } });
   // Given nothing of the person's own, Codex starts with a first turn that receives what waits: which is also how its session gets a name to wake.
   await ann.run(['agent', 'run', 'coder', 'codex'], { self, start });
   expect(ann.err.join('\n')).toContain('Codex starts with a first turn that receives what waits. From then on messages wake it (Codex 0.149 or later; an earlier one receives at the start of each turn).');
@@ -188,7 +189,7 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   expect(waking).toStrictEqual([{ port: 4777, label: 'coder', owner: 'ann', wakeOn: 'general' }]);
   expect(stops).toBe(1);
   // The server is told not to wake the session itself; konnect does.
-  expect(JSON.parse(started[1].env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['/usr/bin/node', '/opt/konnect/konnect.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_WAKE_ON: 'general', KONNECT_URL: server.url, KONNECT_WAKE: 'beside' }, enabled: true });
+  expect(JSON.parse(started[1].env.OPENCODE_CONFIG_CONTENT).mcp['konnect-coder']).toStrictEqual({ type: 'local', command: ['/usr/bin/node', '/opt/konnect/konnect.mjs', 'mcp'], environment: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'coder', KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR, KONNECT_WAKE_ON: 'general', KONNECT_URL: server.url, KONNECT_WAKE: 'beside' }, enabled: true });
   expect(readdirSync(ann.cwd)).toStrictEqual([]);
   // A port the person gives OpenCode themselves is the one used, and isn't given twice.
   await ann.run(['agent', 'run', 'coder', 'opencode', '--port', '5123'], { self, start, port: async () => { throw new Error('asked for a port'); }, wakeOpenCode });
@@ -269,7 +270,7 @@ test('konnect agent add prints the entry and starts nothing; agent list says wha
   const allow = (u: URL) => { idp.next(annId); void browse(u, pressing('decision=allow')); };
   const start = async () => { throw new Error('started'); };
 
-  const entry = { mcpServers: { 'konnect-helper': { type: 'stdio', command: 'node', args: ['k.mjs', 'mcp'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_ACT_FOR: 'team', KONNECT_WAKE_ON: 'deploys', KONNECT_SYSTEM_PROMPT: 'Be brief.', KONNECT_URL: server.url } } } };
+  const entry = { mcpServers: { 'konnect-helper': { type: 'stdio', command: 'node', args: ['k.mjs', 'mcp'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR, KONNECT_ACT_FOR: 'team', KONNECT_WAKE_ON: 'deploys', KONNECT_SYSTEM_PROMPT: 'Be brief.', KONNECT_URL: server.url } } } };
   expect(await ann.run(['agent', 'add', 'helper', '--act-for', 'team', '--wake-on', '#deploys', '--system-prompt', 'Be brief.'], { open: allow, self, start })).toBe([
     'Your agent @ann/helper is added to team hub, and logged in on this machine.',
     'Put this entry in the harness it runs in (an MCP server):',

@@ -146,9 +146,12 @@ export function keepKonnect(keep: { from: string; to: string }) {
  * (whose messages it carries out, the channels that wake it, the owner's own words), and the
  * service's URL when it isn't the hosted one. No token.
  */
-export function entryEnv(o: { team: string; label: string; wakeOn?: string[]; actFor?: string; systemPrompt?: string; url?: string }): Record<string, string> {
+export function entryEnv(o: { team: string; label: string; wakeOn?: string[]; actFor?: string; systemPrompt?: string; url?: string; configDir?: string; xdgConfigHome?: string }): Record<string, string> {
   return {
     KONNECT_TEAM: o.team, KONNECT_AGENT: o.label,
+    // Where konnect keeps the agent's login, when it isn't the usual place: a harness needn't hand its own
+    // environment on to the servers it starts (Codex doesn't), so the entry says it itself.
+    ...(o.configDir ? { KONNECT_CONFIG_DIR: o.configDir } : o.xdgConfigHome ? { XDG_CONFIG_HOME: o.xdgConfigHome } : {}),
     ...(o.actFor && o.actFor !== 'nobody' ? { KONNECT_ACT_FOR: o.actFor } : {}),
     ...(o.wakeOn?.length ? { KONNECT_WAKE_ON: o.wakeOn.join(',') } : {}),
     ...(o.systemPrompt?.trim() ? { KONNECT_SYSTEM_PROMPT: o.systemPrompt } : {}),

@@ -132,7 +132,10 @@ function entryFor(ctx: Ctx, team: string, name: string, said: Said) {
   if (self.keep) keepKonnect(self.keep);
   return {
     command: self.command, args: [...self.args, 'mcp'],
-    env: entryEnv({ team, label: name, wakeOn: said.wakeOn, actFor: said.actFor, systemPrompt: said.systemPrompt, ...(ctx.url !== HOSTED_URL ? { url: ctx.url } : {}) }),
+    env: entryEnv({
+      team, label: name, wakeOn: said.wakeOn, actFor: said.actFor, systemPrompt: said.systemPrompt, ...(ctx.url !== HOSTED_URL ? { url: ctx.url } : {}),
+      ...(ctx.env.KONNECT_CONFIG_DIR ? { configDir: resolve(ctx.env.KONNECT_CONFIG_DIR) } : ctx.env.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
+    }),
   };
 }
 
